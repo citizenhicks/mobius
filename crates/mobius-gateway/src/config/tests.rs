@@ -1065,32 +1065,6 @@ fn workspace_directory_creation_creates_one_canonical_git_workspace() {
 }
 
 #[test]
-fn background_workspace_is_private_stable_and_outside_gateway_state() {
-    let root = tempfile::tempdir().expect("root");
-    let state = root.path().join("gateway");
-    let (store, _) =
-        ConfigStore::initialize(state, DEFAULT_LISTEN, None).expect("initialize gateway");
-
-    let first = prepare_background_workspace(store.state_dir(), None)
-        .expect("prepare background workspace");
-    let second =
-        prepare_background_workspace(store.state_dir(), None).expect("reopen background workspace");
-
-    assert_eq!(first, second);
-    assert!(!first.starts_with(store.state_dir()));
-    assert!(first.join(".git").is_dir());
-    #[cfg(unix)]
-    assert_eq!(
-        fs::metadata(first)
-            .expect("background metadata")
-            .permissions()
-            .mode()
-            & 0o777,
-        0o700
-    );
-}
-
-#[test]
 fn workspace_directory_creation_rejects_invalid_names_and_existing_targets() {
     let root = tempfile::tempdir().expect("root");
     let parent = root.path().join("parent");

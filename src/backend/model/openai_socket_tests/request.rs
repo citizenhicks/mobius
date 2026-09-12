@@ -40,15 +40,15 @@ fn tool_load_becomes_additional_tools_at_its_context_position() {
         parameters: serde_json::json!({"type": "object"}),
     }];
     let deferred = [ToolDefinition {
-        name: "swarm_post".into(),
-        description: "Post to the swarm".into(),
+        name: "notebook_post".into(),
+        description: "Post to the notebook".into(),
         parameters: serde_json::json!({"type": "object"}),
     }];
     let input = [
         serde_json::json!({"role": "user", "content": "before"}),
         ToolLoad {
             catalog_revision: "catalog-1".into(),
-            tools: vec!["swarm_post".into()],
+            tools: vec!["notebook_post".into()],
         }
         .into_input(),
         serde_json::json!({"role": "user", "content": "after"}),
@@ -73,8 +73,8 @@ fn tool_load_becomes_additional_tools_at_its_context_position() {
                     "role": "developer",
                     "tools": [{
                         "type": "function",
-                        "name": "swarm_post",
-                        "description": "Post to the swarm",
+                        "name": "notebook_post",
+                        "description": "Post to the notebook",
                         "parameters": {"type": "object"},
                         "strict": false
                     }]
@@ -167,8 +167,8 @@ fn continuation_ignores_searchable_inventory_and_resets_on_catalog_change() {
     );
 
     let deferred_tools = [ToolDefinition {
-        name: "swarm_post".into(),
-        description: "Post to the swarm".into(),
+        name: "notebook_post".into(),
+        description: "Post to the notebook".into(),
         parameters: serde_json::json!({"type": "object"}),
     }];
     let inventory_envelope = envelope_fingerprint(

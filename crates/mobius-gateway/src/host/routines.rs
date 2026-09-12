@@ -108,6 +108,7 @@ impl GatewayHost {
         )
         .await;
         drop(state);
+        self.cleanup_session_files(file_deletion);
         if !session_ids.is_empty() {
             let _ = self.broadcast_sessions().await;
         }
@@ -140,6 +141,7 @@ impl GatewayHost {
                 });
             }
         };
+        drop(_mutation);
         self.run_routine_with_state(state, routine_id, run).await
     }
 
@@ -165,6 +167,7 @@ impl GatewayHost {
             }
         };
         let state = self.state.lock().await;
+        drop(_mutation);
         self.run_routine_with_state(state, routine_id, run).await
     }
 
@@ -185,6 +188,7 @@ impl GatewayHost {
             message: "this routine run has no execution session".into(),
             fatal: false,
         })?;
+        drop(_mutation);
         let (host, temporary) = self.open_session_with_cache(&session_id, false).await?;
         let page = host.history_page(before_sequence).await;
         if temporary {
@@ -241,6 +245,7 @@ impl GatewayHost {
             Ok(None)
         };
         drop(state);
+        self.cleanup_session_files(file_deletion);
         if !session_ids.is_empty() {
             let _ = self.broadcast_sessions().await;
         }
@@ -259,97 +264,50 @@ impl GatewayHost {
 
     async fn run_routine_with_state(
         &self,
-        mut state: tokio::sync::MutexGuard<'_, GatewayState>,
+        state: tokio::sync::MutexGuard<'_, GatewayState>,
         routine_id: String,
         run: ActiveRoutineRun,
     ) -> std::result::Result<(), Rejection> {
-        let preflight: std::result::Result<_, Rejection> = (|| {
-            let routine = state.bots.routine(&routine_id).map_err(invalid_routine)?;
-            let (_, input) = state
-                .bots
-                .routine_input(&routine.id)
-                .map_err(invalid_routine)?;
-            let bot = state.bots.bot(&routine.bot_id).map_err(invalid_bot)?;
-            let tls = state
-                .config
-                .lock()
-                .map_err(|_| internal("gateway configuration lock is poisoned"))?
-                .tls
-                .clone();
-            let mut spec = ChatSpec::for_bot(
-                &routine.workspace,
-                &bot,
-                state.store.state_dir(),
-                tls.as_ref(),
-            )
-            .map_err(invalid_workspace)?;
-            spec.catalog_visible = false;
-            Ok((routine, input, spec))
-        })();
-        let (routine, input, spec) = match preflight {
+        let bots = Arc::clone(&state.bots);
+        drop(state);
+        let preflight = bots.routine_input(&routine_id).map_err(invalid_routine);
+        let (routine, input) = match preflight {
             Ok(preflight) => preflight,
             Err(rejection) => {
-                state
-                    .bots
-                    .finish_run(
-                        run,
-                        crate::wire::RoutineRunStatus::Failed,
-                        Some(rejection.message.clone()),
-                    )
+                bots.finish_run(
+                    run,
+                    crate::wire::RoutineRunStatus::Failed,
+                    Some(rejection.message.clone()),
+                )
+                .map_err(internal)?;
+                return Err(rejection);
+            }
+        };
+        let session_id = run.session_id().to_owned();
+        let label = format!("routine · {}", routine.id.get(..8).unwrap_or(&routine.id));
+        let host = match self
+            .create_session_with_id(
+                &routine.workspace,
+                &routine.bot_id,
+                session_id.clone(),
+                false,
+                &label,
+            )
+            .await
+        {
+            Ok(host) => host,
+            Err(rejection) => {
+                let status = if rejection.code == "session_limit" {
+                    crate::wire::RoutineRunStatus::Skipped
+                } else {
+                    crate::wire::RoutineRunStatus::Failed
+                };
+                bots.finish_run(run, status, Some(rejection.message.clone()))
                     .map_err(internal)?;
                 return Err(rejection);
             }
         };
-        if let Err(rejection) = state.ensure_capacity().await {
-            state
-                .bots
-                .finish_run(
-                    run,
-                    crate::wire::RoutineRunStatus::Skipped,
-                    Some("the gateway active-chat limit was reached".into()),
-                )
-                .map_err(internal)?;
-            return Err(rejection);
-        }
-        let session_id = run.session_id().to_owned();
-        let label = format!("routine · {}", routine.id.get(..8).unwrap_or(&routine.id));
-        let host = match HostHandle::start(
-            state.store.clone(),
-            Arc::clone(&state.config),
-            spec,
-            Arc::clone(&state.credentials),
-            Arc::clone(&state.bots),
-            Arc::clone(&state.checkpoints),
-            state.scratchpad.clone(),
-            state.session_files.clone(),
-            state.swarm.clone(),
-            Arc::clone(&state.session_mutations),
-            Arc::clone(&state.discovery_gate),
-            Arc::clone(&self.desktop),
-            Arc::clone(&state.provider_epoch),
-            Arc::clone(&state.activities),
-            self.events.clone(),
-            session_id.clone(),
-            &label,
-        )
-        .await
-        {
-            Ok(host) => host,
-            Err(error) => {
-                let message = error.to_string();
-                state
-                    .bots
-                    .finish_run(
-                        run,
-                        crate::wire::RoutineRunStatus::Failed,
-                        Some(message.clone()),
-                    )
-                    .map_err(internal)?;
-                return Err(internal(message));
-            }
-        };
-        let bots = Arc::clone(&state.bots);
-        state.sessions.insert(session_id.clone(), host.clone());
+        let mut state = self.state.lock().await;
         let accepted =
             accept_routine_while_state_locked(&mut state, &host, run, input, bots.as_ref()).await;
         drop(state);

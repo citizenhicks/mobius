@@ -2,7 +2,7 @@ use mobius::backend::checkpoint::{Checkpoint, sqlite::SqliteCheckpoint};
 use mobius::backend::model::provider::HostedWebSearch;
 use mobius::middleware::bots::BotsBackend;
 
-use crate::bots::swarm::SwarmStore;
+use crate::groups::GroupStore;
 use crate::provider_catalog::*;
 
 use super::*;
@@ -526,8 +526,8 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
     prepared.models = Arc::clone(&shared_router);
     let prepared = Arc::new(prepared);
     let gateway = Arc::new(Mutex::new(gateway));
-    let (swarm, _deliveries) = SwarmStore::new(Arc::clone(&checkpoints), Arc::clone(&bots));
-    let swarm: Arc<dyn BotsBackend> = Arc::new(swarm);
+    let (groups, _deliveries) = GroupStore::new(store.state_dir(), Arc::clone(&bots)).unwrap();
+    let groups: Arc<dyn BotsBackend> = Arc::new(groups);
     let default_tools = {
         let mut built = assemble(
             Arc::clone(&gateway),
@@ -538,10 +538,9 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
             SessionFileStore::new(store.state_dir()),
             Arc::new(tokio::sync::Mutex::new(())),
             Arc::new(crate::computer_runtime::desktop::DesktopControl::default()),
-            Arc::clone(&swarm),
+            Arc::clone(&groups),
             Some("chat".into()),
             "test",
-            true,
             Arc::clone(&prepared),
         )
         .await
@@ -555,10 +554,9 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
             SessionFileStore::new(store.state_dir()),
             Arc::new(tokio::sync::Mutex::new(())),
             Arc::new(crate::computer_runtime::desktop::DesktopControl::default()),
-            Arc::clone(&swarm),
+            Arc::clone(&groups),
             Some("sibling".into()),
             "test",
-            true,
             Arc::clone(&prepared),
         )
         .await
@@ -643,10 +641,9 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         SessionFileStore::new(store.state_dir()),
         Arc::new(tokio::sync::Mutex::new(())),
         Arc::new(crate::computer_runtime::desktop::DesktopControl::default()),
-        swarm,
+        groups,
         Some("chat".into()),
         "test",
-        true,
         Arc::clone(&prepared),
     )
     .await
@@ -824,8 +821,8 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
     let scratchpad = ScratchpadStore::new(Arc::clone(&checkpoints));
     let session_files = SessionFileStore::new(store.state_dir());
     let bots = Arc::new(crate::bots::BotStore::open(store.state_dir()).expect("Bots"));
-    let (swarm, _deliveries) = SwarmStore::new(Arc::clone(&checkpoints), bots);
-    let swarm: Arc<dyn BotsBackend> = Arc::new(swarm);
+    let (groups, _deliveries) = GroupStore::new(store.state_dir(), bots).unwrap();
+    let groups: Arc<dyn BotsBackend> = Arc::new(groups);
     let backend: Arc<dyn SandboxBackend> =
         Arc::new(LocalSandbox::new(&workspace).expect("sandbox"));
     let discover = |resolved: &ResolvedExtensions| {
@@ -845,11 +842,10 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
         &settings,
         &workspace,
         "bot-fixture",
-        true,
         Arc::clone(&gateway),
         scratchpad.clone(),
         session_files.clone(),
-        Arc::clone(&swarm),
+        Arc::clone(&groups),
         Arc::clone(&backend),
         None,
         &active,
@@ -862,11 +858,10 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
         &settings,
         &workspace,
         "bot-fixture",
-        true,
         gateway,
         scratchpad,
         session_files,
-        swarm,
+        groups,
         backend,
         None,
         &inactive,

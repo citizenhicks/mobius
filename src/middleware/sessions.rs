@@ -101,9 +101,16 @@ pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
 pub struct Sessions {
     page_size: usize,
     files: Option<crate::backend::session_files::SessionFileStore>,
+    chat_history: Option<Arc<dyn super::bots::BotsBackend>>,
 }
 
 impl Sessions {
+    /// Uses the Bot's shared conversation for current-chat history retrieval.
+    #[must_use]
+    pub fn chat_history(mut self, backend: Arc<dyn super::bots::BotsBackend>) -> Self {
+        self.chat_history = Some(backend);
+        self
+    }
     /// Injects durable media storage used when granting a fork its observations.
     #[must_use]
     pub fn session_files(mut self, files: crate::backend::session_files::SessionFileStore) -> Self {
@@ -121,6 +128,7 @@ impl Sessions {
         Ok(Self {
             page_size,
             files: None,
+            chat_history: None,
         })
     }
 }
@@ -130,6 +138,7 @@ impl Default for Sessions {
         Self {
             page_size: DEFAULT_PAGE_SIZE,
             files: None,
+            chat_history: None,
         }
     }
 }
@@ -141,6 +150,7 @@ impl Middleware for Sessions {
 
     fn register(&self, catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
         let history = Arc::new(History {
+            chat_history: self.chat_history.clone(),
             checkpoints: Arc::clone(&runtime.checkpoints),
             session_id: runtime.session_id.clone(),
             bot_id: runtime.session_context.bot_id.clone(),
@@ -288,6 +298,7 @@ struct HistoryDocument {
 }
 
 struct History {
+    chat_history: Option<Arc<dyn super::bots::BotsBackend>>,
     checkpoints: Arc<dyn crate::backend::checkpoint::CheckpointStore>,
     session_id: String,
     bot_id: String,
@@ -387,6 +398,29 @@ impl Tool for ReadHistory {
 }
 
 impl History {
+    async fn page(
+        &self,
+        session_id: &str,
+        before_sequence: Option<u64>,
+    ) -> Result<crate::backend::checkpoint::TranscriptPage> {
+        if session_id == self.session_id
+            && let Some(backend) = &self.chat_history
+            && let Some(page) = backend
+                .chat_history(&self.bot_id, session_id, before_sequence)
+                .await?
+        {
+            return Ok(page);
+        }
+        self.checkpoints
+            .transcript_page(
+                session_id,
+                TranscriptPageRequest {
+                    before_sequence,
+                    max_batches: 1,
+                },
+            )
+            .await
+    }
     async fn authorize(&self, session_id: &str) -> Result<()> {
         validate_history_session_id(session_id)?;
         let checkpoint = self.checkpoints.load(session_id).await?;
@@ -467,16 +501,7 @@ impl History {
                 }
                 continue;
             };
-            let page = self
-                .checkpoints
-                .transcript_page(
-                    &session_id,
-                    TranscriptPageRequest {
-                        before_sequence: cursor.before_sequence,
-                        max_batches: 1,
-                    },
-                )
-                .await?;
+            let page = self.page(&session_id, cursor.before_sequence).await?;
             let Some(batch) = page.batches.into_iter().next() else {
                 if cursor.scope == HistoryScope::Current {
                     complete = true;
@@ -571,16 +596,7 @@ impl History {
             .checked_add(1)
             .ok_or_else(|| Error::Tool("history target sequence is too large".into()))?;
         validate_history_sequence(before_sequence)?;
-        let page = self
-            .checkpoints
-            .transcript_page(
-                session_id,
-                TranscriptPageRequest {
-                    before_sequence: Some(before_sequence),
-                    max_batches: 1,
-                },
-            )
-            .await?;
+        let page = self.page(session_id, Some(before_sequence)).await?;
         let item = page
             .batches
             .first()
@@ -1184,6 +1200,7 @@ mod tests {
 
     fn history_store(path: &std::path::Path) -> History {
         History {
+            chat_history: None,
             checkpoints: Arc::new(
                 crate::backend::checkpoint::sqlite::SqliteCheckpoint::new(path).expect("store"),
             ),
@@ -1198,6 +1215,154 @@ mod tests {
             scope,
             cursor,
         }
+    }
+
+    struct SharedHistory {
+        batches: Vec<crate::backend::checkpoint::TranscriptBatch>,
+        revoked: std::sync::atomic::AtomicBool,
+    }
+
+    impl super::super::bots::BotsBackend for SharedHistory {
+        fn create_routine<'a>(
+            &'a self,
+            _bot_id: &'a str,
+            _workspace: &'a std::path::Path,
+            _instructions: String,
+            _schedule: Value,
+            _ends_at: Option<i64>,
+        ) -> BoxFuture<'a, Result<String>> {
+            Box::pin(async { unreachable!("history does not create routines") })
+        }
+
+        fn chat_context<'a>(
+            &'a self,
+            _bot_id: &'a str,
+            _session_id: &'a str,
+        ) -> BoxFuture<'a, Result<Option<String>>> {
+            Box::pin(async { Ok(None) })
+        }
+
+        fn chat_history<'a>(
+            &'a self,
+            bot_id: &'a str,
+            session_id: &'a str,
+            before_sequence: Option<u64>,
+        ) -> BoxFuture<'a, Result<Option<crate::backend::checkpoint::TranscriptPage>>> {
+            Box::pin(async move {
+                assert_eq!(bot_id, "researcher");
+                assert_eq!(session_id, "current");
+                if self.revoked.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Err(Error::Tool("shared membership was revoked".into()));
+                }
+                let mut batches =
+                    self.batches.iter().rev().filter(|batch| {
+                        before_sequence.is_none_or(|before| batch.sequence < before)
+                    });
+                let page = batches.next().cloned();
+                let next_before_sequence = batches
+                    .next()
+                    .and_then(|_| page.as_ref().map(|batch| batch.sequence));
+                Ok(Some(crate::backend::checkpoint::TranscriptPage {
+                    batches: page.into_iter().collect(),
+                    next_before_sequence,
+                }))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn current_shared_history_search_and_read_page_past_recent_context_without_private_fallback()
+     {
+        let state = tempfile::tempdir().unwrap();
+        let mut history = history_store(&state.path().join("history.sqlite3"));
+        save_history(
+            history.checkpoints.as_ref(),
+            "current",
+            "researcher",
+            vec![crate::backend::model::user_message(
+                "Private input must not be searched",
+            )],
+        )
+        .await;
+        let exact = format!("Original shared needle {} exact ending", "🦀".repeat(6_000));
+        let shared = Arc::new(SharedHistory {
+            batches: (1..=150)
+                .map(|sequence| crate::backend::checkpoint::TranscriptBatch {
+                    sequence,
+                    created_at: 1,
+                    items: vec![crate::backend::model::user_message(if sequence == 1 {
+                        &exact
+                    } else {
+                        "Later shared discussion"
+                    })],
+                })
+                .collect(),
+            revoked: std::sync::atomic::AtomicBool::new(false),
+        });
+        history.chat_history = Some(shared.clone());
+        let mut cursor = None;
+        let mut pages = 0;
+        let hit = loop {
+            let page: Value = serde_json::from_str(
+                &history
+                    .search(search_args("needle", HistoryScope::Current, cursor))
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            pages += 1;
+            if let Some(hit) = page["hits"].as_array().unwrap().first() {
+                break hit.clone();
+            }
+            assert!(pages < 10, "shared search must advance through the journal");
+            cursor = Some(page["next_cursor"].as_str().unwrap().into());
+        };
+        assert!(pages > 1);
+        assert_eq!(hit["session_id"], "current");
+        let target: MessageTarget = serde_json::from_value(hit["target"].clone()).unwrap();
+        assert_eq!(target.checkpoint_sequence, 1);
+        let mut full_text = String::new();
+        let mut offset = 0;
+        loop {
+            let page: Value = serde_json::from_str(
+                &history
+                    .read(ReadHistoryArgs {
+                        session_id: None,
+                        target,
+                        offset,
+                        max_chars: 4_000,
+                    })
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            full_text.push_str(page["text"].as_str().unwrap());
+            let Some(next) = page["next_offset"].as_u64() else {
+                break;
+            };
+            offset = usize::try_from(next).unwrap();
+        }
+        assert_eq!(full_text, exact);
+        shared
+            .revoked
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            history
+                .search(search_args("Private", HistoryScope::Current, None))
+                .await
+                .is_err()
+        );
+        assert!(
+            history
+                .read(ReadHistoryArgs {
+                    session_id: None,
+                    target,
+                    offset: 0,
+                    max_chars: 4_000
+                })
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

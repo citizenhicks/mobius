@@ -27,6 +27,7 @@ use super::terminal::terminal_text;
 use mobius::protocol::ActiveMessageDelivery;
 #[cfg(test)]
 use mobius::protocol::EventMsg;
+use mobius::protocol::ExecApprovalRequestEvent;
 use mobius::protocol::FrontendBlockFormat;
 use mobius::protocol::FrontendBlockRole;
 use mobius::protocol::FrontendBlockState;
@@ -132,6 +133,7 @@ enum PickerAction {
         workspace: PathBuf,
         bot_id: String,
         clear: bool,
+        checked: bool,
     },
 }
 
@@ -324,9 +326,9 @@ struct TuiState {
     composer_history: VecDeque<String>,
     composer_history_index: Option<usize>,
     composer_history_draft: Option<InputDraft>,
-    approval: Option<String>,
+    approvals: VecDeque<ExecApprovalRequestEvent>,
     approval_draft: Option<InputDraft>,
-    active_turn: Option<String>,
+    active_turns: Vec<String>,
     active_message_delivery: Option<ActiveMessageDelivery>,
     turn_started_at: Option<Instant>,
     usage: UsageStatus,
@@ -375,10 +377,10 @@ impl TuiState {
             composer_history: VecDeque::new(),
             composer_history_index: None,
             composer_history_draft: None,
-            approval: None,
+            approvals: VecDeque::new(),
             approval_draft: None,
-            active_turn: None,
-            active_message_delivery: None,
+            active_turns: Vec::new(),
+            active_message_delivery: Some(ActiveMessageDelivery::Steer),
             turn_started_at: None,
             usage: UsageStatus::default(),
             context_limit: None,
@@ -401,7 +403,7 @@ impl TuiState {
     }
 
     fn is_working(&self) -> bool {
-        self.active_turn.is_some() && self.approval.is_none() && !self.disconnected
+        self.active_turn().is_some() && self.approval().is_none() && !self.disconnected
     }
 
     fn message_delivery(&self) -> ActiveMessageDelivery {
@@ -416,22 +418,54 @@ impl TuiState {
         }
     }
 
-    fn begin_approval(&mut self, id: String) {
-        if self.approval.is_none() {
+    fn active_turn(&self) -> Option<&str> {
+        self.approval()
+            .map(|request| request.turn_id.as_str())
+            .or_else(|| self.active_turns.first().map(String::as_str))
+    }
+
+    fn composer_target_turn(&self) -> Option<&str> {
+        self.active_message_delivery.and(self.active_turn())
+    }
+
+    fn start_turn(&mut self, turn_id: String) {
+        if !self.active_turns.contains(&turn_id) {
+            self.active_turns.push(turn_id);
+        }
+        self.turn_started_at.get_or_insert_with(Instant::now);
+    }
+
+    fn approval(&self) -> Option<&ExecApprovalRequestEvent> {
+        self.approvals.front()
+    }
+
+    fn begin_approval(&mut self, request: ExecApprovalRequestEvent) {
+        self.start_turn(request.turn_id.clone());
+        if self
+            .approvals
+            .iter()
+            .any(|pending| pending.id == request.id)
+        {
+            return;
+        }
+        if self.approvals.is_empty() {
             self.approval_draft = Some(self.take_input_draft());
         }
-        self.approval = Some(id);
+        self.approvals.push_back(request);
+    }
+
+    fn take_approval(&mut self) -> Option<String> {
+        let request = self.approvals.pop_front()?;
+        self.restore_draft();
+        Some(request.id)
     }
 
     fn restore_draft(&mut self) {
-        if let Some(draft) = self.approval_draft.take() {
+        if self.approvals.is_empty()
+            && let Some(draft) = self.approval_draft.take()
+        {
             self.restore_input_draft(draft);
         }
-    }
-
-    fn clear_approval(&mut self) {
-        self.approval = None;
-        self.restore_draft();
     }
 
     fn take_input_draft(&mut self) -> InputDraft {
@@ -670,13 +704,16 @@ impl TuiState {
         }
     }
 
-    fn finish_turn(&mut self) {
+    fn finish_turn(&mut self, turn_id: &str) {
         self.commit_reasoning();
         self.commit_stream();
-        self.streamed_step_phases.clear();
-        self.active_turn = None;
-        self.turn_started_at = None;
-        self.clear_approval();
+        self.active_turns.retain(|active| active != turn_id);
+        self.approvals.retain(|request| request.turn_id != turn_id);
+        if self.active_turns.is_empty() {
+            self.streamed_step_phases.clear();
+            self.turn_started_at = None;
+        }
+        self.restore_draft();
     }
 
     fn open_transcript_preview(&mut self) {

@@ -11,7 +11,7 @@ fn composer_dispatches_commands_and_active_turn_steering() {
     assert_eq!(idle.submit_input(&catalog), UiAction::Exit);
 
     let mut working = state();
-    working.active_turn = Some("turn".into());
+    working.start_turn("turn".into());
     working.input = "change direction".into();
     working.cursor = working.input.len();
 
@@ -44,7 +44,7 @@ fn alt_enter_uses_the_opposite_active_delivery() {
         ),
     ] {
         let mut state = state();
-        state.active_turn = Some("turn".into());
+        state.start_turn("turn".into());
         state.active_message_delivery = Some(configured);
         state.input = "follow up".into();
         state.cursor = state.input.len();
@@ -94,13 +94,13 @@ fn new_and_clear_keep_distinct_terminal_semantics() {
 fn composer_targets_interrupt_at_the_active_turn() {
     let catalog = default_catalog();
     let mut slash = state();
-    slash.active_turn = Some("turn-1".into());
+    slash.start_turn("turn-1".into());
     slash.input = "/interrupt".into();
     slash.cursor = slash.input.len();
     let slash_action = slash.submit_input(&catalog);
 
     let mut escape = state();
-    escape.active_turn = Some("turn-1".into());
+    escape.start_turn("turn-1".into());
     let escape_action =
         escape.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &catalog);
 
@@ -161,7 +161,7 @@ fn generic_picker_submits_the_selected_operation() {
 }
 
 #[test]
-fn bot_picker_creates_the_chat_for_the_selected_bot() {
+fn bot_picker_creates_individual_and_group_chats() {
     let bots = [
         mobius_gateway::wire::BotRecord {
             id: "bot-a".into(),
@@ -196,9 +196,44 @@ fn bot_picker_creates_the_chat_for_the_selected_bot() {
             &default_catalog(),
         ),
         UiAction::CreateSession {
-            workspace,
-            bot_id: "bot-b".into(),
+            workspace: workspace.clone(),
+            bot_ids: vec!["bot-b".into()],
             clear: false,
+        }
+    );
+    state.open_bot_picker(&bots, workspace.clone(), "bot-a", true);
+    for code in [
+        KeyCode::Char(' '),
+        KeyCode::Char(' '),
+        KeyCode::Char(' '),
+        KeyCode::Down,
+        KeyCode::Char(' '),
+    ] {
+        assert_eq!(
+            state.handle_key(KeyEvent::new(code, KeyModifiers::NONE), &default_catalog()),
+            UiAction::None
+        );
+    }
+    let mut terminal = Terminal::new(TestBackend::new(100, 20)).expect("terminal");
+    terminal
+        .draw(|frame| view::render(frame, &mut state, &default_catalog()))
+        .expect("Bot picker");
+    let screen = terminal.backend().to_string();
+    assert!(
+        screen.contains("Space toggle")
+            && screen.contains("[x] @ada")
+            && screen.contains("[x] @grace"),
+        "{screen}"
+    );
+    assert_eq!(
+        state.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &default_catalog()
+        ),
+        UiAction::CreateSession {
+            workspace,
+            bot_ids: vec!["bot-a".into(), "bot-b".into()],
+            clear: true,
         }
     );
 }
@@ -526,9 +561,29 @@ fn attachment_only_submission_is_a_user_turn() {
 }
 
 #[test]
+fn group_messages_keep_attachments_without_targeting_a_member_turn() {
+    let mut state = state();
+    state.active_message_delivery = None;
+    state.start_turn("member-turn".into());
+    state.input = "@reviewer check this".into();
+    state.cursor = state.input.len();
+    state.attachments.push(attachment("report.pdf"));
+    let action = state.handle_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT),
+        &default_catalog(),
+    );
+    let UiAction::Submit(Op::Message { message }) = action else {
+        panic!("expected group message");
+    };
+    assert_eq!(message.attachments, vec![attachment("report.pdf")]);
+    assert_eq!(message.target_turn_id, None);
+    assert_eq!(message.requested_delivery, None);
+}
+
+#[test]
 fn active_turn_preserves_attachment_draft_instead_of_steering() {
     let mut state = state();
-    state.active_turn = Some("turn".into());
+    state.start_turn("turn".into());
     state.input = "next request".into();
     state.cursor = state.input.len();
     state.attachments.push(attachment("report.pdf"));
@@ -586,4 +641,45 @@ fn attachment(name: &str) -> mobius::protocol::SessionFileReference {
         }
         .into(),
     }
+}
+
+#[test]
+fn queued_approvals_keep_the_draft_until_the_last_decision() {
+    let mut state = state();
+    state.input = "continue after both approvals".into();
+    state.cursor = state.input.len();
+    for suffix in ["a", "b"] {
+        state.handle_agent_event(
+            EventMsg::ExecApprovalRequest(mobius::protocol::ExecApprovalRequestEvent {
+                id: format!("approval-{suffix}"),
+                turn_id: format!("turn-{suffix}"),
+                calls: Vec::new(),
+                reason: format!("@bot-{suffix}: approve work"),
+            }),
+            Vec::new(),
+        );
+    }
+    for suffix in ["a", "b"] {
+        assert_eq!(state.approval().unwrap().id, format!("approval-{suffix}"));
+        let detail = view::live_transcript_lines(&mut state, 0, 100)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(detail.contains(&format!("@bot-{suffix}: approve work")));
+        assert!(state.input.is_empty());
+        assert_eq!(
+            state.handle_key(
+                KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+                &default_catalog()
+            ),
+            UiAction::Submit(Op::ExecApproval {
+                id: format!("approval-{suffix}"),
+                decision: ReviewDecision::Approved,
+            }),
+        );
+    }
+    assert_eq!(state.input, "continue after both approvals");
+    assert!(state.approval().is_none());
+    assert!(state.is_working());
 }

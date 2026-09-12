@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use super::BlockKey;
 use super::MAX_ENTRY_BYTES;
 use super::PickerState;
@@ -28,7 +26,7 @@ use mobius_gateway::wire::RenderedPreview;
 impl TuiState {
     #[cfg(test)]
     pub(super) fn handle_agent_event(&mut self, event: EventMsg, blocks: Vec<RenderedBlock>) {
-        self.handle_event(event, blocks, None);
+        self.handle_event(event, blocks, None, true);
     }
 
     fn handle_event(
@@ -36,6 +34,7 @@ impl TuiState {
         event: EventMsg,
         blocks: Vec<RenderedBlock>,
         submission_id: Option<String>,
+        live: bool,
     ) {
         self.prepare_agent_event(&event);
         let was_rendered = !blocks.is_empty();
@@ -45,9 +44,9 @@ impl TuiState {
         match event {
             EventMsg::TurnStarted(turn) => {
                 self.commit_stream();
-                self.active_turn = Some(turn.turn_id);
-                self.turn_started_at = Some(Instant::now());
-                self.clear_approval();
+                if live {
+                    self.start_turn(turn.turn_id);
+                }
             }
             EventMsg::Message(message) => {
                 self.handle_message(message, submission_id);
@@ -91,9 +90,9 @@ impl TuiState {
             }
             EventMsg::ContextCompacted => {}
             EventMsg::ExecApprovalRequest(request) => {
-                self.active_turn = Some(request.turn_id);
-                self.turn_started_at.get_or_insert_with(Instant::now);
-                self.begin_approval(request.id);
+                if live {
+                    self.begin_approval(request);
+                }
             }
             EventMsg::TokenCount(tokens) => {
                 if let Some(info) = tokens.info {
@@ -113,11 +112,19 @@ impl TuiState {
             }
             // Presentation for these typed actions is part of the canonical block list.
             EventMsg::WebSearchBegin(_) | EventMsg::WebSearchEnd(_) => {}
-            EventMsg::TurnComplete(_) => {
-                self.finish_turn();
+            EventMsg::TurnComplete(turn) => {
+                self.commit_reasoning();
+                self.commit_stream();
+                if live {
+                    self.finish_turn(&turn.turn_id);
+                }
             }
             EventMsg::TurnAborted(turn) => {
-                self.finish_turn();
+                self.commit_reasoning();
+                self.commit_stream();
+                if live {
+                    self.finish_turn(&turn.turn_id);
+                }
                 if !was_rendered {
                     self.push(
                         format!("turn aborted: {}", turn.reason),
@@ -371,7 +378,7 @@ impl UsageStatus {
     }
 }
 
-pub(super) fn handle_gateway_event(state: &mut TuiState, record: RecordedEvent) {
+pub(super) fn handle_gateway_event(state: &mut TuiState, record: RecordedEvent, live: bool) {
     let requested = record
         .event
         .submission_id
@@ -389,7 +396,12 @@ pub(super) fn handle_gateway_event(state: &mut TuiState, record: RecordedEvent) 
     if let Some(preview) = record.preview {
         apply_preview(state, preview, requested);
     } else {
-        state.handle_event(record.event.msg, record.blocks, record.event.submission_id);
+        state.handle_event(
+            record.event.msg,
+            record.blocks,
+            record.event.submission_id,
+            live,
+        );
     }
 }
 
@@ -498,7 +510,7 @@ fn apply_preview(state: &mut TuiState, preview: RenderedPreview, requested: bool
 
 pub(super) fn handle_gateway_history(state: &mut TuiState, records: Vec<RecordedEvent>) {
     for record in records {
-        handle_gateway_event(state, record);
+        handle_gateway_event(state, record, false);
     }
     state.commit_reasoning();
     state.commit_stream();
@@ -543,7 +555,7 @@ fn apply_rendered_event(state: &mut TuiState, rendered: RenderedEvent) {
                 state.apply_block(block);
             }
         }
-        event => state.handle_event(event, rendered.blocks, rendered.submission_id),
+        event => state.handle_event(event, rendered.blocks, rendered.submission_id, false),
     }
 }
 

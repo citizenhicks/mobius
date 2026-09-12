@@ -56,6 +56,54 @@ pub(super) async fn activity_catalog(
     Ok((sessions, catalog.approvals.values().cloned().collect()))
 }
 
+pub(super) async fn include_group_chats(
+    sessions: &mut Vec<SessionRecord>,
+    groups: &crate::groups::GroupStore,
+    activities: &SessionActivities,
+) -> Result<()> {
+    let chats = groups.chats(false).await?;
+    let catalog = activities.lock().await;
+    for chat in chats {
+        let metadata = catalog
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.metadata.get(&chat.id));
+        let activity = chat
+            .member_bot_ids
+            .iter()
+            .filter_map(|bot_id| {
+                catalog
+                    .activities
+                    .get(&crate::groups::participant_session_id(&chat.id, bot_id))
+            })
+            .max_by_key(|activity| match activity.state {
+                SessionActivityState::Idle => 0,
+                SessionActivityState::Running => 1,
+                SessionActivityState::AwaitingApproval => 2,
+            })
+            .cloned()
+            .unwrap_or_default();
+        sessions.push(SessionRecord {
+            session_context: chat.context(),
+            member_bot_ids: Some(chat.member_bot_ids),
+            session_id: chat.id,
+            parent_session_id: None,
+            parent_sequence: None,
+            sequence: chat.sequence,
+            first_user_message: chat.first_user_message,
+            execution_stats: Default::default(),
+            title: metadata.and_then(|item| item.title.clone()),
+            pinned: metadata.is_some_and(|item| item.pinned),
+            activity,
+            created_at: chat.created_at,
+            updated_at: chat.updated_at,
+        });
+    }
+    sort_sessions(sessions);
+    sessions.truncate(SESSION_PAGE_SIZE);
+    Ok(())
+}
+
 async fn refresh_catalog(
     checkpoints: &Arc<dyn CheckpointStore>,
     catalog: &mut SessionCatalog,
@@ -282,6 +330,7 @@ fn session_record(
         message.truncate(message.floor_char_boundary(MAX_SESSION_PREVIEW_BYTES.min(message.len())));
     }
     SessionRecord {
+        member_bot_ids: None,
         session_id: summary.session_id,
         session_context: summary.session_context,
         parent_session_id: summary.parent_session_id,

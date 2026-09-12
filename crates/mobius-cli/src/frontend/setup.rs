@@ -48,6 +48,9 @@ pub(crate) async fn run(
     gateway: &mut ReadyPayload,
     session: &mut SessionReadyPayload,
 ) -> Result<()> {
+    if session.member_bot_ids.is_some() && mode == SetupMode::Login {
+        return run_gateway(terminal, mode, preferred_provider, sender, events, gateway).await;
+    }
     run_bot(
         terminal,
         mode,
@@ -95,6 +98,7 @@ pub(in crate::frontend) async fn run_bot(
 pub(crate) async fn run_gateway(
     terminal: &mut SetupTerminal,
     mode: SetupMode,
+    preferred_provider: Option<&str>,
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     gateway: &mut ReadyPayload,
@@ -109,7 +113,7 @@ pub(crate) async fn run_gateway(
             "configure a provider before changing the Bot template".into(),
         ));
     }
-    let mut state = SetupState::new(mode, None, gateway, original, true)?;
+    let mut state = SetupState::new(mode, preferred_provider, gateway, original, true)?;
     terminal.clear()?;
     if !edit(terminal, &mut state, sender, events, gateway).await? {
         return Ok(());
@@ -126,7 +130,15 @@ pub async fn run_gateway_login(
     let mut guard = TerminalGuard::alternate()?;
     guard.set_mouse_capture(false)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
-    run_gateway(&mut terminal, SetupMode::Login, sender, events, gateway).await
+    run_gateway(
+        &mut terminal,
+        SetupMode::Login,
+        None,
+        sender,
+        events,
+        gateway,
+    )
+    .await
 }
 
 #[cfg(test)]

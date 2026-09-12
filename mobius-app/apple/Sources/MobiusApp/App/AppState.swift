@@ -43,8 +43,6 @@ enum AppRoute: Hashable {
     case chat(ChatRoute)
     case bot(String)
     case botSessions(String)
-    case swarm(String)
-    case swarmChat(String)
     case settings(SettingsRoute)
 }
 
@@ -202,7 +200,6 @@ struct AppToast: Identifiable {
 
 enum AppNotificationTarget: Equatable {
     case session(String)
-    case swarm(swarmID: String, messageID: String)
     case extensionPackage(String)
     case routineRun(String)
 }
@@ -686,6 +683,7 @@ struct ApprovalCall: Identifiable, Equatable {
 
 struct PendingApproval: Equatable {
     let id: String
+    var turnID: String? = nil
     let reason: String
     let calls: [ApprovalCall]
 }

@@ -337,7 +337,7 @@ extension GatewayWireTests {
                   "id":"add", "label":"Add Collective Note", "symbol":"plus", "tone":"neutral",
                   "editor":{
                     "title":"Add collective note", "label":"Note",
-                    "description":"This note becomes durable context for every Bot in the Swarm.",
+                    "description":"This note becomes durable context for every Bot.",
                     "submit_label":"Add"
                   },
                   "op":{
@@ -358,7 +358,7 @@ extension GatewayWireTests {
         XCTAssertEqual(editor.title, "Add collective note")
         XCTAssertEqual(editor.label, "Note")
         XCTAssertEqual(
-            editor.description, "This note becomes durable context for every Bot in the Swarm.")
+            editor.description, "This note becomes durable context for every Bot.")
         XCTAssertEqual(editor.submitLabel, "Add")
         guard
             case .capabilityCommand("notes", "append", "shared", let input, nil) =

@@ -88,7 +88,7 @@ extension AppModelTests {
         var config = composition()
         config.middleware.enabled.insert("attachments")
         model.bots = [bot(tint: .orange, config: VersionedAgentConfig(revision: 1, config: config))]
-        model.chat.pendingNewChatBotID = "bot-1"
+        model.chat.pendingNewChatBotIDs = ["bot-1"]
         model.gateway.connectionState = .ready
         model.chat.composer = "Preserve this draft"
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)

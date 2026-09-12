@@ -1,7 +1,7 @@
 # möbius CLI
 
 `mobius-cli` is the reference Ratatui client for a `mobius-gateway`. The gateway owns Bot
-profiles, providers, conversations, sandboxing, usage, routines, and swarms.
+profiles, providers, individual and group conversations, sandboxing, usage, and routines.
 
 ## Install the client
 
@@ -35,7 +35,8 @@ credential, and starts `mobius-gateway` in the background. A later `mobius-gatew
 advertises the local TCP and public WSS endpoints with one pairing code that works through either
 endpoint. On an empty gateway, plain `mobius` opens provider setup; the gateway then creates the
 default Mobius Bot. Each run creates a chat for that Bot in the current directory. `/new` and
-`/workspace <gateway-path>` open the Bot picker without changing other running chats. For a source
+`/workspace <gateway-path>` open the Bot picker. Press Space to select multiple Bots for a group
+chat, then Enter to start. For a source
 checkout, build both commands from the CLI package:
 
 ```sh
@@ -106,7 +107,8 @@ can be pasted into a masked field, the environment variable declared by the prov
 used when the field is empty, and device-login providers show their login flow. There is no
 separate environment-name setting. Setup covers the built-in manifests compiled into both the
 gateway and CLI; injected `ModelRouter` entries are library-only. The final page confirms the
-provider's model and reasoning choice and updates the Bot that owns the current chat. `/bot` opens
+provider's model and reasoning choice and updates the Bot that owns the current chat. In a group
+chat, provider setup updates the gateway's Bot defaults. `/bot` opens
 the same Bot-owned capability and approval-policy editor without creating per-chat configuration.
 Required gateway capabilities remain visible but cannot be deselected.
 Secrets are sent directly to the gateway and never returned to the CLI.

@@ -7,7 +7,7 @@ use crate::host::deletion::prepare_bot_session_tree_deletion;
 use super::super::session::{HostCommand, HostInner};
 use super::*;
 
-async fn gateway_with_bot() -> (tempfile::TempDir, GatewayHost, crate::wire::BotRecord) {
+pub(super) async fn gateway_with_bot() -> (tempfile::TempDir, GatewayHost, crate::wire::BotRecord) {
     let root = tempfile::tempdir().expect("root");
     let (store, config) = ConfigStore::initialize(
         root.path().join("state"),
@@ -15,14 +15,7 @@ async fn gateway_with_bot() -> (tempfile::TempDir, GatewayHost, crate::wire::Bot
         None,
     )
     .expect("config");
-    let mut composition = AgentComposition::default();
-    composition.middleware.set_setting(
-        "bots",
-        "collaboration",
-        Some(mobius::protocol::FrontendSettingValue::String(
-            "swarm".into(),
-        )),
-    );
+    let composition = AgentComposition::default();
     let mut config = config
         .registering_provider(
             composition.provider.clone(),
@@ -322,24 +315,6 @@ async fn session_owners_wait_for_the_cascade_gate() {
         .bots
         .mobius()
         .expect("Mobius Bot");
-    let existing_member = gateway
-        .create_bot("Existing member", "Keep the existing team valid.")
-        .await
-        .expect("create existing member");
-    let swarm_id = gateway
-        .create_swarm("Existing team".into(), mobius.id, vec![existing_member.id])
-        .await
-        .expect("create existing swarm")[0]
-        .id
-        .clone();
-    let independent = gateway
-        .create_bot("Independent", "Own a separate team.")
-        .await
-        .expect("create independent Bot");
-    let independent_member = gateway
-        .create_bot("Independent member", "Join the separate team.")
-        .await
-        .expect("create independent member");
     let deletable = gateway
         .create_session(&workspace, &bot.id)
         .await
@@ -383,22 +358,11 @@ async fn session_owners_wait_for_the_cascade_gate() {
         let bot_id = bot.id.clone();
         async move { gateway.create_session(&workspace, &bot_id).await }
     });
-    let mut joining_swarm = tokio::spawn({
+    let mut creating_group = tokio::spawn({
         let gateway = gateway.clone();
+        let workspace = workspace.clone();
         let bot_id = bot.id.clone();
-        async move { gateway.add_swarm_member(&swarm_id, bot_id).await }
-    });
-    let mut creating_swarm = tokio::spawn({
-        let gateway = gateway.clone();
-        async move {
-            gateway
-                .create_swarm(
-                    "Independent team".into(),
-                    independent.id,
-                    vec![independent_member.id],
-                )
-                .await
-        }
+        async move { gateway.create_chat(&workspace, &[mobius.id, bot_id]).await }
     });
     let mut deleting_session = tokio::spawn({
         let gateway = gateway.clone();
@@ -416,12 +380,7 @@ async fn session_owners_wait_for_the_cascade_gate() {
             .is_err()
     );
     assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(50), &mut joining_swarm,)
-            .await
-            .is_err()
-    );
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(50), &mut creating_swarm,)
+        tokio::time::timeout(std::time::Duration::from_millis(50), &mut creating_group,)
             .await
             .is_err()
     );
@@ -441,11 +400,10 @@ async fn session_owners_wait_for_the_cascade_gate() {
         .await
         .expect("session task")
         .expect("create session");
-    joining_swarm.await.expect("join task").expect("join swarm");
-    creating_swarm
+    creating_group
         .await
-        .expect("swarm task")
-        .expect("create swarm");
+        .expect("group task")
+        .expect("create group");
     deleting_session
         .await
         .expect("delete task")
@@ -464,20 +422,16 @@ async fn session_owners_wait_for_the_cascade_gate() {
 }
 
 #[tokio::test]
-async fn routine_sessions_stay_hidden_and_swarm_membership_does_not_dispatch_results() {
+async fn routine_sessions_stay_hidden_and_group_membership_does_not_dispatch_results() {
     let (root, gateway, bot) = gateway_with_bot().await;
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("workspace");
-    let swarm = Arc::clone(&gateway.state.lock().await.swarm);
-    let leader = gateway.state.lock().await.bots.mobius().expect("leader");
-    swarm
-        .create(
-            "Routine team".into(),
-            leader.id.clone(),
-            vec![leader.id, bot.id.clone()],
-        )
+    let groups = Arc::clone(&gateway.state.lock().await.group);
+    let member = gateway.state.lock().await.bots.mobius().expect("member");
+    let group = gateway
+        .create_chat(&workspace, &[member.id, bot.id.clone()])
         .await
-        .expect("swarm");
+        .unwrap();
     let routine = {
         let state = gateway.state.lock().await;
         state
@@ -546,21 +500,8 @@ async fn routine_sessions_stay_hidden_and_swarm_membership_does_not_dispatch_res
     })
     .await
     .expect("routine completion");
-    assert!(swarm.records().await.expect("board")[0].messages.is_empty());
-    assert!(
-        swarm
-            .pending_recipient_bot_ids()
-            .await
-            .expect("deliveries")
-            .is_empty()
-    );
-    assert!(
-        swarm
-            .pending_attentions()
-            .await
-            .expect("attention")
-            .is_empty()
-    );
+    assert!(group.snapshot(None).await.unwrap().replay.is_empty());
+    assert!(groups.pending_recipient_bot_ids().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -742,7 +683,7 @@ async fn bot_delete_rejects_an_active_upload_before_any_owner_commit() {
 }
 
 #[tokio::test]
-async fn startup_finishes_a_bot_cascade_after_the_swarm_commit() {
+async fn startup_finishes_a_bot_cascade_after_group_membership_removal() {
     let (root, gateway, bot) = gateway_with_bot().await;
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("workspace");
@@ -758,60 +699,47 @@ async fn startup_finishes_a_bot_cascade_after_the_swarm_commit() {
         .bots
         .mobius()
         .expect("Mobius Bot");
-    let swarm_id = gateway
-        .create_swarm("Crash-safe team".into(), bot.id.clone(), vec![mobius.id])
+    let group_id = gateway
+        .create_chat(&workspace, &[bot.id.clone(), mobius.id.clone()])
         .await
-        .expect("create swarm")[0]
-        .id
-        .clone();
-    let (deletion, file_deletion, bot_store, swarm_store) = {
+        .unwrap()
+        .session_id()
+        .to_owned();
+    let (deletion, file_deletion, bot_store, groups) = {
         let mut state = gateway.state.lock().await;
-        state
-            .scratchpad
-            .add_swarm(&swarm_id, "retain until the cascade commits")
-            .await
-            .expect("collective note");
         let (roots, ids, file_deletion) = prepare_bot_session_tree_deletion(&mut state, &bot.id)
             .await
             .expect("prepare files");
         let bot_store = Arc::clone(&state.bots);
-        let swarm_store = Arc::clone(&state.swarm);
-        let planned = swarm_store
-            .planned_bot_removal(&bot.id)
-            .await
-            .expect("plan Swarm removal")
-            .expect("Bot swarm");
+        let groups = Arc::clone(&state.group);
         let mut deletion = bot_store
             .prepare_bot_deletion(&bot.id, bot.config.revision)
             .expect("prepare Bot deletion");
         bot_store
-            .record_bot_deletion(
-                &mut deletion,
-                &roots,
-                &ids,
-                Some((&planned.swarm_id, planned.disbanded)),
-            )
+            .record_bot_deletion(&mut deletion, &roots, &ids)
             .expect("record deletion intent");
         drop(state);
-        swarm_store
+        groups
             .remove_bot(&bot.id)
             .await
-            .expect("persist Swarm removal");
-        (deletion, file_deletion, bot_store, swarm_store)
+            .expect("persist group membership removal");
+        (deletion, file_deletion, bot_store, groups)
     };
     assert!(bot_store.bot(&bot.id).is_ok());
-    assert!(
-        swarm_store
-            .records()
+    assert_eq!(
+        groups
+            .load(&group_id)
             .await
-            .expect("removed swarm")
-            .is_empty()
+            .unwrap()
+            .unwrap()
+            .member_bot_ids,
+        vec![mobius.id.clone()]
     );
 
     drop(deletion);
     drop(file_deletion);
     drop(bot_store);
-    drop(swarm_store);
+    drop(groups);
     drop(gateway);
 
     let (store, config) = ConfigStore::open(root.path().join("state")).expect("reopen config");
@@ -832,7 +760,16 @@ async fn startup_finishes_a_bot_cascade_after_the_swarm_commit() {
             .is_none()
     );
     let state = recovered.state.lock().await;
-    assert!(state.swarm.records().await.expect("swarms").is_empty());
+    assert_eq!(
+        state
+            .group
+            .load(&group_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .member_bot_ids,
+        vec![mobius.id]
+    );
     assert!(
         state
             .checkpoints
@@ -841,15 +778,6 @@ async fn startup_finishes_a_bot_cascade_after_the_swarm_commit() {
             .expect("load deleted chat")
             .is_none()
     );
-    let collective = state
-        .scratchpad
-        .swarm_contribution(&swarm_id)
-        .await
-        .expect("cleared collective scratchpad");
-    assert!(matches!(
-        &collective.widgets[0].content,
-        Some(mobius::protocol::FrontendWidgetContent::ActionList { items, .. }) if items.is_empty()
-    ));
 }
 
 #[cfg(unix)]
@@ -894,7 +822,7 @@ async fn startup_rejects_an_unrecoverable_bot_cascade_before_serving() {
             .expect("prepare Bot deletion");
         state
             .bots
-            .record_bot_deletion(&mut deletion, &roots, &ids, None)
+            .record_bot_deletion(&mut deletion, &roots, &ids)
             .expect("record deletion intent");
         drop(deletion);
         drop(file_deletion);
@@ -962,9 +890,10 @@ async fn startup_rejects_an_unrecoverable_bot_cascade_before_serving() {
     );
     assert_eq!(
         gateway
-            .create_swarm("Blocked".into(), mobius.id, vec![])
+            .create_chat(&workspace, &[mobius.id, bot.id.clone()])
             .await
-            .expect_err("pending recovery blocks Swarm mutation")
+            .err()
+            .expect("pending recovery blocks group creation")
             .code,
         "bot_deletion_recovery"
     );
@@ -997,7 +926,7 @@ async fn startup_rejects_an_unrecoverable_bot_cascade_before_serving() {
 }
 
 #[tokio::test]
-async fn deleting_a_bot_removes_all_owned_state_and_its_led_swarm() {
+async fn deleting_a_bot_removes_owned_state_and_preserves_its_group() {
     let (root, gateway, bot) = gateway_with_bot().await;
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("workspace");
@@ -1006,13 +935,12 @@ async fn deleting_a_bot_removes_all_owned_state_and_its_led_swarm() {
         .await
         .expect("create Bot chat");
     let chat_id = chat.session_id().to_owned();
-    let (bots, checkpoints, session_files, scratchpad, mobius) = {
+    let (bots, checkpoints, session_files, mobius) = {
         let state = gateway.state.lock().await;
         (
             Arc::clone(&state.bots),
             Arc::clone(&state.checkpoints),
             state.session_files.clone(),
-            state.scratchpad.clone(),
             state.bots.mobius().expect("Mobius Bot"),
         )
     };
@@ -1095,17 +1023,10 @@ async fn deleting_a_bot_removes_all_owned_state_and_its_led_swarm() {
     bots.finish_run(run, RoutineRunStatus::Succeeded, None)
         .expect("finish routine");
 
-    let swarm_id = gateway
-        .create_swarm("Disposable team".into(), bot.id.clone(), vec![mobius.id])
+    let group = gateway
+        .create_chat(&workspace, &[bot.id.clone(), mobius.id.clone()])
         .await
-        .expect("create led swarm")[0]
-        .id
-        .clone();
-    scratchpad
-        .add_swarm(&swarm_id, "collective context")
-        .await
-        .expect("add collective note");
-
+        .unwrap();
     let (remaining, deleted_sessions) = gateway
         .delete_bot(&bot.id, bot.config.revision)
         .await
@@ -1164,109 +1085,9 @@ async fn deleting_a_bot_removes_all_owned_state_and_its_led_swarm() {
             .activities
             .contains_key(&chat_id)
     );
-    assert!(
-        gateway
-            .state
-            .lock()
-            .await
-            .swarm
-            .records()
-            .await
-            .expect("swarms")
-            .is_empty()
-    );
-    let collective = scratchpad
-        .swarm_contribution(&swarm_id)
-        .await
-        .expect("cleared collective scratchpad");
-    assert!(matches!(
-        &collective.widgets[0].content,
-        Some(mobius::protocol::FrontendWidgetContent::ActionList { items, .. }) if items.is_empty()
-    ));
-}
-
-#[tokio::test]
-async fn deleting_a_nonleader_bot_preserves_the_swarm() {
-    let (root, gateway, bot) = gateway_with_bot().await;
-    let mobius = gateway
-        .state
-        .lock()
-        .await
-        .bots
-        .mobius()
-        .expect("Mobius Bot");
-    let swarm_id = gateway
-        .create_swarm(
-            "Persistent team".into(),
-            mobius.id.clone(),
-            vec![bot.id.clone()],
-        )
-        .await
-        .expect("create swarm")[0]
-        .id
-        .clone();
-    let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).expect("workspace");
-    let chat = gateway
-        .create_session(&workspace, &bot.id)
-        .await
-        .expect("member chat");
-    let leader_chat = gateway
-        .create_session(&workspace, &mobius.id)
-        .await
-        .expect("leader chat");
-    gateway
-        .state
-        .lock()
-        .await
-        .swarm
-        .post(
-            &bot.id,
-            chat.session_id(),
-            "This requires @user attention".into(),
-            None,
-        )
-        .await
-        .expect("pending member work");
-    gateway
-        .state
-        .lock()
-        .await
-        .swarm
-        .post(
-            &mobius.id,
-            leader_chat.session_id(),
-            format!("@{} review before deletion", bot.handle),
-            None,
-        )
-        .await
-        .expect("pending delivery to deleted Bot");
-
-    gateway
-        .delete_bot(&bot.id, bot.config.revision)
-        .await
-        .expect("delete member Bot");
-
-    let swarms = gateway
-        .state
-        .lock()
-        .await
-        .swarm
-        .records()
-        .await
-        .expect("remaining swarm");
-    assert_eq!(swarms[0].id, swarm_id);
-    assert_eq!(swarms[0].leader_bot_id, mobius.id);
-    assert_eq!(swarms[0].members.len(), 1);
-    assert_eq!(swarms[0].messages.len(), 1);
-    assert_eq!(swarms[0].messages[0].author_bot_id, mobius.id);
-    let state = gateway.state.lock().await;
-    assert!(
-        gateway_session_summaries(&state.checkpoints)
-            .await
-            .expect("session catalog")
-            .iter()
-            .all(|session| session.session_context.bot_id != bot.id)
+    assert_eq!(
+        group.snapshot(None).await.unwrap().ready.member_bot_ids,
+        Some(vec![mobius.id])
     );
 }
 
@@ -1372,15 +1193,6 @@ async fn routine_acceptance_keeps_the_gateway_registry_locked() {
 #[tokio::test]
 async fn routine_command_gate_rejection_terminalizes_the_run() {
     let (root, gateway, bot) = gateway_with_bot().await;
-    let leader = gateway.state.lock().await.bots.mobius().expect("leader");
-    gateway
-        .create_swarm(
-            "Routine team".into(),
-            leader.id.clone(),
-            vec![bot.id.clone()],
-        )
-        .await
-        .expect("swarm");
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("workspace");
     let host = gateway
@@ -1427,15 +1239,6 @@ async fn routine_command_gate_rejection_terminalizes_the_run() {
         bots.history(Some(&routine.id)).expect("history")[0].status,
         RoutineRunStatus::Failed
     );
-    let swarms = gateway
-        .state
-        .lock()
-        .await
-        .swarm
-        .records()
-        .await
-        .expect("swarms");
-    assert!(swarms[0].messages.is_empty());
 }
 
 #[tokio::test]
@@ -1470,7 +1273,7 @@ async fn due_routine_terminalizes_when_bot_deletion_recovery_is_pending() {
     let mut deletion = bots
         .prepare_bot_deletion(&deleting_bot.id, deleting_bot.config.revision)
         .expect("prepare deletion");
-    bots.record_bot_deletion(&mut deletion, &[], &[], None)
+    bots.record_bot_deletion(&mut deletion, &[], &[])
         .expect("record recovery intent");
     drop(deletion);
 

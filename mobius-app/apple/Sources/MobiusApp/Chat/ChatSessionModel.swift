@@ -23,7 +23,7 @@ final class ChatSessionModel {
     var chatBotFilterIDs: Set<String> = []
     var chatCatalogSessions: [SessionRecord] {
         guard !chatBotFilterIDs.isEmpty else { return sessions }
-        return sessions.filter { chatBotFilterIDs.contains($0.sessionContext.botId) }
+        return sessions.filter { !chatBotFilterIDs.isDisjoint(with: $0.botIds) }
     }
     var chatPresentationRevision = 0
     var sessionToReassign: SessionRecord?
@@ -34,6 +34,7 @@ final class ChatSessionModel {
     var unreadSessionIDs: Set<String> = []
     @ObservationIgnored var sessionReadCursors: [String: SessionReadCursor]?
 
+    var selectedMemberBotIDs: [String]?
     var selectedSessionID: String? {
         didSet {
             if oldValue != selectedSessionID { stopRealtimeVoice() }
@@ -79,13 +80,22 @@ final class ChatSessionModel {
     var attachedFolders: [String]?
     var sessionFiles: [SessionFileRecord] = []
     var isLoadingSessionFiles = false
-    var activeTurnID: String?
+    var activeTurnIDs: Set<String> = []
+    var activeTurnID: String? {
+        get { activeTurnIDs.min() }
+        set { activeTurnIDs = newValue.map { [$0] } ?? [] }
+    }
+    var composerTargetTurnID: String? { selectedMemberBotIDs == nil ? activeTurnID : nil }
     var steeringDeliveryRevision = 0
     var contextTokens = 0
     var sessionCompactionCount: UInt64 = 0
     var modelContextWindow: Int64?
     var contextLimitTokens: Int64?
-    var pendingApproval: PendingApproval?
+    var pendingApprovals: [PendingApproval] = []
+    var pendingApproval: PendingApproval? {
+        get { pendingApprovals.first }
+        set { pendingApprovals = newValue.map { [$0] } ?? [] }
+    }
     var selectedModelRoute = "" {
         didSet {
             if oldValue != selectedModelRoute { stopRealtimeVoice() }
@@ -104,7 +114,7 @@ final class ChatSessionModel {
     var currentUsage = TokenUsage()
     var lastUsage = TokenUsage()
     var pendingNewChatWorkspace: String?
-    var pendingNewChatBotID: String?
+    var pendingNewChatBotIDs: Set<String> = []
     var pendingWidgetEdit: PendingWidgetEdit?
     var stashedComposerDraft: String?
     var isLoadingComposerEditRecovery = false
@@ -499,6 +509,7 @@ final class ChatSessionModel {
             } ?? []
         return PendingApproval(
             id: id,
+            turnID: value["turnId"]?.stringValue,
             reason: value["reason"]?.stringValue ?? "möbius needs permission to continue.",
             calls: calls
         )
@@ -518,6 +529,7 @@ final class ChatSessionModel {
 
     func resetSessionState(preservingComposerAttachments: Bool = false) {
         stopRealtimeVoice()
+        selectedMemberBotIDs = nil
         composerReply = nil
         messageNavigationRequest = nil
         if !preservingComposerAttachments { discardComposerAttachments() }

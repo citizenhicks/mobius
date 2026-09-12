@@ -10,7 +10,7 @@ extension ChatSessionModel {
     ) -> Bool {
         guard let sessionID = selectedSessionID else { return false }
         let id = requestID("input")
-        let targetTurnID = activeTurnID
+        let targetTurnID = composerTargetTurnID
         let delivery = targetTurnID == nil ? nil : requestedDelivery
         let operation = AgentOperation.message(
             MessageSubmission(

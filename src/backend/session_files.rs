@@ -45,6 +45,7 @@ const MAX_SESSION_FILES: usize = 128;
 const MAX_SESSION_ID_BYTES: usize = 4 * 1024;
 const MAX_VALIDATED_BLOBS: usize = 1_024;
 const BLOB_DIR: &str = "blobs";
+const DELETED_PREFIX: &str = ".deleted-";
 const ATTACHMENT_WORKSPACE_FILE: &str = ".attachment-workspace.json";
 const METADATA_FILE: &str = ".session-file.json";
 
@@ -82,11 +83,11 @@ pub struct SessionFileStore {
     initialized: Arc<OnceCell<()>>,
 }
 
-/// Prepared deletion whose commit lock prevents new uploads until cleanup finishes.
+/// Prepared deletion whose commit lock protects removal from the live file catalog.
 pub struct SessionFileDeletion {
     store: SessionFileStore,
     session_ids: Vec<String>,
-    _commit: OwnedMutexGuard<()>,
+    commit: Option<OwnedMutexGuard<()>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -306,6 +307,13 @@ impl SessionFileStore {
         &self,
         session_ids: &[String],
     ) -> Result<SessionFileDeletion> {
+        if session_ids.is_empty() {
+            return Ok(SessionFileDeletion {
+                store: self.clone(),
+                session_ids: Vec::new(),
+                commit: None,
+            });
+        }
         for session_id in session_ids {
             validate_session_id(session_id)?;
         }
@@ -331,7 +339,7 @@ impl SessionFileStore {
         Ok(SessionFileDeletion {
             store: self.clone(),
             session_ids: session_ids.to_vec(),
-            _commit: commit,
+            commit: Some(commit),
         })
     }
 
@@ -352,13 +360,41 @@ impl SessionFileStore {
         Ok(())
     }
 
-    async fn delete_session_locked(&self, session_id: &str) -> Result<()> {
-        let directory = self.session_dir(session_id);
+    /// Retries workspace cleanup left by completed session deletions.
+    ///
+    /// Run outside gateway mutation locks: a workspace may be unavailable.
+    pub async fn cleanup_deleted_sessions(&self) -> Result<()> {
+        self.ensure_initialized().await?;
+        let mut entries = tokio::fs::read_dir(self.root.as_ref()).await?;
+        // ponytail: sequential retries; bound parallel cleanup if unavailable mounts delay reclamation.
+        while let Some(entry) = entries.next_entry().await? {
+            let name = entry.file_name();
+            let Some(key) = name
+                .to_str()
+                .and_then(|name| name.strip_prefix(DELETED_PREFIX))
+            else {
+                continue;
+            };
+            if key.len() != 43
+                || !key
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+            {
+                return Err(Error::Tool("invalid deleted session file key".into()));
+            }
+            self.cleanup_deleted_directory(key).await?;
+        }
+        let _commit = self.commits.lock().await;
+        gc_unreferenced_blobs(&self.root).await
+    }
+
+    async fn cleanup_deleted_directory(&self, key: &str) -> Result<()> {
+        let directory = self.root.join(format!("{DELETED_PREFIX}{key}"));
         match tokio::fs::symlink_metadata(&directory).await {
             Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
                 let workspace = load_optional_attachment_workspace(&directory).await?;
                 if let Some(workspace) = workspace {
-                    remove_staged_attachments(&workspace, session_id).await?;
+                    remove_staged_attachments(&workspace, key).await?;
                 }
                 tokio::fs::remove_dir_all(directory).await?;
             }
@@ -370,7 +406,6 @@ impl SessionFileStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
-        gc_unreferenced_blobs(&self.root).await?;
         Ok(())
     }
 
@@ -654,12 +689,39 @@ impl SessionFileStore {
 }
 
 impl SessionFileDeletion {
-    /// Removes every prepared session while keeping new uploads excluded.
-    pub async fn delete(&mut self) -> Result<()> {
-        for session_id in &self.session_ids {
-            self.store.delete_session_locked(session_id).await?;
+    /// Durably removes files from the live catalog without opening any workspace.
+    pub async fn stage(&mut self) -> Result<()> {
+        if self.commit.is_none() {
+            return Ok(());
         }
+        for session_id in &self.session_ids {
+            let key = session_storage_key(session_id);
+            let destination = self.store.root.join(format!("{DELETED_PREFIX}{key}"));
+            match tokio::fs::rename(self.store.session_dir(session_id), destination).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        std::fs::File::open(self.store.root.as_ref())?.sync_all()?;
+        self.commit.take();
         Ok(())
+    }
+
+    /// Finishes staged workspace cleanup without holding the file commit lock.
+    pub async fn delete(&mut self) -> Result<()> {
+        if self.session_ids.is_empty() {
+            self.commit.take();
+            return Ok(());
+        }
+        self.stage().await?;
+        for session_id in &self.session_ids {
+            self.store
+                .cleanup_deleted_directory(&session_storage_key(session_id))
+                .await?;
+        }
+        let _commit = self.store.commits.lock().await;
+        gc_unreferenced_blobs(&self.store.root).await
     }
 }
 

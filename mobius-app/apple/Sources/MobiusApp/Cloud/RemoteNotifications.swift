@@ -92,13 +92,11 @@ enum RemoteNotification: Equatable {
         runCount: UInt64?,
         approvalRequestID: String?
     )
-    case swarmAttention(eventID: String, swarmID: String, messageID: String)
     case subscriptionExpired(eventID: String)
 
     var eventID: String {
         switch self {
         case .session(let eventID, _, _, _, _),
-            .swarmAttention(let eventID, _, _),
             .subscriptionExpired(let eventID):
             eventID
         }
@@ -110,13 +108,6 @@ enum RemoteNotification: Equatable {
         else { return nil }
         if rawKind == "subscription.expired" {
             self = .subscriptionExpired(eventID: eventID)
-            return
-        }
-        if rawKind == "swarm.attention" {
-            guard let swarmID = Self.identifier(userInfo["swarmId"]),
-                let messageID = Self.identifier(userInfo["messageId"])
-            else { return nil }
-            self = .swarmAttention(eventID: eventID, swarmID: swarmID, messageID: messageID)
             return
         }
         guard let kind = SessionNotificationKind(rawValue: rawKind),
@@ -166,7 +157,6 @@ enum RemoteNotification: Equatable {
 enum AppNotificationKey: Hashable {
     case approval(requestID: String)
     case terminal(kind: SessionNotificationKind, sessionID: String, runCount: UInt64)
-    case swarmAttention(messageID: String)
 }
 
 @MainActor
@@ -423,13 +413,6 @@ extension AppModel {
                 agentName: agentName,
                 detail: kind == .completed ? detail : nil
             )
-        case .swarmAttention(_, let swarmID, let messageID):
-            presentSwarmAttention(
-                swarmID: swarmID,
-                messageID: messageID,
-                agentName: agentName,
-                text: detail
-            )
         case .subscriptionExpired:
             cloud.handleCloudSubscriptionExpired()
             if cloud.cloudAccount != nil {
@@ -458,12 +441,6 @@ extension AppModel {
         switch notification {
         case .subscriptionExpired:
             return false
-        case .swarmAttention(_, let swarmID, _):
-            guard swarms.contains(where: { $0.id == swarmID }) else { return false }
-            cloud.pendingRemoteNotification = nil
-            prepareToOpenNotification()
-            openSwarmChat(swarmID)
-            return true
         case .session(_, let kind, let sessionID, _, let requestID):
             guard canOpenSession || chat.selectedSessionID == sessionID else { return false }
             if kind == .awaitingApproval,
@@ -494,8 +471,6 @@ extension AppModel {
             } else if chat.sessions.contains(where: { $0.sessionId == sessionID }) {
                 openChat(sessionID)
             }
-        case .swarm(let swarmID, _):
-            openSwarmChat(swarmID)
         case .extensionPackage(let id):
             destination = .extensions
             navigationPath = [.settings(.extensionPackage(id))]
@@ -584,37 +559,6 @@ extension AppModel {
                 showToast("\(title) failed.", tone: .error, target: .session(sessionID))
             }
         }
-    }
-
-    func presentSwarmAttention(_ attention: SwarmAttention) {
-        presentSwarmAttention(
-            swarmID: attention.swarmId,
-            messageID: attention.messageId,
-            agentName: bots.first { $0.id == attention.botId }?.name,
-            text: attention.text
-        )
-    }
-
-    private func presentSwarmAttention(
-        swarmID: String,
-        messageID: String,
-        agentName: String?,
-        text: String?
-    ) {
-        guard cloud.rememberNotification(.swarmAttention(messageID: messageID)) else { return }
-        let name =
-            agentName.map(collapsedNotificationText)
-            .flatMap { $0.isEmpty ? nil : $0 }
-            ?? localizedString("Bot")
-        let detail =
-            text.map(collapsedNotificationText)
-            .flatMap { $0.isEmpty ? nil : $0 }
-            ?? localizedString("Needs attention")
-        showToast(
-            verbatim: "\(name): \(detail)",
-            tone: .warning,
-            target: .swarm(swarmID: swarmID, messageID: messageID)
-        )
     }
 
 }
@@ -728,8 +672,6 @@ extension AppModel {
         switch notification {
         case .subscriptionExpired:
             return false
-        case .swarmAttention(_, _, let messageID):
-            return swarmAttentions.contains { $0.messageId == messageID }
         case .session(_, .awaitingApproval, let sessionID, _, let requestID):
             guard let requestID else { return false }
             if let approval = backgroundApproval(forSessionID: sessionID) {
@@ -774,7 +716,4 @@ extension AppModel {
         showsWorkspaceBrowser = false
     }
 
-    private func collapsedNotificationText(_ text: String) -> String {
-        text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
-    }
 }

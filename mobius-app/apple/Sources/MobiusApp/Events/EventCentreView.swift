@@ -7,7 +7,7 @@ struct EventCentreView: View {
     var body: some View {
         let events = model.eventCentreItems
         PageScaffold(
-            title: "Event Centre", detail: "Approvals, results, and Swarm activity.",
+            title: "Event Centre", detail: "Approvals and results.",
             headerAccessory: {
                 Button("Mark all read", glyph: .checkCircle) { model.markEventsRead(events) }
                     .mobiusIconButton()

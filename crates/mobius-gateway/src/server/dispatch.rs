@@ -55,9 +55,6 @@ pub(super) async fn handle_message(
     if let Err(rejection) = gateway.reconcile_pending_bot_deletion().await {
         return write_server_error(writer, "bot_deletion_recovery", rejection.message, false).await;
     }
-    let Some(message) = handle_collaboration_message(message, writer, gateway).await? else {
-        return Ok(());
-    };
     let Some(message) = super::voice::handle_message(message, &mut connection, writer).await?
     else {
         return Ok(());
@@ -86,14 +83,14 @@ pub(super) async fn handle_message(
         ClientMessage::CreateSession {
             request_id,
             workspace,
-            bot_id,
+            bot_ids,
         } => {
             return create_session(
                 writer,
                 connection.selected,
                 request_id,
                 workspace,
-                bot_id,
+                bot_ids,
                 gateway,
             )
             .await;
@@ -185,20 +182,13 @@ pub(super) async fn handle_message(
             session_id,
             submission,
         } => return submit(writer, &connection, session_id, submission).await,
-        ClientMessage::GetContributions { request_id, scope } => {
-            return contribution_response(
-                writer,
-                request_id,
-                scope.clone(),
-                gateway.contributions(&scope).await,
-            )
-            .await;
+        ClientMessage::GetContributions { request_id } => {
+            return contribution_response(writer, request_id, gateway.contributions().await).await;
         }
         ClientMessage::SubmitContribution {
             request_id,
-            scope,
             operation,
-        } => return submit_contribution(writer, request_id, scope, operation, gateway).await,
+        } => return submit_contribution(writer, request_id, operation, gateway).await,
         ClientMessage::BeginSessionFileUpload {
             request_id,
             session_id,
@@ -625,100 +615,11 @@ pub(super) async fn handle_message(
         ClientMessage::StartRealtimeVoice { .. } | ClientMessage::EndRealtimeVoice { .. } => {
             unreachable!("voice messages are handled before general dispatch")
         }
-        ClientMessage::ListBotSessions { .. }
-        | ClientMessage::CreateSwarm { .. }
-        | ClientMessage::AddSwarmMember { .. }
-        | ClientMessage::LeaveSwarm { .. }
-        | ClientMessage::RenameSwarm { .. }
-        | ClientMessage::DisbandSwarm { .. }
-        | ClientMessage::PostSwarmMessage { .. } => {
-            unreachable!("collaboration messages are handled before general dispatch")
+        ClientMessage::ListBotSessions { request_id, bot_id } => {
+            return list_bot_sessions(writer, request_id, bot_id, gateway).await;
         }
     }
     Ok(())
-}
-
-async fn handle_collaboration_message(
-    message: ClientMessage,
-    writer: &mut (impl AsyncWrite + Unpin),
-    gateway: &GatewayHost,
-) -> Result<Option<ClientMessage>> {
-    match message {
-        ClientMessage::ListBotSessions { request_id, bot_id } => {
-            list_bot_sessions(writer, request_id, bot_id, gateway).await?;
-        }
-        ClientMessage::CreateSwarm {
-            request_id,
-            title,
-            leader_bot_id,
-            member_bot_ids,
-        } => {
-            write_swarms_result(
-                writer,
-                request_id,
-                gateway
-                    .create_swarm(title, leader_bot_id, member_bot_ids)
-                    .await,
-            )
-            .await?;
-        }
-        ClientMessage::AddSwarmMember {
-            request_id,
-            swarm_id,
-            bot_id,
-        } => {
-            write_swarms_result(
-                writer,
-                request_id,
-                gateway.add_swarm_member(&swarm_id, bot_id).await,
-            )
-            .await?;
-        }
-        ClientMessage::LeaveSwarm {
-            request_id,
-            swarm_id,
-            bot_id,
-        } => {
-            write_swarms_result(
-                writer,
-                request_id,
-                gateway.leave_swarm(&swarm_id, &bot_id).await,
-            )
-            .await?;
-        }
-        ClientMessage::RenameSwarm {
-            request_id,
-            swarm_id,
-            title,
-        } => {
-            write_swarms_result(
-                writer,
-                request_id,
-                gateway.rename_swarm(&swarm_id, title).await,
-            )
-            .await?;
-        }
-        ClientMessage::DisbandSwarm {
-            request_id,
-            swarm_id,
-        } => {
-            write_swarms_result(writer, request_id, gateway.disband_swarm(&swarm_id).await).await?;
-        }
-        ClientMessage::PostSwarmMessage {
-            request_id,
-            swarm_id,
-            text,
-        } => {
-            write_swarms_result(
-                writer,
-                request_id,
-                gateway.post_swarm_message(&swarm_id, text).await,
-            )
-            .await?;
-        }
-        message => return Ok(Some(message)),
-    }
-    Ok(None)
 }
 
 async fn start_provider_login(
@@ -829,35 +730,15 @@ async fn list_bot_sessions(
     }
 }
 
-async fn write_swarms_result(
-    writer: &mut (impl AsyncWrite + Unpin),
-    request_id: String,
-    result: std::result::Result<Vec<crate::wire::SwarmRecord>, Rejection>,
-) -> Result<()> {
-    match result {
-        Ok(swarms) => {
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::Swarms {
-                    request_id: Some(request_id),
-                    swarms,
-                }),
-            )
-            .await
-        }
-        Err(rejection) => write_rejection(writer, request_id, rejection).await,
-    }
-}
-
 async fn create_session(
     writer: &mut (impl AsyncWrite + Unpin),
     selected: &mut Option<SelectedChat>,
     request_id: String,
     workspace: PathBuf,
-    bot_id: String,
+    bot_ids: Vec<String>,
     gateway: &GatewayHost,
 ) -> Result<()> {
-    match gateway.create_session(&workspace, &bot_id).await {
+    match gateway.create_chat(&workspace, &bot_ids).await {
         Ok(host) => open_selected(writer, selected, request_id, host, None).await,
         Err(rejection) => write_rejection(writer, request_id, rejection).await,
     }
@@ -1118,18 +999,16 @@ async fn submit(
 async fn submit_contribution(
     writer: &mut (impl AsyncWrite + Unpin),
     request_id: String,
-    scope: crate::wire::ContributionScope,
     operation: Op,
     gateway: &GatewayHost,
 ) -> Result<()> {
-    let result = gateway.submit_contribution(&scope, operation).await;
-    contribution_response(writer, request_id, scope, result).await
+    let result = gateway.submit_contribution(operation).await;
+    contribution_response(writer, request_id, result).await
 }
 
 async fn contribution_response(
     writer: &mut (impl AsyncWrite + Unpin),
     request_id: String,
-    scope: crate::wire::ContributionScope,
     result: std::result::Result<Vec<mobius::protocol::FrontendContribution>, Rejection>,
 ) -> Result<()> {
     match result {
@@ -1138,7 +1017,6 @@ async fn contribution_response(
                 writer,
                 &ServerFrame::new(ServerMessage::Contributions {
                     request_id,
-                    scope,
                     contributions,
                 }),
             )

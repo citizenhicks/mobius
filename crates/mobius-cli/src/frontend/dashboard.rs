@@ -41,6 +41,7 @@ pub async fn run_provider(state_dir: PathBuf) -> Result<()> {
     setup::run_gateway(
         &mut terminal,
         SetupMode::Login,
+        None,
         &sender,
         &mut events,
         &mut state.gateway,

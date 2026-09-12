@@ -2,13 +2,17 @@ import Foundation
 import Observation
 
 extension AppModel {
-    func selectBotForNewChat(_ bot: BotRecord) {
+    func selectBotForNewChat(_ bot: BotRecord, selected: Bool = true) {
         guard canCreateSession,
             bots.contains(where: { $0.id == bot.id }),
             chat.pendingNewChatWorkspace != nil,
             case .chat(.new)? = navigationPath.last
         else { return }
-        chat.pendingNewChatBotID = bot.id
+        if selected {
+            chat.pendingNewChatBotIDs.insert(bot.id)
+        } else {
+            chat.pendingNewChatBotIDs.remove(bot.id)
+        }
         workspaceError = nil
         createPendingVoiceChat()
     }
@@ -17,8 +21,8 @@ extension AppModel {
     func createPendingSession() -> String? {
         guard canCreateSession,
             let path = chat.pendingNewChatWorkspace,
-            let botID = chat.pendingNewChatBotID,
-            bots.contains(where: { $0.id == botID }),
+            !chat.pendingNewChatBotIDs.isEmpty,
+            chat.pendingNewChatBotIDs.allSatisfy({ id in bots.contains { $0.id == id } }),
             case .chat(.new)? = navigationPath.last
         else { return nil }
         let id = requestID("create")
@@ -26,7 +30,10 @@ extension AppModel {
         workspaceError = nil
         isChangingWorkspace = true
         gateway.connectionState = .loading
-        gateway.transmit(.createSession(requestID: id, workspace: path, botID: botID)) {
+        gateway.transmit(
+            .createSession(
+                requestID: id, workspace: path, botIDs: chat.pendingNewChatBotIDs.sorted())
+        ) {
             [weak self] message in
             guard let self, self.chat.sessionRequestID == id else { return }
             self.chat.restoreDraft(id: id)
@@ -60,12 +67,10 @@ extension AppModel {
     }
 
     func openNewSessionInCurrentWorkspace() {
-        guard let path = workspace?.path,
-            let selectedSession,
-            let bot = bots.first(where: { $0.id == selectedSession.sessionContext.botId })
-        else { return }
+        guard let path = workspace?.path, let selectedSession else { return }
+        let ids = selectedSession.botIds
         chooseWorkspace(path)
-        selectBotForNewChat(bot)
+        chat.pendingNewChatBotIDs = Set(ids)
     }
 
     func openChat(_ sessionID: String) {
@@ -152,7 +157,7 @@ extension AppModel {
     func canReassignSession(_ session: SessionRecord) -> Bool {
         guard let current = chat.sessions.first(where: { $0.sessionId == session.sessionId })
         else { return false }
-        return canRenameSession && current.activity.state == .idle
+        return !current.isGroup && canRenameSession && current.activity.state == .idle
             && (current.sessionId != chat.selectedSessionID
                 || (canModifySelectedSession && chat.realtimeVoiceCall == nil))
     }
@@ -192,7 +197,7 @@ extension AppModel {
 
     func attachFolder(_ selectedPath: String) {
         let path = selectedPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard canModifySelectedSession,
+        guard canModifySelectedSession, !selectedChatIsGroup,
             let sessionID = chat.selectedSessionID,
             chat.sessionMutationRequestID == nil,
             !path.isEmpty

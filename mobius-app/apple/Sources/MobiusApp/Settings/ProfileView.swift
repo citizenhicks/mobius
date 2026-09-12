@@ -887,7 +887,7 @@ private struct RemoteNotificationSettings: View {
             SettingsInfoButton(
                 title: "Notifications",
                 detail:
-                    "Alerts you on this device when a Cloud chat needs approval or finishes, or a Swarm needs attention."
+                    "Alerts you on this device when a Cloud chat needs approval or finishes."
             )
         }
         if model.cloud.isUpdatingNotifications {

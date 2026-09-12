@@ -1,15 +1,9 @@
-use std::collections::BTreeSet;
-
 use mobius_gateway::wire::{
     ClientMessage, ReadyPayload, Routine, RoutineRun, RoutineRunPreview, RoutineRunStatus,
-    SwarmRecord,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use super::form::{
-    AddMemberForm, BotForm, CreateSwarmForm, Form, FormFlow, MAX_SWARM_TITLE_BYTES, RoutineForm,
-    TextForm,
-};
+use super::form::{BotForm, Form, FormFlow, RoutineForm};
 use super::{Action, FollowUp, request_action};
 use crate::frontend::setup::SetupMode;
 use crate::frontend::theme::Role;
@@ -23,13 +17,6 @@ pub(super) enum Page {
     Routine { bot_id: String, routine_id: String },
     Runs { bot_id: String, routine_id: String },
     Run { bot_id: String, routine_id: String },
-    Swarm(String),
-}
-
-#[derive(Clone)]
-pub(super) enum RootItem {
-    Bot(String),
-    Swarm(String),
 }
 
 #[derive(Clone, Copy)]
@@ -39,8 +26,15 @@ pub(super) enum BotRow {
     Capabilities,
     Conversations,
     Routines,
-    Swarm,
 }
+
+pub(super) const BOT_ROWS: [BotRow; 5] = [
+    BotRow::Identity,
+    BotRow::Model,
+    BotRow::Capabilities,
+    BotRow::Conversations,
+    BotRow::Routines,
+];
 
 #[derive(Clone, Copy)]
 pub(super) enum RoutineRow {
@@ -51,28 +45,19 @@ pub(super) enum RoutineRow {
 }
 
 pub(super) enum Confirmation {
-    DeleteBot {
+    Bot {
         id: String,
         revision: u64,
         handle: String,
     },
-    DeleteRoutine {
+    Routine {
         id: String,
         label: String,
     },
-    DeleteRun {
+    Run {
         id: String,
         routine_id: String,
         label: String,
-    },
-    RemoveMember {
-        swarm_id: String,
-        bot_id: String,
-        handle: String,
-    },
-    DisbandSwarm {
-        id: String,
-        title: String,
     },
 }
 
@@ -122,38 +107,10 @@ impl BotsState {
         }
     }
 
-    pub(super) fn root_items(&self, gateway: &ReadyPayload) -> Vec<RootItem> {
-        gateway
-            .bots
-            .iter()
-            .map(|bot| RootItem::Bot(bot.id.clone()))
-            .chain(
-                gateway
-                    .swarms
-                    .iter()
-                    .map(|swarm| RootItem::Swarm(swarm.id.clone())),
-            )
-            .collect()
-    }
-
-    pub(super) fn bot_rows(&self, gateway: &ReadyPayload, bot_id: &str) -> Vec<BotRow> {
-        let mut rows = vec![
-            BotRow::Identity,
-            BotRow::Model,
-            BotRow::Capabilities,
-            BotRow::Conversations,
-            BotRow::Routines,
-        ];
-        if swarm_for_bot(gateway, bot_id).is_some() {
-            rows.push(BotRow::Swarm);
-        }
-        rows
-    }
-
     fn row_count(&self, gateway: &ReadyPayload) -> usize {
         match &self.page {
-            Page::Root => self.root_items(gateway).len(),
-            Page::Bot(id) => self.bot_rows(gateway, id).len(),
+            Page::Root => gateway.bots.len(),
+            Page::Bot(_) => BOT_ROWS.len(),
             Page::Conversations(id) => sessions_for_bot(gateway, id).len(),
             Page::Routines(id) => self
                 .routines
@@ -167,11 +124,6 @@ impl BotsState {
                 .filter(|run| run.routine_id == *routine_id)
                 .count(),
             Page::Run { .. } => 0,
-            Page::Swarm(id) => gateway
-                .swarms
-                .iter()
-                .find(|swarm| swarm.id == *id)
-                .map_or(0, |swarm| swarm.members.len()),
         }
     }
 
@@ -183,12 +135,6 @@ impl BotsState {
         | Page::Runs { bot_id: id, .. }
         | Page::Run { bot_id: id, .. } = &self.page
             && !gateway.bots.iter().any(|bot| bot.id == *id)
-        {
-            self.page = Page::Root;
-            self.selected = 0;
-        }
-        if let Page::Swarm(id) = &self.page
-            && !gateway.swarms.iter().any(|swarm| swarm.id == *id)
         {
             self.page = Page::Root;
             self.selected = 0;
@@ -266,115 +212,60 @@ impl BotsState {
             }
             Page::Runs { bot_id, routine_id } => self.handle_runs_key(key, bot_id, routine_id),
             Page::Run { .. } => Action::None,
-            Page::Swarm(id) => self.handle_swarm_key(key, gateway, id),
         }
     }
 
     fn handle_root_key(&mut self, key: KeyEvent, gateway: &ReadyPayload) -> Action {
-        match key.code {
-            KeyCode::Char('n') => {
-                self.form = Some(Form::Bot(BotForm::create()));
-                return Action::None;
-            }
-            KeyCode::Char('s') => {
-                let bot_ids = available_bot_ids(gateway);
-                if bot_ids.len() < 2 {
-                    self.fail("Enable Swarm collaboration in at least two Bots’ capabilities before creating a Swarm.");
-                } else {
-                    self.form = Some(Form::CreateSwarm(CreateSwarmForm {
-                        title: TextForm::new("", MAX_SWARM_TITLE_BYTES),
-                        bot_ids,
-                        members: BTreeSet::new(),
-                        leader_bot_id: None,
-                        row: 0,
-                        error: None,
-                    }));
-                }
-                return Action::None;
-            }
-            _ => {}
+        if key.code == KeyCode::Char('n') {
+            self.form = Some(Form::Bot(Box::new(BotForm::create())));
+            return Action::None;
         }
-        let Some(item) = self.root_items(gateway).get(self.selected).cloned() else {
+        let Some(bot) = gateway.bots.get(self.selected) else {
             return Action::None;
         };
         match key.code {
             KeyCode::Enter => {
-                self.page = match item {
-                    RootItem::Bot(id) => Page::Bot(id),
-                    RootItem::Swarm(id) => Page::Swarm(id),
-                };
+                self.page = Page::Bot(bot.id.clone());
                 self.selected = 0;
-                Action::None
             }
             KeyCode::Char('e') => {
-                match item {
-                    RootItem::Bot(id) => {
-                        if let Some(bot) = gateway.bots.iter().find(|bot| bot.id == id) {
-                            self.form = Some(Form::Bot(BotForm::update(bot)));
-                        }
-                    }
-                    RootItem::Swarm(id) => {
-                        if let Some(swarm) = gateway.swarms.iter().find(|swarm| swarm.id == id) {
-                            self.form = Some(Form::RenameSwarm {
-                                swarm_id: id,
-                                title: TextForm::new(&swarm.title, MAX_SWARM_TITLE_BYTES),
-                            });
-                        }
-                    }
-                }
-                Action::None
+                self.form = Some(Form::Bot(Box::new(BotForm::update(bot))));
             }
             KeyCode::Delete | KeyCode::Char('x') => {
-                if let RootItem::Bot(id) = &item
-                    && self.protected_bot_id.as_deref() == Some(id)
-                {
+                if self.protected_bot_id.as_deref() == Some(&bot.id) {
                     self.fail(
                         "The Bot owning this open chat cannot be deleted here; use the gateway dashboard.",
                     );
-                    return Action::None;
+                } else {
+                    self.confirmation = Some(Confirmation::Bot {
+                        id: bot.id.clone(),
+                        revision: bot.config.revision,
+                        handle: bot.handle.clone(),
+                    });
                 }
-                self.confirmation = match item {
-                    RootItem::Bot(id) => gateway.bots.iter().find(|bot| bot.id == id).map(|bot| {
-                        Confirmation::DeleteBot {
-                            id,
-                            revision: bot.config.revision,
-                            handle: bot.handle.clone(),
-                        }
-                    }),
-                    RootItem::Swarm(id) => {
-                        gateway
-                            .swarms
-                            .iter()
-                            .find(|swarm| swarm.id == id)
-                            .map(|swarm| Confirmation::DisbandSwarm {
-                                id,
-                                title: swarm.title.clone(),
-                            })
-                    }
-                };
-                Action::None
             }
-            _ => Action::None,
+            _ => {}
         }
+        Action::None
     }
 
     fn handle_bot_key(&mut self, key: KeyEvent, gateway: &ReadyPayload, id: String) -> Action {
         if key.code == KeyCode::Char('e') {
             if let Some(bot) = gateway.bots.iter().find(|bot| bot.id == id) {
-                self.form = Some(Form::Bot(BotForm::update(bot)));
+                self.form = Some(Form::Bot(Box::new(BotForm::update(bot))));
             }
             return Action::None;
         }
         if key.code != KeyCode::Enter {
             return Action::None;
         }
-        let Some(row) = self.bot_rows(gateway, &id).get(self.selected).copied() else {
+        let Some(row) = BOT_ROWS.get(self.selected).copied() else {
             return Action::None;
         };
         match row {
             BotRow::Identity => {
                 if let Some(bot) = gateway.bots.iter().find(|bot| bot.id == id) {
-                    self.form = Some(Form::Bot(BotForm::update(bot)));
+                    self.form = Some(Form::Bot(Box::new(BotForm::update(bot))));
                 }
                 Action::None
             }
@@ -394,13 +285,6 @@ impl BotsState {
             BotRow::Routines => {
                 self.page = Page::Routines(id);
                 self.selected = 0;
-                Action::None
-            }
-            BotRow::Swarm => {
-                if let Some(swarm) = swarm_for_bot(gateway, &id) {
-                    self.page = Page::Swarm(swarm.id.clone());
-                    self.selected = 0;
-                }
                 Action::None
             }
         }
@@ -441,7 +325,7 @@ impl BotsState {
                 }
             }),
             KeyCode::Delete | KeyCode::Char('x') => {
-                self.confirmation = Some(Confirmation::DeleteRoutine {
+                self.confirmation = Some(Confirmation::Routine {
                     id: routine.id,
                     label: routine.instructions,
                 });
@@ -538,7 +422,7 @@ impl BotsState {
             }
             KeyCode::Delete | KeyCode::Char('x') => {
                 let label = routine_run_label(run);
-                self.confirmation = Some(Confirmation::DeleteRun {
+                self.confirmation = Some(Confirmation::Run {
                     id: run.id.clone(),
                     routine_id,
                     label,
@@ -547,60 +431,6 @@ impl BotsState {
             }
             _ => Action::None,
         }
-    }
-
-    fn handle_swarm_key(
-        &mut self,
-        key: KeyEvent,
-        gateway: &ReadyPayload,
-        swarm_id: String,
-    ) -> Action {
-        let Some(swarm) = gateway.swarms.iter().find(|swarm| swarm.id == swarm_id) else {
-            return Action::None;
-        };
-        match key.code {
-            KeyCode::Char('e') => {
-                self.form = Some(Form::RenameSwarm {
-                    swarm_id: swarm.id.clone(),
-                    title: TextForm::new(&swarm.title, MAX_SWARM_TITLE_BYTES),
-                });
-            }
-            KeyCode::Char('a') => {
-                let bot_ids = available_bot_ids(gateway);
-                if bot_ids.is_empty() {
-                    self.fail(
-                        "Enable Swarm collaboration in another ungrouped Bot’s capabilities first.",
-                    );
-                } else {
-                    self.form = Some(Form::AddSwarmMember(AddMemberForm {
-                        swarm_id: swarm.id.clone(),
-                        bot_ids,
-                        row: 0,
-                    }));
-                }
-            }
-            KeyCode::Delete => {
-                self.confirmation = Some(Confirmation::DisbandSwarm {
-                    id: swarm.id.clone(),
-                    title: swarm.title.clone(),
-                });
-            }
-            KeyCode::Char('x') => {
-                if let Some(member) = swarm.members.get(self.selected) {
-                    if member.bot_id == swarm.leader_bot_id {
-                        self.fail("The leader cannot leave; disband the Swarm instead.");
-                    } else {
-                        self.confirmation = Some(Confirmation::RemoveMember {
-                            swarm_id: swarm.id.clone(),
-                            bot_id: member.bot_id.clone(),
-                            handle: member.handle.clone(),
-                        });
-                    }
-                }
-            }
-            _ => {}
-        }
-        Action::None
     }
 
     fn handle_confirmation(&mut self, key: KeyEvent) -> Action {
@@ -614,7 +444,7 @@ impl BotsState {
                     return Action::None;
                 };
                 match confirmation {
-                    Confirmation::DeleteBot { id, revision, .. } => {
+                    Confirmation::Bot { id, revision, .. } => {
                         request_action("Delete Bot and owned data", FollowUp::None, |request_id| {
                             ClientMessage::DeleteBot {
                                 request_id,
@@ -623,33 +453,16 @@ impl BotsState {
                             }
                         })
                     }
-                    Confirmation::DeleteRoutine { id, .. } => {
+                    Confirmation::Routine { id, .. } => {
                         request_action("Delete routine", FollowUp::Routines, |request_id| {
                             ClientMessage::DeleteRoutine { request_id, id }
                         })
                     }
-                    Confirmation::DeleteRun { id, routine_id, .. } => request_action(
+                    Confirmation::Run { id, routine_id, .. } => request_action(
                         "Delete routine run",
                         FollowUp::Runs(routine_id),
                         |request_id| ClientMessage::DeleteRoutineRun { request_id, id },
                     ),
-                    Confirmation::RemoveMember {
-                        swarm_id, bot_id, ..
-                    } => request_action("Remove Swarm member", FollowUp::None, |request_id| {
-                        ClientMessage::LeaveSwarm {
-                            request_id,
-                            swarm_id,
-                            bot_id,
-                        }
-                    }),
-                    Confirmation::DisbandSwarm { id, .. } => {
-                        request_action("Disband Swarm", FollowUp::None, |request_id| {
-                            ClientMessage::DisbandSwarm {
-                                request_id,
-                                swarm_id: id,
-                            }
-                        })
-                    }
                 }
             }
             _ => Action::None,
@@ -659,7 +472,7 @@ impl BotsState {
     pub(super) fn back(&mut self) -> Action {
         match &self.page {
             Page::Root => Action::Exit,
-            Page::Bot(_) | Page::Swarm(_) => {
+            Page::Bot(_) => {
                 self.page = Page::Root;
                 self.selected = 0;
                 Action::None
@@ -760,15 +573,6 @@ pub(super) fn update_routine_action(routine: &Routine, enabled: bool) -> Action 
     })
 }
 
-pub(super) fn available_bot_ids(gateway: &ReadyPayload) -> Vec<String> {
-    gateway
-        .bots
-        .iter()
-        .filter(|bot| bot.collaboration_enabled() && swarm_for_bot(gateway, &bot.id).is_none())
-        .map(|bot| bot.id.clone())
-        .collect()
-}
-
 pub(super) fn runs_for_routine<'a>(
     runs: &'a [RoutineRun],
     routine_id: &str,
@@ -800,18 +604,14 @@ pub(super) fn sessions_for_bot<'a>(
     let mut sessions = gateway
         .sessions
         .iter()
-        .filter(|session| session.session_context.bot_id == bot_id)
+        .filter(|session| {
+            session.session_context.bot_id == bot_id
+                || session
+                    .member_bot_ids
+                    .as_ref()
+                    .is_some_and(|members| members.iter().any(|id| id == bot_id))
+        })
         .collect::<Vec<_>>();
     sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_at));
     sessions
-}
-
-pub(super) fn swarm_for_bot<'a>(
-    gateway: &'a ReadyPayload,
-    bot_id: &str,
-) -> Option<&'a SwarmRecord> {
-    gateway
-        .swarms
-        .iter()
-        .find(|swarm| swarm.members.iter().any(|member| member.bot_id == bot_id))
 }

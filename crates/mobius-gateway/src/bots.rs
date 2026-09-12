@@ -1,7 +1,6 @@
 //! Gateway-owned Bot profiles, routines, run history, and schedule matching.
 
 mod storage;
-pub(crate) mod swarm;
 
 use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions, TryLockError};
@@ -60,6 +59,7 @@ pub(crate) struct BotStore {
     pub(crate) prepared: tokio::sync::Mutex<
         std::collections::BTreeMap<String, std::sync::Arc<crate::assembly::PreparedBot>>,
     >,
+    pub(crate) preparation_generation: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -207,8 +207,6 @@ pub(crate) struct PendingBotDeletion {
     pub(crate) expected_revision: u64,
     pub(crate) session_roots: Vec<String>,
     pub(crate) session_ids: Vec<String>,
-    pub(crate) swarm_id: Option<String>,
-    pub(crate) disbanded_swarm: bool,
     instruction_paths: Vec<PathBuf>,
 }
 
@@ -256,6 +254,7 @@ impl BotStore {
             routines_dir,
             storage,
             prepared: tokio::sync::Mutex::default(),
+            preparation_generation: std::sync::atomic::AtomicU64::default(),
         };
         let state = store.fresh_state()?;
         if persisted && !state.bots.iter().any(|bot| bot.handle == MOBIUS_HANDLE) {
@@ -435,15 +434,12 @@ impl BotStore {
         deletion: &mut BotDeletion,
         session_roots: &[String],
         session_ids: &[String],
-        swarm: Option<(&str, bool)>,
     ) -> Result<PendingBotDeletion> {
         let intent = PendingBotDeletion {
             bot_id: deletion.bot_id.clone(),
             expected_revision: deletion.expected_revision,
             session_roots: session_roots.to_vec(),
             session_ids: session_ids.to_vec(),
-            swarm_id: swarm.map(|(id, _)| id.to_owned()),
-            disbanded_swarm: swarm.is_some_and(|(_, disbanded)| disbanded),
             instruction_paths: deletion.instructions.iter().cloned().collect(),
         };
         let intent = self.update_locked(|state| {
@@ -1449,19 +1445,6 @@ fn validate_state(state: &BotState, routines_dir: &Path) -> Result<()> {
             return Err(Error::Config(
                 "pending Bot deletion root is outside its session set".into(),
             ));
-        }
-        match (&pending.swarm_id, pending.disbanded_swarm) {
-            (Some(id), _) if Uuid::parse_str(id).is_err() => {
-                return Err(Error::Config(
-                    "invalid pending Bot deletion swarm ID".into(),
-                ));
-            }
-            (None, true) => {
-                return Err(Error::Config(
-                    "pending Bot deletion cannot disband an unknown swarm".into(),
-                ));
-            }
-            _ => {}
         }
         if pending
             .instruction_paths

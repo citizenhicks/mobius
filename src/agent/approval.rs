@@ -17,10 +17,8 @@ use crate::backend::sandbox::SandboxApprovalRequest;
 use crate::backend::sandbox::SandboxPermissions;
 use crate::middleware::PermissionRequestContext;
 use crate::middleware::tools::ToolResult;
-use crate::protocol::ApprovalCall;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
-use crate::protocol::ExecApprovalRequestEvent;
 use crate::protocol::ReviewDecision;
 
 struct ApprovalResponse {
@@ -263,26 +261,8 @@ impl Runner {
 fn approval_event(pending: &PendingApproval) -> Event {
     Event {
         submission_id: Some(pending.submission_id.clone()),
-        msg: EventMsg::ExecApprovalRequest(ExecApprovalRequestEvent {
-            id: pending.request_id.clone(),
-            turn_id: pending.turn_id.clone(),
-            calls: selected_approval_calls(&pending.calls, &pending.approval_call_ids),
-            reason: pending.reason.clone(),
-        }),
+        msg: EventMsg::ExecApprovalRequest(pending.request_event()),
     }
-}
-
-fn selected_approval_calls(calls: &[ToolCall], call_ids: &[String]) -> Vec<ApprovalCall> {
-    let selected = call_ids.iter().map(String::as_str).collect::<BTreeSet<_>>();
-    calls
-        .iter()
-        .filter(|call| selected.contains(call.call_id.as_str()))
-        .map(|call| ApprovalCall {
-            call_id: call.call_id.clone(),
-            name: call.name.clone(),
-            arguments: call.arguments.clone(),
-        })
-        .collect()
 }
 
 fn validate_approval_selection(calls: &[ToolCall], call_ids: &[String]) -> Result<()> {

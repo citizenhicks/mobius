@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use mobius::protocol::MAX_MESSAGE_BYTES;
@@ -12,13 +11,9 @@ use crate::frontend::terminal_text;
 
 const MAX_BOT_NAME_BYTES: usize = 128;
 const MAX_BOT_DESCRIPTION_BYTES: usize = 2 * 1024;
-pub(super) const MAX_SWARM_TITLE_BYTES: usize = 256;
 
 pub(super) enum Form {
-    Bot(BotForm),
-    CreateSwarm(CreateSwarmForm),
-    RenameSwarm { swarm_id: String, title: TextForm },
-    AddSwarmMember(AddMemberForm),
+    Bot(Box<BotForm>),
     Routine(Box<RoutineForm>),
 }
 
@@ -109,21 +104,6 @@ impl BotForm {
     }
 }
 
-pub(super) struct CreateSwarmForm {
-    pub(super) title: TextForm,
-    pub(super) bot_ids: Vec<String>,
-    pub(super) members: BTreeSet<String>,
-    pub(super) leader_bot_id: Option<String>,
-    pub(super) row: usize,
-    pub(super) error: Option<String>,
-}
-
-pub(super) struct AddMemberForm {
-    pub(super) swarm_id: String,
-    pub(super) bot_ids: Vec<String>,
-    pub(super) row: usize,
-}
-
 pub(super) enum RoutineFormMode {
     Create(String),
     Update(String),
@@ -201,40 +181,6 @@ impl Form {
         }
         match self {
             Self::Bot(form) => form.handle_key(key, gateway),
-            Self::CreateSwarm(form) => form.handle_key(key),
-            Self::RenameSwarm { swarm_id, title } => match key.code {
-                KeyCode::Enter => {
-                    let value = title.value.trim();
-                    if value.is_empty() {
-                        title.error = Some("Swarm title cannot be empty.".into());
-                        FormFlow::Stay
-                    } else {
-                        FormFlow::Send(request_action(
-                            "Rename Swarm",
-                            FollowUp::None,
-                            |request_id| ClientMessage::RenameSwarm {
-                                request_id,
-                                swarm_id: swarm_id.clone(),
-                                title: value.into(),
-                            },
-                        ))
-                    }
-                }
-                KeyCode::Backspace => {
-                    title.backspace();
-                    FormFlow::Stay
-                }
-                KeyCode::Char(character)
-                    if !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                {
-                    title.push(&character.to_string());
-                    FormFlow::Stay
-                }
-                _ => FormFlow::Stay,
-            },
-            Self::AddSwarmMember(form) => form.handle_key(key),
             Self::Routine(form) => form.handle_key(key),
         }
     }
@@ -246,10 +192,7 @@ impl Form {
                     field.push(value);
                 }
             }
-            Self::CreateSwarm(form) if form.row == 0 => form.title.push(value),
-            Self::RenameSwarm { title, .. } => title.push(value),
             Self::Routine(form) => form.paste(value),
-            Self::CreateSwarm(_) | Self::AddSwarmMember(_) => {}
         }
     }
 }
@@ -348,114 +291,6 @@ impl BotForm {
                     },
                 ))
             }
-        }
-    }
-}
-
-impl CreateSwarmForm {
-    fn handle_key(&mut self, key: KeyEvent) -> FormFlow {
-        let length = self.bot_ids.len() + 2;
-        match key.code {
-            KeyCode::Up | KeyCode::BackTab => self.row = moved(self.row, length, -1),
-            KeyCode::Down | KeyCode::Tab => self.row = moved(self.row, length, 1),
-            KeyCode::Enter if self.row == 0 => self.row = 1,
-            KeyCode::Enter if self.row == length - 1 => return self.submit(),
-            KeyCode::Enter | KeyCode::Char(' ') if self.row > 0 => self.toggle_member(),
-            KeyCode::Char('l') if self.row > 0 && self.row < length - 1 => {
-                let bot_id = self.bot_ids[self.row - 1].clone();
-                self.members.insert(bot_id.clone());
-                self.leader_bot_id = Some(bot_id);
-            }
-            KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                return self.submit();
-            }
-            KeyCode::Backspace if self.row == 0 => self.title.backspace(),
-            KeyCode::Char(character)
-                if self.row == 0
-                    && !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                self.title.push(&character.to_string());
-            }
-            _ => {}
-        }
-        self.error = None;
-        FormFlow::Stay
-    }
-
-    fn toggle_member(&mut self) {
-        if self.row == 0 || self.row > self.bot_ids.len() {
-            return;
-        }
-        let bot_id = self.bot_ids[self.row - 1].clone();
-        if !self.members.remove(&bot_id) {
-            self.members.insert(bot_id.clone());
-            self.leader_bot_id.get_or_insert(bot_id);
-        } else if self.leader_bot_id.as_deref() == Some(&bot_id) {
-            self.leader_bot_id = None;
-        }
-    }
-
-    pub(super) fn submit(&mut self) -> FormFlow {
-        let title = self.title.value.trim().to_owned();
-        if title.is_empty() {
-            self.error = Some("Swarm title is required.".into());
-            return FormFlow::Stay;
-        }
-        if self.members.len() < 2 {
-            self.error = Some("Select at least two Bots.".into());
-            return FormFlow::Stay;
-        }
-        let Some(leader_bot_id) = self.leader_bot_id.clone() else {
-            self.error = Some("Appoint a leader with l.".into());
-            return FormFlow::Stay;
-        };
-        let member_bot_ids = self
-            .bot_ids
-            .iter()
-            .filter(|id| self.members.contains(*id))
-            .cloned()
-            .collect();
-        FormFlow::Send(request_action(
-            "Create Swarm",
-            FollowUp::None,
-            |request_id| ClientMessage::CreateSwarm {
-                request_id,
-                title,
-                leader_bot_id,
-                member_bot_ids,
-            },
-        ))
-    }
-}
-
-impl AddMemberForm {
-    pub(super) fn handle_key(&mut self, key: KeyEvent) -> FormFlow {
-        match key.code {
-            KeyCode::Up | KeyCode::BackTab => {
-                self.row = moved(self.row, self.bot_ids.len(), -1);
-                FormFlow::Stay
-            }
-            KeyCode::Down | KeyCode::Tab => {
-                self.row = moved(self.row, self.bot_ids.len(), 1);
-                FormFlow::Stay
-            }
-            KeyCode::Enter => {
-                let Some(bot_id) = self.bot_ids.get(self.row).cloned() else {
-                    return FormFlow::Stay;
-                };
-                FormFlow::Send(request_action(
-                    "Add Swarm member",
-                    FollowUp::None,
-                    |request_id| ClientMessage::AddSwarmMember {
-                        request_id,
-                        swarm_id: self.swarm_id.clone(),
-                        bot_id,
-                    },
-                ))
-            }
-            _ => FormFlow::Stay,
         }
     }
 }

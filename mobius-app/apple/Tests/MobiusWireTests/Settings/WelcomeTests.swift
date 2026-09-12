@@ -338,7 +338,6 @@ final class WelcomeTests: XCTestCase {
         }
         for (name, content) in [
             ("New Bot", AnyView(NewBotForm {})),
-            ("New Swarm", AnyView(NewSwarmForm {})),
             (
                 "New routine",
                 AnyView(

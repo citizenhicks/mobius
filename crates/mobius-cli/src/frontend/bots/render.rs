@@ -1,4 +1,4 @@
-use mobius_gateway::wire::{BotRecord, ReadyPayload, RoutineScheduleKind, SwarmRecord};
+use mobius_gateway::wire::{BotRecord, ReadyPayload, RoutineScheduleKind};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -6,8 +6,8 @@ use ratatui::widgets::{Block, HighlightSpacing, List, ListState, Paragraph, Wrap
 
 use super::form::{BotFormMode, Form};
 use super::state::{
-    BotRow, BotsState, Confirmation, Page, RootItem, routine_run_label, runs_for_routine,
-    sessions_for_bot, swarm_for_bot,
+    BOT_ROWS, BotRow, BotsState, Confirmation, Page, routine_run_label, runs_for_routine,
+    sessions_for_bot,
 };
 use crate::frontend::terminal_text;
 use crate::frontend::theme::{Role, current};
@@ -44,7 +44,7 @@ pub(super) fn render(frame: &mut ratatui::Frame<'_>, state: &BotsState, gateway:
         header,
     );
     if let Some(form) = &state.form {
-        render_form(frame, body, form, gateway);
+        render_form(frame, body, form);
     } else {
         match &state.page {
             Page::Root => render_root(frame, body, state, gateway),
@@ -54,7 +54,6 @@ pub(super) fn render(frame: &mut ratatui::Frame<'_>, state: &BotsState, gateway:
             Page::Routine { routine_id, .. } => render_routine(frame, body, state, routine_id),
             Page::Runs { routine_id, .. } => render_runs(frame, body, state, routine_id),
             Page::Run { .. } => render_run(frame, body, state),
-            Page::Swarm(id) => render_swarm(frame, body, state, gateway, id),
         }
     }
     render_notice(frame, notice, state);
@@ -64,7 +63,7 @@ pub(super) fn render(frame: &mut ratatui::Frame<'_>, state: &BotsState, gateway:
     );
 }
 
-fn render_form(frame: &mut ratatui::Frame<'_>, area: Rect, form: &Form, gateway: &ReadyPayload) {
+fn render_form(frame: &mut ratatui::Frame<'_>, area: Rect, form: &Form) {
     let (title, mut lines, error) = match form {
         Form::Bot(form) => {
             let title = match form.mode {
@@ -102,60 +101,6 @@ fn render_form(frame: &mut ratatui::Frame<'_>, area: Rect, form: &Form, gateway:
                         .and_then(|prompt| prompt.error.as_deref())),
             )
         }
-        Form::CreateSwarm(form) => {
-            let mut lines = vec![form_line("Title", &form.title.value, form.row == 0)];
-            for (index, bot_id) in form.bot_ids.iter().enumerate() {
-                let label = gateway
-                    .bots
-                    .iter()
-                    .find(|bot| bot.id == *bot_id)
-                    .map_or(bot_id.as_str(), |bot| bot.handle.as_str());
-                let marker = if form.members.contains(bot_id) {
-                    "[x]"
-                } else {
-                    "[ ]"
-                };
-                let leader = if form.leader_bot_id.as_deref() == Some(bot_id.as_str()) {
-                    " · leader"
-                } else {
-                    ""
-                };
-                lines.push(choice_line(
-                    &format!("{marker} @{label}{leader}"),
-                    form.row == index + 1,
-                ));
-            }
-            lines.push(choice_line(
-                "Save Swarm",
-                form.row == form.bot_ids.len() + 1,
-            ));
-            (
-                "Create Swarm",
-                lines,
-                form.error.as_deref().or(form.title.error.as_deref()),
-            )
-        }
-        Form::RenameSwarm { title, .. } => (
-            "Rename Swarm",
-            vec![form_line("Title", &title.value, true)],
-            title.error.as_deref(),
-        ),
-        Form::AddSwarmMember(form) => (
-            "Add Swarm member",
-            form.bot_ids
-                .iter()
-                .enumerate()
-                .map(|(index, bot_id)| {
-                    let label = gateway
-                        .bots
-                        .iter()
-                        .find(|bot| bot.id == *bot_id)
-                        .map_or(bot_id.as_str(), |bot| bot.handle.as_str());
-                    choice_line(&format!("@{label}"), form.row == index)
-                })
-                .collect(),
-            None,
-        ),
         Form::Routine(form) => {
             let save_row = form.save_row();
             let mut lines = vec![
@@ -276,47 +221,27 @@ fn render_root(
     let [catalog, details] =
         Layout::vertical([Constraint::Percentage(45), Constraint::Min(5)]).areas(area);
     let theme = current();
-    let items = state.root_items(gateway);
-    let rows = items.iter().map(|item| match item {
-        RootItem::Bot(id) => {
-            gateway
-                .bots
-                .iter()
-                .find(|bot| bot.id == *id)
-                .map_or_else(Line::default, |bot| {
-                    Line::from(format!(
-                        " BOT    @{} · {}",
-                        terminal_text(&bot.handle),
-                        terminal_text(&bot.name)
-                    ))
-                })
-        }
-        RootItem::Swarm(id) => gateway
-            .swarms
-            .iter()
-            .find(|swarm| swarm.id == *id)
-            .map_or_else(Line::default, |swarm| {
-                Line::from(format!(
-                    " SWARM  {} · {} Bots",
-                    terminal_text(&swarm.title),
-                    swarm.members.len()
-                ))
-            }),
+    let rows = gateway.bots.iter().map(|bot| {
+        Line::from(format!(
+            " @{} · {}",
+            terminal_text(&bot.handle),
+            terminal_text(&bot.name)
+        ))
     });
     let mut list_state =
-        ListState::default().with_selected((!items.is_empty()).then_some(state.selected));
+        ListState::default().with_selected((!gateway.bots.is_empty()).then_some(state.selected));
     frame.render_stateful_widget(
         List::new(rows)
-            .block(panel("Bots & Swarms"))
+            .block(panel("Bots"))
             .highlight_symbol("› ")
             .highlight_spacing(HighlightSpacing::Always)
             .highlight_style(Style::default().add_modifier(Modifier::BOLD)),
         catalog,
         &mut list_state,
     );
-    let lines = items.get(state.selected).map_or_else(
-        || vec![Line::styled("No Bots or Swarms", theme.style(Role::Muted))],
-        |item| root_details(item, state, gateway),
+    let lines = gateway.bots.get(state.selected).map_or_else(
+        || vec![Line::styled("No Bots", theme.style(Role::Muted))],
+        |bot| bot_details(bot, state, gateway),
     );
     frame.render_widget(
         Paragraph::new(lines)
@@ -324,21 +249,6 @@ fn render_root(
             .block(panel("Details")),
         details,
     );
-}
-
-fn root_details(item: &RootItem, state: &BotsState, gateway: &ReadyPayload) -> Vec<Line<'static>> {
-    match item {
-        RootItem::Bot(id) => gateway
-            .bots
-            .iter()
-            .find(|bot| bot.id == *id)
-            .map_or_else(Vec::new, |bot| bot_details(bot, state, gateway)),
-        RootItem::Swarm(id) => gateway
-            .swarms
-            .iter()
-            .find(|swarm| swarm.id == *id)
-            .map_or_else(Vec::new, |swarm| swarm_details(swarm, gateway)),
-    }
 }
 
 fn bot_details(bot: &BotRecord, state: &BotsState, gateway: &ReadyPayload) -> Vec<Line<'static>> {
@@ -349,9 +259,6 @@ fn bot_details(bot: &BotRecord, state: &BotsState, gateway: &ReadyPayload) -> Ve
         .iter()
         .filter(|routine| routine.bot_id == bot.id)
         .count();
-    let swarm = swarm_for_bot(gateway, &bot.id)
-        .map(|swarm| terminal_text(&swarm.title))
-        .unwrap_or_else(|| "none".into());
     vec![
         Line::styled(
             format!(
@@ -370,39 +277,7 @@ fn bot_details(bot: &BotRecord, state: &BotsState, gateway: &ReadyPayload) -> Ve
             theme.style(Role::Muted),
         ),
         Line::styled(
-            format!(
-                "{chats} conversations · {routines} routines · swarm {swarm} · collaboration {}",
-                if bot.collaboration_enabled() {
-                    "enabled"
-                } else {
-                    "off"
-                }
-            ),
-            theme.style(Role::Muted),
-        ),
-    ]
-}
-
-fn swarm_details(swarm: &SwarmRecord, gateway: &ReadyPayload) -> Vec<Line<'static>> {
-    let theme = current();
-    let leader = gateway
-        .bots
-        .iter()
-        .find(|bot| bot.id == swarm.leader_bot_id)
-        .map(|bot| format!("@{}", terminal_text(&bot.handle)))
-        .unwrap_or_else(|| "unavailable".into());
-    vec![
-        Line::styled(
-            terminal_text(&swarm.title),
-            theme.style(Role::AccentStrong).add_modifier(Modifier::BOLD),
-        ),
-        Line::styled(format!("leader: {leader}"), theme.style(Role::Muted)),
-        Line::styled(
-            format!(
-                "{} Bots · {} board posts",
-                swarm.members.len(),
-                swarm.messages.len()
-            ),
+            format!("{chats} conversations · {routines} routines"),
             theme.style(Role::Muted),
         ),
     ]
@@ -418,7 +293,7 @@ fn render_bot(
     let Some(bot) = gateway.bots.iter().find(|bot| bot.id == bot_id) else {
         return;
     };
-    let rows = state.bot_rows(gateway, bot_id);
+    let rows = BOT_ROWS;
     let chats = sessions_for_bot(gateway, bot_id).len();
     let routines = state
         .routines
@@ -431,10 +306,6 @@ fn render_bot(
         BotRow::Capabilities => Line::from(" Capabilities"),
         BotRow::Conversations => Line::from(format!(" Conversations · {chats}")),
         BotRow::Routines => Line::from(format!(" Routines · {routines}")),
-        BotRow::Swarm => Line::from(format!(
-            " Swarm · {}",
-            swarm_for_bot(gateway, bot_id).map_or("—", |swarm| swarm.title.as_str())
-        )),
     });
     render_list_page(
         frame,
@@ -616,47 +487,6 @@ fn render_run(frame: &mut ratatui::Frame<'_>, area: Rect, state: &BotsState) {
     );
 }
 
-fn render_swarm(
-    frame: &mut ratatui::Frame<'_>,
-    area: Rect,
-    state: &BotsState,
-    gateway: &ReadyPayload,
-    swarm_id: &str,
-) {
-    let Some(swarm) = gateway.swarms.iter().find(|swarm| swarm.id == swarm_id) else {
-        return;
-    };
-    let rows = swarm.members.iter().map(|member| {
-        Line::from(format!(
-            " @{}{}{}",
-            terminal_text(&member.handle),
-            if gateway
-                .bots
-                .iter()
-                .find(|bot| bot.id == member.bot_id)
-                .is_some_and(|bot| bot.collaboration_enabled())
-            {
-                ""
-            } else {
-                " · collaboration off"
-            },
-            if member.bot_id == swarm.leader_bot_id {
-                " · leader"
-            } else {
-                ""
-            }
-        ))
-    });
-    render_list_page(
-        frame,
-        area,
-        &format!("Swarm · {}", terminal_text(&swarm.title)),
-        rows,
-        swarm.members.len(),
-        state.selected,
-    );
-}
-
 fn render_list_page<'a>(
     frame: &mut ratatui::Frame<'_>,
     area: Rect,
@@ -694,25 +524,18 @@ fn render_notice(frame: &mut ratatui::Frame<'_>, area: Rect, state: &BotsState) 
 
 fn confirmation_text(confirmation: &Confirmation) -> String {
     match confirmation {
-        Confirmation::DeleteBot { handle, .. } => format!(
-            "Delete @{handle} plus every owned conversation, routine, run, and Swarm membership? y/n"
-        ),
-        Confirmation::DeleteRoutine { label, .. } => {
+        Confirmation::Bot { handle, .. } => {
+            format!("Delete @{handle} plus every owned conversation, routine, and run? y/n")
+        }
+        Confirmation::Routine { label, .. } => {
             format!("Delete routine `{}`? y/n", terminal_text(label))
         }
-        Confirmation::DeleteRun { label, .. } => {
+        Confirmation::Run { label, .. } => {
             format!(
                 "Delete routine run `{}` and its transcript? y/n",
                 terminal_text(label)
             )
         }
-        Confirmation::RemoveMember { handle, .. } => {
-            format!("Remove @{handle} from this Swarm? y/n")
-        }
-        Confirmation::DisbandSwarm { title, .. } => format!(
-            "Disband `{}` and delete its board and collective scratchpad? y/n",
-            terminal_text(title)
-        ),
     }
 }
 
@@ -727,7 +550,7 @@ fn footer_text(state: &BotsState) -> &'static str {
         return "y confirm · n cancel";
     }
     match state.page {
-        Page::Root => "↑↓ select · n new Bot · s new Swarm · e edit · x delete · q close",
+        Page::Root => "↑↓ select · n new Bot · e edit · x delete · q close",
         Page::Bot(_) => "↑↓ select · enter open · e edit identity/prompt · esc back",
         Page::Conversations(_) => "↑↓ inspect · esc back",
         Page::Routines(_) => {
@@ -736,7 +559,6 @@ fn footer_text(state: &BotsState) -> &'static str {
         Page::Routine { .. } => "↑↓ select · enter open · e edit · space enable · r run · esc back",
         Page::Runs { .. } => "↑↓ select · enter inspect · x delete · esc back",
         Page::Run { .. } => "esc back",
-        Page::Swarm(_) => "↑↓ select · a add · e rename · x remove · delete disband · esc back",
     }
 }
 

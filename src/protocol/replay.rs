@@ -523,7 +523,7 @@ mod tests {
             },
             ToolLoad {
                 catalog_revision: "catalog-1".into(),
-                tools: vec!["swarm_post".into(), "swarm_read".into()],
+                tools: vec!["notebook_post".into(), "notebook_read".into()],
             }
             .into_input(),
         )];
@@ -536,7 +536,7 @@ mod tests {
                 if load.turn_id == "history-11-2"
                     && load.load_id == load.turn_id
                     && load.catalog_revision == "catalog-1"
-                    && load.tools == ["swarm_post", "swarm_read"]
+                    && load.tools == ["notebook_post", "notebook_read"]
         ));
     }
 

@@ -16,7 +16,7 @@ fn another_clients_preview_cannot_open_or_replace_the_requested_preview() {
         record.event.submission_id = Some("another-client-request".into());
         record
     };
-    events::handle_gateway_event(&mut state, foreign());
+    events::handle_gateway_event(&mut state, foreign(), true);
     assert!(state.preview.is_none());
     assert_eq!(state.preview_request_id.as_deref(), Some("preview-request"));
 
@@ -29,9 +29,10 @@ fn another_clients_preview_cannot_open_or_replace_the_requested_preview() {
             &["ours"],
             None,
         ),
+        true,
     );
     assert!(state.preview_request_id.is_none());
-    events::handle_gateway_event(&mut state, foreign());
+    events::handle_gateway_event(&mut state, foreign(), true);
     assert_eq!(snapshot(&state).id, "ours");
     assert_eq!(preview_messages(snapshot(&state)), ["› ours"]);
 }
@@ -78,7 +79,7 @@ fn unsuccessful_preview_model_steps_close_their_pending_narrative() {
                 blocks: Vec::new(),
             },
         ];
-        events::handle_gateway_event(&mut state, record);
+        events::handle_gateway_event(&mut state, record, true);
         let entry = snapshot(&state)
             .transcript
             .front()
@@ -108,7 +109,7 @@ fn live_preview_replaces_the_changed_model_step_suffix_and_keeps_older_pages() {
         }),
         blocks: Vec::new(),
     }];
-    events::handle_gateway_event(&mut state, record);
+    events::handle_gateway_event(&mut state, record, true);
     let older = preview_continuation("even older");
     events::handle_gateway_event(
         &mut state,
@@ -119,6 +120,7 @@ fn live_preview_replaces_the_changed_model_step_suffix_and_keeps_older_pages() {
             &["older message"],
             Some(older.clone()),
         ),
+        true,
     );
     let mut completed =
         preview_record("child", "latest", FrontendPreviewUpdate::Replace, &[], None);
@@ -141,7 +143,7 @@ fn live_preview_replaces_the_changed_model_step_suffix_and_keeps_older_pages() {
         }),
         blocks: Vec::new(),
     }];
-    events::handle_gateway_event(&mut state, completed);
+    events::handle_gateway_event(&mut state, completed, true);
     assert_eq!(
         preview_messages(snapshot(&state)),
         ["› older message", "Final answer"]
@@ -224,13 +226,13 @@ fn live_voice_preview_updates_only_its_open_surface_and_preserves_message_identi
     ];
     let mut state = state();
     state.preview_request_id = Some("preview-request".into());
-    state.active_turn = Some("parent-work".into());
+    state.start_turn("parent-work".into());
     let parent_entries = state.transcript.len();
     let mut unsolicited = preview(draft_events.clone());
     unsolicited.event.submission_id = None;
-    events::handle_gateway_event(&mut state, unsolicited);
+    events::handle_gateway_event(&mut state, unsolicited, true);
     assert!(state.preview.is_none());
-    events::handle_gateway_event(&mut state, preview(draft_events));
+    events::handle_gateway_event(&mut state, preview(draft_events), true);
     assert_eq!(
         preview_messages(snapshot(&state)),
         ["› Earlier call", "› Hel", "First response", "Second"]
@@ -254,7 +256,7 @@ fn live_voice_preview_updates_only_its_open_surface_and_preserves_message_identi
         ),
     ]);
     completed.event.submission_id = None;
-    events::handle_gateway_event(&mut state, completed);
+    events::handle_gateway_event(&mut state, completed, true);
     assert_eq!(
         preview_messages(snapshot(&state)),
         [
@@ -271,7 +273,7 @@ fn live_voice_preview_updates_only_its_open_surface_and_preserves_message_identi
             .all(|entry| !entry.pending)
     );
     assert_eq!(state.transcript.len(), parent_entries);
-    assert_eq!(state.active_turn.as_deref(), Some("parent-work"));
+    assert_eq!(state.active_turn(), Some("parent-work"));
 }
 
 #[test]
@@ -332,6 +334,7 @@ fn snapshot_preview_scrolls_with_the_mouse_wheel() {
                 next: None,
             }),
         ),
+        true,
     );
     let mut terminal = Terminal::new(TestBackend::new(40, 10)).expect("terminal");
     terminal
@@ -385,6 +388,7 @@ fn snapshot_preview_prepends_an_older_page_without_losing_the_latest_page() {
             &["latest"],
             Some(preview_continuation("older")),
         ),
+        true,
     );
     events::handle_gateway_event(
         &mut state,
@@ -395,6 +399,7 @@ fn snapshot_preview_prepends_an_older_page_without_losing_the_latest_page() {
             &["older"],
             None,
         ),
+        true,
     );
 
     let snapshot = snapshot(&state);
@@ -422,6 +427,7 @@ fn snapshot_preview_deduplicates_page_ids() {
             &["latest"],
             None,
         ),
+        true,
     );
     for message in ["older", "duplicate"] {
         events::handle_gateway_event(
@@ -433,6 +439,7 @@ fn snapshot_preview_deduplicates_page_ids() {
                 &[message],
                 None,
             ),
+            true,
         );
     }
 
@@ -456,6 +463,7 @@ fn snapshot_preview_replace_refreshes_a_reused_latest_page_id() {
                 &[message],
                 None,
             ),
+            true,
         );
     }
 
@@ -475,6 +483,7 @@ fn snapshot_preview_does_not_merge_a_page_for_another_preview_id() {
             &["latest"],
             None,
         ),
+        true,
     );
     events::handle_gateway_event(
         &mut state,
@@ -485,6 +494,7 @@ fn snapshot_preview_does_not_merge_a_page_for_another_preview_id() {
             &["wrong preview"],
             None,
         ),
+        true,
     );
 
     let snapshot = snapshot(&state);
@@ -508,6 +518,7 @@ fn snapshot_preview_older_key_submits_the_retained_continuation() {
             &["latest"],
             Some(next.clone()),
         ),
+        true,
     );
     let mut terminal = Terminal::new(TestBackend::new(120, 10)).expect("terminal");
     terminal

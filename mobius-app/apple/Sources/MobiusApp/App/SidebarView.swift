@@ -216,12 +216,12 @@ struct SidebarView: View {
                 VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
                     navigationButton("Chats", destination: .chats)
                     navigationButton("Bots", destination: .bots)
-                    let globalWidgets = model.navigationWidgets(in: .global)
+                    let globalWidgets = model.gatewayNavigationWidgets
                     if globalWidgets.isEmpty {
                         navigationButton("Scratchpad", destination: .globalContributions)
                     } else {
                         ForEach(globalWidgets) { widget in
-                            contributionNavigationButton(widget, scope: .global)
+                            contributionNavigationButton(widget, destination: .globalContributions)
                         }
                     }
                     ForEach(
@@ -229,7 +229,7 @@ struct SidebarView: View {
                             !globalWidgets.contains { $0.id == widget.id }
                         }
                     ) { widget in
-                        contributionNavigationButton(widget)
+                        contributionNavigationButton(widget, destination: .contribution(widget.id))
                     }
 
                     // Work above, the gateway's own configuration below.
@@ -349,15 +349,12 @@ struct SidebarView: View {
 
     private func contributionNavigationButton(
         _ widget: MountedWidget,
-        scope: ContributionScope? = nil
+        destination: AppDestination
     ) -> some View {
-        let destination =
-            scope == .global
-            ? AppDestination.globalContributions : .contribution(widget.id)
-        return Button {
+        Button {
             if let operation = widget.widget.action {
-                if let scope {
-                    model.submitContributionOperation(operation, scope: scope)
+                if destination == .globalContributions {
+                    model.submitContributionOperation(operation)
                 } else {
                     model.submitWidget(widget)
                 }

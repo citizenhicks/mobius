@@ -62,7 +62,7 @@ pub(super) enum UiAction {
     },
     CreateSession {
         workspace: PathBuf,
-        bot_id: String,
+        bot_ids: Vec<String>,
         clear: bool,
     },
 }
@@ -94,7 +94,7 @@ impl TuiState {
             }
             _ => {}
         }
-        if self.approval.is_some()
+        if self.approval().is_some()
             && key.kind == KeyEventKind::Press
             && matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT)
             && matches!(
@@ -105,8 +105,7 @@ impl TuiState {
             let KeyCode::Char(choice) = key.code else {
                 unreachable!();
             };
-            let id = self.approval.take().expect("approval checked");
-            self.restore_draft();
+            let id = self.take_approval().expect("approval checked");
             return UiAction::Submit(Op::ExecApproval {
                 id,
                 decision: approval_decision(&choice.to_string()),
@@ -128,13 +127,13 @@ impl TuiState {
                     UiAction::None
                 }
                 KeyCode::Char('p') => {
-                    if !self.move_menu_up(catalog) && self.approval.is_none() {
+                    if !self.move_menu_up(catalog) && self.approval().is_none() {
                         self.composer_history_up();
                     }
                     UiAction::None
                 }
                 KeyCode::Char('n') => {
-                    if !self.move_menu_down(catalog) && self.approval.is_none() {
+                    if !self.move_menu_down(catalog) && self.approval().is_none() {
                         self.composer_history_down();
                     }
                     UiAction::None
@@ -145,27 +144,26 @@ impl TuiState {
         match key.code {
             KeyCode::Enter if self.complete_reference(catalog) => UiAction::None,
             KeyCode::Enter => {
-                let delivery = (self.active_turn.is_some()
+                let delivery = (self.composer_target_turn().is_some()
                     && key.modifiers.contains(KeyModifiers::ALT))
                 .then(|| self.alternate_message_delivery());
                 self.submit_selected_slash(catalog, delivery)
                     .unwrap_or_else(|| self.submit_input_with_delivery(catalog, delivery))
             }
             KeyCode::Up => {
-                if !self.move_menu_up(catalog) && self.approval.is_none() {
+                if !self.move_menu_up(catalog) && self.approval().is_none() {
                     self.composer_history_up();
                 }
                 UiAction::None
             }
             KeyCode::Down => {
-                if !self.move_menu_down(catalog) && self.approval.is_none() {
+                if !self.move_menu_down(catalog) && self.approval().is_none() {
                     self.composer_history_down();
                 }
                 UiAction::None
             }
-            KeyCode::Esc if self.approval.is_some() => {
-                let id = self.approval.take().expect("approval checked");
-                self.restore_draft();
+            KeyCode::Esc if self.approval().is_some() => {
+                let id = self.take_approval().expect("approval checked");
                 UiAction::Submit(Op::ExecApproval {
                     id,
                     decision: ReviewDecision::Abort,
@@ -179,11 +177,12 @@ impl TuiState {
                 self.slash_menu_dismissed = true;
                 UiAction::None
             }
-            KeyCode::Esc if self.input.is_empty() && self.is_working() => {
-                self.active_turn.clone().map_or(UiAction::None, |turn_id| {
+            KeyCode::Esc if self.input.is_empty() && self.is_working() => self
+                .active_turn()
+                .map(str::to_owned)
+                .map_or(UiAction::None, |turn_id| {
                     UiAction::Submit(Op::Interrupt { turn_id })
-                })
-            }
+                }),
             KeyCode::Esc => UiAction::None,
             KeyCode::Backspace => {
                 if self.input.is_empty() {
@@ -348,7 +347,29 @@ impl TuiState {
                 }
                 UiAction::None
             }
+            KeyCode::Char(' ') => {
+                if let Some(super::PickerOption {
+                    action: super::PickerAction::CreateSession { checked, .. },
+                    ..
+                }) = picker.options.get_mut(picker.selected)
+                {
+                    *checked = !*checked;
+                }
+                UiAction::None
+            }
             KeyCode::Enter => {
+                let mut bot_ids = picker
+                    .options
+                    .iter()
+                    .filter_map(|option| match &option.action {
+                        super::PickerAction::CreateSession {
+                            bot_id,
+                            checked: true,
+                            ..
+                        } => Some(bot_id.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
                 let action = picker
                     .options
                     .get(picker.selected)
@@ -360,11 +381,17 @@ impl TuiState {
                         workspace,
                         bot_id,
                         clear,
-                    } => UiAction::CreateSession {
-                        workspace,
-                        bot_id,
-                        clear,
-                    },
+                        ..
+                    } => {
+                        if bot_ids.is_empty() {
+                            bot_ids.push(bot_id);
+                        }
+                        UiAction::CreateSession {
+                            workspace,
+                            bot_ids,
+                            clear,
+                        }
+                    }
                 })
             }
             _ => UiAction::None,
@@ -381,7 +408,7 @@ impl TuiState {
         self.preview = None;
         self.capability_overlay = None;
         self.picker = Some(super::PickerState {
-            title: "Select Bot".into(),
+            title: "Select Bots".into(),
             selected: bots
                 .iter()
                 .position(|bot| bot.id == current_bot_id)
@@ -397,6 +424,7 @@ impl TuiState {
                         workspace: workspace.clone(),
                         bot_id: bot.id.clone(),
                         clear,
+                        checked: false,
                     },
                 })
                 .collect(),
@@ -724,7 +752,7 @@ impl TuiState {
         } else {
             line.trim()
         };
-        if !self.attachments.is_empty() && self.active_turn.is_some() {
+        if !self.attachments.is_empty() && self.composer_target_turn().is_some() {
             self.push(
                 "attachments can be sent when the agent is idle",
                 TranscriptTone::Warning,
@@ -741,16 +769,13 @@ impl TuiState {
             && let Some(action) = catalog.dispatch(
                 line,
                 CommandContext {
-                    active_turn: self.active_turn.as_deref(),
+                    active_turn: self.active_turn(),
                     status: &status,
                 },
             )
         {
             return match action {
                 CommandAction::Submit(op) => {
-                    if matches!(op, Op::Interrupt { .. }) {
-                        self.clear_approval();
-                    }
                     if let Some((capability, widgets, action)) = self.capability_popup_for(&op) {
                         self.picker = None;
                         self.preview = None;
@@ -781,9 +806,8 @@ impl TuiState {
                 }
             };
         }
-        if let Some(id) = self.approval.take() {
+        if let Some(id) = self.take_approval() {
             let decision = approval_decision(line);
-            self.restore_draft();
             return UiAction::Submit(Op::ExecApproval { id, decision });
         }
         if line.is_empty() && self.attachments.is_empty() {
@@ -795,8 +819,8 @@ impl TuiState {
                 text: line.into(),
                 attachments: std::mem::take(&mut self.attachments),
                 reply: None,
-                requested_delivery: self.active_turn.as_ref().and(delivery),
-                target_turn_id: self.active_turn.clone(),
+                requested_delivery: self.composer_target_turn().and(delivery),
+                target_turn_id: self.composer_target_turn().map(str::to_owned),
             },
         };
         UiAction::Submit(op)
@@ -848,7 +872,7 @@ impl TuiState {
     fn status(&self) -> String {
         format!(
             "{} · {}{}",
-            if self.active_turn.is_some() {
+            if self.active_turn().is_some() {
                 "active"
             } else {
                 "idle"

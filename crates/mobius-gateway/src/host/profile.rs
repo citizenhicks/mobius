@@ -256,12 +256,8 @@ pub(super) async fn gateway_ready(
         gateway_version: env!("CARGO_PKG_VERSION").into(),
         machine_name: local_machine_name().map_err(internal)?,
         bots: state.bots.bots().map_err(internal)?,
-        sessions: session_catalog(&state.checkpoints, &state.activities)
-            .await
-            .map_err(internal)?,
+        sessions: state.visible_sessions().await?,
         background_approvals: background_approvals(&state.activities).await,
-        swarm_attentions: state.swarm.pending_attentions().await.map_err(internal)?,
-        swarms: state.swarm.records().await.map_err(internal)?,
         providers: provider_statuses(),
         provider_instances: provider_instances(&config, &state.store, &state.credentials)
             .map_err(internal)?,

@@ -1,5 +1,5 @@
 use std::io;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local, Utc};
 use ratatui::Terminal;
@@ -37,7 +37,7 @@ use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
     BotRecord, ClientMessage, MiddlewareConfig, ReadyPayload, ServerMessage, SessionActivityState,
-    SessionReadyPayload, SessionRecord, SwarmRecord, WorkspaceFileScope,
+    SessionReadyPayload, SessionRecord, WorkspaceFileScope,
 };
 use uuid::Uuid;
 
@@ -93,26 +93,16 @@ pub(in crate::frontend) async fn run(
     let mut guard = TerminalGuard::alternate()?;
     let mut terminal = TuiTerminal::new(CrosstermBackend::new(io::stdout()))?;
     terminal.clear()?;
-    let model = ModelInfo {
-        model: session.session.model.model.clone(),
-        reasoning_effort: session.session.model.reasoning_effort.clone(),
-    };
-    let model_route = session.session.model.route.clone();
     let session_id = session.session.session_id.clone();
-    let bot = session_bot(gateway, session)?;
     let mut state = TuiState::new(
         &catalog,
         catalog.workspace().to_path_buf(),
-        model,
-        model_route,
-        agent_summary(gateway, session, bot),
+        ModelInfo::default(),
+        String::new(),
+        String::new(),
     );
-    state.active_message_delivery = Some(composer_message_delivery(
-        &gateway.middleware_features,
-        &bot.config.config.middleware,
-    ));
+    sync_session(&mut state, session, gateway)?;
     let mut uploads = ClipboardUploads::default();
-    state.context_limit = session.context_limit_tokens;
     let mut tick = tokio::time::interval(INPUT_POLL);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut elapsed = tokio::time::interval(ELAPSED_INTERVAL);
@@ -236,7 +226,7 @@ pub(in crate::frontend) async fn run(
                 ).await;
                 dirty = true;
             }
-            _ = elapsed.tick(), if state.active_turn.is_some() => {
+            _ = elapsed.tick(), if state.active_turn().is_some() => {
                 dirty = true;
             }
         }
@@ -314,11 +304,11 @@ async fn handle_terminal_input(
             }
             UiAction::CreateSession {
                 workspace,
-                bot_id,
+                bot_ids,
                 clear,
             } => {
                 *pending_session_creation =
-                    create_session(sender, workspace, bot_id, clear, state).await;
+                    create_session(sender, workspace, bot_ids, clear, state).await;
             }
             UiAction::Submit(op) => send_and_report(sender, session_id, op, state).await,
             UiAction::Gateway(action) => send_gateway_action(sender, action, state).await,
@@ -358,7 +348,7 @@ async fn handle_terminal_input(
                         session.session.session_id.clone(),
                     )));
                 }
-                if let Err(error) = sync_session(state, session, gateway) {
+                if let Err(error) = sync_session_info(state, session, gateway) {
                     state.push(error.to_string(), TranscriptTone::Error);
                 }
                 if let Err(error) = result {
@@ -440,7 +430,7 @@ fn choose_bot(
 async fn create_session(
     sender: &GatewaySender,
     workspace: std::path::PathBuf,
-    bot_id: String,
+    bot_ids: Vec<String>,
     clear: bool,
     state: &mut TuiState,
 ) -> Option<PendingSessionCreation> {
@@ -449,7 +439,7 @@ async fn create_session(
         .send(ClientMessage::CreateSession {
             request_id: request_id.clone(),
             workspace,
-            bot_id,
+            bot_ids,
         })
         .await;
     if let Err(error) = result {
@@ -555,10 +545,11 @@ fn handle_server_message(
                 &mut record.event.msg,
                 &gateway.sessions,
                 &gateway.bots,
-                &gateway.swarms,
                 &session.workspace.id,
             );
-            handle_gateway_event(state, record);
+            // The snapshot already contains current activity through this sequence.
+            let live = record.sequence > session.latest_sequence;
+            handle_gateway_event(state, record, live);
         }
         ServerMessage::SessionHistory {
             session_id: actual,
@@ -570,7 +561,6 @@ fn handle_server_message(
                     &mut record.event.msg,
                     &gateway.sessions,
                     &gateway.bots,
-                    &gateway.swarms,
                     &session.workspace.id,
                 );
             }
@@ -582,18 +572,17 @@ fn handle_server_message(
         }
         ServerMessage::Ready { payload } => {
             *gateway = payload;
-            if let Err(error) = sync_session(state, session, gateway) {
+            if let Err(error) = sync_session_info(state, session, gateway) {
                 state.push(error.to_string(), TranscriptTone::Error);
             }
         }
         ServerMessage::Sessions { sessions, .. } => gateway.sessions = sessions,
         ServerMessage::Bots { bots, .. } => {
             gateway.bots = bots;
-            if let Err(error) = sync_session(state, session, gateway) {
+            if let Err(error) = sync_session_info(state, session, gateway) {
                 state.push(error.to_string(), TranscriptTone::Error);
             }
         }
-        ServerMessage::Swarms { swarms, .. } => gateway.swarms = swarms,
         ServerMessage::SessionChanged { payload } if payload.session.session_id == session_id => {
             if payload.workspace.id == session.workspace.id
                 && payload.contributions == session.contributions
@@ -629,7 +618,9 @@ fn disconnect(
     state.upload_in_progress = false;
     replay_hydration.finish();
     state.disconnected = true;
-    state.finish_turn();
+    for turn_id in state.active_turns.clone() {
+        state.finish_turn(&turn_id);
+    }
     state.push(message, TranscriptTone::Error);
 }
 
@@ -672,7 +663,7 @@ fn paste_clipboard(
     uploads: &mut ClipboardUploads,
     clipboard_preparation: &mut Option<ClipboardPreparation>,
 ) {
-    if state.active_turn.is_some() {
+    if state.composer_target_turn().is_some() {
         state.push(
             "files can be pasted when the agent is idle",
             TranscriptTone::Warning,
@@ -743,7 +734,7 @@ async fn handle_clipboard_preparation(
 }
 
 async fn interrupt_active_turn(sender: &GatewaySender, session_id: &str, state: &TuiState) {
-    if let Some(turn_id) = state.active_turn.clone() {
+    if let Some(turn_id) = state.active_turn().map(str::to_owned) {
         let _ = send_op(sender, session_id, Op::Interrupt { turn_id }).await;
     }
 }
@@ -794,7 +785,7 @@ async fn open_extensions(
     state: &mut TuiState,
 ) {
     let result = extensions::run(terminal, sender, events, gateway).await;
-    if let Err(error) = sync_session(state, session, gateway) {
+    if let Err(error) = sync_session_info(state, session, gateway) {
         state.push(error.to_string(), TranscriptTone::Error);
     }
     if let Err(error) = result {
@@ -828,7 +819,7 @@ async fn open_bots(
     {
         return true;
     }
-    if let Err(error) = sync_session(state, session, gateway) {
+    if let Err(error) = sync_session_info(state, session, gateway) {
         state.push(error.to_string(), TranscriptTone::Error);
     }
     if let Err(error) = result {
@@ -872,8 +863,32 @@ fn sync_session(
     session: &SessionReadyPayload,
     gateway: &ReadyPayload,
 ) -> Result<()> {
-    let bot = session_bot(gateway, session)?;
-    state.model.model = super::terminal_text(&session.session.model.model);
+    sync_session_info(state, session, gateway)?;
+    state.active_turns.clone_from(&session.active_turn_ids);
+    state.approvals.clear();
+    state.restore_draft();
+    state.turn_started_at = (!state.active_turns.is_empty()).then(Instant::now);
+    for request in &session.pending_approvals {
+        state.begin_approval(request.clone());
+    }
+    Ok(())
+}
+
+fn sync_session_info(
+    state: &mut TuiState,
+    session: &SessionReadyPayload,
+    gateway: &ReadyPayload,
+) -> Result<()> {
+    let bot = if session.member_bot_ids.is_some() {
+        None
+    } else {
+        Some(session_bot(gateway, session)?)
+    };
+    state.model.model = if bot.is_some() {
+        super::terminal_text(&session.session.model.model)
+    } else {
+        "Group chat".into()
+    };
     state.model.reasoning_effort = session
         .session
         .model
@@ -882,10 +897,9 @@ fn sync_session(
         .map(super::terminal_text);
     state.model_route.clone_from(&session.session.model.route);
     state.agent_summary = agent_summary(gateway, session, bot);
-    state.active_message_delivery = Some(composer_message_delivery(
-        &gateway.middleware_features,
-        &bot.config.config.middleware,
-    ));
+    state.active_message_delivery = bot.map(|bot| {
+        composer_message_delivery(&gateway.middleware_features, &bot.config.config.middleware)
+    });
     state.context_limit = session.context_limit_tokens;
     state.usage.apply_context_limit(state.context_limit);
     Ok(())
@@ -925,7 +939,6 @@ fn enrich_resume_picker(
     event: &mut EventMsg,
     sessions: &[SessionRecord],
     bots: &[BotRecord],
-    swarms: &[SwarmRecord],
     current_workspace_id: &str,
 ) {
     let EventMsg::Frontend(FrontendEvent::Picker { options, .. }) = event else {
@@ -960,12 +973,10 @@ fn enrich_resume_picker(
         if let Some(origin) = &session.session_context.origin_label {
             details.push(origin.clone());
         }
-        let bot_id = &session.session_context.bot_id;
-        if let Some(handle) = bot_handle(bot_id, bots) {
+        if let Some(members) = &session.member_bot_ids {
+            details.push(member_labels(members, bots));
+        } else if let Some(handle) = bot_handle(&session.session_context.bot_id, bots) {
             details.push(format!("@{handle}"));
-        }
-        if let Some(swarm) = swarm_label(bot_id, swarms) {
-            details.push(swarm);
         }
         details.push(format!("started {}", human_time(session.created_at)));
         option.description = details.join(" · ");
@@ -986,21 +997,17 @@ fn session_status(session: &SessionRecord) -> &'static str {
     }
 }
 
-fn swarm_label(bot_id: &str, swarms: &[SwarmRecord]) -> Option<String> {
-    swarms.iter().find_map(|swarm| {
-        if !swarm.members.iter().any(|member| member.bot_id == bot_id) {
-            return None;
-        }
-        Some(format!(
-            "swarm {}{}",
-            swarm.title,
-            if swarm.leader_bot_id == bot_id {
-                " (leader)"
-            } else {
-                ""
-            }
-        ))
-    })
+fn member_labels(members: &[String], bots: &[BotRecord]) -> String {
+    members
+        .iter()
+        .map(|id| {
+            bot_handle(id, bots).map_or_else(
+                || super::terminal_text(id),
+                |handle| format!("@{}", super::terminal_text(handle)),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn bot_handle<'a>(bot_id: &str, bots: &'a [BotRecord]) -> Option<&'a str> {
@@ -1036,11 +1043,23 @@ fn human_time(timestamp_ms: i64) -> String {
     )
 }
 
-fn agent_summary(gateway: &ReadyPayload, session: &SessionReadyPayload, bot: &BotRecord) -> String {
-    let bot_id = &session.session.context.bot_id;
+fn agent_summary(
+    gateway: &ReadyPayload,
+    session: &SessionReadyPayload,
+    bot: Option<&BotRecord>,
+) -> String {
+    let Some(bot) = bot else {
+        return format!(
+            "MÖBIUS v{} · {}\nworkspace: {}",
+            env!("CARGO_PKG_VERSION"),
+            member_labels(
+                session.member_bot_ids.as_deref().unwrap_or_default(),
+                &gateway.bots
+            ),
+            super::terminal_text(&session.workspace.path.display().to_string()),
+        );
+    };
     let bot_label = format!("@{}", bot.handle);
-    let bot_label = swarm_label(bot_id, &gateway.swarms)
-        .map_or(bot_label.clone(), |swarm| format!("{bot_label} · {swarm}"));
     let providers = gateway
         .provider_instances
         .iter()
@@ -1127,7 +1146,7 @@ mod tests {
     };
     use mobius_gateway::wire::{
         ReadyPayload, RecordedEvent, RunStats, SessionActivity, SessionReadyPayload,
-        SwarmMemberRecord, VersionedAgentConfig, WorkspaceInfo,
+        VersionedAgentConfig, WorkspaceInfo,
     };
 
     fn replay_event(sequence: u64) -> ServerMessage {
@@ -1278,8 +1297,196 @@ mod tests {
         );
     }
 
+    #[test]
+    fn group_snapshot_restores_current_work_and_keeps_the_next_approval_after_completion() {
+        use mobius::protocol::{ExecApprovalRequestEvent, TurnCompleteEvent};
+        let catalog = UiCatalog::build(&[], std::path::Path::new("/tmp")).unwrap();
+        let mut state = TuiState::new(
+            &catalog,
+            "/tmp".into(),
+            ModelInfo::default(),
+            String::new(),
+            String::new(),
+        );
+        let mut session = session_payload("group-chat");
+        session.member_bot_ids = Some(vec!["bot-a".into(), "bot-b".into()]);
+        session.active_turn_ids = vec!["turn-a".into(), "turn-b".into()];
+        session.pending_approvals = ["a", "b"]
+            .map(|suffix| ExecApprovalRequestEvent {
+                id: format!("approval-{suffix}"),
+                turn_id: format!("turn-{suffix}"),
+                calls: Vec::new(),
+                reason: format!("@bot-{suffix}: approve work"),
+            })
+            .to_vec();
+        sync_session(&mut state, &session, &ready_payload()).unwrap();
+        assert!(state.active_turn().is_some());
+        assert_eq!(
+            state.approval().map(|request| request.id.as_str()),
+            Some("approval-a")
+        );
+        state.handle_agent_event(
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-a".into(),
+            }),
+            Vec::new(),
+        );
+        assert!(state.active_turn().is_some());
+        assert_eq!(
+            state.approval().map(|request| request.id.as_str()),
+            Some("approval-b")
+        );
+        state.handle_agent_event(
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-b".into(),
+            }),
+            Vec::new(),
+        );
+        assert!(state.active_turn().is_none());
+        assert!(state.approval().is_none());
+    }
+
+    #[test]
+    fn another_group_member_starting_and_completing_preserves_the_pending_approval() {
+        use mobius::protocol::{ExecApprovalRequestEvent, TurnCompleteEvent, TurnStartedEvent};
+        let catalog = UiCatalog::build(&[], std::path::Path::new("/tmp")).unwrap();
+        let mut state = TuiState::new(
+            &catalog,
+            "/tmp".into(),
+            ModelInfo::default(),
+            String::new(),
+            String::new(),
+        );
+        state.handle_agent_event(
+            EventMsg::ExecApprovalRequest(ExecApprovalRequestEvent {
+                id: "approval-a".into(),
+                turn_id: "turn-a".into(),
+                calls: Vec::new(),
+                reason: "Approve member A".into(),
+            }),
+            Vec::new(),
+        );
+        state.handle_agent_event(
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-b".into(),
+                model_context_window: None,
+            }),
+            Vec::new(),
+        );
+        assert_eq!(
+            state.approval().map(|request| request.id.as_str()),
+            Some("approval-a")
+        );
+        state.handle_agent_event(
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-b".into(),
+            }),
+            Vec::new(),
+        );
+        assert_eq!(
+            state.approval().map(|request| request.id.as_str()),
+            Some("approval-a")
+        );
+        assert!(state.active_turn().is_some());
+    }
+
+    #[test]
+    fn replay_preserves_current_activity_and_live_completion_clears_only_its_turn() {
+        use mobius::protocol::{ExecApprovalRequestEvent, TurnCompleteEvent};
+        let mut state = TuiState::default();
+        let mut gateway = ready_payload();
+        let mut session = session_payload("session-a");
+        session.member_bot_ids = Some(vec!["bot-a".into()]);
+        session.latest_sequence = 2;
+        session.active_turn_ids = vec!["current-turn".into()];
+        session.pending_approvals = vec![ExecApprovalRequestEvent {
+            id: "current-approval".into(),
+            turn_id: "current-turn".into(),
+            calls: Vec::new(),
+            reason: "Approve current work".into(),
+        }];
+        sync_session(&mut state, &session, &gateway).unwrap();
+        let mut message = replay_event(1);
+        let ServerMessage::AgentEvent { record, .. } = &mut message else {
+            unreachable!()
+        };
+        record.event.msg = EventMsg::ExecApprovalRequest(ExecApprovalRequestEvent {
+            id: "old-approval".into(),
+            turn_id: "old-turn".into(),
+            calls: Vec::new(),
+            reason: "Already decided".into(),
+        });
+        handle_server_message(
+            message,
+            &mut gateway,
+            &mut session,
+            &mut state,
+            "session-a",
+            false,
+        );
+        let mut completion = replay_event(2);
+        let ServerMessage::AgentEvent { record, .. } = &mut completion else {
+            unreachable!()
+        };
+        record.event.msg = EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "current-turn".into(),
+        });
+        handle_server_message(
+            completion.clone(),
+            &mut gateway,
+            &mut session,
+            &mut state,
+            "session-a",
+            false,
+        );
+        assert_eq!(state.active_turn(), Some("current-turn"));
+        assert_eq!(state.approvals.len(), 1);
+        assert_eq!(state.approval().unwrap().id, "current-approval");
+        // Inventory refreshes contain no new session activity snapshot.
+        handle_server_message(
+            ServerMessage::Ready {
+                payload: ready_payload(),
+            },
+            &mut gateway,
+            &mut session,
+            &mut state,
+            "session-a",
+            false,
+        );
+        assert_eq!(state.approval().unwrap().id, "current-approval");
+        let ServerMessage::AgentEvent { record, .. } = &mut completion else {
+            unreachable!()
+        };
+        record.sequence = 3;
+        handle_server_message(
+            completion,
+            &mut gateway,
+            &mut session,
+            &mut state,
+            "session-a",
+            false,
+        );
+        assert!(state.active_turn().is_none());
+        assert!(state.approval().is_none());
+        handle_server_message(
+            ServerMessage::Ready {
+                payload: ready_payload(),
+            },
+            &mut gateway,
+            &mut session,
+            &mut state,
+            "session-a",
+            false,
+        );
+        assert!(state.active_turn().is_none());
+        assert!(state.approval().is_none());
+    }
+
     fn session_payload(session_id: &str) -> SessionReadyPayload {
         SessionReadyPayload {
+            member_bot_ids: None,
+            active_turn_ids: Vec::new(),
+            pending_approvals: Vec::new(),
             latest_sequence: 0,
             next_before_sequence: None,
             attached_folders: Vec::new(),
@@ -1314,8 +1521,6 @@ mod tests {
             bots: Vec::new(),
             sessions: Vec::new(),
             background_approvals: Vec::new(),
-            swarm_attentions: Vec::new(),
-            swarms: Vec::new(),
             providers: Vec::new(),
             provider_instances: Vec::new(),
             bot_defaults: None,
@@ -1392,7 +1597,44 @@ mod tests {
     }
 
     #[test]
-    fn resume_picker_uses_live_session_and_swarm_metadata() {
+    fn group_session_hydrates_members_without_an_individual_bot_configuration() {
+        let mut gateway = ready_payload();
+        gateway.bots = ["ada", "grace"]
+            .into_iter()
+            .map(|handle| BotRecord {
+                id: format!("bot-{handle}"),
+                handle: handle.into(),
+                name: handle.into(),
+                description: String::new(),
+                tint: Default::default(),
+                config: VersionedAgentConfig {
+                    revision: 1,
+                    config: Default::default(),
+                },
+            })
+            .collect();
+        let mut session = session_payload("group");
+        session.member_bot_ids = Some(vec!["bot-ada".into(), "bot-grace".into()]);
+        let catalog = UiCatalog::build(&[], &session.workspace.path).expect("catalog");
+        let mut state = TuiState::new(
+            &catalog,
+            session.workspace.path.clone(),
+            ModelInfo::default(),
+            String::new(),
+            String::new(),
+        );
+
+        sync_session(&mut state, &session, &gateway).expect("group hydration");
+
+        assert_eq!(state.model.model, "Group chat");
+        assert!(state.agent_summary.contains("@ada, @grace"));
+        assert_eq!(state.active_message_delivery, None);
+        session.member_bot_ids = None;
+        assert!(sync_session(&mut state, &session, &gateway).is_err());
+    }
+
+    #[test]
+    fn resume_picker_uses_live_session_and_group_metadata() {
         let mut event = EventMsg::Frontend(FrontendEvent::Picker {
             title: "Resume chat".into(),
             options: vec![FrontendPickerOption {
@@ -1407,9 +1649,10 @@ mod tests {
             }],
         });
         let sessions = [SessionRecord {
+            member_bot_ids: Some(vec!["bot-a".into(), "bot-b".into()]),
             session_id: "session-a".into(),
             session_context: SessionContext {
-                bot_id: "bot-a".into(),
+                bot_id: String::new(),
                 workspace_id: Some("workspace-a".into()),
                 workspace_label: Some("Project A".into()),
                 ..SessionContext::default()
@@ -1439,19 +1682,7 @@ mod tests {
                 config: Default::default(),
             },
         }];
-        let swarms = [SwarmRecord {
-            id: "swarm-a".into(),
-            title: "Release".into(),
-            leader_bot_id: "bot-a".into(),
-            members: vec![SwarmMemberRecord {
-                bot_id: "bot-a".into(),
-                handle: "curie".into(),
-            }],
-            messages: Vec::new(),
-            updated_at_ms: 0,
-        }];
-
-        enrich_resume_picker(&mut event, &sessions, &bots, &swarms, "workspace-a");
+        enrich_resume_picker(&mut event, &sessions, &bots, "workspace-a");
 
         let EventMsg::Frontend(FrontendEvent::Picker { options, .. }) = event else {
             panic!("resume picker");
@@ -1462,7 +1693,7 @@ mod tests {
                 .description
                 .starts_with("running · this workspace")
         );
-        assert!(options[0].description.contains("swarm Release (leader)"));
+        assert!(options[0].description.contains("@curie, bot-b"));
         assert!(options[0].description.contains("started "));
         assert!(!options[0].description.contains("Unix"));
     }

@@ -542,7 +542,6 @@ extension AppModelTests {
             CachedChatCatalog(
                 bots: [bot()],
                 sessions: [session(state: .running, sequence: 7)],
-                swarms: [],
                 lastSessionID: "chat-1"
             ),
             accountID: account.id

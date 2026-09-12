@@ -24,7 +24,9 @@ extension ChatSessionModel {
         let event = record.event
         let type = event.msg["type"]?.stringValue ?? "unknown"
         let message = type == "message" ? try? MessageEventPayload(json: event.msg) : nil
-        let turnID = event.msg["turnId"]?.stringValue ?? activeTurnID
+        let turnID =
+            event.msg["turnId"]?.stringValue
+            ?? (selectedMemberBotIDs == nil ? activeTurnID : nil)
         prepareTranscriptEvent(event, type: type, message: message)
         applyPresentation(from: record, turnID: turnID)
 
@@ -42,7 +44,7 @@ extension ChatSessionModel {
         {
             return
         }
-        handleTranscriptStateEvent(type, event: event)
+        handleTranscriptStateEvent(type, record: record)
     }
 
     private func prepareTranscriptEvent(
@@ -190,6 +192,14 @@ extension ChatSessionModel {
         case "model_step_started":
             if replayRequestID == nil { runStats.active?.modelCalls += 1 }
         case "turn_started":
+            if selectedMemberBotIDs != nil {
+                if record.sequence > (replaySnapshotSequence ?? 0),
+                    let turnID = event.msg["turnId"]?.stringValue
+                {
+                    activeTurnIDs.insert(turnID)
+                }
+                return true
+            }
             activeTurnID = event.msg["turnId"]?.stringValue
             awaitingInitialMessageTurnID = activeTurnID
             if replayRequestID == nil,
@@ -236,6 +246,17 @@ extension ChatSessionModel {
         turnID: String?,
         aborted: Bool
     ) {
+        if selectedMemberBotIDs != nil {
+            guard record.sequence > (replaySnapshotSequence ?? 0) else { return }
+            if let turnID {
+                if pendingApproval?.turnID == turnID { approvalRequestID = nil }
+                activeTurnIDs.remove(turnID)
+                pendingApprovals.removeAll { $0.turnID == turnID }
+            }
+            onWorkspaceRefresh?()
+            onSessionFilesRefresh?()
+            return
+        }
         finishPendingTranscriptEntries()
         if let turnID {
             markTranscriptTurnFinished(
@@ -248,6 +269,7 @@ extension ChatSessionModel {
         awaitingInitialMessageTurnID = nil
         activeTurnID = nil
         if replayRequestID == nil { runStats.active = nil }
+        guard record.sequence > (replaySnapshotSequence ?? 0) else { return }
         onWorkspaceRefresh?()
         onSessionFilesRefresh?()
         pendingApproval = nil
@@ -256,8 +278,9 @@ extension ChatSessionModel {
 
     private func handleTranscriptStateEvent(
         _ type: String,
-        event: AgentEventRecord
+        record: RecordedEvent
     ) {
+        let event = record.event
         switch type {
         case "model_changed":
             selectedModelRoute = event.msg["route"]?.stringValue ?? selectedModelRoute
@@ -267,8 +290,11 @@ extension ChatSessionModel {
         case "session_resume_requested":
             if let sessionID = event.msg["sessionId"]?.stringValue { onOpenChat?(sessionID) }
         case "exec_approval_request":
-            approvalRequestID = nil
-            pendingApproval = decodeApproval(event.msg)
+            guard record.sequence > (replaySnapshotSequence ?? 0) else { return }
+            if let approval = decodeApproval(event.msg) {
+                pendingApprovals.removeAll { $0.id == approval.id }
+                pendingApprovals.append(approval)
+            }
         case "token_count":
             if let usage = event.msg["info"]?["totalTokenUsage"],
                 let decoded = TokenUsage(json: usage)
@@ -597,13 +623,13 @@ extension ChatSessionModel {
     ) {
         guard !message.text.isEmpty || !message.attachments.isEmpty else { return }
         let metadata = TranscriptMessageMetadata(author: message.author, delivery: message.delivery)
-        guard message.author == .user else {
-            if let entry = entries.first(where: { $0.sourceSequence == record.sequence }) {
-                entry.startsTurn = startsTurn
-                entry.messageMetadata = metadata
-                entry.messageTarget = message.messageTarget
-                entry.reply = message.reply
-            }
+        if message.author != .user,
+            let entry = entries.first(where: { $0.sourceSequence == record.sequence })
+        {
+            entry.startsTurn = startsTurn
+            entry.messageMetadata = metadata
+            entry.messageTarget = message.messageTarget
+            entry.reply = message.reply
             return
         }
         let id: String
@@ -617,7 +643,7 @@ extension ChatSessionModel {
         let entry = TranscriptEntry(
             id: id,
             text: message.text,
-            kind: .user,
+            kind: message.author == .user ? .user : .assistant,
             format: "plain_text",
             pending: false,
             turnID: turnID,

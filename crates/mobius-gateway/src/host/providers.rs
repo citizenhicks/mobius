@@ -339,7 +339,12 @@ impl GatewayHost {
         scope: ProviderRefresh,
     ) -> std::result::Result<(), Rejection> {
         let state = self.state.lock().await;
-        for prepared in state.bots.prepared.lock().await.values() {
+        let cache = state.bots.prepared.lock().await;
+        state
+            .bots
+            .preparation_generation
+            .fetch_add(1, Ordering::Release);
+        for prepared in cache.values() {
             for selection in &prepared.providers {
                 if super::session::provider_refresh_matches(selection, &scope)
                     .map_err(invalid_config)?

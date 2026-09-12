@@ -1,7 +1,21 @@
 import Foundation
 import Observation
+import UIKit
 @testable import Mobius
 import XCTest
+
+@MainActor
+func testAccessibilityElements(_ object: NSObject, depth: Int = 0) -> [NSObject] {
+    guard depth < 20 else { return [] }
+    let count = object.accessibilityElementCount()
+    let children =
+        count > 0 && count < 100
+        ? (0..<count).compactMap { object.accessibilityElement(at: $0) as? NSObject } : []
+    return [object]
+        + (children + ((object as? UIView)?.subviews ?? [])).flatMap {
+            testAccessibilityElements($0, depth: depth + 1)
+        }
+}
 
 func testMessageEvent(
     author: MessageAuthor = .user,
@@ -353,8 +367,6 @@ final class AppModelTests: XCTestCase {
         bots: [BotRecord]? = nil,
         sessions: [SessionRecord]? = nil,
         backgroundApprovals: [BackgroundApproval] = [],
-        swarmAttentions: [SwarmAttention] = [],
-        swarms: [SwarmRecord] = [],
         extensions: [ExtensionRecord] = [],
         contributions: [FrontendContribution] = []
     ) -> ReadyPayload {
@@ -363,8 +375,6 @@ final class AppModelTests: XCTestCase {
             bots: bots ?? [bot(config: botDefaults)],
             sessions: sessions ?? [session(state: .idle)],
             backgroundApprovals: backgroundApprovals,
-            swarmAttentions: swarmAttentions,
-            swarms: swarms,
             providers: [],
             providerInstances: [],
             botDefaults: botDefaults,
@@ -385,8 +395,7 @@ final class AppModelTests: XCTestCase {
         description: String =
             "You are möbius, a concise coding agent. Inspect the real code path before editing, make the smallest focused change, and preserve unrelated work.",
         tint: AccentTint = .blue,
-        config: VersionedAgentConfig? = nil,
-        collaborationEnabled: Bool = false
+        config: VersionedAgentConfig? = nil
     ) -> BotRecord {
         BotRecord(
             id: id,
@@ -394,8 +403,7 @@ final class AppModelTests: XCTestCase {
             name: name,
             description: description,
             tint: tint,
-            config: config ?? VersionedAgentConfig(revision: 1, config: composition()),
-            collaborationEnabled: collaborationEnabled
+            config: config ?? VersionedAgentConfig(revision: 1, config: composition())
         )
     }
 
@@ -513,9 +521,15 @@ final class AppModelTests: XCTestCase {
         widgets: [SessionWidget] = [],
         attachedFolders: [String] = [],
         compactionCount: UInt64 = 0,
+        memberBotIDs: [String]? = nil,
+        activeTurnIDs: [String]? = nil,
+        pendingApprovals: [JSONValue] = [],
         runStats: RunStats = RunStats()
     ) -> SessionReadyPayload {
         SessionReadyPayload(
+            memberBotIds: memberBotIDs,
+            activeTurnIds: activeTurnIDs ?? runStats.active.map { [$0.turnId] } ?? [],
+            pendingApprovals: pendingApprovals,
             latestSequence: latestSequence,
             nextBeforeSequence: nextBeforeSequence,
             workspace: WorkspaceInfo(id: "workspace-1", path: "/srv/mobius"),
@@ -570,7 +584,7 @@ final class AppModelTests: XCTestCase {
         guard case .createSession(let requestID, _, let botID) = try XCTUnwrap(request) else {
             return XCTFail("Expected a create-session request")
         }
-        XCTAssertEqual(botID, "bot-1")
+        XCTAssertEqual(botID, ["bot-1"])
         model.gateway.handle(
             .sessionOpened(
                 requestID: requestID,

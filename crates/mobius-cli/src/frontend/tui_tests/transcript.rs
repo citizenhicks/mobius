@@ -19,7 +19,7 @@ fn transcript_keeps_a_bounded_recent_window() {
 #[test]
 fn commentary_and_final_output_are_separate_assistant_messages() {
     let mut state = state();
-    state.active_turn = Some("turn".into());
+    state.start_turn("turn".into());
     state.handle_agent_event(
         EventMsg::AssistantContentDelta(mobius::protocol::AssistantContentDeltaEvent {
             session_id: "session".into(),

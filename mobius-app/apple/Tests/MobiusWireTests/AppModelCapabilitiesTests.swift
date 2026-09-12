@@ -336,86 +336,15 @@ extension AppModelTests {
         model.gateway.connectionState = .ready
 
         XCTAssertNil(model.chat.selectedSessionID)
-        XCTAssertEqual(model.navigationWidgets(in: .global).first?.title, "Global Scratchpad")
+        XCTAssertEqual(model.gatewayNavigationWidgets.first?.title, "Global Scratchpad")
 
-        model.refreshContributions(scope: .global)
+        model.refreshContributions()
         let request = await recorder.firstRequest(after: 0) {
             if case .getContributions = $0 { return true }
             return false
         }
-        guard case .getContributions(_, let scope) = try XCTUnwrap(request)
+        guard case .getContributions = try XCTUnwrap(request)
         else { return XCTFail("Expected a gateway-scoped contribution refresh") }
-        XCTAssertEqual(scope, .global)
-    }
-
-    func testSwarmScratchpadRefreshAndContributionStayWithSelectedSwarm() async throws {
-        let recorder = GatewayRequestRecorder()
-        let model = try model { request in await recorder.record(request) }
-        let helper = bot()
-        let swarm = SwarmRecord(
-            id: "swarm-1",
-            title: "Reviewers",
-            leaderBotId: helper.id,
-            members: [SwarmMemberRecord(botId: helper.id, handle: helper.handle)],
-            messages: [],
-            updatedAtMs: 100
-        )
-        model.bots = [helper]
-        model.swarms = [swarm]
-        model.gateway.connectionState = .ready
-
-        model.refreshContributions(scope: .swarm(id: swarm.id))
-        let request = await recorder.firstRequest(after: 0) {
-            if case .getContributions = $0 { return true }
-            return false
-        }
-        guard case .getContributions(_, let scope) = try XCTUnwrap(request) else {
-            return XCTFail("Expected a scoped scratchpad refresh")
-        }
-        XCTAssertEqual(scope, .swarm(id: swarm.id))
-
-        let contribution = FrontendContribution(
-            capability: "scratchpad",
-            acceptsFileAttachments: false,
-            count: 1,
-            commands: [],
-            widgets: [
-                FrontendWidget(
-                    id: "swarm",
-                    slot: .navigation,
-                    text: "Scratchpad",
-                    tone: "neutral",
-                    symbol: "brain",
-                    iconOnly: false,
-                    progress: nil,
-                    content: .actionList(title: "Swarm Scratchpad", items: []),
-                    action: nil
-                )
-            ],
-            references: []
-        )
-        model.gateway.handle(
-            .contributionsChanged(
-                requestID: "scratchpad-1",
-                scope: .swarm(id: swarm.id),
-                contributions: [contribution]
-            ))
-
-        XCTAssertEqual(model.swarmContributions[swarm.id]?.first?.count, 1)
-        XCTAssertEqual(
-            model.navigationWidgets(in: .swarm(id: swarm.id)).first?.title, "Swarm Scratchpad")
-        XCTAssertNil(model.navigationWidgets(in: .global).first)
-    }
-
-    func testStaleSwarmContributionScopeDoesNotReachGateway() async throws {
-        let recorder = GatewayRequestRecorder()
-        let model = try model { request in await recorder.record(request) }
-        model.gateway.connectionState = .ready
-
-        model.refreshContributions(scope: .swarm(id: "removed-swarm"))
-
-        let requestCount = await recorder.requestCount()
-        XCTAssertEqual(requestCount, 0)
     }
 
     func testContributionCatalogReferencesAndWidgetsAreGeneric() throws {

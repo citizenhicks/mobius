@@ -5,7 +5,7 @@ enum GatewayRequest: Encodable, Sendable {
     case authenticate(token: String, clientKind: GatewayClientKind)
     case listSessions(requestID: String)
     case listBotSessions(requestID: String, botID: String)
-    case createSession(requestID: String, workspace: String, botID: String)
+    case createSession(requestID: String, workspace: String, botIDs: [String])
     case attachSessionFolder(requestID: String, sessionID: String, folder: String)
     case openSession(
         requestID: String,
@@ -21,28 +21,12 @@ enum GatewayRequest: Encodable, Sendable {
     case renameSession(requestID: String, sessionID: String, title: String)
     case setSessionPinned(requestID: String, sessionID: String, pinned: Bool)
     case deleteSessions(requestID: String, sessionIDs: [String])
-    case createSwarm(
-        requestID: String,
-        title: String,
-        leaderBotID: String,
-        memberBotIDs: [String]
-    )
-    case addSwarmMember(requestID: String, swarmID: String, botID: String)
-    case leaveSwarm(requestID: String, swarmID: String, botID: String)
-    case renameSwarm(requestID: String, swarmID: String, title: String)
-    case disbandSwarm(requestID: String, swarmID: String)
-    case postSwarmMessage(
-        requestID: String,
-        swarmID: String,
-        text: String
-    )
     case startRealtimeVoice(requestID: String, sessionID: String, offerSDP: String)
     case endRealtimeVoice(sessionID: String, voiceID: String)
     case submit(sessionID: String, submission: Submission)
-    case getContributions(requestID: String, scope: ContributionScope)
+    case getContributions(requestID: String)
     case submitContribution(
         requestID: String,
-        scope: ContributionScope,
         operation: AgentOperation
     )
     case createBot(
@@ -208,11 +192,11 @@ enum GatewayRequest: Encodable, Sendable {
             try container.encode("list_bot_sessions", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
             try container.encode(botID, forKey: "botId")
-        case .createSession(let requestID, let workspace, let botID):
+        case .createSession(let requestID, let workspace, let botIDs):
             try container.encode("create_session", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
             try container.encode(workspace, forKey: "workspace")
-            try container.encode(botID, forKey: "botId")
+            try container.encode(botIDs, forKey: "botIds")
         case .attachSessionFolder(let requestID, let sessionID, let folder):
             try container.encode("attach_session_folder", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
@@ -247,48 +231,16 @@ enum GatewayRequest: Encodable, Sendable {
             try container.encode("delete_sessions", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
             try container.encode(sessionIDs, forKey: "sessionIds")
-        case .createSwarm(let requestID, let title, let leaderBotID, let memberBotIDs):
-            try container.encode("create_swarm", forKey: "type")
-            try container.encode(requestID, forKey: "requestId")
-            try container.encode(title, forKey: "title")
-            try container.encode(leaderBotID, forKey: "leaderBotId")
-            try container.encode(memberBotIDs, forKey: "memberBotIds")
-        case .addSwarmMember(let requestID, let swarmID, let botID):
-            try container.encode("add_swarm_member", forKey: "type")
-            try container.encode(requestID, forKey: "requestId")
-            try container.encode(swarmID, forKey: "swarmId")
-            try container.encode(botID, forKey: "botId")
-        case .leaveSwarm(let requestID, let swarmID, let botID):
-            try container.encode("leave_swarm", forKey: "type")
-            try container.encode(requestID, forKey: "requestId")
-            try container.encode(swarmID, forKey: "swarmId")
-            try container.encode(botID, forKey: "botId")
-        case .renameSwarm(let requestID, let swarmID, let title):
-            try container.encode("rename_swarm", forKey: "type")
-            try container.encode(requestID, forKey: "requestId")
-            try container.encode(swarmID, forKey: "swarmId")
-            try container.encode(title, forKey: "title")
-        case .disbandSwarm(let requestID, let swarmID):
-            try container.encode("disband_swarm", forKey: "type")
-            try container.encode(requestID, forKey: "requestId")
-            try container.encode(swarmID, forKey: "swarmId")
-        case .postSwarmMessage(let requestID, let swarmID, let text):
-            try container.encode("post_swarm_message", forKey: "type")
-            try container.encode(requestID, forKey: "requestId")
-            try container.encode(swarmID, forKey: "swarmId")
-            try container.encode(text, forKey: "text")
         case .submit(let sessionID, let submission):
             try container.encode("submit", forKey: "type")
             try container.encode(sessionID, forKey: "sessionId")
             try container.encode(submission, forKey: "submission")
-        case .getContributions(let requestID, let scope):
+        case .getContributions(let requestID):
             try container.encode("get_contributions", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
-            try container.encode(scope, forKey: "scope")
-        case .submitContribution(let requestID, let scope, let operation):
+        case .submitContribution(let requestID, let operation):
             try container.encode("submit_contribution", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
-            try container.encode(scope, forKey: "scope")
             try container.encode(operation, forKey: "operation")
         case .createBot(let requestID, let name, let description):
             try container.encode("create_bot", forKey: "type")
@@ -572,7 +524,6 @@ enum GatewayEnvelope: Decodable, Sendable {
     case gatewayConfigured(requestID: String, payload: ReadyPayload)
     case contributionsChanged(
         requestID: String,
-        scope: ContributionScope,
         contributions: [FrontendContribution]
     )
     case accepted(requestID: String)
@@ -583,10 +534,8 @@ enum GatewayEnvelope: Decodable, Sendable {
     )
     case sessions(requestID: String?, sessions: [SessionRecord])
     case backgroundApprovals([BackgroundApproval])
-    case swarmAttentions([SwarmAttention])
     case botSessions(requestID: String, botID: String, sessions: [SessionRecord])
     case bots(requestID: String?, bots: [BotRecord])
-    case swarms(requestID: String?, swarms: [SwarmRecord])
     case providerCredentialSaved(requestID: String, instance: String, provider: String)
     case pairingCode(requestID: String, code: String, expiresAt: Int64)
     case providerLoginStarted(
@@ -729,7 +678,6 @@ enum GatewayEnvelope: Decodable, Sendable {
         case "contributions":
             self = .contributionsChanged(
                 requestID: try container.decode(String.self, forKey: "requestId"),
-                scope: try container.decode(ContributionScope.self, forKey: "scope"),
                 contributions: try container.decode(
                     [FrontendContribution].self,
                     forKey: "contributions"
@@ -753,10 +701,6 @@ enum GatewayEnvelope: Decodable, Sendable {
             self = .backgroundApprovals(
                 try container.decode([BackgroundApproval].self, forKey: "approvals")
             )
-        case "swarm_attentions":
-            self = .swarmAttentions(
-                try container.decode([SwarmAttention].self, forKey: "attentions")
-            )
         case "bot_sessions":
             self = .botSessions(
                 requestID: try container.decode(String.self, forKey: "requestId"),
@@ -767,11 +711,6 @@ enum GatewayEnvelope: Decodable, Sendable {
             self = .bots(
                 requestID: try container.decodeIfPresent(String.self, forKey: "requestId"),
                 bots: try container.decode([BotRecord].self, forKey: "bots")
-            )
-        case "swarms":
-            self = .swarms(
-                requestID: try container.decodeIfPresent(String.self, forKey: "requestId"),
-                swarms: try container.decode([SwarmRecord].self, forKey: "swarms")
             )
         case "provider_credential_saved":
             self = .providerCredentialSaved(
@@ -944,8 +883,6 @@ struct ReadyPayload: Decodable, Sendable {
     let bots: [BotRecord]
     let sessions: [SessionRecord]
     let backgroundApprovals: [BackgroundApproval]
-    let swarmAttentions: [SwarmAttention]
-    let swarms: [SwarmRecord]
     let providers: [ProviderStatus]
     let providerInstances: [ProviderInstance]
     let botDefaults: VersionedAgentConfig?
@@ -998,6 +935,9 @@ private extension ReadyPayload {
 }
 
 struct SessionReadyPayload: Decodable, Sendable {
+    let memberBotIds: [String]?
+    let activeTurnIds: [String]
+    let pendingApprovals: [JSONValue]
     let latestSequence: UInt64
     let nextBeforeSequence: UInt64?
     let workspace: WorkspaceInfo
@@ -1015,41 +955,6 @@ struct SessionReadyPayload: Decodable, Sendable {
 struct SessionWidget: Decodable, Sendable {
     let capability: String
     let item: FrontendWidget
-}
-
-enum ContributionScope: Codable, Hashable, Sendable {
-    case global
-    case swarm(id: String)
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: DynamicCodingKey.self)
-        switch try container.decode(String.self, forKey: "type") {
-        case "global":
-            self = .global
-        case "swarm":
-            let id = try container.decode(String.self, forKey: "id")
-            guard !id.isEmpty else {
-                throw GatewayWireError.invalidFrame("contribution swarm scope has an empty ID")
-            }
-            self = .swarm(id: id)
-        case let type:
-            throw GatewayWireError.invalidFrame("unknown contribution scope \(type)")
-        }
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: DynamicCodingKey.self)
-        switch self {
-        case .global:
-            try container.encode("global", forKey: "type")
-        case .swarm(let id):
-            guard !id.isEmpty else {
-                throw GatewayWireError.invalidFrame("contribution swarm scope has an empty ID")
-            }
-            try container.encode("swarm", forKey: "type")
-            try container.encode(id, forKey: "id")
-        }
-    }
 }
 
 enum GitDiffScope: String, Codable, CaseIterable, Identifiable, Sendable {
@@ -1136,7 +1041,6 @@ struct BotRecord: Identifiable, Codable, Equatable, Sendable {
     let description: String
     let tint: AccentTint
     let config: VersionedAgentConfig
-    let collaborationEnabled: Bool
 }
 
 struct BackgroundApproval: Codable, Equatable, Hashable, Sendable {
@@ -1144,14 +1048,6 @@ struct BackgroundApproval: Codable, Equatable, Hashable, Sendable {
     let botId: String
     let turnId: String
     let requestId: String
-}
-
-struct SwarmAttention: Codable, Equatable, Hashable, Sendable {
-    let swarmId: String
-    let swarmTitle: String
-    let messageId: String
-    let botId: String
-    let text: String
 }
 
 struct ModelChanged: Codable, Hashable, Sendable {
@@ -1166,6 +1062,9 @@ struct SessionRecord: Identifiable, Codable, Hashable, Sendable {
 
     let sessionId: String
     let sessionContext: SessionContext
+    var memberBotIds: [String]? = nil
+    var isGroup: Bool { memberBotIds != nil }
+    var botIds: [String] { memberBotIds ?? [sessionContext.botId] }
     let parentSessionId: String?
     let parentSequence: UInt64?
     let sequence: UInt64
@@ -1176,34 +1075,6 @@ struct SessionRecord: Identifiable, Codable, Hashable, Sendable {
     let activity: SessionActivity
     let createdAt: Int64
     let updatedAt: Int64
-}
-
-struct SwarmMemberRecord: Identifiable, Codable, Hashable, Sendable {
-    var id: String { botId }
-
-    let botId: String
-    let handle: String
-}
-
-struct SwarmMessageRecord: Identifiable, Codable, Hashable, Sendable {
-    let id: String
-    let sequence: UInt64
-    let authorBotId: String
-    let authorHandle: String
-    let sourceSessionId: String
-    let text: String
-    let createdAtMs: Int64
-    let inReplyToMessageId: String?
-    let replyDepth: UInt64
-}
-
-struct SwarmRecord: Identifiable, Codable, Hashable, Sendable {
-    let id: String
-    let title: String
-    let leaderBotId: String
-    let members: [SwarmMemberRecord]
-    let messages: [SwarmMessageRecord]
-    let updatedAtMs: Int64
 }
 
 struct SessionActivity: Codable, Hashable, Sendable {

@@ -107,7 +107,7 @@ Source paths below are relative to `Sources/MobiusApp/`.
 | `Gateway/GatewayConnectionModel.swift` | Accounts, pairing, transport generations, reconnects, and shutdown. `GatewayClient.swift` handles framing; `GatewayStore.swift` owns persistence. |
 | `Chat/ChatSessionModel.swift` | Session selection/replay/history, transcript, composer/recovery, session attachments, titles, and voice lifecycle. Related code lives in `Chat/` and `Composer/`; workspace-file presentation remains root-owned in `Files/`. |
 | `Cloud/MobiusCloudModel.swift` | Authentication, purchases, provisioning, extension catalog, and auth-bound push registration/deduplication. `RemoteNotifications.swift` contains the Cloud-attached app delegate. |
-| `Bots/`, `Routines/`, `Swarms/`, `Settings/`, `Configuration/`, `UI/` | Feature views/configuration and shared presentation primitives. |
+| `Bots/`, `Routines/`, `Settings/`, `Configuration/`, `UI/` | Feature views/configuration and shared presentation primitives. |
 
 Views use the actual owners through `model.gateway`, `model.chat`, and
 `model.cloud`; do not add mirrored state or property-forwarding facades to AppModel.

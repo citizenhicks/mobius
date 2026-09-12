@@ -183,6 +183,28 @@ pub struct PendingApproval {
     pub decision_received: bool,
 }
 
+impl PendingApproval {
+    /// Presents only the calls awaiting approval, excluding already authorized calls.
+    #[must_use]
+    pub fn request_event(&self) -> crate::protocol::ExecApprovalRequestEvent {
+        crate::protocol::ExecApprovalRequestEvent {
+            id: self.request_id.clone(),
+            turn_id: self.turn_id.clone(),
+            calls: self
+                .calls
+                .iter()
+                .filter(|call| self.approval_call_ids.contains(&call.call_id))
+                .map(|call| crate::protocol::ApprovalCall {
+                    call_id: call.call_id.clone(),
+                    name: call.name.clone(),
+                    arguments: call.arguments.clone(),
+                })
+                .collect(),
+            reason: self.reason.clone(),
+        }
+    }
+}
+
 /// The single delivery boundary for one queued message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

@@ -788,20 +788,11 @@ async fn write_gateway_broadcast(
     mut frame: ServerFrame,
 ) -> Result<()> {
     // Queued catalogs can predate a mutation response on this connection.
-    match &mut frame.message {
-        ServerMessage::Bots { bots, .. } => {
-            *bots = host
-                .bots()
-                .await
-                .map_err(|rejection| Error::Protocol(rejection.message))?;
-        }
-        ServerMessage::Swarms { swarms, .. } => {
-            *swarms = host
-                .swarms()
-                .await
-                .map_err(|rejection| Error::Protocol(rejection.message))?;
-        }
-        _ => {}
+    if let ServerMessage::Bots { bots, .. } = &mut frame.message {
+        *bots = host
+            .bots()
+            .await
+            .map_err(|rejection| Error::Protocol(rejection.message))?;
     }
     write_frame(writer, &frame).await
 }

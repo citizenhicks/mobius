@@ -568,7 +568,7 @@ fn unrelated_run_finishes_while_bot_deletion_recovery_is_pending() {
         .prepare_bot_deletion(&deleting.id, deleting.config.revision)
         .expect("prepare deletion");
     store
-        .record_bot_deletion(&mut deletion, &[], &[], None)
+        .record_bot_deletion(&mut deletion, &[], &[])
         .expect("record recovery intent");
     drop(deletion);
 
@@ -599,7 +599,7 @@ fn due_routines_idle_while_bot_deletion_recovery_is_pending() {
         .prepare_bot_deletion(&deleting.id, deleting.config.revision)
         .expect("prepare deletion");
     store
-        .record_bot_deletion(&mut deletion, &[], &[], None)
+        .record_bot_deletion(&mut deletion, &[], &[])
         .expect("record recovery intent");
     drop(deletion);
 

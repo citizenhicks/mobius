@@ -106,25 +106,18 @@ extension AppModel {
             ))
     }
 
-    func submitContributionOperation(_ operation: AgentOperation, scope: ContributionScope) {
+    func submitContributionOperation(_ operation: AgentOperation) {
         guard gateway.connectionState.isReady else { return }
-        if case .swarm(let id) = scope,
-            !swarms.contains(where: { $0.id == id })
-        {
-            return
-        }
         gateway.transmit(
             .submitContribution(
                 requestID: requestID("contribution"),
-                scope: scope,
                 operation: operation
             ))
     }
 
-    func refreshContributions(scope: ContributionScope) {
+    func refreshContributions() {
         guard gateway.connectionState.isReady else { return }
-        if case .swarm(let id) = scope, !swarms.contains(where: { $0.id == id }) { return }
-        gateway.transmit(.getContributions(requestID: requestID("contributions"), scope: scope))
+        gateway.transmit(.getContributions(requestID: requestID("contributions")))
     }
 
     func loadPreviewPage(_ operation: AgentOperation) {

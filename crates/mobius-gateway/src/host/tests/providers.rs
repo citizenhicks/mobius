@@ -1100,3 +1100,72 @@ async fn unrelated_credential_edits_leave_prepared_chats_untouched() {
     assert_eq!(operations.counts(), before);
     gateway.shutdown().await;
 }
+
+#[tokio::test]
+async fn credential_refresh_retries_an_inflight_bot_preparation() {
+    let root = tempfile::tempdir().expect("root");
+    let (gateway, _, _, removable) = provider_removal_gateway(&root).await;
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let (bot, runtime, operations) = {
+        let state = gateway.state.lock().await;
+        let mut config = state.bots.bots().unwrap()[0].config.config.clone();
+        config.middleware.set_enabled("computer_control", true);
+        (
+            state
+                .bots
+                .create_bot("computer", "Computer", config)
+                .unwrap(),
+            crate::computer_runtime::managed_directory(state.store.state_dir()),
+            Arc::clone(&state.store.runtime_operations),
+        )
+    };
+    let parent = runtime.parent().unwrap();
+    std::fs::create_dir_all(parent).unwrap();
+    let install_lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(parent.join("install.lock"))
+        .unwrap();
+    install_lock.lock().unwrap();
+    let before = operations.counts();
+    let creating = {
+        let gateway = gateway.clone();
+        tokio::spawn(async move { gateway.create_session(&workspace, &bot.id).await })
+    };
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while operations.counts().0 == before.0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("preparation started and is waiting for the runtime installer");
+    gateway.clear_credential(removable.instance).await.unwrap();
+    // Release installation without downloading dependencies or running a browser.
+    for file in [
+        "node",
+        "worker.cjs",
+        "computer-control.md",
+        "node_modules/playwright/package.json",
+    ] {
+        let path = runtime.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "").unwrap();
+    }
+    std::fs::create_dir(runtime.join("browsers")).unwrap();
+    drop(install_lock);
+    let host = tokio::time::timeout(Duration::from_secs(5), creating)
+        .await
+        .expect("startup finishes")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        operations.counts(),
+        (before.0 + 2, before.1 + 1),
+        "discard the old credentials before publishing or assembling the Bot"
+    );
+    drop(host);
+    gateway.shutdown().await;
+}

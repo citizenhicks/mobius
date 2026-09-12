@@ -1,0 +1,1 @@
+Group context and shared conversation history now use the existing Bot and session middleware interfaces. Remove Swarm tools and scratchpad policy, preserve authenticated message provenance, and keep session file deletion from blocking unrelated gateway work. Empty file deletions skip storage initialization and garbage collection.

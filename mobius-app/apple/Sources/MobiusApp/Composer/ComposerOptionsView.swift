@@ -169,13 +169,13 @@ struct ComposerOptionsView: View {
         // ponytail: overlap 44pt targets by 4pt; split groups if boundary taps misfire.
         HStack(spacing: -MobiusSpace.xs) {
             if model.attachmentsEnabled { addAttachmentControl }
-            if !isCompact {
+            if !isCompact && !model.selectedChatIsGroup {
                 ForEach(composerSettings) { item in
                     ComposerSettingMenu(item: item)
                 }
             }
             Spacer(minLength: MobiusSpace.s)
-            if !isCompact { modelMenu }
+            if !isCompact && !model.selectedChatIsGroup { modelMenu }
             actionButtons
         }
         .sheet(isPresented: $showsModelSelection) {
@@ -388,7 +388,7 @@ struct ComposerOptionsView: View {
             .accessibilityLabel(Text(sendLabel))
             .accessibilityHint(Text(sendHint))
             .contextMenu {
-                if model.chat.activeTurnID != nil {
+                if model.chat.composerTargetTurnID != nil {
                     Button(alternateSendLabel, glyph: alternateSendGlyph) {
                         send(alternateDelivery)
                     }
@@ -496,7 +496,7 @@ struct ComposerOptionsView: View {
 
     private var canSend: Bool {
         model.gateway.connectionState.isReady && model.canSendComposer
-            && (model.chat.activeTurnID == nil || model.chat.composerAttachments.isEmpty)
+            && (model.chat.composerTargetTurnID == nil || model.chat.composerAttachments.isEmpty)
     }
 
     private var isWaitingForGateway: Bool {
@@ -507,19 +507,20 @@ struct ComposerOptionsView: View {
     }
 
     private var sendLabel: LocalizedStringResource {
-        guard model.chat.activeTurnID != nil else { return "Send" }
+        guard model.chat.composerTargetTurnID != nil else { return "Send" }
         return model.activeMessageDelivery == .steer ? "Send as Steer" : "Send as Queue"
     }
 
     private var sendHint: LocalizedStringResource {
-        guard model.chat.activeTurnID != nil else { return "Starts a new turn" }
+        if model.selectedChatIsGroup { return "Posts to the group chat" }
+        guard model.chat.composerTargetTurnID != nil else { return "Starts a new turn" }
         return model.activeMessageDelivery == .steer
             ? "Long press to send after this turn"
             : "Long press to steer the active turn"
     }
 
     private var sendGlyph: MobiusGlyph {
-        guard model.chat.activeTurnID != nil else { return .arrowUp02 }
+        guard model.chat.composerTargetTurnID != nil else { return .arrowUp02 }
         return model.activeMessageDelivery == .steer ? .arrowUpRight01 : .queue01
     }
 

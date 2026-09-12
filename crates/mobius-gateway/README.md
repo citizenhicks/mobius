@@ -1,7 +1,7 @@
 # möbius Gateway
 
 `mobius-gateway` is the headless möbius runtime. One process owns machine
-credentials, usage, durable Bot profiles, Bot routines, and manual Bot swarms
+credentials, usage, durable Bot profiles, Bot routines, and group chats
 while hosting up to 32 independent conversations. Every conversation belongs
 to exactly one Bot and owns only its canonical workspace and transcript; the
 Bot owns its model, reasoning, capabilities, approval policy, extensions, and
@@ -65,7 +65,7 @@ for building, packaging, and local connection requirements.
 
 Library hosts should signal shutdown through `GatewayServer::serve_until` and
 await its return. The server closes connections, finishes routine dispatch, stops
-Swarm delivery, and shuts down resident sessions, including active routines.
+group message delivery, and shuts down resident sessions, including active routines.
 Dropping the serving future is not a graceful-shutdown boundary.
 
 Initialize and pair the default gateway:
@@ -227,15 +227,11 @@ and no active routines, the gateway exits after 72 hours. Stopping it manually a
 work; cron occurrences are not replayed after restart, and intervals catch up at most one overdue
 occurrence.
 
-Swarms are optional manual groups of Bots with one appointed leader. In each Bot's
-capability settings, choose `bots.collaboration = swarm` to opt in; the default is
-`off`. The generic settings UI renders this choice from the Bots manifest. Disabled
-Bots retain their saved membership and pending messages, but do not receive Swarm
-work. Bot profiles, ordinary chats, and self-routines remain independent.
-
-Inside Swarm Chat, an exact enabled Bot `@handle` routes work to its durable hidden
-participant conversation; later messages reuse it. `@user` creates a durable
-attention notification without opening or injecting a visible user chat. Routine
-results stay in routine history unless the running Bot explicitly posts to the
-Swarm. See [Bots and context](BOTS.md) for history recovery, compaction handoffs,
-shared scratchpad knowledge, task lists, subagents, and escalation rules.
+Choose several Bots in New Chat to create a group in the selected workspace.
+Only exact member @mentions wake a Bot. Each member uses its own private Agent
+context, reads recent shared history automatically, and publishes its normal final
+answer to the conversation. Mentions in that answer can wake another member.
+The same Bot can join several groups. Shared history, attachments, and approvals
+use the normal chat controls; deleting a group preserves its Bots and routines.
+See [Bots and context](BOTS.md) for history recovery, context boundaries, scratchpad
+knowledge, task lists, and subagents.

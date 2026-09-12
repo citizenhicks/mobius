@@ -10,6 +10,35 @@ impl HostState {
         {
             return Ok(());
         }
+        self.group
+            .observe_event(&self.running.session_id, &event)
+            .await?;
+        if let Some(chat_id) = crate::groups::participant_chat_id(&self.running.session_id) {
+            for rendered in self.running.frontend.render(&event.msg) {
+                if rendered.block.role != mobius::protocol::FrontendBlockRole::Artifact
+                    || rendered.block.files.is_empty()
+                {
+                    continue;
+                }
+                for file in &rendered.block.files {
+                    self.session_files
+                        .share_artifact(&self.running.session_id, chat_id, file)
+                        .await?;
+                }
+                self.group
+                    .observe_event(
+                        &self.running.session_id,
+                        &Event {
+                            submission_id: event.submission_id.clone(),
+                            msg: EventMsg::Frontend(FrontendEvent::Render {
+                                capability: rendered.capability,
+                                block: rendered.block,
+                            }),
+                        },
+                    )
+                    .await?;
+            }
+        }
         match &event.msg {
             EventMsg::TurnStarted(_) => self.last_assistant_text = None,
             EventMsg::AssistantMessage(message) => {
@@ -19,9 +48,9 @@ impl HostState {
             }
             EventMsg::TurnComplete(_) => {
                 let outcome =
-                    swarm_run_outcome(self.turn_error.clone(), self.last_assistant_text.clone());
+                    group_run_outcome(self.turn_error.clone(), self.last_assistant_text.clone());
                 if let Some(message_id) = event.submission_id.as_deref() {
-                    self.swarm
+                    self.group
                         .settle_delivery(
                             message_id,
                             &self.running.session_id,
@@ -33,12 +62,12 @@ impl HostState {
             }
             EventMsg::TurnAborted(turn) => {
                 if let Some(message_id) = event.submission_id.as_deref() {
-                    self.swarm
+                    self.group
                         .settle_delivery(
                             message_id,
                             &self.running.session_id,
                             &self.spec.bot_id,
-                            SwarmRunOutcome::Failed {
+                            GroupRunOutcome::Failed {
                                 message: self
                                     .turn_error
                                     .clone()
@@ -51,12 +80,12 @@ impl HostState {
             _ => {}
         }
         if opens_message_capacity(&event.msg) {
-            self.swarm.notify_capacity_available(&self.spec.bot_id);
+            self.group.notify_capacity_available(&self.spec.bot_id);
         }
         if let EventMsg::SubmissionRejected(_) = &event.msg
             && let Some(submission_id) = event.submission_id.as_deref()
         {
-            self.swarm.notify_rejected(submission_id, &self.spec.bot_id);
+            self.group.notify_rejected(submission_id, &self.spec.bot_id);
         }
         let next_activity = self.activity_for_event(&event.msg).await?;
         account_turn_event(&mut self.pending_turns, &mut self.pending_messages, &event);
@@ -85,7 +114,7 @@ impl HostState {
         Ok(())
     }
 
-    pub(super) async fn reconcile_replayed_swarm_work(&self) -> Result<()> {
+    pub(super) async fn reconcile_replayed_group_work(&self) -> Result<()> {
         let mut error = None;
         let mut summary = None;
         let mut terminal = None;
@@ -109,7 +138,7 @@ impl HostState {
                     terminal = record.event.submission_id.clone().map(|message_id| {
                         (
                             message_id,
-                            swarm_run_outcome(error.clone(), summary.clone()),
+                            group_run_outcome(error.clone(), summary.clone()),
                         )
                     });
                 }
@@ -117,7 +146,7 @@ impl HostState {
                     terminal = record.event.submission_id.clone().map(|message_id| {
                         (
                             message_id,
-                            SwarmRunOutcome::Failed {
+                            GroupRunOutcome::Failed {
                                 message: error.clone().unwrap_or_else(|| event.reason.clone()),
                             },
                         )
@@ -127,7 +156,7 @@ impl HostState {
             }
         }
         if let Some((message_id, outcome)) = terminal {
-            self.swarm
+            self.group
                 .settle_delivery(
                     &message_id,
                     &self.running.session_id,
@@ -267,6 +296,20 @@ impl HostState {
             context_window => context_window,
         };
         Ok(SessionReadyPayload {
+            member_bot_ids: None,
+            active_turn_ids: checkpoint
+                .active_execution
+                .as_ref()
+                .map(|active| active.turn_id.clone())
+                .into_iter()
+                .collect(),
+            pending_approvals: checkpoint
+                .pending_approval
+                .as_ref()
+                .filter(|pending| !pending.decision_received)
+                .map(mobius::backend::checkpoint::PendingApproval::request_event)
+                .into_iter()
+                .collect(),
             latest_sequence: self.sequence,
             next_before_sequence: self.next_before_sequence,
             workspace: self.spec.workspace_info(),
@@ -307,10 +350,13 @@ impl HostState {
     }
 
     pub(super) async fn broadcast_sessions(&self) -> std::result::Result<(), Rejection> {
-        let (sessions, approvals) = activity_catalog(&self.checkpoints, &self.activities)
+        let (mut sessions, approvals) = activity_catalog(&self.checkpoints, &self.activities)
             .await
             .map_err(internal)?;
-        self.swarm.retry_pending();
+        catalog::include_group_chats(&mut sessions, &self.group, &self.activities)
+            .await
+            .map_err(internal)?;
+        self.group.retry_pending();
         let _ = self
             .gateway_events
             .send(ServerFrame::new(ServerMessage::Sessions {
@@ -537,11 +583,11 @@ fn assistant_text(message: &mobius::protocol::AssistantMessageEvent) -> Option<S
     (!text.trim().is_empty()).then_some(text)
 }
 
-fn swarm_run_outcome(error: Option<String>, summary: Option<String>) -> SwarmRunOutcome {
+fn group_run_outcome(error: Option<String>, summary: Option<String>) -> GroupRunOutcome {
     match (error, summary) {
-        (Some(message), _) => SwarmRunOutcome::Failed { message },
-        (None, Some(summary)) => SwarmRunOutcome::Succeeded { summary },
-        (None, None) => SwarmRunOutcome::Failed {
+        (Some(message), _) => GroupRunOutcome::Failed { message },
+        (None, Some(summary)) => GroupRunOutcome::Succeeded { summary },
+        (None, None) => GroupRunOutcome::Failed {
             message: "Bot returned no final response".into(),
         },
     }

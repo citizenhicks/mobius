@@ -22,10 +22,6 @@ final class AppModel {
     var bots: [BotRecord] = []
     var eventReadRevisions: [String: String] = [:]
     var backgroundApprovals: [BackgroundApproval] = []
-    var swarmAttentions: [SwarmAttention] = []
-    var swarms: [SwarmRecord] = []
-    var swarmMessageRequestID: String?
-    var completedSwarmMessageRequestID: String?
     var showsCloudOffer = false
 
     var modelChoices: [ModelChoice] = []
@@ -33,7 +29,6 @@ final class AppModel {
     var middlewareFeatures: [MiddlewareFeature] = []
     var extensions: [ExtensionRecord] = []
     var gatewayContributions: [FrontendContribution] = []
-    var swarmContributions: [String: [FrontendContribution]] = [:]
     var extensionInstallSource = ""
     @ObservationIgnored let messageSpeaker = MessageSpeaker()
     var newVoiceChatIntent: NewVoiceChatIntent?
@@ -145,8 +140,6 @@ final class AppModel {
     @ObservationIgnored var startedAccountID: UUID?
     @ObservationIgnored var appActivationTask: Task<Void, Never>?
     @ObservationIgnored var eventCentreRefreshTask: Task<Void, Never>?
-    var swarmMutationRequestID: String?
-    var swarmApplyState: ApplyState = .idle
     var botMutationRequestID: String?
     var botMutationSuccessMessage: String?
     @ObservationIgnored var botDefaultsRequestID: String?
@@ -439,6 +432,7 @@ final class AppModel {
     var isSwitchingGitBranch: Bool { gitBranchRequestID != nil }
 
     var attachmentsEnabled: Bool {
+        if selectedChatIsGroup { return true }
         if chat.activeTurnID == nil, let bot = selectedBot {
             return bot.config.config.middleware.enabled.contains("attachments")
         }
@@ -446,6 +440,7 @@ final class AppModel {
     }
 
     var selectedRouteSupportsImageInput: Bool {
+        if selectedChatIsGroup { return true }
         let route =
             chat.activeTurnID == nil
             ? modelRoute(for: selectedBot?.config.config) ?? chat.selectedModelRoute
@@ -472,7 +467,7 @@ final class AppModel {
         attachmentsEnabled
             && (gateway.connectionState.isReady || isChangingWorkspace)
             && (chat.selectedSessionID != nil
-                || chat.pendingNewChatWorkspace != nil && selectedBot != nil)
+                || chat.pendingNewChatWorkspace != nil && !chat.pendingNewChatBotIDs.isEmpty)
             && chat.sessionFileLimits != nil
             && chat.pendingWidgetEdit == nil
     }
@@ -517,9 +512,10 @@ final class AppModel {
         let hasPendingSession =
             sessionID == nil
             && chat.pendingNewChatWorkspace != nil
-            && chat.pendingNewChatBotID.map { botID in bots.contains { $0.id == botID } } == true
+            && !chat.pendingNewChatBotIDs.isEmpty
+            && chat.pendingNewChatBotIDs.allSatisfy { id in bots.contains { $0.id == id } }
         guard sessionID != nil || hasPendingSession else { return false }
-        guard sessionID == nil || chat.pendingNewChatBotID == nil else { return false }
+        guard sessionID == nil || chat.pendingNewChatBotIDs.isEmpty else { return false }
         guard !composerHasUnfinishedAttachments else { return false }
         if let pending = chat.pendingWidgetEdit {
             guard let sessionID,
@@ -548,14 +544,6 @@ final class AppModel {
 
     var attentionSessionIDs: Set<String> {
         runningSessionIDs.union(chat.unreadSessionIDs)
-    }
-
-    var canMutateSwarm: Bool {
-        gateway.connectionState.isReady && swarmMutationRequestID == nil
-    }
-
-    var canPostSwarmMessage: Bool {
-        gateway.connectionState.isReady && swarmMessageRequestID == nil
     }
 
     var canMutateBots: Bool {
@@ -794,8 +782,24 @@ final class AppModel {
         }
     }
 
+    var selectedChatIsGroup: Bool {
+        chat.selectedSessionID == nil
+            ? chat.pendingNewChatBotIDs.count > 1
+            : chat.selectedMemberBotIDs != nil || selectedSession?.isGroup == true
+    }
+
+    var selectedChatBots: [BotRecord] {
+        let ids =
+            chat.selectedSessionID == nil
+            ? chat.pendingNewChatBotIDs
+            : Set(chat.selectedMemberBotIDs ?? selectedSession?.botIds ?? [])
+        return bots.filter { ids.contains($0.id) }
+    }
+
     var selectedBot: BotRecord? {
-        guard let botID = selectedSession?.sessionContext.botId ?? chat.pendingNewChatBotID else {
+        guard !selectedChatIsGroup,
+            let botID = selectedSession?.sessionContext.botId ?? chat.pendingNewChatBotIDs.first
+        else {
             return nil
         }
         return bots.first { $0.id == botID }
@@ -825,27 +829,16 @@ final class AppModel {
         backgroundApprovals.contains { $0.botId == botID }
     }
 
-    func hasSwarmAttention(forSwarmID swarmID: String) -> Bool {
-        swarmAttentions.contains { $0.swarmId == swarmID }
-    }
-
     func bot(for target: AppNotificationTarget?) -> BotRecord? {
         switch target {
         case .session(let sessionID):
             bot(forSessionID: sessionID)
-        case .swarm(_, let messageID):
-            swarmAttentions.first { $0.messageId == messageID }
-                .flatMap { attention in bots.first { $0.id == attention.botId } }
         case .routineRun(let runID):
             routineRuns.first { $0.id == runID }
                 .flatMap { run in bots.first { $0.id == run.botId } }
         case .extensionPackage, nil:
             nil
         }
-    }
-
-    var selectedBotSwarm: SwarmRecord? {
-        selectedSession.flatMap { swarm(containingBot: $0.sessionContext.botId) }
     }
 
     func beginRenamingSession(_ session: SessionRecord) {
@@ -885,15 +878,8 @@ final class AppModel {
             ?? localizedString("new conversation")
     }
 
-    func contributions(in scope: ContributionScope) -> [FrontendContribution] {
-        switch scope {
-        case .global: gatewayContributions
-        case .swarm(let id): swarmContributions[id] ?? []
-        }
-    }
-
-    func navigationWidgets(in scope: ContributionScope) -> [MountedWidget] {
-        contributions(in: scope).flatMap { contribution in
+    var gatewayNavigationWidgets: [MountedWidget] {
+        gatewayContributions.flatMap { contribution in
             contribution.widgets.filter { $0.slot == .navigation }.map {
                 MountedWidget(capability: contribution.capability, widget: $0)
             }

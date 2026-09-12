@@ -78,7 +78,7 @@ pub enum ClientMessage {
     CreateSession {
         request_id: String,
         workspace: PathBuf,
-        bot_id: String,
+        bot_ids: Vec<String>,
     },
     CreateWorkspaceDirectory {
         request_id: String,
@@ -119,36 +119,6 @@ pub enum ClientMessage {
         request_id: String,
         session_ids: Vec<String>,
     },
-    CreateSwarm {
-        request_id: String,
-        title: String,
-        leader_bot_id: String,
-        member_bot_ids: Vec<String>,
-    },
-    AddSwarmMember {
-        request_id: String,
-        swarm_id: String,
-        bot_id: String,
-    },
-    LeaveSwarm {
-        request_id: String,
-        swarm_id: String,
-        bot_id: String,
-    },
-    RenameSwarm {
-        request_id: String,
-        swarm_id: String,
-        title: String,
-    },
-    DisbandSwarm {
-        request_id: String,
-        swarm_id: String,
-    },
-    PostSwarmMessage {
-        request_id: String,
-        swarm_id: String,
-        text: String,
-    },
     Submit {
         session_id: String,
         submission: Submission,
@@ -164,11 +134,9 @@ pub enum ClientMessage {
     },
     GetContributions {
         request_id: String,
-        scope: ContributionScope,
     },
     SubmitContribution {
         request_id: String,
-        scope: ContributionScope,
         operation: Op,
     },
     BeginSessionFileUpload {
@@ -485,7 +453,6 @@ pub enum ServerMessage {
     },
     Contributions {
         request_id: String,
-        scope: ContributionScope,
         contributions: Vec<FrontendContribution>,
     },
     Accepted {
@@ -540,9 +507,7 @@ pub enum ServerMessage {
     BackgroundApprovals {
         approvals: Vec<BackgroundApproval>,
     },
-    SwarmAttentions {
-        attentions: Vec<SwarmAttention>,
-    },
+
     BotSessions {
         request_id: String,
         bot_id: String,
@@ -553,11 +518,7 @@ pub enum ServerMessage {
         request_id: Option<String>,
         bots: Vec<BotRecord>,
     },
-    Swarms {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        request_id: Option<String>,
-        swarms: Vec<SwarmRecord>,
-    },
+
     Clients {
         request_id: String,
         current_client_id: String,

@@ -1,4 +1,4 @@
-//! Gateway-scoped Bot, routine, and Swarm management.
+//! Gateway-scoped Bot and routine management.
 
 mod form;
 mod render;
@@ -58,12 +58,9 @@ fn moved(current: usize, length: usize, delta: isize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::form::MAX_SWARM_TITLE_BYTES;
-    use super::form::{
-        AddMemberForm, BotForm, CreateSwarmForm, Form, FormFlow, RoutineForm, TextForm,
-    };
+    use super::form::{BotForm, Form, FormFlow, RoutineForm};
     use super::runtime::handle_frame;
-    use super::state::{BotsState, Page, available_bot_ids, update_routine_action};
+    use super::state::{BotsState, Page, sessions_for_bot, update_routine_action};
     use super::*;
     use mobius::protocol::SessionFileLimits;
     use mobius_gateway::wire::{
@@ -72,7 +69,6 @@ mod tests {
         VersionedAgentConfig,
     };
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use std::collections::BTreeSet;
 
     fn gateway(bots: Vec<BotRecord>) -> ReadyPayload {
         ReadyPayload {
@@ -81,8 +77,6 @@ mod tests {
             bots,
             sessions: Vec::new(),
             background_approvals: Vec::new(),
-            swarm_attentions: Vec::new(),
-            swarms: Vec::new(),
             providers: Vec::new(),
             provider_instances: Vec::new(),
             bot_defaults: None,
@@ -144,21 +138,6 @@ mod tests {
     }
 
     #[test]
-    fn swarm_picker_offers_only_bots_that_enabled_collaboration() {
-        let independent = bot("independent");
-        let mut peer = bot("peer");
-        peer.config.config.middleware.set_setting(
-            "bots",
-            "collaboration",
-            Some(mobius::protocol::FrontendSettingValue::String(
-                "swarm".into(),
-            )),
-        );
-        let gateway = gateway(vec![independent, peer]);
-        assert_eq!(available_bot_ids(&gateway), ["peer"]);
-    }
-
-    #[test]
     fn back_keeps_nested_bot_pages_inside_the_manager() {
         let mut state = BotsState::new(&gateway(vec![bot("bot-a")]), None, None);
         state.page = Page::Routines("bot-a".into());
@@ -169,6 +148,45 @@ mod tests {
         assert!(matches!(state.back(), Action::None));
         assert!(matches!(state.page, Page::Root));
         assert!(matches!(state.back(), Action::Exit));
+    }
+
+    #[test]
+    fn bot_conversations_include_shared_membership_in_recency_order() {
+        let mut gateway = gateway(vec![bot("bot-a"), bot("bot-b")]);
+        let direct = mobius_gateway::wire::SessionRecord {
+            member_bot_ids: None,
+            session_id: "direct".into(),
+            session_context: mobius::protocol::SessionContext {
+                bot_id: "bot-a".into(),
+                ..Default::default()
+            },
+            parent_session_id: None,
+            parent_sequence: None,
+            sequence: 0,
+            first_user_message: None,
+            execution_stats: Default::default(),
+            title: None,
+            pinned: false,
+            activity: Default::default(),
+            created_at: 1,
+            updated_at: 1,
+        };
+        let mut group = direct.clone();
+        group.session_id = "group".into();
+        group.session_context.bot_id.clear();
+        group.member_bot_ids = Some(vec!["bot-a".into(), "bot-b".into()]);
+        group.updated_at = 2;
+        gateway.sessions = vec![direct, group];
+
+        assert_eq!(
+            sessions_for_bot(&gateway, "bot-a")
+                .iter()
+                .map(|session| session.session_id.as_str())
+                .collect::<Vec<_>>(),
+            ["group", "direct"]
+        );
+        assert_eq!(sessions_for_bot(&gateway, "bot-b")[0].session_id, "group");
+        assert!(sessions_for_bot(&gateway, "unrelated").is_empty());
     }
 
     #[test]
@@ -269,57 +287,13 @@ mod tests {
         let mut form = BotForm::update(&bot);
         form.prompt.as_mut().unwrap().value = format!("{}\nPROMPT END", "long prompt ".repeat(200));
         form.row = 2;
-        state.form = Some(Form::Bot(form));
+        state.form = Some(Form::Bot(Box::new(form)));
         let mut terminal = Terminal::new(TestBackend::new(50, 15)).expect("terminal");
         terminal
             .draw(|frame| super::render::render(frame, &state, &gateway))
             .expect("draw");
         let screen = terminal.backend().to_string();
         assert!(screen.contains("PROMPT END") && screen.contains("Save"));
-    }
-
-    #[test]
-    fn swarm_forms_create_rename_and_add_members() {
-        let mut create = CreateSwarmForm {
-            title: TextForm::new("Pair", MAX_SWARM_TITLE_BYTES),
-            bot_ids: vec!["bot-a".into(), "bot-b".into()],
-            members: BTreeSet::from(["bot-a".into(), "bot-b".into()]),
-            leader_bot_id: Some("bot-a".into()),
-            row: 3,
-            error: None,
-        };
-        assert!(matches!(
-            message(match create.submit() {
-                FormFlow::Send(action) => action,
-                _ => panic!("expected create request"),
-            }),
-            ClientMessage::CreateSwarm { leader_bot_id, member_bot_ids, .. }
-                if leader_bot_id == "bot-a" && member_bot_ids.len() == 2
-        ));
-
-        let mut rename = Form::RenameSwarm {
-            swarm_id: "swarm-a".into(),
-            title: TextForm::new("Renamed", MAX_SWARM_TITLE_BYTES),
-        };
-        assert!(matches!(
-            rename.handle_key(
-                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-                &gateway(Vec::new()),
-            ),
-            FormFlow::Send(Action::Send { message, .. })
-                if matches!(*message, ClientMessage::RenameSwarm { ref title, .. } if title == "Renamed")
-        ));
-
-        let mut add = AddMemberForm {
-            swarm_id: "swarm-a".into(),
-            bot_ids: vec!["bot-c".into()],
-            row: 0,
-        };
-        assert!(matches!(
-            add.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-            FormFlow::Send(Action::Send { message, .. })
-                if matches!(*message, ClientMessage::AddSwarmMember { ref bot_id, .. } if bot_id == "bot-c")
-        ));
     }
 
     #[test]

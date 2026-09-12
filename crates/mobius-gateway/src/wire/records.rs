@@ -9,8 +9,6 @@ pub struct ReadyPayload {
     pub bots: Vec<BotRecord>,
     pub sessions: Vec<SessionRecord>,
     pub background_approvals: Vec<BackgroundApproval>,
-    pub swarm_attentions: Vec<SwarmAttention>,
-    pub swarms: Vec<SwarmRecord>,
     pub providers: Vec<ProviderStatus>,
     pub provider_instances: Vec<ProviderInstance>,
     pub bot_defaults: Option<VersionedAgentConfig>,
@@ -32,59 +30,12 @@ pub struct BackgroundApproval {
     pub request_id: String,
 }
 
-/// One durable Swarm Chat message awaiting an authenticated human response.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SwarmAttention {
-    pub swarm_id: String,
-    pub swarm_title: String,
-    pub message_id: String,
-    pub bot_id: String,
-    pub text: String,
-}
-
-/// One gateway-managed group of durable Bots.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SwarmRecord {
-    pub id: String,
-    pub title: String,
-    pub leader_bot_id: String,
-    pub members: Vec<SwarmMemberRecord>,
-    pub messages: Vec<SwarmMessageRecord>,
-    pub updated_at_ms: i64,
-}
-
-/// Stable identity for one Bot in a Swarm.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SwarmMemberRecord {
-    pub bot_id: String,
-    pub handle: String,
-}
-
-/// One retained post on a swarm's shared message board.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SwarmMessageRecord {
-    pub id: String,
-    pub sequence: u64,
-    pub author_bot_id: String,
-    pub author_handle: String,
-    pub source_session_id: String,
-    pub text: String,
-    pub created_at_ms: i64,
-    pub in_reply_to_message_id: Option<String>,
-    pub reply_depth: u8,
-}
-
-/// Gateway-managed scope selected by a human-facing capability request.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ContributionScope {
-    Global,
-    Swarm { id: String },
-}
-
 /// Frontend-safe state for one opened session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionReadyPayload {
+    pub member_bot_ids: Option<Vec<String>>,
+    pub active_turn_ids: Vec<String>,
+    pub pending_approvals: Vec<mobius::protocol::ExecApprovalRequestEvent>,
     pub latest_sequence: u64,
     pub next_before_sequence: Option<u64>,
     pub workspace: WorkspaceInfo,
@@ -109,6 +60,7 @@ pub struct SessionWidget {
 /// One visible session with gateway-owned catalog presentation metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRecord {
+    pub member_bot_ids: Option<Vec<String>>,
     pub session_id: String,
     pub session_context: mobius::protocol::SessionContext,
     pub parent_session_id: Option<String>,
@@ -614,7 +566,7 @@ pub struct DailyUsage {
 }
 
 /// One durable Bot profile.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BotRecord {
     pub id: String,
     pub handle: String,
@@ -622,39 +574,6 @@ pub struct BotRecord {
     pub description: String,
     pub tint: ProviderTint,
     pub config: VersionedAgentConfig,
-}
-
-// Wire eligibility is derived from the current config, never stored as a second source of truth.
-impl Serialize for BotRecord {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeStruct as _;
-
-        let mut record = serializer.serialize_struct("BotRecord", 7)?;
-        record.serialize_field("id", &self.id)?;
-        record.serialize_field("handle", &self.handle)?;
-        record.serialize_field("name", &self.name)?;
-        record.serialize_field("description", &self.description)?;
-        record.serialize_field("tint", &self.tint)?;
-        record.serialize_field("config", &self.config)?;
-        record.serialize_field("collaboration_enabled", &self.collaboration_enabled())?;
-        record.end()
-    }
-}
-
-impl BotRecord {
-    /// Whether this Bot permits gateway-managed peer collaboration.
-    #[must_use]
-    pub fn collaboration_enabled(&self) -> bool {
-        mobius::middleware::bots::collaboration_enabled(
-            self.config
-                .config
-                .middleware
-                .setting("bots", "collaboration"),
-        )
-    }
 }
 
 /// One Bot-owned routine.

@@ -71,10 +71,6 @@ extension AppModel {
         chat.pendingBotSessionResume = nil
         chat.isLoadingBotSessions = false
         chat.sessionMutationRequestID = nil
-        swarmMutationRequestID = nil
-        swarmApplyState = .idle
-        swarmMessageRequestID = nil
-        completedSwarmMessageRequestID = nil
         botMutationRequestID = nil
         botMutationSuccessMessage = nil
         chat.pendingDeletedSessionIDs = []
@@ -113,7 +109,7 @@ extension AppModel {
             chat.botSessions = []
             chat.botSessionsBotID = nil
             chat.pendingNewChatWorkspace = nil
-            chat.pendingNewChatBotID = nil
+            chat.pendingNewChatBotIDs = []
             showsWorkspaceBrowser = false
             directoryListing = nil
             directoryError = nil
@@ -121,10 +117,8 @@ extension AppModel {
             routineRunPreviewPollingTask = nil
             chat.sessions = []
             backgroundApprovals = []
-            swarmAttentions = []
             chat.chatBotFilterIDs.removeAll()
             bots = []
-            swarms = []
             navigationPath = []
             chat.sessionToReassign = nil
             chat.sessionToRename = nil
@@ -137,7 +131,6 @@ extension AppModel {
             middlewareFeatures = []
             extensions = []
             gatewayContributions = []
-            swarmContributions = [:]
             providerStatuses = []
             providerInstances = []
             botDefaultsSnapshot = nil

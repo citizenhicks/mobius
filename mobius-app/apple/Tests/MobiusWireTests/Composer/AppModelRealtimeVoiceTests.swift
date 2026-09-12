@@ -79,27 +79,20 @@ extension AppModelTests {
             window.rootViewController = nil
             previous?.makeKeyAndVisible()
         }
-        func elements(_ object: NSObject, depth: Int = 0) -> [NSObject] {
-            guard depth < 20 else { return [] }
-            let count = object.accessibilityElementCount()
-            let children =
-                count > 0 && count < 100
-                ? (0..<count).compactMap { object.accessibilityElement(at: $0) as? NSObject } : []
-            return [object]
-                + (children + ((object as? UIView)?.subviews ?? [])).flatMap {
-                    elements($0, depth: depth + 1)
-                }
-        }
+
         func checkActions(voice: Bool, send: Bool, name: String) async throws {
             let updated = await eventually {
-                let labels = elements(host.view).compactMap(\.accessibilityLabel)
+                let labels = testAccessibilityElements(host.view).compactMap(\.accessibilityLabel)
                 return labels.contains("Send") == send
                     && labels.contains("Start voice chat") == voice
             }
             XCTAssertTrue(
-                updated, "\(name): \(elements(host.view).compactMap(\.accessibilityLabel))")
+                updated,
+                "\(name): \(testAccessibilityElements(host.view).compactMap(\.accessibilityLabel))")
             XCTAssertFalse(
-                elements(host.view).contains { $0.accessibilityLabel == "Start dictation" })
+                testAccessibilityElements(host.view).contains {
+                    $0.accessibilityLabel == "Start dictation"
+                })
             try await Task.sleep(for: .milliseconds(350))
             let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
                 window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
@@ -126,12 +119,16 @@ extension AppModelTests {
         model.chat.composerReply = nil
         try await checkActions(voice: true, send: false, name: "New voice chat")
         let voice = try XCTUnwrap(
-            elements(host.view).first { $0.accessibilityLabel == "Start voice chat" })
+            testAccessibilityElements(host.view).first {
+                $0.accessibilityLabel == "Start voice chat"
+            })
         XCTAssertTrue(voice.accessibilityActivate())
         let request = await recorder.firstRequest(after: 0) {
             if case .createSession = $0 { true } else { false }
         }
-        guard case .createSession(let requestID, "/srv/project", "bot-1") = request else {
+        guard case .createSession(let requestID, "/srv/project", let botIDs) = request,
+            botIDs == ["bot-1"]
+        else {
             return XCTFail("Primary voice action should create a voice chat")
         }
         XCTAssertEqual(model.newVoiceChatIntent, .openingSession(requestID))
@@ -280,7 +277,9 @@ extension AppModelTests {
         let request = await recorder.firstRequest(after: 0) {
             if case .createSession = $0 { true } else { false }
         }
-        guard case .createSession(let requestID, "/srv/project", "bot-2") = try XCTUnwrap(request)
+        guard
+            case .createSession(let requestID, "/srv/project", let botIDs) = try XCTUnwrap(request),
+            botIDs == ["bot-2"]
         else {
             return XCTFail("Expected the selected workspace and Bot")
         }

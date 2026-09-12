@@ -141,7 +141,7 @@ impl HostState {
         self.alive.store(false, Ordering::Release);
         self.terminated.store(true, Ordering::Release);
         self.termination.notify_waiters();
-        self.swarm.notify_pending(&bot_id);
+        self.group.notify_pending(&bot_id);
     }
 
     pub(super) async fn handle(&mut self, command: HostCommand) -> bool {
@@ -381,7 +381,7 @@ impl HostState {
                     self.idle_waiters.push(reply);
                 }
             }
-            HostCommand::CapacityChanged => self.swarm.retry_pending(),
+            HostCommand::CapacityChanged => self.group.retry_pending(),
             HostCommand::StopIfIdle { reply } => {
                 if !self.is_idle() {
                     let _ = reply.send(false);
@@ -569,11 +569,6 @@ impl HostState {
     }
 
     async fn bind_bot(&mut self) -> std::result::Result<(), Rejection> {
-        let next = self.swarm_workspace_spec().await?;
-        let workspaces_changed = next != self.spec;
-        if workspaces_changed {
-            self.require_idle_runtime().await?;
-        }
         if !self.is_idle() {
             return Ok(());
         }
@@ -582,45 +577,13 @@ impl HostState {
             .prepared
             .matches_runtime(&self.bots.bot(&self.spec.bot_id).map_err(internal)?)
             || self.running.prepared.epoch != self.provider_epoch.load(Ordering::Acquire);
-        if !workspaces_changed && !configuration_changed {
+        if !configuration_changed {
             return Ok(());
         }
-        if workspaces_changed || self.runtime_is_idle().await? {
-            let prepared = (!configuration_changed).then(|| Arc::clone(&self.running.prepared));
-            self.replace_running(next, prepared).await?;
+        if self.runtime_is_idle().await? {
+            self.replace_running(self.spec.clone(), None).await?;
         }
         Ok(())
-    }
-
-    async fn swarm_workspace_spec(&self) -> std::result::Result<ChatSpec, Rejection> {
-        let mut next = self.spec.clone();
-        if self.spec.catalog_visible {
-            return Ok(next);
-        }
-        let Some(workspaces) = self
-            .swarm
-            .participant_workspaces(&self.spec.bot_id, &self.running.session_id)
-            .await
-            .map_err(internal)?
-        else {
-            return Ok(next);
-        };
-        let tls = self
-            .gateway
-            .lock()
-            .map_err(|_| internal("gateway configuration lock is poisoned"))?
-            .tls
-            .clone();
-        next.attached_folders.clear();
-        for workspace in workspaces.into_iter().filter(|path| path.is_dir()) {
-            if let Some(attached) = next
-                .with_attached_folder(&workspace, self.store.state_dir(), tls.as_ref())
-                .map_err(invalid_workspace)?
-            {
-                next = attached;
-            }
-        }
-        Ok(next)
     }
 
     async fn runtime_is_idle(&self) -> std::result::Result<bool, Rejection> {
@@ -706,12 +669,11 @@ impl HostState {
                 Arc::clone(&self.checkpoints),
                 self.scratchpad.clone(),
                 self.session_files.clone(),
-                Arc::clone(&self.swarm),
+                Arc::clone(&self.group),
                 Arc::clone(&self.discovery_gate),
                 Arc::clone(&self.desktop),
                 session_id,
                 "mobius-gateway",
-                true,
                 prepared,
                 Arc::clone(&self.provider_epoch),
             )
@@ -728,12 +690,11 @@ impl HostState {
                         Arc::clone(&self.checkpoints),
                         self.scratchpad.clone(),
                         self.session_files.clone(),
-                        Arc::clone(&self.swarm),
+                        Arc::clone(&self.group),
                         Arc::clone(&self.discovery_gate),
                         Arc::clone(&self.desktop),
                         self.running.session_id.clone(),
                         "mobius-gateway-rollback",
-                        true,
                         Some(old_prepared),
                         Arc::clone(&self.provider_epoch),
                     )

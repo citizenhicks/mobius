@@ -238,15 +238,18 @@ private struct ChatOptionsMenu: View {
                 }
                 .disabled(
                     model.chat.selectedSessionID == nil || !model.gateway.connectionState.isReady)
-                Button {
-                    model.loadDirectory(
-                        model.workspace?.path ?? (model.selectedGatewayIsMobiusCloud ? "." : "/")
-                    )
-                    showsFolderAttachmentBrowser = true
-                } label: {
-                    MobiusLabel(title: "Attach folder…", glyph: .folderPlus)
+                if !model.selectedChatIsGroup {
+                    Button {
+                        model.loadDirectory(
+                            model.workspace?.path
+                                ?? (model.selectedGatewayIsMobiusCloud ? "." : "/")
+                        )
+                        showsFolderAttachmentBrowser = true
+                    } label: {
+                        MobiusLabel(title: "Attach folder…", glyph: .folderPlus)
+                    }
+                    .disabled(!model.canModifySelectedSession)
                 }
-                .disabled(!model.canModifySelectedSession)
                 if let path = model.workspace?.path {
                     Button {
                         copyToPasteboard(path)
@@ -259,19 +262,21 @@ private struct ChatOptionsMenu: View {
                 }
             }
             Section("Actions") {
-                Button {
-                    guard let bot = model.selectedBot else { return }
-                    model.beginEditingBot(bot)
-                    presentedBotSettings = bot
-                } label: {
-                    MobiusLabel(title: "Bot agent settings", glyph: .slidersHorizontal)
-                }
-                .disabled(model.selectedBot == nil)
-                if let session = model.selectedSession {
-                    Button("Reassign Bot", glyph: .aiScan) {
-                        model.chat.sessionToReassign = session
+                if !model.selectedChatIsGroup {
+                    Button {
+                        guard let bot = model.selectedBot else { return }
+                        model.beginEditingBot(bot)
+                        presentedBotSettings = bot
+                    } label: {
+                        MobiusLabel(title: "Bot agent settings", glyph: .slidersHorizontal)
                     }
-                    .disabled(!model.canReassignSession(session))
+                    .disabled(model.selectedBot == nil)
+                    if let session = model.selectedSession {
+                        Button("Reassign Bot", glyph: .aiScan) {
+                            model.chat.sessionToReassign = session
+                        }
+                        .disabled(!model.canReassignSession(session))
+                    }
                 }
                 ForEach(model.chat.chatMenuWidgets) { widget in
                     Button {
@@ -346,11 +351,15 @@ struct ChatInfoView: View {
                 Text("Chat info")
                     .font(MobiusStyle.titleFont)
                 detail("Workspace", value: model.workspace?.path)
-                if let bot = model.selectedBot {
+                if model.selectedChatIsGroup {
+                    detail(
+                        "Bots",
+                        value: model.selectedChatBots.map { "\($0.name) (@\($0.handle))" }.joined(
+                            separator: "\n"))
+                } else if let bot = model.selectedBot {
                     detail("Bot", value: "\(bot.name) (@\(bot.handle))")
+                    detail("Model", value: model.chatModelLabel)
                 }
-                detail("Swarm", value: model.selectedBotSwarm?.title)
-                detail("Model", value: model.chatModelLabel)
                 detail("Gateway", value: model.gateway.gatewayMachineName)
                 Divider()
                 VStack(alignment: .leading, spacing: MobiusSpace.s) {

@@ -6,6 +6,19 @@ use mobius::backend::session_files::SessionFileDeletion;
 use super::*;
 
 impl GatewayHost {
+    pub(super) fn cleanup_session_files(&self, mut deletion: SessionFileDeletion) {
+        let events = self.events.clone();
+        tokio::spawn(async move {
+            if let Err(error) = deletion.delete().await {
+                let _ = events.send(ServerFrame::new(ServerMessage::Error {
+                    code: "session_cleanup".into(),
+                    message: error.to_string(),
+                    fatal: false,
+                }));
+            }
+        });
+    }
+
     pub(crate) async fn reconcile_pending_bot_deletion(
         &self,
     ) -> std::result::Result<(), Rejection> {
@@ -45,14 +58,13 @@ impl GatewayHost {
         let mut file_deletion =
             prepare_session_tree_deletion(&mut state, &intent.session_ids, true).await?;
         let bot_store = Arc::clone(&state.bots);
-        let swarm_store = Arc::clone(&state.swarm);
-        let scratchpad = state.scratchpad.clone();
+        let group_store = Arc::clone(&state.group);
         drop(state);
 
-        swarm_store
+        group_store
             .remove_bot(&intent.bot_id)
             .await
-            .map_err(invalid_swarm)?;
+            .map_err(invalid_group)?;
         if let Some(deletion) = deletion {
             bot_store.delete_bot(deletion).map_err(invalid_bot)?;
         }
@@ -67,6 +79,7 @@ impl GatewayHost {
         )
         .await?;
         drop(state);
+        self.cleanup_session_files(file_deletion);
         if let Some(warning) = file_warning {
             let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
                 code: "session_cleanup".into(),
@@ -77,11 +90,6 @@ impl GatewayHost {
         bot_store
             .cleanup_bot_deletion_files(&intent)
             .map_err(internal)?;
-        if intent.disbanded_swarm
-            && let Some(swarm_id) = &intent.swarm_id
-        {
-            scratchpad.clear_swarm(swarm_id).await.map_err(internal)?;
-        }
         bot_store
             .clear_bot_deletion(&intent.bot_id)
             .map_err(internal)
@@ -110,30 +118,17 @@ impl GatewayHost {
         }
         let (session_roots, session_ids, mut file_deletion) =
             prepare_bot_session_tree_deletion(&mut state, id).await?;
-        let planned_swarm = state
-            .swarm
-            .planned_bot_removal(id)
-            .await
-            .map_err(invalid_swarm)?;
         let mut deletion = state
             .bots
             .prepare_bot_deletion(id, expected_revision)
             .map_err(invalid_bot)?;
         let bot_store = Arc::clone(&state.bots);
-        let swarm_store = Arc::clone(&state.swarm);
-        let scratchpad = state.scratchpad.clone();
+        let group_store = Arc::clone(&state.group);
         let intent = bot_store
-            .record_bot_deletion(
-                &mut deletion,
-                &session_roots,
-                &session_ids,
-                planned_swarm
-                    .as_ref()
-                    .map(|removal| (removal.swarm_id.as_str(), removal.disbanded)),
-            )
+            .record_bot_deletion(&mut deletion, &session_roots, &session_ids)
             .map_err(invalid_bot)?;
         drop(state);
-        let swarm = swarm_store.remove_bot(id).await.map_err(invalid_swarm)?;
+        group_store.remove_bot(id).await.map_err(invalid_group)?;
 
         bot_store.delete_bot(deletion).map_err(invalid_bot)?;
         bot_store.prepared.lock().await.remove(id);
@@ -154,26 +149,15 @@ impl GatewayHost {
             Err(rejection) => return Err(rejection),
         }
         drop(state);
+        self.cleanup_session_files(file_deletion);
         bot_store
             .cleanup_bot_deletion_files(&intent)
             .map_err(internal)?;
-        if intent.disbanded_swarm
-            && let Some(swarm_id) = &intent.swarm_id
-            && let Err(error) = scratchpad.clear_swarm(swarm_id).await
-        {
-            return Err(internal(error));
-        }
         bot_store.clear_bot_deletion(id).map_err(invalid_bot)?;
         if !session_ids.is_empty()
             && let Err(rejection) = self.broadcast_sessions().await
         {
             cleanup_errors.push(rejection.message);
-        }
-        if swarm.is_some() {
-            match swarm_store.records().await {
-                Ok(swarms) => self.broadcast_swarms(&swarms),
-                Err(error) => cleanup_errors.push(error.to_string()),
-            }
         }
         self.broadcast_bots(&bots);
         for message in cleanup_errors {
@@ -184,6 +168,39 @@ impl GatewayHost {
             }));
         }
         Ok((bots, session_ids))
+    }
+
+    pub(super) async fn reconcile_deleted_group_chats(&self) -> std::result::Result<(), Rejection> {
+        let mut state = self.state.lock().await;
+        let groups = state.group.chats(true).await.map_err(internal)?;
+        if groups.is_empty() {
+            return Ok(());
+        }
+        let ids = groups.into_iter().map(|chat| chat.id).collect::<Vec<_>>();
+        let summaries = gateway_session_summaries(&state.checkpoints)
+            .await
+            .map_err(internal)?;
+        let roots = summaries
+            .iter()
+            .filter(|summary| {
+                crate::groups::participant_chat_id(&summary.session_id)
+                    .is_some_and(|id| ids.iter().any(|chat_id| chat_id == id))
+            })
+            .map(|summary| summary.session_id.clone())
+            .collect::<Vec<_>>();
+        let (_, mut deleted) = session_trees(roots.clone(), &summaries);
+        deleted.extend(ids.iter().cloned());
+        let mut files = prepare_session_tree_deletion(&mut state, &deleted, true).await?;
+        let cleanup = remove_session_trees(&mut state, &roots, &deleted, &mut files, true).await?;
+        if cleanup.is_none() {
+            state.group.finish_deletion(&ids).await.map_err(internal)?;
+        }
+        drop(state);
+        self.cleanup_session_files(files);
+        if let Some(error) = cleanup {
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub(crate) async fn delete_sessions(
@@ -211,10 +228,17 @@ impl GatewayHost {
         let summaries = gateway_session_summaries(&state.checkpoints)
             .await
             .map_err(internal)?;
+        let groups = state.group.chats(false).await.map_err(internal)?;
+        let group_ids = groups
+            .iter()
+            .filter(|chat| selected.contains(&chat.id))
+            .map(|chat| chat.id.clone())
+            .collect::<Vec<_>>();
         if selected.iter().any(|selected| {
-            !summaries
-                .iter()
-                .any(|session| session.catalog_visible && session.session_id == *selected)
+            !group_ids.contains(selected)
+                && !summaries
+                    .iter()
+                    .any(|session| session.catalog_visible && session.session_id == *selected)
         }) {
             return Err(unknown_session());
         }
@@ -228,7 +252,7 @@ impl GatewayHost {
                 )
             })
             .collect::<HashMap<_, _>>();
-        let roots = selected
+        let mut roots = selected
             .iter()
             .filter(|session_id| {
                 let mut ancestor = parents.get(session_id.as_str()).copied().flatten();
@@ -246,9 +270,35 @@ impl GatewayHost {
             })
             .cloned()
             .collect::<Vec<_>>();
-        let (_, deleted) = session_trees(roots.clone(), &summaries);
-        let cleanup = delete_session_trees(&mut state, &roots, &deleted, false).await?;
+        roots.extend(
+            state
+                .group
+                .participant_sessions(&roots)
+                .await
+                .map_err(internal)?
+                .into_iter()
+                .filter(|id| summaries.iter().any(|summary| &summary.session_id == id)),
+        );
+        roots.retain(|id| !group_ids.contains(id));
+        let (_, mut deleted) = session_trees(roots.clone(), &summaries);
+        deleted.extend(group_ids.iter().cloned());
+        let mut file_deletion = prepare_session_tree_deletion(&mut state, &deleted, true).await?;
+        state
+            .group
+            .mark_deleted(&group_ids)
+            .await
+            .map_err(internal)?;
+        let cleanup =
+            remove_session_trees(&mut state, &roots, &deleted, &mut file_deletion, false).await?;
+        if cleanup.is_none() {
+            state
+                .group
+                .finish_deletion(&group_ids)
+                .await
+                .map_err(internal)?;
+        }
         drop(state);
+        self.cleanup_session_files(file_deletion);
         if let Some(rejection) = cleanup {
             let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
                 code: "session_cleanup".into(),
@@ -291,6 +341,19 @@ pub(super) async fn prepare_bot_session_tree_deletion(
     state: &mut GatewayState,
     bot_id: &str,
 ) -> std::result::Result<(Vec<String>, Vec<String>, SessionFileDeletion), Rejection> {
+    if state
+        .starting_sessions
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .values()
+        .any(|starting_bot| starting_bot == bot_id)
+    {
+        return Err(Rejection {
+            code: "agent_busy",
+            message: "wait for this Bot's chat to finish starting before deleting it".into(),
+            fatal: false,
+        });
+    }
     let summaries = gateway_session_summaries(&state.checkpoints)
         .await
         .map_err(internal)?;
@@ -321,22 +384,28 @@ pub(super) fn session_trees(
     (roots, session_ids)
 }
 
-async fn delete_session_trees(
-    state: &mut GatewayState,
-    roots: &[String],
-    session_ids: &[String],
-    allow_pending_swarm: bool,
-) -> std::result::Result<Option<Rejection>, Rejection> {
-    let mut file_deletion =
-        prepare_session_tree_deletion(state, session_ids, allow_pending_swarm).await?;
-    remove_session_trees(state, roots, session_ids, &mut file_deletion, false).await
-}
-
 pub(super) async fn prepare_session_tree_deletion(
     state: &mut GatewayState,
     session_ids: &[String],
-    allow_pending_swarm: bool,
+    allow_pending_group: bool,
 ) -> std::result::Result<SessionFileDeletion, Rejection> {
+    if state
+        .starting_sessions
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .keys()
+        .any(|starting| {
+            session_ids.contains(starting)
+                || crate::groups::participant_chat_id(starting)
+                    .is_some_and(|chat| session_ids.iter().any(|id| id == chat))
+        })
+    {
+        return Err(Rejection {
+            code: "agent_busy",
+            message: "wait for this chat to finish starting before deleting it".into(),
+            fatal: false,
+        });
+    }
     if session_ids.is_empty() {
         return state
             .session_files
@@ -344,16 +413,16 @@ pub(super) async fn prepare_session_tree_deletion(
             .await
             .map_err(internal);
     }
-    if !allow_pending_swarm
+    if !allow_pending_group
         && state
-            .swarm
+            .group
             .has_pending_source_sessions(session_ids)
             .await
             .map_err(internal)?
     {
         return Err(Rejection {
-            code: "session_has_pending_swarm_delivery",
-            message: "wait for this chat's pending Swarm deliveries before deleting it".into(),
+            code: "session_has_pending_group_delivery",
+            message: "wait for this chat's pending Group deliveries before deleting it".into(),
             fatal: false,
         });
     }
@@ -432,7 +501,7 @@ pub(super) async fn remove_session_trees(
         state.sessions.remove(id);
     }
     let mut cleanup_errors = Vec::new();
-    if let Err(error) = file_deletion.delete().await {
+    if let Err(error) = file_deletion.stage().await {
         cleanup_errors.push(error.to_string());
     }
     let catalog_lock = Arc::clone(&state.catalog_lock);

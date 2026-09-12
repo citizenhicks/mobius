@@ -272,10 +272,7 @@ mod tests {
         let features = features(&[]);
 
         assert!(validate(&config).is_ok());
-        assert_eq!(
-            config.setting("bots", "collaboration"),
-            Some(&FrontendSettingValue::String("off".into()))
-        );
+        assert_eq!(config.setting("bots", "collaboration"), None);
         assert_eq!(
             config.entries().collect::<BTreeSet<_>>(),
             BTreeSet::from([

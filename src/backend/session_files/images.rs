@@ -59,6 +59,29 @@ impl SessionFileStore {
             .await
     }
 
+    /// Grants an authenticated chat's exact upload to one trusted Bot execution.
+    pub async fn grant_upload(
+        &self,
+        source: &str,
+        target: &str,
+        file: &SessionFileReference,
+    ) -> Result<SessionFileReference> {
+        self.verify_upload(source, file).await?;
+        self.retain_reference(source, target, file, SessionFileOrigin::Upload)
+            .await
+    }
+
+    /// Publishes an execution's exact artifact in its owning chat without copying bytes.
+    pub async fn share_artifact(
+        &self,
+        source: &str,
+        target: &str,
+        file: &SessionFileReference,
+    ) -> Result<SessionFileReference> {
+        self.retain_reference(source, target, file, SessionFileOrigin::Artifact)
+            .await
+    }
+
     async fn retain_reference(
         &self,
         source: &str,

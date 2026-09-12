@@ -281,6 +281,7 @@ fn editable_action_replaces_its_advertised_input_before_submission() {
 
 fn session(id: &str, state: SessionActivityState) -> SessionRecord {
     SessionRecord {
+        member_bot_ids: None,
         session_id: id.into(),
         session_context: SessionContext::default(),
         parent_session_id: None,
@@ -308,8 +309,6 @@ fn dashboard_state() -> super::state::DashboardState {
             bots: Vec::new(),
             sessions: Vec::new(),
             background_approvals: Vec::new(),
-            swarm_attentions: Vec::new(),
-            swarms: Vec::new(),
             providers: Vec::new(),
             provider_instances: Vec::new(),
             bot_defaults: None,

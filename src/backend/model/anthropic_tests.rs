@@ -137,7 +137,7 @@ fn native_discovery_defers_schemas_and_replays_tool_references() {
     let provider =
         Anthropic::new("test-key", DEFAULT_BASE_URL, "claude-haiku-4-5").expect("provider");
     let direct = [discovery_tool(TOOLS_SEARCH_NAME)];
-    let deferred = [discovery_tool("swarm_post")];
+    let deferred = [discovery_tool("notebook_post")];
     let input = discovery_history();
 
     let body = provider
@@ -161,7 +161,7 @@ fn native_discovery_defers_schemas_and_replays_tool_references() {
         (
             None,
             Some(true),
-            serde_json::json!([{"type": "tool_reference", "tool_name": "swarm_post"}]),
+            serde_json::json!([{"type": "tool_reference", "tool_name": "notebook_post"}]),
             false,
         )
     );
@@ -172,12 +172,12 @@ fn native_discovery_replays_a_standalone_compacted_tool_load() {
     let provider =
         Anthropic::new("test-key", DEFAULT_BASE_URL, "claude-haiku-4-5").expect("provider");
     let direct = [discovery_tool(TOOLS_SEARCH_NAME)];
-    let deferred = [discovery_tool("swarm_post")];
+    let deferred = [discovery_tool("notebook_post")];
     let input = [
         user_message("Continue after compaction."),
         ToolLoad {
             catalog_revision: "catalog-1".into(),
-            tools: vec!["swarm_post".into()],
+            tools: vec!["notebook_post".into()],
         }
         .into_input(),
     ];
@@ -200,7 +200,7 @@ fn native_discovery_replays_a_standalone_compacted_tool_load() {
         ),
         (
             &serde_json::json!(TOOLS_SEARCH_NAME),
-            &serde_json::json!([{"type": "tool_reference", "tool_name": "swarm_post"}]),
+            &serde_json::json!([{"type": "tool_reference", "tool_name": "notebook_post"}]),
         )
     );
 }
@@ -210,7 +210,7 @@ fn native_discovery_ignores_tool_loads_from_an_old_catalog() {
     let provider =
         Anthropic::new("test-key", DEFAULT_BASE_URL, "claude-haiku-4-5").expect("provider");
     let direct = [discovery_tool(TOOLS_SEARCH_NAME)];
-    let deferred = [discovery_tool("swarm_post")];
+    let deferred = [discovery_tool("notebook_post")];
     let mut input = discovery_history();
     input.last_mut().expect("tool load")["catalog_revision"] = "catalog-0".into();
 
@@ -227,7 +227,7 @@ fn native_discovery_ignores_tool_loads_from_an_old_catalog() {
 
     assert_eq!(
         body["messages"][2]["content"][0]["content"],
-        serde_json::json!([{"type":"text", "text":"Found swarm_post"}])
+        serde_json::json!([{"type":"text", "text":"Found notebook_post"}])
     );
 }
 
@@ -236,7 +236,7 @@ fn rebuild_discovery_omits_deferred_schemas_and_internal_markers() {
     let provider =
         Anthropic::new("test-key", DEFAULT_BASE_URL, "claude-sonnet-5").expect("provider");
     let direct = [discovery_tool(TOOLS_SEARCH_NAME)];
-    let deferred = [discovery_tool("swarm_post")];
+    let deferred = [discovery_tool("notebook_post")];
     let input = discovery_history();
 
     let body = provider
@@ -256,7 +256,7 @@ fn rebuild_discovery_omits_deferred_schemas_and_internal_markers() {
             body["messages"][2]["content"][0]["content"][0]["text"].as_str(),
             body.to_string().contains("tool_load"),
         ),
-        (Some(1), Some("Found swarm_post"), false)
+        (Some(1), Some("Found notebook_post"), false)
     );
 }
 
@@ -275,16 +275,16 @@ fn discovery_history() -> Vec<Value> {
             "type": "function_call",
             "call_id": "search-1",
             "name": TOOLS_SEARCH_NAME,
-            "arguments": "{\"query\":\"swarm\"}"
+            "arguments": "{\"query\":\"notebook\"}"
         }),
         serde_json::json!({
             "type": "function_call_output",
             "call_id": "search-1",
-            "output": [{"type": "input_text", "text": "Found swarm_post"}]
+            "output": [{"type": "input_text", "text": "Found notebook_post"}]
         }),
         ToolLoad {
             catalog_revision: "catalog-1".into(),
-            tools: vec!["swarm_post".into()],
+            tools: vec!["notebook_post".into()],
         }
         .into_input(),
     ]

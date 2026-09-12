@@ -252,11 +252,17 @@ impl GatewayHost {
         _sessions_guard: tokio::sync::OwnedRwLockWriteGuard<()>,
     ) -> std::result::Result<ReadyPayload, Rejection> {
         let state = self.state.lock().await;
-        for prepared in state.bots.prepared.lock().await.values() {
+        let cache = state.bots.prepared.lock().await;
+        state
+            .bots
+            .preparation_generation
+            .fetch_add(1, Ordering::Release);
+        for prepared in cache.values() {
             if prepared.bot.config.config.extensions.contains(id) {
                 prepared.invalidate();
             }
         }
+        drop(cache);
         let payload = gateway_ready(&state).await?;
         drop(state);
         let _ = self.events.send(ServerFrame::new(ServerMessage::Ready {

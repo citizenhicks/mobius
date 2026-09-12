@@ -17,6 +17,7 @@ use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 
+use super::MAX_ENTRY_BYTES;
 use super::PreviewContent;
 use super::RenderedTranscript;
 use super::TranscriptEntry;
@@ -234,6 +235,26 @@ fn append_live_tail(
             ])
         }));
         has_content = true;
+    }
+    if let Some(request) = state.approval() {
+        if has_content {
+            lines.push(Line::default());
+        }
+        let mut detail = format!(
+            "Approval required · {} pending\n{}",
+            state.approvals.len(),
+            request.reason
+        );
+        for call in &request.calls {
+            detail.push_str(&format!("\n{} {}", call.name, call.arguments));
+        }
+        push_lines(
+            lines,
+            &bounded_terminal_text(&detail, MAX_ENTRY_BYTES),
+            TranscriptTone::Warning,
+            FrontendBlockFormat::PlainText,
+            width,
+        );
     }
 }
 
@@ -956,7 +977,7 @@ fn separator(spans: &mut Vec<Span<'static>>) {
 
 fn composer_title(state: &TuiState) -> Line<'static> {
     let theme = current();
-    let (status, role) = if state.approval.is_some() {
+    let (status, role) = if state.approval().is_some() {
         ("approval".to_string(), Role::Warning)
     } else if state.disconnected {
         ("disconnected".to_string(), Role::Error)
@@ -983,7 +1004,7 @@ fn composer_title(state: &TuiState) -> Line<'static> {
 
 fn status_line(state: &TuiState) -> Line<'static> {
     let theme = current();
-    if state.approval.is_some() {
+    if state.approval().is_some() {
         return Line::styled(
             "approval · y once · a session · n deny · q abort",
             theme.style(Role::Warning),
@@ -995,7 +1016,7 @@ fn status_line(state: &TuiState) -> Line<'static> {
             theme.style(Role::Warning),
         );
     }
-    if state.is_working() {
+    if state.is_working() && state.composer_target_turn().is_some() {
         return Line::styled(
             format!(
                 "enter {} · alt+enter {}",
@@ -1064,7 +1085,14 @@ fn render_picker_menu(frame: &mut Frame<'_>, area: Rect, picker: &super::PickerS
             };
             MenuItem {
                 value: String::new(),
-                label: terminal_text(&option.label),
+                label: match &option.action {
+                    super::PickerAction::CreateSession { checked, .. } => format!(
+                        "{} {}",
+                        if *checked { "[x]" } else { "[ ]" },
+                        terminal_text(&option.label)
+                    ),
+                    _ => terminal_text(&option.label),
+                },
                 description: terminal_text(&description),
             }
         })
@@ -1079,13 +1107,20 @@ fn render_picker_popup(frame: &mut Frame<'_>, picker: &super::PickerState) {
     }
     let theme = current();
     frame.render_widget(Clear, area);
-    let block = Block::bordered()
-        .style(theme.style(Role::Canvas))
-        .border_style(theme.style(Role::Info))
-        .title(Line::styled(
-            " ↑↓ select · Enter open · Esc close ",
-            theme.style(Role::Accent).add_modifier(Modifier::BOLD),
-        ));
+    let block =
+        Block::bordered()
+            .style(theme.style(Role::Canvas))
+            .border_style(theme.style(Role::Info))
+            .title(Line::styled(
+                if picker.options.iter().any(|option| {
+                    matches!(option.action, super::PickerAction::CreateSession { .. })
+                }) {
+                    " ↑↓ select · Space toggle · Enter start chat · Esc close "
+                } else {
+                    " ↑↓ select · Enter open · Esc close "
+                },
+                theme.style(Role::Accent).add_modifier(Modifier::BOLD),
+            ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     render_picker_menu(frame, inner, picker);

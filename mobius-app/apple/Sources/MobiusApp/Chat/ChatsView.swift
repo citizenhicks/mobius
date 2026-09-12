@@ -631,9 +631,17 @@ struct SessionCatalogRow: View {
             } label: {
                 HStack(spacing: MobiusSpace.s) {
                     VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
-                        MobiusTitleText(verbatim: model.displayedTitle(for: session))
-                            .lineLimit(1)
-                        if model.bot(for: session) != nil { ownershipLine }
+                        HStack(spacing: MobiusSpace.xs) {
+                            if session.isGroup {
+                                MobiusIcon(
+                                    .userGroup02, size: MobiusStyle.glyphInline, gutter: false
+                                )
+                                .accessibilityLabel("Group chat")
+                            }
+                            MobiusTitleText(verbatim: model.displayedTitle(for: session))
+                                .lineLimit(1)
+                        }
+                        if session.isGroup || model.bot(for: session) != nil { ownershipLine }
                         if let supportingText, !supportingText.isEmpty {
                             Text(verbatim: supportingText)
                                 .font(MobiusStyle.captionFont)
@@ -739,12 +747,7 @@ struct SessionCatalogRow: View {
     }
 
     private var ownershipLine: some View {
-        let bot = model.bot(for: session)
-        let swarm = bot.flatMap { model.swarm(containingBot: $0.id) }
-        return BotOwnershipLine(
-            identity: bot.map { "@\($0.handle)" } ?? "",
-            swarmName: swarm?.title
-        )
+        BotOwnershipLine(identity: ownershipDescription)
     }
 
     private var supportingText: String? {
@@ -755,12 +758,8 @@ struct SessionCatalogRow: View {
     }
 
     private var ownershipDescription: String {
-        guard let bot = model.bot(for: session) else { return "" }
-        let handle = "@\(bot.handle)"
-        guard let swarm = model.swarm(containingBot: bot.id) else {
-            return handle
-        }
-        return "\(handle), swarm \(swarm.title)"
+        model.bots.filter { session.botIds.contains($0.id) }
+            .map { "@\($0.handle)" }.joined(separator: ", ")
     }
 
     private func accessibilityValue(isUnread: Bool, selection: Bool?) -> Text {

@@ -16,9 +16,7 @@ use mobius::backend::sandbox::{ApprovalPolicy, Sandbox, SandboxBackend};
 use mobius::backend::session_files::SessionFileStore;
 use mobius::middleware::artifacts::Artifacts;
 use mobius::middleware::attachments::Attachments;
-use mobius::middleware::bots::{
-    Bots, BotsBackend, collaboration_enabled, routine_creation_enabled,
-};
+use mobius::middleware::bots::{Bots, BotsBackend, routine_creation_enabled};
 use mobius::middleware::compaction::{Compaction, CompactionMode};
 use mobius::middleware::context_offloading::ContextOffloading;
 use mobius::middleware::extensions::{Extensions, MANIFEST as EXTENSIONS_MANIFEST};
@@ -181,10 +179,9 @@ pub(crate) async fn assemble(
     session_files: SessionFileStore,
     discovery_gate: Arc<tokio::sync::Mutex<()>>,
     desktop: Arc<crate::computer_runtime::desktop::DesktopControl>,
-    swarm: Arc<dyn BotsBackend>,
+    group: Arc<dyn BotsBackend>,
     session_id: Option<String>,
     origin_label: &str,
-    override_saved_model_route: bool,
     prepared: Arc<PreparedBot>,
 ) -> Result<BuiltAgent> {
     #[cfg(test)]
@@ -214,7 +211,6 @@ pub(crate) async fn assemble(
         .as_ref()
         .map(|tls| tls.private_key.clone());
     let resources = Arc::clone(&prepared);
-    let catalog_visible = chat.catalog_visible;
     let gateway_for_middleware = Arc::clone(&gateway);
     let (
         gateway_sandbox,
@@ -276,11 +272,10 @@ pub(crate) async fn assemble(
             &settings,
             &workspace_path,
             &bot_id,
-            catalog_visible,
             gateway_for_middleware,
             scratchpad,
             session_files,
-            swarm,
+            group,
             backend,
             instructions,
             resolved_extensions,
@@ -316,6 +311,7 @@ pub(crate) async fn assemble(
     .context_window(context_window)
     .catalog_visible(chat.catalog_visible)
     .initial_replay_batches(0)
+    .override_saved_model_route()
     .max_model_steps(max_model_steps)
     .metadata(metadata)
     .usage_observer(move |route, usage| {
@@ -334,9 +330,6 @@ pub(crate) async fn assemble(
     });
     if let Some(session_id) = session_id {
         agent_config = agent_config.session_id(session_id);
-    }
-    if override_saved_model_route {
-        agent_config = agent_config.override_saved_model_route();
     }
     if let Some(template) = &template {
         template
@@ -645,11 +638,10 @@ fn build_middleware(
     settings: &MiddlewareConfig,
     workspace: &std::path::Path,
     bot_id: &str,
-    catalog_visible: bool,
     gateway: Arc<Mutex<GatewayConfig>>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
-    swarm: Arc<dyn BotsBackend>,
+    group: Arc<dyn BotsBackend>,
     backend: Arc<dyn SandboxBackend>,
     mut instructions: Option<Instructions>,
     resolved_extensions: &ResolvedExtensions,
@@ -677,8 +669,7 @@ fn build_middleware(
                     .ok_or_else(|| Error::Config("instructions were not discovered".into()))?,
             ),
             BuiltinMiddleware::Scratchpad => Arc::new(
-                Scratchpad::new(scratchpad.clone(), Arc::clone(&swarm), bot_id.to_owned())
-                    .agent_enabled(settings.enabled("scratchpad")),
+                Scratchpad::new(scratchpad.clone()).agent_enabled(settings.enabled("scratchpad")),
             ),
             BuiltinMiddleware::Extensions => Arc::new(
                 extensions
@@ -776,17 +767,13 @@ fn build_middleware(
                     "sessions",
                     "page_size",
                 )?)?
-                .session_files(session_files.clone()),
+                .session_files(session_files.clone())
+                .chat_history(Arc::clone(&group)),
             ),
             BuiltinMiddleware::Bots => {
-                let collaboration =
-                    collaboration_enabled(settings.setting("bots", "collaboration"));
-                let bots = Bots::new(Arc::clone(&swarm), bot_id.to_owned())
-                    .with_collaboration(collaboration);
+                let bots = Bots::new(Arc::clone(&group), bot_id.to_owned());
                 Arc::new(
-                    if catalog_visible
-                        && routine_creation_enabled(settings.setting("bots", "routine_creation"))
-                    {
+                    if routine_creation_enabled(settings.setting("bots", "routine_creation")) {
                         bots.with_routine_creation(workspace)
                     } else {
                         bots

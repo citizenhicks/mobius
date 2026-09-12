@@ -15198,22 +15198,6 @@
         }
       }
     },
-    "Alerts you on this device when a Cloud chat needs approval or finishes, or a Swarm needs attention." : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Vous avertit sur cet appareil lorsqu’une discussion Cloud nécessite une approbation ou se termine, ou lorsqu’un essaim nécessite votre attention."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Benachrichtigt Sie auf diesem Gerät, wenn ein Cloud-Chat eine Genehmigung benötigt oder abgeschlossen ist oder ein Schwarm Ihre Aufmerksamkeit erfordert."
-          }
-        }
-      }
-    },
     "Apple notification registration returned an invalid device token." : {
       "localizations" : {
         "fr" : {
@@ -15450,22 +15434,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Hinzufügen"
-          }
-        }
-      }
-    },
-    "Add Bot to Swarm" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ajouter le Bot à l’essaim"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Bot zum Schwarm hinzufügen"
           }
         }
       }
@@ -16078,70 +16046,6 @@
         }
       }
     },
-    "Disband Swarm" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dissoudre l’essaim"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Schwarm auflösen"
-          }
-        }
-      }
-    },
-    "Disband this swarm?" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dissoudre cet essaim ?"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Diesen Schwarm auflösen?"
-          }
-        }
-      }
-    },
-    "Durable agents, their routines, and the swarms they form." : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Des agents durables, leurs routines et les essaims qu’ils forment."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dauerhafte Agenten, ihre Routinen und die Schwärme, die sie bilden."
-          }
-        }
-      }
-    },
-    "Each Bot can belong to one swarm." : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Chaque Bot ne peut appartenir qu’à un seul essaim."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Jeder Bot kann nur einem Schwarm angehören."
-          }
-        }
-      }
-    },
     "Edit Bot" : {
       "localizations" : {
         "fr" : {
@@ -16318,22 +16222,6 @@
         }
       }
     },
-    "Message the Swarm" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Envoyer un message à l’essaim"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nachricht an den Schwarm"
-          }
-        }
-      }
-    },
     "Native discovery keeps the cached context. Rebuild mode supports the same tools but starts a new cache prefix when the tool set changes." : {
       "localizations" : {
         "fr" : {
@@ -16378,22 +16266,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Neuer Bot"
-          }
-        }
-      }
-    },
-    "New Swarm" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nouvel essaim"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Neuer Schwarm"
           }
         }
       }
@@ -16506,22 +16378,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Noch keine Routinen."
-          }
-        }
-      }
-    },
-    "No swarms yet." : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aucun essaim pour le moment."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Noch keine Schwärme."
           }
         }
       }
@@ -16670,22 +16526,6 @@
         }
       }
     },
-    "Opens the shared Swarm Chat" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ouvre la conversation partagée de l’essaim"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Öffnet den gemeinsamen Schwarm-Chat"
-          }
-        }
-      }
-    },
     "Opens the source in your browser" : {
       "localizations" : {
         "fr" : {
@@ -16730,22 +16570,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Chats organisieren und filtern"
-          }
-        }
-      }
-    },
-    "Posts to Swarm Chat" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Publie dans la conversation de l’essaim"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sendet an den Schwarm-Chat"
           }
         }
       }
@@ -16842,38 +16666,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Bot umbenennen"
-          }
-        }
-      }
-    },
-    "Rename Swarm" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Renommer l’essaim"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Schwarm umbenennen"
-          }
-        }
-      }
-    },
-    "Rename swarm" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Renommer l’essaim"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Schwarm umbenennen"
           }
         }
       }
@@ -17166,38 +16958,6 @@
         }
       }
     },
-    "Shows private conversations created by routines and Swarm work" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Affiche les conversations privées créées par les routines et le travail de l’essaim"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zeigt private Gespräche aus Routinen und Schwarmarbeit"
-          }
-        }
-      }
-    },
-    "Shows swarm roster and Swarm Chat" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Affiche les membres et la conversation de l’essaim"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zeigt Schwarmmitglieder und Schwarm-Chat"
-          }
-        }
-      }
-    },
     "Sources" : {
       "localizations" : {
         "fr" : {
@@ -17226,150 +16986,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Startet eine neue Runde"
-          }
-        }
-      }
-    },
-    "Swarm" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Essaim"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Schwarm"
-          }
-        }
-      }
-    },
-    "Swarm Chat" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Conversation de l’essaim"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Schwarm-Chat"
-          }
-        }
-      }
-    },
-    "Swarm Chat needs attention" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "La conversation de l’essaim nécessite votre attention"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Schwarm-Chat erfordert Aufmerksamkeit"
-          }
-        }
-      }
-    },
-    "Swarm message" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Message de l’essaim"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Schwarmnachricht"
-          }
-        }
-      }
-    },
-    "Swarm name" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nom de l’essaim"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Schwarmname"
-          }
-        }
-      }
-    },
-    "Swarm options" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Options de l’essaim"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Schwarmoptionen"
-          }
-        }
-      }
-    },
-    "Swarm unavailable" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Essaim indisponible"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Schwarm nicht verfügbar"
-          }
-        }
-      }
-    },
-    "Swarms" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Essaims"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Schwärme"
-          }
-        }
-      }
-    },
-    "That Bot already belongs to a swarm." : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ce Bot appartient déjà à un essaim."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dieser Bot gehört bereits einem Schwarm an."
           }
         }
       }
@@ -17486,22 +17102,6 @@
         }
       }
     },
-    "The gateway returned invalid Swarm attention state." : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "La passerelle a renvoyé un état d’attention de l’essaim non valide."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Das Gateway hat einen ungültigen Aufmerksamkeitsstatus des Schwarms zurückgegeben."
-          }
-        }
-      }
-    },
     "The gateway returned invalid background approval state." : {
       "localizations" : {
         "fr" : {
@@ -17514,22 +17114,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Das Gateway hat einen ungültigen Genehmigungsstatus für Hintergrundarbeit zurückgegeben."
-          }
-        }
-      }
-    },
-    "The gateway returned invalid swarm state." : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "La passerelle a renvoyé un état d’essaim non valide."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Das Gateway hat einen ungültigen Schwarmstatus zurückgegeben."
           }
         }
       }
@@ -17598,54 +17182,6 @@
         }
       }
     },
-    "This note becomes durable context for every Bot in the Swarm." : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Cette note devient un contexte durable pour chaque Bot de l’essaim."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Diese Notiz wird zum dauerhaften Kontext für jeden Bot im Schwarm."
-          }
-        }
-      }
-    },
-    "This permanently deletes every conversation, routine, run history, and swarm membership owned by @%@. If this Bot leads a swarm, its Swarm Chat and collective scratchpad are also deleted. Active work must finish first." : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Cette action supprime définitivement chaque conversation, routine, historique d’exécution et appartenance à un essaim de @%@. Si ce Bot dirige un essaim, la conversation de l’essaim et le bloc-notes collectif sont également supprimés. Le travail en cours doit d’abord se terminer."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dadurch werden alle Chats, Routinen, Ausführungsverläufe und Schwarmmitgliedschaften von @%@ dauerhaft gelöscht. Leitet dieser Bot einen Schwarm, werden auch dessen Schwarm-Chat und gemeinsamer Notizbereich gelöscht. Aktive Arbeit muss zuerst beendet werden."
-          }
-        }
-      }
-    },
-    "This permanently deletes the shared Swarm Chat and collective scratchpad." : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Cette action supprime définitivement la conversation partagée de l’essaim et le bloc-notes collectif."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dadurch werden der gemeinsame Schwarm-Chat und der gemeinsame Notizbereich dauerhaft gelöscht."
-          }
-        }
-      }
-    },
     "This removes cached chats, chat lists, and image thumbnails from this device. Gateways, credentials, Cloud sign-in, settings, and drafts are kept." : {
       "localizations" : {
         "fr" : {
@@ -17706,38 +17242,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dadurch werden der Ausführungsverlauf und das zugehörige Chat-Transkript gelöscht."
-          }
-        }
-      }
-    },
-    "This swarm is no longer available on the gateway." : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Cet essaim n’est plus disponible sur la passerelle."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dieser Schwarm ist auf dem Gateway nicht mehr verfügbar."
-          }
-        }
-      }
-    },
-    "Those Bots can no longer form a swarm." : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ces Bots ne peuvent plus former un essaim."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Diese Bots können keinen Schwarm mehr bilden."
           }
         }
       }
@@ -17866,22 +17370,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%1$lld Bots · geleitet von %2$@"
-          }
-        }
-      }
-    },
-    "%@, swarm %@" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@, essaim %2$@"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@, Schwarm %2$@"
           }
         }
       }

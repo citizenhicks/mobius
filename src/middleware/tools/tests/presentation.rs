@@ -181,7 +181,7 @@ fn tool_load_uses_the_standard_tool_presentation() {
             turn_id: "turn".into(),
             load_id: "step".into(),
             catalog_revision: "catalog".into(),
-            tools: vec!["swarm_post".into(), "swarm_read".into()],
+            tools: vec!["notebook_post".into(), "notebook_read".into()],
         }),
         "session",
     )
@@ -201,7 +201,7 @@ fn tool_load_uses_the_standard_tool_presentation() {
             FrontendBlockState::Complete,
             FrontendBlockRole::Tool,
             "Loaded tools",
-            "swarm_post\nswarm_read",
+            "notebook_post\nnotebook_read",
             FrontendTone::Success,
         )
     );

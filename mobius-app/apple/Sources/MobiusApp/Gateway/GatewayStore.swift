@@ -157,18 +157,16 @@ struct CachedTranscript: Codable, Sendable {
 }
 
 struct CachedChatCatalog: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 4
+    static let currentSchemaVersion = 5
 
     let schemaVersion: Int
     let bots: [BotRecord]
     let sessions: [SessionRecord]
-    let swarms: [SwarmRecord]
     let lastSessionID: String?
 
     init(
         bots: [BotRecord],
         sessions: [SessionRecord],
-        swarms: [SwarmRecord],
         lastSessionID: String?
     ) {
         schemaVersion = Self.currentSchemaVersion
@@ -177,6 +175,7 @@ struct CachedChatCatalog: Codable, Equatable, Sendable {
             SessionRecord(
                 sessionId: session.sessionId,
                 sessionContext: session.sessionContext,
+                memberBotIds: session.memberBotIds,
                 parentSessionId: session.parentSessionId,
                 parentSequence: session.parentSequence,
                 sequence: session.sequence,
@@ -194,16 +193,6 @@ struct CachedChatCatalog: Codable, Equatable, Sendable {
                 ),
                 createdAt: session.createdAt,
                 updatedAt: session.updatedAt
-            )
-        }
-        self.swarms = swarms.map { swarm in
-            SwarmRecord(
-                id: swarm.id,
-                title: swarm.title,
-                leaderBotId: swarm.leaderBotId,
-                members: swarm.members,
-                messages: [],
-                updatedAtMs: swarm.updatedAtMs
             )
         }
         self.lastSessionID = lastSessionID.flatMap { sessionID in
@@ -228,25 +217,13 @@ struct CachedChatCatalog: Codable, Equatable, Sendable {
             && sessions.count <= 100
             && sessionIDs.count == sessions.count
             && !sessionIDs.contains("")
-            && sessions.allSatisfy { botIDs.contains($0.sessionContext.botId) }
-            && swarmsAreValid(botIDs: botIDs)
+            && sessions.allSatisfy { session in
+                Set(session.botIds).count == session.botIds.count
+                    && session.botIds.allSatisfy(botIDs.contains)
+            }
             && lastSessionID.map(sessionIDs.contains) ?? true
     }
 
-    private func swarmsAreValid(botIDs: Set<String>) -> Bool {
-        var swarmBotIDs = Set<String>()
-        return swarms.count <= 100
-            && Set(swarms.map(\.id)).count == swarms.count
-            && swarms.allSatisfy { swarm in
-                !swarm.id.isEmpty
-                    && swarm.messages.isEmpty
-                    && Set(swarm.members.map(\.botId)).count == swarm.members.count
-                    && swarm.members.contains { $0.botId == swarm.leaderBotId }
-                    && swarm.members.allSatisfy {
-                        botIDs.contains($0.botId) && swarmBotIDs.insert($0.botId).inserted
-                    }
-            }
-    }
 }
 
 struct ComposerEditRecovery: Codable, Equatable, Sendable {

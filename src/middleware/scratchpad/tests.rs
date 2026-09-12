@@ -4,97 +4,8 @@ use crate::middleware::tools::{ApprovalRequirement, Tool, ToolContext};
 use crate::middleware::{ActiveCommandContext, FrontendEventSink, MessageQueue, SubmissionResult};
 use crate::protocol::{FrontendSlot, FrontendWidgetContent, Op};
 
-#[derive(Default)]
-struct TestBotsBackend {
-    scope: std::sync::Mutex<Option<String>>,
-    scope_barriers:
-        std::sync::Mutex<Option<(Arc<tokio::sync::Barrier>, Arc<tokio::sync::Barrier>)>>,
-}
-
-impl TestBotsBackend {
-    fn set_scope(&self, scope: Option<&str>) {
-        *self.scope.lock().expect("swarm scope") = scope.map(str::to_owned);
-    }
-
-    fn block_scope_resolution(
-        &self,
-        entered: Arc<tokio::sync::Barrier>,
-        release: Arc<tokio::sync::Barrier>,
-    ) {
-        *self.scope_barriers.lock().expect("scope barriers") = Some((entered, release));
-    }
-}
-
-impl BotsBackend for TestBotsBackend {
-    fn active<'a>(&'a self, _bot_id: &'a str) -> BoxFuture<'a, Result<bool>> {
-        let active = self.scope.lock().expect("swarm scope").is_some();
-        Box::pin(async move { Ok(active) })
-    }
-
-    fn scratchpad_scope<'a>(&'a self, _bot_id: &'a str) -> BoxFuture<'a, Result<Option<String>>> {
-        let barriers = self.scope_barriers.lock().expect("scope barriers").clone();
-        Box::pin(async move {
-            if let Some((entered, release)) = barriers {
-                entered.wait().await;
-                release.wait().await;
-            }
-            Ok(self.scope.lock().expect("swarm scope").clone())
-        })
-    }
-
-    fn create_routine<'a>(
-        &'a self,
-        _bot_id: &'a str,
-        _bot_handle: Option<String>,
-        _workspace: &'a std::path::Path,
-        _instructions: String,
-        _schedule: serde_json::Value,
-        _ends_at: Option<i64>,
-    ) -> BoxFuture<'a, Result<String>> {
-        Box::pin(async { unreachable!() })
-    }
-
-    fn roster<'a>(&'a self, _bot_id: &'a str) -> BoxFuture<'a, Result<String>> {
-        Box::pin(async { unreachable!() })
-    }
-
-    fn read<'a>(&'a self, _bot_id: &'a str) -> BoxFuture<'a, Result<String>> {
-        Box::pin(async { unreachable!() })
-    }
-
-    fn swarm_chat_context<'a>(
-        &'a self,
-        _bot_id: &'a str,
-        _session_id: &'a str,
-    ) -> BoxFuture<'a, Result<Option<String>>> {
-        Box::pin(async { Ok(None) })
-    }
-
-    fn can_reply<'a>(
-        &'a self,
-        _bot_id: &'a str,
-        _message_id: &'a str,
-    ) -> BoxFuture<'a, Result<bool>> {
-        Box::pin(async { unreachable!() })
-    }
-
-    fn post<'a>(
-        &'a self,
-        _bot_id: &'a str,
-        _source_session_id: &'a str,
-        _text: String,
-        _in_reply_to_message_id: Option<String>,
-    ) -> BoxFuture<'a, Result<String>> {
-        Box::pin(async { unreachable!() })
-    }
-}
-
 fn scratchpad(store: &ScratchpadStore) -> Scratchpad {
-    Scratchpad::new(
-        store.clone(),
-        Arc::new(TestBotsBackend::default()),
-        "test-bot",
-    )
+    Scratchpad::new(store.clone())
 }
 
 fn session_context() -> crate::protocol::SessionContext {
@@ -311,83 +222,64 @@ fn tool_context() -> ToolContext {
     )
 }
 
-fn write_tool(store: &ScratchpadStore, backend: Arc<TestBotsBackend>) -> WriteScratchpad {
+fn write_tool(store: &ScratchpadStore) -> WriteScratchpad {
     WriteScratchpad {
         store: store.clone(),
-        swarm: SwarmScope {
-            backend,
-            bot_id: "test-bot".into(),
-        },
         frontend: frontend_sink(),
     }
 }
 
 #[tokio::test]
-async fn shared_management_adds_edits_and_forgets_only_the_selected_scope() {
+async fn shared_management_adds_edits_and_forgets_global_notes() {
     let (_temporary, store) = store().await;
-    let swarm_id = Uuid::new_v4().to_string();
-    for (scope, owner) in [
-        (Scope::Global, None),
-        (Scope::Swarm, Some(swarm_id.as_str())),
-    ] {
-        let contribution = match scope {
-            Scope::Global => store.global_contribution().await,
-            Scope::Swarm => store.swarm_contribution(&swarm_id).await,
-        }
+    let contribution = store
+        .global_contribution()
+        .await
         .expect("management surface");
-        let Some(FrontendWidgetContent::ActionList { actions, .. }) =
-            &contribution.widgets[0].content
-        else {
-            panic!("semantic shared management");
-        };
-        assert_eq!(actions.len(), 1);
-        let mut add = actions[0].op.clone();
-        let Op::CapabilityCommand { input, .. } = &mut add else {
-            panic!("add command")
-        };
-        *input = Some("shared fact".into());
-        store
-            .management_command(owner, &add)
-            .await
-            .expect("add shared fact");
-        let snapshot = store.snapshot(owner).await.expect("snapshot");
-        let entry = match scope {
-            Scope::Global => &snapshot.global[0],
-            Scope::Swarm => &snapshot.swarm.as_ref().expect("swarm")[0],
-        };
-        assert_eq!(entry.basis, Basis::UserConfirmed);
-        let item = action_list_item(scope, entry);
-        assert_eq!(item.actions.len(), 2);
-        let mut edit = item.actions[0].op.clone();
-        let Op::CapabilityCommand { input, .. } = &mut edit else {
-            panic!("edit command")
-        };
-        *input = Some("revised fact".into());
-        store.management_command(owner, &edit).await.expect("edit");
-        let other_scope = match scope {
-            Scope::Global => Some(swarm_id.as_str()),
-            Scope::Swarm => None,
-        };
-        assert!(store.management_command(other_scope, &edit).await.is_err());
-        store
-            .management_command(owner, &item.actions[1].op)
-            .await
-            .expect("forget");
-    }
-    let snapshot = store.snapshot(Some(&swarm_id)).await.expect("snapshot");
-    assert!(snapshot.global.is_empty());
-    assert!(snapshot.swarm.expect("swarm").is_empty());
+    let Some(FrontendWidgetContent::ActionList { actions, .. }) = &contribution.widgets[0].content
+    else {
+        panic!("semantic shared management");
+    };
+    assert_eq!(actions.len(), 1);
+    let mut add = actions[0].op.clone();
+    let Op::CapabilityCommand { input, .. } = &mut add else {
+        panic!("add command")
+    };
+    *input = Some("shared fact".into());
+    store
+        .management_command(&add)
+        .await
+        .expect("add shared fact");
+    let snapshot = store.snapshot().await.expect("snapshot");
+    let entry = &snapshot.global[0];
+    assert_eq!(entry.basis, Basis::UserConfirmed);
+    let item = action_list_item(entry);
+    assert_eq!(item.actions.len(), 2);
+    let mut edit = item.actions[0].op.clone();
+    let Op::CapabilityCommand { input, .. } = &mut edit else {
+        panic!("edit command")
+    };
+    *input = Some("revised fact".into());
+    store.management_command(&edit).await.expect("edit");
+    assert_eq!(
+        store.snapshot().await.expect("edited").global[0].note,
+        "revised fact"
+    );
+    store
+        .management_command(&item.actions[1].op)
+        .await
+        .expect("forget");
+    assert!(store.snapshot().await.expect("snapshot").global.is_empty());
 }
 
 #[tokio::test]
 async fn agent_writes_shared_notes_with_approval_without_session_staging() {
     let (temporary, store) = store().await;
-    let backend = Arc::new(TestBotsBackend::default());
-    let tool = write_tool(&store, backend.clone());
+    let tool = write_tool(&store);
     assert_eq!(tool.approval(), ApprovalRequirement::Always);
     assert_eq!(
         tool.definition().parameters["required"],
-        serde_json::json!(["scope", "note"])
+        serde_json::json!(["note"])
     );
     assert!(
         tool.call(
@@ -397,27 +289,16 @@ async fn agent_writes_shared_notes_with_approval_without_session_staging() {
         .await
         .is_err()
     );
-    assert!(
-        tool.call(
-            tool_context(),
-            serde_json::json!({"scope":"swarm", "note":"no swarm"})
-        )
-        .await
-        .is_err()
-    );
     tool.call(
         tool_context(),
-        serde_json::json!({"scope":"global", "note":"  shared fact  "}),
+        serde_json::json!({"note":"  shared fact  "}),
     )
     .await
     .expect("shared write");
-    tool.call(
-        tool_context(),
-        serde_json::json!({"scope":"global", "note":"shared fact"}),
-    )
-    .await
-    .expect("deduplicated write");
-    let snapshot = store.snapshot(None).await.expect("snapshot");
+    tool.call(tool_context(), serde_json::json!({"note":"shared fact"}))
+        .await
+        .expect("deduplicated write");
+    let snapshot = store.snapshot().await.expect("snapshot");
     assert_eq!(snapshot.global.len(), 1);
     assert_eq!(snapshot.global[0].basis, Basis::AgentObservation);
     let id = snapshot.global[0].id.clone();
@@ -428,27 +309,9 @@ async fn agent_writes_shared_notes_with_approval_without_session_staging() {
     let reopened = ScratchpadStore::new(Arc::new(
         SqliteCheckpoint::new(temporary.path().join("checkpoints.sqlite3")).expect("reopen"),
     ));
-    let saved = reopened.snapshot(None).await.expect("durable state");
+    let saved = reopened.snapshot().await.expect("durable state");
     assert_eq!(saved.global[0].id, id);
     assert_eq!(saved.global[0].basis, Basis::UserConfirmed);
-    let swarm_id = Uuid::new_v4().to_string();
-    backend.set_scope(Some(&swarm_id));
-    tool.call(
-        tool_context(),
-        serde_json::json!({"scope":"swarm", "note":"group fact"}),
-    )
-    .await
-    .expect("Swarm write");
-    let other = Uuid::new_v4().to_string();
-    assert!(
-        store
-            .snapshot(Some(&other))
-            .await
-            .expect("other swarm")
-            .swarm
-            .expect("scope")
-            .is_empty()
-    );
 }
 
 #[tokio::test]
@@ -461,7 +324,7 @@ async fn shared_scope_budget_rejects_oversized_writes_and_edits_without_changing
             .expect("bounded note");
     }
     store.add_global("short").await.expect("small note");
-    let before = store.snapshot(None).await.expect("before");
+    let before = store.snapshot().await.expect("before");
     assert!(store.add_global(&"y".repeat(500)).await.is_err());
     assert!(
         store
@@ -469,8 +332,7 @@ async fn shared_scope_budget_rejects_oversized_writes_and_edits_without_changing
             .await
             .is_err()
     );
-    assert_eq!(store.snapshot(None).await.expect("unchanged"), before);
-    assert!(store.add_swarm("not-a-uuid", "no").await.is_err());
+    assert_eq!(store.snapshot().await.expect("unchanged"), before);
     assert!(store.add_global("").await.is_err());
     assert!(store.add_global(&"é".repeat(251)).await.is_err());
     let escaped = vec![entry(format!("a{}b", "\u{0001}".repeat(400)))];
@@ -497,7 +359,7 @@ async fn concurrent_shared_writes_preserve_every_accepted_note_and_the_count_lim
     }
     assert_eq!(accepted, MAX_NOTES);
     assert_eq!(
-        store.snapshot(None).await.expect("snapshot").global.len(),
+        store.snapshot().await.expect("snapshot").global.len(),
         MAX_NOTES
     );
 }
@@ -507,10 +369,7 @@ fn projections_include_all_notes_and_append_complete_changes_without_hidden_meta
     let notes = (0..MAX_NOTES)
         .map(|i| entry(format!("note {i} {}", "x".repeat(65))))
         .collect::<Vec<_>>();
-    let previous = Snapshot {
-        swarm: Some(notes.clone()),
-        global: notes,
-    };
+    let previous = Snapshot { global: notes };
     let mut baseline = next_projection(&[], &previous)
         .expect("projection")
         .expect("baseline");
@@ -557,14 +416,7 @@ fn projections_include_all_notes_and_append_complete_changes_without_hidden_meta
 async fn startup_and_compaction_restore_shared_notes_without_chat_menu_or_duplicate_input() {
     let (_temporary, store) = store().await;
     store.add_global("global context").await.expect("note");
-    let backend = Arc::new(TestBotsBackend::default());
-    let swarm_id = Uuid::new_v4().to_string();
-    store
-        .add_swarm(&swarm_id, "Swarm context")
-        .await
-        .expect("swarm note");
-    backend.set_scope(Some(&swarm_id));
-    let middleware = Scratchpad::new(store.clone(), backend.clone(), "test-bot");
+    let middleware = scratchpad(&store);
     let runtime = runtime(&store, "session");
     let mut input = Vec::new();
     for source in [
@@ -589,34 +441,13 @@ async fn startup_and_compaction_restore_shared_notes_without_chat_menu_or_duplic
         FrontendSlot::Navigation
     );
     assert!(!middleware.retain_compacted_input(&input[0]));
-    backend.set_scope(None);
-    let snapshot = middleware.snapshot().await.expect("membership refresh");
-    assert!(snapshot.swarm.is_none());
-    let update = next_projection(&input, &snapshot)
-        .expect("removed membership")
-        .expect("update");
-    assert!(
-        !update["content"][0]["text"]
-            .as_str()
-            .expect("text")
-            .contains("Swarm context")
-    );
-    store.clear_swarm(&swarm_id).await.expect("cleanup");
-    assert!(
-        store
-            .snapshot(Some(&swarm_id))
-            .await
-            .expect("cleared")
-            .swarm
-            .expect("scope")
-            .is_empty()
-    );
 }
 
 #[tokio::test]
 async fn disabled_agent_keeps_shared_management_without_prompt_or_tools() {
     let (_temporary, store) = store().await;
     store.add_global("historical note").await.expect("seed");
+    let before = store.snapshot().await.expect("snapshot");
     let middleware = scratchpad(&store).agent_enabled(false);
     let runtime = runtime(&store, "session");
     let mut catalog = Catalog::default();
@@ -645,14 +476,14 @@ async fn disabled_agent_keeps_shared_management_without_prompt_or_tools() {
         middleware
             .execute_command_locked(
                 "scratchpad",
-                "edit global invalid",
+                &format!("edit {}", before.global[0].id),
                 Some("no"),
-                None,
-                access
+                access,
             )
             .await
             .is_err()
     );
+    assert_eq!(store.snapshot().await.expect("unchanged"), before);
     assert!(parse_command("edit session unused", Some("no")).is_none());
     assert!(parse_command("promote global unused", None).is_none());
 }
@@ -661,21 +492,21 @@ async fn disabled_agent_keeps_shared_management_without_prompt_or_tools() {
 async fn active_shared_edit_updates_state_and_defers_when_lock_is_busy() {
     let (_temporary, store) = store().await;
     store.add_global("before").await.expect("seed");
-    let id = store.snapshot(None).await.expect("snapshot").global[0]
+    let id = store.snapshot().await.expect("snapshot").global[0]
         .id
         .clone();
     let middleware = scratchpad(&store);
     let (handled, events) = active_command(
         &middleware,
         "scratchpad",
-        &format!("edit global {id}"),
+        &format!("edit {id}"),
         Some("after"),
     )
     .await;
     assert_eq!(handled, Some(SubmissionResult::Handled));
     assert!(!events.is_empty());
     assert_eq!(
-        store.snapshot(None).await.expect("after").global[0].note,
+        store.snapshot().await.expect("after").global[0].note,
         "after"
     );
     let _access = store.lock_access().await;
@@ -687,51 +518,6 @@ async fn active_shared_edit_updates_state_and_defers_when_lock_is_busy() {
     .expect("must not block");
     assert_eq!(result, None);
     assert!(events.is_empty());
-}
-
-#[tokio::test]
-async fn scope_resolution_is_serialized_with_swarm_cleanup() {
-    let (_temporary, store) = store().await;
-    let swarm_id = Uuid::new_v4().to_string();
-    store
-        .add_swarm(&swarm_id, "existing context")
-        .await
-        .expect("seed");
-    let backend = Arc::new(TestBotsBackend::default());
-    backend.set_scope(Some(&swarm_id));
-    let entered = Arc::new(tokio::sync::Barrier::new(2));
-    let release = Arc::new(tokio::sync::Barrier::new(2));
-    backend.block_scope_resolution(entered.clone(), release.clone());
-    let tool = write_tool(&store, backend.clone());
-    let write = tokio::spawn(async move {
-        tool.call(
-            tool_context(),
-            serde_json::json!({"scope":"swarm", "note":"new context"}),
-        )
-        .await
-    });
-    entered.wait().await;
-    backend.set_scope(None);
-    let cleanup_store = store.clone();
-    let cleanup_id = swarm_id.clone();
-    let mut cleanup = tokio::spawn(async move { cleanup_store.clear_swarm(&cleanup_id).await });
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(50), &mut cleanup)
-            .await
-            .is_err()
-    );
-    release.wait().await;
-    assert!(write.await.expect("write task").is_err());
-    cleanup.await.expect("cleanup task").expect("cleanup");
-    assert!(
-        store
-            .snapshot(Some(&swarm_id))
-            .await
-            .expect("snapshot")
-            .swarm
-            .expect("scope")
-            .is_empty()
-    );
 }
 
 #[tokio::test]
@@ -749,13 +535,10 @@ async fn oversized_saved_shared_scope_stays_manageable_and_is_never_silently_cli
         )
         .await
         .expect("saved state");
-    let snapshot = store
-        .snapshot(None)
-        .await
-        .expect("management can load notes");
+    let snapshot = store.snapshot().await.expect("management can load notes");
     let error = next_projection(&[], &snapshot).expect_err("projection must not clip");
     assert!(error.to_string().contains("shorten or remove a note"));
-    assert_eq!(store.snapshot(None).await.expect("unchanged"), snapshot);
+    assert_eq!(store.snapshot().await.expect("unchanged"), snapshot);
     store
         .global_contribution()
         .await
@@ -769,7 +552,7 @@ async fn oversized_saved_shared_scope_stays_manageable_and_is_never_silently_cli
         .await
         .expect("can remove a note");
     assert!(
-        next_projection(&[], &store.snapshot(None).await.expect("reduced"))
+        next_projection(&[], &store.snapshot().await.expect("reduced"))
             .expect("all remaining notes fit")
             .is_some()
     );

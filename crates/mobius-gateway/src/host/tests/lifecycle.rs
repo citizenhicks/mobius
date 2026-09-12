@@ -222,7 +222,7 @@ async fn idle_stop_waits_for_an_accepted_capability_command_to_finish() {
         op: Op::CapabilityCommand {
             capability: "scratchpad".into(),
             command: "scratchpad".into(),
-            arguments: format!("edit global {note_id}"),
+            arguments: format!("edit {note_id}"),
             input: Some("after".into()),
             target: None,
         },
@@ -302,39 +302,30 @@ async fn global_contribution_reads_and_updates_preserve_extension_references_wit
         "scratchpad"
     );
     assert_eq!(
-        gateway
-            .contributions(&crate::wire::ContributionScope::Global)
-            .await
-            .expect("global contributions"),
+        gateway.contributions().await.expect("global contributions"),
         contributions
     );
 
     let refreshed = gateway
-        .submit_contribution(
-            &crate::wire::ContributionScope::Global,
-            Op::CapabilityCommand {
-                capability: "scratchpad".into(),
-                command: "scratchpad".into(),
-                arguments: "refresh".into(),
-                input: None,
-                target: None,
-            },
-        )
+        .submit_contribution(Op::CapabilityCommand {
+            capability: "scratchpad".into(),
+            command: "scratchpad".into(),
+            arguments: "refresh".into(),
+            input: None,
+            target: None,
+        })
         .await
         .expect("refresh global scratchpad");
     assert_eq!(refreshed, contributions);
 
     let updated = gateway
-        .submit_contribution(
-            &crate::wire::ContributionScope::Global,
-            Op::CapabilityCommand {
-                capability: "scratchpad".into(),
-                command: "scratchpad".into(),
-                arguments: "add".into(),
-                input: Some("Shared context".into()),
-                target: None,
-            },
-        )
+        .submit_contribution(Op::CapabilityCommand {
+            capability: "scratchpad".into(),
+            command: "scratchpad".into(),
+            arguments: "add".into(),
+            input: Some("Shared context".into()),
+            target: None,
+        })
         .await
         .expect("add global note");
     assert_eq!(&updated[..expected.len()], expected);
@@ -345,23 +336,20 @@ async fn global_contribution_reads_and_updates_preserve_extension_references_wit
     ));
     assert_eq!(
         gateway
-            .contributions(&crate::wire::ContributionScope::Global)
+            .contributions()
             .await
             .expect("updated global contributions"),
         updated
     );
 
     let rejection = gateway
-        .submit_contribution(
-            &crate::wire::ContributionScope::Global,
-            Op::CapabilityCommand {
-                capability: "scratchpad".into(),
-                command: "scratchpad".into(),
-                arguments: "forget session note-1".into(),
-                input: None,
-                target: None,
-            },
-        )
+        .submit_contribution(Op::CapabilityCommand {
+            capability: "scratchpad".into(),
+            command: "scratchpad".into(),
+            arguments: "forget session note-1".into(),
+            input: None,
+            target: None,
+        })
         .await
         .expect_err("session operations need a selected chat");
     assert_eq!(rejection.code, "invalid_scratchpad");

@@ -296,8 +296,6 @@ extension AppModelTests {
                 bots: [],
                 sessions: [],
                 backgroundApprovals: [],
-                swarmAttentions: [],
-                swarms: [],
                 providers: [
                     ProviderStatus(
                         provider: "openai_socket",
@@ -558,8 +556,6 @@ extension AppModelTests {
                     bots: [],
                     sessions: [],
                     backgroundApprovals: [],
-                    swarmAttentions: [],
-                    swarms: [],
                     providers: [providerStatus(for: selection)],
                     providerInstances: [],
                     botDefaults: nil,
@@ -1128,8 +1124,6 @@ extension AppModelTests {
                 bots: [],
                 sessions: [],
                 backgroundApprovals: [],
-                swarmAttentions: [],
-                swarms: [],
                 providers: [],
                 providerInstances: [],
                 botDefaults: VersionedAgentConfig(revision: 8, config: botDefaults),

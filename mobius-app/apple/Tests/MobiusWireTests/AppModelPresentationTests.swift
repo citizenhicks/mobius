@@ -23,20 +23,10 @@ extension AppModelTests {
             rootView: AnyView(NavigationStack { BotsView() }.environment(app)))
         window.rootViewController = host
         window.makeKeyAndVisible()
-        func elements(_ object: NSObject, depth: Int = 0) -> [NSObject] {
-            guard depth < 20 else { return [] }
-            let count = object.accessibilityElementCount()
-            let children =
-                count > 0 && count < 100
-                ? (0..<count).compactMap { object.accessibilityElement(at: $0) as? NSObject } : []
-            return [object]
-                + (children + ((object as? UIView)?.subviews ?? [])).flatMap {
-                    elements($0, depth: depth + 1)
-                }
-        }
+
         func activate(_ label: String) async throws {
             let activated = await eventually {
-                elements(host.view).contains {
+                testAccessibilityElements(host.view).contains {
                     $0.accessibilityLabel == label && $0.accessibilityActivate()
                 }
             }
@@ -44,7 +34,7 @@ extension AppModelTests {
             try await Task.sleep(for: .milliseconds(350))
         }
         func fields() -> [UIView] {
-            elements(host.view).compactMap { $0 as? UIView }.filter {
+            testAccessibilityElements(host.view).compactMap { $0 as? UIView }.filter {
                 guard $0 is UITextField || $0 is UITextView else { return false }
                 let center = CGPoint(x: $0.bounds.midX, y: $0.bounds.midY)
                 return window.hitTest($0.convert(center, to: window), with: nil)?.isDescendant(
@@ -74,23 +64,6 @@ extension AppModelTests {
         XCTAssertEqual(fields().compactMap { $0 as? UITextField }.first?.text, "")
         XCTAssertEqual(fields().compactMap { $0 as? UITextView }.first?.text, "")
         host.rootView = AnyView(NavigationStack { BotsView() }.environment(app).id(UUID()))
-
-        app.bots = [bot(collaborationEnabled: true), bot(id: "bot-2", collaborationEnabled: true)]
-        try await activate("New Swarm")
-        let title = try XCTUnwrap(
-            fields().compactMap { $0 as? UITextField }.first {
-                $0.placeholder == "Swarm name"
-            })
-        title.becomeFirstResponder()
-        title.insertText("Previous Swarm")
-        title.resignFirstResponder()
-        try await activate("Cancel")
-        try await activate("New Swarm")
-        XCTAssertEqual(
-            fields().compactMap { $0 as? UITextField }.first {
-                $0.placeholder == "Swarm name"
-            }?.text, "")
-        try await activate("Cancel")
 
         app.chat.sessions = [session(state: .idle)]
         host.rootView = AnyView(NavigationStack { BotDetailView(botID: "bot-1") }.environment(app))
@@ -473,7 +446,7 @@ extension AppModelTests {
                 "turnId": .string("turn-1"),
                 "loadId": .string("step-1"),
                 "catalogRevision": .string("catalog-1"),
-                "tools": .array([.string("swarm_post"), .string("swarm_read")]),
+                "tools": .array([.string("search_history"), .string("read_history")]),
             ]))
         try AgentEventRecord.validate(event.msg)
         app.chat.reduce(
@@ -492,7 +465,7 @@ extension AppModelTests {
                             state: .complete,
                             role: .tool,
                             title: "Loaded tools",
-                            text: "swarm_post\nswarm_read",
+                            text: "search_history\nread_history",
                             symbol: nil,
                             format: "plain_text",
                             tone: "success",
@@ -505,7 +478,7 @@ extension AppModelTests {
         let entry = try XCTUnwrap(app.chat.transcript.first)
         XCTAssertEqual(entry.role, .tool)
         XCTAssertEqual(entry.title, "Loaded tools")
-        XCTAssertEqual(entry.text, "swarm_post\nswarm_read")
+        XCTAssertEqual(entry.text, "search_history\nread_history")
         XCTAssertEqual(entry.turnID, "turn-1")
     }
 

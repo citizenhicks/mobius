@@ -148,7 +148,7 @@ extension AppModel {
         if chat.pendingWidgetEdit == nil, text.hasPrefix("/") {
             return sendComposerCommand(text)
         }
-        if chat.activeTurnID != nil, !attachments.isEmpty {
+        if chat.composerTargetTurnID != nil, !attachments.isEmpty {
             showToast("Attachments can be sent with a new turn.", tone: .warning)
             return false
         }

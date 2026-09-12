@@ -4,6 +4,35 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testGroupAttachmentPostsWhileMembersAreRunningWithoutTargetingATurn() async throws {
+        let recorder = GatewayRequestRecorder()
+        let app = try model { await recorder.record($0) }
+        app.gateway.connectionState = .ready
+        app.chat.selectedSessionID = "group"
+        app.chat.selectedMemberBotIDs = ["bot-1", "bot-2"]
+        app.chat.activeTurnIDs = ["turn-a", "turn-b"]
+        let attachment = SessionFileReference(
+            id: "file-1", name: "notes.txt", size: 3, mediaType: "text/plain")
+        app.chat.composerAttachments = [
+            ComposerAttachment(
+                id: UUID(), name: attachment.name, size: attachment.size,
+                mediaType: attachment.mediaType, state: .uploaded(attachment))
+        ]
+        app.chat.composer = "@reviewer review this"
+        XCTAssertTrue(app.canImportAttachments)
+        XCTAssertTrue(app.sendMessage(delivery: .steer))
+        let request = await recorder.firstRequest(after: 0) {
+            if case .submit = $0 { return true }
+            return false
+        }
+        guard case .submit("group", let submission) = try XCTUnwrap(request),
+            case .message(let message) = submission.op
+        else { return XCTFail("Expected group message") }
+        XCTAssertEqual(message.attachments, [attachment])
+        XCTAssertNil(message.targetTurnId)
+        XCTAssertNil(message.requestedDelivery)
+    }
+
     func testIdleChatAttachmentControlUsesUpdatedBotWithoutReopeningChat() throws {
         let model = try model()
         model.gateway.connectionState = .ready
@@ -103,7 +132,7 @@ extension AppModelTests {
                     sessionID: "chat-created",
                     contributions: [fileAttachmentContribution()]
                 )))
-        XCTAssertNil(model.chat.pendingNewChatBotID)
+        XCTAssertTrue(model.chat.pendingNewChatBotIDs.isEmpty)
 
         let begin = await recorder.firstRequest(after: 0) { request in
             if case .beginSessionFileUpload = request { return true }

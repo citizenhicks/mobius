@@ -1,4 +1,4 @@
-//! Approved shared Swarm and global knowledge.
+//! Approved global knowledge.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use super::bots::BotsBackend;
 use super::manifest::MiddlewareManifest;
 use super::tools::{Catalog, labeled_tool_heading, render_tool_event};
 use super::{
@@ -24,23 +23,18 @@ use crate::{BoxFuture, Error, Result};
 
 mod text {
     pub const ACTION_ADD_GLOBAL: &str = "Add Global Note";
-    pub const ACTION_ADD_SWARM: &str = "Add Collective Note";
     pub const ACTION_DELETE: &str = "Delete";
     pub const ACTION_EDIT: &str = "Edit";
-    pub const COMMAND_ARGUMENTS: &str =
-        "[read|refresh|edit <swarm|global> <note-id>|forget <swarm|global> <note-id>]";
-    pub const COMMAND_DESCRIPTION: &str = "read or manage shared Swarm and global notes";
-    pub const COMMAND_USAGE: &str = "! usage: scratchpad [read|refresh|edit <swarm|global> <note-id>|forget <swarm|global> <note-id>]";
+    pub const COMMAND_ARGUMENTS: &str = "[read|refresh|edit <note-id>|forget <note-id>]";
+    pub const COMMAND_DESCRIPTION: &str = "read or manage global notes";
+    pub const COMMAND_USAGE: &str =
+        "! usage: scratchpad [read|refresh|edit <note-id>|forget <note-id>]";
     pub const EDITOR_GLOBAL_DESCRIPTION: &str =
         "This note becomes durable context for every gateway conversation.";
     pub const EDITOR_GLOBAL_TITLE: &str = "Add global note";
     pub const EDITOR_LABEL: &str = "Note";
     pub const EDITOR_SUBMIT: &str = "Add";
-    pub const EDITOR_SWARM_DESCRIPTION: &str =
-        "This note becomes durable context for every Bot in the Swarm.";
-    pub const EDITOR_SWARM_TITLE: &str = "Add collective note";
-    pub const MANIFEST_DESCRIPTION: &str =
-        "Keep explicitly approved shared Swarm and global knowledge";
+    pub const MANIFEST_DESCRIPTION: &str = "Keep explicitly approved global knowledge";
     pub const MANIFEST_LABEL: &str = "Scratchpad";
     pub const MESSAGE_ADDED: &str = "Added the shared scratchpad note.";
     pub const MESSAGE_AGENT_OBSERVATION: &str = "agent observation";
@@ -48,17 +42,13 @@ mod text {
     pub const MESSAGE_FORGOT: &str = "Forgot the scratchpad note.";
     pub const MESSAGE_GLOBAL_HEADING: &str = "Global";
     pub const MESSAGE_NO_NOTES: &str = "No notes.";
-    pub const MESSAGE_SWARM_HEADING: &str = "Swarm";
     pub const MESSAGE_UPDATED: &str = "Updated the scratchpad note.";
     pub const MESSAGE_USER_CONFIRMED: &str = "user confirmed";
-    pub const PROMPT_MAIN: &str = "Use `write_scratchpad` for a concise fact, preference, or reusable lesson that should help this Bot's current Swarm or every future chat; shared writes require approval. Shared notes are knowledge, not a task handoff or reasoning log. Never store private reasoning, raw outputs, secrets, credentials, or transient progress.";
+    pub const PROMPT_MAIN: &str = "Use `write_scratchpad` for a concise fact, preference, or reusable lesson that should help every future chat; shared writes require approval. Shared notes are knowledge, not a task handoff or reasoning log. Never store private reasoning, raw outputs, secrets, credentials, or transient progress.";
     pub const RENDER_REMEMBER: &str = "Remember shared note";
     pub const TOOL_WRITE_SCRATCHPAD_DESCRIPTION: &str = "Add one concise shared fact, preference, or lesson after approval. Never store reasoning, raw outputs, secrets, or task progress.";
-    pub const TOOL_WRITE_SCRATCHPAD_PARAMETER_NOTE_DESCRIPTION: &str = "Concise reusable knowledge, at most 500 UTF-8 bytes. Shared scopes have a small total size limit.";
-    pub const TOOL_WRITE_SCRATCHPAD_PARAMETER_SCOPE_DESCRIPTION: &str =
-        "swarm shares with this Bot's current Swarm; global shares with every gateway chat.";
+    pub const TOOL_WRITE_SCRATCHPAD_PARAMETER_NOTE_DESCRIPTION: &str = "Concise reusable knowledge, at most 500 UTF-8 bytes. The scratchpad has a small total size limit.";
     pub const WIDGET_GLOBAL_TITLE: &str = "Global Scratchpad";
-    pub const WIDGET_SWARM_TITLE: &str = "Collective scratchpad";
     pub const WIDGET_TEXT: &str = "Scratchpad";
 }
 mod presentation;
@@ -68,8 +58,7 @@ mod tools;
 #[cfg(test)]
 use presentation::action_list_item;
 use presentation::{
-    format_snapshot, global_widget, parse_scope, publish_widgets, surface_widgets, swarm_widget,
-    usage, widget_events,
+    format_snapshot, global_widget, publish_widgets, surface_widgets, usage, widget_events,
 };
 use projection::is_projection_item;
 use projection::{next_projection, without_projection_items};
@@ -77,8 +66,6 @@ use tools::WriteScratchpad;
 
 const GLOBAL_SCOPE: &str = "scratchpad.global";
 const GLOBAL_STATE_KEY: &str = "entries.v1";
-const SWARM_SCOPE_PREFIX: &str = "scratchpad.swarm:";
-const SWARM_STATE_KEY: &str = "entries.v1";
 const MAX_NOTES: usize = 20;
 const MAX_NOTE_BYTES: usize = 500;
 const MAX_INJECTION_BYTES: usize = 4 * 1024;
@@ -122,15 +109,7 @@ impl Basis {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Snapshot {
-    swarm: Option<Vec<Entry>>,
     global: Vec<Entry>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum Scope {
-    Swarm,
-    Global,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,44 +119,27 @@ enum WriteOutcome {
     Existing,
 }
 
-#[derive(Clone)]
-struct SwarmScope {
-    backend: Arc<dyn BotsBackend>,
-    bot_id: String,
-}
-
-impl SwarmScope {
-    async fn resolve(&self) -> Result<Option<String>> {
-        self.backend.scratchpad_scope(&self.bot_id).await
-    }
-}
-
 enum ScratchpadCommand<'a> {
     Read,
     Refresh,
     Add(&'a str),
-    Edit(Scope, &'a str, &'a str),
-    Forget(Scope, &'a str),
+    Edit(&'a str, &'a str),
+    Forget(&'a str),
 }
 
 fn parse_command<'a>(arguments: &'a str, input: Option<&'a str>) -> Option<ScratchpadCommand<'a>> {
     let mut arguments = arguments.split_whitespace();
     let operation = arguments.next().unwrap_or("read");
-    let scope = arguments.next();
     let id = arguments.next();
     if arguments.next().is_some() {
         return None;
     }
-    match (operation, scope, id, input) {
-        ("read", None, None, None) => Some(ScratchpadCommand::Read),
-        ("refresh", None, None, None) => Some(ScratchpadCommand::Refresh),
-        ("add", None, None, Some(note)) => Some(ScratchpadCommand::Add(note)),
-        ("edit", Some(scope), Some(id), Some(note)) => {
-            Some(ScratchpadCommand::Edit(parse_scope(scope)?, id, note))
-        }
-        ("forget", Some(scope), Some(id), None) => {
-            Some(ScratchpadCommand::Forget(parse_scope(scope)?, id))
-        }
+    match (operation, id, input) {
+        ("read", None, None) => Some(ScratchpadCommand::Read),
+        ("refresh", None, None) => Some(ScratchpadCommand::Refresh),
+        ("add", None, Some(note)) => Some(ScratchpadCommand::Add(note)),
+        ("edit", Some(id), Some(note)) => Some(ScratchpadCommand::Edit(id, note)),
+        ("forget", Some(id), None) => Some(ScratchpadCommand::Forget(id)),
         _ => None,
     }
 }
@@ -186,8 +148,7 @@ fn parse_command<'a>(arguments: &'a str, input: Option<&'a str>) -> Option<Scrat
 #[derive(Clone)]
 pub struct ScratchpadStore {
     checkpoints: Arc<dyn CheckpointStore>,
-    // ponytail: one process-wide lock keeps whole-value writes correct; split by scope only if
-    // measured contention justifies the extra lock registry.
+    // Serializes whole-value updates to the one global notebook.
     access: Arc<Mutex<()>>,
 }
 
@@ -210,30 +171,20 @@ impl ScratchpadStore {
     }
 
     #[cfg(test)]
-    async fn snapshot(&self, swarm_id: Option<&str>) -> Result<Snapshot> {
+    async fn snapshot(&self) -> Result<Snapshot> {
         let access = self.lock_access().await;
-        self.snapshot_locked(swarm_id, &access).await
+        self.snapshot_locked(&access).await
     }
 
-    async fn snapshot_locked(
-        &self,
-        swarm_id: Option<&str>,
-        _access: &tokio::sync::MutexGuard<'_, ()>,
-    ) -> Result<Snapshot> {
+    async fn snapshot_locked(&self, _access: &tokio::sync::MutexGuard<'_, ()>) -> Result<Snapshot> {
         Ok(Snapshot {
-            swarm: match swarm_id {
-                Some(swarm_id) => Some(self.load(Scope::Swarm, swarm_id).await?),
-                None => None,
-            },
-            global: self.load(Scope::Global, GLOBAL_SCOPE).await?,
+            global: self.load().await?,
         })
     }
 
     /// Executes a human management action using the capability's command grammar.
-    /// `swarm_id` selects a Swarm; `None` selects gateway-wide notes.
     pub async fn management_command(
         &self,
-        swarm_id: Option<&str>,
         operation: &crate::protocol::Op,
     ) -> Result<FrontendContribution> {
         let invalid = || {
@@ -252,23 +203,11 @@ impl ScratchpadStore {
         if capability != MANIFEST.id || command != "scratchpad" {
             return Err(invalid());
         }
-        match (swarm_id, parse_command(arguments, input.as_deref())) {
-            (None, Some(ScratchpadCommand::Refresh)) => self.global_contribution().await,
-            (None, Some(ScratchpadCommand::Add(note))) => self.add_global(note).await,
-            (None, Some(ScratchpadCommand::Edit(Scope::Global, id, note))) => {
-                self.edit_global(id, note).await
-            }
-            (None, Some(ScratchpadCommand::Forget(Scope::Global, id))) => {
-                self.forget_global(id).await
-            }
-            (Some(swarm), Some(ScratchpadCommand::Refresh)) => self.swarm_contribution(swarm).await,
-            (Some(swarm), Some(ScratchpadCommand::Add(note))) => self.add_swarm(swarm, note).await,
-            (Some(swarm), Some(ScratchpadCommand::Edit(Scope::Swarm, id, note))) => {
-                self.edit_swarm(swarm, id, note).await
-            }
-            (Some(swarm), Some(ScratchpadCommand::Forget(Scope::Swarm, id))) => {
-                self.forget_swarm(swarm, id).await
-            }
+        match parse_command(arguments, input.as_deref()) {
+            Some(ScratchpadCommand::Refresh) => self.global_contribution().await,
+            Some(ScratchpadCommand::Add(note)) => self.add_global(note).await,
+            Some(ScratchpadCommand::Edit(id, note)) => self.edit_global(id, note).await,
+            Some(ScratchpadCommand::Forget(id)) => self.forget_global(id).await,
             _ => Err(invalid()),
         }
     }
@@ -282,7 +221,7 @@ impl ScratchpadStore {
     /// Adds one user-confirmed gateway-wide note and returns its refreshed surface.
     pub async fn add_global(&self, note: &str) -> Result<FrontendContribution> {
         let access = self.lock_access().await;
-        self.write_locked(None, Scope::Global, note, Basis::UserConfirmed, &access)
+        self.write_locked(note, Basis::UserConfirmed, &access)
             .await?;
         self.global_contribution_locked(&access).await
     }
@@ -291,8 +230,7 @@ impl ScratchpadStore {
     pub async fn edit_global(&self, id: &str, note: &str) -> Result<FrontendContribution> {
         validate_id(id).map_err(Error::Tool)?;
         let access = self.lock_access().await;
-        self.edit_locked(None, Scope::Global, id, note, &access)
-            .await?;
+        self.edit_locked(id, note, &access).await?;
         self.global_contribution_locked(&access).await
     }
 
@@ -300,69 +238,15 @@ impl ScratchpadStore {
     pub async fn forget_global(&self, id: &str) -> Result<FrontendContribution> {
         validate_id(id).map_err(Error::Tool)?;
         let access = self.lock_access().await;
-        self.forget_locked(None, Scope::Global, id, &access).await?;
+        self.forget_locked(id, &access).await?;
         self.global_contribution_locked(&access).await
-    }
-
-    /// Returns the persisted management surface for one stable Swarm.
-    pub async fn swarm_contribution(&self, swarm_id: &str) -> Result<FrontendContribution> {
-        validate_swarm_id(swarm_id).map_err(Error::Tool)?;
-        let access = self.lock_access().await;
-        self.swarm_contribution_locked(swarm_id, &access).await
-    }
-
-    /// Adds one user-confirmed Swarm note and returns its refreshed surface.
-    pub async fn add_swarm(&self, swarm_id: &str, note: &str) -> Result<FrontendContribution> {
-        validate_swarm_id(swarm_id).map_err(Error::Tool)?;
-        let access = self.lock_access().await;
-        self.write_locked(
-            Some(swarm_id),
-            Scope::Swarm,
-            note,
-            Basis::UserConfirmed,
-            &access,
-        )
-        .await?;
-        self.swarm_contribution_locked(swarm_id, &access).await
-    }
-
-    /// Edits one user-confirmed Swarm note and returns its refreshed surface.
-    pub async fn edit_swarm(
-        &self,
-        swarm_id: &str,
-        id: &str,
-        note: &str,
-    ) -> Result<FrontendContribution> {
-        validate_swarm_id(swarm_id).map_err(Error::Tool)?;
-        validate_id(id).map_err(Error::Tool)?;
-        let access = self.lock_access().await;
-        self.edit_locked(Some(swarm_id), Scope::Swarm, id, note, &access)
-            .await?;
-        self.swarm_contribution_locked(swarm_id, &access).await
-    }
-
-    /// Forgets one Swarm note and returns its refreshed management surface.
-    pub async fn forget_swarm(&self, swarm_id: &str, id: &str) -> Result<FrontendContribution> {
-        validate_swarm_id(swarm_id).map_err(Error::Tool)?;
-        validate_id(id).map_err(Error::Tool)?;
-        let access = self.lock_access().await;
-        self.forget_locked(Some(swarm_id), Scope::Swarm, id, &access)
-            .await?;
-        self.swarm_contribution_locked(swarm_id, &access).await
-    }
-
-    /// Clears notes owned by a permanently disbanded Swarm.
-    pub async fn clear_swarm(&self, swarm_id: &str) -> Result<()> {
-        validate_swarm_id(swarm_id).map_err(Error::Tool)?;
-        let _access = self.lock_access().await;
-        self.save(Scope::Swarm, swarm_id, &[]).await
     }
 
     async fn global_contribution_locked(
         &self,
         _access: &tokio::sync::MutexGuard<'_, ()>,
     ) -> Result<FrontendContribution> {
-        let entries = self.load(Scope::Global, GLOBAL_SCOPE).await?;
+        let entries = self.load().await?;
         Ok(FrontendContribution {
             capability: MANIFEST.id.into(),
             widgets: vec![global_widget(&entries)],
@@ -370,66 +254,44 @@ impl ScratchpadStore {
         })
     }
 
-    async fn swarm_contribution_locked(
-        &self,
-        swarm_id: &str,
-        _access: &tokio::sync::MutexGuard<'_, ()>,
-    ) -> Result<FrontendContribution> {
-        let entries = self.load(Scope::Swarm, swarm_id).await?;
-        Ok(FrontendContribution {
-            capability: MANIFEST.id.into(),
-            widgets: vec![swarm_widget(&entries)],
-            ..FrontendContribution::default()
-        })
-    }
-
     async fn write_locked(
         &self,
-        swarm_id: Option<&str>,
-        scope: Scope,
         note: &str,
         basis: Basis,
         _access: &tokio::sync::MutexGuard<'_, ()>,
     ) -> Result<WriteOutcome> {
-        let owner = scope_owner(scope, swarm_id)?;
         let note = canonical_note(note).map_err(Error::Tool)?;
-        let mut entries = self.load(scope, owner).await?;
+        let mut entries = self.load().await?;
         let outcome = insert(&mut entries, note, basis)?;
         if outcome != WriteOutcome::Existing {
             validate_scope_budget(&entries).map_err(Error::Tool)?;
-            self.save(scope, owner, &entries).await?;
+            self.save(&entries).await?;
         }
         Ok(outcome)
     }
 
     async fn forget_locked(
         &self,
-        swarm_id: Option<&str>,
-        scope: Scope,
         id: &str,
         _access: &tokio::sync::MutexGuard<'_, ()>,
     ) -> Result<()> {
-        let owner_id = scope_owner(scope, swarm_id)?;
-        let mut entries = self.load(scope, owner_id).await?;
+        let mut entries = self.load().await?;
         let previous_len = entries.len();
         entries.retain(|entry| entry.id != id);
         if entries.len() == previous_len {
             return Err(Error::Tool("the scratchpad note no longer exists".into()));
         }
-        self.save(scope, owner_id, &entries).await
+        self.save(&entries).await
     }
 
     async fn edit_locked(
         &self,
-        swarm_id: Option<&str>,
-        scope: Scope,
         id: &str,
         note: &str,
         _access: &tokio::sync::MutexGuard<'_, ()>,
     ) -> Result<()> {
         let note = canonical_note(note).map_err(Error::Tool)?;
-        let owner_id = scope_owner(scope, swarm_id)?;
-        let mut entries = self.load(scope, owner_id).await?;
+        let mut entries = self.load().await?;
         if entries
             .iter()
             .any(|entry| entry.id != id && entry.note == note)
@@ -448,14 +310,13 @@ impl ScratchpadStore {
         if scope_bytes(&entries).map_err(Error::Tool)? > previous_bytes {
             validate_scope_budget(&entries).map_err(Error::Tool)?;
         }
-        self.save(scope, owner_id, &entries).await
+        self.save(&entries).await
     }
 
-    async fn load(&self, scope: Scope, owner_id: &str) -> Result<Vec<Entry>> {
-        let (scope, key) = storage_location(scope, owner_id);
+    async fn load(&self) -> Result<Vec<Entry>> {
         let entries: Vec<Entry> = self
             .checkpoints
-            .load_state(&scope, key)
+            .load_state(GLOBAL_SCOPE, GLOBAL_STATE_KEY)
             .await?
             .map(serde_json::from_value)
             .transpose()
@@ -466,10 +327,13 @@ impl ScratchpadStore {
         Ok(entries)
     }
 
-    async fn save(&self, scope: Scope, owner_id: &str, entries: &[Entry]) -> Result<()> {
-        let (scope, key) = storage_location(scope, owner_id);
+    async fn save(&self, entries: &[Entry]) -> Result<()> {
         self.checkpoints
-            .save_state(&scope, key, &serde_json::to_value(entries)?)
+            .save_state(
+                GLOBAL_SCOPE,
+                GLOBAL_STATE_KEY,
+                &serde_json::to_value(entries)?,
+            )
             .await
     }
 }
@@ -478,24 +342,15 @@ impl ScratchpadStore {
 #[derive(Clone)]
 pub struct Scratchpad {
     store: ScratchpadStore,
-    swarm: SwarmScope,
     agent_enabled: bool,
 }
 
 impl Scratchpad {
     /// Creates scratchpad middleware for one Bot backed by shared durable stores.
     #[must_use]
-    pub fn new(
-        store: ScratchpadStore,
-        swarm: Arc<dyn BotsBackend>,
-        bot_id: impl Into<String>,
-    ) -> Self {
+    pub fn new(store: ScratchpadStore) -> Self {
         Self {
             store,
-            swarm: SwarmScope {
-                backend: swarm,
-                bot_id: bot_id.into(),
-            },
             agent_enabled: true,
         }
     }
@@ -509,10 +364,7 @@ impl Scratchpad {
 
     async fn snapshot(&self) -> Result<Snapshot> {
         let access = self.store.lock_access().await;
-        let swarm_id = self.swarm.resolve().await?;
-        self.store
-            .snapshot_locked(swarm_id.as_deref(), &access)
-            .await
+        self.store.snapshot_locked(&access).await
     }
 }
 
@@ -522,7 +374,6 @@ impl Scratchpad {
         command: &str,
         arguments: &str,
         input: Option<&str>,
-        swarm_id: Option<&str>,
         access: tokio::sync::MutexGuard<'_, ()>,
     ) -> Result<MiddlewareCommandOutput> {
         let _access = access;
@@ -543,7 +394,7 @@ impl Scratchpad {
         };
         match parsed {
             ScratchpadCommand::Read => {
-                let snapshot = self.store.snapshot_locked(swarm_id, &_access).await?;
+                let snapshot = self.store.snapshot_locked(&_access).await?;
                 Ok(MiddlewareCommandOutput::render(
                     self.name(),
                     format_snapshot(&snapshot),
@@ -551,22 +402,16 @@ impl Scratchpad {
                 ))
             }
             ScratchpadCommand::Refresh => {
-                let snapshot = self.store.snapshot_locked(swarm_id, &_access).await?;
+                let snapshot = self.store.snapshot_locked(&_access).await?;
                 Ok(MiddlewareCommandOutput::events(widget_events(&snapshot)))
             }
-            ScratchpadCommand::Edit(scope, id, note) => {
-                self.store
-                    .edit_locked(swarm_id, scope, id, note, &_access)
-                    .await?;
-                self.command_updated(swarm_id, text::MESSAGE_UPDATED, &_access)
-                    .await
+            ScratchpadCommand::Edit(id, note) => {
+                self.store.edit_locked(id, note, &_access).await?;
+                self.command_updated(text::MESSAGE_UPDATED, &_access).await
             }
-            ScratchpadCommand::Forget(scope, id) => {
-                self.store
-                    .forget_locked(swarm_id, scope, id, &_access)
-                    .await?;
-                self.command_updated(swarm_id, text::MESSAGE_FORGOT, &_access)
-                    .await
+            ScratchpadCommand::Forget(id) => {
+                self.store.forget_locked(id, &_access).await?;
+                self.command_updated(text::MESSAGE_FORGOT, &_access).await
             }
             ScratchpadCommand::Add(_) => Ok(usage()),
         }
@@ -574,11 +419,10 @@ impl Scratchpad {
 
     async fn command_updated(
         &self,
-        swarm_id: Option<&str>,
         message: &str,
         access: &tokio::sync::MutexGuard<'_, ()>,
     ) -> Result<MiddlewareCommandOutput> {
-        let snapshot = self.store.snapshot_locked(swarm_id, access).await?;
+        let snapshot = self.store.snapshot_locked(access).await?;
         let mut events = widget_events(&snapshot);
         events.extend(
             MiddlewareCommandOutput::render(self.name(), message, FrontendTone::Success).events,
@@ -598,7 +442,6 @@ impl Middleware for Scratchpad {
         }
         catalog.register(Arc::new(WriteScratchpad {
             store: self.store.clone(),
-            swarm: self.swarm.clone(),
             frontend: Arc::clone(&runtime.frontend),
         }))
     }
@@ -671,15 +514,8 @@ impl Middleware for Scratchpad {
     ) -> BoxFuture<'a, Result<MiddlewareCommandOutput>> {
         Box::pin(async move {
             let access = self.store.lock_access().await;
-            let swarm_id = self.swarm.resolve().await?;
-            self.execute_command_locked(
-                context.command,
-                context.arguments,
-                context.input,
-                swarm_id.as_deref(),
-                access,
-            )
-            .await
+            self.execute_command_locked(context.command, context.arguments, context.input, access)
+                .await
         })
     }
 
@@ -691,15 +527,8 @@ impl Middleware for Scratchpad {
             let Some(access) = self.store.try_lock_access() else {
                 return Ok(None);
             };
-            let swarm_id = self.swarm.resolve().await?;
             let output = self
-                .execute_command_locked(
-                    context.command,
-                    context.arguments,
-                    context.input,
-                    swarm_id.as_deref(),
-                    access,
-                )
+                .execute_command_locked(context.command, context.arguments, context.input, access)
                 .await?;
             context
                 .events
@@ -722,22 +551,6 @@ impl Middleware for Scratchpad {
             }
             Ok(())
         })
-    }
-}
-
-fn storage_location(scope: Scope, owner_id: &str) -> (String, &'static str) {
-    match scope {
-        Scope::Swarm => (format!("{SWARM_SCOPE_PREFIX}{owner_id}"), SWARM_STATE_KEY),
-        Scope::Global => (GLOBAL_SCOPE.into(), GLOBAL_STATE_KEY),
-    }
-}
-
-fn scope_owner(scope: Scope, swarm_id: Option<&str>) -> Result<&str> {
-    match scope {
-        Scope::Swarm => {
-            swarm_id.ok_or_else(|| Error::Tool("this Bot is not currently in a swarm".into()))
-        }
-        Scope::Global => Ok(GLOBAL_SCOPE),
     }
 }
 
@@ -822,12 +635,6 @@ fn validate_id(id: &str) -> std::result::Result<(), String> {
     Uuid::parse_str(id)
         .map(|_| ())
         .map_err(|_| "invalid scratchpad note ID".into())
-}
-
-fn validate_swarm_id(id: &str) -> std::result::Result<(), String> {
-    Uuid::parse_str(id)
-        .map(|_| ())
-        .map_err(|_| "invalid Swarm ID".into())
 }
 
 fn canonical_note(note: &str) -> std::result::Result<String, String> {

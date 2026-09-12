@@ -2,39 +2,6 @@ use tokio::io::duplex;
 
 use super::*;
 
-#[test]
-fn bot_wire_collaboration_availability_tracks_config_after_reload() {
-    let mut bot = BotRecord {
-        id: "bot-a".into(),
-        handle: "helper".into(),
-        name: "Helper".into(),
-        description: "Help with the project".into(),
-        tint: ProviderTint::Blue,
-        config: VersionedAgentConfig {
-            revision: 1,
-            config: AgentComposition::default(),
-        },
-    };
-
-    for (setting, enabled) in [("off", false), ("swarm", true), ("off", false)] {
-        bot.config.config.middleware.set_setting(
-            "bots",
-            "collaboration",
-            Some(FrontendSettingValue::String(setting.into())),
-        );
-        let encoded = serde_json::to_value(&bot).expect("encode Bot");
-        assert_eq!(encoded["collaboration_enabled"], enabled);
-        assert_eq!(
-            encoded["config"]["config"]["middleware"]["settings"]["bots"]["collaboration"],
-            setting,
-        );
-        let reloaded: BotRecord = serde_json::from_value(encoded).expect("reload Bot");
-        assert_eq!(reloaded, bot);
-        assert_eq!(reloaded.collaboration_enabled(), enabled);
-        bot = reloaded;
-    }
-}
-
 #[tokio::test]
 async fn framed_json_round_trip_preserves_the_versioned_message() {
     let expected = ClientFrame::new(ClientMessage::Authenticate {
@@ -144,38 +111,6 @@ fn session_file_list_carries_the_file_origin() {
     let encoded = serde_json::to_value(frame).expect("encode session files");
 
     assert_eq!(encoded["files"][0]["origin"], "agent");
-}
-
-#[test]
-fn swarm_message_records_use_text_as_the_payload_name() {
-    let record = SwarmMessageRecord {
-        id: "message-a".into(),
-        sequence: 1,
-        author_bot_id: "bot-a".into(),
-        author_handle: "reviewer".into(),
-        source_session_id: "session-a".into(),
-        text: "Review this".into(),
-        created_at_ms: 1,
-        in_reply_to_message_id: None,
-        reply_depth: 0,
-    };
-
-    let encoded = serde_json::to_value(record).expect("encode swarm message");
-
-    assert_eq!(
-        encoded,
-        serde_json::json!({
-            "id": "message-a",
-            "sequence": 1,
-            "author_bot_id": "bot-a",
-            "author_handle": "reviewer",
-            "source_session_id": "session-a",
-            "text": "Review this",
-            "created_at_ms": 1,
-            "in_reply_to_message_id": null,
-            "reply_depth": 0,
-        })
-    );
 }
 
 #[tokio::test]
@@ -451,7 +386,7 @@ fn session_creation_requires_a_gateway_workspace_and_bot() {
     let frame = ClientFrame::new(ClientMessage::CreateSession {
         request_id: "request-a".into(),
         workspace: PathBuf::from("/srv/mobius/project"),
-        bot_id: "bot-a".into(),
+        bot_ids: vec!["bot-a".into()],
     });
 
     let encoded = serde_json::to_value(frame).expect("encode session creation");
@@ -463,78 +398,13 @@ fn session_creation_requires_a_gateway_workspace_and_bot() {
             "type": "create_session",
             "request_id": "request-a",
             "workspace": "/srv/mobius/project",
-            "bot_id": "bot-a"
+            "bot_ids": ["bot-a"]
         })
     );
 }
 
 #[test]
-fn swarm_management_frames_keep_request_correlation_out_of_broadcasts() {
-    let create = ClientFrame::new(ClientMessage::CreateSwarm {
-        request_id: "request-swarm".into(),
-        title: "Review team".into(),
-        leader_bot_id: "leader".into(),
-        member_bot_ids: vec!["leader".into(), "reviewer".into()],
-    });
-    let broadcast = ServerFrame::new(ServerMessage::Swarms {
-        request_id: None,
-        swarms: Vec::new(),
-    });
-
-    assert_eq!(
-        serde_json::to_value(create).expect("encode swarm creation"),
-        serde_json::json!({
-            "version": PROTOCOL_VERSION,
-            "type": "create_swarm",
-            "request_id": "request-swarm",
-            "title": "Review team",
-            "leader_bot_id": "leader",
-            "member_bot_ids": ["leader", "reviewer"]
-        })
-    );
-    assert!(
-        serde_json::to_value(broadcast)
-            .expect("encode swarm broadcast")
-            .get("request_id")
-            .is_none()
-    );
-}
-
-#[test]
-fn swarm_attention_frames_carry_the_pending_board_message() {
-    let frame = ServerFrame::new(ServerMessage::SwarmAttentions {
-        attentions: vec![SwarmAttention {
-            swarm_id: "swarm-a".into(),
-            swarm_title: "Review team".into(),
-            message_id: "message-a".into(),
-            bot_id: "bot-a".into(),
-            text: "Choose the release scope".into(),
-        }],
-    });
-
-    assert_eq!(
-        serde_json::to_value(frame).expect("encode Swarm attention"),
-        serde_json::json!({
-            "version": PROTOCOL_VERSION,
-            "type": "swarm_attentions",
-            "attentions": [{
-                "swarm_id": "swarm-a",
-                "swarm_title": "Review team",
-                "message_id": "message-a",
-                "bot_id": "bot-a",
-                "text": "Choose the release scope"
-            }]
-        })
-    );
-}
-
-#[test]
-fn swarm_chat_and_hidden_bot_session_frames_are_gateway_scoped() {
-    let post = ClientFrame::new(ClientMessage::PostSwarmMessage {
-        request_id: "request-post".into(),
-        swarm_id: "swarm-a".into(),
-        text: "@reviewer check this".into(),
-    });
+fn hidden_bot_session_frames_are_gateway_scoped() {
     let list = ClientFrame::new(ClientMessage::ListBotSessions {
         request_id: "request-hidden".into(),
         bot_id: "bot-a".into(),
@@ -545,16 +415,6 @@ fn swarm_chat_and_hidden_bot_session_frames_are_gateway_scoped() {
         sessions: Vec::new(),
     });
 
-    assert_eq!(
-        serde_json::to_value(post).expect("encode human swarm post"),
-        serde_json::json!({
-            "version": PROTOCOL_VERSION,
-            "type": "post_swarm_message",
-            "request_id": "request-post",
-            "swarm_id": "swarm-a",
-            "text": "@reviewer check this"
-        })
-    );
     assert_eq!(
         serde_json::to_value(list).expect("encode hidden Bot sessions request")["type"],
         "list_bot_sessions"
@@ -1002,6 +862,7 @@ fn agent_events_preserve_every_web_search_query() {
 #[test]
 fn session_record_exposes_only_frontend_catalog_fields() {
     let record = SessionRecord {
+        member_bot_ids: None,
         session_id: "session-a".into(),
         session_context: mobius::protocol::SessionContext {
             bot_id: "bot-a".into(),
@@ -1138,8 +999,6 @@ fn gateway_ready_contains_no_selected_session() {
             bots: Vec::new(),
             sessions: Vec::new(),
             background_approvals: Vec::new(),
-            swarm_attentions: Vec::new(),
-            swarms: Vec::new(),
             providers: Vec::new(),
             provider_instances: Vec::new(),
             bot_defaults: Some(VersionedAgentConfig {
@@ -1199,6 +1058,8 @@ fn server_frame_decodes_session_opened_with_a_widget_action_tag() {
         "type": "session_opened",
         "request_id": "request-open",
         "payload": {
+            "active_turn_ids": [],
+            "pending_approvals": [],
             "latest_sequence": 4,
             "attached_folders": [],
             "next_before_sequence": 2,
@@ -1381,7 +1242,7 @@ fn validate_version_requires_the_exact_protocol() {
 }
 
 #[test]
-fn scratchpad_messages_carry_their_management_scope() {
+fn scratchpad_management_is_gateway_scoped() {
     let operation = Op::CapabilityCommand {
         capability: "scratchpad".into(),
         command: "scratchpad".into(),
@@ -1391,20 +1252,15 @@ fn scratchpad_messages_carry_their_management_scope() {
     };
     let request = serde_json::to_value(ClientFrame::new(ClientMessage::SubmitContribution {
         request_id: "scratchpad-1".into(),
-        scope: ContributionScope::Swarm {
-            id: "f517e178-38e3-4f2c-89ec-f787860964ea".into(),
-        },
         operation,
     }))
     .expect("encode scratchpad request");
 
     assert_eq!(request["type"], "submit_contribution");
-    assert_eq!(request["scope"]["type"], "swarm");
     assert!(request.get("session_id").is_none());
 
     let response = ServerFrame::new(ServerMessage::Contributions {
         request_id: "scratchpad-1".into(),
-        scope: ContributionScope::Global,
         contributions: vec![FrontendContribution {
             capability: "scratchpad".into(),
             ..FrontendContribution::default()

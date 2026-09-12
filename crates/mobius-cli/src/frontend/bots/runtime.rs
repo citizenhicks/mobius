@@ -158,17 +158,6 @@ pub(super) fn handle_frame(
                 defer(ServerMessage::Bots { request_id, bots }, deferred)?;
             }
         }
-        ServerMessage::Swarms { request_id, swarms } => {
-            gateway.swarms = swarms.clone();
-            if request_id
-                .as_ref()
-                .is_some_and(|id| pending_matches(state, id))
-            {
-                follow_up = state.complete().unwrap_or(FollowUp::None);
-            } else if request_id.is_some() {
-                defer(ServerMessage::Swarms { request_id, swarms }, deferred)?;
-            }
-        }
         ServerMessage::Routines {
             request_id,
             routines,

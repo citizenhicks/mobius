@@ -191,7 +191,6 @@ extension AppModelTests {
             CachedChatCatalog(
                 bots: [bot()],
                 sessions: [session(state: .idle)],
-                swarms: [],
                 lastSessionID: "chat-1"
             ),
             accountID: account.id
@@ -815,89 +814,6 @@ extension AppModelTests {
         XCTAssertEqual(model.navigationPath, [.chat(.session("chat-1"))])
     }
 
-    func testSwarmAttentionNotificationTapWaitsForCatalogThenOpensSwarmChat() throws {
-        let model = try model()
-        let userID = UUID()
-        let cloudGateway = GatewayAccount(
-            endpoint: try GatewayEndpoint("tcp://localhost:9191"),
-            cloudUserID: userID
-        )
-        let helper = bot()
-        let swarm = SwarmRecord(
-            id: "swarm-1",
-            title: "Quiet Foxes",
-            leaderBotId: helper.id,
-            members: [SwarmMemberRecord(botId: helper.id, handle: helper.handle)],
-            messages: [],
-            updatedAtMs: 1
-        )
-        let notification = RemoteNotification.swarmAttention(
-            eventID: "event-tap",
-            swarmID: swarm.id,
-            messageID: "message-1"
-        )
-        model.cloud.cloudSession = MobiusCloudSession(userID: userID, expiresAt: .distantFuture)
-        model.cloud.notificationsEnabled = true
-        model.gateway.accounts = [cloudGateway]
-        model.gateway.selectedAccountID = cloudGateway.id
-        model.gateway.connectionState = .loading
-
-        model.cloud.openRemoteNotification(notification)
-        XCTAssertEqual(model.cloud.pendingRemoteNotification, notification)
-
-        model.bots = [helper]
-        model.swarms = [swarm]
-        model.gateway.connectionState = .ready
-        XCTAssertTrue(model.openPendingRemoteNotification())
-        XCTAssertNil(model.cloud.pendingRemoteNotification)
-        XCTAssertEqual(
-            model.navigationPath,
-            [.swarm(swarm.id), .swarmChat(swarm.id)]
-        )
-    }
-
-    func testForegroundAndLiveSwarmAttentionDeduplicateByMessageID() throws {
-        let model = try model()
-        let helper = bot()
-        let swarm = SwarmRecord(
-            id: "swarm-1",
-            title: "Quiet Foxes",
-            leaderBotId: helper.id,
-            members: [SwarmMemberRecord(botId: helper.id, handle: helper.handle)],
-            messages: [],
-            updatedAtMs: 1
-        )
-        let attention = SwarmAttention(
-            swarmId: swarm.id,
-            swarmTitle: swarm.title,
-            messageId: "message-1",
-            botId: helper.id,
-            text: "Choose a migration path."
-        )
-        model.cloud.cloudSession = MobiusCloudSession(userID: UUID(), expiresAt: .distantFuture)
-        model.cloud.notificationsEnabled = true
-        model.bots = [helper]
-        model.swarms = [swarm]
-
-        model.receivedForegroundRemoteNotification(
-            .swarmAttention(
-                eventID: "event-1",
-                swarmID: swarm.id,
-                messageID: attention.messageId
-            ),
-            agentName: helper.name,
-            detail: attention.text
-        )
-        let remoteToastID = try XCTUnwrap(model.toast?.id)
-
-        model.gateway.handle(.swarmAttentions([attention]))
-
-        XCTAssertEqual(model.toast?.id, remoteToastID)
-        XCTAssertEqual(model.toast?.message, "Helper: Choose a migration path.")
-        XCTAssertEqual(model.bot(for: model.toast?.target)?.id, helper.id)
-        XCTAssertTrue(model.hasSwarmAttention(forSwarmID: swarm.id))
-    }
-
     func testBackgroundApprovalNotificationTapResumesValidatedHiddenSession() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
@@ -1050,25 +966,7 @@ extension AppModelTests {
                 approvalRequestID: "approval-1"
             )
         )
-        XCTAssertEqual(
-            RemoteNotification(userInfo: [
-                "eventId": "event-5",
-                "kind": "swarm.attention",
-                "swarmId": "swarm-1",
-                "messageId": "message-1",
-            ]),
-            .swarmAttention(
-                eventID: "event-5",
-                swarmID: "swarm-1",
-                messageID: "message-1"
-            )
-        )
-        XCTAssertNil(
-            RemoteNotification(userInfo: [
-                "eventId": "event-6",
-                "kind": "swarm.attention",
-                "swarmId": "swarm-1",
-            ]))
+
     }
 
     func testLanguageLocalesPreserveTheSystemChoice() {

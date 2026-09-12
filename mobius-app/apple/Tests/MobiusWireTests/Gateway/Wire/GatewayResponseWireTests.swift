@@ -143,7 +143,7 @@ extension GatewayWireTests {
 
     func testMessageEventDecodesTypedAuthorAndActualDelivery() throws {
         let envelope = try decodeEnvelope(
-            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"submission_id":"swarm-message-1","msg":{"type":"message","author":{"type":"peer","message_id":"message-1","session_id":"chat-reviewer","handle":"@reviewer"},"delivery":"steer","text":"Check the parser boundary.","attachments":[],"reply":{"target":{"checkpoint_sequence":9,"batch_item_count":1},"text":"Original decision"},"message_target":{"checkpoint_sequence":12,"batch_item_count":2}}},"stream_metrics":[],"blocks":[],"preview":null}}"#
+            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"submission_id":"peer-message-1","msg":{"type":"message","author":{"type":"peer","message_id":"message-1","session_id":"chat-reviewer","handle":"@reviewer"},"delivery":"steer","text":"Check the parser boundary.","attachments":[],"reply":{"target":{"checkpoint_sequence":9,"batch_item_count":1},"text":"Original decision"},"message_target":{"checkpoint_sequence":12,"batch_item_count":2}}},"stream_metrics":[],"blocks":[],"preview":null}}"#
         )
         guard case .agentEvent(_, let record) = envelope else {
             return XCTFail("Expected an agent event")
@@ -355,41 +355,6 @@ extension GatewayWireTests {
             ])
     }
 
-    func testSwarmAttentionResponseCarriesSharedChatTarget() throws {
-        let envelope = try decodeEnvelope(
-            #"{"version":64,"type":"swarm_attentions","attentions":[{"swarm_id":"swarm-1","swarm_title":"Quiet Foxes","message_id":"message-1","bot_id":"bot-1","text":"Choose a migration path."}]}"#
-        )
-        guard case .swarmAttentions(let attentions) = envelope else {
-            return XCTFail("Expected Swarm attentions")
-        }
-        XCTAssertEqual(
-            attentions,
-            [
-                SwarmAttention(
-                    swarmId: "swarm-1",
-                    swarmTitle: "Quiet Foxes",
-                    messageId: "message-1",
-                    botId: "bot-1",
-                    text: "Choose a migration path."
-                )
-            ])
-    }
-
-    func testBotCollaborationAvailabilityUsesRequiredGatewayValue() throws {
-        let enabled = botJSON.replacingOccurrences(
-            of: "\"collaboration_enabled\":false",
-            with: "\"collaboration_enabled\":true"
-        )
-        let bot = try decoder().decode(BotRecord.self, from: Data(enabled.utf8))
-        XCTAssertTrue(bot.collaborationEnabled)
-
-        let missing = botJSON.replacingOccurrences(
-            of: ",\"collaboration_enabled\":false",
-            with: ""
-        )
-        XCTAssertThrowsError(try decoder().decode(BotRecord.self, from: Data(missing.utf8)))
-    }
-
     func testBotAndRoutineResponsesDecodeProtocolFields() throws {
         let bots = try decodeEnvelope(
             #"{"version":56,"type":"bots","request_id":"bots-1","bots":[\#(botJSON)]}"#
@@ -400,7 +365,6 @@ extension GatewayWireTests {
         XCTAssertEqual(botsRequestID, "bots-1")
         XCTAssertEqual(records.first?.handle, "helper")
         XCTAssertEqual(records.first?.config.revision, 4)
-        XCTAssertEqual(records.first?.collaborationEnabled, false)
 
         let gitDiff = try decodeEnvelope(
             #"{"version":27,"type":"git_diff","request_id":"diff-1","session_id":"chat-1","scope":"unstaged","diff":"diff --git a/a b/a"}"#
@@ -613,28 +577,6 @@ extension GatewayWireTests {
         XCTAssertEqual(profile.providerUsage.last?.error, "ChatGPT session expired; sign in again")
         let roundTrip = try decoder().decode(ProfileSnapshot.self, from: encoder().encode(profile))
         XCTAssertEqual(roundTrip, profile)
-    }
-
-    func testSwarmCatalogResponseCarriesOptionalRequestID() throws {
-        let swarm =
-            #"{"id":"swarm-1","title":"Quiet Foxes","leader_bot_id":"bot-1","members":[{"bot_id":"bot-1","handle":"leader"},{"bot_id":"bot-2","handle":"builder"}],"messages":[],"updated_at_ms":200}"#
-        let mutation = try decodeEnvelope(
-            #"{"version":51,"type":"swarms","request_id":"swarm-create-1","swarms":[\#(swarm)]}"#
-        )
-        guard case .swarms(let requestID, let records) = mutation else {
-            return XCTFail("Expected correlated swarm catalog")
-        }
-        XCTAssertEqual(requestID, "swarm-create-1")
-        XCTAssertEqual(records.first?.leaderBotId, "bot-1")
-        XCTAssertEqual(records.first?.members.last?.handle, "builder")
-
-        let broadcast = try decodeEnvelope(
-            #"{"version":51,"type":"swarms","swarms":[\#(swarm)]}"#
-        )
-        guard case .swarms(let broadcastID, _) = broadcast else {
-            return XCTFail("Expected broadcast swarm catalog")
-        }
-        XCTAssertNil(broadcastID)
     }
 
     func testBotSessionsResponseUsesTheExistingSessionRecord() throws {

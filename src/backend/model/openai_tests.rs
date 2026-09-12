@@ -386,10 +386,10 @@ fn hosted_tools_can_be_disabled_per_request() {
 
 #[test]
 fn rebuild_filters_tool_load_control_items() {
-    let loaded = [tool_definition("swarm_post")];
+    let loaded = [tool_definition("notebook_post")];
     let input = [ToolLoad {
         catalog_revision: "catalog-1".into(),
-        tools: vec!["swarm_post".into()],
+        tools: vec!["notebook_post".into()],
     }
     .into_input()];
     let body = OpenAi::new("test-key", "https://example.com/v1", "test-model")
@@ -403,7 +403,7 @@ fn rebuild_filters_tool_load_control_items() {
 
     assert_eq!(
         (&body["input"], &body["tools"][0]["name"]),
-        (&serde_json::json!([]), &serde_json::json!("swarm_post"))
+        (&serde_json::json!([]), &serde_json::json!("notebook_post"))
     );
 
     let native = OpenAi::new("test-key", "https://api.openai.com/v1", "test-model")
@@ -423,10 +423,10 @@ fn rebuild_filters_tool_load_control_items() {
 
 #[test]
 fn native_discovery_ignores_tool_loads_from_an_old_catalog() {
-    let deferred = [tool_definition("swarm_post")];
+    let deferred = [tool_definition("notebook_post")];
     let input = [ToolLoad {
         catalog_revision: "catalog-0".into(),
-        tools: vec!["swarm_post".into()],
+        tools: vec!["notebook_post".into()],
     }
     .into_input()];
 
@@ -449,10 +449,10 @@ fn openrouter_defers_optional_tools_and_uses_hosted_search() {
         tool_definition(TOOLS_SEARCH_NAME),
         tool_definition("read_file"),
     ];
-    let deferred = [tool_definition("swarm_post")];
+    let deferred = [tool_definition("notebook_post")];
     let input = [ToolLoad {
         catalog_revision: "catalog-1".into(),
-        tools: vec!["swarm_post".into()],
+        tools: vec!["notebook_post".into()],
     }
     .into_input()];
     let body = OpenAi::new("test-key", "https://openrouter.ai/api/v1", "test-model")
@@ -480,8 +480,8 @@ fn openrouter_defers_optional_tools_and_uses_hosted_search() {
             },
             {
                 "type": "function",
-                "name": "swarm_post",
-                "description": "Use swarm_post",
+                "name": "notebook_post",
+                "description": "Use notebook_post",
                 "parameters": {"type": "object"},
                 "strict": false,
                 "defer_loading": true
@@ -493,7 +493,7 @@ fn openrouter_defers_optional_tools_and_uses_hosted_search() {
 #[test]
 fn openrouter_materializes_only_deferred_tools_it_calls() {
     let deferred = [
-        tool_definition("swarm_post"),
+        tool_definition("notebook_post"),
         tool_definition("scratchpad_write"),
     ];
     let output = OpenAi::new("test-key", "https://openrouter.ai/api/v1", "test-model")
@@ -505,12 +505,12 @@ fn openrouter_materializes_only_deferred_tools_it_calls() {
                     {
                         "type": "openrouter:tool_search",
                         "status": "completed",
-                        "query": "swarm"
+                        "query": "notebook"
                     },
                     {
                         "type": "function_call",
                         "call_id": "call-1",
-                        "name": "swarm_post",
+                        "name": "notebook_post",
                         "arguments": "{\"message\":\"hello\"}"
                     }
                 ]
@@ -521,7 +521,7 @@ fn openrouter_materializes_only_deferred_tools_it_calls() {
 
     assert_eq!(
         output.materialized_tools(),
-        &std::collections::BTreeSet::from(["swarm_post".to_string()])
+        &std::collections::BTreeSet::from(["notebook_post".to_string()])
     );
 }
 
@@ -1021,10 +1021,10 @@ fn compaction_shape_matches_the_responses_contract() {
 
 #[test]
 fn native_compaction_ignores_tool_loads_from_an_old_catalog() {
-    let deferred = [tool_definition("swarm_post")];
+    let deferred = [tool_definition("notebook_post")];
     let input = [ToolLoad {
         catalog_revision: "catalog-0".into(),
-        tools: vec!["swarm_post".into()],
+        tools: vec!["notebook_post".into()],
     }
     .into_input()];
     let body = OpenAi::new("test-key", "https://api.openai.com/v1", "test-model")

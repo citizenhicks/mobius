@@ -236,7 +236,7 @@ struct GlobalContributionsView: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        let widgets = model.navigationWidgets(in: .global)
+        let widgets = model.gatewayNavigationWidgets
         let title: MobiusText =
             widgets.first.map {
                 .localized(frontendPresentationText($0.title))
@@ -251,10 +251,10 @@ struct GlobalContributionsView: View {
                                 actionsEnabled: model.gateway.connectionState.isReady,
                                 usesSwipeActions: true,
                                 submitOperation: { operation in
-                                    model.submitContributionOperation(operation, scope: .global)
+                                    model.submitContributionOperation(operation)
                                 }
                             ) { option in
-                                model.submitContributionOperation(option.op, scope: .global)
+                                model.submitContributionOperation(option.op)
                             }
                         }
                     }
@@ -268,7 +268,7 @@ struct GlobalContributionsView: View {
             }
         }
         .task(id: model.gateway.connectionState.isReady) {
-            if model.gateway.connectionState.isReady { model.refreshContributions(scope: .global) }
+            if model.gateway.connectionState.isReady { model.refreshContributions() }
         }
     }
 }

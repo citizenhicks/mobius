@@ -2241,7 +2241,7 @@ final class MobiusCloudTests: XCTestCase {
             try? await gatewayStore.remove(secondGateway)
         }
         await gatewayStore.saveChatCatalog(
-            CachedChatCatalog(bots: [], sessions: [], swarms: [], lastSessionID: nil),
+            CachedChatCatalog(bots: [], sessions: [], lastSessionID: nil),
             accountID: secondGateway.id
         )
         await gatewayStore.saveTranscript(

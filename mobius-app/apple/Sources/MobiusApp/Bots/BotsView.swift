@@ -5,19 +5,15 @@ struct BotsView: View {
     @Environment(\.mobiusPalette) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var newBotFormID: UUID?
-    @State private var newSwarmFormID: UUID?
     @State private var botToDelete: BotRecord?
     @State private var botToRename: BotRecord?
     @State private var botRenameDraft = ""
-    @State private var swarmToRename: SwarmRecord?
-    @State private var swarmRenameDraft = ""
-    @State private var swarmToDelete: SwarmRecord?
 
     var body: some View {
         @Bindable var model = model
         PageScaffold(
             title: "Bots",
-            detail: "Durable agents, their routines, and the swarms they form.",
+            detail: "Durable agents and their routines.",
             manualSection: "bots",
             sharesHeaderBackground: true,
             headerAccessory: { headerActions }
@@ -52,32 +48,6 @@ struct BotsView: View {
                 }
             }
 
-            if let newSwarmFormID {
-                Section {
-                    NewSwarmForm { self.newSwarmFormID = nil }
-                        .id(newSwarmFormID)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
-                }
-            }
-            Section("Swarms") {
-                if model.swarms.isEmpty {
-                    Text("No swarms yet.")
-                        .foregroundStyle(palette.muted)
-                } else {
-                    ForEach(orderedSwarms) { swarm in
-                        swarmRow(swarm)
-                            .mobiusSwipeActions {
-                                MobiusSwipeAction(title: "Delete", glyph: .trash, tone: "error") {
-                                    swarmToDelete = swarm
-                                }
-                                MobiusSwipeAction(title: "Rename", glyph: .pencilSimple) {
-                                    swarmRenameDraft = swarm.title
-                                    swarmToRename = swarm
-                                }
-                            }
-                    }
-                }
-            }
         }
         .task(id: model.gateway.connectionState.isReady) {
             guard model.gateway.connectionState.isReady else { return }
@@ -90,8 +60,6 @@ struct BotsView: View {
         }
         .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: newBotFormID)
         .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: model.bots.map(\.id))
-        .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: newSwarmFormID)
-        .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: model.swarms.map(\.id))
         .alert("Delete this Bot and all its data?", isPresented: botDeletionPresented) {
             Button("Delete Bot and All Data", role: .destructive) {
                 if let botToDelete { model.deleteBot(botToDelete) }
@@ -101,7 +69,7 @@ struct BotsView: View {
         } message: {
             if let botToDelete {
                 Text(
-                    "This permanently deletes every conversation, routine, run history, and swarm membership owned by @\(botToDelete.handle). If this Bot leads a swarm, its Swarm Chat and collective scratchpad are also deleted. Active work must finish first."
+                    "This permanently deletes private conversations, routines, and run history owned by @\(botToDelete.handle). Group chat history stays available. Active work must finish first."
                 )
             }
         }
@@ -120,26 +88,6 @@ struct BotsView: View {
             }
             .disabled(botRenameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
-        .alert("Rename swarm", isPresented: swarmRenamePresented) {
-            TextField("Swarm name", text: $swarmRenameDraft)
-            Button("Cancel", role: .cancel) { swarmToRename = nil }
-            Button("Rename") {
-                if let swarmToRename {
-                    model.renameSwarm(swarmToRename, title: swarmRenameDraft)
-                }
-                swarmToRename = nil
-            }
-            .disabled(swarmRenameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        }
-        .alert("Disband this swarm?", isPresented: swarmDeletionPresented) {
-            Button("Disband", role: .destructive) {
-                if let swarmToDelete { model.disbandSwarm(swarmToDelete) }
-                swarmToDelete = nil
-            }
-            Button("Cancel", role: .cancel) { swarmToDelete = nil }
-        } message: {
-            Text("This permanently deletes the shared Swarm Chat and collective scratchpad.")
-        }
     }
 
     private var headerActions: some View {
@@ -149,28 +97,14 @@ struct BotsView: View {
             } label: {
                 MobiusIcon(.aiScan, gutter: false)
             }
-            .disabled(!model.canMutateBots || newBotFormID != nil || newSwarmFormID != nil)
+            .disabled(!model.canMutateBots || newBotFormID != nil)
             .groupedHeaderAction(prominent: true)
             .accessibilityLabel("New Bot")
             .help("New Bot")
-            Button {
-                if model.beginCreatingSwarm() { newSwarmFormID = UUID() }
-            } label: {
-                MobiusIcon(.swarm, gutter: false)
-            }
-            .disabled(
-                !model.canMutateSwarm || newSwarmFormID != nil || newBotFormID != nil
-                    || model.bots.contains(where: \.collaborationEnabled)
-                        && model.availableBotsForSwarm().count < 2
-            )
-            .groupedHeaderAction()
-            .accessibilityLabel("New Swarm")
-            .help("Create a Swarm with Bots that have collaboration enabled in Bot capabilities.")
         }
     }
 
     private func botRow(_ bot: BotRecord) -> some View {
-        let swarm = model.swarm(containingBot: bot.id)
         return SettingsNavigationRow(
             hint: "Shows Bot details",
             open: { model.navigationPath = [.bot(bot.id)] },
@@ -196,10 +130,7 @@ struct BotsView: View {
                     Text(verbatim: bot.name)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    BotOwnershipLine(
-                        identity: "@\(bot.handle)",
-                        swarmName: swarm?.title
-                    )
+                    BotOwnershipLine(identity: "@\(bot.handle)")
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -207,57 +138,10 @@ struct BotsView: View {
         }
     }
 
-    private func swarmRow(_ swarm: SwarmRecord) -> some View {
-        let detail: LocalizedStringResource =
-            swarm.members.count == 1
-            ? "1 Bot · led by \(leaderHandle(for: swarm))"
-            : "\(swarm.members.count) Bots · led by \(leaderHandle(for: swarm))"
-
-        return SettingsNavigationRow(
-            hint: "Shows swarm roster and Swarm Chat",
-            open: { model.openSwarm(swarm.id) },
-            marks: {
-                if model.hasSwarmAttention(forSwarmID: swarm.id) {
-                    MobiusIcon(
-                        .bellDot,
-                        size: MobiusStyle.glyphMark,
-                        foreground: palette.warning
-                    )
-                    .accessibilityLabel("\(swarm.title) has work needing attention")
-                }
-            }
-        ) {
-            SettingsRowLabel(
-                title: .verbatim(swarm.title),
-                detail: .localized(detail)
-            ) {
-                MobiusIcon(
-                    .swarm,
-                    size: MobiusStyle.glyphLead,
-                    foreground: palette.accent
-                )
-                .accessibilityHidden(true)
-            }
-        }
-    }
-
-    private func leaderHandle(for swarm: SwarmRecord) -> String {
-        swarm.members.first { $0.botId == swarm.leaderBotId }.map { "@\($0.handle)" }
-            ?? model.bots.first { $0.id == swarm.leaderBotId }.map { "@\($0.handle)" }
-            ?? "—"
-    }
-
     private var botDeletionPresented: Binding<Bool> {
         Binding(
             get: { botToDelete != nil },
             set: { if !$0 { botToDelete = nil } }
-        )
-    }
-
-    private var swarmRenamePresented: Binding<Bool> {
-        Binding(
-            get: { swarmToRename != nil },
-            set: { if !$0 { swarmToRename = nil } }
         )
     }
 
@@ -268,54 +152,23 @@ struct BotsView: View {
         )
     }
 
-    private var swarmDeletionPresented: Binding<Bool> {
-        Binding(
-            get: { swarmToDelete != nil },
-            set: { if !$0 { swarmToDelete = nil } }
-        )
-    }
-
     private var orderedBots: [BotRecord] {
         model.bots.sorted {
             $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
     }
 
-    private var orderedSwarms: [SwarmRecord] {
-        model.swarms.sorted {
-            if $0.updatedAtMs != $1.updatedAtMs { return $0.updatedAtMs > $1.updatedAtMs }
-            return $0.title.localizedStandardCompare($1.title) == .orderedAscending
-        }
-    }
 }
 
 struct BotOwnershipLine: View {
     @Environment(\.mobiusPalette) private var palette
     let identity: String
-    var swarmName: String?
 
     var body: some View {
-        HStack(spacing: MobiusSpace.xs) {
-            Text(verbatim: identity)
-            if let swarmName {
-                Text(verbatim: "•")
-                    .accessibilityHidden(true)
-                MobiusIcon(.swarm, size: MobiusStyle.glyphMark, gutter: false)
-                    .accessibilityHidden(true)
-                Text(verbatim: swarmName)
-                    .lineLimit(1)
-            }
-        }
-        .font(MobiusStyle.captionFont)
-        .foregroundStyle(palette.muted)
-        .lineLimit(1)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityDescription)
-    }
-
-    private var accessibilityDescription: Text {
-        guard let swarmName else { return Text(verbatim: identity) }
-        return Text("\(identity), swarm \(swarmName)")
+        Text(verbatim: identity)
+            .font(MobiusStyle.captionFont)
+            .foregroundStyle(palette.muted)
+            .lineLimit(1)
     }
 }
 
@@ -410,135 +263,6 @@ struct NewBotForm: View {
     }
 }
 
-struct NewSwarmForm: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.mobiusPalette) private var palette
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var title = ""
-    @State private var leaderBotID = ""
-    @State private var memberBotIDs: Set<String> = []
-    @State private var submitted = false
-    @State private var submittedRequestID: String?
-    let onClose: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: MobiusSpace.l) {
-            HStack(spacing: MobiusSpace.m) {
-                MobiusIcon(.swarm, size: 36, foreground: palette.accent)
-                    .padding(MobiusSpace.m)
-                    .background(palette.accentSoft, in: .rect(cornerRadius: 16))
-                VStack(alignment: .leading, spacing: MobiusSpace.xs) {
-                    Text(title.nonEmpty ?? String(localized: "New Swarm")).font(.headline)
-                    Text("Leader and coworkers")
-                        .font(MobiusStyle.captionFont)
-                        .foregroundStyle(palette.muted)
-                }
-            }
-            TextField("Swarm name", text: $title)
-                .textInputAutocapitalization(.words)
-                .padding(MobiusSpace.m)
-                .background(palette.recessed, in: MobiusStyle.controlShape)
-                .disabled(isSaving)
-            Picker("Leader", selection: $leaderBotID) {
-                Text("Choose a leader").tag("")
-                ForEach(availableBots) { bot in
-                    Text(verbatim: "\(bot.name) · @\(bot.handle)").tag(bot.id)
-                }
-            }
-            .pickerStyle(.menu)
-            .disabled(isSaving)
-            VStack(alignment: .leading, spacing: MobiusSpace.s) {
-                Text("Coworkers").font(MobiusStyle.captionFont).foregroundStyle(palette.muted)
-                ForEach(availableBots.filter { $0.id != leaderBotID }) { bot in
-                    Button {
-                        if !memberBotIDs.insert(bot.id).inserted { memberBotIDs.remove(bot.id) }
-                    } label: {
-                        HStack(spacing: MobiusSpace.m) {
-                            SettingsRowLabel(
-                                title: .verbatim(bot.name), detail: .verbatim("@\(bot.handle)")
-                            ) {
-                                MobiusIcon(.aiScan, foreground: bot.tint.color)
-                            }
-                            Spacer(minLength: 0)
-                            if memberBotIDs.contains(bot.id) {
-                                MobiusIcon(.checkCircle, foreground: palette.accent)
-                            } else {
-                                Circle().strokeBorder(palette.line, lineWidth: 1)
-                                    .frame(
-                                        width: MobiusStyle.glyphInline,
-                                        height: MobiusStyle.glyphInline)
-                            }
-                        }
-                        .frame(minHeight: MobiusStyle.rowTouch)
-                        .contentShape(.rect)
-                    }
-                    .buttonStyle(.mobiusPlain)
-                    .accessibilityValue(
-                        memberBotIDs.contains(bot.id) ? Text("Selected") : Text("Not selected"))
-                }
-            }
-            .disabled(isSaving)
-            .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: leaderBotID)
-            Text(
-                "Enable Swarm collaboration in Bot capabilities to make a Bot available here. Each Bot can belong to one swarm."
-            )
-            .font(MobiusStyle.captionFont)
-            .foregroundStyle(palette.muted)
-            if submitted {
-                switch model.swarmApplyState {
-                case .busy(let message), .conflict(let message), .invalid(let message),
-                    .failed(let message):
-                    Text(verbatim: message).font(MobiusStyle.captionFont).foregroundStyle(
-                        palette.danger)
-                default: EmptyView()
-                }
-            }
-            HStack(spacing: MobiusSpace.m) {
-                Button("Cancel", action: onClose)
-                    .buttonStyle(.mobiusGlass)
-                    .disabled(isSaving)
-                Button(action: create) {
-                    if isSaving {
-                        ProgressView().frame(maxWidth: .infinity)
-                    } else {
-                        Text("Create").frame(maxWidth: .infinity)
-                    }
-                }
-                .mobiusProminentButton()
-                .accessibilityLabel("Create")
-                .disabled(!canCreate)
-            }
-            .buttonBorderShape(.capsule)
-            .controlSize(.large)
-            .buttonSizing(.flexible)
-        }
-        .padding(.vertical, MobiusSpace.s)
-        .onChange(of: leaderBotID) { _, newValue in memberBotIDs.remove(newValue) }
-        .onChange(of: model.swarmMutationRequestID) { old, new in
-            guard let submittedRequestID, old == submittedRequestID, new == nil else { return }
-            self.submittedRequestID = nil
-            if model.swarmApplyState == .applied { onClose() }
-        }
-    }
-
-    private var availableBots: [BotRecord] { model.availableBotsForSwarm() }
-    private var isSaving: Bool {
-        submittedRequestID != nil && submittedRequestID == model.swarmMutationRequestID
-    }
-    private var canCreate: Bool {
-        let allowed = Set(availableBots.map(\.id))
-        return title.nonEmpty != nil && allowed.contains(leaderBotID)
-            && !memberBotIDs.isEmpty && !memberBotIDs.contains(leaderBotID)
-            && memberBotIDs.isSubset(of: allowed) && model.canMutateSwarm
-    }
-    private func create() {
-        guard canCreate else { return }
-        submitted = true
-        model.createSwarm(title: title, leaderBotID: leaderBotID, memberBotIDs: memberBotIDs)
-        submittedRequestID = model.swarmMutationRequestID
-    }
-}
-
 struct BotDetailView: View {
     private static let runPageSize = 5
 
@@ -588,18 +312,6 @@ struct BotDetailView: View {
                         Text(verbatim: bot.description)
                             .font(MobiusStyle.bodyFont)
                             .fixedSize(horizontal: false, vertical: true)
-                    }
-
-                    if let swarm = model.swarm(containingBot: bot.id) {
-                        Section("Swarm") {
-                            Button {
-                                model.navigationPath.append(.swarm(swarm.id))
-                            } label: {
-                                MobiusLabel(verbatim: swarm.title, glyph: .swarm)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                            .buttonStyle(.mobiusPlain)
-                        }
                     }
 
                     routineSections
@@ -654,7 +366,7 @@ struct BotDetailView: View {
                             }
                         }
                         SettingsNavigationRow(
-                            hint: "Shows private conversations created by routines and Swarm work",
+                            hint: "Shows private conversations created by routines and group chats",
                             open: { model.openBotSessions(bot.id) },
                             marks: {
                                 if model.hasBackgroundApproval(forBotID: bot.id) {

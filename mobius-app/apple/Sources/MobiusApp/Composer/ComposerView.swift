@@ -91,39 +91,42 @@ private struct NewChatBotPicker: View {
 
     var body: some View {
         Menu {
-            Picker(
-                "Bot",
-                selection: Binding(
-                    get: { model.chat.pendingNewChatBotID },
-                    set: { id in
-                        if let bot = model.bots.first(where: { $0.id == id }) {
-                            model.selectBotForNewChat(bot)
-                        }
-                    }
-                )
-            ) {
-                ForEach(model.bots) { bot in
+            ForEach(model.bots) { bot in
+                Toggle(
+                    isOn: Binding(
+                        get: { model.chat.pendingNewChatBotIDs.contains(bot.id) },
+                        set: { model.selectBotForNewChat(bot, selected: $0) }
+                    )
+                ) {
                     Label {
-                        Text(verbatim: bot.name)
+                        Text(verbatim: "\(bot.name) · @\(bot.handle)")
                     } icon: {
                         MobiusGlyph.aiScan.menuImage(bot.tint.color)
                     }
-                    .tag(Optional(bot.id))
+                }
+                .menuActionDismissBehavior(.disabled)
+            }
+
+        } label: {
+            Group {
+                if model.selectedChatIsGroup {
+                    MobiusBadge(text: .verbatim(""), glyph: .userGroup02, interactive: true)
+                } else {
+                    MobiusMenuLabel(
+                        text: model.selectedChatBots.isEmpty
+                            ? .localized("Choose Bots")
+                            : .verbatim(model.selectedChatBots.map(\.name).joined(separator: ", ")),
+                        glyph: .aiScan,
+                        glyphColor: model.selectedBot?.tint.color ?? palette.muted
+                    )
                 }
             }
-            .pickerStyle(.inline)
-        } label: {
-            MobiusMenuLabel(
-                text: model.selectedBot.map { .verbatim($0.name) } ?? .localized("Choose Bot"),
-                glyph: .aiScan,
-                glyphColor: model.selectedBot?.tint.color ?? palette.muted
-            )
-            .frame(minHeight: MobiusStyle.iconButtonSize)
+            .frame(minWidth: MobiusStyle.iconButtonSize, minHeight: MobiusStyle.iconButtonSize)
         }
-        .accessibilityLabel("Bot")
-        .accessibilityValue(model.selectedBot?.name ?? model.localizedString("Choose Bot"))
-        .accessibilityHint("Choose the Bot for this chat")
-        .sensoryFeedback(.selection, trigger: model.chat.pendingNewChatBotID)
+        .accessibilityLabel("Bots")
+        .accessibilityValue(model.selectedChatBots.map(\.name).joined(separator: ", "))
+        .accessibilityHint("Choose one Bot for a chat, or several for a group chat")
+        .sensoryFeedback(.selection, trigger: model.chat.pendingNewChatBotIDs)
     }
 }
 
@@ -250,6 +253,7 @@ private struct ComposerActivityView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
     @State private var totals = DiffLineTotals()
+    @State private var showsChatInfo = false
     let showBotSettings: () -> Void
 
     var body: some View {
@@ -284,10 +288,25 @@ private struct ComposerActivityView: View {
                     .accessibilityHint("Opens modified files")
                 }
 
-                if let bot = model.selectedBot {
+                if model.selectedChatIsGroup {
+                    Button {
+                        showsChatInfo = true
+                    } label: {
+                        MobiusBadge(text: .verbatim(""), glyph: .userGroup02, interactive: true)
+                            .frame(
+                                minWidth: MobiusStyle.iconButtonSize,
+                                minHeight: MobiusStyle.iconButtonSize)
+                    }
+                    .buttonStyle(.mobiusPlain)
+                    .accessibilityLabel("Group members")
+                    .accessibilityValue(model.selectedChatBots.map(\.name).joined(separator: ", "))
+                    .popover(isPresented: $showsChatInfo, arrowEdge: .bottom) {
+                        ChatInfoView().presentationCompactAdaptation(.popover)
+                    }
+                } else if let bot = model.selectedBot {
                     BotActivityBadge(bot: bot, action: showBotSettings)
                 }
-                if !model.simplifiedChatUI { SessionStatsBadge() }
+                if !model.simplifiedChatUI && !model.selectedChatIsGroup { SessionStatsBadge() }
             }
             .frame(minHeight: MobiusStyle.iconButtonSize)
             .scrollableRow()

@@ -280,8 +280,6 @@ struct AppShell: View {
                     case .chat: ChatView()
                     case .bot(let id): BotDetailView(botID: id)
                     case .botSessions(let id): BotSessionsView(botID: id)
-                    case .swarm(let id): SwarmView(swarmID: id)
-                    case .swarmChat(let id): SwarmChatView(swarmID: id)
                     case .settings(.gateway(let id)): GatewayDetailView(id: id)
                     case .settings(.provider(let instance)): ProviderDetailView(instance: instance)
                     case .settings(.extensionPackage(let id)): ExtensionDetailView(id: id)
@@ -394,7 +392,7 @@ struct AppShell: View {
         case .bots:
             MobiusTitleText(title: "Bots")
         case .globalContributions:
-            if let widget = model.navigationWidgets(in: .global).first {
+            if let widget = model.gatewayNavigationWidgets.first {
                 MobiusTitleText(title: frontendPresentationText(widget.title))
             } else {
                 MobiusTitleText(title: "Scratchpad")

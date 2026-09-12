@@ -39,8 +39,6 @@
 		20000000000000000000004A /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000036 /* SidebarView.swift */; };
 		20000000000000000000004B /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000037 /* PairingView.swift */; };
 		200000000000000000000034 /* ChatsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000026 /* ChatsView.swift */; };
-		200000000000000000000066 /* SwarmView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000047 /* SwarmView.swift */; };
-		200000000000000000000067 /* SwarmStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000048 /* SwarmStats.swift */; };
 		200000000000000000000003 /* FilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000003 /* FilesView.swift */; };
 		200000000000000000000050 /* FilePreviewViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000003A /* FilePreviewViews.swift */; };
 		200000000000000000000004 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000004 /* ChatView.swift */; };
@@ -106,7 +104,6 @@
 		A20000000000000000000015 /* AppModelTurnTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000015 /* AppModelTurnTests.swift */; };
 		A20000000000000000000016 /* ChatTitleWriterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000016 /* ChatTitleWriterTests.swift */; };
 		A20000000000000000000017 /* FileTreeNodeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* FileTreeNodeTests.swift */; };
-		A20000000000000000000027 /* SwarmStatsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000027 /* SwarmStatsTests.swift */; };
 		A20000000000000000000018 /* TranscriptPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000018 /* TranscriptPresentationTests.swift */; };
 		A20000000000000000000019 /* TranscriptProjectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000019 /* TranscriptProjectionTests.swift */; };
 		B20000000000000000000005 /* MobiusCloudTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003 /* MobiusCloudTests.swift */; };
@@ -136,7 +133,6 @@
 		F20000000000000000000105 /* RealtimeVoiceMeterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000105 /* RealtimeVoiceMeterTests.swift */; };
 		930000000000000000000001 /* AppModelChatCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 920000000000000000000001 /* AppModelChatCommands.swift */; };
 		930000000000000000000002 /* AppModelFileCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 920000000000000000000002 /* AppModelFileCommands.swift */; };
-		930000000000000000000003 /* AppModelSwarmCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 920000000000000000000003 /* AppModelSwarmCommands.swift */; };
 		930000000000000000000004 /* AppModelComposerCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 920000000000000000000004 /* AppModelComposerCommands.swift */; };
 		930000000000000000000005 /* AppModelFrontendCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 920000000000000000000005 /* AppModelFrontendCommands.swift */; };
 		930000000000000000000006 /* AppModelBotConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 920000000000000000000006 /* AppModelBotConfiguration.swift */; };
@@ -196,8 +192,6 @@
 		100000000000000000000036 /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
 		100000000000000000000037 /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
 		100000000000000000000026 /* ChatsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatsView.swift; sourceTree = "<group>"; };
-		100000000000000000000047 /* SwarmView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwarmView.swift; sourceTree = "<group>"; };
-		100000000000000000000048 /* SwarmStats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwarmStats.swift; sourceTree = "<group>"; };
 		100000000000000000000003 /* FilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesView.swift; sourceTree = "<group>"; };
 		10000000000000000000003A /* FilePreviewViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewViews.swift; sourceTree = "<group>"; };
 		100000000000000000000004 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
@@ -262,7 +256,6 @@
 		A10000000000000000000015 /* AppModelTurnTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelTurnTests.swift; sourceTree = "<group>"; };
 		A10000000000000000000016 /* ChatTitleWriterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatTitleWriterTests.swift; sourceTree = "<group>"; };
 		A10000000000000000000017 /* FileTreeNodeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileTreeNodeTests.swift; sourceTree = "<group>"; };
-		A10000000000000000000027 /* SwarmStatsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwarmStatsTests.swift; sourceTree = "<group>"; };
 		A10000000000000000000018 /* TranscriptPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptPresentationTests.swift; sourceTree = "<group>"; };
 		A10000000000000000000019 /* TranscriptProjectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptProjectionTests.swift; sourceTree = "<group>"; };
 		B10000000000000000000003 /* MobiusCloudTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobiusCloudTests.swift; sourceTree = "<group>"; };
@@ -291,7 +284,6 @@
 		F10000000000000000000105 /* RealtimeVoiceMeterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealtimeVoiceMeterTests.swift; sourceTree = "<group>"; };
 		920000000000000000000001 /* AppModelChatCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelChatCommands.swift; sourceTree = "<group>"; };
 		920000000000000000000002 /* AppModelFileCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelFileCommands.swift; sourceTree = "<group>"; };
-		920000000000000000000003 /* AppModelSwarmCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelSwarmCommands.swift; sourceTree = "<group>"; };
 		920000000000000000000004 /* AppModelComposerCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelComposerCommands.swift; sourceTree = "<group>"; };
 		920000000000000000000005 /* AppModelFrontendCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelFrontendCommands.swift; sourceTree = "<group>"; };
 		920000000000000000000006 /* AppModelBotConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelBotConfiguration.swift; sourceTree = "<group>"; };
@@ -366,7 +358,6 @@
 				AA0000000000000000000005 /* Composer */,
 				AA0000000000000000000006 /* Bots */,
 				AA0000000000000000000007 /* Routines */,
-				AA0000000000000000000008 /* Swarms */,
 				AA0000000000000000000009 /* Files */,
 				AA000000000000000000000A /* Cloud */,
 				AA000000000000000000000B /* Settings */,
@@ -406,7 +397,6 @@
 				AC0000000000000000000001 /* Gateway */,
 				AC0000000000000000000003 /* Chat */,
 				AC0000000000000000000004 /* Composer */,
-				AC0000000000000000000005 /* Swarms */,
 				AC0000000000000000000006 /* Files */,
 				AC0000000000000000000007 /* Cloud */,
 				AC0000000000000000000008 /* Settings */,
@@ -505,16 +495,6 @@
 				920000000000000000000008 /* AppModelRoutineConfiguration.swift */,
 			);
 			path = Routines;
-			sourceTree = "<group>";
-		};
-		AA0000000000000000000008 /* Swarms */ = {
-			isa = PBXGroup;
-			children = (
-				100000000000000000000047 /* SwarmView.swift */,
-				100000000000000000000048 /* SwarmStats.swift */,
-				920000000000000000000003 /* AppModelSwarmCommands.swift */,
-			);
-			path = Swarms;
 			sourceTree = "<group>";
 		};
 		AA0000000000000000000009 /* Files */ = {
@@ -632,14 +612,6 @@
 				F10000000000000000000105 /* RealtimeVoiceMeterTests.swift */,
 			);
 			path = Composer;
-			sourceTree = "<group>";
-		};
-		AC0000000000000000000005 /* Swarms */ = {
-			isa = PBXGroup;
-			children = (
-				A10000000000000000000027 /* SwarmStatsTests.swift */,
-			);
-			path = Swarms;
 			sourceTree = "<group>";
 		};
 		AC0000000000000000000006 /* Files */ = {
@@ -853,12 +825,10 @@
 				20000000000000000000004A /* SidebarView.swift in Sources */,
 				20000000000000000000004B /* PairingView.swift in Sources */,
 				200000000000000000000034 /* ChatsView.swift in Sources */,
-				200000000000000000000066 /* SwarmView.swift in Sources */,
 				10C531DD2EAA465B95FC0B3C /* ComposerSurface.swift in Sources */,
 				40B7FF5D03BC4620900D4EA9 /* EventCentreView.swift in Sources */,
 				C129155822474DC088E39BE4 /* AppModelEventCentre.swift in Sources */,
 				268831BC10FF4896B6E4E0E0 /* EventCentreItem.swift in Sources */,
-				200000000000000000000067 /* SwarmStats.swift in Sources */,
 				200000000000000000000003 /* FilesView.swift in Sources */,
 				200000000000000000000050 /* FilePreviewViews.swift in Sources */,
 				200000000000000000000004 /* ChatView.swift in Sources */,
@@ -904,7 +874,6 @@
 				200000000000000000000020 /* WorkspaceDiffView.swift in Sources */,
 				930000000000000000000001 /* AppModelChatCommands.swift in Sources */,
 				930000000000000000000002 /* AppModelFileCommands.swift in Sources */,
-				930000000000000000000003 /* AppModelSwarmCommands.swift in Sources */,
 				930000000000000000000004 /* AppModelComposerCommands.swift in Sources */,
 				930000000000000000000005 /* AppModelFrontendCommands.swift in Sources */,
 				930000000000000000000006 /* AppModelBotConfiguration.swift in Sources */,
@@ -941,7 +910,6 @@
 				A20000000000000000000015 /* AppModelTurnTests.swift in Sources */,
 				A20000000000000000000016 /* ChatTitleWriterTests.swift in Sources */,
 				A20000000000000000000017 /* FileTreeNodeTests.swift in Sources */,
-				A20000000000000000000027 /* SwarmStatsTests.swift in Sources */,
 				A20000000000000000000018 /* TranscriptPresentationTests.swift in Sources */,
 				A20000000000000000000019 /* TranscriptProjectionTests.swift in Sources */,
 				B20000000000000000000005 /* MobiusCloudTests.swift in Sources */,
@@ -1070,7 +1038,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CODE_SIGN_ENTITLEMENTS = Sources/MobiusApp/MobiusApp.entitlements;
-				CURRENT_PROJECT_VERSION = 331;
+				CURRENT_PROJECT_VERSION = 332;
 				DEVELOPMENT_TEAM = 3T68GZFAR6;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1109,7 +1077,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CODE_SIGN_ENTITLEMENTS = Sources/MobiusApp/MobiusApp.entitlements;
-				CURRENT_PROJECT_VERSION = 331;
+				CURRENT_PROJECT_VERSION = 332;
 				DEVELOPMENT_TEAM = 3T68GZFAR6;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/MobiusApp/Info.plist;

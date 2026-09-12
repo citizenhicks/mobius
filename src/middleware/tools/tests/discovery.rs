@@ -227,9 +227,9 @@ fn catalog_revision_is_order_independent_and_schema_sensitive() {
 fn deferred_search_is_relevant_scoped_and_bounded() {
     let mut catalog = Catalog::default();
     for (name, description) in [
-        ("swarm", "exact"),
-        ("swarm_post", "name match"),
-        ("board", "post to the swarm"),
+        ("notebook", "exact"),
+        ("notebook_post", "name match"),
+        ("board", "post to the notebook"),
     ] {
         catalog
             .register(Arc::new(NamedTool::new(
@@ -241,15 +241,15 @@ fn deferred_search_is_relevant_scoped_and_bounded() {
     }
     catalog
         .register(Arc::new(NamedTool::new(
-            "direct_swarm",
-            "swarm",
+            "direct_notebook",
+            "notebook",
             ToolExposure::Direct,
         )))
         .expect("direct tool");
     catalog
         .register(Arc::new(NamedTool::new(
-            "hidden_swarm",
-            "swarm",
+            "hidden_notebook",
+            "notebook",
             ToolExposure::Hidden,
         )))
         .expect("hidden tool");
@@ -258,23 +258,23 @@ fn deferred_search_is_relevant_scoped_and_bounded() {
         names(
             &catalog
                 .search_deferred(
-                    " SWARM ",
+                    " NOTEBOOK ",
                     &BTreeSet::from([
-                        "swarm".to_string(),
-                        "swarm_post".to_string(),
+                        "notebook".to_string(),
+                        "notebook_post".to_string(),
                         "board".to_string(),
-                        "direct_swarm".to_string(),
-                        "hidden_swarm".to_string(),
+                        "direct_notebook".to_string(),
+                        "hidden_notebook".to_string(),
                     ]),
                 )
                 .expect("search"),
         ),
-        ["swarm", "board", "swarm_post"]
+        ["notebook", "board", "notebook_post"]
     );
     assert_eq!(
         names(
             &catalog
-                .search_deferred("swarm", &BTreeSet::from(["board".to_string()]))
+                .search_deferred("notebook", &BTreeSet::from(["board".to_string()]))
                 .expect("scoped search"),
         ),
         ["board"]
@@ -492,8 +492,8 @@ async fn tools_search_executes_as_a_normal_bound_tool_and_reports_loaded_names()
     let mut catalog = Catalog::default();
     catalog
         .register(Arc::new(NamedTool::new(
-            "swarm_post",
-            "post a message to swarm peers",
+            "notebook_post",
+            "post a message to notebook peers",
             ToolExposure::Deferred,
         )))
         .expect("deferred tool");
@@ -503,10 +503,10 @@ async fn tools_search_executes_as_a_normal_bound_tool_and_reports_loaded_names()
             ToolCall {
                 call_id: "search-1".into(),
                 name: TOOLS_SEARCH_NAME.into(),
-                arguments: serde_json::json!({"query": "swarm"}),
+                arguments: serde_json::json!({"query": "notebook"}),
             },
             &BTreeSet::new(),
-            &BTreeSet::from(["swarm_post".to_string()]),
+            &BTreeSet::from(["notebook_post".to_string()]),
         )
         .expect("bind search");
 
@@ -524,7 +524,10 @@ async fn tools_search_executes_as_a_normal_bound_tool_and_reports_loaded_names()
     let load = ToolLoad::from_input(&result.additional_input[0])
         .expect("valid load")
         .expect("tool load");
-    assert_eq!(load.tools, ["swarm_post"]);
+    assert_eq!(load.tools, ["notebook_post"]);
     assert!(matches!(result.events.as_slice(), [EventMsg::ToolLoad(_)]));
-    assert_eq!(result.output.text(), r#"{"loaded_tools":["swarm_post"]}"#);
+    assert_eq!(
+        result.output.text(),
+        r#"{"loaded_tools":["notebook_post"]}"#
+    );
 }

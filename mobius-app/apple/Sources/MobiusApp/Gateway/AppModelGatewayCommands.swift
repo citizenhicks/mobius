@@ -51,7 +51,6 @@ extension AppModel {
         else { return }
         if let catalog {
             applyBots(catalog.bots)
-            applySwarms(catalog.swarms)
             applySessionCatalog(catalog.sessions)
             if let sessionID = catalog.lastSessionID {
                 destination = .chats
@@ -162,7 +161,7 @@ extension AppModel {
         chat.sessionToRestoreID = nil
         chat.sessionOpenCursor = nil
         chat.pendingNewChatWorkspace = path
-        chat.pendingNewChatBotID = nil
+        chat.pendingNewChatBotIDs = []
         workspaceError = nil
         chat.resetSessionState()
         destination = .chats

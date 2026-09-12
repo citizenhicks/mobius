@@ -594,7 +594,7 @@ async fn create_session(
         .send(ClientMessage::CreateSession {
             request_id: request_id.clone(),
             workspace,
-            bot_id,
+            bot_ids: vec![bot_id],
         })
         .await
         .map_err(gateway_error)?;
@@ -695,7 +695,6 @@ async fn refresh_sessions(
             }
             ServerMessage::Ready { payload } => *gateway = payload,
             ServerMessage::Sessions { sessions, .. } => gateway.sessions = sessions,
-            ServerMessage::Swarms { swarms, .. } => gateway.swarms = swarms,
             ServerMessage::Rejected {
                 request_id: actual,
                 message,
@@ -941,6 +940,7 @@ mod tests {
     #[test]
     fn only_an_unused_startup_chat_is_pristine() {
         let mut session = SessionRecord {
+            member_bot_ids: None,
             session_id: "startup".into(),
             session_context: Default::default(),
             parent_session_id: None,

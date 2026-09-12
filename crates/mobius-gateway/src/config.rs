@@ -37,9 +37,8 @@ pub use self::store::{
 pub use self::validation::validate_agent_composition;
 use self::validation::*;
 pub(crate) use self::validation::{effective_reasoning_effort, model_route_id};
-use self::workspace::*;
 pub(crate) use self::workspace::{
-    create_workspace_directory, local_user_name, prepare_background_workspace,
+    create_workspace_directory, local_user_name, validate_chat_workspace, workspace_id,
 };
 
 const CONFIG_VERSION: u32 = 24;

@@ -42,7 +42,7 @@ struct HostState {
     checkpoints: Arc<dyn CheckpointStore>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
-    swarm: Arc<SwarmStore>,
+    group: Arc<GroupStore>,
     alive: Arc<AtomicBool>,
     terminated: Arc<AtomicBool>,
     termination: Arc<tokio::sync::Notify>,
@@ -234,7 +234,7 @@ impl HostHandle {
         checkpoints: Arc<dyn CheckpointStore>,
         scratchpad: ScratchpadStore,
         session_files: SessionFileStore,
-        swarm: Arc<SwarmStore>,
+        group: Arc<GroupStore>,
         session_mutations: Arc<RwLock<()>>,
         discovery_gate: Arc<Mutex<()>>,
         desktop: Arc<DesktopControl>,
@@ -253,12 +253,11 @@ impl HostHandle {
             Arc::clone(&checkpoints),
             scratchpad.clone(),
             session_files.clone(),
-            Arc::clone(&swarm),
+            Arc::clone(&group),
             Arc::clone(&discovery_gate),
             Arc::clone(&desktop),
             session_id.clone(),
             origin_label,
-            true,
             None,
             Arc::clone(&provider_epoch),
         )
@@ -286,7 +285,7 @@ impl HostHandle {
             checkpoints,
             scratchpad,
             session_files,
-            swarm,
+            group,
             discovery_gate,
             desktop,
             alive: Arc::clone(&alive),
@@ -314,7 +313,7 @@ impl HostHandle {
             idle_waiters: Vec::new(),
         };
         state.reconcile_loaded_startup().await?;
-        state.reconcile_replayed_swarm_work().await?;
+        state.reconcile_replayed_group_work().await?;
         tokio::spawn(state.run());
         Ok(Self {
             inner: Arc::new(HostInner {
@@ -658,47 +657,66 @@ async fn start_agent(
     checkpoints: Arc<dyn CheckpointStore>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
-    swarm: Arc<SwarmStore>,
+    group: Arc<GroupStore>,
     discovery_gate: Arc<Mutex<()>>,
     desktop: Arc<DesktopControl>,
     session_id: String,
     origin_label: &str,
-    override_saved_model_route: bool,
     prepared: Option<Arc<crate::assembly::PreparedBot>>,
     provider_epoch: Arc<AtomicU64>,
 ) -> Result<RunningAgent> {
-    let swarm: Arc<dyn BotsBackend> = swarm;
+    let group: Arc<dyn BotsBackend> = group;
     let prepared = if let Some(prepared) = prepared {
         prepared
     } else {
-        let bot = bots.bot(&spec.bot_id)?;
-        let epoch = provider_epoch.load(Ordering::Acquire);
-        let mut cache = bots.prepared.lock().await;
-        if let Some(prepared) = cache
-            .get(&bot.id)
-            .filter(|prepared| prepared.matches_runtime(&bot) && prepared.epoch == epoch)
-        {
-            Arc::clone(prepared)
-        } else {
+        loop {
+            let generation = bots.preparation_generation.load(Ordering::Acquire);
+            let bot = bots.bot(&spec.bot_id)?;
+            let epoch = provider_epoch.load(Ordering::Acquire);
+            let cached = bots
+                .prepared
+                .lock()
+                .await
+                .get(&bot.id)
+                .filter(|prepared| prepared.matches_runtime(&bot) && prepared.epoch == epoch)
+                .cloned();
+            if let Some(prepared) = cached {
+                break prepared;
+            }
             let config = gateway
                 .lock()
                 .map_err(|_| Error::Config("gateway configuration lock is poisoned".into()))?
                 .clone();
-            let prepared = Arc::new(
-                crate::assembly::prepare_bot(
-                    &config,
-                    bot,
-                    store,
-                    &credentials,
-                    session_files.clone(),
-                    epoch,
-                )
-                .await?,
-            );
+            let prepared = crate::assembly::prepare_bot(
+                &config,
+                bot.clone(),
+                store,
+                &credentials,
+                session_files.clone(),
+                epoch,
+            )
+            .await;
+            let mut cache = bots.prepared.lock().await;
+            let current_bot = bots.bot(&spec.bot_id)?;
+            // A refresh can finish while preparation waits for external resources.
+            if generation != bots.preparation_generation.load(Ordering::Acquire)
+                || epoch != provider_epoch.load(Ordering::Acquire)
+                || bot.description != current_bot.description
+                || bot.config.config != current_bot.config.config
+            {
+                continue;
+            }
+            if let Some(cached) = cache
+                .get(&bot.id)
+                .filter(|cached| cached.matches_runtime(&bot) && cached.epoch == epoch)
+            {
+                break Arc::clone(cached);
+            }
+            let prepared = Arc::new(prepared?);
             if let Some(previous) = cache.insert(spec.bot_id.clone(), Arc::clone(&prepared)) {
                 previous.invalidate();
             }
-            prepared
+            break prepared;
         }
     };
     if let Some(mut checkpoint) = checkpoints.load(&session_id).await?
@@ -728,10 +746,9 @@ async fn start_agent(
         session_files,
         discovery_gate,
         desktop,
-        swarm,
+        group,
         Some(session_id),
         origin_label,
-        override_saved_model_route,
         Arc::clone(&prepared),
     )
     .await?;

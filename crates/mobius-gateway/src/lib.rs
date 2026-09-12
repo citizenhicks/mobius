@@ -9,6 +9,7 @@ pub mod command;
 mod computer_runtime;
 pub mod config;
 mod extensions;
+mod groups;
 mod host;
 mod middleware_manifest;
 mod provider_catalog;

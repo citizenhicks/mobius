@@ -504,7 +504,7 @@ fn peer_messages_use_activity_rows_in_live_history_and_preview_transcripts() {
         record.event.submission_id = Some("submission".into());
 
         let mut live = state();
-        events::handle_gateway_event(&mut live, record.clone());
+        events::handle_gateway_event(&mut live, record.clone(), true);
         let mut history = state();
         events::handle_gateway_history(&mut history, vec![record.clone()]);
         let mut preview = state();
@@ -516,7 +516,7 @@ fn peer_messages_use_activity_rows_in_live_history_and_preview_transcripts() {
             event: record.event.msg,
             blocks: record.blocks,
         }];
-        events::handle_gateway_event(&mut preview, page);
+        events::handle_gateway_event(&mut preview, page, true);
 
         let title = format!("Message received from @{handle}");
         for transcript in [
@@ -840,6 +840,7 @@ fn transcript_viewport_matches_full_paragraph_for_unicode_scroll_and_resize() {
                     &["e\u{301} 👩‍💻 snapshot content ".repeat(8).as_str()],
                     None,
                 ),
+                true,
             );
         }
         compare_preview(

@@ -1,4 +1,4 @@
-use super::{Basis, Entry, MANIFEST, Scope, Snapshot, text};
+use super::{Basis, Entry, MANIFEST, Snapshot, text};
 use crate::Result;
 use crate::middleware::{FrontendEventSink, MiddlewareCommandOutput};
 use crate::protocol::{
@@ -15,16 +15,7 @@ pub(super) fn global_widget(entries: &[Entry]) -> FrontendWidget {
         "navigation",
         FrontendSlot::Navigation,
         text::WIDGET_TEXT,
-        action_list_content(text::WIDGET_GLOBAL_TITLE, Scope::Global, entries),
-    )
-}
-
-pub(super) fn swarm_widget(entries: &[Entry]) -> FrontendWidget {
-    frontend_widget(
-        "swarm",
-        FrontendSlot::Navigation,
-        text::WIDGET_TEXT,
-        action_list_content(text::WIDGET_SWARM_TITLE, Scope::Swarm, entries),
+        action_list_content(text::WIDGET_GLOBAL_TITLE, entries),
     )
 }
 
@@ -53,16 +44,12 @@ fn frontend_widget(
     }
 }
 
-fn action_list_content(title: &str, scope: Scope, entries: &[Entry]) -> FrontendWidgetContent {
+fn action_list_content(title: &str, entries: &[Entry]) -> FrontendWidgetContent {
     FrontendWidgetContent::ActionList {
         title: title.into(),
         actions: vec![FrontendAction {
             id: "add".into(),
-            label: match scope {
-                Scope::Swarm => text::ACTION_ADD_SWARM,
-                Scope::Global => text::ACTION_ADD_GLOBAL,
-            }
-            .into(),
+            label: text::ACTION_ADD_GLOBAL.into(),
             symbol: FrontendSymbol::Custom("plus".into()),
             tone: FrontendTone::Neutral,
             op: Op::CapabilityCommand {
@@ -73,30 +60,17 @@ fn action_list_content(title: &str, scope: Scope, entries: &[Entry]) -> Frontend
                 target: None,
             },
             editor: Some(FrontendEditor {
-                title: match scope {
-                    Scope::Swarm => text::EDITOR_SWARM_TITLE,
-                    Scope::Global => text::EDITOR_GLOBAL_TITLE,
-                }
-                .into(),
+                title: text::EDITOR_GLOBAL_TITLE.into(),
                 label: text::EDITOR_LABEL.into(),
-                description: match scope {
-                    Scope::Swarm => text::EDITOR_SWARM_DESCRIPTION,
-                    Scope::Global => text::EDITOR_GLOBAL_DESCRIPTION,
-                }
-                .into(),
+                description: text::EDITOR_GLOBAL_DESCRIPTION.into(),
                 submit_label: text::EDITOR_SUBMIT.into(),
             }),
         }],
-        items: entries
-            .iter()
-            .rev()
-            .map(|entry| action_list_item(scope, entry))
-            .collect(),
+        items: entries.iter().rev().map(action_list_item).collect(),
     }
 }
 
-pub(super) fn action_list_item(scope: Scope, entry: &Entry) -> FrontendActionListItem {
-    let scope_name = scope_name(scope);
+pub(super) fn action_list_item(entry: &Entry) -> FrontendActionListItem {
     let actions = vec![
         list_action(
             entry,
@@ -104,7 +78,7 @@ pub(super) fn action_list_item(scope: Scope, entry: &Entry) -> FrontendActionLis
             FrontendSymbol::Edit,
             text::ACTION_EDIT,
             FrontendTone::Neutral,
-            format!("edit {scope_name} {}", entry.id),
+            format!("edit {}", entry.id),
             Some(&entry.note),
         ),
         list_action(
@@ -113,7 +87,7 @@ pub(super) fn action_list_item(scope: Scope, entry: &Entry) -> FrontendActionLis
             FrontendSymbol::Delete,
             text::ACTION_DELETE,
             FrontendTone::Error,
-            format!("forget {scope_name} {}", entry.id),
+            format!("forget {}", entry.id),
             None,
         ),
     ];
@@ -167,34 +141,12 @@ pub(super) fn publish_widgets(frontend: &FrontendEventSink, snapshot: &Snapshot)
     Ok(())
 }
 
-pub(super) fn parse_scope(scope: &str) -> Option<Scope> {
-    match scope {
-        "swarm" => Some(Scope::Swarm),
-        "global" => Some(Scope::Global),
-        _ => None,
-    }
-}
-
-const fn scope_name(scope: Scope) -> &'static str {
-    match scope {
-        Scope::Swarm => "swarm",
-        Scope::Global => "global",
-    }
-}
-
 pub(super) fn usage() -> MiddlewareCommandOutput {
     MiddlewareCommandOutput::render(MANIFEST.id, text::COMMAND_USAGE, FrontendTone::Warning)
 }
 
 pub(super) fn format_snapshot(snapshot: &Snapshot) -> String {
     let mut sections = Vec::new();
-    if let Some(swarm) = &snapshot.swarm {
-        sections.push(format!(
-            "{}\n{}",
-            text::MESSAGE_SWARM_HEADING,
-            format_entries(swarm)
-        ));
-    }
     sections.push(format!(
         "{}\n{}",
         text::MESSAGE_GLOBAL_HEADING,

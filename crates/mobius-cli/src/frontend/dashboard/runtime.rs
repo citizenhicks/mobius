@@ -205,7 +205,7 @@ pub(super) async fn handle_key(
         _ => None,
     };
     if let Some(mode) = mode {
-        state.error = setup::run_gateway(terminal, mode, sender, events, &mut state.gateway)
+        state.error = setup::run_gateway(terminal, mode, None, sender, events, &mut state.gateway)
             .await
             .err()
             .map(|error| error.to_string());
@@ -710,7 +710,6 @@ pub(super) fn handle_frame(state: &mut DashboardState, message: ServerMessage) -
             state.gateway.bots = bots;
             sync_bot_selection(state);
         }
-        ServerMessage::Swarms { swarms, .. } => state.gateway.swarms = swarms,
         ServerMessage::Clients {
             current_client_id,
             clients,

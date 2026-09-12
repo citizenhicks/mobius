@@ -232,12 +232,12 @@ pub(super) async fn save_attachment_workspace(
 
 pub(super) async fn remove_staged_attachments(
     workspace: &StoredAttachmentWorkspace,
-    session_id: &str,
+    storage_key: &str,
 ) -> Result<()> {
     let workspace = workspace.clone();
     let staged = PathBuf::from(".mobius")
         .join("attachments")
-        .join(session_storage_key(session_id));
+        .join(storage_key);
     tokio::task::spawn_blocking(move || {
         let directory = match Dir::open_ambient_dir(&workspace.path, ambient_authority()) {
             Ok(directory) => directory,

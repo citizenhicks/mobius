@@ -20,8 +20,7 @@ extension AppModel {
         case .sessionOpened, .sessionReplayComplete, .sessionHistory, .sessionChanged:
             handleSessionEnvelope(envelope)
         case .gatewayConfigured, .contributionsChanged, .accepted, .rejected,
-            .agentEvent, .sessions, .backgroundApprovals, .swarmAttentions, .botSessions,
-            .bots, .swarms:
+            .agentEvent, .sessions, .backgroundApprovals, .botSessions, .bots:
             handleGatewayUpdateEnvelope(envelope)
         case .providerCredentialSaved, .pairingCode, .providerLoginStarted,
             .providerLoginFinished, .gitCredentialStatus, .sshIdentities,
@@ -80,8 +79,8 @@ extension AppModel {
         switch envelope {
         case .gatewayConfigured(let requestID, let payload):
             applyGatewayConfigurationResponse(requestID: requestID, payload: payload)
-        case .contributionsChanged(_, let scope, let contributions):
-            applyScopedContributions(contributions, scope: scope)
+        case .contributionsChanged(_, let contributions):
+            gatewayContributions = contributions
         case .accepted(let requestID):
             handleAccepted(requestID)
         case .rejected(let rejection):
@@ -98,29 +97,12 @@ extension AppModel {
         case .backgroundApprovals(let approvals):
             applyBackgroundApprovals(approvals, notifyingNew: true)
             refreshRoutines()
-        case .swarmAttentions(let attentions):
-            applySwarmAttentions(attentions, notifyingNew: true)
         case .botSessions(let requestID, let botID, let sessions):
             applyBotSessionsResponse(requestID: requestID, botID: botID, sessions: sessions)
         case .bots(let requestID, let bots):
             applyBotsResponse(requestID: requestID, bots: bots)
-        case .swarms(let requestID, let swarms):
-            applySwarmsResponse(requestID: requestID, swarms: swarms)
         default:
             break
-        }
-    }
-
-    private func applyScopedContributions(
-        _ contributions: [FrontendContribution],
-        scope: ContributionScope
-    ) {
-        switch scope {
-        case .global:
-            gatewayContributions = contributions
-        case .swarm(let id):
-            guard swarms.contains(where: { $0.id == id }) else { return }
-            swarmContributions[id] = contributions
         }
     }
 
@@ -171,19 +153,6 @@ extension AppModel {
             tone: .success
         )
         botMutationSuccessMessage = nil
-    }
-
-    private func applySwarmsResponse(requestID: String?, swarms: [SwarmRecord]) {
-        let completedMutation = requestID != nil && requestID == swarmMutationRequestID
-        if completedMutation { swarmMutationRequestID = nil }
-        let posted = requestID != nil && requestID == swarmMessageRequestID
-        if posted { swarmMessageRequestID = nil }
-        if applySwarms(swarms) {
-            if completedMutation { swarmApplyState = .applied }
-            if posted { completedSwarmMessageRequestID = requestID }
-        } else if completedMutation {
-            swarmApplyState = .failed(localizedString("The gateway returned invalid swarm state."))
-        }
     }
 
     private func applyProviderCredentialSaved(requestID: String, instance: String, provider: String)
@@ -420,7 +389,7 @@ extension AppModel {
             guard let self,
                 let draft = await self.chat.takePendingNewChatDraft(requestID: requestID)
             else { return }
-            self.chat.pendingNewChatBotID = nil
+            self.chat.pendingNewChatBotIDs = []
             let nextDraft = self.chat.composer
             self.chat.suppressesComposerDraftSave = true
             self.chat.composer = draft.text
@@ -530,9 +499,7 @@ extension AppModel {
         extensions = payload.extensions
         gatewayContributions = payload.contributions
         applyBots(payload.bots)
-        applySwarms(payload.swarms)
         applyBackgroundApprovals(payload.backgroundApprovals, notifyingNew: false)
-        applySwarmAttentions(payload.swarmAttentions, notifyingNew: false)
         botDefaultsSnapshot = payload.botDefaults
         botDefaultsDraft = payload.botDefaults.map { incomingSnapshot in
             pendingBotDefaultsDraft
@@ -553,7 +520,13 @@ extension AppModel {
         opened: Bool,
         replayRequestID: String? = nil
     ) {
-        guard let bot = bots.first(where: { $0.id == payload.session.context.botId }) else {
+        let bot = bots.first(where: { $0.id == payload.session.context.botId })
+        let validMembers =
+            payload.memberBotIds.map { ids in
+                Set(ids).count == ids.count
+                    && ids.allSatisfy { id in bots.contains { $0.id == id } }
+            } ?? (bot != nil)
+        guard validMembers else {
             cancelVoiceChatIntent()
             chat.restorePendingDrafts()
             chat.sessionRequestID = nil
@@ -562,7 +535,7 @@ extension AppModel {
             chat.pendingCachedTranscript = nil
             chat.pendingPresentedTranscript = nil
             isChangingWorkspace = false
-            chat.pendingNewChatBotID = nil
+            chat.pendingNewChatBotIDs = []
             gateway.connectionState = .ready
             showToast("The gateway returned a chat with an unknown Bot.", tone: .error)
             return
@@ -620,8 +593,9 @@ extension AppModel {
         isChangingWorkspace = false
         showsWorkspaceBrowser = false
         chat.pendingNewChatWorkspace = nil
-        if !createdWithPendingDraft, chat.pendingDrafts.isEmpty { chat.pendingNewChatBotID = nil }
+        if !createdWithPendingDraft, chat.pendingDrafts.isEmpty { chat.pendingNewChatBotIDs = [] }
         chat.selectedSessionID = payload.session.sessionId
+        chat.selectedMemberBotIDs = payload.memberBotIds
         if createdByThisClient {
             destination = .chats
             navigationPath = [.chat(.session(payload.session.sessionId))]
@@ -646,13 +620,20 @@ extension AppModel {
         }
         chat.runStats = payload.runStats
         chat.sessionCompactionCount = payload.compactionCount
-        chat.activeTurnID = payload.runStats.active?.turnId
-        agentDraft = refreshedAgentDraft(
-            currentDraft: agentDraft,
-            currentSnapshot: agentSnapshot,
-            incomingSnapshot: bot.config
-        )
-        agentSnapshot = bot.config
+        chat.activeTurnIDs = Set(payload.activeTurnIds)
+        chat.pendingApprovals = payload.pendingApprovals.compactMap(chat.decodeApproval)
+        chat.approvalRequestID = nil
+        if let bot {
+            agentDraft = refreshedAgentDraft(
+                currentDraft: agentDraft,
+                currentSnapshot: agentSnapshot,
+                incomingSnapshot: bot.config
+            )
+            agentSnapshot = bot.config
+        } else {
+            agentDraft = nil
+            agentSnapshot = nil
+        }
         if !opened { gateway.connectionState = .ready }
         if let accountID = gateway.selectedAccountID {
             chat.prepareComposerEditRecovery(
@@ -668,7 +649,8 @@ extension AppModel {
     func applySessionCatalog(_ records: [SessionRecord]) {
         guard
             records.allSatisfy({ session in
-                bots.contains { $0.id == session.sessionContext.botId }
+                Set(session.botIds).count == session.botIds.count
+                    && session.botIds.allSatisfy { id in bots.contains { $0.id == id } }
             })
         else {
             showToast("The gateway returned a chat with an unknown Bot.", tone: .error)
@@ -816,7 +798,6 @@ extension AppModel {
         }
         chat.chatBotFilterIDs.formIntersection(botIDs)
         backgroundApprovals.removeAll { !botIDs.contains($0.botId) }
-        swarmAttentions.removeAll { !botIDs.contains($0.botId) }
         routines.removeAll { !botIDs.contains($0.botId) }
         routineRuns.removeAll { !botIDs.contains($0.botId) }
         if let botID = selectedSession?.sessionContext.botId,
@@ -842,36 +823,6 @@ extension AppModel {
             botApplyState = .idle
         }
         cacheChatCatalog()
-    }
-
-    @discardableResult
-    func applySwarms(_ records: [SwarmRecord]) -> Bool {
-        var claimedBotIDs = Set<String>()
-        guard Set(records.map(\.id)).count == records.count,
-            records.allSatisfy({ swarm in
-                let orderedMessages = zip(swarm.messages, swarm.messages.dropFirst())
-                    .allSatisfy { pair in pair.0.sequence < pair.1.sequence }
-                return Set(swarm.members.map(\.botId)).count == swarm.members.count
-                    && swarm.members.contains { $0.botId == swarm.leaderBotId }
-                    && swarm.members.allSatisfy { member in
-                        bots.contains { $0.id == member.botId }
-                            && claimedBotIDs.insert(member.botId).inserted
-                    }
-                    && Set(swarm.messages.map(\.id)).count == swarm.messages.count
-                    && orderedMessages
-            })
-        else {
-            showToast("The gateway returned invalid swarm state.", tone: .error)
-            return false
-        }
-        swarms = records
-        let swarmIDs = Set(records.map(\.id))
-        swarmAttentions.removeAll { !swarmIDs.contains($0.swarmId) }
-        swarmContributions = swarmContributions.filter {
-            swarmIDs.contains($0.key)
-        }
-        cacheChatCatalog()
-        return true
     }
 
     private func applyExecutionStats(_ stats: ExecutionStats) {
@@ -913,43 +864,6 @@ extension AppModel {
                     sessionID: approval.sessionId,
                     approvalRequestID: approval.requestId
                 )
-            }
-        }
-        if gateway.connectionState.isReady { _ = openPendingRemoteNotification() }
-        return true
-    }
-
-    @discardableResult
-    func applySwarmAttentions(
-        _ records: [SwarmAttention],
-        notifyingNew: Bool
-    ) -> Bool {
-        let botIDs = Set(bots.map(\.id))
-        let previousMessageIDs = Set(swarmAttentions.map(\.messageId))
-        guard Set(records.map(\.messageId)).count == records.count,
-            records.allSatisfy({ attention in
-                !attention.swarmId.isEmpty
-                    && !attention.swarmTitle.trimmingCharacters(
-                        in: .whitespacesAndNewlines
-                    ).isEmpty
-                    && !attention.messageId.isEmpty
-                    && !attention.botId.isEmpty
-                    && !attention.text.trimmingCharacters(
-                        in: .whitespacesAndNewlines
-                    ).isEmpty
-                    && swarms.contains { swarm in
-                        swarm.id == attention.swarmId
-                    }
-                    && botIDs.contains(attention.botId)
-            })
-        else {
-            showToast("The gateway returned invalid Swarm attention state.", tone: .error)
-            return false
-        }
-        swarmAttentions = records
-        if notifyingNew {
-            for attention in records where !previousMessageIDs.contains(attention.messageId) {
-                presentSwarmAttention(attention)
             }
         }
         if gateway.connectionState.isReady { _ = openPendingRemoteNotification() }
@@ -1027,7 +941,7 @@ extension AppModel {
         chat.acceptSessionFileDeletionRequest(requestID)
         if chat.pendingDrafts[requestID] != nil { chat.flushComposerDraft() }
         if requestID == chat.approvalRequestID {
-            chat.pendingApproval = nil
+            if !chat.pendingApprovals.isEmpty { chat.pendingApprovals.removeFirst() }
             chat.approvalRequestID = nil
         }
         if requestID == chat.sessionMutationRequestID {
@@ -1245,13 +1159,6 @@ extension AppModel {
     }
 
     private func handleRejectedCapabilities(_ rejection: GatewayRejection) {
-        if rejection.requestId == swarmMutationRequestID {
-            swarmMutationRequestID = nil
-            swarmApplyState = configurationApplyState(for: rejection)
-        }
-        if rejection.requestId == swarmMessageRequestID {
-            swarmMessageRequestID = nil
-        }
         if rejection.requestId == chat.botSessionsRequestID {
             chat.botSessionsRequestID = nil
             chat.pendingBotSessionResume = nil

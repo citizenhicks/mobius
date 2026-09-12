@@ -10,7 +10,6 @@ extension AppModel {
         let catalog = CachedChatCatalog(
             bots: bots,
             sessions: chat.sessions,
-            swarms: swarms,
             lastSessionID: lastSessionID ?? chat.selectedSessionID
         )
         chat.enqueueTranscriptIO { [store] in

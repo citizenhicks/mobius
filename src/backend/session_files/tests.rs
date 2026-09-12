@@ -81,6 +81,94 @@ async fn file_list_identifies_user_uploads_and_agent_artifacts() {
 }
 
 #[tokio::test]
+async fn chat_file_grants_preserve_origin_identity_and_survive_source_deletion() {
+    let state = tempfile::tempdir().expect("state");
+    let store = SessionFileStore::new(state.path());
+    let mut pending = store
+        .begin_upload("source", "input.txt".into(), 5, "text/plain".into())
+        .await
+        .expect("upload");
+    pending.append(0, b"input").await.expect("append");
+    let upload = pending.finish().await.expect("finish");
+    let artifact = store
+        .publish_artifact(
+            "source",
+            "result.txt".into(),
+            "text/plain".into(),
+            b"result",
+        )
+        .await
+        .expect("artifact");
+    let observation = store
+        .grant_file("source", "observer", &upload)
+        .await
+        .expect("observation grant");
+    let mut altered = upload.clone();
+    altered.name = "different.txt".into();
+    for (source, file) in [
+        ("source", &altered),
+        ("source", &artifact),
+        ("observer", &observation),
+        ("unrelated", &upload),
+    ] {
+        assert!(store.grant_upload(source, "execution", file).await.is_err());
+    }
+    assert!(
+        store
+            .list_files("execution")
+            .await
+            .expect("rejected grants")
+            .is_empty()
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            store
+                .grant_upload("source", "execution", &upload)
+                .await
+                .expect("upload grant"),
+            upload
+        );
+        assert_eq!(
+            store
+                .share_artifact("source", "chat", &artifact)
+                .await
+                .expect("artifact share"),
+            artifact
+        );
+    }
+    store.delete_session("source").await.expect("delete source");
+    let reopened = SessionFileStore::new(state.path());
+    reopened
+        .verify_upload("execution", &upload)
+        .await
+        .expect("user origin");
+    assert_eq!(
+        reopened.list_uploads("execution").await.expect("uploads"),
+        std::slice::from_ref(&upload)
+    );
+    assert_eq!(
+        reopened.list_artifacts("chat").await.expect("artifacts"),
+        std::slice::from_ref(&artifact)
+    );
+    assert!(reopened.verify_upload("chat", &artifact).await.is_err());
+    assert_eq!(
+        reopened
+            .read_file("execution", &upload)
+            .await
+            .expect("retained upload"),
+        b"input"
+    );
+    assert_eq!(
+        reopened
+            .read_file("chat", &artifact)
+            .await
+            .expect("retained artifact"),
+        b"result"
+    );
+    assert_eq!(blob_entries(&reopened), 2);
+}
+
+#[tokio::test]
 async fn delete_session_removes_only_that_sessions_files() {
     let state = tempfile::tempdir().expect("state");
     let store = SessionFileStore::new(state.path());
@@ -503,6 +591,71 @@ async fn attachment_cleanup_removes_staged_files_for_the_registered_workspace() 
         .expect("delete session");
 
     assert!(!staged.exists());
+}
+
+#[tokio::test]
+async fn empty_deletion_does_not_initialize_or_scan_file_storage() {
+    let state = tempfile::tempdir().expect("state");
+    let store = SessionFileStore::new(state.path());
+    let mut deletion = store.prepare_delete_sessions(&[]).await.expect("prepare");
+    deletion.stage().await.expect("stage");
+    deletion.delete().await.expect("delete");
+    assert!(!store.root.exists());
+}
+
+#[tokio::test]
+async fn staged_deletion_releases_uploads_and_resumes_after_restart() {
+    let state = tempfile::tempdir().expect("state");
+    let workspace = tempfile::tempdir().expect("workspace");
+    let staged = workspace
+        .path()
+        .join(".mobius/attachments")
+        .join(session_storage_key("deleted"));
+    std::fs::create_dir_all(&staged).expect("staged attachment directory");
+    let directory =
+        Dir::open_ambient_dir(workspace.path(), ambient_authority()).expect("workspace");
+    let store = SessionFileStore::new(state.path());
+    store
+        .register_attachment_workspace("deleted", &directory, workspace.path())
+        .await
+        .expect("register");
+    let mut deletion = store
+        .prepare_delete_sessions(&["deleted".into()])
+        .await
+        .expect("prepare");
+    deletion.stage().await.expect("stage deletion");
+
+    assert!(
+        staged.is_dir(),
+        "staging does not touch the external workspace"
+    );
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        store.publish_artifact(
+            "retained",
+            "result.txt".into(),
+            "text/plain".into(),
+            b"result",
+        ),
+    )
+    .await
+    .expect("other uploads remain available")
+    .expect("publish");
+    drop(deletion);
+    let reopened = SessionFileStore::new(state.path());
+    reopened
+        .cleanup_deleted_sessions()
+        .await
+        .expect("resume cleanup");
+    assert!(!staged.exists());
+    assert_eq!(
+        reopened
+            .list_artifacts("retained")
+            .await
+            .expect("retained files")
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]
