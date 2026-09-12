@@ -101,7 +101,7 @@ impl EventRecorder {
 }
 
 impl RecorderIngress {
-    async fn record(&self, event: Event) -> Result<()> {
+    pub(super) async fn record(&self, event: Event) -> Result<()> {
         let (event, event_bytes) = timestamp(event)?;
         let byte_permit = self.reserve_bytes(event_bytes).await?;
         let (result, recorded) = oneshot::channel();

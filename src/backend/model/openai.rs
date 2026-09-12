@@ -294,18 +294,19 @@ impl OpenAi {
                     &mut next_output_index,
                     &mut streamed_tool_calls,
                     &events,
-                )?;
-                if emit_web_event(&event, &mut web_searches, &events)? {
+                )
+                .await?;
+                if emit_web_event(&event, &mut web_searches, &events).await? {
                     continue;
                 }
-                if emit_reasoning_event(&event, &mut reasoning_part, &events)? {
+                if emit_reasoning_event(&event, &mut reasoning_part, &events).await? {
                     continue;
                 }
-                if emit_text_event(&event, &mut commentary, &events)? {
+                if emit_text_event(&event, &mut commentary, &events).await? {
                     continue;
                 }
                 if let Some(response) = self.finish_stream_event(&event, &output, deferred_tools)? {
-                    emit_citation_web_search(&response, &web_searches, &events)?;
+                    emit_citation_web_search(&response, &web_searches, &events).await?;
                     return Ok(response);
                 }
             }
@@ -726,7 +727,7 @@ pub(super) fn collect_stream_output(
     Ok(())
 }
 
-pub(super) fn emit_ready_tool_calls(
+pub(super) async fn emit_ready_tool_calls(
     output: &BTreeMap<u64, Value>,
     next_output_index: &mut u64,
     tool_calls: &mut StreamingToolCalls,
@@ -736,7 +737,7 @@ pub(super) fn emit_ready_tool_calls(
         if item.get("type").and_then(Value::as_str) == Some("function_call") {
             let call = super::decode_tool_call(item)?;
             tool_calls.accept(&call)?;
-            events(ModelEvent::ToolCallReady(call))?;
+            events(ModelEvent::ToolCallReady(call)).await?;
         }
         *next_output_index = next_output_index
             .checked_add(1)
@@ -818,7 +819,7 @@ fn web_search_item(event: &Value) -> Option<&Value> {
     })
 }
 
-fn emit_citation_web_search(
+async fn emit_citation_web_search(
     output: &ModelOutput,
     web_searches: &BTreeSet<String>,
     events: &ModelEventSink,
@@ -835,14 +836,16 @@ fn emit_citation_web_search(
     let call_id = "citations".to_string();
     events(ModelEvent::WebSearchStarted {
         call_id: call_id.clone(),
-    })?;
+    })
+    .await?;
     events(ModelEvent::WebSearchCompleted {
         call_id,
         action: WebSearchAction::Other,
     })
+    .await
 }
 
-pub(super) fn emit_web_event(
+pub(super) async fn emit_web_event(
     event: &Value,
     seen: &mut BTreeSet<String>,
     events: &ModelEventSink,
@@ -855,13 +858,15 @@ pub(super) fn emit_web_event(
     if added {
         events(ModelEvent::WebSearchStarted {
             call_id: call_id.clone(),
-        })?;
+        })
+        .await?;
     }
     if event.get("type").and_then(Value::as_str) == Some("response.output_item.done") {
         events(ModelEvent::WebSearchCompleted {
             call_id,
             action: decode_web_action(item),
-        })?;
+        })
+        .await?;
     }
     Ok(true)
 }
@@ -879,7 +884,7 @@ pub(super) struct ReasoningPart {
     part_index: usize,
 }
 
-pub(super) fn emit_reasoning_event(
+pub(super) async fn emit_reasoning_event(
     event: &Value,
     previous_part: &mut Option<ReasoningPart>,
     events: &ModelEventSink,
@@ -913,7 +918,8 @@ pub(super) fn emit_reasoning_event(
         format!("\n{delta}")
     } else {
         delta.to_string()
-    }))?;
+    }))
+    .await?;
     Ok(true)
 }
 
@@ -929,7 +935,7 @@ fn reasoning_part(
     })
 }
 
-pub(super) fn emit_text_event(
+pub(super) async fn emit_text_event(
     event: &Value,
     commentary: &mut BTreeSet<String>,
     events: &ModelEventSink,
@@ -962,9 +968,9 @@ pub(super) fn emit_text_event(
                 .and_then(Value::as_str)
                 .is_some_and(|id| commentary.contains(id));
             if is_commentary {
-                events(ModelEvent::CommentaryDelta(delta.to_string()))?;
+                events(ModelEvent::CommentaryDelta(delta.to_string())).await?;
             } else {
-                events(ModelEvent::TextDelta(delta.to_string()))?;
+                events(ModelEvent::TextDelta(delta.to_string())).await?;
             }
             Ok(true)
         }

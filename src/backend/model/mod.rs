@@ -390,13 +390,14 @@ pub struct CompactRequest<'a> {
     pub deferred_tools: &'a [ToolDefinition],
 }
 
-/// Fallible synchronous callback used to forward streaming provider events.
+/// Fallible asynchronous callback used to forward streaming provider events.
 ///
-/// Providers must propagate callback errors instead of retrying or silently
+/// Providers must await each callback and propagate errors instead of retrying or silently
 /// dropping events. An agent-provided sink has bounded ingress and closes when
 /// [`Model::respond`] completes or is canceled; retaining it does not extend
 /// the response lifetime.
-pub type ModelEventSink = Arc<dyn Fn(crate::protocol::ModelEvent) -> Result<()> + Send + Sync>;
+pub type ModelEventSink =
+    Arc<dyn Fn(crate::protocol::ModelEvent) -> BoxFuture<'static, Result<()>> + Send + Sync>;
 
 /// Completed output from a model response.
 #[derive(Debug, Clone)]

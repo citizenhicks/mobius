@@ -22,7 +22,7 @@ async fn metadata_only_event_does_not_count_as_sink_delivery() {
     let sink_delivered = Arc::clone(&delivered);
     let events: ModelEventSink = Arc::new(move |_| {
         sink_delivered.fetch_add(1, Ordering::Relaxed);
-        Ok(())
+        Box::pin(async { Ok(()) })
     });
 
     let exchange = read_exchange(&mut messages, &events)
@@ -50,7 +50,7 @@ async fn visible_delta_before_eof_is_still_a_retryable_stream_failure() {
     let sink_delivered = Arc::clone(&delivered);
     let events: ModelEventSink = Arc::new(move |_| {
         sink_delivered.fetch_add(1, Ordering::Relaxed);
-        Ok(())
+        Box::pin(async { Ok(()) })
     });
 
     let exchange = read_exchange(&mut messages, &events)
@@ -65,7 +65,7 @@ async fn visible_delta_before_eof_is_still_a_retryable_stream_failure() {
 async fn server_close_before_completion_is_retryable() {
     let (sender, mut messages) = mpsc::unbounded_channel();
     sender.send(SocketEvent::Closed).expect("server close");
-    let events: ModelEventSink = Arc::new(|_| Ok(()));
+    let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
 
     let exchange = read_exchange(&mut messages, &events)
         .await
@@ -99,7 +99,7 @@ async fn tool_call_readiness_does_not_complete_a_disconnected_exchange() {
     let events: ModelEventSink = Arc::new(move |event| {
         assert!(matches!(event, ModelEvent::ToolCallReady(_)));
         sink_delivered.fetch_add(1, Ordering::Relaxed);
-        Ok(())
+        Box::pin(async { Ok(()) })
     });
 
     let exchange = read_exchange(&mut messages, &events)
@@ -143,7 +143,7 @@ async fn completed_tool_call_is_emitted_before_websocket_completion() {
     let sink_seen = Arc::clone(&seen);
     let events: ModelEventSink = Arc::new(move |event| {
         sink_seen.lock().expect("events lock").push(event);
-        Ok(())
+        Box::pin(async { Ok(()) })
     });
 
     let exchange = read_exchange(&mut messages, &events)
@@ -164,7 +164,7 @@ async fn completed_tool_call_is_emitted_before_websocket_completion() {
 #[tokio::test(start_paused = true)]
 async fn stream_idle_timeout_is_retryable() {
     let (_sender, mut messages) = mpsc::unbounded_channel();
-    let events: ModelEventSink = Arc::new(|_| Ok(()));
+    let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
     let exchange = tokio::spawn(async move { read_exchange(&mut messages, &events).await });
     tokio::task::yield_now().await;
 
@@ -175,4 +175,60 @@ async fn stream_idle_timeout_is_retryable() {
         .expect("exchange result");
 
     assert!(matches!(exchange, Exchange::Reconnect));
+}
+
+#[tokio::test]
+async fn websocket_burst_waits_for_the_event_sink_in_order() {
+    const DELTAS: usize = 2048;
+    let (sender, mut messages) = mpsc::unbounded_channel();
+    for index in 0..DELTAS {
+        sender
+            .send(SocketEvent::Message(Message::text(
+                serde_json::json!({
+                    "type": "response.output_text.delta",
+                    "delta": index.to_string(),
+                })
+                .to_string(),
+            )))
+            .expect("text delta");
+    }
+    sender
+        .send(SocketEvent::Message(Message::text(
+            serde_json::json!({
+                "type": "response.completed",
+                "response": {"id": "response-burst", "output": []},
+            })
+            .to_string(),
+        )))
+        .expect("completion");
+    drop(sender);
+    let (delivered, mut received) = mpsc::channel(1);
+    let events: ModelEventSink = Arc::new(move |event| {
+        let delivered = delivered.clone();
+        Box::pin(async move {
+            delivered
+                .send(event)
+                .await
+                .map_err(|_| Error::Stopped("test event consumer closed".into()))
+        })
+    });
+    let exchange = tokio::spawn(async move { read_exchange(&mut messages, &events).await });
+    assert_eq!(
+        received.recv().await,
+        Some(ModelEvent::TextDelta("0".into()))
+    );
+    assert!(
+        !exchange.is_finished(),
+        "the stream must wait for the consumer"
+    );
+    for index in 1..DELTAS {
+        assert_eq!(
+            received.recv().await,
+            Some(ModelEvent::TextDelta(index.to_string())),
+        );
+    }
+    assert!(matches!(
+        exchange.await.expect("exchange task").expect("exchange"),
+        Exchange::Completed(_)
+    ));
 }

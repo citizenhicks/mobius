@@ -511,7 +511,11 @@ async fn credential_deadline_cancels_in_flight_work_and_blocks_reuse() {
         )
         .unwrap();
     let error = router
-        .respond("included", request(), Arc::new(|_| Ok(())))
+        .respond(
+            "included",
+            request(),
+            Arc::new(|_| Box::pin(async { Ok(()) })),
+        )
         .await
         .unwrap_err();
     assert!(matches!(error, Error::Provider(error) if error.status() == Some(401)));
@@ -527,7 +531,11 @@ async fn credential_deadline_cancels_in_flight_work_and_blocks_reuse() {
         .unwrap();
     assert!(
         router
-            .respond("included", request(), Arc::new(|_| Ok(())))
+            .respond(
+                "included",
+                request(),
+                Arc::new(|_| Box::pin(async { Ok(()) }))
+            )
             .await
             .is_err()
     );
@@ -543,7 +551,11 @@ async fn credential_deadline_cancels_in_flight_work_and_blocks_reuse() {
         )
         .unwrap();
     model.cancelled.store(false, Ordering::SeqCst);
-    let response = router.respond("included", request(), Arc::new(|_| Ok(())));
+    let response = router.respond(
+        "included",
+        request(),
+        Arc::new(|_| Box::pin(async { Ok(()) })),
+    );
     let revoke = async {
         tokio::task::yield_now().await;
         drop(owner);
@@ -553,7 +565,11 @@ async fn credential_deadline_cancels_in_flight_work_and_blocks_reuse() {
     assert!(model.cancelled.load(Ordering::SeqCst));
     assert!(
         router
-            .respond("included", request(), Arc::new(|_| Ok(())))
+            .respond(
+                "included",
+                request(),
+                Arc::new(|_| Box::pin(async { Ok(()) }))
+            )
             .await
             .is_err()
     );

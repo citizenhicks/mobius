@@ -522,7 +522,7 @@ impl OpenAiSocket {
                 allow_continuation: true,
             };
             match self
-                .send_response(model_request, Arc::new(|_| Ok(())))
+                .send_response(model_request, Arc::new(|_| Box::pin(async { Ok(()) })))
                 .await
             {
                 Ok(output) => break output,

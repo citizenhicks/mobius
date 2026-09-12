@@ -373,9 +373,13 @@ pub(super) async fn read_exchange(
     let tracked_delivery = Arc::clone(&output_delivered);
     let downstream = Arc::clone(events);
     let tracked_events: ModelEventSink = Arc::new(move |event| {
-        downstream(event)?;
-        tracked_delivery.store(true, Ordering::Release);
-        Ok(())
+        let downstream = Arc::clone(&downstream);
+        let tracked_delivery = Arc::clone(&tracked_delivery);
+        Box::pin(async move {
+            downstream(event).await?;
+            tracked_delivery.store(true, Ordering::Release);
+            Ok(())
+        })
     });
     loop {
         let message = match timeout(STREAM_IDLE_TIMEOUT, messages.recv()).await {
@@ -403,14 +407,15 @@ pub(super) async fn read_exchange(
             &mut next_output_index,
             &mut streamed_tool_calls,
             &tracked_events,
-        )?;
-        if emit_web_event(&event, &mut web_searches, &tracked_events)? {
+        )
+        .await?;
+        if emit_web_event(&event, &mut web_searches, &tracked_events).await? {
             continue;
         }
-        if emit_reasoning_event(&event, &mut reasoning_part, &tracked_events)? {
+        if emit_reasoning_event(&event, &mut reasoning_part, &tracked_events).await? {
             continue;
         }
-        if emit_text_event(&event, &mut commentary, &tracked_events)? {
+        if emit_text_event(&event, &mut commentary, &tracked_events).await? {
             continue;
         }
         match event.get("type").and_then(Value::as_str) {

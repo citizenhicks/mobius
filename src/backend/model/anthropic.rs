@@ -258,7 +258,7 @@ impl Anthropic {
                 let Some(data) = frame_data(frame) else {
                     continue;
                 };
-                stream.apply(serde_json::from_str(&data)?, &events)?;
+                stream.apply(serde_json::from_str(&data)?, &events).await?;
             }
         }
         if !stream.stopped {
@@ -375,12 +375,12 @@ struct StreamState {
 }
 
 impl StreamState {
-    fn apply(&mut self, event: Value, events: &ModelEventSink) -> Result<()> {
+    async fn apply(&mut self, event: Value, events: &ModelEventSink) -> Result<()> {
         match event.get("type").and_then(Value::as_str) {
             Some("message_start") => self.usage.update(event.pointer("/message/usage"))?,
-            Some("content_block_start") => self.start_block(&event, events)?,
-            Some("content_block_delta") => self.delta_block(&event, events)?,
-            Some("content_block_stop") => self.stop_block(&event, events)?,
+            Some("content_block_start") => self.start_block(&event, events).await?,
+            Some("content_block_delta") => self.delta_block(&event, events).await?,
+            Some("content_block_stop") => self.stop_block(&event, events).await?,
             Some("message_delta") => {
                 self.usage.update(event.get("usage"))?;
                 self.stop_reason = event
@@ -401,7 +401,7 @@ impl StreamState {
         Ok(())
     }
 
-    fn start_block(&mut self, event: &Value, events: &ModelEventSink) -> Result<()> {
+    async fn start_block(&mut self, event: &Value, events: &ModelEventSink) -> Result<()> {
         let index = event_index(event)?;
         if self.blocks.contains_key(&index) {
             return Err(Error::Provider(
@@ -426,7 +426,7 @@ impl StreamState {
                 .and_then(Value::as_str)
                 .map(ToString::to_string);
             self.web_queries.insert(id.clone(), query);
-            events(ModelEvent::WebSearchStarted { call_id: id })?;
+            events(ModelEvent::WebSearchStarted { call_id: id }).await?;
         }
         if block.get("type").and_then(Value::as_str) == Some("web_search_tool_result") {
             let call_id = required_string(&block, "tool_use_id")?.to_string();
@@ -439,13 +439,13 @@ impl StreamState {
                 .map_or(WebSearchAction::Other, |query| WebSearchAction::Search {
                     queries: vec![query],
                 });
-            events(ModelEvent::WebSearchCompleted { call_id, action })?;
+            events(ModelEvent::WebSearchCompleted { call_id, action }).await?;
         }
         self.blocks.insert(index, block);
         Ok(())
     }
 
-    fn delta_block(&mut self, event: &Value, events: &ModelEventSink) -> Result<()> {
+    async fn delta_block(&mut self, event: &Value, events: &ModelEventSink) -> Result<()> {
         let index = event_index(event)?;
         if self.completed_blocks.contains(&index) {
             return Err(Error::Provider(
@@ -463,12 +463,12 @@ impl StreamState {
             Some("text_delta") => {
                 let text = required_string(delta, "text")?;
                 append_string(block, "text", text);
-                events(ModelEvent::TextDelta(text.to_string()))?;
+                events(ModelEvent::TextDelta(text.to_string())).await?;
             }
             Some("thinking_delta") => {
                 let thinking = required_string(delta, "thinking")?;
                 append_string(block, "thinking", thinking);
-                events(ModelEvent::ReasoningDelta(thinking.to_string()))?;
+                events(ModelEvent::ReasoningDelta(thinking.to_string())).await?;
             }
             Some("signature_delta") => {
                 block["signature"] =
@@ -501,7 +501,7 @@ impl StreamState {
         Ok(())
     }
 
-    fn stop_block(&mut self, event: &Value, events: &ModelEventSink) -> Result<()> {
+    async fn stop_block(&mut self, event: &Value, events: &ModelEventSink) -> Result<()> {
         let index = event_index(event)?;
         if self.completed_blocks.contains(&index) {
             return Err(Error::Provider(
@@ -527,10 +527,10 @@ impl StreamState {
             }
         }
         self.completed_blocks.insert(index);
-        self.emit_ready_tool_calls(events)
+        self.emit_ready_tool_calls(events).await
     }
 
-    fn emit_ready_tool_calls(&mut self, events: &ModelEventSink) -> Result<()> {
+    async fn emit_ready_tool_calls(&mut self, events: &ModelEventSink) -> Result<()> {
         while self.completed_blocks.contains(&self.next_completed_block) {
             let index = self.next_completed_block;
             self.next_completed_block = self
@@ -557,7 +557,7 @@ impl StreamState {
             });
             let call = super::decode_tool_call(&item)?;
             self.streamed_tool_calls.accept(&call)?;
-            events(ModelEvent::ToolCallReady(call))?;
+            events(ModelEvent::ToolCallReady(call)).await?;
         }
         Ok(())
     }

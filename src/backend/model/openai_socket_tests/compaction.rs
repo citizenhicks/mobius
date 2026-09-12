@@ -97,7 +97,7 @@ async fn native_compaction_reuses_the_websocket_with_a_v2_trigger() {
                 allow_hosted_tools: false,
                 allow_continuation: true,
             },
-            Arc::new(|_| Ok(())),
+            Arc::new(|_| Box::pin(async { Ok(()) })),
         )
         .await
         .expect("initial response");

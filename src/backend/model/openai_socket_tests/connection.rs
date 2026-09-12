@@ -250,7 +250,7 @@ async fn connection_limit_closes_other_idle_connections() {
         .expect("idle session");
     idle_session.lock().await.connection = Some(OpenAiWsConnection::new(idle_socket));
     drop(idle_session);
-    let events: ModelEventSink = Arc::new(|_| Ok(()));
+    let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
 
     let Error::Provider(error) = provider
         .send_response(model_request(), events)

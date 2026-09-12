@@ -290,13 +290,13 @@ fn discovery_history() -> Vec<Value> {
     ]
 }
 
-#[test]
-fn anthropic_web_search_normalizes_query_to_a_singleton() {
+#[tokio::test]
+async fn anthropic_web_search_normalizes_query_to_a_singleton() {
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_seen = Arc::clone(&seen);
     let events: ModelEventSink = Arc::new(move |event| {
         sink_seen.lock().expect("events lock").push(event);
-        Ok(())
+        Box::pin(async { Ok(()) })
     });
     let mut stream = StreamState::default();
 
@@ -321,7 +321,7 @@ fn anthropic_web_search_normalizes_query_to_a_singleton() {
             }
         }),
     ] {
-        stream.apply(event, &events).expect("stream event");
+        stream.apply(event, &events).await.expect("stream event");
     }
 
     assert_eq!(
@@ -340,13 +340,13 @@ fn anthropic_web_search_normalizes_query_to_a_singleton() {
     );
 }
 
-#[test]
-fn anthropic_web_search_with_an_empty_streamed_query_is_other() {
+#[tokio::test]
+async fn anthropic_web_search_with_an_empty_streamed_query_is_other() {
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_seen = Arc::clone(&seen);
     let events: ModelEventSink = Arc::new(move |event| {
         sink_seen.lock().expect("events lock").push(event);
-        Ok(())
+        Box::pin(async { Ok(()) })
     });
     let mut stream = StreamState::default();
 
@@ -380,7 +380,7 @@ fn anthropic_web_search_with_an_empty_streamed_query_is_other() {
             }
         }),
     ] {
-        stream.apply(event, &events).expect("stream event");
+        stream.apply(event, &events).await.expect("stream event");
     }
 
     assert_eq!(
@@ -645,13 +645,13 @@ fn stream_rejects_unmodeled_citation_fields() {
     assert!(error.to_string().contains("unknown field"));
 }
 
-#[test]
-fn stream_normalizes_deltas_tools_usage_and_errors() {
+#[tokio::test]
+async fn stream_normalizes_deltas_tools_usage_and_errors() {
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_seen = Arc::clone(&seen);
     let events: ModelEventSink = Arc::new(move |event| {
         sink_seen.lock().expect("events lock").push(event);
-        Ok(())
+        Box::pin(async { Ok(()) })
     });
     let mut stream = StreamState::default();
     for event in [
@@ -708,7 +708,7 @@ fn stream_normalizes_deltas_tools_usage_and_errors() {
         }),
         serde_json::json!({"type": "message_stop"}),
     ] {
-        stream.apply(event, &events).expect("stream event");
+        stream.apply(event, &events).await.expect("stream event");
     }
 
     let output = stream.finish().expect("normalized output");
@@ -730,13 +730,14 @@ fn stream_normalizes_deltas_tools_usage_and_errors() {
             serde_json::json!({"type": "error", "error": {"message": "quota"}}),
             &events,
         )
+        .await
         .expect_err("stream error");
     assert!(error.to_string().contains("quota"));
 }
 
-#[test]
-fn stream_rejects_mutation_or_duplicate_stop_after_block_completion() {
-    let events: ModelEventSink = Arc::new(|_| Ok(()));
+#[tokio::test]
+async fn stream_rejects_mutation_or_duplicate_stop_after_block_completion() {
+    let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
     let mut stream = StreamState::default();
     stream
         .apply(
@@ -747,12 +748,14 @@ fn stream_rejects_mutation_or_duplicate_stop_after_block_completion() {
             }),
             &events,
         )
+        .await
         .expect("block start");
     stream
         .apply(
             serde_json::json!({"type": "content_block_stop", "index": 0}),
             &events,
         )
+        .await
         .expect("block stop");
 
     assert!(
@@ -765,6 +768,7 @@ fn stream_rejects_mutation_or_duplicate_stop_after_block_completion() {
                 }),
                 &events,
             )
+            .await
             .is_err()
     );
     assert!(
@@ -773,6 +777,7 @@ fn stream_rejects_mutation_or_duplicate_stop_after_block_completion() {
                 serde_json::json!({"type": "content_block_stop", "index": 0}),
                 &events,
             )
+            .await
             .is_err()
     );
 }

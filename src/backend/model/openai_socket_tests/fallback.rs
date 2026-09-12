@@ -122,7 +122,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
         "role": "user",
         "content": [{"type": "input_text", "text": "hello"}]
     })];
-    let events: ModelEventSink = Arc::new(|_| Ok(()));
+    let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
 
     let warm = provider
         .send_response(

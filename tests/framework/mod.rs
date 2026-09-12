@@ -201,7 +201,7 @@ impl Model for ScriptedModel {
                 .pop_front()
                 .ok_or_else(|| Error::Provider("script exhausted".into()))?;
             if !output.text().is_empty() {
-                events(ModelEvent::TextDelta(output.text().into()))?;
+                events(ModelEvent::TextDelta(output.text().into())).await?;
             }
             Ok(output)
         })

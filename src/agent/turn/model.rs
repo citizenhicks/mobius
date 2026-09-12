@@ -77,33 +77,6 @@ enum ModelStepRequest {
     Finished,
 }
 
-#[derive(Clone)]
-struct ModelEventGate(Arc<Mutex<bool>>);
-
-impl ModelEventGate {
-    fn new() -> Self {
-        Self(Arc::new(Mutex::new(true)))
-    }
-
-    fn enter(&self) -> Result<std::sync::MutexGuard<'_, bool>> {
-        self.0
-            .lock()
-            .map_err(|_| Error::Stopped("model event sink unavailable".into()))
-    }
-
-    fn close(&self) {
-        if let Ok(mut open) = self.0.lock() {
-            *open = false;
-        }
-    }
-}
-
-impl Drop for ModelEventGate {
-    fn drop(&mut self) {
-        self.close();
-    }
-}
-
 impl Runner {
     async fn stage_message_input(&mut self, turn_id: &str) -> Result<()> {
         let mut pending_messages = self.state.pending_messages.clone();
@@ -553,36 +526,55 @@ impl Runner {
             let streamed_events = model_events.clone();
             let catalog_revision = self.catalog.revision()?.to_owned();
             let recorder = self.events.downgrade();
-            let sink_gate = ModelEventGate::new();
-            let stream_gate = sink_gate.clone();
+            let (response_open, response_closed) = tokio::sync::watch::channel(());
             let (ready_calls_tx, ready_calls) = tokio::sync::mpsc::channel(MAX_TOOL_CALLS);
-            let call_validation = Mutex::new(StreamingToolCalls::default());
+            let call_validation = Arc::new(Mutex::new(StreamingToolCalls::default()));
             let stream: ModelEventSink = Arc::new(move |event| {
-                let open = stream_gate.enter()?;
-                if !*open {
-                    return Err(Error::Stopped("model event sink closed".into()));
-                }
-                if let ModelEvent::ToolCallReady(call) = event {
-                    call_validation
-                        .lock()
-                        .map_err(|_| Error::Stopped("streamed tool validation unavailable".into()))?
-                        .accept(&call)?;
-                    return ready_calls_tx
-                        .try_send(call)
-                        .map_err(|_| Error::Stopped("streamed tool queue unavailable".into()));
-                }
-                streamed_events.observe(&event)?;
-                let Some(msg) =
-                    event.into_event(&event_session_id, &event_turn_id, &event_model_step_id)
-                else {
-                    return Ok(());
-                };
-                let recorder = recorder
-                    .upgrade()
-                    .ok_or_else(|| Error::Stopped("event recorder stopped".into()))?;
-                recorder.try_record(Event {
-                    submission_id: Some(event_submission_id.clone()),
-                    msg,
+                let mut response_closed = response_closed.clone();
+                let call_validation = Arc::clone(&call_validation);
+                let ready_calls_tx = ready_calls_tx.clone();
+                let streamed_events = streamed_events.clone();
+                let recorder = recorder.clone();
+                let event_submission_id = event_submission_id.clone();
+                let event_turn_id = event_turn_id.clone();
+                let event_session_id = event_session_id.clone();
+                let event_model_step_id = event_model_step_id.clone();
+                Box::pin(async move {
+                    let record = async {
+                        if let ModelEvent::ToolCallReady(call) = event {
+                            call_validation
+                                .lock()
+                                .map_err(|_| {
+                                    Error::Stopped("streamed tool validation unavailable".into())
+                                })?
+                                .accept(&call)?;
+                            return ready_calls_tx.send(call).await.map_err(|_| {
+                                Error::Stopped("streamed tool queue unavailable".into())
+                            });
+                        }
+                        streamed_events.observe(&event)?;
+                        let Some(msg) = event.into_event(
+                            &event_session_id,
+                            &event_turn_id,
+                            &event_model_step_id,
+                        ) else {
+                            return Ok(());
+                        };
+                        let recorder = recorder
+                            .upgrade()
+                            .ok_or_else(|| Error::Stopped("event recorder stopped".into()))?;
+                        recorder
+                            .record(Event {
+                                submission_id: Some(event_submission_id),
+                                msg,
+                            })
+                            .await
+                    };
+                    tokio::select! {
+                        biased;
+                        _ = response_closed.changed() => Err(Error::Stopped("model event sink closed".into())),
+                        result = record => result,
+                    }
                 })
             });
             let request = ModelRequest {
@@ -600,10 +592,9 @@ impl Runner {
                 allow_continuation: true,
             };
             let response = model.respond(&provider, request, stream);
-            let response_gate = sink_gate;
             let response = async move {
                 let response = response.await;
-                response_gate.close();
+                drop(response_open);
                 response
             };
             let mut streamed = StreamedTools::default();

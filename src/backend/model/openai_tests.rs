@@ -671,13 +671,13 @@ fn responses_decode_normalizes_tool_calls_usage_and_errors() {
     );
 }
 
-#[test]
-fn responses_emits_complete_tool_calls_in_output_order() {
+#[tokio::test]
+async fn responses_emits_complete_tool_calls_in_output_order() {
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_seen = Arc::clone(&seen);
     let events: ModelEventSink = Arc::new(move |event| {
         sink_seen.lock().expect("events lock").push(event);
-        Ok(())
+        Box::pin(async { Ok(()) })
     });
     let mut output = BTreeMap::new();
     let mut next_output_index = 0;
@@ -698,6 +698,7 @@ fn responses_emits_complete_tool_calls_in_output_order() {
         &mut streamed_tool_calls,
         &events,
     )
+    .await
     .expect("incomplete prefix is held");
     assert!(seen.lock().expect("events lock").is_empty());
 
@@ -715,6 +716,7 @@ fn responses_emits_complete_tool_calls_in_output_order() {
         &mut streamed_tool_calls,
         &events,
     )
+    .await
     .expect("complete prefix emits");
 
     assert_eq!(
@@ -727,13 +729,13 @@ fn responses_emits_complete_tool_calls_in_output_order() {
     );
 }
 
-#[test]
-fn responses_emits_reasoning_text_deltas() {
+#[tokio::test]
+async fn responses_emits_reasoning_text_deltas() {
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_seen = Arc::clone(&seen);
     let events: ModelEventSink = Arc::new(move |event| {
         sink_seen.lock().expect("events lock").push(event);
-        Ok(())
+        Box::pin(async { Ok(()) })
     });
     let mut previous_part = None;
 
@@ -746,6 +748,7 @@ fn responses_emits_reasoning_text_deltas() {
             &mut previous_part,
             &events,
         )
+        .await
         .expect("reasoning event")
     );
     assert_eq!(
@@ -754,13 +757,13 @@ fn responses_emits_reasoning_text_deltas() {
     );
 }
 
-#[test]
-fn responses_emits_reasoning_summary_deltas() {
+#[tokio::test]
+async fn responses_emits_reasoning_summary_deltas() {
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_seen = Arc::clone(&seen);
     let events: ModelEventSink = Arc::new(move |event| {
         sink_seen.lock().expect("events lock").push(event);
-        Ok(())
+        Box::pin(async { Ok(()) })
     });
     let mut previous_part = None;
 
@@ -775,6 +778,7 @@ fn responses_emits_reasoning_summary_deltas() {
             &mut previous_part,
             &events,
         )
+        .await
         .expect("reasoning summary event")
     );
     assert_eq!(
@@ -785,13 +789,13 @@ fn responses_emits_reasoning_summary_deltas() {
     );
 }
 
-#[test]
-fn responses_preserves_reasoning_summary_part_boundaries() {
+#[tokio::test]
+async fn responses_preserves_reasoning_summary_part_boundaries() {
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_seen = Arc::clone(&seen);
     let events: ModelEventSink = Arc::new(move |event| {
         sink_seen.lock().expect("events lock").push(event);
-        Ok(())
+        Box::pin(async { Ok(()) })
     });
     let mut previous_part = None;
 
@@ -810,6 +814,7 @@ fn responses_preserves_reasoning_summary_part_boundaries() {
             &mut previous_part,
             &events,
         )
+        .await
         .expect("reasoning summary event");
     }
 
@@ -823,13 +828,13 @@ fn responses_preserves_reasoning_summary_part_boundaries() {
     );
 }
 
-#[test]
-fn responses_emits_commentary_text_deltas() {
+#[tokio::test]
+async fn responses_emits_commentary_text_deltas() {
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_seen = Arc::clone(&seen);
     let events: ModelEventSink = Arc::new(move |event| {
         sink_seen.lock().expect("events lock").push(event);
-        Ok(())
+        Box::pin(async { Ok(()) })
     });
     let mut commentary = BTreeSet::new();
 
@@ -845,6 +850,7 @@ fn responses_emits_commentary_text_deltas() {
         &mut commentary,
         &events,
     )
+    .await
     .expect("commentary item");
     emit_text_event(
         &serde_json::json!({
@@ -855,6 +861,7 @@ fn responses_emits_commentary_text_deltas() {
         &mut commentary,
         &events,
     )
+    .await
     .expect("commentary delta");
 
     assert_eq!(
@@ -863,13 +870,13 @@ fn responses_emits_commentary_text_deltas() {
     );
 }
 
-#[test]
-fn openrouter_web_search_uses_native_search_events() {
+#[tokio::test]
+async fn openrouter_web_search_uses_native_search_events() {
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_seen = Arc::clone(&seen);
     let events: ModelEventSink = Arc::new(move |event| {
         sink_seen.lock().expect("events lock").push(event);
-        Ok(())
+        Box::pin(async { Ok(()) })
     });
     let mut searches = BTreeSet::new();
 
@@ -890,6 +897,7 @@ fn openrouter_web_search_uses_native_search_events() {
             &mut searches,
             &events,
         )
+        .await
         .expect("OpenRouter web search event")
     );
     assert_eq!(
@@ -1166,7 +1174,7 @@ async fn http_stream_emits_citation_search_before_completion_and_eof() {
     let (event_sender, mut events) = tokio::sync::mpsc::unbounded_channel();
     let event_sink: ModelEventSink = Arc::new(move |event| {
         let _ = event_sender.send(event);
-        Ok(())
+        Box::pin(async { Ok(()) })
     });
     let response =
         tokio::spawn(async move { provider.send_response(model_request(), event_sink).await });

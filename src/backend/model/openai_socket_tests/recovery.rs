@@ -86,7 +86,7 @@ async fn transient_response_failure_leaves_retry_to_a_fresh_model_attempt() {
         reqwest::Client::new(),
     )
     .expect("provider");
-    let events: ModelEventSink = Arc::new(|_| Ok(()));
+    let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
 
     let Error::Provider(error) = provider
         .send_response(model_request(), Arc::clone(&events))
@@ -159,7 +159,7 @@ async fn previous_response_not_found_does_not_repeat_full_context() {
         reqwest::Client::new(),
     )
     .expect("provider");
-    let events: ModelEventSink = Arc::new(|_| Ok(()));
+    let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
 
     let Error::Provider(error) = provider
         .send_response(model_request(), events)
@@ -260,7 +260,7 @@ async fn previous_response_not_found_rebuilds_full_context_on_the_same_connectio
     )
     .expect("provider");
     let initial_input = vec![serde_json::json!({"role": "user", "content": "one"})];
-    let events: ModelEventSink = Arc::new(|_| Ok(()));
+    let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
     let initial_output = provider
         .send_response(
             ModelRequest {

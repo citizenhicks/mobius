@@ -376,7 +376,9 @@ async fn retained_model_sink_closes_after_response_completion() {
         .expect("retained sink lock")
         .clone()
         .expect("retained model sink");
-    let error = sink(ModelEvent::TextDelta("late".into())).expect_err("closed sink");
+    let error = sink(ModelEvent::TextDelta("late".into()))
+        .await
+        .expect_err("closed sink");
 
     assert_eq!(error.to_string(), "agent stopped: model event sink closed");
 }
@@ -416,7 +418,7 @@ async fn retained_model_sink_closes_when_response_is_cancelled() {
     drop(agent);
     let error = tokio::time::timeout(std::time::Duration::from_secs(1), async {
         loop {
-            match sink(ModelEvent::TextDelta("late".into())) {
+            match sink(ModelEvent::TextDelta("late".into())).await {
                 Ok(()) => tokio::task::yield_now().await,
                 Err(error) => break error,
             }
@@ -553,4 +555,53 @@ async fn recorder_save_copies_the_checkpoint_once_through_sqlite() {
         checkpoints.load("session").await.expect("load"),
         Some(checkpoint)
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fast_model_burst_waits_for_durable_event_delivery() {
+    struct BurstModel;
+    const DELTAS: usize = RECORDER_COMMAND_CAPACITY * 4;
+    impl Model for BurstModel {
+        fn respond<'a>(
+            &'a self,
+            _request: ModelRequest<'a>,
+            events: ModelEventSink,
+        ) -> BoxFuture<'a, Result<ModelOutput>> {
+            Box::pin(async move {
+                for _ in 0..DELTAS {
+                    events(ModelEvent::TextDelta("x".into())).await?;
+                }
+                Ok(scripted_message(&"x".repeat(DELTAS)))
+            })
+        }
+    }
+    let workspace = tempfile::tempdir().expect("workspace");
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+            .expect("checkpoint store"),
+    );
+    let mut agent = create_agent(config_with_model(
+        workspace.path(),
+        checkpoints,
+        "fast-model-burst",
+        "test",
+        Arc::new(BurstModel),
+    ))
+    .await
+    .expect("agent");
+    agent.sender().submit(user_op("hello")).expect("submit");
+    let mut deltas = 0;
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            match agent.next_event().await.expect("agent event").msg {
+                EventMsg::AssistantContentDelta(_) => deltas += 1,
+                EventMsg::TurnComplete(_) => break,
+                EventMsg::Error(error) => panic!("burst aborted: {}", error.message),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("burst completes");
+    assert_eq!(deltas, DELTAS);
 }

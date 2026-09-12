@@ -91,7 +91,7 @@
 //!         events: ModelEventSink,
 //!     ) -> BoxFuture<'a, Result<ModelOutput>> {
 //!         Box::pin(async move {
-//!             events(ModelEvent::TextDelta("done".into()))?;
+//!             events(ModelEvent::TextDelta("done".into())).await?;
 //!             ModelOutput::from_output(
 //!                 vec![json!({
 //!                     "type": "message",

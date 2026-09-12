@@ -155,13 +155,13 @@ fn neutral_image_becomes_kimi_image_url() {
     );
 }
 
-#[test]
-fn stream_normalizes_deltas_tools_usage_and_errors() {
+#[tokio::test]
+async fn stream_normalizes_deltas_tools_usage_and_errors() {
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_seen = Arc::clone(&seen);
     let events: ModelEventSink = Arc::new(move |event| {
         sink_seen.lock().expect("events lock").push(event);
-        Ok(())
+        Box::pin(async { Ok(()) })
     });
     let mut stream = StreamState::default();
     stream
@@ -182,6 +182,7 @@ fn stream_normalizes_deltas_tools_usage_and_errors() {
             .to_string(),
             &events,
         )
+        .await
         .expect("first delta");
     stream
         .apply_data(
@@ -204,8 +205,9 @@ fn stream_normalizes_deltas_tools_usage_and_errors() {
             .to_string(),
             &events,
         )
+        .await
         .expect("second delta");
-    stream.apply_data("[DONE]", &events).expect("done");
+    stream.apply_data("[DONE]", &events).await.expect("done");
 
     let output = stream.finish().expect("normalized output");
     assert_eq!(output.text(), "Reading.");
@@ -219,6 +221,7 @@ fn stream_normalizes_deltas_tools_usage_and_errors() {
     let mut failed = StreamState::default();
     let error = failed
         .apply_data(r#"{"error":{"message":"quota"}} "#, &events)
+        .await
         .expect_err("stream error");
     assert!(error.to_string().contains("quota"));
 }

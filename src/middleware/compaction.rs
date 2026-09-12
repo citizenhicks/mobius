@@ -564,7 +564,11 @@ async fn summarize(context: &ModelContext<'_>) -> Result<CompactOutput> {
     };
     let output = context
         .model
-        .respond(context.provider, request, Arc::new(|_| Ok(())))
+        .respond(
+            context.provider,
+            request,
+            Arc::new(|_| Box::pin(async { Ok(()) })),
+        )
         .await?;
     let summary = output.text().trim();
     if summary.is_empty() {

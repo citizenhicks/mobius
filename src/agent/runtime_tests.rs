@@ -485,8 +485,9 @@ impl Model for RecoveringStreamModel {
             if attempt == 0 {
                 events(ModelEvent::WebSearchStarted {
                     call_id: "search-1".into(),
-                })?;
-                events(ModelEvent::TextDelta("partial".into()))?;
+                })
+                .await?;
+                events(ModelEvent::TextDelta("partial".into())).await?;
                 return Err(Error::Provider(crate::ProviderError::stream_interrupted(
                     None,
                 )));

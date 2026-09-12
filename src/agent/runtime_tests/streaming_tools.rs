@@ -117,7 +117,8 @@ impl Model for ParallelStreamingModel {
                     call_id: call_id.into(),
                     name: "parallel_streaming_tool".into(),
                     arguments: serde_json::json!({"call_id": call_id}),
-                }))?;
+                }))
+                .await?;
             }
             while started_count.load(Ordering::SeqCst) < 2 {
                 started.notified().await;
@@ -196,10 +197,11 @@ impl Model for BarrierStreamingModel {
                     call_id: call_id.into(),
                     name: name.into(),
                     arguments: serde_json::json!({}),
-                }))?;
+                }))
+                .await?;
             }
             barrier.c_prepared.notified().await;
-            events(ModelEvent::TextDelta("barrier-admitted".into()))?;
+            events(ModelEvent::TextDelta("barrier-admitted".into())).await?;
             barrier.release_stream.notified().await;
             ModelOutput::from_output(
                 [
@@ -295,7 +297,8 @@ impl Model for StreamingModel {
                 call_id: "stream-call".into(),
                 name: "streaming_tool".into(),
                 arguments: serde_json::json!({"value": "ready"}),
-            }))?;
+            }))
+            .await?;
             if wait_for_tool_start {
                 tool_started.notified().await;
             }
@@ -422,7 +425,8 @@ impl Model for PreHookModel {
                 call_id: "stream-call".into(),
                 name: "streaming_tool".into(),
                 arguments: serde_json::json!({"value": "ready"}),
-            }))?;
+            }))
+            .await?;
             release.notified().await;
             ModelOutput::from_output(
                 vec![

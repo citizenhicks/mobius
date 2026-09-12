@@ -150,7 +150,7 @@ impl Kimi {
             sse.push(&chunk, "Kimi")?;
             while let Some(frame) = sse.next_frame()? {
                 if let Some(data) = frame_data(frame) {
-                    stream.apply_data(&data, &events)?;
+                    stream.apply_data(&data, &events).await?;
                 }
             }
         }
@@ -239,7 +239,7 @@ struct PendingTool {
 }
 
 impl StreamState {
-    fn apply_data(&mut self, data: &str, events: &ModelEventSink) -> Result<()> {
+    async fn apply_data(&mut self, data: &str, events: &ModelEventSink) -> Result<()> {
         if data == "[DONE]" {
             self.done = true;
             return Ok(());
@@ -262,13 +262,13 @@ impl StreamState {
         if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str) {
             self.reasoning.push_str(reasoning);
             if !reasoning.is_empty() {
-                events(ModelEvent::ReasoningDelta(reasoning.to_string()))?;
+                events(ModelEvent::ReasoningDelta(reasoning.to_string())).await?;
             }
         }
         if let Some(text) = delta.get("content").and_then(Value::as_str) {
             self.text.push_str(text);
             if !text.is_empty() {
-                events(ModelEvent::TextDelta(text.to_string()))?;
+                events(ModelEvent::TextDelta(text.to_string())).await?;
             }
         }
         for (position, call) in delta
