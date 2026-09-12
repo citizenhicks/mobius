@@ -87,7 +87,7 @@ struct ChatView: View {
             // Title changes animate glyphs, so the principal title must be a view the app
             // owns rather than the system's opaque navigation title.
             ToolbarItem(placement: .principal) {
-                VStack(spacing: MobiusSpace.xxs) {
+                VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
                     MobiusTitleText(verbatim: chatTitle)
                         .font(MobiusStyle.titleFont)
                         .lineLimit(1)
