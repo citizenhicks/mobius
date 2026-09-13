@@ -1044,42 +1044,50 @@ impl GatewayHost {
         &'a self,
         mut state: tokio::sync::MutexGuard<'a, GatewayState>,
     ) -> std::result::Result<tokio::sync::MutexGuard<'a, GatewayState>, Rejection> {
-        if state.resident_sessions() < MAX_ACTIVE_SESSIONS {
-            return Ok(state);
-        }
-        let candidates = state
-            .sessions
-            .iter()
-            .filter(|(_, host)| host.is_unreferenced())
-            .map(|(id, host)| (id.clone(), host.clone()))
-            .collect::<Vec<_>>();
-        for (id, host) in candidates {
-            // The cache and this candidate must still be the only owners.
-            if Arc::strong_count(&host.inner) != 2
-                || !state
-                    .sessions
-                    .get(&id)
-                    .is_some_and(|cached| Arc::ptr_eq(&cached.inner, &host.inner))
-            {
-                continue;
+        for attempt in 0..2 {
+            if state.resident_sessions() < MAX_ACTIVE_SESSIONS {
+                return Ok(state);
             }
-            // Unreferenced actors have no queued or running admission commands.
-            // Keep selection atomic, but let lifecycle shutdown re-enter the gateway.
-            if host.request_stop_if_idle().await {
-                drop(state);
-                host.wait_terminated().await;
-                state = self.state.lock().await;
-                if state
-                    .sessions
-                    .get(&id)
-                    .is_some_and(|cached| Arc::ptr_eq(&cached.inner, &host.inner))
+            let candidates = state
+                .sessions
+                .iter()
+                .filter(|(_, host)| host.is_unreferenced())
+                .map(|(id, host)| (id.clone(), host.clone()))
+                .collect::<Vec<_>>();
+            for (id, host) in candidates {
+                // The cache and this candidate must still be the only owners.
+                if Arc::strong_count(&host.inner) != 2
+                    || !state
+                        .sessions
+                        .get(&id)
+                        .is_some_and(|cached| Arc::ptr_eq(&cached.inner, &host.inner))
                 {
-                    state.sessions.remove(&id);
+                    continue;
                 }
-                state.chat_store.retry_pending();
-                if state.resident_sessions() < MAX_ACTIVE_SESSIONS {
-                    return Ok(state);
+                // Unreferenced actors have no queued or running admission commands.
+                // Keep selection atomic, but let lifecycle shutdown re-enter the gateway.
+                if host.request_stop_if_idle().await {
+                    drop(state);
+                    host.wait_terminated().await;
+                    state = self.state.lock().await;
+                    if state
+                        .sessions
+                        .get(&id)
+                        .is_some_and(|cached| Arc::ptr_eq(&cached.inner, &host.inner))
+                    {
+                        state.sessions.remove(&id);
+                    }
+                    state.chat_store.retry_pending();
+                    if state.resident_sessions() < MAX_ACTIVE_SESSIONS {
+                        return Ok(state);
+                    }
                 }
+            }
+            if attempt == 0 {
+                // A command can deliver its reply just before its ownership guard drops.
+                drop(state);
+                tokio::task::yield_now().await;
+                state = self.state.lock().await;
             }
         }
         Err(Rejection {
