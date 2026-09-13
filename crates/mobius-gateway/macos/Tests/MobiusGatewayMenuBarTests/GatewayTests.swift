@@ -250,6 +250,9 @@ import Testing
         loadingChanged.withLock { $0 = true }
     }
     try await eventually { model.chatIsReady && model.selectedChatID == "two" }
+    try await eventually {
+        fixture.requests.count { $0["type"]?.stringValue == "list_sessions" } == 2
+    }
     #expect(loadingChanged.withLock { $0 })
     fixture.opened(firstOpen)
     fixture.send(
