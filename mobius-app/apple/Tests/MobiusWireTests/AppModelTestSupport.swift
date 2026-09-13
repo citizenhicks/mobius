@@ -395,15 +395,24 @@ final class AppModelTests: XCTestCase {
         description: String =
             "You are möbius, a concise coding agent. Inspect the real code path before editing, make the smallest focused change, and preserve unrelated work.",
         tint: AccentTint = .blue,
-        config: VersionedAgentConfig? = nil
+        config: VersionedAgentConfig? = nil,
+        acceptsFileAttachments: Bool? = nil,
+        routineInteractionPolicy: RoutineInteractionPolicy? = nil
     ) -> BotRecord {
-        BotRecord(
+        let config = config ?? VersionedAgentConfig(revision: 1, config: composition())
+        let mayPauseForApproval =
+            config.config.middleware.settings["sandbox"]?["approval_policy"] == .string("ask")
+        return BotRecord(
             id: id,
             handle: handle,
             name: name,
             description: description,
             tint: tint,
-            config: config ?? VersionedAgentConfig(revision: 1, config: composition())
+            config: config,
+            acceptsFileAttachments: acceptsFileAttachments
+                ?? config.config.middleware.enabled.contains("attachments"),
+            routineInteractionPolicy: routineInteractionPolicy
+                ?? (mayPauseForApproval ? .mayPauseForApproval : .unattended)
         )
     }
 
@@ -521,12 +530,14 @@ final class AppModelTests: XCTestCase {
         widgets: [SessionWidget] = [],
         attachedFolders: [String] = [],
         compactionCount: UInt64 = 0,
+        activeMessageDelivery: ActiveMessageDelivery = .steer,
         activeTurnIDs: [String]? = nil,
         pendingApprovals: [JSONValue] = [],
         runStats: RunStats = RunStats()
     ) -> SessionReadyPayload {
         SessionReadyPayload(
             activeTurnIds: activeTurnIDs ?? runStats.active.map { [$0.turnId] } ?? [],
+            activeMessageDelivery: activeMessageDelivery,
             pendingApprovals: pendingApprovals,
             latestSequence: latestSequence,
             nextBeforeSequence: nextBeforeSequence,
@@ -536,7 +547,7 @@ final class AppModelTests: XCTestCase {
             session: SessionConfigured(
                 sessionId: sessionID,
                 context: SessionContext(
-                    botId: botID,
+                    ownerId: botID,
                     tenantId: nil,
                     userId: nil,
                     userName: nil,
@@ -735,7 +746,7 @@ final class AppModelTests: XCTestCase {
         SessionRecord(
             sessionId: sessionID,
             sessionContext: SessionContext(
-                botId: botID,
+                ownerId: botID,
                 tenantId: nil,
                 userId: nil,
                 userName: nil,

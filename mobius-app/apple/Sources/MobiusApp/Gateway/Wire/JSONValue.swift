@@ -1,5 +1,54 @@
 import Foundation
 
+enum AgentEventKind: String, Equatable, Sendable {
+    case error
+    case warning
+    case submissionRejected = "submission_rejected"
+    case message
+    case messageDelta = "message_delta"
+    case sessionConfigured = "session_configured"
+    case sessionHistory = "session_history"
+    case sessionResumeRequested = "session_resume_requested"
+    case contextCompacted = "context_compacted"
+    case turnStarted = "turn_started"
+    case turnComplete = "turn_complete"
+    case turnAborted = "turn_aborted"
+    case assistantMessage = "assistant_message"
+    case assistantContentDelta = "assistant_content_delta"
+    case modelStepStarted = "model_step_started"
+    case modelStepCompleted = "model_step_completed"
+    case modelChanged = "model_changed"
+    case toolCallBegin = "tool_call_begin"
+    case toolCallEnd = "tool_call_end"
+    case toolLoad = "tool_load"
+    case execApprovalRequest = "exec_approval_request"
+    case tokenCount = "token_count"
+    case webSearchBegin = "web_search_begin"
+    case webSearchEnd = "web_search_end"
+    case frontend
+
+    var finishesTurn: Bool {
+        switch self {
+        case .turnComplete, .turnAborted:
+            true
+        case .error, .warning, .submissionRejected, .message, .messageDelta, .sessionConfigured,
+            .sessionHistory, .sessionResumeRequested, .contextCompacted, .turnStarted,
+            .assistantMessage, .assistantContentDelta, .modelStepStarted, .modelStepCompleted,
+            .modelChanged, .toolCallBegin, .toolCallEnd, .toolLoad, .execApprovalRequest,
+            .tokenCount, .webSearchBegin, .webSearchEnd, .frontend:
+            false
+        }
+    }
+}
+
+enum FrontendAgentEventKind: String, Equatable, Sendable {
+    case render
+    case widget
+    case removeWidget = "remove_widget"
+    case picker
+    case preview
+}
+
 indirect enum JSONValue: Codable, Equatable, Sendable {
     case object([String: JSONValue])
     case array([JSONValue])

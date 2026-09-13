@@ -116,6 +116,21 @@ struct MiddlewareConfig: Codable, Equatable, Sendable {
 }
 
 extension MiddlewareConfig {
+    func activeMessageDelivery(features: [MiddlewareFeature]) -> ActiveMessageDelivery? {
+        for feature in features {
+            for setting in feature.settings {
+                guard case .select(let options, _) = setting.kind,
+                    Set(options.compactMap { ActiveMessageDelivery(rawValue: $0.value) })
+                        == Set(ActiveMessageDelivery.allCases),
+                    case .string(let rawValue) = settings[feature.id]?[setting.id],
+                    let delivery = ActiveMessageDelivery(rawValue: rawValue)
+                else { continue }
+                return delivery
+            }
+        }
+        return nil
+    }
+
     func disabledBy(features: [MiddlewareFeature], middleware: String) -> String? {
         for feature in features where feature.required || enabled.contains(feature.id) {
             for setting in feature.settings {

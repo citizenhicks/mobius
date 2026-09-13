@@ -225,7 +225,7 @@ extension AppModelTests {
             RecordedEvent(
                 sequence: UInt64(index + 1),
                 recordedAtMs: Int64(1_000 + index),
-                event: AgentEventRecord(submissionId: nil, msg: rendered.event),
+                event: rendered.event,
                 streamMetrics: [],
                 blocks: rendered.blocks,
                 preview: nil

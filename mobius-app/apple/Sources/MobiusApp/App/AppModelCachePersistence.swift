@@ -1,9 +1,7 @@
 import Foundation
 
 extension AppModel {
-    func requestID(_ prefix: String) -> String {
-        "\(prefix)-\(UUID().uuidString.lowercased())"
-    }
+    func requestID(_ prefix: String) -> String { gatewayRequestID(prefix) }
 
     func cacheChatCatalog(lastSessionID: String? = nil) {
         guard !isClearingLocalData, let accountID = gateway.selectedAccountID else { return }

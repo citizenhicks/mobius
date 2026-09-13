@@ -77,11 +77,9 @@ extension ChatSessionModel {
         turnState: inout TranscriptHistoryTurnState,
         recordID: String? = nil
     ) {
-        let event = record.event.msg
-        let type = event["type"]?.stringValue ?? "unknown"
-        let modelStepID = event["modelStepId"]?.stringValue
+        let event = record.event
         let turnID = historyTurnID(
-            for: type,
+            for: event.kind,
             event: event,
             entries: &entries,
             turnState: &turnState
@@ -102,17 +100,17 @@ extension ChatSessionModel {
                 blockIndex: index,
                 recordedAtMs: record.recordedAtMs,
                 turnID: turnID,
-                modelStepID: modelStepID,
+                modelStepID: event.modelStepID,
                 recordID: recordID,
                 to: &entries
             )
         }
 
-        switch type {
-        case "message_delta":
+        switch event.kind {
+        case .messageDelta:
             appendMessageDelta(record, to: &entries)
-        case "message":
-            guard let message = try? MessageEventPayload(json: event) else { break }
+        case .message:
+            guard let message = event.message else { break }
             let startsTurn =
                 message.delivery.startsTurn
                 && turnID != nil
@@ -126,21 +124,21 @@ extension ChatSessionModel {
                 recordID: recordID,
                 to: &entries
             )
-        case "assistant_content_delta":
+        case .assistantContentDelta:
             reduceHistoryDelta(
                 event: event,
                 record: record,
                 turnID: turnID,
                 entries: &entries
             )
-        case "model_step_completed":
+        case .modelStepCompleted:
             applyModelStepCompletion(event, turnID: turnID, record: record, to: &entries)
-        case "assistant_message":
+        case .assistantMessage:
             applyAssistantMessage(event, turnID: turnID, record: record, to: &entries)
-        case "turn_complete":
+        case .turnComplete:
             finishHistoryTurn(record, turnID: turnID, aborted: false, entries: &entries)
             turnState = TranscriptHistoryTurnState()
-        case "turn_aborted":
+        case .turnAborted:
             finishHistoryTurn(record, turnID: turnID, aborted: true, entries: &entries)
             turnState = TranscriptHistoryTurnState()
         default:
@@ -149,13 +147,13 @@ extension ChatSessionModel {
     }
 
     private func historyTurnID(
-        for type: String,
-        event: JSONValue,
+        for kind: AgentEventKind,
+        event: AgentEventRecord,
         entries: inout [TranscriptEntry],
         turnState: inout TranscriptHistoryTurnState
     ) -> String? {
-        let explicitTurnID = event["turnId"]?.stringValue
-        if type == "turn_started" {
+        let explicitTurnID = event.turnID
+        if kind == .turnStarted {
             turnState = TranscriptHistoryTurnState(
                 turnID: explicitTurnID,
                 awaitingInitialMessageTurnID: explicitTurnID
@@ -182,21 +180,14 @@ extension ChatSessionModel {
     }
 
     private func reduceHistoryDelta(
-        event: JSONValue,
+        event: AgentEventRecord,
         record: RecordedEvent,
         turnID: String?,
         entries: inout [TranscriptEntry]
     ) {
-        guard let modelStepID = event["modelStepId"]?.stringValue else { return }
-        let phase = event["phase"]?.stringValue ?? "final_answer"
-        let id = streamID(modelStepID: modelStepID, phase: phase)
-        let kind: TranscriptEntry.Kind =
-            switch phase {
-            case "reasoning": .reasoning
-            case "commentary": .commentary
-            default: .assistant
-            }
-        let delta = event["delta"]?.stringValue ?? ""
+        guard let modelStepID = event.modelStepID, let phase = event.phase else { return }
+        let id = streamID(modelStepID: modelStepID, phase: phase.rawValue)
+        let delta = event.delta ?? ""
         guard !delta.isEmpty else { return }
         if let index = entries.lastIndex(where: { $0.id == id }) {
             entries[index].text.append(delta)
@@ -213,7 +204,7 @@ extension ChatSessionModel {
                         ordinal: 0
                     ),
                     text: delta,
-                    kind: kind,
+                    kind: phase.transcriptKind,
                     format: "plain_text",
                     tone: "neutral",
                     pending: true,

@@ -195,6 +195,7 @@ extension GatewayWireTests {
         }
         XCTAssertEqual(requestID, "open-1")
         XCTAssertEqual(payload.latestSequence, 7)
+        XCTAssertEqual(payload.activeMessageDelivery, .steer)
         XCTAssertEqual(payload.nextBeforeSequence, 2)
         XCTAssertEqual(payload.compactionCount, 2)
         XCTAssertEqual(payload.contextLimitTokens, 200_000)

@@ -1,6 +1,14 @@
 import Foundation
 import SwiftUI
 
+extension LocalizedStringResource {
+    func resolved(locale: Locale) -> String {
+        var resource = self
+        resource.locale = locale
+        return String(localized: resource)
+    }
+}
+
 func formatDuration(_ interval: TimeInterval) -> String {
     let seconds = max(0, Int(interval))
     return Duration.seconds(seconds).formatted(.time(pattern: .minuteSecond(padMinuteToLength: 1)))
@@ -41,9 +49,7 @@ enum MobiusText {
 
     func resolved(locale: Locale) -> String {
         switch self {
-        case .localized(var resource):
-            resource.locale = locale
-            return String(localized: resource)
+        case .localized(let resource): return resource.resolved(locale: locale)
         case .verbatim(let value): return value
         }
     }

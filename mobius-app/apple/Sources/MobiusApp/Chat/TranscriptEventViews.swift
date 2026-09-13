@@ -389,6 +389,7 @@ private struct WebSearchDetail: View {
 }
 
 /// Converts a queued non-user widget into the same pending event record used by the transcript.
+@MainActor
 func transcriptEventEntry(for widget: MountedWidget) -> TranscriptEntry {
     TranscriptEntry(
         id: "queued-widget:\(widget.id)",

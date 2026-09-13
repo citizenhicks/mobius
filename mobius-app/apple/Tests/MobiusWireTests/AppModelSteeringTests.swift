@@ -407,7 +407,7 @@ extension AppModelTests {
         XCTAssertNil(turnMessage.targetTurnId)
     }
 
-    func testActiveDeliveryDoesNotRequireAComposerControl() throws {
+    func testSessionDeliveryOverridesThePreSessionDraft() throws {
         let model = try model()
         var composition = composition()
         composition.middleware.settings["messages"] = ["delivery": .string("queue")]
@@ -443,6 +443,8 @@ extension AppModelTests {
         ]
 
         XCTAssertEqual(model.activeMessageDelivery, .queue)
+        model.chat.sessionActiveMessageDelivery = .steer
+        XCTAssertEqual(model.activeMessageDelivery, .steer)
     }
 
 }

@@ -252,17 +252,21 @@ struct ChatsView: View {
                 .disabled(displayedSessions.isEmpty || !model.canRenameSession)
             }
             let cloudLimit = model.cloud.hasCloudAccount ? model.cloud.cloudAccount?.luna : nil
-            if cloudLimit != nil || model.codexWeeklyUsage != nil {
+            if cloudLimit != nil
+                || model.providerUsage.contains(where: { $0.limits?.isEmpty == false })
+            {
                 Section("Usage") {
                     if let limit = cloudLimit {
                         Text(
                             "möbius • \(limit.remainingFraction.formatted(.percent.precision(.fractionLength(0)).locale(locale))) remaining"
                         )
                     }
-                    if let limit = model.codexWeeklyUsage {
-                        Text(
-                            "Codex • \(limit.remainingFraction.formatted(.percent.precision(.fractionLength(0)).locale(locale))) remaining"
-                        )
+                    ForEach(model.providerUsage) { usage in
+                        ForEach(usage.limits ?? []) { limit in
+                            Text(
+                                "\(model.providerLabel(for: usage.provider)) · \(limit.label) • \(limit.remainingFraction.formatted(.percent.precision(.fractionLength(0)).locale(locale))) remaining"
+                            )
+                        }
                     }
                 }
             }

@@ -1,10 +1,14 @@
 import Foundation
 import UIKit
 
-let gatewayProtocolVersion = 80
+let gatewayProtocolVersion = 81
 let maximumGatewayFrameBytes = 50 * 1024 * 1024
 let maximumComposerBytes = 1024 * 1024
 let maximumWireSessionFileReferences = 16
+
+func gatewayRequestID(_ prefix: String) -> String {
+    "\(prefix)-\(UUID().uuidString.lowercased())"
+}
 
 enum GatewayWireError: LocalizedError, Equatable {
     case invalidEndpoint(LocalizedStringResource)
@@ -122,13 +126,8 @@ struct GatewayEndpoint: Hashable, Codable, Sendable {
     var displayName: String { displayName(locale: .current) }
 
     func displayName(locale: Locale) -> String {
-        func resolve(_ resource: LocalizedStringResource) -> String {
-            var resource = resource
-            resource.locale = locale
-            return String(localized: resource)
-        }
         if Self.isLoopback(host) {
-            return resolve("This device · \(port)")
+            return LocalizedStringResource("This device · \(port)").resolved(locale: locale)
         }
         let quickSuffix = ".trycloudflare.com"
         if host.hasSuffix(quickSuffix) {
@@ -136,8 +135,9 @@ struct GatewayEndpoint: Hashable, Codable, Sendable {
             let tunnel =
                 words.count > 1
                 ? "\(words[0])…\(words[words.count - 1])"
-                : words.first.map(String.init) ?? resolve("Tunnel")
-            return resolve("Cloudflare · \(tunnel)")
+                : words.first.map(String.init)
+                    ?? LocalizedStringResource("Tunnel").resolved(locale: locale)
+            return LocalizedStringResource("Cloudflare · \(tunnel)").resolved(locale: locale)
         }
         return port == 443 ? host : "\(host):\(port)"
     }

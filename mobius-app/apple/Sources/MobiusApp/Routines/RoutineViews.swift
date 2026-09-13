@@ -390,12 +390,12 @@ struct RoutineForm: View {
             }
             .pickerStyle(.menu)
             .disabled(isSaving)
-            if asksForApproval {
+            if mayPauseForApproval {
                 StatusBanner(
                     tone: .warning,
                     title: "Routine may pause",
                     detail:
-                        "This Bot uses Ask. Approval-required actions will wait for you before the routine can continue."
+                        "Approval-required actions will wait for you before the routine can continue."
                 )
             }
             if submitted, let error = model.routineError {
@@ -597,9 +597,8 @@ struct RoutineForm: View {
             && (endsAt == nil || endsAt! > Int64(Date.now.timeIntervalSince1970))
     }
 
-    private var asksForApproval: Bool {
-        model.bots.first { $0.id == botID }?
-            .config.config.middleware.settings["sandbox"]?["approval_policy"] == .string("ask")
+    private var mayPauseForApproval: Bool {
+        model.bots.first { $0.id == botID }?.routineInteractionPolicy == .mayPauseForApproval
     }
 
     private var summary: MobiusText {

@@ -2,6 +2,7 @@ import Foundation
 @testable import Mobius
 import XCTest
 
+@MainActor
 final class TranscriptProjectionTests: XCTestCase {
     private func entry(
         _ id: String,

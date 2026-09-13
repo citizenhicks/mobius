@@ -62,7 +62,7 @@ extension AppModel {
     func openNewSessionInCurrentWorkspace() {
         guard let path = workspace?.path,
             let selectedSession,
-            let bot = bots.first(where: { $0.id == selectedSession.sessionContext.botId })
+            let bot = bots.first(where: { $0.id == selectedSession.sessionContext.ownerId })
         else { return }
         chooseWorkspace(path)
         selectBotForNewChat(bot)
@@ -115,7 +115,7 @@ extension AppModel {
     func resumeBotSession(botID: String, sessionID: String) {
         guard bots.contains(where: { $0.id == botID }) else { return }
         if let visible = chat.sessions.first(where: { $0.sessionId == sessionID }) {
-            guard visible.sessionContext.botId == botID else {
+            guard visible.sessionContext.ownerId == botID else {
                 showToast("The source conversation belongs to another Bot.", tone: .error)
                 return
             }
@@ -146,7 +146,7 @@ extension AppModel {
     func reassignSession(_ session: SessionRecord, to botID: String) -> String? {
         guard let current = chat.sessions.first(where: { $0.sessionId == session.sessionId }),
             canReassignSession(current), bots.contains(where: { $0.id == botID }),
-            botID != current.sessionContext.botId
+            botID != current.sessionContext.ownerId
         else { return nil }
         let id = requestID("session-reassign")
         chat.sessionMutationRequestID = id

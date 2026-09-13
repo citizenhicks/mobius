@@ -1,60 +1,216 @@
 import Foundation
 
+struct AssistantMessageContent: Sendable {
+    let outputIndex: Int
+    let partIndex: Int
+    let phase: ModelStepContentPhase
+    let text: String
+    let annotations: [JSONValue]
+
+    init(json: JSONValue) throws {
+        guard let outputIndex = json["outputIndex"]?.intValue,
+            let partIndex = json["partIndex"]?.intValue,
+            let rawPhase = json["phase"]?.stringValue,
+            let phase = ModelStepContentPhase(rawValue: rawPhase),
+            let text = json["text"]?.stringValue,
+            let annotations = json["annotations"]?.arrayValue
+        else {
+            throw GatewayWireError.invalidFrame("assistant_message has invalid content")
+        }
+        self.outputIndex = outputIndex
+        self.partIndex = partIndex
+        self.phase = phase
+        self.text = text
+        self.annotations = annotations
+    }
+}
+
+enum ModelStepOutcomeStatus: String, Sendable {
+    case completed
+    case failed
+    case interrupted
+    case retrying
+}
+
 struct AgentEventRecord: Decodable, Sendable {
     let submissionId: String?
+    let kind: AgentEventKind
     let msg: JSONValue
+
+    #if DEBUG
+        /// Test-only construction for synthetic records. Production records use the throwing decoder.
+        init(submissionId: String?, msg: JSONValue) {
+            guard let rawKind = msg["type"]?.stringValue,
+                let kind = AgentEventKind(rawValue: rawKind)
+            else { preconditionFailure("invalid trusted agent event") }
+            self.submissionId = submissionId
+            self.kind = kind
+            self.msg = msg
+        }
+    #endif
+
+    init(validating msg: JSONValue, submissionId: String?) throws {
+        self.submissionId = submissionId
+        kind = try Self.validate(msg, submissionId: submissionId)
+        self.msg = msg
+    }
+
+    var message: MessageEventPayload? {
+        guard kind == .message else { return nil }
+        return try? MessageEventPayload(json: msg)
+    }
+
+    var turnID: String? { msg["turnId"]?.stringValue }
+    var modelStepID: String? { msg["modelStepId"]?.stringValue }
+    var delta: String? {
+        switch kind {
+        case .messageDelta: msg["text"]?.stringValue
+        case .assistantContentDelta: msg["delta"]?.stringValue
+        default: nil
+        }
+    }
+    var phase: ModelStepContentPhase? {
+        msg["phase"]?.stringValue.flatMap(ModelStepContentPhase.init(rawValue:))
+    }
+    var assistantContent: [AssistantMessageContent]? {
+        guard kind == .assistantMessage, let content = msg["content"]?.arrayValue else {
+            return nil
+        }
+        return try? content.map(AssistantMessageContent.init(json:))
+    }
+    var messageTarget: MessageTarget? {
+        guard kind == .assistantMessage, let target = msg["messageTarget"], target != .null else {
+            return nil
+        }
+        return MessageTarget(json: target)
+    }
+    var modelContextWindow: Int64? {
+        let value =
+            kind == .tokenCount ? msg["info"]?["modelContextWindow"] : msg["modelContextWindow"]
+        return value?.intValue.map(Int64.init)
+    }
+    var modelRoute: String? {
+        guard kind == .modelChanged else { return nil }
+        return msg["route"]?.stringValue
+    }
+    var sessionID: String? {
+        guard kind == .sessionResumeRequested else { return nil }
+        return msg["sessionId"]?.stringValue
+    }
+    var toolCallFailed: Bool {
+        kind == .toolCallEnd && msg["isError"]?.boolValue == true
+    }
+    var modelStepOutcomeStatus: ModelStepOutcomeStatus? {
+        guard kind == .modelStepCompleted else { return nil }
+        return msg["outcome"]?["status"]?.stringValue.flatMap(
+            ModelStepOutcomeStatus.init(rawValue:))
+    }
+    var tokenUsage: (total: TokenUsage, last: TokenUsage)? {
+        guard kind == .tokenCount, let info = msg["info"], info != .null,
+            let total = info["totalTokenUsage"].flatMap(TokenUsage.init(json:)),
+            let last = info["lastTokenUsage"].flatMap(TokenUsage.init(json:))
+        else { return nil }
+        return (total, last)
+    }
+    var frontendWidget: (capability: String, widget: FrontendWidget)? {
+        guard kind == .frontend, frontendEvent == .widget,
+            let capability = msg["capability"]?.stringValue,
+            let item = msg["item"],
+            let widget = try? FrontendWidget(json: item)
+        else { return nil }
+        return (capability, widget)
+    }
+    var removedFrontendWidget: (capability: String, id: String)? {
+        guard kind == .frontend, frontendEvent == .removeWidget,
+            let capability = msg["capability"]?.stringValue,
+            let id = msg["id"]?.stringValue
+        else { return nil }
+        return (capability, id)
+    }
+    var frontendPicker: (title: String, options: [FrontendPickerOption])? {
+        guard kind == .frontend, frontendEvent == .picker,
+            let title = msg["title"]?.stringValue,
+            let values = msg["options"]?.arrayValue,
+            let options = try? values.map(FrontendPickerOption.init(json:))
+        else { return nil }
+        return (title, options)
+    }
+    var frontendEvent: FrontendAgentEventKind? {
+        guard kind == .frontend else { return nil }
+        return msg["frontendType"]?.stringValue.flatMap(FrontendAgentEventKind.init(rawValue:))
+    }
 }
 
 extension AgentEventRecord {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: DynamicCodingKey.self)
         let msg = try container.decode(JSONValue.self, forKey: "msg")
-        submissionId = try container.decodeIfPresent(String.self, forKey: "submissionId")
-        try Self.validate(msg, submissionId: submissionId)
-        self.msg = msg
+        try self.init(
+            validating: msg,
+            submissionId: try container.decodeIfPresent(String.self, forKey: "submissionId")
+        )
     }
 
-    static func validate(_ msg: JSONValue, submissionId: String?) throws {
-        try validate(msg)
-        if msg["type"]?.stringValue == "message_delta", submissionId?.isEmpty != false {
+    @discardableResult
+    static func validate(_ msg: JSONValue, submissionId: String?) throws -> AgentEventKind {
+        let kind = try validate(msg)
+        if kind == .messageDelta, submissionId?.isEmpty != false {
             throw GatewayWireError.invalidFrame("message_delta has no submission identity")
         }
+        return kind
     }
 
-    static func validate(_ msg: JSONValue) throws {
-        guard let type = msg["type"]?.stringValue else {
+    @discardableResult
+    static func validate(_ msg: JSONValue) throws -> AgentEventKind {
+        guard let rawKind = msg["type"]?.stringValue else {
             throw GatewayWireError.invalidFrame("agent event has no type")
         }
-        try AgentEventValidator(msg: msg, type: type).validate()
+        guard let kind = AgentEventKind(rawValue: rawKind) else {
+            throw GatewayWireError.invalidFrame("unknown agent event \(rawKind)")
+        }
+        try AgentEventValidator(msg: msg, kind: kind).validate()
+        return kind
     }
 }
 
 private struct AgentEventValidator {
     let msg: JSONValue
-    let type: String
+    let kind: AgentEventKind
+    var type: String { kind.rawValue }
 
     func validate() throws {
-        if try validateSessionEvent() { return }
-        if try validateModelEvent() { return }
-        if try validateCapabilityEvent() { return }
-        throw GatewayWireError.invalidFrame("unknown agent event \(type)")
+        let validated: Bool
+        switch kind {
+        case .error, .warning, .submissionRejected, .message, .messageDelta, .sessionConfigured,
+            .sessionHistory, .sessionResumeRequested, .contextCompacted:
+            validated = try validateSessionEvent()
+        case .turnStarted, .turnComplete, .turnAborted, .assistantMessage,
+            .assistantContentDelta, .modelStepStarted, .modelStepCompleted, .modelChanged:
+            validated = try validateModelEvent()
+        case .toolCallBegin, .toolCallEnd, .toolLoad, .execApprovalRequest, .tokenCount,
+            .webSearchBegin, .webSearchEnd, .frontend:
+            validated = try validateCapabilityEvent()
+        }
+        guard validated else {
+            throw GatewayWireError.invalidFrame("unknown agent event \(type)")
+        }
     }
 
     private func validateSessionEvent() throws -> Bool {
-        switch type {
-        case "error":
+        switch kind {
+        case .error:
             try requireString("kind")
             try requireString("message")
             try requireBool("retryable")
             try optionalInteger("status")
             try optionalString("retryAfter")
-        case "warning", "submission_rejected":
+        case .warning, .submissionRejected:
             try requireString("message")
-        case "message":
+        case .message:
             _ = try MessageEventPayload(json: msg)
-        case "message_delta":
+        case .messageDelta:
             try requireString("text")
-        case "session_configured":
+        case .sessionConfigured:
             try requireString("sessionId")
             guard let context = msg["context"], let model = msg["model"] else {
                 throw GatewayWireError.invalidFrame(
@@ -63,9 +219,9 @@ private struct AgentEventValidator {
             }
             try validateContext(context)
             try validateModel(model)
-        case "session_history":
+        case .sessionHistory:
             throw GatewayWireError.invalidFrame("session_history cannot cross the gateway")
-        case "session_resume_requested":
+        case .sessionResumeRequested:
             try requireString("sessionId")
             guard let context = msg["context"] else {
                 throw GatewayWireError.invalidFrame(
@@ -73,7 +229,7 @@ private struct AgentEventValidator {
                 )
             }
             try validateContext(context)
-        case "context_compacted":
+        case .contextCompacted:
             break
         default:
             return false
@@ -82,32 +238,32 @@ private struct AgentEventValidator {
     }
 
     private func validateModelEvent() throws -> Bool {
-        switch type {
-        case "turn_started":
+        switch kind {
+        case .turnStarted:
             try requireString("turnId")
             try optionalInteger("modelContextWindow")
-        case "turn_complete":
+        case .turnComplete:
             try requireString("turnId")
-        case "turn_aborted":
+        case .turnAborted:
             try requireString("turnId")
             try requireString("reason")
-        case "assistant_message":
+        case .assistantMessage:
             try requireStrings(["sessionId", "turnId", "modelStepId"])
             guard let content = msg["content"]?.arrayValue, !content.isEmpty else {
                 throw GatewayWireError.invalidFrame("assistant_message has invalid content")
             }
             try validateAssistantContent(content)
             try validateMessageTarget()
-        case "assistant_content_delta":
+        case .assistantContentDelta:
             try requireStrings(["sessionId", "turnId", "modelStepId", "delta"])
             try validatePhase()
-        case "model_step_started":
+        case .modelStepStarted:
             try requireStrings(["sessionId", "turnId", "modelStepId"])
             try requireInteger("stepIndex")
             try requireInteger("startedAtMs")
-        case "model_step_completed":
+        case .modelStepCompleted:
             try validateModelStepCompletion()
-        case "model_changed":
+        case .modelChanged:
             try validateModel(msg)
         default:
             return false
@@ -116,20 +272,20 @@ private struct AgentEventValidator {
     }
 
     private func validateCapabilityEvent() throws -> Bool {
-        switch type {
-        case "tool_call_begin":
+        switch kind {
+        case .toolCallBegin:
             try requireStrings(["turnId", "callId", "name"])
             guard msg["arguments"] != nil else {
                 throw GatewayWireError.invalidFrame("tool_call_begin has invalid arguments")
             }
-        case "tool_call_end":
+        case .toolCallEnd:
             try requireStrings(["turnId", "callId", "name"])
             guard let output = msg["output"]?.arrayValue else {
                 throw GatewayWireError.invalidFrame("tool_call_end has invalid output")
             }
             _ = try output.map(ContentPart.init(json:))
             try requireBool("isError")
-        case "tool_load":
+        case .toolLoad:
             try requireStrings(["turnId", "loadId", "catalogRevision"])
             guard let tools = msg["tools"]?.arrayValue,
                 !tools.isEmpty,
@@ -137,16 +293,16 @@ private struct AgentEventValidator {
             else {
                 throw GatewayWireError.invalidFrame("tool_load has invalid tools")
             }
-        case "exec_approval_request":
+        case .execApprovalRequest:
             try validateApprovalCalls()
-        case "token_count":
+        case .tokenCount:
             try validateTokenCount()
-        case "web_search_begin":
+        case .webSearchBegin:
             try requireStrings(["sessionId", "turnId", "modelStepId", "callId"])
-        case "web_search_end":
+        case .webSearchEnd:
             try requireStrings(["sessionId", "turnId", "modelStepId", "callId"])
             try validateWebSearchAction()
-        case "frontend":
+        case .frontend:
             try validateFrontendEvent()
         default:
             return false
@@ -202,6 +358,7 @@ private struct AgentEventValidator {
         guard value.objectValue != nil else {
             throw GatewayWireError.invalidFrame("\(type) has invalid context")
         }
+        try requireString("ownerId", in: value)
         try optionalStrings(
             ["tenantId", "userId", "userName", "workspaceId", "workspaceLabel", "originLabel"],
             in: value
@@ -221,7 +378,7 @@ private struct AgentEventValidator {
     private func validatePhase(in value: JSONValue? = nil) throws {
         let value = value ?? msg
         guard let phase = value["phase"]?.stringValue,
-            ["reasoning", "commentary", "final_answer"].contains(phase)
+            ModelStepContentPhase(rawValue: phase) != nil
         else {
             throw GatewayWireError.invalidFrame("\(type) has invalid phase")
         }
@@ -254,8 +411,15 @@ private struct AgentEventValidator {
         guard let outcome = msg["outcome"], outcome.objectValue != nil else {
             throw GatewayWireError.invalidFrame("model_step_completed has invalid outcome")
         }
-        switch outcome["status"]?.stringValue {
-        case "completed":
+        guard let rawStatus = outcome["status"]?.stringValue,
+            let status = ModelStepOutcomeStatus(rawValue: rawStatus)
+        else {
+            throw GatewayWireError.invalidFrame(
+                "model_step_completed has invalid outcome status"
+            )
+        }
+        switch status {
+        case .completed:
             try requireBool("endTurn", in: outcome)
             guard let usage = outcome["usage"],
                 let toolCallIDs = outcome["toolCallIds"]?.arrayValue,
@@ -266,26 +430,15 @@ private struct AgentEventValidator {
                 )
             }
             try validateUsage(usage)
-        case "failed", "interrupted", "retrying":
+        case .failed, .interrupted, .retrying:
             break
-        default:
-            throw GatewayWireError.invalidFrame(
-                "model_step_completed has invalid outcome status"
-            )
         }
     }
 
     private func validateAssistantContent(_ content: [JSONValue]) throws {
-        for item in content {
-            try requireIntegers(["outputIndex", "partIndex"], in: item)
-            try validatePhase(in: item)
-            try requireString("text", in: item)
-            guard let annotations = item["annotations"]?.arrayValue else {
-                throw GatewayWireError.invalidFrame(
-                    "assistant_message has invalid content annotations"
-                )
-            }
-            try annotations.forEach(validateModelStepAnnotation)
+        for value in content {
+            let item = try AssistantMessageContent(json: value)
+            try item.annotations.forEach(validateModelStepAnnotation)
         }
     }
 
@@ -405,31 +558,34 @@ private struct AgentEventValidator {
     }
 
     private func validateFrontendEvent() throws {
-        guard let frontendType = msg["frontendType"]?.stringValue else {
+        guard let rawFrontendEvent = msg["frontendType"]?.stringValue else {
             throw GatewayWireError.invalidFrame("frontend event has no frontend_type")
         }
-        switch frontendType {
-        case "render":
+        guard let frontendEvent = FrontendAgentEventKind(rawValue: rawFrontendEvent) else {
+            throw GatewayWireError.invalidFrame("unknown frontend event \(rawFrontendEvent)")
+        }
+        switch frontendEvent {
+        case .render:
             guard msg["capability"]?.stringValue != nil, let block = msg["block"] else {
                 throw GatewayWireError.invalidFrame(
                     "frontend render is missing a required field"
                 )
             }
             _ = try FrontendBlock(json: block)
-        case "widget":
+        case .widget:
             guard msg["capability"]?.stringValue != nil, let item = msg["item"] else {
                 throw GatewayWireError.invalidFrame(
                     "frontend widget is missing a required field"
                 )
             }
             _ = try FrontendWidget(json: item)
-        case "remove_widget":
+        case .removeWidget:
             guard msg["capability"]?.stringValue != nil, msg["id"]?.stringValue != nil else {
                 throw GatewayWireError.invalidFrame(
                     "frontend remove_widget is missing a required field"
                 )
             }
-        case "picker":
+        case .picker:
             guard msg["title"]?.stringValue != nil,
                 let options = msg["options"]?.arrayValue
             else {
@@ -438,7 +594,7 @@ private struct AgentEventValidator {
                 )
             }
             try options.forEach { _ = try FrontendPickerOption(json: $0) }
-        case "preview":
+        case .preview:
             guard let id = msg["id"]?.stringValue,
                 !id.isEmpty,
                 msg["title"]?.stringValue != nil,
@@ -455,9 +611,7 @@ private struct AgentEventValidator {
                 )
             }
             if next != .null { _ = try AgentOperation(json: next) }
-            try events.forEach(AgentEventRecord.validate)
-        default:
-            throw GatewayWireError.invalidFrame("unknown frontend event \(frontendType)")
+            try events.forEach { try AgentEventRecord.validate($0) }
         }
     }
 }

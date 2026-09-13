@@ -433,7 +433,7 @@ final class AppModel {
 
     var attachmentsEnabled: Bool {
         if chat.activeTurnID == nil, let bot = selectedBot {
-            return bot.config.config.middleware.enabled.contains("attachments")
+            return bot.acceptsFileAttachments
         }
         return chat.contributions.contains { $0.acceptsFileAttachments }
     }
@@ -470,13 +470,6 @@ final class AppModel {
             && chat.pendingWidgetEdit == nil
     }
 
-    var attachmentReferenceLimit: Int {
-        min(
-            chat.sessionFileLimits?.maxAttachmentReferences ?? 0,
-            maximumWireSessionFileReferences
-        )
-    }
-
     var attachmentFileByteLimit: Int {
         Int(
             min(
@@ -491,13 +484,6 @@ final class AppModel {
                 chat.sessionFileLimits?.maxSessionBytes ?? 0,
                 UInt64(maximumClientComposerAttachmentBytes)
             ))
-    }
-
-    var uploadChunkByteLimit: Int {
-        min(
-            chat.sessionFileLimits?.maxUploadChunkBytes ?? 0,
-            maximumClientUploadChunkBytes
-        )
     }
 
     var canSendComposer: Bool {
@@ -549,11 +535,11 @@ final class AppModel {
 
     func canMutateBot(_ botID: String) -> Bool {
         guard canMutateBots else { return false }
-        if selectedSession?.sessionContext.botId == botID, chat.activeTurnID != nil {
+        if selectedSession?.sessionContext.ownerId == botID, chat.activeTurnID != nil {
             return false
         }
         return !chat.sessions.contains {
-            $0.sessionContext.botId == botID && $0.activity.state != .idle
+            $0.sessionContext.ownerId == botID && $0.activity.state != .idle
         }
     }
 
@@ -619,9 +605,7 @@ final class AppModel {
     }
 
     func localizedString(_ resource: LocalizedStringResource) -> String {
-        var resource = resource
-        resource.locale = language.locale
-        return String(localized: resource)
+        resource.resolved(locale: language.locale)
     }
 
     func localizedErrorDescription(_ error: Error) -> String {
@@ -772,14 +756,14 @@ final class AppModel {
     }
 
     var selectedBot: BotRecord? {
-        guard let botID = selectedSession?.sessionContext.botId ?? chat.pendingNewChatBotID else {
+        guard let botID = selectedSession?.sessionContext.ownerId ?? chat.pendingNewChatBotID else {
             return nil
         }
         return bots.first { $0.id == botID }
     }
 
     func bot(for session: SessionRecord) -> BotRecord? {
-        bots.first { $0.id == session.sessionContext.botId }
+        bots.first { $0.id == session.sessionContext.ownerId }
     }
 
     func bot(forSessionID sessionID: String?) -> BotRecord? {

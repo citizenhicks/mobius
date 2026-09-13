@@ -8,13 +8,34 @@ mkdir -p "$output_dir"
 output_dir="$(cd "$output_dir" && pwd)"
 app="$output_dir/möbius-app.app"
 
-# Keep the small desktop projection on the exact gateway protocol.
+# Keep both Apple clients on the exact gateway transport contract.
 python3 - "$repo_dir" <<'PY'
 import pathlib, re, sys
 root = pathlib.Path(sys.argv[1])
-rust = (root / 'crates/mobius-gateway/src/wire.rs').read_text()
-swift = (root / 'crates/mobius-gateway/macos/Sources/MobiusGatewayMenuBar/GatewayWire.swift').read_text()
-assert re.search(r'PROTOCOL_VERSION: u16 = (\d+)', rust)[1] == re.search(r'gatewayProtocolVersion = (\d+)', swift)[1], 'Update the menu bar wire projection for the current gateway protocol'
+sources = {
+    'Rust gateway': root / 'crates/mobius-gateway/src/wire.rs',
+    'iOS app': root / 'mobius-app/apple/Sources/MobiusApp/Gateway/Wire/GatewayWire.swift',
+    'macOS menu bar': root / 'crates/mobius-gateway/macos/Sources/MobiusGatewayMenuBar/GatewayWire.swift',
+}
+texts = {name: path.read_text() for name, path in sources.items()}
+versions = {
+    'Rust gateway': re.search(r'PROTOCOL_VERSION: u16 = (\d+)', texts['Rust gateway'])[1],
+    **{
+        name: re.search(r'gatewayProtocolVersion = (\d+)', text)[1]
+        for name, text in texts.items() if name != 'Rust gateway'
+    },
+}
+frame_limits = {
+    'Rust gateway': re.search(r'MAX_FRAME_BYTES: usize = ([^;]+);', texts['Rust gateway'])[1],
+    **{
+        name: re.search(r'maximumGatewayFrameBytes = ([^\n]+)', text)[1]
+        for name, text in texts.items() if name != 'Rust gateway'
+    },
+}
+normalize = lambda expression: re.sub(r'\s+', '', expression)
+assert len(set(versions.values())) == 1, f'Gateway protocol versions differ: {versions}'
+assert len({normalize(value) for value in frame_limits.values()}) == 1, \
+    f'Gateway frame limits differ: {frame_limits}'
 PY
 
 gateway="${MOBIUS_GATEWAY_BINARY:-$repo_dir/target/release/mobius-gateway}"

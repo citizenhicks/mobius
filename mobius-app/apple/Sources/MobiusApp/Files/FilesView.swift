@@ -186,46 +186,58 @@ private extension ModifiedFilesScope {
     }
 }
 
+private struct FileExtensionMetadata {
+    let glyph: MobiusGlyph
+    let highlightLanguage: HighlightLanguage?
+}
+
+private let defaultFileExtensionMetadata = FileExtensionMetadata(
+    glyph: .fileText,
+    highlightLanguage: nil
+)
+
+private let fileExtensionMetadataByExtension: [String: FileExtensionMetadata] = {
+    let groups: [([String], FileExtensionMetadata)] = [
+        (["py", "pyi", "pyw"], .init(glyph: .python, highlightLanguage: .python)),
+        (["ts", "tsx"], .init(glyph: .typeScript, highlightLanguage: .typeScript)),
+        (["js", "jsx", "mjs", "cjs"], .init(glyph: .javaScript, highlightLanguage: .javaScript)),
+        (["csv", "tsv"], .init(glyph: .csv, highlightLanguage: nil)),
+        (["rs"], .init(glyph: .rust, highlightLanguage: .rust)),
+        (["go"], .init(glyph: .go, highlightLanguage: .go)),
+        (["md", "mdx", "markdown"], .init(glyph: .markdown, highlightLanguage: .markdown)),
+        (["swift"], .init(glyph: .fileScript, highlightLanguage: .swift)),
+        (["c", "h"], .init(glyph: .fileScript, highlightLanguage: .c)),
+        (["cpp", "hpp", "cc", "cxx"], .init(glyph: .fileScript, highlightLanguage: .cPlusPlus)),
+        (["java"], .init(glyph: .fileScript, highlightLanguage: .java)),
+        (["kt", "kts"], .init(glyph: .fileScript, highlightLanguage: .kotlin)),
+        (["rb"], .init(glyph: .fileScript, highlightLanguage: .ruby)),
+        (["php"], .init(glyph: .fileScript, highlightLanguage: .php)),
+        (["sh", "zsh", "bash"], .init(glyph: .fileScript, highlightLanguage: .shell)),
+        (["doc", "docx", "odt", "pages", "rtf"], .init(glyph: .doc, highlightLanguage: nil)),
+        (
+            ["png", "jpg", "jpeg", "gif", "heic", "webp", "svg"],
+            .init(glyph: .image01, highlightLanguage: nil)
+        ),
+        (["json"], .init(glyph: .gear, highlightLanguage: .json)),
+        (["yaml", "yml"], .init(glyph: .gear, highlightLanguage: .yaml)),
+        (["toml"], .init(glyph: .gear, highlightLanguage: .toml)),
+        (["xml", "ini", "plist"], .init(glyph: .gear, highlightLanguage: nil)),
+    ]
+    return Dictionary(
+        uniqueKeysWithValues: groups.flatMap { group in
+            group.0.map { ($0, group.1) }
+        })
+}()
+
 extension String {
-    var fileGlyph: MobiusGlyph {
-        switch URL(fileURLWithPath: self).pathExtension.lowercased() {
-        case "py", "pyi", "pyw": .python
-        case "ts", "tsx": .typeScript
-        case "js", "jsx", "mjs", "cjs": .javaScript
-        case "csv", "tsv": .csv
-        case "rs": .rust
-        case "go": .go
-        case "md", "mdx", "markdown": .markdown
-        case "swift", "c", "h", "cpp", "hpp", "java", "kt", "kts", "rb", "php", "sh", "zsh":
-            .fileScript
-        case "doc", "docx", "odt", "pages", "rtf": .doc
-        case "png", "jpg", "jpeg", "gif", "heic", "webp", "svg": .image01
-        case "json", "yaml", "yml", "toml", "xml", "ini", "plist": .gear
-        default: .fileText
-        }
+    var fileGlyph: MobiusGlyph { fileExtensionMetadata.glyph }
+    var sourceHighlightLanguage: HighlightLanguage? {
+        fileExtensionMetadata.highlightLanguage
     }
 
-    var sourceHighlightLanguage: HighlightLanguage? {
-        switch URL(fileURLWithPath: self).pathExtension.lowercased() {
-        case "py", "pyi", "pyw": .python
-        case "rs": .rust
-        case "go": .go
-        case "ts", "tsx": .typeScript
-        case "js", "jsx", "mjs", "cjs": .javaScript
-        case "md", "mdx", "markdown": .markdown
-        case "swift": .swift
-        case "c", "h": .c
-        case "cpp", "hpp", "cc", "cxx": .cPlusPlus
-        case "java": .java
-        case "kt", "kts": .kotlin
-        case "rb": .ruby
-        case "php": .php
-        case "sh", "zsh", "bash": .shell
-        case "json": .json
-        case "yaml", "yml": .yaml
-        case "toml": .toml
-        default: nil
-        }
+    private var fileExtensionMetadata: FileExtensionMetadata {
+        fileExtensionMetadataByExtension[URL(fileURLWithPath: self).pathExtension.lowercased()]
+            ?? defaultFileExtensionMetadata
     }
 }
 
@@ -279,7 +291,7 @@ private struct WorkspaceFileList: View {
             let files = model.workspaceFiles
             let query = query
             let searchTask = Task.detached(priority: .userInitiated) {
-                files.filter { $0.path.localizedCaseInsensitiveContains(query) }
+                files.filter { $0.path.localizedStandardContains(query) }
             }
             let result = await searchTask.value
             guard !Task.isCancelled else { return }

@@ -936,6 +936,7 @@ private extension ReadyPayload {
 
 struct SessionReadyPayload: Decodable, Sendable {
     let activeTurnIds: [String]
+    let activeMessageDelivery: ActiveMessageDelivery
     let pendingApprovals: [JSONValue]
     let latestSequence: UInt64
     let nextBeforeSequence: UInt64?
@@ -1024,7 +1025,7 @@ struct SessionConfigured: Decodable, Sendable {
 }
 
 struct SessionContext: Codable, Hashable, Sendable {
-    let botId: String
+    let ownerId: String
     var tenantId: String?
     var userId: String?
     var userName: String?
@@ -1040,6 +1041,13 @@ struct BotRecord: Identifiable, Codable, Equatable, Sendable {
     let description: String
     let tint: AccentTint
     let config: VersionedAgentConfig
+    let acceptsFileAttachments: Bool
+    let routineInteractionPolicy: RoutineInteractionPolicy
+}
+
+enum RoutineInteractionPolicy: String, Codable, Equatable, Sendable {
+    case unattended
+    case mayPauseForApproval = "may_pause_for_approval"
 }
 
 struct BackgroundApproval: Codable, Equatable, Hashable, Sendable {

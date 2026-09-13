@@ -493,9 +493,7 @@ final class GatewayConnectionModel {
     }
 
     private func localizedString(_ resource: LocalizedStringResource) -> String {
-        var resource = resource
-        resource.locale = locale
-        return String(localized: resource)
+        resource.resolved(locale: locale)
     }
 
     private func localizedErrorDescription(_ error: Error) -> String {

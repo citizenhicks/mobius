@@ -115,9 +115,7 @@ final class MobiusCloudModel {
     }
 
     func toast(_ message: LocalizedStringResource, tone: ToastTone = .info) {
-        var message = message
-        message.locale = locale
-        callbacks.showToast?(String(localized: message), tone)
+        callbacks.showToast?(message.resolved(locale: locale), tone)
     }
 
     var locale: Locale {
@@ -125,9 +123,7 @@ final class MobiusCloudModel {
     }
 
     func localizedString(_ resource: LocalizedStringResource) -> String {
-        var resource = resource
-        resource.locale = locale
-        return String(localized: resource)
+        resource.resolved(locale: locale)
     }
 
     func localizedErrorDescription(_ error: Error) -> String {

@@ -82,7 +82,7 @@ extension ChatSessionModel {
     func startRealtimeVoice(eligible: Bool) {
         guard gateway.connectionState.isReady, eligible, realtimeVoiceCall == nil else { return }
         guard let sessionID = selectedSessionID else { return }
-        let requestID = UUID().uuidString.lowercased()
+        let requestID = gatewayRequestID("voice")
         realtimeVoiceCall = RealtimeVoiceCall(
             requestID: requestID, sessionID: sessionID
         )

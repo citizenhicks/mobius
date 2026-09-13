@@ -65,6 +65,7 @@ extension AppModelTests {
         let oldID = try XCTUnwrap(model.profileRequestID)
         model.refreshProfile()
         let currentID = try XCTUnwrap(model.profileRequestID)
+        XCTAssertTrue(model.isLoadingProviderUsage)
         let quota = ProviderUsage(
             provider: "openai_codex",
             limits: [
@@ -125,14 +126,30 @@ extension AppModelTests {
             ProviderUsage(
                 provider: quota.provider, limits: [spark] + (quota.limits ?? []), error: nil)
         ]
-        XCTAssertNil(model.codexWeeklyUsage)
+        XCTAssertEqual(model.providerUsage.first?.limits, [spark] + (quota.limits ?? []))
         model.refreshProfile()
-        XCTAssertTrue(model.isLoadingCodexWeeklyUsage)
-        model.profile?.providerUsage = [
-            ProviderUsage(provider: quota.provider, limits: [spark, weekly], error: nil)
-        ]
-        XCTAssertEqual(model.codexWeeklyUsage, weekly)
-        XCTAssertFalse(model.isLoadingCodexWeeklyUsage)
+        let refreshedID = try XCTUnwrap(model.profileRequestID)
+        XCTAssertFalse(model.isLoadingProviderUsage)
+        model.gateway.handle(
+            .profile(
+                requestID: refreshedID,
+                profile: ProfileSnapshot(
+                    userName: nil,
+                    dailyUsage: [],
+                    providerUsage: [
+                        ProviderUsage(
+                            provider: quota.provider,
+                            limits: [spark, weekly],
+                            error: nil
+                        )
+                    ],
+                    runStats: RunStats(),
+                    recentRunGroups: []
+                )
+            )
+        )
+        XCTAssertEqual(model.providerUsage.first?.limits, [spark, weekly])
+        XCTAssertFalse(model.isLoadingProviderUsage)
 
         model.refreshProfile()
         let failedID = try XCTUnwrap(model.profileRequestID)
@@ -158,7 +175,7 @@ extension AppModelTests {
 
         model.handleGatewayDisconnected("Disconnected")
         XCTAssertNil(model.profileRequestID)
-        XCTAssertFalse(model.isLoadingCodexWeeklyUsage)
+        XCTAssertFalse(model.isLoadingProviderUsage)
         XCTAssertEqual(
             model.providerUsage, [ProviderUsage(provider: quota.provider, limits: nil, error: nil)])
         model.providerInstances = []
@@ -517,6 +534,39 @@ extension AppModelTests {
             XCTAssertEqual(state.tone, tone)
             XCTAssertEqual(state.isLoading, isLoading)
         }
+    }
+
+    func testStaleChatCatalogSchemaIsDiscarded() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let catalogDirectory = root.appendingPathComponent("Catalogs", isDirectory: true)
+        let store = GatewayStore(catalogDirectory: catalogDirectory)
+        let accountID = UUID()
+        var json = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(
+                    CachedChatCatalog(
+                        bots: [bot()],
+                        sessions: [session(state: .idle)],
+                        lastSessionID: "chat-1"
+                    ))) as? [String: Any]
+        )
+        json["schemaVersion"] = CachedChatCatalog.currentSchemaVersion - 1
+        try FileManager.default.createDirectory(
+            at: catalogDirectory,
+            withIntermediateDirectories: true
+        )
+        let url =
+            catalogDirectory
+            .appendingPathComponent(accountID.uuidString)
+            .appendingPathExtension("json")
+        try JSONSerialization.data(withJSONObject: json).write(to: url)
+
+        let cached = await store.loadChatCatalog(accountID: accountID)
+
+        XCTAssertNil(cached)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
     }
 
     func testStartRestoresCachedCatalogAndLastChatBeforeGatewayReady() async throws {

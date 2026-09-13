@@ -156,12 +156,10 @@ extension ChatSessionModel {
     func observeReplayCompletion(_ buffered: BufferedAgentEvent) {
         guard replayRequestID != nil else { return }
         let event = buffered.record.event
-        let type = event.msg["type"]?.stringValue
-        let message = type == "message" ? try? MessageEventPayload(json: event.msg) : nil
+        let message = event.message
         if let submissionID = event.submissionId,
             message?.author == .user
-                || (type == "frontend"
-                    && event.msg["frontendType"]?.stringValue == "widget"),
+                || event.frontendEvent == .widget,
             replayCompletionSubmissionIDs.count < maximumObservedReplaySubmissions
                 || replayCompletionSubmissionIDs.contains(submissionID)
         {
@@ -405,7 +403,7 @@ extension ChatSessionModel {
                 guard case .uploaded(let attachment) = item.state else { return nil }
                 return attachment.id
             })
-        let available = max(0, attachmentReferenceLimit - composerAttachments.count)
+        let available = max(0, self.attachmentReferenceLimit - composerAttachments.count)
         composerAttachments.insert(
             contentsOf: draft.attachments
                 .filter { !currentIDs.contains($0.id) }

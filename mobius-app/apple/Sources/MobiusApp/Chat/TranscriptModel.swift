@@ -159,6 +159,7 @@ extension UIFont {
     }
 }
 
+@MainActor
 @Observable
 final class TranscriptEntry: Identifiable {
     enum Kind: String, Codable, Sendable {
@@ -279,12 +280,22 @@ extension TranscriptEntry.Kind {
         self == .event || self == .error || self == .reasoning
     }
 
-    var narrativePhase: String? {
+    var narrativePhase: ModelStepContentPhase? {
         switch self {
-        case .assistant: "final_answer"
-        case .commentary: "commentary"
-        case .reasoning: "reasoning"
+        case .assistant: .finalAnswer
+        case .commentary: .commentary
+        case .reasoning: .reasoning
         case .user, .event, .error: nil
+        }
+    }
+}
+
+extension ModelStepContentPhase {
+    var transcriptKind: TranscriptEntry.Kind {
+        switch self {
+        case .reasoning: .reasoning
+        case .commentary: .commentary
+        case .finalAnswer: .assistant
         }
     }
 }
@@ -300,6 +311,7 @@ enum TranscriptRowSizing: Equatable {
     case intrinsic
 }
 
+@MainActor
 struct TranscriptPresentationRow: Identifiable {
     enum Kind: Equatable {
         case user
@@ -361,6 +373,7 @@ enum TranscriptWaitingSlot: Equatable {
     }
 }
 
+@MainActor
 struct TranscriptProjection {
     let rows: [TranscriptPresentationRow]
     let waiting: TranscriptWaitingSlot
@@ -717,10 +730,10 @@ struct TranscriptProjection {
 extension TranscriptEntry {
     static func narrativePresentationID(
         modelStepID: String,
-        phase: String,
+        phase: ModelStepContentPhase,
         ordinal: Int
     ) -> String {
-        "\(modelStepID):\(phase):\(ordinal)"
+        "\(modelStepID):\(phase.rawValue):\(ordinal)"
     }
 
     var headline: String { title }
@@ -835,6 +848,7 @@ extension TranscriptEntry {
 
 /// Derived from the entries a surface actually holds, so the chat, a subagent preview, and a
 /// Bot routine all resolve these against their own transcript rather than the selected chat's.
+@MainActor
 func activeStepID(in entries: [TranscriptEntry], isRunning: Bool) -> String? {
     guard isRunning,
         let latest = entries.last,
@@ -844,6 +858,7 @@ func activeStepID(in entries: [TranscriptEntry], isRunning: Bool) -> String? {
     return latest.presentationID
 }
 
+@MainActor
 func transcriptTurnDiff(for entry: TranscriptEntry, in entries: [TranscriptEntry]) -> String {
     guard entry.kind == .assistant,
         entry.turnTerminal,
@@ -855,6 +870,7 @@ func transcriptTurnDiff(for entry: TranscriptEntry, in entries: [TranscriptEntry
     return transcriptTurnDiff(forTurn: turnID, in: entries)
 }
 
+@MainActor
 func transcriptTurnDiff(forTurn turnID: String, in entries: [TranscriptEntry]) -> String {
     entries.lazy
         .filter {

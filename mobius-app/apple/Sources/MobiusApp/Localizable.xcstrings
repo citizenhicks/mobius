@@ -2479,6 +2479,22 @@
         }
       }
     },
+    "Approval-required actions will wait for you before the routine can continue." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Les actions nécessitant une approbation attendront votre réponse avant que la routine puisse continuer."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Genehmigungspflichtige Aktionen warten auf Sie, bevor die Routine fortgesetzt werden kann."
+          }
+        }
+      }
+    },
     "Approve for session" : {
       "localizations" : {
         "fr" : {
@@ -7509,6 +7525,22 @@
         }
       }
     },
+    "Loading" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chargement"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wird geladen"
+          }
+        }
+      }
+    },
     "Loading %@" : {
       "localizations" : {
         "fr" : {
@@ -7681,6 +7713,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Modell wird geladen"
+          }
+        }
+      }
+    },
+    "Loading provider usage" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chargement de l’utilisation des fournisseurs"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Anbieternutzung wird geladen"
           }
         }
       }
@@ -10458,6 +10506,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Anbieter nicht verfügbar"
+          }
+        }
+      }
+    },
+    "Provider usage" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Utilisation des fournisseurs"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Anbieternutzung"
           }
         }
       }
@@ -17082,22 +17146,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dieser Bot ist nicht mehr verfügbar."
-          }
-        }
-      }
-    },
-    "This Bot uses Ask. Approval-required actions will wait for you before the routine can continue." : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ce Bot utilise Demander. Les actions nécessitant une approbation attendront votre réponse avant que la routine puisse continuer."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dieser Bot verwendet „Nachfragen“. Genehmigungspflichtige Aktionen warten auf Sie, bevor die Routine fortgesetzt werden kann."
           }
         }
       }

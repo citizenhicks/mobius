@@ -129,7 +129,7 @@ extension AppModelTests {
                 requestID: beginID,
                 sessionID: sessionID,
                 uploadID: "upload-1",
-                maxChunkBytes: model.uploadChunkByteLimit
+                maxChunkBytes: model.chat.uploadChunkByteLimit
             ))
         let chunk = await recorder.firstRequest(after: 0) { request in
             if case .uploadSessionFileChunk = request { return true }
@@ -460,10 +460,10 @@ extension AppModelTests {
             maxUploadChunkBytes: 64 * 1024
         )
 
-        XCTAssertEqual(model.attachmentReferenceLimit, 3)
+        XCTAssertEqual(model.chat.attachmentReferenceLimit, 3)
         XCTAssertEqual(model.attachmentFileByteLimit, 4 * 1024 * 1024)
         XCTAssertEqual(model.attachmentDraftByteLimit, 6 * 1024 * 1024)
-        XCTAssertEqual(model.uploadChunkByteLimit, 64 * 1024)
+        XCTAssertEqual(model.chat.uploadChunkByteLimit, 64 * 1024)
 
         model.chat.sessionFileLimits = SessionFileLimits(
             maxAttachmentReferences: .max,

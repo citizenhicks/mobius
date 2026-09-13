@@ -170,6 +170,7 @@ final class TranscriptWaitingNoteTests: XCTestCase {
     }
 }
 
+@MainActor
 final class TranscriptEventLineTests: XCTestCase {
     private func entry(
         id: String,
@@ -339,6 +340,7 @@ final class TranscriptEventLineTests: XCTestCase {
 ///
 /// The scroll view animates its bottom-anchor correction on `structuralRevision`, so one
 /// logical arrival that bumps it more than once is one bump the reader sees.
+@MainActor
 final class TranscriptRunArrivalTests: XCTestCase {
     private func message(_ id: String) -> TranscriptEntry {
         TranscriptEntry(

@@ -39,6 +39,7 @@ struct CachedTranscript: Codable, Sendable {
         let files: [SessionFileReference]
         let annotations: [JSONValue]?
 
+        @MainActor
         init(_ entry: TranscriptEntry) {
             id = entry.id
             presentationID = entry.presentationID
@@ -66,6 +67,7 @@ struct CachedTranscript: Codable, Sendable {
             annotations = entry.annotations.isEmpty ? nil : entry.annotations
         }
 
+        @MainActor
         var transcriptEntry: TranscriptEntry {
             TranscriptEntry(
                 id: id,
@@ -103,6 +105,7 @@ struct CachedTranscript: Codable, Sendable {
     let nextBeforeSequence: UInt64?
     private let entries: [Entry]
 
+    @MainActor
     init(
         sequence: UInt64,
         nextBeforeSequence: UInt64?,
@@ -118,6 +121,7 @@ struct CachedTranscript: Codable, Sendable {
         entries = transcript.map(Entry.init)
     }
 
+    @MainActor
     var transcript: [TranscriptEntry] { entries.map(\.transcriptEntry) }
 
     fileprivate func fitsCache(maximumEntries: Int, maximumContentBytes: Int) -> Bool {
@@ -157,7 +161,7 @@ struct CachedTranscript: Codable, Sendable {
 }
 
 struct CachedChatCatalog: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 6
+    static let currentSchemaVersion = 7
 
     let schemaVersion: Int
     let bots: [BotRecord]
@@ -216,7 +220,7 @@ struct CachedChatCatalog: Codable, Equatable, Sendable {
             && sessions.count <= 100
             && sessionIDs.count == sessions.count
             && !sessionIDs.contains("")
-            && sessions.allSatisfy { botIDs.contains($0.sessionContext.botId) }
+            && sessions.allSatisfy { botIDs.contains($0.sessionContext.ownerId) }
             && lastSessionID.map(sessionIDs.contains) ?? true
     }
 

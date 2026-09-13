@@ -364,9 +364,7 @@ extension AppModel {
         let isLiveEvent = chat.replayRequestID == nil
         chat.observeReplayCompletion(buffered)
         chat.latestSequence = buffered.record.sequence
-        if isLiveEvent,
-            buffered.record.event.msg["type"]?.stringValue == "context_compacted"
-        {
+        if isLiveEvent, buffered.record.event.kind == .contextCompacted {
             chat.sessionCompactionCount += 1
         }
         chat.transcriptRecords[buffered.record.sequence] = buffered.record
@@ -376,10 +374,7 @@ extension AppModel {
     }
 
     private func shouldCacheTranscript(after event: AgentEventRecord) -> Bool {
-        switch event.msg["type"]?.stringValue {
-        case "turn_complete", "turn_aborted": true
-        default: false
-        }
+        event.kind.finishesTurn
     }
 
     func submitPendingNewChatDraft(requestID: String?) {
@@ -521,7 +516,7 @@ extension AppModel {
         opened: Bool,
         replayRequestID: String? = nil
     ) {
-        guard let bot = bots.first(where: { $0.id == payload.session.context.botId }) else {
+        guard let bot = bots.first(where: { $0.id == payload.session.context.ownerId }) else {
             cancelVoiceChatIntent()
             chat.restorePendingDrafts()
             chat.sessionRequestID = nil
@@ -615,6 +610,7 @@ extension AppModel {
         chat.runStats = payload.runStats
         chat.sessionCompactionCount = payload.compactionCount
         chat.activeTurnIDs = Set(payload.activeTurnIds)
+        chat.sessionActiveMessageDelivery = payload.activeMessageDelivery
         chat.pendingApprovals = payload.pendingApprovals.compactMap(chat.decodeApproval)
         chat.approvalRequestID = nil
         agentDraft = refreshedAgentDraft(
@@ -638,7 +634,7 @@ extension AppModel {
     func applySessionCatalog(_ records: [SessionRecord]) {
         guard
             records.allSatisfy({ session in
-                bots.contains { $0.id == session.sessionContext.botId }
+                bots.contains { $0.id == session.sessionContext.ownerId }
             })
         else {
             showToast("The gateway returned a chat with an unknown Bot.", tone: .error)
@@ -740,7 +736,7 @@ extension AppModel {
     func applyBotSessions(_ records: [SessionRecord], botID: String) -> Bool {
         guard chat.botSessionsBotID == botID,
             Set(records.map(\.sessionId)).count == records.count,
-            records.allSatisfy({ $0.sessionContext.botId == botID })
+            records.allSatisfy({ $0.sessionContext.ownerId == botID })
         else {
             showToast("The gateway returned invalid Bot work.", tone: .error)
             return false
@@ -770,7 +766,7 @@ extension AppModel {
         }
         let selectedHiddenBotID =
             selectedSessionIsHidden
-            ? selectedSession?.sessionContext.botId ?? chat.botSessionsBotID
+            ? selectedSession?.sessionContext.ownerId ?? chat.botSessionsBotID
             : nil
         bots = records
         let botIDs = Set(records.map(\.id))
@@ -788,7 +784,7 @@ extension AppModel {
         backgroundApprovals.removeAll { !botIDs.contains($0.botId) }
         routines.removeAll { !botIDs.contains($0.botId) }
         routineRuns.removeAll { !botIDs.contains($0.botId) }
-        if let botID = selectedSession?.sessionContext.botId,
+        if let botID = selectedSession?.sessionContext.ownerId,
             let bot = records.first(where: { $0.id == botID })
         {
             agentDraft = refreshedAgentDraft(

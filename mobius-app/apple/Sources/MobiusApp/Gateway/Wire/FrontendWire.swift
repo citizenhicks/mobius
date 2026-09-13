@@ -435,29 +435,30 @@ enum FrontendPreviewUpdate: String, Decodable, Sendable {
 
 struct RenderedEventRecord: Decodable, Sendable {
     let recordedAtMs: Int64
-    let submissionId: String?
-    let event: JSONValue
+    let event: AgentEventRecord
     let blocks: [RenderedBlock]
+
+    var submissionId: String? { event.submissionId }
 }
 
 extension RenderedEventRecord {
-    init(
-        event: JSONValue, blocks: [RenderedBlock], recordedAtMs: Int64 = 0,
-        submissionId: String? = nil
-    ) {
-        self.recordedAtMs = recordedAtMs
-        self.submissionId = submissionId
-        self.event = event
-        self.blocks = blocks
-    }
+    #if DEBUG
+        init(
+            event: JSONValue, blocks: [RenderedBlock], recordedAtMs: Int64 = 0,
+            submissionId: String? = nil
+        ) {
+            self.recordedAtMs = recordedAtMs
+            self.event = AgentEventRecord(submissionId: submissionId, msg: event)
+            self.blocks = blocks
+        }
+    #endif
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: DynamicCodingKey.self)
         recordedAtMs = try container.decode(Int64.self, forKey: "recordedAtMs")
-        submissionId = try container.decodeIfPresent(String.self, forKey: "submissionId")
+        let submissionId = try container.decodeIfPresent(String.self, forKey: "submissionId")
         let event = try container.decode(JSONValue.self, forKey: "event")
-        try AgentEventRecord.validate(event, submissionId: submissionId)
-        self.event = event
+        self.event = try AgentEventRecord(validating: event, submissionId: submissionId)
         blocks = try container.decode([RenderedBlock].self, forKey: "blocks")
     }
 }
@@ -471,7 +472,7 @@ struct RecordedEvent: Decodable, Sendable {
     let preview: RenderedPreview?
 }
 
-enum ModelStepContentPhase: String, Decodable, Sendable {
+enum ModelStepContentPhase: String, Decodable, Equatable, Sendable {
     case reasoning
     case commentary
     case finalAnswer = "final_answer"

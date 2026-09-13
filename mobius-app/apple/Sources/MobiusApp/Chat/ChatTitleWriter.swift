@@ -196,9 +196,7 @@ final class ChatTitleWriter {
         _ resource: LocalizedStringResource,
         locale: Locale
     ) -> String {
-        var resource = resource
-        resource.locale = locale
-        return String(localized: resource)
+        resource.resolved(locale: locale)
     }
 
     /// Small models like to wrap titles in quotes, prefix them with "Title:", and end them

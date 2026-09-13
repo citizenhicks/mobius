@@ -440,7 +440,7 @@ struct ReassignChatSheet: View {
     }
 
     private var currentBotID: String {
-        model.chat.sessions.first { $0.sessionId == session.sessionId }?.sessionContext.botId
-            ?? session.sessionContext.botId
+        model.chat.sessions.first { $0.sessionId == session.sessionId }?.sessionContext.ownerId
+            ?? session.sessionContext.ownerId
     }
 }

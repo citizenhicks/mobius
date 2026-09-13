@@ -47,22 +47,27 @@ struct ProfileView: View {
                 LocalDataSettings()
             }
             settingsSection(.usage, title: "Usage", glyph: .chartBarDecreasing) {
-                if model.isLoadingCodexWeeklyUsage {
-                    SettingsLoadingRows(label: "Loading Codex weekly usage") {
+                if model.isLoadingProviderUsage {
+                    SettingsLoadingRows(label: "Loading provider usage") {
                         UsageLimitBar(
-                            title: Text("Codex · Weekly"),
+                            title: Text("Provider usage"),
                             remainingFraction: 1,
-                            resetText: Text("Resets September 15, 2026")
+                            resetText: Text("Loading")
                         )
                     }
-                } else if !model.providerUsage.isEmpty {
-                    UsageLimitBar(
-                        title: Text("Codex · Weekly"),
-                        remainingFraction: model.codexWeeklyUsage?.remainingFraction,
-                        resetText: model.codexWeeklyUsage.map {
-                            Text($0.resetDescription(locale: locale))
-                        } ?? Text("Unavailable")
-                    )
+                } else {
+                    ForEach(model.providerUsage) { usage in
+                        ForEach(usage.limits ?? []) { limit in
+                            UsageLimitBar(
+                                title: Text(
+                                    verbatim:
+                                        "\(model.providerLabel(for: usage.provider)) · \(limit.label)"
+                                ),
+                                remainingFraction: limit.remainingFraction,
+                                resetText: Text(limit.resetDescription(locale: locale))
+                            )
+                        }
+                    }
                 }
                 ProfileUsageSection(days: usage)
                 ProfileUsageHistory(

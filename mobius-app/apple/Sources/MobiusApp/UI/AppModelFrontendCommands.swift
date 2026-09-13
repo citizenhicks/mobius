@@ -8,14 +8,9 @@ extension AppModel {
         }
     }
 
-    var codexWeeklyUsage: UsageLimit? {
-        providerUsage.lazy.compactMap { usage in
-            usage.limits?.first { $0.id.hasPrefix("codex:") && $0.windowSeconds == 604_800 }
-        }.first
-    }
-
-    var isLoadingCodexWeeklyUsage: Bool {
-        profileRequestID != nil && codexWeeklyUsage == nil
+    var isLoadingProviderUsage: Bool {
+        profileRequestID != nil
+            && !providerUsage.contains { $0.limits?.isEmpty == false }
     }
 
     func providerUsageError(for provider: String) -> String? {

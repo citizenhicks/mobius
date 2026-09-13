@@ -22,14 +22,12 @@ extension ChatSessionModel {
     func reduce(record: RecordedEvent) {
         pinTranscriptWindowIfNeeded()
         let event = record.event
-        let type = event.msg["type"]?.stringValue ?? "unknown"
-        let message = type == "message" ? try? MessageEventPayload(json: event.msg) : nil
-        let turnID = event.msg["turnId"]?.stringValue ?? activeTurnID
-        prepareTranscriptEvent(event, type: type, message: message)
+        let message = event.message
+        let turnID = event.turnID ?? activeTurnID
+        prepareTranscriptEvent(event, message: message)
         applyPresentation(from: record, turnID: turnID)
 
         if handleNarrativeEvent(
-            type,
             event: event,
             message: message,
             record: record,
@@ -38,16 +36,15 @@ extension ChatSessionModel {
             return
         }
         if handleTurnEvent(
-            type, event: event, record: record, turnID: turnID)
+            event: event, record: record, turnID: turnID)
         {
             return
         }
-        handleTranscriptStateEvent(type, record: record)
+        handleTranscriptStateEvent(record: record)
     }
 
     private func prepareTranscriptEvent(
         _ event: AgentEventRecord,
-        type: String,
         message: MessageEventPayload?
     ) {
         let confirmsSteeringDelivery =
@@ -59,7 +56,7 @@ extension ChatSessionModel {
         if confirmsSteeringDelivery { steeringDeliveryRevision &+= 1 }
         // Anything that is not a delta may read or finalize the streams the buffer feeds,
         // so buffered text must land first to keep transcript order exact.
-        if type != "assistant_content_delta" {
+        if event.kind != .assistantContentDelta {
             flushStreamDeltas()
         }
         if message?.delivery == .turn,
@@ -69,7 +66,7 @@ extension ChatSessionModel {
             confirmChatTitle(submissionID: submissionID)
         }
         if let submissionID = event.submissionId {
-            if type == "warning" || type == "error" || type == "submission_rejected" {
+            if [.warning, .error, .submissionRejected].contains(event.kind) {
                 if let draft = pendingDrafts.removeValue(forKey: submissionID) {
                     restoreDraft(draft)
                 }
@@ -82,10 +79,7 @@ extension ChatSessionModel {
                 rejectComposerEdit(requestID: submissionID)
             } else {
                 pendingDrafts.removeValue(forKey: submissionID)
-                if message?.author == .user
-                    || (type == "frontend"
-                        && event.msg["frontendType"]?.stringValue == "widget")
-                {
+                if message?.author == .user || event.frontendEvent == .widget {
                     completeSubmittedComposerEdit(requestID: submissionID)
                 }
                 flushComposerDraft()
@@ -95,7 +89,6 @@ extension ChatSessionModel {
 
     private func applyPresentation(from record: RecordedEvent, turnID: String?) {
         let event = record.event
-        let modelStepID = event.msg["modelStepId"]?.stringValue
         for (index, rendered) in record.blocks.enumerated() {
             apply(
                 rendered,
@@ -103,7 +96,7 @@ extension ChatSessionModel {
                 blockIndex: index,
                 recordedAtMs: record.recordedAtMs,
                 turnID: turnID,
-                modelStepID: modelStepID
+                modelStepID: event.modelStepID
             )
         }
         if let preview = record.preview {
@@ -124,19 +117,18 @@ extension ChatSessionModel {
     }
 
     private func handleNarrativeEvent(
-        _ type: String,
         event: AgentEventRecord,
         message: MessageEventPayload?,
         record: RecordedEvent,
         turnID: String?
     ) -> Bool {
-        switch type {
-        case "message_delta":
+        switch event.kind {
+        case .messageDelta:
             mutateTranscriptPreservingPrefix { entries in
                 appendMessageDelta(record, to: &entries)
             }
             return true
-        case "message":
+        case .message:
             guard let message else { return true }
             appendMessage(
                 message,
@@ -145,29 +137,22 @@ extension ChatSessionModel {
                 startsTurn: message.delivery.startsTurn && consumeInitialTurnMarker(turnID)
             )
             return true
-        case "assistant_content_delta":
-            let phase = event.msg["phase"]?.stringValue
-            guard let modelStepID = event.msg["modelStepId"]?.stringValue else { return true }
-            let kind: TranscriptEntry.Kind =
-                switch phase {
-                case "reasoning": .reasoning
-                case "commentary": .commentary
-                default: .assistant
-                }
+        case .assistantContentDelta:
+            guard let phase = event.phase, let modelStepID = event.modelStepID else { return true }
             appendStream(
-                id: streamID(modelStepID: modelStepID, phase: phase ?? "final_answer"),
-                delta: event.msg["delta"]?.stringValue ?? "",
-                kind: kind,
+                id: streamID(modelStepID: modelStepID, phase: phase.rawValue),
+                delta: event.delta ?? "",
+                kind: phase.transcriptKind,
                 modelStepID: modelStepID,
                 turnID: turnID,
                 record: record
             )
             return true
-        case "model_step_completed":
-            applyModelStepCompletion(event.msg, turnID: turnID, record: record)
+        case .modelStepCompleted:
+            applyModelStepCompletion(event, turnID: turnID, record: record)
             return true
-        case "assistant_message":
-            applyAssistantMessage(event.msg, turnID: turnID, record: record)
+        case .assistantMessage:
+            applyAssistantMessage(event, turnID: turnID, record: record)
             return true
         default:
             return false
@@ -181,16 +166,15 @@ extension ChatSessionModel {
     }
 
     private func handleTurnEvent(
-        _ type: String,
         event: AgentEventRecord,
         record: RecordedEvent,
         turnID: String?
     ) -> Bool {
-        switch type {
-        case "model_step_started":
+        switch event.kind {
+        case .modelStepStarted:
             if replayRequestID == nil { runStats.active?.modelCalls += 1 }
-        case "turn_started":
-            activeTurnID = event.msg["turnId"]?.stringValue
+        case .turnStarted:
+            activeTurnID = event.turnID
             awaitingInitialMessageTurnID = activeTurnID
             if replayRequestID == nil,
                 let turnID = activeTurnID,
@@ -210,19 +194,17 @@ extension ChatSessionModel {
                     usage: TokenUsage()
                 )
             }
-            if let window = event.msg["modelContextWindow"]?.intValue {
-                modelContextWindow = Int64(window)
-            }
-        case "turn_complete":
+            if let window = event.modelContextWindow { modelContextWindow = window }
+        case .turnComplete:
             finishTranscriptTurn(record, turnID: turnID, aborted: false)
-        case "turn_aborted":
+        case .turnAborted:
             finishTranscriptTurn(record, turnID: turnID, aborted: true)
-        case "web_search_begin", "web_search_end", "warning", "error", "submission_rejected":
+        case .webSearchBegin, .webSearchEnd, .warning, .error, .submissionRejected:
             break
-        case "tool_call_begin":
+        case .toolCallBegin:
             if replayRequestID == nil { runStats.active?.toolCalls += 1 }
-        case "tool_call_end":
-            if replayRequestID == nil, event.msg["isError"]?.boolValue == true {
+        case .toolCallEnd:
+            if replayRequestID == nil, event.toolCallFailed {
                 runStats.active?.failedToolCalls += 1
             }
         default:
@@ -256,80 +238,59 @@ extension ChatSessionModel {
     }
 
     private func handleTranscriptStateEvent(
-        _ type: String,
         record: RecordedEvent
     ) {
         let event = record.event
-        switch type {
-        case "model_changed":
-            selectedModelRoute = event.msg["route"]?.stringValue ?? selectedModelRoute
-            if let window = event.msg["modelContextWindow"]?.intValue {
-                modelContextWindow = Int64(window)
-            }
-        case "session_resume_requested":
-            if let sessionID = event.msg["sessionId"]?.stringValue { onOpenChat?(sessionID) }
-        case "exec_approval_request":
+        switch event.kind {
+        case .modelChanged:
+            selectedModelRoute = event.modelRoute ?? selectedModelRoute
+            if let window = event.modelContextWindow { modelContextWindow = window }
+        case .sessionResumeRequested:
+            if let sessionID = event.sessionID { onOpenChat?(sessionID) }
+        case .execApprovalRequest:
             guard record.sequence > (replaySnapshotSequence ?? 0) else { return }
             if let approval = decodeApproval(event.msg) {
                 pendingApprovals.removeAll { $0.id == approval.id }
                 pendingApprovals.append(approval)
             }
-        case "token_count":
-            if let usage = event.msg["info"]?["totalTokenUsage"],
-                let decoded = TokenUsage(json: usage)
-            {
-                currentUsage = decoded
-            }
-            if let usage = event.msg["info"]?["lastTokenUsage"],
-                let latest = TokenUsage(json: usage)
-            {
-                lastUsage = latest
+        case .tokenCount:
+            if let usage = event.tokenUsage {
+                currentUsage = usage.total
+                lastUsage = usage.last
                 updateContextTokens()
             }
-            if let window = event.msg["info"]?["modelContextWindow"]?.intValue {
-                modelContextWindow = Int64(window)
-            }
-        case "frontend":
-            applyFrontendEvent(event.msg, submissionID: event.submissionId)
+            if let window = event.modelContextWindow { modelContextWindow = window }
+        case .frontend:
+            applyFrontendEvent(event)
         default:
             break
         }
     }
 
-    private func applyFrontendEvent(_ event: JSONValue, submissionID: String?) {
-        switch event["frontendType"]?.stringValue {
-        case "render":
+    private func applyFrontendEvent(_ event: AgentEventRecord) {
+        switch event.frontendEvent {
+        case .render:
             break
-        case "widget":
-            guard let capability = event["capability"]?.stringValue,
-                let item = event["item"],
-                let widget = try? FrontendWidget(json: item)
-            else { return }
+        case .widget:
+            guard let (capability, widget) = event.frontendWidget else { return }
             upsertWidget(MountedWidget(capability: capability, widget: widget))
             acknowledgeWidgetEdit(
-                submissionID: submissionID,
+                submissionID: event.submissionId,
                 capability: capability,
                 widgetID: widget.id
             )
-        case "remove_widget":
-            guard let capability = event["capability"]?.stringValue,
-                let id = event["id"]?.stringValue
-            else { return }
+        case .removeWidget:
+            guard let (capability, id) = event.removedFrontendWidget else { return }
             mountedWidgets.removeAll { $0.capability == capability && $0.widget.id == id }
             acknowledgeWidgetEdit(
-                submissionID: submissionID,
+                submissionID: event.submissionId,
                 capability: capability,
                 widgetID: id
             )
-        case "picker":
-            guard let title = event["title"]?.stringValue else { return }
-            let options =
-                event["options"]?.arrayValue?.compactMap {
-                    try? FrontendPickerOption(json: $0)
-                } ?? []
-            guard !options.isEmpty else { return }
-            pendingPicker = FrontendPickerPrompt(title: title, options: options)
-        default:
+        case .picker:
+            guard let picker = event.frontendPicker else { return }
+            pendingPicker = FrontendPickerPrompt(title: picker.title, options: picker.options)
+        case .preview, nil:
             break
         }
     }
@@ -497,8 +458,7 @@ extension ChatSessionModel {
                 RecordedEvent(
                     sequence: UInt64(index + 1),
                     recordedAtMs: rendered.recordedAtMs,
-                    event: AgentEventRecord(
-                        submissionId: rendered.submissionId, msg: rendered.event),
+                    event: rendered.event,
                     streamMetrics: [],
                     blocks: rendered.blocks,
                     preview: nil
@@ -647,7 +607,7 @@ extension ChatSessionModel {
 
     func appendMessageDelta(_ record: RecordedEvent, to entries: inout [TranscriptEntry]) {
         guard let submissionID = record.event.submissionId,
-            let delta = record.event.msg["text"]?.stringValue, !delta.isEmpty
+            let delta = record.event.delta, !delta.isEmpty
         else { return }
         let id = submittedMessageID(submissionID)
         if let entry = entries.last(where: { $0.id == id }) {
@@ -759,7 +719,7 @@ extension ChatSessionModel {
     }
 
     func applyModelStepCompletion(
-        _ event: JSONValue,
+        _ event: AgentEventRecord,
         turnID: String?,
         record: RecordedEvent
     ) {
@@ -767,16 +727,15 @@ extension ChatSessionModel {
     }
 
     func applyModelStepCompletion(
-        _ event: JSONValue,
+        _ event: AgentEventRecord,
         turnID: String?,
         record: RecordedEvent,
         to entries: inout [TranscriptEntry]
     ) {
-        guard let modelStepID = event["modelStepId"]?.stringValue,
-            let outcome = event["outcome"],
-            let status = outcome["status"]?.stringValue
+        guard let modelStepID = event.modelStepID,
+            let status = event.modelStepOutcomeStatus,
+            status != .completed
         else { return }
-        guard status != "completed" else { return }
         // Block source ids are namespaced by model step, so a step that ends without
         // completing can never finish its pending blocks. The backend closes live
         // ones with its own end events; this sweep only keeps replay after a crash
@@ -798,14 +757,14 @@ extension ChatSessionModel {
         for entry in entries where entry.modelStepID == modelStepID && entry.pending {
             entry.pending = false
             if entry.turnID == nil { entry.turnID = turnID }
-            if status == "retrying" { entry.tone = "warning" }
+            if status == .retrying { entry.tone = "warning" }
             entry.sourceSequence = record.sequence
             entry.recordedAtMs = record.recordedAtMs
         }
     }
 
     func applyAssistantMessage(
-        _ event: JSONValue,
+        _ event: AgentEventRecord,
         turnID: String?,
         record: RecordedEvent
     ) {
@@ -813,13 +772,13 @@ extension ChatSessionModel {
     }
 
     func applyAssistantMessage(
-        _ event: JSONValue,
+        _ event: AgentEventRecord,
         turnID: String?,
         record: RecordedEvent,
         to entries: inout [TranscriptEntry]
     ) {
-        guard let modelStepID = event["modelStepId"]?.stringValue,
-            let content = event["content"]?.arrayValue
+        guard let modelStepID = event.modelStepID,
+            let content = event.assistantContent
         else { return }
         let previousSnapshotIndex = entries.firstIndex(where: {
             $0.modelStepID == modelStepID && !$0.pending
@@ -830,40 +789,30 @@ extension ChatSessionModel {
                 && [.reasoning, .commentary, .assistant].contains($0.kind)
         }
         let targetItem = content.lastIndex(where: {
-            $0["phase"]?.stringValue != "reasoning" && $0["text"]?.stringValue?.isEmpty == false
+            $0.phase != .reasoning && !$0.text.isEmpty
         })
-        let messageTarget = messageTarget(from: event)
+        let messageTarget = event.messageTarget
         var nextPresentationOrdinal: [String: Int] = [:]
         let snapshotEntries = content.enumerated().compactMap { index, item -> TranscriptEntry? in
-            guard let outputIndex = item["outputIndex"]?.intValue,
-                let partIndex = item["partIndex"]?.intValue,
-                let phase = item["phase"]?.stringValue,
-                let text = item["text"]?.stringValue,
-                !text.isEmpty
-            else { return nil }
-            let kind: TranscriptEntry.Kind
-            switch phase {
-            case "reasoning": kind = .reasoning
-            case "commentary": kind = .commentary
-            case "final_answer": kind = .assistant
-            default: return nil
-            }
-            let ordinal = nextPresentationOrdinal[phase, default: 0]
-            nextPresentationOrdinal[phase] = ordinal + 1
+            guard !item.text.isEmpty else { return nil }
+            let phase = item.phase
+            let rawPhase = phase.rawValue
+            let ordinal = nextPresentationOrdinal[rawPhase, default: 0]
+            nextPresentationOrdinal[rawPhase] = ordinal + 1
             return TranscriptEntry(
                 id: snapshotID(
                     modelStepID: modelStepID,
-                    phase: phase,
-                    outputIndex: outputIndex,
-                    partIndex: partIndex
+                    phase: rawPhase,
+                    outputIndex: item.outputIndex,
+                    partIndex: item.partIndex
                 ),
                 presentationID: TranscriptEntry.narrativePresentationID(
                     modelStepID: modelStepID,
                     phase: phase,
                     ordinal: ordinal
                 ),
-                text: text,
-                kind: kind,
+                text: item.text,
+                kind: phase.transcriptKind,
                 format: "plain_text",
                 tone: "neutral",
                 pending: false,
@@ -872,13 +821,13 @@ extension ChatSessionModel {
                 sourceSequence: record.sequence,
                 recordedAtMs: record.recordedAtMs,
                 messageTarget: index == targetItem ? messageTarget : nil,
-                annotations: item["annotations"]?.arrayValue ?? []
+                annotations: item.annotations
             )
         }
         guard !snapshotEntries.isEmpty else { return }
         let insertionIndex = min(previousSnapshotIndex ?? entries.endIndex, entries.endIndex)
         entries.insert(contentsOf: snapshotEntries, at: insertionIndex)
-        let annotations = snapshotEntries.flatMap(\.annotations)
+        let annotations = snapshotEntries.flatMap { $0.annotations }
         if !annotations.isEmpty,
             let searchIndex = entries.lastIndex(where: {
                 $0.isWebSearch && $0.modelStepID == modelStepID
@@ -886,10 +835,6 @@ extension ChatSessionModel {
         {
             entries[searchIndex].annotations = annotations
         }
-    }
-
-    func messageTarget(from event: JSONValue) -> MessageTarget? {
-        event["messageTarget"].flatMap { MessageTarget(json: $0) }
     }
 
     private func finishPendingTranscriptEntries() {

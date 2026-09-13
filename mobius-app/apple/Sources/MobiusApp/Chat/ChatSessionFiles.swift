@@ -382,7 +382,7 @@ extension ChatSessionModel {
             localID: localID,
             sessionID: sessionID,
             uploadID: uploadID,
-            maxChunkBytes: min(maxChunkBytes, uploadChunkByteLimit)
+            maxChunkBytes: min(maxChunkBytes, self.uploadChunkByteLimit)
         )
         sendNextSessionFileChunk(localID: localID, offset: 0)
     }

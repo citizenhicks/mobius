@@ -333,7 +333,7 @@ extension GatewayWireTests {
         XCTAssertNil(requestID)
         XCTAssertEqual(sessions.first?.sessionId, "chat-1")
         XCTAssertEqual(sessions.first?.pinned, true)
-        XCTAssertEqual(sessions.first?.sessionContext.botId, "bot-1")
+        XCTAssertEqual(sessions.first?.sessionContext.ownerId, "bot-1")
     }
 
     func testBackgroundApprovalResponseCarriesHiddenSessionOwnership() throws {
@@ -589,7 +589,7 @@ extension GatewayWireTests {
         XCTAssertEqual(requestID, "bot-sessions-1")
         XCTAssertEqual(botID, "bot-1")
         XCTAssertEqual(sessions.first?.sessionId, "chat-1")
-        XCTAssertEqual(sessions.first?.sessionContext.botId, "bot-1")
+        XCTAssertEqual(sessions.first?.sessionContext.ownerId, "bot-1")
     }
 
     func testPairedRejectedAndErrorResponsesDecode() throws {

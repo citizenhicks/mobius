@@ -4,11 +4,11 @@ import Observation
 extension AppModel {
     func importAttachments(_ urls: [URL]) async {
         guard canImportAttachments else { return }
-        let available = max(0, attachmentReferenceLimit - chat.composerAttachments.count)
+        let available = max(0, chat.attachmentReferenceLimit - chat.composerAttachments.count)
         let selectedURLs = Array(urls.prefix(available))
         if urls.count > selectedURLs.count {
             showToast(
-                "You can attach up to \(attachmentReferenceLimit) files to a message.",
+                "You can attach up to \(chat.attachmentReferenceLimit) files to a message.",
                 tone: .warning
             )
         }
@@ -25,9 +25,9 @@ extension AppModel {
     @discardableResult
     func reserveComposerAttachment(named name: String) -> UUID? {
         guard canImportAttachments else { return nil }
-        guard chat.composerAttachments.count < attachmentReferenceLimit else {
+        guard chat.composerAttachments.count < chat.attachmentReferenceLimit else {
             showToast(
-                "You can attach up to \(attachmentReferenceLimit) files to a message.",
+                "You can attach up to \(chat.attachmentReferenceLimit) files to a message.",
                 tone: .warning
             )
             return nil
@@ -134,7 +134,7 @@ extension AppModel {
         let text = chat.composer.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = uploadedComposerAttachments
         let reply = chat.composerReply
-        guard chat.composerAttachments.count <= attachmentReferenceLimit else { return false }
+        guard chat.composerAttachments.count <= chat.attachmentReferenceLimit else { return false }
         guard !text.isEmpty || !chat.composerAttachments.isEmpty else { return false }
         guard chat.composerAttachments.isEmpty || canSubmitAttachments else {
             showToast(attachmentSubmissionUnavailableMessage, tone: .warning)
@@ -226,19 +226,9 @@ extension AppModel {
     }
 
     var activeMessageDelivery: ActiveMessageDelivery {
-        for feature in middlewareFeatures {
-            for setting in feature.settings {
-                guard case .select(let options, _) = setting.kind,
-                    Set(options.compactMap { ActiveMessageDelivery(rawValue: $0.value) })
-                        == Set(ActiveMessageDelivery.allCases),
-                    let value = agentDraft?.middleware.settings[feature.id]?[setting.id],
-                    case .string(let rawValue) = value,
-                    let delivery = ActiveMessageDelivery(rawValue: rawValue)
-                else { continue }
-                return delivery
-            }
-        }
-        return .steer
+        chat.sessionActiveMessageDelivery
+            ?? agentDraft?.middleware.activeMessageDelivery(features: middlewareFeatures)
+            ?? .steer
     }
 
     func editWidgetInputInComposer(_ mounted: MountedWidget) {

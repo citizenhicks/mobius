@@ -23,7 +23,7 @@ final class ChatSessionModel {
     var chatBotFilterIDs: Set<String> = []
     var chatCatalogSessions: [SessionRecord] {
         guard !chatBotFilterIDs.isEmpty else { return sessions }
-        return sessions.filter { chatBotFilterIDs.contains($0.sessionContext.botId) }
+        return sessions.filter { chatBotFilterIDs.contains($0.sessionContext.ownerId) }
     }
     var chatPresentationRevision = 0
     var sessionToReassign: SessionRecord?
@@ -80,6 +80,7 @@ final class ChatSessionModel {
     var sessionFiles: [SessionFileRecord] = []
     var isLoadingSessionFiles = false
     var activeTurnIDs: Set<String> = []
+    var sessionActiveMessageDelivery: ActiveMessageDelivery?
     var activeTurnID: String? {
         get { activeTurnIDs.min() }
         set { activeTurnIDs = newValue.map { [$0] } ?? [] }
@@ -445,9 +446,7 @@ final class ChatSessionModel {
     }
 
     func showToast(_ resource: LocalizedStringResource, tone: ToastTone = .info) {
-        var resource = resource
-        resource.locale = locale
-        onToast?(String(localized: resource), tone)
+        onToast?(resource.resolved(locale: locale), tone)
     }
 
     func showToast(verbatim message: String, tone: ToastTone = .info) {
@@ -456,21 +455,15 @@ final class ChatSessionModel {
 
     func localizedErrorDescription(_ error: Error) -> String {
         if let resource = (error as? GatewayWireError)?.localizedDescriptionResource {
-            var resource = resource
-            resource.locale = locale
-            return String(localized: resource)
+            return resource.resolved(locale: locale)
         }
         if let resource = (error as? GatewayStore.StoreError)?.localizedDescriptionResource {
-            var resource = resource
-            resource.locale = locale
-            return String(localized: resource)
+            return resource.resolved(locale: locale)
         }
         return error.localizedDescription
     }
 
-    func requestID(_ prefix: String) -> String {
-        "\(prefix)-\(UUID().uuidString.lowercased())"
-    }
+    func requestID(_ prefix: String) -> String { gatewayRequestID(prefix) }
 
     func cacheSelectedTranscript() {
         guard !isClearingLocalData,
@@ -557,6 +550,7 @@ final class ChatSessionModel {
         nextHistoryBeforeSequence = nil
         transcriptWindowAnchor = .tail
         activeTurnID = nil
+        sessionActiveMessageDelivery = nil
         awaitingInitialMessageTurnID = nil
         runStats = RunStats()
         contextTokens = 0
