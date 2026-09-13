@@ -41,7 +41,7 @@ pub(crate) use self::workspace::{
     create_workspace_directory, local_user_name, validate_chat_workspace, workspace_id,
 };
 
-const CONFIG_VERSION: u32 = 24;
+const CONFIG_VERSION: u32 = 25;
 const CHAT_SPEC_VERSION: u32 = 15;
 pub(crate) const CHAT_SPEC_METADATA_KEY: &str = "mobius_gateway.chat";
 const CONFIG_FILE: &str = "gateway.toml";
@@ -153,6 +153,7 @@ impl Default for AgentComposition {
                     .expect("default provider web-search manifest"),
             },
             realtime_voice: None,
+            routine_creation: false,
             middleware: crate::middleware_manifest::default_config(),
             extensions: BTreeSet::new(),
             system_prompt: DEFAULT_SYSTEM_PROMPT.into(),

@@ -91,7 +91,7 @@ fn new_and_clear_keep_distinct_terminal_semantics() {
 }
 
 #[test]
-fn composer_targets_interrupt_at_the_active_turn() {
+fn composer_stops_the_whole_chat_from_slash_and_escape() {
     let catalog = default_catalog();
     let mut slash = state();
     slash.start_turn("turn-1".into());
@@ -106,15 +106,12 @@ fn composer_targets_interrupt_at_the_active_turn() {
 
     assert_eq!(
         (slash_action, escape_action),
-        (
-            UiAction::Submit(Op::Interrupt {
-                turn_id: "turn-1".into()
-            }),
-            UiAction::Submit(Op::Interrupt {
-                turn_id: "turn-1".into()
-            })
-        )
+        (UiAction::StopChat, UiAction::StopChat)
     );
+    let mut queued = state();
+    queued.input = "/interrupt".into();
+    queued.cursor = queued.input.len();
+    assert_eq!(queued.submit_input(&catalog), UiAction::StopChat);
 }
 
 #[test]

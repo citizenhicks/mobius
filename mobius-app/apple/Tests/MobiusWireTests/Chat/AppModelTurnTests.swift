@@ -124,14 +124,12 @@ extension AppModelTests {
         XCTAssertNil(model.chat.runStats.active)
     }
 
-    func testSessionSnapshotRestoresActiveTurnInterrupt() async throws {
+    func testSessionSnapshotRestoresWholeChatStop() async throws {
         let recorder = GatewayRequestRecorder()
         let interruptSent = expectation(description: "Interrupt sent")
         let model = try model { request in
             await recorder.record(request)
-            guard case .submit(_, let submission) = request,
-                case .interrupt = submission.op
-            else { return }
+            guard case .stopChat = request else { return }
             interruptSent.fulfill()
         }
         model.gateway.connectionState = .ready
@@ -157,11 +155,27 @@ extension AppModelTests {
         model.interrupt()
         await fulfillment(of: [interruptSent], timeout: 1)
         let requests = await recorder.requests()
-        guard case .submit(let sessionID, let submission) = try XCTUnwrap(requests.last),
-            case .interrupt(let turnID) = submission.op
-        else { return XCTFail("Expected active-turn interrupt") }
+        guard case .stopChat(_, let sessionID) = try XCTUnwrap(requests.last)
+        else { return XCTFail("Expected whole-chat stop") }
         XCTAssertEqual(sessionID, "chat-1")
-        XCTAssertEqual(turnID, "turn-1")
+    }
+
+    func testQueuedChatCanStopWithoutAnActiveTurnIdentifier() async throws {
+        let recorder = GatewayRequestRecorder()
+        let app = try model { await recorder.record($0) }
+        app.gateway.connectionState = .ready
+        app.chat.selectedSessionID = "chat-1"
+        app.chat.sessions = [session(state: .running)]
+        XCTAssertNil(app.chat.activeTurnID)
+        XCTAssertTrue(app.canStopChat)
+        app.interrupt()
+        let request = await recorder.firstRequest(after: 0) {
+            if case .stopChat = $0 { return true }
+            return false
+        }
+        guard case .stopChat(_, "chat-1") = try XCTUnwrap(request) else {
+            return XCTFail("Expected queued Chat cancellation")
+        }
     }
 
     func testStreamDeltasStayBatchedUntilTheCanonicalMessage() async throws {

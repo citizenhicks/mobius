@@ -3,7 +3,6 @@ mod runtime;
 
 use super::*;
 use mobius::backend::model::provider::provider;
-use mobius::middleware::bots::BotsBackend;
 #[cfg(test)]
 pub(in crate::host) use runtime::fail_queued_routine_commands;
 
@@ -17,14 +16,17 @@ pub(crate) struct HostHandle {
 impl Drop for HostHandle {
     fn drop(&mut self) {
         if Arc::strong_count(&self.inner) == 2 {
-            let _ = self.inner.commands.try_send(HostCommand::CapacityChanged);
+            let _ = self
+                .inner
+                .commands
+                .try_send((HostCommand::CapacityChanged, None));
         }
     }
 }
 
 pub(super) struct HostInner {
     pub(super) session_id: Arc<str>,
-    pub(super) commands: mpsc::Sender<HostCommand>,
+    pub(super) commands: mpsc::Sender<QueuedCommand>,
     pub(super) events: broadcast::Sender<ServerFrame>,
     pub(super) alive: Arc<AtomicBool>,
     pub(super) terminated: Arc<AtomicBool>,
@@ -42,7 +44,7 @@ struct HostState {
     checkpoints: Arc<dyn CheckpointStore>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
-    group: Arc<GroupStore>,
+    chat_store: Arc<ChatStore>,
     alive: Arc<AtomicBool>,
     terminated: Arc<AtomicBool>,
     termination: Arc<tokio::sync::Notify>,
@@ -54,7 +56,9 @@ struct HostState {
     running: RunningAgent,
     pending_turns: usize,
     pending_messages: HashSet<String>,
+    pending_submissions: HashMap<String, oneshot::Sender<std::result::Result<(), Rejection>>>,
     approval_active: bool,
+    approval_request_id: Option<String>,
     turn_error: Option<String>,
     last_assistant_text: Option<String>,
     pending_startup: Vec<ServerFrame>,
@@ -64,12 +68,13 @@ struct HostState {
     pub(super) replay_bytes: usize,
     pub(super) next_before_sequence: Option<u64>,
     pub(super) widgets: SessionWidgets,
-    commands: mpsc::Receiver<HostCommand>,
+    commands: mpsc::Receiver<QueuedCommand>,
     events: broadcast::Sender<ServerFrame>,
     gateway_events: broadcast::Sender<ServerFrame>,
     idle_waiters: Vec<oneshot::Sender<()>>,
 }
 
+#[derive(Default)]
 pub(super) struct LoadedReplay {
     pub(super) latest_sequence: u64,
     pub(super) replay: VecDeque<ReplayEntry>,
@@ -99,6 +104,7 @@ pub(super) struct ProviderCutoverStatus {
 }
 
 pub(crate) struct RealtimeModel {
+    pub(crate) execution_session_id: String,
     pub(crate) bot_name: String,
     pub(crate) bot_instructions: String,
     pub(crate) router: Arc<ModelRouter>,
@@ -117,10 +123,11 @@ pub(super) struct ActiveRoutine {
     pub(super) failure: Option<String>,
 }
 
+// Keep queued and running commands referenced so capacity eviction cannot wait on
+// a Chat that is itself admitting an execution. Capacity notifications never admit work.
+pub(super) type QueuedCommand = (HostCommand, Option<HostHandle>);
+
 pub(super) enum HostCommand {
-    BotId {
-        reply: oneshot::Sender<String>,
-    },
     AcceptsFileAttachments {
         reply: oneshot::Sender<std::result::Result<bool, Rejection>>,
     },
@@ -142,8 +149,20 @@ pub(super) enum HostCommand {
     },
     Submit {
         submission: Submission,
+        recipient_bot_ids: Vec<String>,
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
     },
+    Participant {
+        bot_id: String,
+        reply: oneshot::Sender<std::result::Result<HostHandle, Rejection>>,
+    },
+    Publish {
+        records: Vec<JournalEvent>,
+    },
+    Frontend {
+        reply: oneshot::Sender<FrontendExtensions>,
+    },
+    Dispatch,
     ReassignBot {
         bot_id: String,
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
@@ -190,6 +209,9 @@ pub(super) enum HostCommand {
     StopIfIdle {
         reply: oneshot::Sender<bool>,
     },
+    Stop {
+        reply: oneshot::Sender<std::result::Result<(), Rejection>>,
+    },
     Shutdown,
 }
 
@@ -207,12 +229,6 @@ pub(super) enum JournalDelivery {
 }
 
 impl HostHandle {
-    pub(crate) async fn bot_id(&self) -> std::result::Result<String, Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::BotId { reply }).await?;
-        receiver.await.map_err(|_| stopped())
-    }
-
     pub(super) async fn reassign_bot(&self, bot_id: String) -> std::result::Result<(), Rejection> {
         let _voice = self.claim_realtime_voice()?;
         let (reply, receiver) = oneshot::channel();
@@ -234,7 +250,7 @@ impl HostHandle {
         checkpoints: Arc<dyn CheckpointStore>,
         scratchpad: ScratchpadStore,
         session_files: SessionFileStore,
-        group: Arc<GroupStore>,
+        chat_store: Arc<ChatStore>,
         session_mutations: Arc<RwLock<()>>,
         discovery_gate: Arc<Mutex<()>>,
         desktop: Arc<DesktopControl>,
@@ -253,7 +269,7 @@ impl HostHandle {
             Arc::clone(&checkpoints),
             scratchpad.clone(),
             session_files.clone(),
-            Arc::clone(&group),
+            Arc::clone(&chat_store),
             Arc::clone(&discovery_gate),
             Arc::clone(&desktop),
             session_id.clone(),
@@ -268,14 +284,13 @@ impl HostHandle {
         let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
         let loaded = load_replay(checkpoints.as_ref(), &session_id, &running.frontend).await?;
-        let awaiting_approval = activities
-            .lock()
-            .await
-            .activities
-            .entry(session_id.clone())
-            .or_default()
-            .state
-            == SessionActivityState::AwaitingApproval;
+        let pending_approval = checkpoints
+            .load(&session_id)
+            .await?
+            .and_then(|checkpoint| checkpoint.pending_approval);
+        let awaiting_approval = pending_approval
+            .as_ref()
+            .is_some_and(|pending| !pending.decision_received);
         let mut state = HostState {
             store,
             gateway,
@@ -285,7 +300,7 @@ impl HostHandle {
             checkpoints,
             scratchpad,
             session_files,
-            group,
+            chat_store,
             discovery_gate,
             desktop,
             alive: Arc::clone(&alive),
@@ -297,7 +312,9 @@ impl HostHandle {
             running,
             pending_turns: usize::from(awaiting_approval),
             pending_messages: HashSet::new(),
+            pending_submissions: HashMap::new(),
             approval_active: awaiting_approval,
+            approval_request_id: pending_approval.map(|pending| pending.request_id),
             turn_error: None,
             last_assistant_text: None,
             pending_startup: Vec::new(),
@@ -313,7 +330,6 @@ impl HostHandle {
             idle_waiters: Vec::new(),
         };
         state.reconcile_loaded_startup().await?;
-        state.reconcile_replayed_group_work().await?;
         tokio::spawn(state.run());
         Ok(Self {
             inner: Arc::new(HostInner {
@@ -423,9 +439,38 @@ impl HostHandle {
         &self,
         submission: Submission,
     ) -> std::result::Result<(), Rejection> {
+        self.submit_to(submission, Vec::new()).await
+    }
+
+    pub(crate) async fn submit_to(
+        &self,
+        submission: Submission,
+        recipient_bot_ids: Vec<String>,
+    ) -> std::result::Result<(), Rejection> {
         let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::Submit { submission, reply }).await?;
+        self.send(HostCommand::Submit {
+            submission,
+            recipient_bot_ids,
+            reply,
+        })
+        .await?;
         receive(receiver).await
+    }
+
+    pub(super) async fn participant(
+        &self,
+        bot_id: String,
+    ) -> std::result::Result<HostHandle, Rejection> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(HostCommand::Participant { bot_id, reply })
+            .await?;
+        receive(receiver).await
+    }
+
+    pub(super) async fn frontend(&self) -> std::result::Result<FrontendExtensions, Rejection> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(HostCommand::Frontend { reply }).await?;
+        receiver.await.map_err(|_| stopped())
     }
 
     pub(crate) async fn attach_folder(
@@ -518,10 +563,13 @@ impl HostHandle {
         if let Err(error) = self
             .inner
             .commands
-            .send(HostCommand::RunRoutine { run, input, reply })
+            .send((
+                HostCommand::RunRoutine { run, input, reply },
+                Some(self.clone()),
+            ))
             .await
         {
-            let HostCommand::RunRoutine { run, .. } = error.0 else {
+            let HostCommand::RunRoutine { run, .. } = error.0.0 else {
                 unreachable!("only a routine command was sent")
             };
             bots.finish_run(
@@ -547,6 +595,14 @@ impl HostHandle {
     }
 
     pub(super) async fn stop_if_idle(&self) -> bool {
+        let stopped = self.request_stop_if_idle().await;
+        if stopped {
+            self.wait_terminated().await;
+        }
+        stopped
+    }
+
+    pub(super) async fn request_stop_if_idle(&self) -> bool {
         let (reply, receiver) = oneshot::channel();
         let stopped = if self.send(HostCommand::StopIfIdle { reply }).await.is_err() {
             true
@@ -554,7 +610,7 @@ impl HostHandle {
             receiver.await.unwrap_or(true)
         };
         if stopped {
-            self.wait_terminated().await;
+            self.inner.alive.store(false, Ordering::Release);
         }
         stopped
     }
@@ -562,6 +618,22 @@ impl HostHandle {
     pub(super) async fn shutdown(&self) {
         let _ = self.send(HostCommand::Shutdown).await;
         self.wait_terminated().await;
+    }
+
+    pub(crate) async fn stop(&self) -> std::result::Result<(), Rejection> {
+        tokio::time::timeout(std::time::Duration::from_secs(30), self.stop_and_wait())
+            .await
+            .map_err(|_| Rejection {
+                code: "stop_pending",
+                message: "the Chat has not finished stopping".into(),
+                fatal: false,
+            })?
+    }
+
+    pub(super) async fn stop_and_wait(&self) -> std::result::Result<(), Rejection> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(HostCommand::Stop { reply }).await?;
+        receive(receiver).await
     }
 
     pub(crate) async fn wait_terminated(&self) {
@@ -574,10 +646,10 @@ impl HostHandle {
         }
     }
 
-    async fn send(&self, command: HostCommand) -> std::result::Result<(), Rejection> {
+    pub(super) async fn send(&self, command: HostCommand) -> std::result::Result<(), Rejection> {
         self.inner
             .commands
-            .send(command)
+            .send((command, Some(self.clone())))
             .await
             .map_err(|_| stopped())
     }
@@ -657,7 +729,7 @@ async fn start_agent(
     checkpoints: Arc<dyn CheckpointStore>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
-    group: Arc<GroupStore>,
+    chat_store: Arc<ChatStore>,
     discovery_gate: Arc<Mutex<()>>,
     desktop: Arc<DesktopControl>,
     session_id: String,
@@ -665,7 +737,77 @@ async fn start_agent(
     prepared: Option<Arc<crate::assembly::PreparedBot>>,
     provider_epoch: Arc<AtomicU64>,
 ) -> Result<RunningAgent> {
-    let group: Arc<dyn BotsBackend> = group;
+    let (built, prepared) = prepare_agent(
+        gateway,
+        spec,
+        store,
+        credentials,
+        bots,
+        checkpoints,
+        scratchpad,
+        session_files,
+        chat_store,
+        discovery_gate,
+        desktop,
+        session_id,
+        origin_label,
+        prepared,
+        provider_epoch,
+    )
+    .await?;
+    let BuiltAgent {
+        agent,
+        model_router,
+        sandbox,
+        gateway_sandbox,
+        subagents,
+        subagent_template,
+    } = built;
+    let agent = agent.start().await?;
+    let session = agent.session().clone();
+    let frontend = agent.frontend().clone();
+    let frontend_sink = agent.frontend_sink();
+    let tool_count = agent.tool_count();
+    let session_id = session.session_id.clone();
+    let (sender, events) = agent.into_recorded_parts();
+    Ok(RunningAgent {
+        session_id,
+        sender: Some(sender),
+        events,
+        model_router,
+        sandbox,
+        frontend,
+        frontend_sink,
+        session,
+        gateway_sandbox,
+        subagents,
+        subagent_template,
+        tool_count,
+        prepared,
+    })
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "agent assembly keeps chat and gateway dependencies explicit"
+)]
+pub(super) async fn prepare_agent(
+    gateway: Arc<StdMutex<GatewayConfig>>,
+    spec: &ChatSpec,
+    store: &ConfigStore,
+    credentials: Arc<CredentialStore>,
+    bots: Arc<BotStore>,
+    checkpoints: Arc<dyn CheckpointStore>,
+    scratchpad: ScratchpadStore,
+    session_files: SessionFileStore,
+    chat_store: Arc<ChatStore>,
+    discovery_gate: Arc<Mutex<()>>,
+    desktop: Arc<DesktopControl>,
+    session_id: String,
+    origin_label: &str,
+    prepared: Option<Arc<crate::assembly::PreparedBot>>,
+    provider_epoch: Arc<AtomicU64>,
+) -> Result<(BuiltAgent, Arc<crate::assembly::PreparedBot>)> {
     let prepared = if let Some(prepared) = prepared {
         prepared
     } else {
@@ -719,25 +861,7 @@ async fn start_agent(
             break prepared;
         }
     };
-    if let Some(mut checkpoint) = checkpoints.load(&session_id).await?
-        && checkpoint.session_context.bot_id != spec.bot_id
-    {
-        checkpoint.sequence = checkpoint
-            .sequence
-            .checked_add(1)
-            .ok_or_else(|| Error::Config("checkpoint sequence overflow".into()))?;
-        checkpoint.session_context.bot_id.clone_from(&spec.bot_id);
-        checkpoint.metadata.extend(spec.metadata()?);
-        checkpoints.save(&checkpoint, &[], None).await?;
-    }
-    let BuiltAgent {
-        agent,
-        model_router,
-        sandbox,
-        gateway_sandbox,
-        subagents,
-        subagent_template,
-    } = assemble(
+    let built = assemble(
         gateway,
         spec,
         store,
@@ -746,33 +870,79 @@ async fn start_agent(
         session_files,
         discovery_gate,
         desktop,
-        group,
+        chat_store,
+        bots,
         Some(session_id),
         origin_label,
         Arc::clone(&prepared),
     )
     .await?;
-    let session = agent.session().clone();
-    let frontend = agent.frontend().clone();
-    let frontend_sink = agent.frontend_sink();
-    let tool_count = agent.tool_count();
-    let session_id = session.session_id.clone();
-    let (sender, events) = agent.into_recorded_parts();
-    Ok(RunningAgent {
-        session_id,
-        sender: Some(sender),
-        events,
-        model_router,
-        sandbox,
-        frontend,
-        frontend_sink,
-        session,
-        gateway_sandbox,
-        subagents,
-        subagent_template,
-        tool_count,
-        prepared,
-    })
+    Ok((built, prepared))
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "cancellation restores the same execution dependencies without starting its hooks"
+)]
+pub(super) async fn cancel_execution(
+    store: ConfigStore,
+    gateway: Arc<StdMutex<GatewayConfig>>,
+    spec: ChatSpec,
+    credentials: Arc<CredentialStore>,
+    bots: Arc<BotStore>,
+    checkpoints: Arc<dyn CheckpointStore>,
+    scratchpad: ScratchpadStore,
+    session_files: SessionFileStore,
+    chats: Arc<ChatStore>,
+    discovery_gate: Arc<Mutex<()>>,
+    desktop: Arc<DesktopControl>,
+    provider_epoch: Arc<AtomicU64>,
+    activities: SessionActivities,
+    session_id: String,
+) -> Result<()> {
+    let (built, _) = prepare_agent(
+        gateway,
+        &spec,
+        &store,
+        credentials,
+        Arc::clone(&bots),
+        Arc::clone(&checkpoints),
+        scratchpad,
+        session_files,
+        Arc::clone(&chats),
+        discovery_gate,
+        desktop,
+        session_id.clone(),
+        "Chat",
+        None,
+        provider_epoch,
+    )
+    .await?;
+    let agent = built.agent.cancel();
+    let (sender, mut events) = agent.into_recorded_parts();
+    drop(sender);
+    let mut failure = None;
+    while let Some(record) = events.recv().await {
+        chats.observe_record(&session_id, &record, &[]).await?;
+        if let EventMsg::Error(error) = record.event.msg {
+            failure = Some(Error::Config(error.message));
+        }
+    }
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    update_session_activity(
+        &checkpoints,
+        &chats,
+        &bots,
+        &activities,
+        &session_id,
+        SessionActivity {
+            last_outcome: Some(ExecutionOutcome::Aborted),
+            ..SessionActivity::default()
+        },
+    )
+    .await
 }
 
 pub(super) fn runtime_accepts_attachments(frontend: &FrontendExtensions) -> bool {

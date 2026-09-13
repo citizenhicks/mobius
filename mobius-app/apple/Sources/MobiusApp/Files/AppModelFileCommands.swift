@@ -135,19 +135,19 @@ extension AppModel {
         let id = requestID("session-file-read")
         let generation = UUID()
         filePresentationGeneration = generation
+        let source = chat.fileSource(forSessionID: sessionID)
         chat.sessionFileDownload = SessionFileDownload(
             generation: generation,
             file: file,
-            sessionID: sessionID,
+            source: source,
             purpose: purpose,
             data: Data(),
             requestID: id
         )
         isLoadingFilePresentation = true
         gateway.transmit(
-            .readSessionFile(
+            source.readRequest(
                 requestID: id,
-                sessionID: sessionID,
                 fileID: file.id,
                 offset: 0,
                 maxBytes: 256 * 1024
@@ -161,6 +161,7 @@ extension AppModel {
     }
 
     func workspaceFile(for link: URL) -> WorkspaceFileRecord? {
+        guard chat.previewFileSource == nil else { return nil }
         let scheme = link.scheme?.lowercased()
         if let scheme, !["file", "sandbox", "workspace"].contains(scheme) { return nil }
         var path = link.path

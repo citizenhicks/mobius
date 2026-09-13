@@ -34,7 +34,7 @@ impl HostState {
         delivery: JournalDelivery,
     ) -> Result<()> {
         if high_water == 0 {
-            return Ok(());
+            return self.reconcile_chat_journal().await;
         }
         loop {
             let record = self.running.events.recv().await.ok_or_else(|| {
@@ -67,14 +67,14 @@ impl HostState {
                 }
             }
         }
-        Ok(())
+        self.reconcile_chat_journal().await
     }
 
     pub(super) async fn run(mut self) {
         loop {
             tokio::select! {
                 command = self.commands.recv() => {
-                    let Some(command) = command else { break };
+                    let Some((command, _owner)) = command else { break };
                     if !Box::pin(self.handle(command)).await { break; }
                 }
                 event = self.running.events.recv() => match event {
@@ -136,19 +136,18 @@ impl HostState {
         for waiter in self.idle_waiters.drain(..) {
             let _ = waiter.send(());
         }
-        let bot_id = self.spec.bot_id.clone();
+        let session_id = self.running.session_id.clone();
         shutdown_agent(self.running).await;
         self.alive.store(false, Ordering::Release);
         self.terminated.store(true, Ordering::Release);
         self.termination.notify_waiters();
-        self.group.notify_pending(&bot_id);
+        if let Ok(Some(chat)) = self.chat_store.chat_for_session(&session_id).await {
+            self.chat_store.notify_pending(&chat.id);
+        }
     }
 
     pub(super) async fn handle(&mut self, command: HostCommand) -> bool {
         match command {
-            HostCommand::BotId { reply } => {
-                let _ = reply.send(self.spec.bot_id.clone());
-            }
             HostCommand::AcceptsFileAttachments { reply } => {
                 let result = async {
                     let _mutation = self.begin_session_mutation()?;
@@ -186,6 +185,7 @@ impl HostState {
                     .remove(route)
                     .ok_or_else(|| internal("voice route is no longer configured"))?;
                     Ok(RealtimeModel {
+                        execution_session_id: self.running.session_id.clone(),
                         bot_instructions: format!(
                             "Your name is {} (@{}).\n\n{}",
                             bot.name,
@@ -238,8 +238,17 @@ impl HostState {
             } => {
                 let _ = reply.send(self.history_page_value(before_sequence).await);
             }
-            HostCommand::Submit { submission, reply } => {
+            HostCommand::Submit {
+                submission,
+                recipient_bot_ids,
+                reply,
+            } => {
+                let message_id =
+                    matches!(&submission.op, Op::Message { .. }).then(|| submission.id.clone());
                 let result = async {
+                    if !recipient_bot_ids.is_empty() {
+                        return Err(invalid_chat("address recipients through their Chat"));
+                    }
                     let _mutation = self.begin_session_mutation()?;
                     if matches!(
                         submission.op,
@@ -262,7 +271,7 @@ impl HostState {
                             message: "change the model on this chat's Bot profile".into(),
                             fatal: false,
                         }),
-                        _ => self.submit(submission),
+                        _ => self.submit(submission).await,
                     };
                     if result.is_ok()
                         && resumes_approval
@@ -277,7 +286,13 @@ impl HostState {
                     result
                 }
                 .await;
-                let _ = reply.send(result);
+                if let Some(message_id) = message_id
+                    && result.is_ok()
+                {
+                    self.pending_submissions.insert(message_id, reply);
+                } else {
+                    let _ = reply.send(result);
+                }
             }
             HostCommand::ReassignBot { bot_id, reply } => {
                 let result = async {
@@ -353,7 +368,7 @@ impl HostState {
             HostCommand::RunRoutine { run, input, reply } => {
                 let result = match self.begin_session_mutation() {
                     Ok(_mutation) => match self.bind_bot().await {
-                        Ok(()) => self.run_routine(run, input),
+                        Ok(()) => self.run_routine(run, input).await,
                         Err(rejection) => {
                             let result = self.bots.finish_run(
                                 run,
@@ -381,7 +396,14 @@ impl HostState {
                     self.idle_waiters.push(reply);
                 }
             }
-            HostCommand::CapacityChanged => self.group.retry_pending(),
+            HostCommand::Participant { reply, .. } => {
+                let _ = reply.send(Err(invalid_chat("this execution is not a Chat")));
+            }
+            HostCommand::Frontend { reply } => {
+                let _ = reply.send(self.running.frontend.clone());
+            }
+            HostCommand::Publish { .. } => {}
+            HostCommand::Dispatch | HostCommand::CapacityChanged => self.chat_store.retry_pending(),
             HostCommand::StopIfIdle { reply } => {
                 if !self.is_idle() {
                     let _ = reply.send(false);
@@ -389,6 +411,26 @@ impl HostState {
                 }
                 self.alive.store(false, Ordering::Release);
                 let _ = reply.send(true);
+                return false;
+            }
+            HostCommand::Stop { reply } => {
+                let result = async {
+                    if let Some(active) = self
+                        .checkpoints
+                        .load(&self.running.session_id)
+                        .await
+                        .map_err(internal)?
+                        .and_then(|checkpoint| checkpoint.active_execution)
+                        && let Some(sender) = &self.running.sender
+                    {
+                        let _ = sender.submit(Op::Interrupt {
+                            turn_id: active.turn_id,
+                        });
+                    }
+                    self.stop_and_drain_running().await.map_err(internal)
+                }
+                .await;
+                let _ = reply.send(result);
                 return false;
             }
             HostCommand::Shutdown => return false,
@@ -404,9 +446,12 @@ impl HostState {
         let replay = if last_sequence.is_some() {
             self.replay_after(last_sequence)?
         } else {
-            let page = event_turn_page(self.checkpoints.as_ref(), &self.running.session_id, None)
-                .await
-                .map_err(internal)?;
+            let page = event_turn_page(None, false, MAX_FRAME_BYTES, |request| {
+                self.checkpoints
+                    .event_page(&self.running.session_id, request)
+            })
+            .await
+            .map_err(internal)?;
             ready.next_before_sequence = page.next_before_sequence;
             let mut replay = Vec::new();
             for journal in page.into_chronological() {
@@ -428,11 +473,10 @@ impl HostState {
         &self,
         before_sequence: Option<u64>,
     ) -> std::result::Result<SessionHistoryPage, Rejection> {
-        let page = event_turn_page(
-            self.checkpoints.as_ref(),
-            &self.running.session_id,
-            before_sequence,
-        )
+        let page = event_turn_page(before_sequence, false, MAX_FRAME_BYTES, |request| {
+            self.checkpoints
+                .event_page(&self.running.session_id, request)
+        })
         .await
         .map_err(internal)?;
         let next_before_sequence = page.next_before_sequence;
@@ -488,7 +532,7 @@ impl HostState {
             .collect())
     }
 
-    pub(super) fn run_routine(
+    pub(super) async fn run_routine(
         &mut self,
         run: ActiveRoutineRun,
         input: String,
@@ -523,7 +567,7 @@ impl HostState {
                 },
             },
         };
-        if let Err(rejection) = self.submit(submission) {
+        if let Err(rejection) = self.submit(submission).await {
             let active = self
                 .active_routine
                 .take()
@@ -540,7 +584,23 @@ impl HostState {
         Ok(())
     }
 
-    pub(super) fn submit(&mut self, submission: Submission) -> std::result::Result<(), Rejection> {
+    pub(super) async fn submit(
+        &mut self,
+        submission: Submission,
+    ) -> std::result::Result<(), Rejection> {
+        if let Op::ExecApproval { id, .. } = &submission.op
+            && (!self.approval_active
+                || self.approval_request_id.as_deref() != Some(id.as_str())
+                || !self
+                    .checkpoints
+                    .load(&self.running.session_id)
+                    .await
+                    .map_err(internal)?
+                    .and_then(|checkpoint| checkpoint.pending_approval)
+                    .is_some_and(|pending| pending.request_id == *id && !pending.decision_received))
+        {
+            return Err(super::super::approvals::stale_approval());
+        }
         let message_submission_id =
             matches!(submission.op, Op::Message { .. }).then(|| submission.id.clone());
         let resolves_approval = matches!(submission.op, Op::ExecApproval { .. });
@@ -669,7 +729,7 @@ impl HostState {
                 Arc::clone(&self.checkpoints),
                 self.scratchpad.clone(),
                 self.session_files.clone(),
-                Arc::clone(&self.group),
+                Arc::clone(&self.chat_store),
                 Arc::clone(&self.discovery_gate),
                 Arc::clone(&self.desktop),
                 session_id,
@@ -690,7 +750,7 @@ impl HostState {
                         Arc::clone(&self.checkpoints),
                         self.scratchpad.clone(),
                         self.session_files.clone(),
-                        Arc::clone(&self.group),
+                        Arc::clone(&self.chat_store),
                         Arc::clone(&self.discovery_gate),
                         Arc::clone(&self.desktop),
                         self.running.session_id.clone(),
@@ -741,11 +801,11 @@ impl HostState {
 }
 
 pub(in crate::host) fn fail_queued_routine_commands(
-    commands: &mut mpsc::Receiver<HostCommand>,
+    commands: &mut mpsc::Receiver<QueuedCommand>,
     bots: &BotStore,
 ) -> Option<Rejection> {
     let mut first_error = None;
-    while let Ok(command) = commands.try_recv() {
+    while let Ok((command, _owner)) = commands.try_recv() {
         let HostCommand::RunRoutine { run, reply, .. } = command else {
             continue;
         };

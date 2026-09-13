@@ -5,40 +5,42 @@ impl HostState {
         let was_active = self.pending_turns > 0;
         let event = record.event.clone();
         if self
-            .project_and_publish(record, JournalDelivery::Live)?
+            .project_and_publish(record.clone(), JournalDelivery::Live)?
             .is_none()
         {
             return Ok(());
         }
-        self.group
-            .observe_event(&self.running.session_id, &event)
-            .await?;
-        if let Some(chat_id) = crate::groups::participant_chat_id(&self.running.session_id) {
-            for rendered in self.running.frontend.render(&event.msg) {
-                if rendered.block.role != mobius::protocol::FrontendBlockRole::Artifact
-                    || rendered.block.files.is_empty()
+        if let Some(submission_id) = event.submission_id.as_deref() {
+            let acceptance = match &event.msg {
+                EventMsg::Message(_) => Some(Ok(())),
+                EventMsg::SubmissionRejected(rejection) => Some(Err(Rejection {
+                    code: "invalid_submission",
+                    message: rejection.message.clone(),
+                    fatal: false,
+                })),
+                _ if self.pending_submissions.contains_key(submission_id)
+                    && self
+                        .checkpoints
+                        .load(&self.running.session_id)
+                        .await?
+                        .is_some_and(|checkpoint| {
+                            checkpoint
+                                .pending_messages
+                                .iter()
+                                .any(|message| message.id() == submission_id)
+                        }) =>
                 {
-                    continue;
+                    Some(Ok(()))
                 }
-                for file in &rendered.block.files {
-                    self.session_files
-                        .share_artifact(&self.running.session_id, chat_id, file)
-                        .await?;
-                }
-                self.group
-                    .observe_event(
-                        &self.running.session_id,
-                        &Event {
-                            submission_id: event.submission_id.clone(),
-                            msg: EventMsg::Frontend(FrontendEvent::Render {
-                                capability: rendered.capability,
-                                block: rendered.block,
-                            }),
-                        },
-                    )
-                    .await?;
+                _ => None,
+            };
+            if let Some(acceptance) = acceptance
+                && let Some(reply) = self.pending_submissions.remove(submission_id)
+            {
+                let _ = reply.send(acceptance);
             }
         }
+        self.publish_chat_record(&record).await?;
         match &event.msg {
             EventMsg::TurnStarted(_) => self.last_assistant_text = None,
             EventMsg::AssistantMessage(message) => {
@@ -48,9 +50,9 @@ impl HostState {
             }
             EventMsg::TurnComplete(_) => {
                 let outcome =
-                    group_run_outcome(self.turn_error.clone(), self.last_assistant_text.clone());
+                    chat_run_outcome(self.turn_error.clone(), self.last_assistant_text.clone());
                 if let Some(message_id) = event.submission_id.as_deref() {
-                    self.group
+                    self.chat_store
                         .settle_delivery(
                             message_id,
                             &self.running.session_id,
@@ -62,12 +64,12 @@ impl HostState {
             }
             EventMsg::TurnAborted(turn) => {
                 if let Some(message_id) = event.submission_id.as_deref() {
-                    self.group
+                    self.chat_store
                         .settle_delivery(
                             message_id,
                             &self.running.session_id,
                             &self.spec.bot_id,
-                            GroupRunOutcome::Failed {
+                            ChatRunOutcome::Failed {
                                 message: self
                                     .turn_error
                                     .clone()
@@ -79,18 +81,23 @@ impl HostState {
             }
             _ => {}
         }
-        if opens_message_capacity(&event.msg) {
-            self.group.notify_capacity_available(&self.spec.bot_id);
-        }
-        if let EventMsg::SubmissionRejected(_) = &event.msg
-            && let Some(submission_id) = event.submission_id.as_deref()
+        if opens_message_capacity(&event.msg)
+            && let Some(chat) = self
+                .chat_store
+                .chat_for_session(&self.running.session_id)
+                .await?
         {
-            self.group.notify_rejected(submission_id, &self.spec.bot_id);
+            self.chat_store.notify_pending(&chat.id);
         }
         let next_activity = self.activity_for_event(&event.msg).await?;
         account_turn_event(&mut self.pending_turns, &mut self.pending_messages, &event);
         match &event.msg {
-            EventMsg::ExecApprovalRequest(_) => self.approval_active = true,
+            EventMsg::ExecApprovalRequest(request)
+                if self.approval_request_id.as_deref() != Some(request.id.as_str()) =>
+            {
+                self.approval_request_id = Some(request.id.clone());
+                self.approval_active = true;
+            }
             EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_) => self.approval_active = false,
             _ => {}
         }
@@ -114,14 +121,119 @@ impl HostState {
         Ok(())
     }
 
-    pub(super) async fn reconcile_replayed_group_work(&self) -> Result<()> {
+    pub(super) async fn publish_chat_record(&self, record: &JournalEvent) -> Result<()> {
+        let mut artifacts = Vec::new();
+        if let Some(chat) = self
+            .chat_store
+            .chat_for_session(&self.running.session_id)
+            .await?
+        {
+            let single = chat.participants.len() == 1;
+            if single && let EventMsg::ToolCallEnd(tool) = &record.event.msg {
+                for file in tool.output.files() {
+                    self.session_files
+                        .grant_file(&self.running.session_id, &chat.id, file)
+                        .await?;
+                }
+            }
+            for rendered in self.running.frontend.render(&record.event.msg) {
+                if single {
+                    for file in rendered
+                        .block
+                        .files
+                        .iter()
+                        .chain(rendered.block.content.files())
+                    {
+                        self.session_files
+                            .grant_file(&self.running.session_id, &chat.id, file)
+                            .await?;
+                    }
+                }
+                if rendered.block.role != mobius::protocol::FrontendBlockRole::Artifact
+                    || rendered.block.files.is_empty()
+                {
+                    continue;
+                }
+                for file in &rendered.block.files {
+                    self.session_files
+                        .share_artifact(&self.running.session_id, &chat.id, file)
+                        .await?;
+                }
+                if !single
+                    && !matches!(
+                        record.event.msg,
+                        EventMsg::Frontend(FrontendEvent::Render { .. })
+                    )
+                {
+                    artifacts.push(Event {
+                        submission_id: record.event.submission_id.clone(),
+                        msg: EventMsg::Frontend(FrontendEvent::Render {
+                            capability: rendered.capability,
+                            block: rendered.block,
+                        }),
+                    });
+                }
+            }
+        }
+        self.chat_store
+            .observe_record(&self.running.session_id, record, &artifacts)
+            .await
+    }
+
+    pub(super) async fn reconcile_chat_journal(&self) -> Result<()> {
+        let Some(chat) = self
+            .chat_store
+            .chat_for_session(&self.running.session_id)
+            .await?
+        else {
+            return Ok(());
+        };
+        let published_sequence = chat
+            .participants
+            .iter()
+            .find(|participant| participant.session_id == self.running.session_id)
+            .map_or(0, |participant| participant.published_sequence);
+        let pending = self
+            .chat_store
+            .pending_deliveries(&chat.id)
+            .await?
+            .into_iter()
+            .filter(|(bot_id, _)| bot_id == &self.spec.bot_id)
+            .map(|(_, message)| message.id)
+            .collect::<HashSet<_>>();
+        let mut before_sequence = None;
+        let mut records = Vec::new();
+        loop {
+            let page = self
+                .checkpoints
+                .event_page(
+                    &self.running.session_id,
+                    EventPageRequest {
+                        before_sequence,
+                        limit: REPLAY_CAPACITY,
+                    },
+                )
+                .await?;
+            records.extend(page.events.into_iter().filter(|record| {
+                record.sequence > published_sequence
+                    || record
+                        .event
+                        .submission_id
+                        .as_ref()
+                        .is_some_and(|id| pending.contains(id))
+            }));
+            let Some(next) = page.next_before_sequence else {
+                break;
+            };
+            before_sequence = Some(next);
+        }
         let mut error = None;
         let mut summary = None;
         let mut terminal = None;
-        for entry in &self.replay {
-            let ServerMessage::AgentEvent { record, .. } = &entry.frame.message else {
-                continue;
-            };
+        for record in records.into_iter().rev() {
+            if record.sequence > published_sequence {
+                self.publish_chat_record(&record).await?;
+            }
             match &record.event.msg {
                 EventMsg::TurnStarted(_) => {
                     error = None;
@@ -136,17 +248,14 @@ impl HostState {
                 EventMsg::Error(event) => error = Some(event.message.clone()),
                 EventMsg::TurnComplete(_) => {
                     terminal = record.event.submission_id.clone().map(|message_id| {
-                        (
-                            message_id,
-                            group_run_outcome(error.clone(), summary.clone()),
-                        )
+                        (message_id, chat_run_outcome(error.clone(), summary.clone()))
                     });
                 }
                 EventMsg::TurnAborted(event) => {
                     terminal = record.event.submission_id.clone().map(|message_id| {
                         (
                             message_id,
-                            GroupRunOutcome::Failed {
+                            ChatRunOutcome::Failed {
                                 message: error.clone().unwrap_or_else(|| event.reason.clone()),
                             },
                         )
@@ -154,16 +263,16 @@ impl HostState {
                 }
                 _ => {}
             }
-        }
-        if let Some((message_id, outcome)) = terminal {
-            self.group
-                .settle_delivery(
-                    &message_id,
-                    &self.running.session_id,
-                    &self.spec.bot_id,
-                    outcome,
-                )
-                .await?;
+            if let Some((message_id, outcome)) = terminal.take() {
+                self.chat_store
+                    .settle_delivery(
+                        &message_id,
+                        &self.running.session_id,
+                        &self.spec.bot_id,
+                        outcome,
+                    )
+                    .await?;
+            }
         }
         Ok(())
     }
@@ -296,7 +405,8 @@ impl HostState {
             context_window => context_window,
         };
         Ok(SessionReadyPayload {
-            member_bot_ids: None,
+            member_bot_ids: vec![self.spec.bot_id.clone()],
+            primary_bot_id: Some(self.spec.bot_id.clone()),
             active_turn_ids: checkpoint
                 .active_execution
                 .as_ref()
@@ -346,17 +456,23 @@ impl HostState {
         let ready = ServerFrame::new(ServerMessage::SessionChanged { payload });
         let pending = std::mem::take(&mut self.pending_startup);
         publish_ready_and_pending(&self.events, ready, pending);
+        if let Some(chat) = self
+            .chat_store
+            .chat_for_session(&self.running.session_id)
+            .await
+            .map_err(internal)?
+        {
+            self.chat_store.notify_ready_changed(&chat.id);
+        }
         Ok(())
     }
 
     pub(super) async fn broadcast_sessions(&self) -> std::result::Result<(), Rejection> {
-        let (mut sessions, approvals) = activity_catalog(&self.checkpoints, &self.activities)
-            .await
-            .map_err(internal)?;
-        catalog::include_group_chats(&mut sessions, &self.group, &self.activities)
-            .await
-            .map_err(internal)?;
-        self.group.retry_pending();
+        let (sessions, approvals) =
+            activity_catalog(&self.checkpoints, &self.chat_store, &self.activities)
+                .await
+                .map_err(internal)?;
+        self.chat_store.retry_pending();
         let _ = self
             .gateway_events
             .send(ServerFrame::new(ServerMessage::Sessions {
@@ -477,6 +593,8 @@ impl HostState {
     pub(super) async fn set_activity(&self, activity: SessionActivity) -> Result<()> {
         update_session_activity(
             &self.checkpoints,
+            &self.chat_store,
+            &self.bots,
             &self.activities,
             &self.running.session_id,
             activity,
@@ -583,11 +701,11 @@ fn assistant_text(message: &mobius::protocol::AssistantMessageEvent) -> Option<S
     (!text.trim().is_empty()).then_some(text)
 }
 
-fn group_run_outcome(error: Option<String>, summary: Option<String>) -> GroupRunOutcome {
+fn chat_run_outcome(error: Option<String>, summary: Option<String>) -> ChatRunOutcome {
     match (error, summary) {
-        (Some(message), _) => GroupRunOutcome::Failed { message },
-        (None, Some(summary)) => GroupRunOutcome::Succeeded { summary },
-        (None, None) => GroupRunOutcome::Failed {
+        (Some(message), _) => ChatRunOutcome::Failed { message },
+        (None, Some(summary)) => ChatRunOutcome::Succeeded { summary },
+        (None, None) => ChatRunOutcome::Failed {
             message: "Bot returned no final response".into(),
         },
     }

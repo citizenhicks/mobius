@@ -33,7 +33,7 @@ final class GatewayWireTests: XCTestCase {
     }
 
     var configJSON: String {
-        #"{"revision":4,"config":{"provider":{"instance":"openai-work","provider":"openai_socket","model":"gpt-5.6-sol","endpoint_auth":"provider_default","reasoning_effort":"high","web_search":"cached"},"middleware":{"enabled":["extensions","subagents"],"settings":{"context_offloading":{"stale_after_tokens":50000},"subagents":{"model_route":"openai_socket/gpt-5.6-sol"}}},"extensions":["plugin:ponytail"],"system_prompt":"Stay focused.","max_model_steps":256}}"#
+        #"{"revision":4,"config":{"provider":{"instance":"openai-work","provider":"openai_socket","model":"gpt-5.6-sol","endpoint_auth":"provider_default","reasoning_effort":"high","web_search":"cached"},"middleware":{"enabled":["extensions","subagents"],"settings":{"context_offloading":{"stale_after_tokens":50000},"subagents":{"model_route":"openai_socket/gpt-5.6-sol"}}},"extensions":["plugin:ponytail"],"system_prompt":"Stay focused.","max_model_steps":256,"routine_creation":false}}"#
     }
 
     var usageJSON: String {
@@ -49,7 +49,7 @@ final class GatewayWireTests: XCTestCase {
     }
 
     var sessionRecordJSON: String {
-        #"{"session_id":"chat-1","session_context":{"bot_id":"bot-1","workspace_id":"workspace-1"},"parent_session_id":null,"parent_sequence":null,"sequence":7,"first_user_message":"Review this","execution_stats":\#(executionStatsJSON),"created_at":100,"updated_at":200,"title":"Review","pinned":true,"activity":{"state":"running","turn_id":"turn-1","approval_request_id":null,"started_at":190,"last_outcome":null,"message":null}}"#
+        #"{"session_id":"chat-1","member_bot_ids":["bot-1"],"primary_bot_id":"bot-1","session_context":{"workspace_id":"workspace-1"},"parent_session_id":null,"parent_sequence":null,"sequence":7,"first_user_message":"Review this","execution_stats":\#(executionStatsJSON),"created_at":100,"updated_at":200,"title":"Review","pinned":true,"activity":{"state":"running","turn_id":"turn-1","approval_request_id":null,"started_at":190,"last_outcome":null,"message":null}}"#
     }
 
     var botJSON: String {
@@ -61,7 +61,7 @@ final class GatewayWireTests: XCTestCase {
     }
 
     var sessionReadyPayloadJSON: String {
-        #"{"active_turn_ids":[],"pending_approvals":[],"latest_sequence":7,"next_before_sequence":2,"attached_folders":["/srv/other"],"workspace":{"id":"workspace-1","path":"/srv/mobius"},"git":{"current_branch":"main","branches":["feature","main"]},"session":{"session_id":"chat-1","context":{"bot_id":"bot-1","workspace_id":"workspace-1"},"model":{"route":"openai_socket/gpt-5.6-sol","model":"gpt-5.6-sol","reasoning_effort":"high","model_context_window":200000}},"contributions":[{"capability":"subagents","accepts_file_attachments":false,"count":2,"commands":[],"widgets":[{"id":"subagents","slot":"composer_footer","text":"Subagents","tone":"neutral","symbol":"agent","icon_only":true,"progress":null,"content":{"type":"picker","title":"Subagents","options":[{"label":"reviewer","description":"running","detail":"gpt-5.6-sol","symbol":"agent","shows_detail":false,"op":{"type":"capability_command","capability":"subagents","command":"subagents","arguments":"reviewer","input":null,"target":null}}]},"action":null}],"references":[]}],"widgets":[],"tool_count":7,"compaction_count":2,"run_stats":\#(runStatsJSON)}"#
+        #"{"member_bot_ids":["bot-1"],"primary_bot_id":"bot-1","active_turn_ids":[],"pending_approvals":[],"latest_sequence":7,"next_before_sequence":2,"attached_folders":["/srv/other"],"workspace":{"id":"workspace-1","path":"/srv/mobius"},"git":{"current_branch":"main","branches":["feature","main"]},"session":{"session_id":"chat-1","context":{"workspace_id":"workspace-1"},"model":{"route":"openai_socket/gpt-5.6-sol","model":"gpt-5.6-sol","reasoning_effort":"high","model_context_window":200000}},"contributions":[{"capability":"subagents","accepts_file_attachments":false,"count":2,"commands":[],"widgets":[{"id":"subagents","slot":"composer_footer","text":"Subagents","tone":"neutral","symbol":"agent","icon_only":true,"progress":null,"content":{"type":"picker","title":"Subagents","options":[{"label":"reviewer","description":"running","detail":"gpt-5.6-sol","symbol":"agent","shows_detail":false,"op":{"type":"capability_command","capability":"subagents","command":"subagents","arguments":"reviewer","input":null,"target":null}}]},"action":null}],"references":[]}],"widgets":[],"tool_count":7,"compaction_count":2,"run_stats":\#(runStatsJSON)}"#
     }
 
     var composition: AgentComposition {

@@ -1451,14 +1451,13 @@ extension AppModelTests {
                 message: nil
             )
         ]
-        model.chat.botSessionsBotID = helper.id
+        model.botConversationState.botID = helper.id
         model.chat.selectedSessionID = "work-1"
         model.destination = .bots
         model.navigationPath = [
-            .botSessions(helper.id),
+            .botConversations(helper.id),
             .chat(.session("work-1")),
         ]
-        XCTAssertTrue(model.selectedSessionIsHidden)
 
         model.applyBots([mobius, helper])
         XCTAssertEqual(model.chat.selectedSessionID, "work-1")
@@ -1478,9 +1477,9 @@ extension AppModelTests {
 
         XCTAssertTrue(model.routines.isEmpty)
         XCTAssertTrue(model.routineRuns.isEmpty)
-        XCTAssertTrue(model.chat.botSessions.isEmpty)
-        XCTAssertNil(model.chat.selectedSessionID)
-        XCTAssertTrue(model.navigationPath.isEmpty)
+        XCTAssertTrue(model.botConversationState.conversations.isEmpty)
+        XCTAssertEqual(model.chat.selectedSessionID, "work-1")
+        XCTAssertEqual(model.navigationPath.last, .chat(.session("work-1")))
     }
 
     func testProviderRegistrationDoesNotConfigureBotDefaults() async throws {

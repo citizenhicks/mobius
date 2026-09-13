@@ -40,10 +40,22 @@ extension AppModel {
         openNotificationTarget(event.target)
     }
 
+    func openApproval(_ requestID: String) {
+        let approval =
+            backgroundApprovals.first { $0.id == requestID }
+            .flatMap { chat.decodeApproval($0.request) }
+            ?? chat.pendingApprovals.first { $0.id == requestID }
+        guard let approval else {
+            showToast("That approval is no longer pending.", tone: .warning)
+            return
+        }
+        presentedApproval = approval
+    }
+
     private var approvalEvents: [EventCentreItem] {
         var events = backgroundApprovals.map { approval in
             approvalEvent(
-                requestID: approval.requestId, sessionID: approval.sessionId,
+                requestID: approval.id,
                 title: bots.first { $0.id == approval.botId }?.name ?? localizedString("Bot")
             )
         }
@@ -51,27 +63,27 @@ extension AppModel {
             guard let requestID = session.activity.approvalRequestId else { continue }
             events.append(
                 approvalEvent(
-                    requestID: requestID, sessionID: session.sessionId,
+                    requestID: requestID,
                     title: displayedTitle(for: session)
                 ))
         }
-        if let approval = chat.pendingApproval, let sessionID = chat.selectedSessionID {
+        for approval in chat.pendingApprovals {
             events.append(
                 approvalEvent(
-                    requestID: approval.id, sessionID: sessionID,
+                    requestID: approval.id,
                     title: localizedString("Current chat")))
         }
         var seen = Set<String>()
         return events.filter { seen.insert($0.id).inserted }
     }
 
-    private func approvalEvent(requestID: String, sessionID: String, title: String)
+    private func approvalEvent(requestID: String, title: String)
         -> EventCentreItem
     {
         EventCentreItem(
             id: "approval:\(requestID)", revision: requestID, title: title,
             detail: localizedString("Approval required"), glyph: .shieldCheck, tone: .warning,
-            requiresAction: true, target: .session(sessionID)
+            requiresAction: true, target: .approval(requestID)
         )
     }
 

@@ -27,6 +27,7 @@ async fn chat_creation_requires_an_existing_bot_after_workspace_selection() {
 
     sender
         .send(ClientMessage::CreateSession {
+            primary_bot_id: None,
             request_id: "create".into(),
             workspace,
             bot_ids: vec![Uuid::new_v4().to_string()],
@@ -39,7 +40,7 @@ async fn chat_creation_requires_an_existing_bot_after_workspace_selection() {
         } = next_gateway_message(&mut events).await
             && request_id == "create"
         {
-            assert_eq!(code, "invalid_bot");
+            assert_eq!(code, "invalid_chat");
             break;
         }
     }
@@ -49,7 +50,7 @@ async fn chat_creation_requires_an_existing_bot_after_workspace_selection() {
 }
 
 #[tokio::test]
-async fn deleting_a_bot_clears_its_selected_chat_on_the_requesting_connection() {
+async fn deleting_a_bot_preserves_its_selected_chat_on_the_requesting_connection() {
     let root = tempfile::tempdir().expect("root");
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("workspace");
@@ -107,13 +108,19 @@ async fn deleting_a_bot_clears_its_selected_chat_on_the_requesting_connection() 
         .await
         .expect("request deleted history");
     loop {
-        if let ServerMessage::Rejected {
-            request_id, code, ..
-        } = next_gateway_message(&mut events).await
-            && request_id == "deleted-history"
-        {
-            assert_eq!(code, "session_required");
-            break;
+        match next_gateway_message(&mut events).await {
+            ServerMessage::SessionHistory { request_id, .. } if request_id == "deleted-history" => {
+                break;
+            }
+            ServerMessage::Rejected {
+                request_id,
+                code,
+                message,
+                ..
+            } if request_id == "deleted-history" => {
+                panic!("preserved Chat history rejected ({code}): {message}");
+            }
+            _ => {}
         }
     }
 

@@ -3,6 +3,28 @@ import Foundation
 import XCTest
 
 extension GatewayWireTests {
+    func testChatMembershipAndRoutineCreationAreRequiredInProtocol78() throws {
+        let ready = try decodeEnvelope(
+            #"{"version":78,"type":"ready","payload":\#(readyPayloadJSON)}"#)
+        guard case .ready(let payload) = ready else { return XCTFail("Expected ready") }
+        XCTAssertEqual(payload.sessions.first?.memberBotIds, ["bot-1"])
+        XCTAssertEqual(payload.sessions.first?.primaryBotId, "bot-1")
+        XCTAssertEqual(payload.botDefaults?.config.routineCreation, false)
+        for removed in [#""member_bot_ids":["bot-1"],"#, #""routine_creation":false"#] {
+            let incomplete = readyPayloadJSON.replacingOccurrences(of: removed, with: "")
+                .replacingOccurrences(of: ",}", with: "}")
+            XCTAssertThrowsError(
+                try decodeEnvelope(
+                    #"{"version":78,"type":"ready","payload":\#(incomplete)}"#))
+        }
+        let incomplete = sessionReadyPayloadJSON.replacingOccurrences(
+            of: #""member_bot_ids":["bot-1"],"#, with: "")
+        XCTAssertThrowsError(
+            try decodeEnvelope(
+                #"{"version":78,"type":"session_opened","request_id":"open-1","payload":\#(incomplete)}"#
+            ))
+    }
+
     func testGatewayWideReadyPayloadDefaultsMissingCredentialHint() throws {
         let legacyPayload = readyPayloadJSON.replacingOccurrences(
             of: "\"credential_hint\":\"a8f2\",",
@@ -105,7 +127,7 @@ extension GatewayWireTests {
         let payload = readyPayloadJSON.replacingOccurrences(
             of: #""background_approvals":[]"#,
             with:
-                #""background_approvals":[{"session_id":"work-1","bot_id":"bot-1","turn_id":"turn-1","request_id":"approval-1"}]"#
+                #""background_approvals":[{"chat_id":null,"bot_id":"bot-1","request":{"id":"approval-1","turn_id":"turn-1","reason":"Run checks","calls":[]}}]"#
         )
         let envelope = try decodeEnvelope(
             #"{"version":64,"type":"ready","payload":\#(payload)}"#
@@ -113,9 +135,9 @@ extension GatewayWireTests {
         guard case .ready(let ready) = envelope else {
             return XCTFail("Expected ready envelope")
         }
-        XCTAssertEqual(ready.backgroundApprovals.first?.sessionId, "work-1")
+        XCTAssertNil(ready.backgroundApprovals.first?.chatId)
         XCTAssertEqual(ready.backgroundApprovals.first?.botId, "bot-1")
-        XCTAssertEqual(ready.backgroundApprovals.first?.requestId, "approval-1")
+        XCTAssertEqual(ready.backgroundApprovals.first?.id, "approval-1")
     }
 
     func testGatewayMachineNameRejectsControlCharacters() {
@@ -244,7 +266,7 @@ extension GatewayWireTests {
         XCTAssertEqual(sessionID, "chat-1")
 
         let history = try decodeEnvelope(
-            #"{"version":28,"type":"session_history","request_id":"history-1","session_id":"chat-1","records":[{"sequence":3,"recorded_at_ms":1000,"event":{"submission_id":null,"msg":{"type":"context_compacted"}},"stream_metrics":[],"blocks":[],"preview":null}],"next_before_sequence":4}"#
+            #"{"version":28,"type":"session_history","request_id":"history-1","session_id":"chat-1","records":[{"sequence":3,"recorded_at_ms":1000,"event":{"submission_id":null,"msg":{"type":"context_compacted"}},"recipient_bot_ids":[],"stream_metrics":[],"blocks":[],"preview":null}],"next_before_sequence":4}"#
         )
         guard
             case .sessionHistory(
@@ -471,7 +493,7 @@ extension GatewayWireTests {
         let usage =
             #"{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":2}"#
         let fixture =
-            #"{"version":28,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"token_count","info":{"total_token_usage":\#(usage),"last_token_usage":\#(usage),"model_context_window":200}}},"stream_metrics":[],"blocks":[],"preview":null}}"#
+            #"{"version":28,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"token_count","info":{"total_token_usage":\#(usage),"last_token_usage":\#(usage),"model_context_window":200}}},"recipient_bot_ids":[],"stream_metrics":[],"blocks":[],"preview":null}}"#
 
         XCTAssertThrowsError(try decodeEnvelope(fixture))
     }

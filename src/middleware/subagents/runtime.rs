@@ -438,7 +438,10 @@ impl Shared {
                 },
             )
         };
-        let page = event_turn_page(checkpoints.as_ref(), &session_id, before_sequence).await?;
+        let page = event_turn_page(before_sequence, false, MAX_PREVIEW_PAGE_BYTES, |request| {
+            checkpoints.event_page(&session_id, request)
+        })
+        .await?;
         let next = page.next_before_sequence;
         let mut events = page
             .into_chronological()

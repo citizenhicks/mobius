@@ -41,6 +41,7 @@ async fn catalogue_mutations_do_not_require_selecting_the_target_chat() {
     let server = GatewayServer::assemble(store, config, listener)
         .await
         .expect("assemble gateway");
+    let gateway = server.host.clone();
     let listen = server.config.listen;
     let (shutdown, signal) = tokio::sync::oneshot::channel();
     let serving = tokio::spawn(server.serve_until(async move {
@@ -71,13 +72,13 @@ async fn catalogue_mutations_do_not_require_selecting_the_target_chat() {
         .await
         .expect("reassign inactive chat");
     expect_accepted(&mut events, "reassign-inactive").await;
-    let reassigned = SqliteCheckpoint::new(checkpoints_path.clone())
-        .expect("checkpoints")
-        .load(&inactive_session_id)
-        .await
-        .expect("load reassigned chat")
-        .expect("chat");
-    assert_eq!(reassigned.session_context.bot_id, target_bot_id);
+    let bots = Arc::new(crate::bots::BotStore::open(&root.path().join("state")).unwrap());
+    let (chats, _) = crate::chats::ChatStore::new(&root.path().join("state"), bots).unwrap();
+    let reassigned = chats.load(&inactive_session_id).await.unwrap().unwrap();
+    assert_eq!(
+        reassigned.primary_bot_id.as_deref(),
+        Some(target_bot_id.as_str())
+    );
 
     sender
         .send(ClientMessage::RenameSession {
@@ -136,8 +137,20 @@ async fn catalogue_mutations_do_not_require_selecting_the_target_chat() {
     }
 
     let checkpoints = SqliteCheckpoint::new(checkpoints_path).expect("open checkpoints");
-    let selected = checkpoints
+    let selected_execution = chats
         .load(&selected_session_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .participants[0]
+        .session_id
+        .clone();
+    gateway
+        .open_session(&selected_execution)
+        .await
+        .expect("initialize selected execution for the hidden child fixture");
+    let selected = checkpoints
+        .load(&selected_execution)
         .await
         .expect("load selected")
         .expect("selected checkpoint");
@@ -145,7 +158,7 @@ async fn catalogue_mutations_do_not_require_selecting_the_target_chat() {
     hidden.session_context = selected.session_context.clone();
     hidden.catalog_visible = false;
     checkpoints
-        .fork(&selected_session_id, selected.sequence, &hidden)
+        .fork(&selected_execution, selected.sequence, &hidden)
         .await
         .expect("fork hidden child");
     sender
@@ -172,8 +185,20 @@ async fn catalogue_mutations_do_not_require_selecting_the_target_chat() {
     }
 
     let parent_session_id = create_chat(&sender, &mut events, &workspace).await;
-    let parent = checkpoints
+    let parent_execution = chats
         .load(&parent_session_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .participants[0]
+        .session_id
+        .clone();
+    gateway
+        .open_session(&parent_execution)
+        .await
+        .expect("initialize parent execution for the child fixture");
+    let parent = checkpoints
+        .load(&parent_execution)
         .await
         .expect("load parent")
         .expect("parent checkpoint");
@@ -183,24 +208,28 @@ async fn catalogue_mutations_do_not_require_selecting_the_target_chat() {
     child.metadata.clone_from(&parent.metadata);
     child.model_route.clone_from(&parent.model_route);
     checkpoints
-        .fork(&parent_session_id, parent.sequence, &child)
+        .fork(&parent_execution, parent.sequence, &child)
         .await
         .expect("fork child");
-    open_chat(&sender, &mut events, child_session_id).await;
+    open_chat(&sender, &mut events, &parent_session_id).await;
 
     sender
         .send(ClientMessage::DeleteSessions {
             request_id: "delete-selected-child-parent".into(),
-            session_ids: vec![parent_session_id],
+            session_ids: vec![parent_session_id.clone()],
         })
         .await
         .expect("delete selected child's parent");
     expect_accepted(&mut events, "delete-selected-child-parent").await;
+    assert!(
+        checkpoints.load(child_session_id).await.unwrap().is_none(),
+        "deleting a Chat removes its private execution descendants"
+    );
 
     sender
         .send(ClientMessage::GetSessionHistory {
             request_id: "deleted-child-history".into(),
-            session_id: child_session_id.into(),
+            session_id: parent_session_id,
             before_sequence: None,
         })
         .await
@@ -488,6 +517,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
     };
     sender
         .send(ClientMessage::Submit {
+            recipient_bot_ids: Vec::new(),
             session_id: session_id.clone(),
             submission: Submission {
                 id: "invalid-duplicate-attachments".into(),
@@ -788,6 +818,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
     let submission_id = "submit-attachment".to_string();
     sender
         .send(ClientMessage::Submit {
+            recipient_bot_ids: Vec::new(),
             session_id: session_id.clone(),
             submission: Submission {
                 id: submission_id.clone(),
@@ -1282,6 +1313,7 @@ async fn frontends_select_independent_chats_and_can_share_one_chat() {
     let first_submission = Uuid::new_v4().to_string();
     first_sender
         .send(ClientMessage::Submit {
+            recipient_bot_ids: Vec::new(),
             session_id: first_session.clone(),
             submission: Submission {
                 id: first_submission.clone(),
@@ -1311,6 +1343,7 @@ async fn frontends_select_independent_chats_and_can_share_one_chat() {
     let shared_submission = Uuid::new_v4().to_string();
     first_sender
         .send(ClientMessage::Submit {
+            recipient_bot_ids: Vec::new(),
             session_id: first_session,
             submission: Submission {
                 id: shared_submission.clone(),
@@ -1405,6 +1438,7 @@ async fn attached_folder_is_persisted_for_tool_access() {
     let attached = fs::canonicalize(&attached).expect("canonical attached folder");
     let (server, grant) = configured_test_server(state.clone()).await;
     let listen = server.config.listen;
+    let server_bots = Arc::clone(&server.bots);
     let checkpoints =
         SqliteCheckpoint::new(state.join("checkpoints.sqlite3")).expect("checkpoint store");
     let (shutdown, signal) = tokio::sync::oneshot::channel();
@@ -1459,8 +1493,12 @@ async fn attached_folder_is_persisted_for_tool_access() {
         }
     }
 
+    let (chats, _) = crate::chats::ChatStore::new(&state, Arc::clone(&server_bots)).unwrap();
+    let execution_id = chats.load(&session_id).await.unwrap().unwrap().participants[0]
+        .session_id
+        .clone();
     let checkpoint = checkpoints
-        .load(&session_id)
+        .load(&execution_id)
         .await
         .expect("load checkpoint")
         .expect("session checkpoint");

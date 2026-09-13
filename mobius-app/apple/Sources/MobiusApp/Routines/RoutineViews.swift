@@ -93,7 +93,6 @@ struct RoutineRunRow: View {
     @State private var confirmsDeletion = false
     let run: RoutineRun
     let name: String
-    let awaitsApproval: Bool
     let open: () -> Void
     let delete: () -> Void
 
@@ -117,14 +116,6 @@ struct RoutineRunRow: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                if awaitsApproval {
-                    MobiusIcon(
-                        .bellDot,
-                        size: MobiusStyle.glyphMark,
-                        foreground: palette.warning
-                    )
-                    .accessibilityHidden(true)
-                }
                 Text(routineRunStatusLabel(run.status))
                     .font(MobiusStyle.metadataFont.weight(.bold))
                     .foregroundStyle(statusColor)
@@ -133,11 +124,10 @@ struct RoutineRunRow: View {
         }
         .buttonStyle(.mobiusPlain)
         .disabled(run.sessionId == nil)
-        .accessibilityValue(awaitsApproval ? "Awaiting approval" : "")
         .accessibilityHint(
             run.sessionId == nil
                 ? "No transcript"
-                : awaitsApproval ? "Opens approval" : "Opens run transcript"
+                : "Opens run transcript"
         )
         .mobiusSwipeActions {
             MobiusSwipeAction(

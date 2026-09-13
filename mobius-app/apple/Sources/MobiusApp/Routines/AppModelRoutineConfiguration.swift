@@ -106,6 +106,9 @@ extension AppModel {
 
     func presentRoutineRun(_ run: RoutineRun) {
         chat.cancelSessionFileThumbnailDownloads()
+        chat.previewFileSource = run.sessionId.map {
+            .botConversation(botID: run.botId, conversationID: $0)
+        }
         presentedRoutineRun = run
         routineRunPreview = nil
         routineRunPreviewEntries = []
@@ -129,6 +132,7 @@ extension AppModel {
 
     func closeRoutineRunPreview() {
         chat.cancelSessionFileThumbnailDownloads()
+        chat.previewFileSource = nil
         routineRunPreviewPollingTask?.cancel()
         routineRunPreviewPollingTask = nil
         routineRunPreviewRequestID = nil

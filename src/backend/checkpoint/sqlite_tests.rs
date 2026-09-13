@@ -18,9 +18,7 @@ use crate::protocol::TurnCompleteEvent;
 use crate::protocol::TurnStartedEvent;
 
 fn checkpoint(session_id: impl Into<String>) -> Checkpoint {
-    let mut checkpoint = Checkpoint::empty(session_id);
-    checkpoint.session_context.bot_id = "test-bot".into();
-    checkpoint
+    Checkpoint::empty(session_id)
 }
 
 fn execution(session_id: &str, turn: u64) -> ExecutionRecord {

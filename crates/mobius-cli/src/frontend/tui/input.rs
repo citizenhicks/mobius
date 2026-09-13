@@ -47,6 +47,7 @@ pub(super) enum UiAction {
     None,
     PasteClipboard,
     Submit(Op),
+    StopChat,
     Gateway(GatewayAction),
     GatewaySettings,
     Extensions,
@@ -177,12 +178,7 @@ impl TuiState {
                 self.slash_menu_dismissed = true;
                 UiAction::None
             }
-            KeyCode::Esc if self.input.is_empty() && self.is_working() => self
-                .active_turn()
-                .map(str::to_owned)
-                .map_or(UiAction::None, |turn_id| {
-                    UiAction::Submit(Op::Interrupt { turn_id })
-                }),
+            KeyCode::Esc if self.input.is_empty() && self.is_working() => UiAction::StopChat,
             KeyCode::Esc => UiAction::None,
             KeyCode::Backspace => {
                 if self.input.is_empty() {
@@ -788,6 +784,7 @@ impl TuiState {
                     UiAction::Submit(op)
                 }
                 CommandAction::Gateway(action) => UiAction::Gateway(action),
+                CommandAction::StopChat => UiAction::StopChat,
                 CommandAction::GatewaySettings => UiAction::GatewaySettings,
                 CommandAction::Extensions => UiAction::Extensions,
                 CommandAction::Bots => UiAction::Bots,

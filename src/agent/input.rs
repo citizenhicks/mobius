@@ -501,8 +501,7 @@ mod tests {
             SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3"))
                 .expect("checkpoint store"),
         );
-        let mut checkpoint = Checkpoint::empty("session-1");
-        checkpoint.session_context.bot_id = "test-bot".into();
+        let checkpoint = Checkpoint::empty("session-1");
         checkpoints
             .save(&checkpoint, &[], None)
             .await
@@ -517,8 +516,7 @@ mod tests {
         let store = SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3"))
             .expect("checkpoint store");
         for session_id in ["current", "other"] {
-            let mut checkpoint = Checkpoint::empty(session_id);
-            checkpoint.session_context.bot_id = "test-bot".into();
+            let checkpoint = Checkpoint::empty(session_id);
             store
                 .save(&checkpoint, &[], None)
                 .await

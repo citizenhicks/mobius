@@ -8,15 +8,20 @@ independent conversations. The gateway creates `@mobius` after provider setup.
 
 | Surface | Durable context | Workspace | Visibility |
 | --- | --- | --- | --- |
-| Individual chat | One Bot's transcript and Agent checkpoint | User-selected | Chats catalog |
-| Group chat | Shared ordered message history and membership | User-selected | Chats catalog |
-| Group participant | One private Agent transcript per `(chat, Bot)` | Group workspace | Bot background work |
-| Routine run | Fresh Agent transcript per invocation | Routine's pinned workspace | Routine history |
-| Subagent | Child Agent transcript rooted in its parent | Parent workspace | Parent's task tree |
+| Chat | Ordered public history, participants, primary Bot, and pending deliveries | User-selected | Chats catalog |
+| Chat participant | One private Agent transcript per `(Chat, Bot)` | Chat workspace | Bot's Private conversations; one-Bot Chats also show its activity inline |
+| Routine run | Fresh Agent transcript per invocation | Routine's pinned workspace | Routine history and Bot's Private conversations |
+| Subagent | Child Agent transcript rooted in its parent | Parent workspace | Parent's task tree and Bot's Private conversations |
 
-A group chat has no Agent or checkpoint. Its message journal belongs to the gateway.
-A private participant Agent is created only when its Bot is addressed. The same Bot
-can participate in several groups, with independent contexts and workspaces.
+Every Chat uses the gateway's message journal and explicit participant mapping.
+Its public ID is separate from each participant's execution ID. One-Bot Chats show
+the Bot's execution inline. Multi-Bot Chats publish final replies, artifacts,
+approvals, and activity while keeping intermediate work private. The same Bot can
+participate in several Chats with independent contexts and workspaces.
+
+The Private conversations page includes previous Chat assignments and follows parent ownership
+for subagents. History and attachment inspection is read-only and never starts an Agent.
+These conversations stay out of the public Chats catalog and use the shared transcript renderer.
 
 ## Group conversations
 
@@ -24,11 +29,16 @@ Use the existing New Chat Bot picker: select one Bot for an individual chat or
 several for a group. Groups appear in the normal chat list and use the normal
 transcript, attachments, replies, approvals, and deletion controls.
 
-Only exact member `@handles` wake Bots. An unaddressed message stays in shared
-history. Every member receives the roster and recent shared messages automatically
-when it runs. Its final answer appears in the shared chat; mentions in that answer
-can wake other members. Delivery is ordered per Bot, survives gateway restarts, and
-has bounded pending work and reply chains. Concurrent Bots keep separate approvals.
+Choose one selected Bot as primary with the king control. Tap a member in the Chat
+header to add a recipient pill to the composer. Messages without recipients go to
+the primary. Textual `@handles` do not route messages; `@` remains for file references.
+Each Bot receives the current roster, original requests, and recent public history.
+A multi-Bot final answer carries visible text and a validated recipient list;
+only deliberate requests to other members enqueue further work. Delivery is ordered
+per participant and survives restarts, with bounded pending work and reply chains.
+Stop clears the Chat's pending deliveries and cancels every participant's active
+and queued execution. Approvals retain their Bot identity and can be reviewed
+without opening a private execution.
 
 User messages are authenticated user input. Bot messages retain their author and
 source conversation and are peer advice: they cannot grant permission or expand
@@ -39,8 +49,10 @@ not attached automatically.
 The complete shared message history remains available through normal paging.
 `search_history` defaults to the current shared conversation for a participant;
 `read_history` expands exact search results with character paging. The explicit
-`other_chats` scope searches the calling Bot's private transcripts. Historical text
-is evidence, not new instructions, and hidden reasoning is not exposed.
+`execution` scope reads the caller's own private history; `other_chats` searches
+public histories of Chats containing that Bot. History references keep public
+message sequences separate from private checkpoint positions. Historical text is
+evidence, not new instructions, and hidden reasoning is not exposed.
 
 Deleting a group removes its shared history and private participant sessions.
 The Bots and their routines remain available. Removing a Bot from the gateway
@@ -51,8 +63,8 @@ removes its membership while preserving the remaining group's conversation.
 Routines belong to one Bot and support one-time, interval, and cron schedules.
 Every invocation uses a fresh hidden conversation, the Bot's current profile, and
 the routine's pinned workspace. Results and failures remain in routine history.
-When routine creation is enabled, a Bot can create its own routine with approval,
-including from a group conversation.
+When routine creation is enabled in the Bot profile, the Bot's main Agent can
+create its own routine with approval, including from a Chat.
 
 Subagents are temporary specialists within an Agent's task tree. They use the
 parent workspace and start without parent turns unless the caller explicitly
@@ -75,10 +87,10 @@ and secrets do not belong in shared notes.
 
 ## Ownership in code
 
-- `src/middleware/bots.rs`: self-routine creation and automatic group context.
-- `src/middleware/sessions.rs`: existing history search and reading tools.
+- `crates/mobius-gateway/src/chats/`: public history, participant context, forks, and storage.
+- `crates/mobius-gateway/src/chats.rs`: Chat membership, routing, and durable delivery.
+- `crates/mobius-gateway/src/host/chat.rs`: common Chat admission, Stop, and public projection.
+- `crates/mobius-gateway/src/routines.rs`: gateway-owned self-routine creation.
 - `src/middleware/scratchpad.rs`: global shared knowledge.
 - `src/middleware/compaction.rs`, `tasks.rs`, and `subagents/`: Agent working state.
 - `crates/mobius-gateway/src/bots/`: Bot profiles and routines.
-- `crates/mobius-gateway/src/groups/`: shared chat journal and delivery state.
-- `crates/mobius-gateway/src/host/group.rs`: normal gateway operations for groups.

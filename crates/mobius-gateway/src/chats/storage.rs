@@ -4,7 +4,7 @@ use std::sync::Arc;
 use mobius::backend::checkpoint::{EventPage, EventPageRequest, JournalEvent};
 use rusqlite::{Connection, OptionalExtension as _, params};
 
-use super::{GroupChat, GroupStore, invalid, validate_chat};
+use super::{Chat, ChatMessage, ChatStore, invalid, validate_chat};
 use crate::Result;
 
 const SCHEMA: &str = "
@@ -21,11 +21,12 @@ CREATE TABLE messages (
     sequence INTEGER NOT NULL CHECK (sequence >= 0),
     message_id TEXT,
     event_json TEXT NOT NULL,
+    message_json TEXT,
     PRIMARY KEY(chat_id, sequence),
     UNIQUE(chat_id, message_id)
 );
 CREATE INDEX chats_recent ON chats(deleted, updated_at DESC);
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 COMMIT;
 ";
 
@@ -57,7 +58,7 @@ pub(super) fn open(state_dir: &Path) -> Result<Connection> {
             }
             connection.execute_batch(SCHEMA)?;
         }
-        1 => {}
+        2 => {}
         _ => {
             return Err(invalid(format!(
                 "unsupported chat storage schema {version}"
@@ -67,7 +68,43 @@ pub(super) fn open(state_dir: &Path) -> Result<Connection> {
     Ok(connection)
 }
 
-impl GroupStore {
+impl ChatStore {
+    pub(crate) async fn published_reply(
+        &self,
+        session_id: &str,
+        submission_id: &str,
+        text: &str,
+    ) -> Result<Option<super::BotReply>> {
+        let Ok(reply) = serde_json::from_str::<super::BotReply>(text) else {
+            return Ok(None);
+        };
+        let session_id = session_id.to_owned();
+        let submission_id = submission_id.to_owned();
+        self.run(move |connection| {
+            let published: bool = connection.query_row(
+                "SELECT EXISTS (
+                    SELECT 1 FROM chats
+                    JOIN messages AS source ON source.chat_id = chats.id
+                    JOIN messages AS published ON published.chat_id = chats.id
+                    WHERE chats.deleted = 0 AND source.message_id = ?2
+                      AND (EXISTS (SELECT 1 FROM json_each(chats.state_json, '$.participants')
+                                   WHERE json_extract(value, '$.session_id') = ?1)
+                           OR EXISTS (SELECT 1 FROM json_each(chats.state_json, '$.retired_participants')
+                                      WHERE json_extract(value, '$.session_id') = ?1))
+                      AND json_extract(published.event_json, '$.event.msg.type') = 'message'
+                      AND json_extract(published.message_json, '$.message.author.type') = 'peer'
+                      AND json_extract(published.message_json, '$.user_message_id') =
+                          json_extract(source.message_json, '$.user_message_id')
+                      AND json_extract(published.message_json, '$.message.text') = ?3
+                      AND json(json_extract(published.message_json, '$.recipients')) = json(?4)
+                )",
+                params![session_id, submission_id, reply.text, serde_json::to_string(&reply.recipient_bot_ids)?],
+                |row| row.get(0),
+            )?;
+            Ok(published.then_some(reply))
+        }).await
+    }
+
     async fn run<T: Send + 'static>(
         &self,
         operation: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
@@ -83,7 +120,7 @@ impl GroupStore {
         .map_err(|error| invalid(format!("chat storage task failed: {error}")))?
     }
 
-    pub(crate) async fn load(&self, id: &str) -> Result<Option<GroupChat>> {
+    pub(crate) async fn load(&self, id: &str) -> Result<Option<Chat>> {
         let id = id.to_owned();
         self.run(move |connection| {
             let state: Option<String> = connection
@@ -98,7 +135,7 @@ impl GroupStore {
         .await
     }
 
-    pub(crate) async fn chats(&self, deleted: bool) -> Result<Vec<GroupChat>> {
+    pub(crate) async fn chats(&self, deleted: bool) -> Result<Vec<Chat>> {
         self.run(move |connection| {
             let mut statement = connection.prepare(
                 "SELECT state_json FROM chats WHERE deleted = ?1 ORDER BY updated_at DESC, id",
@@ -109,6 +146,30 @@ impl GroupStore {
                 .collect()
         })
         .await
+    }
+
+    pub(super) async fn catalog_page(
+        &self,
+        bot_id: &str,
+        before: Option<(i64, u64, String)>,
+        limit: usize,
+    ) -> Result<Vec<Chat>> {
+        let bot_id = bot_id.to_owned();
+        self.run(move |connection| {
+            let (updated_at, sequence, id) = match before {
+                Some((updated_at, sequence, id)) => (Some(updated_at), Some(sql_sequence(sequence)?), Some(id)),
+                None => (None, None, None),
+            };
+            let limit = i64::try_from(limit.clamp(1, 1_002)).map_err(|_| invalid("invalid catalog page size"))?;
+            let mut statement = connection.prepare(
+                "SELECT state_json FROM chats WHERE deleted = 0
+                 AND EXISTS (SELECT 1 FROM json_each(state_json, '$.participants') WHERE json_extract(value, '$.bot_id') = ?1)
+                 AND (?2 IS NULL OR updated_at < ?2 OR (updated_at = ?2 AND (sequence < ?3 OR (sequence = ?3 AND id > ?4))))
+                 ORDER BY updated_at DESC, sequence DESC, id LIMIT ?5",
+            )?;
+            statement.query_map(params![bot_id, updated_at, sequence, id, limit], |row| row.get::<_, String>(0))?
+                .map(|json| decode(&json?)).collect()
+        }).await
     }
 
     pub(super) async fn contains_message(&self, id: &str, message_id: &str) -> Result<bool> {
@@ -124,18 +185,91 @@ impl GroupStore {
         .await
     }
 
-    pub(super) async fn save(&self, chat: &GroupChat, event: Option<&JournalEvent>) -> Result<()> {
+    pub(crate) async fn chat_for_session(&self, session_id: &str) -> Result<Option<Chat>> {
+        let session_id = session_id.to_owned();
+        self.run(move |connection| {
+            let state: Option<String> = connection.query_row(
+                "SELECT state_json FROM chats WHERE deleted = 0 AND EXISTS (SELECT 1 FROM json_each(state_json, '$.participants') WHERE json_extract(value, '$.session_id') = ?1)",
+                [session_id], |row| row.get(0),
+            ).optional()?;
+            state.map(|json| decode(&json)).transpose()
+        }).await
+    }
+
+    pub(super) async fn message_by_id(
+        &self,
+        chat_id: &str,
+        message_id: &str,
+    ) -> Result<Option<ChatMessage>> {
+        let chat_id = chat_id.to_owned();
+        let message_id = message_id.to_owned();
+        self.run(move |connection| {
+            let json: Option<String> = connection.query_row(
+                "SELECT message_json FROM messages WHERE chat_id = ?1 AND message_id = ?2 AND message_json IS NOT NULL",
+                params![chat_id, message_id], |row| row.get(0),
+            ).optional()?;
+            json.map(|json| serde_json::from_str(&json).map_err(Into::into)).transpose()
+        }).await
+    }
+
+    pub(crate) async fn message_by_sequence(
+        &self,
+        chat_id: &str,
+        sequence: u64,
+    ) -> Result<Option<ChatMessage>> {
+        let chat_id = chat_id.to_owned();
+        self.run(move |connection| {
+            let json: Option<String> = connection.query_row(
+                "SELECT message_json FROM messages WHERE chat_id = ?1 AND sequence = ?2 AND message_json IS NOT NULL",
+                params![chat_id, sql_sequence(sequence)?], |row| row.get(0),
+            ).optional()?;
+            json.map(|json| serde_json::from_str(&json).map_err(Into::into)).transpose()
+        }).await
+    }
+
+    pub(super) async fn validate_target(
+        &self,
+        chat_id: &str,
+        target: &mobius::protocol::MessageTarget,
+    ) -> Result<()> {
+        if target.batch_item_count != 1
+            || self
+                .message_by_sequence(chat_id, target.checkpoint_sequence)
+                .await?
+                .is_none()
+        {
+            return Err(invalid("reply target is not a published chat message"));
+        }
+        Ok(())
+    }
+
+    pub(super) async fn save(&self, chat: &Chat, event: Option<&JournalEvent>) -> Result<()> {
+        let events = event
+            .map(|event| (event.clone(), None))
+            .into_iter()
+            .collect::<Vec<_>>();
+        self.persist(chat, &events).await
+    }
+
+    pub(super) async fn persist(
+        &self,
+        chat: &Chat,
+        events: &[(JournalEvent, Option<ChatMessage>)],
+    ) -> Result<()> {
         validate_chat(chat)?;
         let chat = chat.clone();
         let state = serde_json::to_string(&chat)?;
-        let event = event
-            .map(|event| {
-                let message_id = matches!(event.event.msg, mobius::protocol::EventMsg::Message(_))
-                    .then(|| event.event.submission_id.clone())
-                    .flatten();
-                Ok::<_, crate::Error>((event.sequence, message_id, serde_json::to_string(event)?))
+        let events = events
+            .iter()
+            .map(|(event, message)| {
+                Ok::<_, crate::Error>((
+                    event.sequence,
+                    message.as_ref().map(|m| m.id.clone()),
+                    serde_json::to_string(event)?,
+                    message.as_ref().map(serde_json::to_string).transpose()?,
+                ))
             })
-            .transpose()?;
+            .collect::<Result<Vec<_>>>()?;
         self.run(move |connection| {
             let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             transaction.execute(
@@ -144,9 +278,9 @@ impl GroupStore {
                  deleted=excluded.deleted, state_json=excluded.state_json",
                 params![chat.id, sql_sequence(chat.sequence)?, chat.updated_at, chat.deleted, state],
             )?;
-            if let Some((sequence, message_id, event)) = event {
-                transaction.execute("INSERT INTO messages(chat_id, sequence, message_id, event_json) VALUES (?1, ?2, ?3, ?4)",
-                    params![chat.id, sql_sequence(sequence)?, message_id, event])?;
+            for (sequence, message_id, event, message_json) in events {
+                transaction.execute("INSERT INTO messages(chat_id, sequence, message_id, event_json, message_json) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![chat.id, sql_sequence(sequence)?, message_id, event, message_json])?;
             }
             transaction.commit()?;
             Ok(())
@@ -179,7 +313,7 @@ impl GroupStore {
         self.run(move |connection| {
             let latest_sequence: i64 = connection.query_row(
                 "SELECT sequence FROM chats WHERE id = ?1 AND deleted = 0", [&chat_id], |row| row.get(0),
-            ).optional()?.ok_or_else(|| invalid("unknown group chat"))?;
+            ).optional()?.ok_or_else(|| invalid("unknown chat"))?;
             let latest_sequence = u64::try_from(latest_sequence).map_err(|_| invalid("invalid chat sequence"))?;
             let limit = request.limit.clamp(1, 256);
             let mut statement = connection.prepare(
@@ -201,51 +335,6 @@ impl GroupStore {
             }
             Ok(EventPage { latest_sequence, events, next_before_sequence })
         }).await
-    }
-
-    pub(super) async fn history_page(
-        &self,
-        chat_id: &str,
-        before_sequence: Option<u64>,
-    ) -> Result<mobius::backend::checkpoint::TranscriptPage> {
-        use mobius::backend::checkpoint::{TranscriptBatch, TranscriptPage};
-        let chat_id = chat_id.to_owned();
-        self.run(move |connection| {
-            let mut statement = connection.prepare(
-                "SELECT event_json FROM messages WHERE chat_id = ?1 AND message_id IS NOT NULL
-                 AND (?2 IS NULL OR sequence < ?2) ORDER BY sequence DESC LIMIT 2",
-            )?;
-            let mut rows = statement.query(params![
-                chat_id,
-                before_sequence.map(sql_sequence).transpose()?
-            ])?;
-            let Some(row) = rows.next()? else {
-                return Ok(TranscriptPage::default());
-            };
-            let journal: JournalEvent = serde_json::from_str(&row.get::<_, String>(0)?)?;
-            let mobius::protocol::EventMsg::Message(message) = journal.event.msg else {
-                return Err(invalid("invalid shared history message"));
-            };
-            let (role, text) = match message.author {
-                mobius::protocol::MessageAuthor::User => ("user", message.text),
-                mobius::protocol::MessageAuthor::Peer { handle, .. } => {
-                    ("assistant", format!("@{handle}: {}", message.text))
-                }
-            };
-            let content = serde_json::to_string(
-                &serde_json::json!({"text": text, "attachments": message.attachments}),
-            )?;
-            let next_before_sequence = rows.next()?.map(|_| journal.sequence);
-            Ok(TranscriptPage {
-                batches: vec![TranscriptBatch {
-                    sequence: journal.sequence,
-                    created_at: journal.recorded_at_ms / 1000,
-                    items: vec![serde_json::json!({"role": role, "content": content})],
-                }],
-                next_before_sequence,
-            })
-        })
-        .await
     }
 
     pub(crate) async fn mark_deleted(&self, ids: &[String]) -> Result<()> {
@@ -273,7 +362,7 @@ impl GroupStore {
     }
 }
 
-fn decode(json: &str) -> Result<GroupChat> {
+fn decode(json: &str) -> Result<Chat> {
     let chat = serde_json::from_str(json)?;
     validate_chat(&chat)?;
     Ok(chat)

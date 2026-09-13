@@ -4,8 +4,15 @@ enum GatewayRequest: Encodable, Sendable {
     case pair(code: String, clientLabel: String, clientKind: GatewayClientKind)
     case authenticate(token: String, clientKind: GatewayClientKind)
     case listSessions(requestID: String)
-    case listBotSessions(requestID: String, botID: String)
-    case createSession(requestID: String, workspace: String, botIDs: [String])
+    case listBotConversations(requestID: String, botID: String, cursor: BotConversationCursor?)
+    case getBotConversationHistory(
+        requestID: String, botID: String, conversationID: String, beforeSequence: UInt64?)
+    case readBotConversationFile(
+        requestID: String, botID: String, conversationID: String, fileID: String,
+        offset: UInt64, maxBytes: Int)
+    case createSession(
+        requestID: String, workspace: String, botIDs: [String], primaryBotID: String?
+    )
     case attachSessionFolder(requestID: String, sessionID: String, folder: String)
     case openSession(
         requestID: String,
@@ -23,7 +30,9 @@ enum GatewayRequest: Encodable, Sendable {
     case deleteSessions(requestID: String, sessionIDs: [String])
     case startRealtimeVoice(requestID: String, sessionID: String, offerSDP: String)
     case endRealtimeVoice(sessionID: String, voiceID: String)
-    case submit(sessionID: String, submission: Submission)
+    case submit(sessionID: String, submission: Submission, recipientBotIDs: [String] = [])
+    case stopChat(requestID: String, sessionID: String)
+    case reviewApproval(requestID: String, approvalRequestID: String, decision: ReviewDecision)
     case getContributions(requestID: String)
     case submitContribution(
         requestID: String,
@@ -188,15 +197,33 @@ enum GatewayRequest: Encodable, Sendable {
         case .listSessions(let requestID):
             try container.encode("list_sessions", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
-        case .listBotSessions(let requestID, let botID):
-            try container.encode("list_bot_sessions", forKey: "type")
+        case .listBotConversations(let requestID, let botID, let cursor):
+            try container.encode("list_bot_conversations", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
             try container.encode(botID, forKey: "botId")
-        case .createSession(let requestID, let workspace, let botIDs):
+            try container.encode(cursor, forKey: "cursor")
+        case .getBotConversationHistory(let requestID, let botID, let conversationID, let before):
+            try container.encode("get_bot_conversation_history", forKey: "type")
+            try container.encode(requestID, forKey: "requestId")
+            try container.encode(botID, forKey: "botId")
+            try container.encode(conversationID, forKey: "conversationId")
+            try container.encode(before, forKey: "beforeSequence")
+        case .readBotConversationFile(
+            let requestID, let botID, let conversationID, let fileID, let offset, let maxBytes
+        ):
+            try container.encode("read_bot_conversation_file", forKey: "type")
+            try container.encode(requestID, forKey: "requestId")
+            try container.encode(botID, forKey: "botId")
+            try container.encode(conversationID, forKey: "conversationId")
+            try container.encode(fileID, forKey: "fileId")
+            try container.encode(offset, forKey: "offset")
+            try container.encode(maxBytes, forKey: "maxBytes")
+        case .createSession(let requestID, let workspace, let botIDs, let primaryBotID):
             try container.encode("create_session", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
             try container.encode(workspace, forKey: "workspace")
             try container.encode(botIDs, forKey: "botIds")
+            try container.encode(primaryBotID, forKey: "primaryBotId")
         case .attachSessionFolder(let requestID, let sessionID, let folder):
             try container.encode("attach_session_folder", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
@@ -231,10 +258,20 @@ enum GatewayRequest: Encodable, Sendable {
             try container.encode("delete_sessions", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
             try container.encode(sessionIDs, forKey: "sessionIds")
-        case .submit(let sessionID, let submission):
+        case .submit(let sessionID, let submission, let recipientBotIDs):
             try container.encode("submit", forKey: "type")
             try container.encode(sessionID, forKey: "sessionId")
             try container.encode(submission, forKey: "submission")
+            try container.encode(recipientBotIDs, forKey: "recipientBotIds")
+        case .stopChat(let requestID, let sessionID):
+            try container.encode("stop_chat", forKey: "type")
+            try container.encode(requestID, forKey: "requestId")
+            try container.encode(sessionID, forKey: "sessionId")
+        case .reviewApproval(let requestID, let approvalRequestID, let decision):
+            try container.encode("review_approval", forKey: "type")
+            try container.encode(requestID, forKey: "requestId")
+            try container.encode(approvalRequestID, forKey: "approvalRequestId")
+            try container.encode(decision, forKey: "decision")
         case .getContributions(let requestID):
             try container.encode("get_contributions", forKey: "type")
             try container.encode(requestID, forKey: "requestId")
@@ -534,7 +571,10 @@ enum GatewayEnvelope: Decodable, Sendable {
     )
     case sessions(requestID: String?, sessions: [SessionRecord])
     case backgroundApprovals([BackgroundApproval])
-    case botSessions(requestID: String, botID: String, sessions: [SessionRecord])
+    case botConversations(requestID: String, botID: String, page: BotConversationPage)
+    case botConversationHistory(
+        requestID: String, botID: String, conversationID: String,
+        records: [RecordedEvent], nextBeforeSequence: UInt64?)
     case bots(requestID: String?, bots: [BotRecord])
     case providerCredentialSaved(requestID: String, instance: String, provider: String)
     case pairingCode(requestID: String, code: String, expiresAt: Int64)
@@ -701,11 +741,19 @@ enum GatewayEnvelope: Decodable, Sendable {
             self = .backgroundApprovals(
                 try container.decode([BackgroundApproval].self, forKey: "approvals")
             )
-        case "bot_sessions":
-            self = .botSessions(
+        case "bot_conversations":
+            self = .botConversations(
                 requestID: try container.decode(String.self, forKey: "requestId"),
                 botID: try container.decode(String.self, forKey: "botId"),
-                sessions: try container.decode([SessionRecord].self, forKey: "sessions")
+                page: try container.decode(BotConversationPage.self, forKey: "page")
+            )
+        case "bot_conversation_history":
+            self = .botConversationHistory(
+                requestID: try container.decode(String.self, forKey: "requestId"),
+                botID: try container.decode(String.self, forKey: "botId"),
+                conversationID: try container.decode(String.self, forKey: "conversationId"),
+                records: try container.decode([RecordedEvent].self, forKey: "records"),
+                nextBeforeSequence: try container.decode(UInt64?.self, forKey: "nextBeforeSequence")
             )
         case "bots":
             self = .bots(
@@ -935,7 +983,8 @@ private extension ReadyPayload {
 }
 
 struct SessionReadyPayload: Decodable, Sendable {
-    let memberBotIds: [String]?
+    let memberBotIds: [String]
+    let primaryBotId: String?
     let activeTurnIds: [String]
     let pendingApprovals: [JSONValue]
     let latestSequence: UInt64
@@ -1025,7 +1074,6 @@ struct SessionConfigured: Decodable, Sendable {
 }
 
 struct SessionContext: Codable, Hashable, Sendable {
-    let botId: String
     var tenantId: String?
     var userId: String?
     var userName: String?
@@ -1043,11 +1091,11 @@ struct BotRecord: Identifiable, Codable, Equatable, Sendable {
     let config: VersionedAgentConfig
 }
 
-struct BackgroundApproval: Codable, Equatable, Hashable, Sendable {
-    let sessionId: String
+struct BackgroundApproval: Identifiable, Codable, Equatable, Sendable {
+    var id: String { request["id"]?.stringValue ?? "" }
+    let chatId: String?
     let botId: String
-    let turnId: String
-    let requestId: String
+    let request: JSONValue
 }
 
 struct ModelChanged: Codable, Hashable, Sendable {
@@ -1062,9 +1110,9 @@ struct SessionRecord: Identifiable, Codable, Hashable, Sendable {
 
     let sessionId: String
     let sessionContext: SessionContext
-    var memberBotIds: [String]? = nil
-    var isGroup: Bool { memberBotIds != nil }
-    var botIds: [String] { memberBotIds ?? [sessionContext.botId] }
+    var memberBotIds: [String]
+    var primaryBotId: String?
+    var isGroup: Bool { memberBotIds.count > 1 }
     let parentSessionId: String?
     let parentSequence: UInt64?
     let sequence: UInt64
@@ -1075,6 +1123,67 @@ struct SessionRecord: Identifiable, Codable, Hashable, Sendable {
     let activity: SessionActivity
     let createdAt: Int64
     let updatedAt: Int64
+}
+
+struct BotConversation: Identifiable, Decodable, Hashable, Sendable {
+    var id: String { conversationId }
+
+    let conversationId: String
+    let botId: String
+    let chatId: String?
+    let sessionContext: SessionContext
+    let sequence: UInt64
+    let firstUserMessage: String?
+    let executionStats: ExecutionStats
+    let activity: SessionActivity
+    let createdAt: Int64
+    let updatedAt: Int64
+}
+
+extension BotConversation {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+        conversationId = try container.decode(String.self, forKey: "conversationId")
+        botId = try container.decode(String.self, forKey: "botId")
+        chatId = try container.decode(String?.self, forKey: "chatId")
+        guard [conversationId, botId].allSatisfy({ !$0.isEmpty && $0.utf8.count <= 256 }),
+            chatId.map({ !$0.isEmpty && $0.utf8.count <= 256 }) ?? true
+        else {
+            throw GatewayWireError.invalidFrame("private conversation has invalid identity")
+        }
+        sessionContext = try container.decode(SessionContext.self, forKey: "sessionContext")
+        sequence = try container.decode(UInt64.self, forKey: "sequence")
+        firstUserMessage = try container.decode(String?.self, forKey: "firstUserMessage")
+        executionStats = try container.decode(ExecutionStats.self, forKey: "executionStats")
+        activity = try container.decode(SessionActivity.self, forKey: "activity")
+        createdAt = try container.decode(Int64.self, forKey: "createdAt")
+        updatedAt = try container.decode(Int64.self, forKey: "updatedAt")
+    }
+}
+
+struct BotConversationCursor: Codable, Hashable, Sendable {
+    let updatedAt: Int64
+    let sequence: UInt64
+    let sessionId: String
+}
+
+struct BotConversationPage: Decodable, Sendable {
+    let conversations: [BotConversation]
+    let nextCursor: BotConversationCursor?
+}
+
+extension BotConversationPage {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+        conversations = try container.decode([BotConversation].self, forKey: "conversations")
+        nextCursor = try container.decode(BotConversationCursor?.self, forKey: "nextCursor")
+        guard conversations.count <= 100,
+            Set(conversations.map(\.id)).count == conversations.count,
+            nextCursor.map({ !$0.sessionId.isEmpty && $0.sessionId.utf8.count <= 256 }) ?? true
+        else {
+            throw GatewayWireError.invalidFrame("private conversation page is invalid")
+        }
+    }
 }
 
 struct SessionActivity: Codable, Hashable, Sendable {

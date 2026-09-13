@@ -6,6 +6,7 @@ extension ChatSessionModel {
         text: String,
         attachments: [SessionFileReference],
         reply: MessageReply?,
+        recipientBotIDs: [String] = [],
         requestedDelivery: ActiveMessageDelivery?
     ) -> Bool {
         guard let sessionID = selectedSessionID else { return false }
@@ -31,23 +32,22 @@ extension ChatSessionModel {
             )
             return true
         }
-        let stashedText = stashedComposerDraft
+        let stashedDraft = stashedComposerDraft
         if targetTurnID == nil {
             startChatTitle(prompt: text, submissionID: id, sessionID: sessionID)
         }
         pendingDrafts[id] = PendingComposerDraft(
             text: text,
             attachments: attachments,
-            reply: reply
+            reply: reply,
+            recipientBotIDs: recipientBotIDs
         )
         composerDraftSaveTask?.cancel()
         composerDraftSaveTask = nil
         if let owner = composerDraftOwner {
             enqueueComposerDraftSave(
-                ComposerDraft(
-                    text: stashedText ?? text,
-                    reply: stashedText == nil ? reply : nil
-                ),
+                stashedDraft
+                    ?? ComposerDraft(text: text, reply: reply, recipientBotIDs: recipientBotIDs),
                 owner: owner
             )
         }
@@ -56,18 +56,24 @@ extension ChatSessionModel {
         composer = ""
         suppressesComposerDraftSave = false
         composerReply = nil
+        composerRecipientBotIDs = []
         composerAttachments = []
         gateway.transmit(
             .submit(
                 sessionID: sessionID,
-                submission: Submission(id: id, op: operation)
+                submission: Submission(id: id, op: operation),
+                recipientBotIDs: recipientBotIDs
             )
         ) { [weak self] _ in
             guard let self else { return }
             self.restoreDraft(id: id)
             self.cancelChatTitle(submissionID: id, rearm: true)
         }
-        if let stashedText, !stashedText.isEmpty { composer = stashedText }
+        if let stashedDraft {
+            composer = stashedDraft.text
+            composerReply = stashedDraft.reply
+            composerRecipientBotIDs = stashedDraft.recipientBotIDs
+        }
         return true
     }
 
@@ -179,7 +185,6 @@ extension ChatSessionModel {
         guard
             gateway.connectionState.isReady || sessionID == selectedSessionID
                 || sessions.contains(where: { $0.sessionId == sessionID })
-                || botSessions.contains(where: { $0.sessionId == sessionID })
         else { return }
         markSessionRead(sessionID)
         guard sessionID != selectedSessionID else { return }

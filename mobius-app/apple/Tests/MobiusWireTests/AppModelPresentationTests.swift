@@ -74,6 +74,16 @@ extension AppModelTests {
                 && choices.allSatisfy { $0.accessibilityTraits.contains(.selected) }
         }
         XCTAssertTrue(choicesSelected)
+        XCTAssertEqual(app.chat.pendingNewChatPrimaryBotID, "bot-2")
+        let primaryChanged = await eventually {
+            testAccessibilityElements(window).contains {
+                $0.accessibilityLabel == "Make Research Assistant primary"
+                    && $0.accessibilityActivate()
+            }
+        }
+        XCTAssertTrue(primaryChanged)
+        XCTAssertEqual(app.chat.pendingNewChatPrimaryBotID, "bot-1")
+        XCTAssertEqual(app.chat.pendingNewChatBotIDs, ["bot-2", "bot-1"])
         try await Task.sleep(for: .milliseconds(350))
         capture("new-chat-bot-picker")
         host.rootView = AnyView(
@@ -691,6 +701,83 @@ extension AppModelTests {
         }
     }
 
+    func testUserRecipientsSurviveLiveHistoryAndCacheAndFitTheMessageFooter() async throws {
+        let app = try model()
+        app.bots = [
+            bot(name: "Research Assistant"),
+            bot(id: "bot-2", handle: "reviewer", name: "Reviewer", tint: .orange),
+        ]
+        let record = RecordedEvent(
+            sequence: 1, recordedAtMs: 1_000,
+            event: AgentEventRecord(
+                submissionId: "mentioned-message",
+                msg: testMessageEvent(text: "Review this together")),
+            streamMetrics: [], blocks: [], preview: nil,
+            recipientBotIds: app.bots.map(\.id))
+        app.chat.reduce(record: record)
+        let replay = try model()
+        replay.chat.mergeHistory([record])
+        let cached = CachedTranscript(
+            sequence: 1, nextBeforeSequence: nil, transcript: app.chat.transcript,
+            currentUsage: TokenUsage(), lastUsage: TokenUsage())
+        let restored = try JSONDecoder().decode(
+            CachedTranscript.self, from: JSONEncoder().encode(cached)
+        ).transcript
+        for entries in [app.chat.transcript, replay.chat.transcript, restored] {
+            XCTAssertEqual(entries.count, 1)
+            XCTAssertEqual(entries.first?.messageMetadata?.recipientBotIDs, app.bots.map(\.id))
+        }
+
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 320, height: 874)
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+        let host = UIHostingController(rootView: AnyView(EmptyView()))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        var previousFooterHeight: CGFloat = 0
+        for size in [DynamicTypeSize.large, .accessibility3] {
+            host.rootView = AnyView(
+                ScrollView {
+                    TranscriptRowsView(
+                        projection: TranscriptProjection(entries: restored), fileSessionID: nil
+                    ).padding()
+                }
+                .modifier(MobiusTheme())
+                .environment(app)
+                .environment(\.dynamicTypeSize, size))
+            let appeared = await eventually {
+                testAccessibilityElements(host.view).contains {
+                    $0.accessibilityLabel?.contains("you, to Research Assistant and Reviewer")
+                        == true
+                        && $0.accessibilityFrame.height > previousFooterHeight
+                }
+            }
+            XCTAssertTrue(appeared)
+            let footer = try XCTUnwrap(
+                testAccessibilityElements(host.view).first {
+                    $0.accessibilityLabel?.contains("you, to Research Assistant and Reviewer")
+                        == true
+                })
+            XCTAssertGreaterThanOrEqual(footer.accessibilityFrame.minX, window.frame.minX)
+            XCTAssertLessThanOrEqual(footer.accessibilityFrame.maxX, window.frame.maxX)
+            XCTAssertGreaterThan(footer.accessibilityFrame.height, previousFooterHeight)
+            previousFooterHeight = footer.accessibilityFrame.height
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+            let attachment = XCTAttachment(image: image)
+            attachment.name = "user-recipient-footer-\(size)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+    }
+
     func testBlockAppendsSeparateChunksWithoutRemovingWhitespace() {
         XCTAssertEqual(appendingBlockText("contents", to: "note.txt"), "note.txt\ncontents")
         XCTAssertEqual(appendingBlockText("\n\ncontents", to: "note.txt"), "note.txt\n\ncontents")
@@ -1112,10 +1199,10 @@ extension AppModelTests {
                     ]),
                 ])))
         let request = await recorder.firstRequest(after: requestCount) { request in
-            guard case .submit("chat-1", _) = request else { return false }
+            guard case .submit("chat-1", _, _) = request else { return false }
             return true
         }
-        guard case .submit(_, let submission) = try XCTUnwrap(request) else {
+        guard case .submit(_, let submission, _) = try XCTUnwrap(request) else {
             return XCTFail("Expected picker submission")
         }
         let block = FrontendBlock(
@@ -1228,10 +1315,10 @@ extension AppModelTests {
         model.loadPreviewPage(next)
         XCTAssertTrue(model.chat.isLoadingPreviewPage)
         let request = await recorder.firstRequest(after: requestCount) { request in
-            guard case .submit("chat-1", _) = request else { return false }
+            guard case .submit("chat-1", _, _) = request else { return false }
             return true
         }
-        guard case .submit(_, let submission) = try XCTUnwrap(request) else {
+        guard case .submit(_, let submission, _) = try XCTUnwrap(request) else {
             return XCTFail("Expected preview page submission")
         }
         model.chat.reduce(
@@ -1332,10 +1419,10 @@ extension AppModelTests {
         let requestCount = await recorder.requestCount()
         model.loadPreviewPage(next)
         let request = await recorder.firstRequest(after: requestCount) { request in
-            guard case .submit("chat-1", _) = request else { return false }
+            guard case .submit("chat-1", _, _) = request else { return false }
             return true
         }
-        guard case .submit(_, let submission) = try XCTUnwrap(request) else {
+        guard case .submit(_, let submission, _) = try XCTUnwrap(request) else {
             return XCTFail("Expected preview page submission")
         }
         model.chat.reduce(
@@ -1409,10 +1496,10 @@ extension AppModelTests {
         let requestCount = await recorder.requestCount()
         model.loadPreviewPage(operation)
         let request = await recorder.firstRequest(after: requestCount) { request in
-            guard case .submit("chat-1", _) = request else { return false }
+            guard case .submit("chat-1", _, _) = request else { return false }
             return true
         }
-        guard case .submit(_, let submission) = try XCTUnwrap(request) else {
+        guard case .submit(_, let submission, _) = try XCTUnwrap(request) else {
             return XCTFail("Expected preview page submission")
         }
 
@@ -1486,7 +1573,7 @@ extension AppModelTests {
         await fulfillment(of: [operationSent], timeout: 1)
 
         let requests = await recorder.requests()
-        guard case .submit(let sessionID, let submission) = try XCTUnwrap(requests.first),
+        guard case .submit(let sessionID, let submission, _) = try XCTUnwrap(requests.first),
             case .capabilityCommand(
                 let capability,
                 let command,

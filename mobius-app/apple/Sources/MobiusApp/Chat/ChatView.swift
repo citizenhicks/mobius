@@ -33,27 +33,13 @@ struct ChatView: View {
                 scrollToBottomRequest: scrollToBottomRequest
             )
             .id(transcriptPresentationID)
-            if model.selectedSessionIsHidden, let approval = model.chat.pendingApproval {
-                ApprovalView(approval: approval)
-                    .frame(maxWidth: MobiusStyle.transcriptWidth)
-                    .frame(maxWidth: .infinity)
-                    .padding(.horizontal, MobiusSpace.l)
-                    .padding(.bottom, MobiusSpace.m)
-                    .onGeometryChange(for: CGFloat.self) { geometry in
-                        geometry.size.height
-                    } action: { height in
-                        composerHeight = height
-                    }
-                    .zIndex(1)
-            } else if !model.selectedSessionIsHidden {
-                ComposerView(showBotSettings: presentSelectedBotSettings)
-                    .onGeometryChange(for: CGFloat.self) { geometry in
-                        geometry.size.height
-                    } action: { height in
-                        composerHeight = height
-                    }
-                    .zIndex(1)
-            }
+            ComposerView(showBotSettings: presentSelectedBotSettings)
+                .onGeometryChange(for: CGFloat.self) { geometry in
+                    geometry.size.height
+                } action: { height in
+                    composerHeight = height
+                }
+                .zIndex(1)
             if !isAtBottom {
                 Button("Scroll to latest", glyph: .arrowDown) {
                     scrollToBottomRequest += 1
@@ -114,7 +100,7 @@ struct ChatView: View {
             // One item holding both, so the spacing is this stack's rather than the bar's
             // between two items. The 44pt targets still touch; only the slack goes.
             ToolbarItem(placement: .primaryAction) {
-                if model.chat.selectedSessionID != nil, !model.selectedSessionIsHidden {
+                if model.chat.selectedSessionID != nil {
                     HeaderActionGroup {
                         newChatButton
                         ChatOptionsMenu(
@@ -170,7 +156,7 @@ struct ChatView: View {
     }
 
     private var bottomInset: CGFloat {
-        model.selectedSessionIsHidden && model.chat.pendingApproval == nil ? 0 : composerHeight
+        composerHeight
     }
 
     private var workspaceName: String {
@@ -180,7 +166,6 @@ struct ChatView: View {
     }
 
     private var chatSubtitle: String {
-        if model.selectedSessionIsHidden { return model.gateway.gatewayMachineName }
         return [workspaceName, model.gateway.gatewayMachineName]
             .filter { !$0.isEmpty }
             .joined(separator: " • ")
@@ -449,8 +434,8 @@ struct ReassignChatSheet: View {
         }
     }
 
-    private var currentBotID: String {
-        model.chat.sessions.first { $0.sessionId == session.sessionId }?.sessionContext.botId
-            ?? session.sessionContext.botId
+    private var currentBotID: String? {
+        model.chat.sessions.first { $0.sessionId == session.sessionId }?.primaryBotId
+            ?? session.primaryBotId
     }
 }

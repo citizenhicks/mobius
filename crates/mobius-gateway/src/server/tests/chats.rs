@@ -32,6 +32,7 @@ async fn authenticated_client_creates_opens_submits_and_pages_a_group_chat() {
     wait_gateway_ready(&mut events).await;
     sender
         .send(ClientMessage::CreateSession {
+            primary_bot_id: None,
             request_id: "create-group".into(),
             workspace: workspace.clone(),
             bot_ids: bot_ids.clone(),
@@ -44,7 +45,7 @@ async fn authenticated_client_creates_opens_submits_and_pages_a_group_chat() {
                 request_id,
                 payload,
             } if request_id == "create-group" => {
-                assert_eq!(payload.member_bot_ids, Some(bot_ids.clone()));
+                assert_eq!(payload.member_bot_ids, bot_ids.clone());
                 assert_eq!(payload.workspace.path, workspace.canonicalize().unwrap());
                 assert_eq!(payload.tool_count, 0);
                 break payload.session.session_id;
@@ -57,6 +58,7 @@ async fn authenticated_client_creates_opens_submits_and_pages_a_group_chat() {
     };
     sender
         .send(ClientMessage::Submit {
+            recipient_bot_ids: Vec::new(),
             session_id: session_id.clone(),
             submission: Submission {
                 id: "forged-peer".into(),
@@ -91,6 +93,7 @@ async fn authenticated_client_creates_opens_submits_and_pages_a_group_chat() {
     }
     sender
         .send(ClientMessage::Submit {
+            recipient_bot_ids: Vec::new(),
             session_id: session_id.clone(),
             submission: Submission {
                 id: "user-post".into(),
@@ -135,8 +138,14 @@ async fn authenticated_client_creates_opens_submits_and_pages_a_group_chat() {
                 next_before_sequence,
             } if request_id == "group-history" => {
                 assert_eq!(actual, session_id);
-                assert_eq!(records.len(), 1);
-                assert_eq!(records[0].event.submission_id.as_deref(), Some("user-post"));
+                assert!(
+                    records
+                        .iter()
+                        .any(
+                            |record| record.event.submission_id.as_deref() == Some("user-post")
+                                && matches!(record.event.msg, EventMsg::Message(_))
+                        )
+                );
                 assert_eq!(next_before_sequence, None);
                 break;
             }

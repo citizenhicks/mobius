@@ -576,7 +576,11 @@ fn push_hook_notices(events: &mut Vec<EventMsg>, outcomes: &[hooks::HookOutcome]
 }
 
 fn publish_hook_notices(runtime: &RuntimeContext, outcomes: &[hooks::HookOutcome]) -> Result<()> {
-    for message in hook_notices(outcomes) {
+    for message in outcomes
+        .iter()
+        .filter_map(|outcome| outcome.failure.as_ref())
+        .take(MAX_HOOK_NOTICES)
+    {
         for event in
             super::MiddlewareCommandOutput::render(MANIFEST.id, message, FrontendTone::Warning)
                 .events
@@ -1385,7 +1389,7 @@ printf '%s\n' '{"systemMessage":"PONYTAIL:FULL","hookSpecificOutput":{"hookEvent
             1
         );
         assert!(input[0].to_string().contains("Ponytail rules active."));
-        assert_eq!(notices.lock().expect("notices").len(), 1);
+        assert!(notices.lock().expect("notices").is_empty());
     }
 
     #[tokio::test]

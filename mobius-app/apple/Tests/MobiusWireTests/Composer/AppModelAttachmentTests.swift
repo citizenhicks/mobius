@@ -25,7 +25,7 @@ extension AppModelTests {
             if case .submit = $0 { return true }
             return false
         }
-        guard case .submit("group", let submission) = try XCTUnwrap(request),
+        guard case .submit("group", let submission, _) = try XCTUnwrap(request),
             case .message(let message) = submission.op
         else { return XCTFail("Expected group message") }
         XCTAssertEqual(message.attachments, [attachment])
@@ -111,7 +111,7 @@ extension AppModelTests {
             if case .createSession = request { return true }
             return false
         }
-        guard case .createSession(let createID, _, _) = try XCTUnwrap(create) else {
+        guard case .createSession(let createID, _, _, _) = try XCTUnwrap(create) else {
             return XCTFail("Expected session creation")
         }
 
@@ -210,7 +210,7 @@ extension AppModelTests {
             if case .submit = request { return true }
             return false
         }
-        guard case .submit("chat-created", let submission) = try XCTUnwrap(submit),
+        guard case .submit("chat-created", let submission, _) = try XCTUnwrap(submit),
             case .message(let message) = submission.op
         else { return XCTFail("Expected first message submission") }
         XCTAssertEqual(message.text, "Review this image")
@@ -666,7 +666,7 @@ extension AppModelTests {
             return false
         }
         let submit = try XCTUnwrap(submitRequest)
-        guard case .submit(_, let submission) = submit,
+        guard case .submit(_, let submission, _) = submit,
             case .message(let message) = submission.op
         else { return XCTFail("Expected attachment submission") }
         XCTAssertEqual(message.text, "")
@@ -772,10 +772,10 @@ extension AppModelTests {
         let requestCount = await recorder.requestCount()
         model.sendMessage()
         let request = await recorder.firstRequest(after: requestCount) {
-            guard case .submit("chat-1", _) = $0 else { return false }
+            guard case .submit("chat-1", _, _) = $0 else { return false }
             return true
         }
-        guard case .submit(_, let submission) = try XCTUnwrap(request) else {
+        guard case .submit(_, let submission, _) = try XCTUnwrap(request) else {
             return XCTFail("Expected attachment submission")
         }
         guard case .message(let message) = submission.op else {

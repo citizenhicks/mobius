@@ -19,6 +19,14 @@ extension AppModel {
         createPendingVoiceChat()
     }
 
+    func selectPrimaryBotForNewChat(_ bot: BotRecord) {
+        guard canCreateSession,
+            chat.pendingNewChatBotIDs.contains(bot.id),
+            case .chat(.new)? = navigationPath.last
+        else { return }
+        chat.pendingNewChatPrimaryBotID = bot.id
+    }
+
     @discardableResult
     func createPendingSession() -> String? {
         guard canCreateSession,
@@ -34,7 +42,8 @@ extension AppModel {
         gateway.connectionState = .loading
         gateway.transmit(
             .createSession(
-                requestID: id, workspace: path, botIDs: chat.pendingNewChatBotIDs)
+                requestID: id, workspace: path, botIDs: chat.pendingNewChatBotIDs,
+                primaryBotID: chat.pendingNewChatPrimaryBotID)
         ) {
             [weak self] message in
             guard let self, self.chat.sessionRequestID == id else { return }
@@ -70,9 +79,12 @@ extension AppModel {
 
     func openNewSessionInCurrentWorkspace() {
         guard let path = workspace?.path, let selectedSession else { return }
-        let ids = selectedSession.botIds
+        let ids = selectedSession.memberBotIds
         chooseWorkspace(path)
         chat.pendingNewChatBotIDs = ids
+        if let primaryBotID = selectedSession.primaryBotId, ids.contains(primaryBotID) {
+            chat.pendingNewChatPrimaryBotID = primaryBotID
+        }
     }
 
     func openChat(_ sessionID: String) {
@@ -92,70 +104,6 @@ extension AppModel {
         navigationPath = []
     }
 
-    func openBotSessions(_ botID: String) {
-        guard bots.contains(where: { $0.id == botID }) else { return }
-        if chat.botSessionsBotID != botID {
-            chat.botSessionsRequestID = nil
-            chat.botSessions = []
-            chat.isLoadingBotSessions = false
-        }
-        chat.botSessionsBotID = botID
-        destination = .bots
-        if navigationPath.last != .botSessions(botID) {
-            navigationPath.append(.botSessions(botID))
-        }
-        refreshBotSessions(botID)
-    }
-
-    func refreshBotSessions(_ botID: String) {
-        guard gateway.connectionState.isReady,
-            chat.botSessionsRequestID == nil,
-            bots.contains(where: { $0.id == botID })
-        else { return }
-        if chat.botSessionsBotID != botID { chat.botSessions = [] }
-        chat.botSessionsBotID = botID
-        let id = requestID("bot-sessions")
-        chat.botSessionsRequestID = id
-        chat.isLoadingBotSessions = true
-        gateway.transmit(.listBotSessions(requestID: id, botID: botID)) { [weak self] _ in
-            guard self?.chat.botSessionsRequestID == id else { return }
-            self?.chat.botSessionsRequestID = nil
-            self?.chat.isLoadingBotSessions = false
-        }
-    }
-
-    func openBotSession(_ sessionID: String) {
-        guard canBrowseSessions || sessionID == chat.selectedSessionID,
-            chat.botSessions.contains(where: { $0.sessionId == sessionID })
-        else { return }
-        cancelVoiceChatIntent()
-        chat.chatPresentationRevision &+= 1
-        chat.openSession(sessionID)
-        navigationPath.append(.chat(.session(sessionID)))
-    }
-
-    func resumeBotSession(botID: String, sessionID: String) {
-        guard bots.contains(where: { $0.id == botID }) else { return }
-        if let visible = chat.sessions.first(where: { $0.sessionId == sessionID }) {
-            guard visible.sessionContext.botId == botID else {
-                showToast("The source conversation belongs to another Bot.", tone: .error)
-                return
-            }
-            chat.pendingBotSessionResume = nil
-            openChat(sessionID)
-            return
-        }
-        guard canOpenSession else { return }
-        chat.pendingBotSessionResume = (botID, sessionID)
-        if chat.botSessionsBotID != botID {
-            chat.botSessionsRequestID = nil
-            chat.botSessions = []
-            chat.isLoadingBotSessions = false
-        }
-        chat.botSessionsBotID = botID
-        refreshBotSessions(botID)
-    }
-
     func canReassignSession(_ session: SessionRecord) -> Bool {
         guard let current = chat.sessions.first(where: { $0.sessionId == session.sessionId })
         else { return false }
@@ -168,7 +116,7 @@ extension AppModel {
     func reassignSession(_ session: SessionRecord, to botID: String) -> String? {
         guard let current = chat.sessions.first(where: { $0.sessionId == session.sessionId }),
             canReassignSession(current), bots.contains(where: { $0.id == botID }),
-            botID != current.sessionContext.botId
+            botID != current.primaryBotId
         else { return nil }
         let id = requestID("session-reassign")
         chat.sessionMutationRequestID = id
@@ -268,38 +216,33 @@ extension AppModel {
         chat.restoreSession(sessionID)
     }
 
-    func interrupt() {
-        guard let sessionID = chat.selectedSessionID, let activeTurnID = chat.activeTurnID else {
-            return
-        }
-        gateway.transmit(
-            .submit(
-                sessionID: sessionID,
-                submission: Submission(
-                    id: requestID("interrupt"),
-                    op: .interrupt(turnID: activeTurnID)
-                )
-            ))
+    var canStopChat: Bool {
+        gateway.connectionState.isReady && chat.selectedSessionID != nil
+            && (chat.activeTurnID != nil
+                || selectedSession.map { $0.activity.state != .idle } == true)
     }
 
-    func resolveApproval(_ decision: ReviewDecision) {
-        guard let sessionID = chat.selectedSessionID,
-            let approval = chat.pendingApproval,
-            chat.approvalRequestID == nil
+    func interrupt() {
+        guard canStopChat, let sessionID = chat.selectedSessionID else {
+            return
+        }
+        gateway.transmit(.stopChat(requestID: requestID("stop"), sessionID: sessionID))
+    }
+
+    func resolveApproval(_ decision: ReviewDecision, approvalID: String? = nil) {
+        guard gateway.connectionState.isReady,
+            let approvalID = approvalID ?? chat.pendingApproval?.id,
+            approvalReviewRequest == nil,
+            backgroundApprovals.contains(where: { $0.id == approvalID })
+                || chat.pendingApprovals.contains(where: { $0.id == approvalID })
         else { return }
         let id = requestID("approval")
-        chat.approvalRequestID = id
+        approvalReviewRequest = (id, approvalID)
         gateway.transmit(
-            .submit(
-                sessionID: sessionID,
-                submission: Submission(
-                    id: id,
-                    op: .execApproval(id: approval.id, decision: decision)
-                )
-            )
+            .reviewApproval(requestID: id, approvalRequestID: approvalID, decision: decision)
         ) { [weak self] _ in
-            guard self?.chat.approvalRequestID == id else { return }
-            self?.chat.approvalRequestID = nil
+            guard self?.approvalReviewRequest?.id == id else { return }
+            self?.approvalReviewRequest = nil
         }
     }
 }

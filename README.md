@@ -37,8 +37,8 @@ Underneath the apps is a small, modular Rust framework you can embed in your own
   capabilities, instructions, and permissions. Each chat keeps its own transcript and workspace selection.
 - **Put repeat work on a schedule.** Run a task once, at an interval, daily, weekly, or on a
   cron schedule. Each routine run starts a fresh conversation and keeps its results in run history.
-- **Let Bots collaborate.** Select several Bots in New Chat and address them with @mentions in a shared
-  conversation. Within a task, subagents can take on bounded parallel work.
+- **Let Bots collaborate.** Select Bots and a primary in New Chat. Tap members to address a message;
+  otherwise the primary responds. Within a task, subagents can take on bounded parallel work.
 - **Keep long tasks moving.** Durable checkpoints, context compaction, and searchable history
   let agents resume work and recover earlier details.
 - **Choose the tools and boundaries.** Enable capabilities per Bot, add skills, review plugin
@@ -156,9 +156,8 @@ you configure; changing clients preserves the agent's runtime and saved work.
 | --- | --- |
 | **Gateway** | The runtime on your Mac, Linux machine, or cloud host. It serves all your paired clients. |
 | **Bot** | A reusable agent profile: purpose, model, tools, instructions, and approval policy. |
-| **Chat** | A conversation with one Bot, a selected workspace, and its own durable transcript. |
+| **Chat** | A conversation with one or more Bots, a primary responder, a workspace, and a durable transcript. |
 | **Routine** | A scheduled task owned by a Bot. Each run gets a fresh conversation. |
-| **Group chat** | A shared conversation where @mentioned Bots respond using their own private contexts. |
 
 Protected execution uses **Seatbelt on macOS** and **Bubblewrap on Linux** and fails closed
 if the selected sandbox is unavailable. Approval policy belongs to the Bot. **Full access**

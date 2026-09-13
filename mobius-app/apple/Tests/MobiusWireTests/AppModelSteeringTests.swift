@@ -47,7 +47,7 @@ extension AppModelTests {
             if case .submit = request { return true }
             return false
         }
-        guard case .submit(_, let submission) = try XCTUnwrap(request),
+        guard case .submit(_, let submission, _) = try XCTUnwrap(request),
             case .message(let message) = submission.op
         else { return XCTFail("Expected reply message submission") }
         XCTAssertEqual(message.reply, reply)
@@ -108,7 +108,7 @@ extension AppModelTests {
         }
         let first = try XCTUnwrap(
             firstRequest.flatMap { request -> Submission? in
-                guard case .submit(_, let submission) = request else { return nil }
+                guard case .submit(_, let submission, _) = request else { return nil }
                 return submission
             })
         model.chat.reduce(
@@ -166,7 +166,7 @@ extension AppModelTests {
         }
         let second = try XCTUnwrap(
             secondRequest.flatMap { request -> Submission? in
-                guard case .submit(_, let submission) = request else { return nil }
+                guard case .submit(_, let submission, _) = request else { return nil }
                 return submission
             })
         model.chat.reduce(
@@ -366,7 +366,7 @@ extension AppModelTests {
             if case .submit = request { return true }
             return false
         }
-        guard case .submit(_, let queuedSubmission) = try XCTUnwrap(queuedRequest),
+        guard case .submit(_, let queuedSubmission, _) = try XCTUnwrap(queuedRequest),
             case .message(let queuedMessage) = queuedSubmission.op
         else {
             return XCTFail("Expected a queued message submission")
@@ -382,7 +382,7 @@ extension AppModelTests {
             if case .submit = request { return true }
             return false
         }
-        guard case .submit(_, let steeringSubmission) = try XCTUnwrap(steeringRequest),
+        guard case .submit(_, let steeringSubmission, _) = try XCTUnwrap(steeringRequest),
             case .message(let steeringMessage) = steeringSubmission.op
         else {
             return XCTFail("Expected a steering message submission")
@@ -398,7 +398,7 @@ extension AppModelTests {
             if case .submit = request { return true }
             return false
         }
-        guard case .submit(_, let turnSubmission) = try XCTUnwrap(turnRequest),
+        guard case .submit(_, let turnSubmission, _) = try XCTUnwrap(turnRequest),
             case .message(let turnMessage) = turnSubmission.op
         else {
             return XCTFail("Expected a new-turn message submission")

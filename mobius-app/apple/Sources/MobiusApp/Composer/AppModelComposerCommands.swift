@@ -2,6 +2,15 @@ import Foundation
 import Observation
 
 extension AppModel {
+    func addComposerRecipient(_ bot: BotRecord) {
+        guard selectedChatIsGroup,
+            selectedChatBots.contains(where: { $0.id == bot.id }),
+            chat.pendingWidgetEdit == nil,
+            !chat.composerRecipientBotIDs.contains(bot.id)
+        else { return }
+        chat.composerRecipientBotIDs.append(bot.id)
+    }
+
     func importAttachments(_ urls: [URL]) async {
         guard canImportAttachments else { return }
         let available = max(0, attachmentReferenceLimit - chat.composerAttachments.count)
@@ -134,6 +143,16 @@ extension AppModel {
         let text = chat.composer.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = uploadedComposerAttachments
         let reply = chat.composerReply
+        let recipientBotIDs = chat.composerRecipientBotIDs
+        guard
+            recipientBotIDs.isEmpty
+                || selectedChatIsGroup
+                    && recipientBotIDs.allSatisfy({ id in selectedChatBots.contains { $0.id == id }
+                    })
+        else {
+            showToast("Choose recipients who are members of this chat.", tone: .warning)
+            return false
+        }
         guard chat.composerAttachments.count <= attachmentReferenceLimit else { return false }
         guard !text.isEmpty || !chat.composerAttachments.isEmpty else { return false }
         guard chat.composerAttachments.isEmpty || canSubmitAttachments else {
@@ -158,7 +177,8 @@ extension AppModel {
             chat.pendingDrafts[requestID] = PendingComposerDraft(
                 text: text,
                 attachments: attachments,
-                reply: reply
+                reply: reply,
+                recipientBotIDs: recipientBotIDs
             )
             chat.composerDraftSaveTask?.cancel()
             chat.composerDraftSaveTask = nil
@@ -166,6 +186,7 @@ extension AppModel {
             chat.composer = ""
             chat.suppressesComposerDraftSave = false
             chat.composerReply = nil
+            chat.composerRecipientBotIDs = []
             return true
         }
         guard !composerHasUnfinishedAttachments else {
@@ -176,6 +197,7 @@ extension AppModel {
             text: text,
             attachments: attachments,
             reply: reply,
+            recipientBotIDs: recipientBotIDs,
             requestedDelivery: requestedDelivery
         )
     }
@@ -195,9 +217,12 @@ extension AppModel {
             showToast("/\(name) is available when the agent is idle.", tone: .warning)
             return false
         }
-        guard chat.composerAttachments.isEmpty, chat.composerReply == nil else {
+        guard chat.composerAttachments.isEmpty, chat.composerReply == nil,
+            chat.composerRecipientBotIDs.isEmpty
+        else {
             showToast(
-                "Send attachments and replies as a message before using a command.", tone: .warning)
+                "Send attachments, recipients, and replies as a message before using a command.",
+                tone: .warning)
             return false
         }
         guard let sessionID = chat.selectedSessionID else { return false }
@@ -255,8 +280,10 @@ extension AppModel {
                 "Finish the attachment draft before editing a queued message.", tone: .warning)
             return
         }
-        guard chat.composerReply == nil else {
-            showToast("Finish the reply draft before editing a queued message.", tone: .warning)
+        guard chat.composerReply == nil, chat.composerRecipientBotIDs.isEmpty else {
+            showToast(
+                "Finish the reply or recipient draft before editing a queued message.",
+                tone: .warning)
             return
         }
         guard chat.pendingWidgetEdit == nil, chat.stashedComposerDraft == nil else { return }

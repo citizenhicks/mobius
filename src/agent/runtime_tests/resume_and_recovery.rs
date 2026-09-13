@@ -461,7 +461,6 @@ async fn resumed_agent_uses_the_durable_session_context() {
     );
     let checkpoint_store: Arc<dyn CheckpointStore> = checkpoints.clone();
     let durable_context = SessionContext {
-        bot_id: "test-bot".into(),
         workspace_label: Some("Project One".into()),
         origin_label: Some("routine".into()),
         ..SessionContext::default()
@@ -481,7 +480,6 @@ async fn resumed_agent_uses_the_durable_session_context() {
     let checkpoint_store: Arc<dyn CheckpointStore> = checkpoints;
     let mut resumed = create_agent(
         config(workspace.path(), checkpoint_store, "target").session_context(SessionContext {
-            bot_id: "wrong-bot".into(),
             workspace_label: Some("wrong workspace".into()),
             ..SessionContext::default()
         }),
@@ -589,7 +587,6 @@ async fn resume_request_carries_the_target_session_context() {
             .expect("checkpoint store"),
     );
     let target_context = SessionContext {
-        bot_id: "test-bot".into(),
         workspace_id: Some("workspace-two".into()),
         workspace_label: Some("Project Two".into()),
         origin_label: Some("routine".into()),

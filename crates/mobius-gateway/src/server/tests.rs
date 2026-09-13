@@ -56,7 +56,8 @@ async fn configured_test_server(state_dir: PathBuf) -> (GatewayServer, PairingGr
 }
 
 mod bots;
-mod groups;
+mod chats;
+mod conversations;
 mod protocol;
 mod sessions;
 mod transport;
@@ -156,6 +157,7 @@ async fn create_bot_chat_with_config(
     let request_id = Uuid::new_v4().to_string();
     sender
         .send(ClientMessage::CreateSession {
+            primary_bot_id: None,
             request_id: request_id.clone(),
             workspace: workspace.into(),
             bot_ids: vec![bot_id.clone()],

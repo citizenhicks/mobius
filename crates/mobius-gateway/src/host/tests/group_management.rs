@@ -10,12 +10,14 @@ pub(super) async fn gateway_with_group() -> (
     let (root, gateway, bot) = bots::gateway_with_bot().await;
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
+    let workspace = workspace.canonicalize().unwrap();
     let member = gateway.state.lock().await.bots.mobius().unwrap();
     let members = vec![bot, member];
     let chat = gateway
         .create_chat(
             &workspace,
             &members.iter().map(|bot| bot.id.clone()).collect::<Vec<_>>(),
+            None,
         )
         .await
         .unwrap();
@@ -39,55 +41,42 @@ pub(super) fn message(id: impl Into<String>, text: impl Into<String>) -> Submiss
 }
 
 #[tokio::test]
-async fn groups_use_the_session_catalog_and_unmentioned_posts_do_not_start_an_agent() {
+async fn chats_share_one_catalog_and_unaddressed_posts_wake_the_primary() {
     let (_root, gateway, workspace, chat, bots) = gateway_with_group().await;
     let snapshot = chat.snapshot(None).await.unwrap();
     assert_eq!(
         snapshot.ready.member_bot_ids,
-        Some(bots.iter().map(|bot| bot.id.clone()).collect())
+        bots.iter().map(|bot| bot.id.clone()).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        snapshot.ready.primary_bot_id.as_deref(),
+        Some(bots[0].id.as_str())
     );
     assert_eq!(
         snapshot.ready.workspace.path,
         workspace.canonicalize().unwrap()
     );
-    assert!(snapshot.ready.session.context.bot_id.is_empty());
     assert_eq!(snapshot.ready.tool_count, 0);
-    assert!(snapshot.ready.contributions.is_empty());
-    chat.submit(message("quiet", "Notes for everyone"))
+    let groups = Arc::clone(&gateway.state.lock().await.chat_store);
+    chat.submit(message("human", "Notes for everyone"))
         .await
         .unwrap();
-    let state = gateway.state.lock().await;
-    assert_eq!(state.sessions.len(), 1);
+    tokio::time::timeout(std::time::Duration::from_secs(10), chat.wait_idle())
+        .await
+        .unwrap();
+    let participant = chat_execution_id(&gateway, chat.session_id(), &bots[0].id).await;
+    let untouched = chat_execution_id(&gateway, chat.session_id(), &bots[1].id).await;
+    let checkpoints = Arc::clone(&gateway.state.lock().await.checkpoints);
+    assert!(checkpoints.load(chat.session_id()).await.unwrap().is_none());
+    assert!(checkpoints.load(&participant).await.unwrap().is_some());
+    assert!(checkpoints.load(&untouched).await.unwrap().is_none());
     assert!(
-        gateway_session_summaries(&state.checkpoints)
-            .await
-            .unwrap()
-            .is_empty(),
-        "creating and posting to an unmentioned group must not create Agent checkpoints"
-    );
-    assert!(
-        state
-            .checkpoints
-            .load(chat.session_id())
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert!(state.group.load(chat.session_id()).await.unwrap().is_some());
-
-    assert!(
-        state.bots.prepared.lock().await.is_empty(),
-        "no Bot runtime should be prepared for an unmentioned post"
-    );
-    assert!(
-        state
-            .group
-            .pending_recipient_bot_ids()
+        groups
+            .pending_deliveries(chat.session_id())
             .await
             .unwrap()
             .is_empty()
     );
-    drop(state);
     gateway
         .rename_session(chat.session_id(), "Project discussion")
         .await
@@ -106,31 +95,56 @@ async fn groups_use_the_session_catalog_and_unmentioned_posts_do_not_start_an_ag
     assert!(record.pinned);
     assert!(chat.stop_if_idle().await);
     let reopened = gateway.open_session(chat.session_id()).await.unwrap();
-    assert_eq!(reopened.snapshot(None).await.unwrap().replay.len(), 1);
+    assert!(reopened.snapshot(None).await.unwrap().replay.iter().any(|frame| matches!(&frame.message, ServerMessage::AgentEvent { record, .. } if matches!(&record.event.msg, EventMsg::Message(message) if message.text == "Notes for everyone"))));
     let direct = gateway
-        .create_chat(&workspace, &[bots[0].id.clone()])
+        .create_chat(&workspace, &[bots[0].id.clone()], None)
         .await
         .unwrap();
     assert_eq!(
         direct.snapshot(None).await.unwrap().ready.member_bot_ids,
-        None
+        vec![bots[0].id.clone()]
+    );
+    assert_eq!(
+        gateway.sessions().await.unwrap().len(),
+        2,
+        "private executions never appear as extra Chats"
     );
     gateway.shutdown().await;
 }
 
 #[tokio::test]
-async fn group_history_pages_and_replay_work_after_more_than_256_unmentioned_messages() {
-    let (_root, gateway, _workspace, chat, _bots) = gateway_with_group().await;
+async fn chat_history_pages_and_replay_keep_old_messages_after_restart() {
+    let (root, gateway, _workspace, chat, _bots) = gateway_with_group().await;
+    let chat_id = chat.session_id().to_owned();
+    let groups = Arc::clone(&gateway.state.lock().await.chat_store);
+    gateway.shutdown().await;
+    drop(chat);
+    drop(gateway);
     for index in 0..310 {
-        chat.submit(message(
-            format!("quiet-{index}"),
-            format!("Message {index}"),
-        ))
+        let Op::Message { message } =
+            message(format!("past-{index}"), format!("Message {index}")).op
+        else {
+            unreachable!()
+        };
+        groups
+            .post_user(&chat_id, format!("past-{index}"), message, &[])
+            .await
+            .unwrap();
+        groups.cancel_pending(&chat_id).await.unwrap();
+    }
+    let (store, config) = ConfigStore::open(root.path().join("state")).unwrap();
+    let bots = Arc::new(BotStore::open(store.state_dir()).unwrap());
+    let credentials = Arc::new(CredentialStore::open(store.credentials_path()).unwrap());
+    let gateway = GatewayHost::start(store, config, credentials, bots)
         .await
         .unwrap();
-    }
+    let chat = gateway.open_session(&chat_id).await.unwrap();
     let current = chat.snapshot(None).await.unwrap();
-    assert_eq!(current.replay.len(), 50);
+    assert_eq!(current.replay.len(), 1);
+    assert!(
+        matches!(&current.replay[0].message, ServerMessage::AgentEvent { record, .. }
+        if record.event.submission_id.as_deref() == Some("past-309"))
+    );
     assert!(current.ready.next_before_sequence.is_some());
     assert_eq!(
         chat.snapshot(Some(1)).await.err().unwrap().code,
@@ -147,6 +161,17 @@ async fn group_history_pages_and_replay_work_after_more_than_256_unmentioned_mes
     let mut records = Vec::new();
     loop {
         let page = chat.history_page(cursor).await.unwrap();
+        assert!(
+            page.records
+                .iter()
+                .all(|record| cursor.is_none_or(|before| record.sequence < before))
+        );
+        if let Some(next) = page.next_before_sequence {
+            assert_eq!(
+                Some(next),
+                page.records.first().map(|record| record.sequence)
+            );
+        }
         records.extend(page.records);
         match page.next_before_sequence {
             Some(next) => cursor = Some(next),
@@ -159,7 +184,7 @@ async fn group_history_pages_and_replay_work_after_more_than_256_unmentioned_mes
         .filter_map(|record| record.event.submission_id.as_deref())
         .collect::<HashSet<_>>();
     assert_eq!(submissions.len(), 310);
-    assert!(submissions.contains("quiet-0"));
+    assert!(submissions.contains("past-0"));
     gateway.shutdown().await;
 }
 
@@ -174,6 +199,7 @@ async fn deleting_a_group_preserves_member_bots_routines_and_other_chats() {
         .create_chat(
             &workspace,
             &bots.iter().map(|bot| bot.id.clone()).collect::<Vec<_>>(),
+            None,
         )
         .await
         .unwrap();
@@ -193,17 +219,17 @@ async fn deleting_a_group_preserves_member_bots_routines_and_other_chats() {
             None,
         )
         .unwrap();
-    let participant_id = crate::groups::participant_session_id(chat.session_id(), &bots[0].id);
+    let participant_id = chat_execution_id(&gateway, chat.session_id(), &bots[0].id).await;
     chat.submit(message(
         "before-delete",
         format!("@{} finish this chat", bots[0].handle),
     ))
     .await
     .unwrap();
-    let groups = Arc::clone(&gateway.state.lock().await.group);
+    let groups = Arc::clone(&gateway.state.lock().await.chat_store);
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
-            if groups.pending_recipient_bot_ids().await.unwrap().is_empty() {
+            if groups.pending_chat_ids().await.unwrap().is_empty() {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -249,7 +275,7 @@ async fn deleting_a_group_preserves_member_bots_routines_and_other_chats() {
             .state
             .lock()
             .await
-            .group
+            .chat_store
             .load(chat.session_id())
             .await
             .unwrap()
@@ -268,11 +294,11 @@ async fn startup_finishes_tombstoned_group_deletion_without_removing_member_bots
             .await
             .unwrap();
         let direct_id = direct.session_id().to_owned();
-        let participant_id = crate::groups::participant_session_id(&chat_id, &bots[0].id);
+        let participant_id = chat_execution_id(&gateway, &chat_id, &bots[0].id).await;
         let (groups, checkpoints, files, bot_store) = {
             let state = gateway.state.lock().await;
             (
-                Arc::clone(&state.group),
+                Arc::clone(&state.chat_store),
                 Arc::clone(&state.checkpoints),
                 state.session_files.clone(),
                 Arc::clone(&state.bots),
@@ -302,7 +328,7 @@ async fn startup_finishes_tombstoned_group_deletion_without_removing_member_bots
             .unwrap();
             tokio::time::timeout(std::time::Duration::from_secs(10), async {
                 loop {
-                    if groups.pending_recipient_bot_ids().await.unwrap().is_empty() {
+                    if groups.pending_chat_ids().await.unwrap().is_empty() {
                         break;
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -354,8 +380,8 @@ async fn startup_finishes_tombstoned_group_deletion_without_removing_member_bots
             .await
             .unwrap();
         let state = recovered.state.lock().await;
-        assert!(state.group.chats(true).await.unwrap().is_empty());
-        assert!(state.group.load(&chat_id).await.unwrap().is_none());
+        assert!(state.chat_store.chats(true).await.unwrap().is_empty());
+        assert!(state.chat_store.load(&chat_id).await.unwrap().is_none());
         assert!(state.checkpoints.load(&chat_id).await.unwrap().is_none());
         assert!(
             state
@@ -365,7 +391,7 @@ async fn startup_finishes_tombstoned_group_deletion_without_removing_member_bots
                 .unwrap()
                 .is_none()
         );
-        assert!(state.checkpoints.load(&direct_id).await.unwrap().is_some());
+        assert!(state.chat_store.load(&direct_id).await.unwrap().is_some());
         assert!(
             !load_session_metadata(&state.checkpoints)
                 .await
@@ -395,19 +421,25 @@ async fn snapshots_recover_all_current_approvals_beyond_the_replay_page() {
     use mobius::protocol::ExecApprovalRequestEvent;
 
     let (_root, gateway, workspace, chat, bots) = gateway_with_group().await;
+    super::group_delivery::pause_deliveries(&gateway).await;
     let (groups, checkpoints) = {
         let state = gateway.state.lock().await;
-        (Arc::clone(&state.group), Arc::clone(&state.checkpoints))
+        (
+            Arc::clone(&state.chat_store),
+            Arc::clone(&state.checkpoints),
+        )
     };
     let mut expected = Vec::new();
     let mut private_ids = Vec::new();
     for (index, bot) in bots.iter().enumerate() {
-        let private_id = crate::groups::participant_session_id(chat.session_id(), &bot.id);
+        let private_id = chat_execution_id(&gateway, chat.session_id(), &bot.id).await;
         let participant = gateway
             .create_session_with_id(&workspace, &bot.id, private_id.clone(), false, "Group chat")
             .await
             .unwrap();
         assert!(participant.stop_if_idle().await);
+        let input = message(format!("message-{index}"), "Review this project");
+        chat.submit_to(input, vec![bot.id.clone()]).await.unwrap();
         let mut checkpoint = checkpoints.load(&private_id).await.unwrap().unwrap();
         checkpoint.sequence += 1;
         checkpoint.active_execution = Some(ActiveExecution {
@@ -477,10 +509,33 @@ async fn snapshots_recover_all_current_approvals_beyond_the_replay_page() {
         .unwrap();
     }
     let snapshot = chat.snapshot(None).await.unwrap();
-    assert_eq!(snapshot.replay.len(), 50);
+    assert_eq!(snapshot.replay.len(), 1);
+    assert!(
+        matches!(&snapshot.replay[0].message, ServerMessage::AgentEvent { record, .. }
+        if record.event.submission_id.as_deref() == Some("later-59"))
+    );
     assert!(!snapshot.replay.iter().any(|frame| matches!(&frame.message, ServerMessage::AgentEvent { record, .. } if matches!(record.event.msg, EventMsg::ExecApprovalRequest(_)))));
     assert_eq!(snapshot.ready.active_turn_ids, ["turn-0", "turn-1"]);
     assert_eq!(snapshot.ready.pending_approvals, expected);
+    let mut cursor = snapshot.ready.next_before_sequence;
+    let mut historical_approvals = Vec::new();
+    while let Some(before) = cursor {
+        let page = chat.history_page(Some(before)).await.unwrap();
+        assert!(page.records.iter().all(|record| record.sequence < before));
+        historical_approvals.extend(page.records.into_iter().filter_map(|record| {
+            if let EventMsg::ExecApprovalRequest(request) = record.event.msg {
+                Some(request)
+            } else {
+                None
+            }
+        }));
+        if let Some(next) = page.next_before_sequence {
+            assert!(next < before);
+        }
+        cursor = page.next_before_sequence;
+    }
+    historical_approvals.sort_by(|left, right| left.id.cmp(&right.id));
+    assert_eq!(historical_approvals, expected);
     let mut resolved = checkpoints.load(&private_ids[1]).await.unwrap().unwrap();
     resolved
         .pending_approval
@@ -510,6 +565,7 @@ async fn startup_reservations_block_only_deletion_of_the_starting_chat_or_bot() 
         .create_chat(
             &workspace,
             &bots.iter().map(|bot| bot.id.clone()).collect::<Vec<_>>(),
+            None,
         )
         .await
         .unwrap();
@@ -551,7 +607,7 @@ async fn startup_reservations_block_only_deletion_of_the_starting_chat_or_bot() 
     .await
     .expect("unrelated deletion and Ready must not wait for this startup");
     drop(starting);
-    let participant_id = crate::groups::participant_session_id(chat.session_id(), &bots[0].id);
+    let participant_id = chat_execution_id(&gateway, chat.session_id(), &bots[0].id).await;
     let starting = gateway
         .state
         .lock()

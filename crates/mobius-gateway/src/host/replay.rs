@@ -144,6 +144,7 @@ pub(super) fn project_record(
         sequence: journal.sequence,
         recorded_at_ms: journal.recorded_at_ms,
         event: journal.event,
+        recipient_bot_ids: Vec::new(),
         stream_metrics: journal.stream_metrics,
         blocks,
         preview,
@@ -318,24 +319,22 @@ pub(super) fn compact_replay_deltas(
 }
 
 pub(super) fn replayable(frame: &ServerFrame) -> bool {
+    match &frame.message {
+        ServerMessage::AgentEvent { record, .. } => replayable_event(&record.event.msg),
+        _ => true,
+    }
+}
+
+pub(super) fn replayable_event(event: &EventMsg) -> bool {
     !matches!(
-        &frame.message,
-        ServerMessage::AgentEvent {
-            record: RecordedEvent {
-                event: Event {
-                    msg: EventMsg::SessionResumeRequested(_)
-                        | EventMsg::Frontend(
-                            FrontendEvent::Preview { .. }
-                                | FrontendEvent::Picker { .. }
-                                | FrontendEvent::Widget { .. }
-                                | FrontendEvent::RemoveWidget { .. }
-                        ),
-                    ..
-                },
-                ..
-            },
-            ..
-        }
+        event,
+        EventMsg::SessionResumeRequested(_)
+            | EventMsg::Frontend(
+                FrontendEvent::Preview { .. }
+                    | FrontendEvent::Picker { .. }
+                    | FrontendEvent::Widget { .. }
+                    | FrontendEvent::RemoveWidget { .. }
+            )
     )
 }
 

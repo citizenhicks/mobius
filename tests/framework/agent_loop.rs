@@ -263,7 +263,7 @@ async fn interrupt_only_aborts_its_target_turn() {
     .await
     .expect("create agent");
     let sender = agent.sender();
-    sender.submit(user_message("start")).expect("submit turn");
+    let turn_submission = sender.submit(user_message("start")).expect("submit turn");
 
     let configured = agent.next_event().await.expect("session event");
     assert!(configured.submission_id.is_none());
@@ -294,7 +294,7 @@ async fn interrupt_only_aborts_its_target_turn() {
         }
     }
 
-    let interrupt_submission = sender
+    sender
         .submit(Op::Interrupt {
             turn_id: turn_id.clone(),
         })
@@ -304,7 +304,7 @@ async fn interrupt_only_aborts_its_target_turn() {
         if let EventMsg::TurnAborted(turn) = event.msg {
             assert_eq!(
                 (event.submission_id, turn.turn_id),
-                (Some(interrupt_submission), turn_id)
+                (Some(turn_submission), turn_id)
             );
             break;
         }

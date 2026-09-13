@@ -1,5 +1,15 @@
 use super::*;
 
+async fn participant_session_id(gateway: &GatewayHost, chat: &HostHandle) -> String {
+    let chats = Arc::clone(&gateway.state.lock().await.chat_store);
+    let record = chats.load(chat.session_id()).await.unwrap().unwrap();
+    assert_eq!(record.participants.len(), 1);
+    chat.participant(record.participants[0].bot_id.clone())
+        .await
+        .expect("initialize participant");
+    record.participants[0].session_id.clone()
+}
+
 #[tokio::test]
 async fn concurrent_catalog_updates_preserve_both_fields_for_resident_and_stopped_chats() {
     let root = tempfile::tempdir().expect("root");
@@ -71,14 +81,82 @@ async fn capacity_reclaims_real_idle_agents() {
         .await
         .expect("gateway");
     for index in 0..=MAX_ACTIVE_SESSIONS {
-        let host = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            create_test_session(&gateway, &workspace),
-        )
+        let host = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let host = create_test_session(&gateway, &workspace).await?;
+            participant_session_id(&gateway, &host).await;
+            host.snapshot(None).await?;
+            Ok::<_, Rejection>(host)
+        })
         .await
         .unwrap_or_else(|_| panic!("chat {index} timed out"))
         .expect("chat");
         drop(host);
+    }
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
+async fn browsing_a_chat_never_starts_or_resumes_its_execution() {
+    let (root, gateway, bot) = bots::gateway_with_bot().await;
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let chat = gateway
+        .create_chat(&workspace, std::slice::from_ref(&bot.id), None)
+        .await
+        .unwrap();
+    let id = chat.session_id().to_owned();
+    let execution_id = chat_execution_id(&gateway, &id, &bot.id).await;
+    let checkpoints = Arc::clone(&gateway.state.lock().await.checkpoints);
+    assert!(chat.snapshot(None).await.unwrap().ready.tool_count > 0);
+    assert!(checkpoints.load(&execution_id).await.unwrap().is_none());
+
+    // Set up a previously opened execution, then close it before browsing history.
+    let participant = chat.participant(bot.id.clone()).await.unwrap();
+    assert!(chat.stop_if_idle().await);
+    assert!(!participant.is_alive());
+    let before = checkpoints.load(&execution_id).await.unwrap();
+    let before_events = checkpoints
+        .event_page(
+            &execution_id,
+            EventPageRequest {
+                before_sequence: None,
+                limit: 100,
+            },
+        )
+        .await
+        .unwrap();
+    for _ in 0..3 {
+        let chat = gateway.open_session(&id).await.unwrap();
+        chat.snapshot(None).await.unwrap();
+        chat.history_page(None).await.unwrap();
+        chat.frontend().await.unwrap();
+        chat.accepts_file_attachments().await.unwrap();
+        chat.git_diff(GitDiffScope::Unstaged).await.unwrap();
+        chat.workspace_files(WorkspaceFileScope::All).await.unwrap();
+        assert!(
+            !gateway
+                .state
+                .lock()
+                .await
+                .sessions
+                .get(&execution_id)
+                .is_some_and(HostHandle::is_alive)
+        );
+        assert_eq!(checkpoints.load(&execution_id).await.unwrap(), before);
+        assert_eq!(
+            checkpoints
+                .event_page(
+                    &execution_id,
+                    EventPageRequest {
+                        before_sequence: None,
+                        limit: 100
+                    }
+                )
+                .await
+                .unwrap(),
+            before_events
+        );
+        assert!(chat.stop_if_idle().await);
     }
     gateway.shutdown().await;
 }
@@ -373,7 +451,7 @@ async fn durable_event_journal_restores_complete_turn_pages() {
         .await
         .expect("create session");
     let checkpoints = Arc::clone(&gateway.state.lock().await.checkpoints);
-    let session_id = host.session_id().to_owned();
+    let session_id = participant_session_id(&gateway, &host).await;
     assert!(host.stop_if_idle().await);
     gateway.state.lock().await.sessions.remove(&session_id);
     drop(host);
@@ -439,10 +517,10 @@ async fn durable_event_journal_restores_complete_turn_pages() {
         .expect("advance journal high-water")
         .sequence;
 
-    let reopened = gateway
-        .open_session(&session_id)
+    let (reopened, _) = gateway
+        .open_execution_with_cache(&session_id, true)
         .await
-        .expect("reopen session");
+        .expect("reopen private execution");
     let snapshot = reopened.snapshot(None).await.expect("session snapshot");
     let older = reopened
         .history_page(snapshot.ready.next_before_sequence)
@@ -450,11 +528,34 @@ async fn durable_event_journal_restores_complete_turn_pages() {
         .expect("older turn");
 
     assert!(snapshot.ready.latest_sequence >= durable_highwater);
-    assert_eq!(snapshot.replay.len(), 3);
+    let replay = snapshot
+        .replay
+        .iter()
+        .filter_map(|frame| match &frame.message {
+            ServerMessage::AgentEvent { record, .. }
+                if !matches!(record.event.msg, EventMsg::SessionConfigured(_)) =>
+            {
+                Some(&record.event.msg)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(matches!(
+        &replay[..],
+        [EventMsg::TurnStarted(started), EventMsg::Warning(warning), EventMsg::TurnComplete(completed)]
+            if started.turn_id == "latest"
+                && warning.message == "latest work"
+                && completed.turn_id == "latest"
+    ));
     assert_eq!(snapshot.ready.next_before_sequence, Some(latest_start));
+    assert_eq!(older.next_before_sequence, None);
     assert!(matches!(
         &older.records[..],
         [
+            RecordedEvent {
+                event: Event { msg: EventMsg::SessionConfigured(_), .. },
+                ..
+            },
             RecordedEvent {
                 event: Event { msg: EventMsg::TurnStarted(started), .. },
                 ..
@@ -491,6 +592,8 @@ async fn initial_snapshot_restores_transient_widgets_without_replaying_them() {
         .await
         .expect("create session");
 
+    participant_session_id(&gateway, &host).await;
+
     let snapshot = host.snapshot(None).await.expect("session snapshot");
 
     let context_window = snapshot
@@ -524,7 +627,7 @@ async fn initial_snapshot_restores_transient_widgets_without_replaying_them() {
 }
 
 #[tokio::test]
-async fn delete_sessions_remove_distinct_roots_and_collapse_duplicate_descendants() {
+async fn delete_chats_remove_private_descendants_and_deduplicate_public_roots() {
     let root = tempfile::tempdir().expect("root");
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("workspace");
@@ -549,22 +652,25 @@ async fn delete_sessions_remove_distinct_roots_and_collapse_duplicate_descendant
     let deleted_id = deleted.session_id().to_owned();
     let also_deleted_id = also_deleted.session_id().to_owned();
     let retained_id = retained.session_id().to_owned();
+    let deleted_execution = participant_session_id(&gateway, &deleted).await;
+    let also_deleted_execution = participant_session_id(&gateway, &also_deleted).await;
+    let retained_execution = participant_session_id(&gateway, &retained).await;
     let (checkpoints, session_files) = {
         let state = gateway.state.lock().await;
         (Arc::clone(&state.checkpoints), state.session_files.clone())
     };
     let parent = checkpoints
-        .load(&deleted_id)
+        .load(&deleted_execution)
         .await
         .expect("load parent")
         .expect("parent checkpoint");
     let mut deleted_child = Checkpoint::empty("deleted-child");
     deleted_child.session_context = parent.session_context.clone();
     checkpoints
-        .fork(&deleted_id, parent.sequence, &deleted_child)
+        .fork(&deleted_execution, parent.sequence, &deleted_child)
         .await
         .expect("fork child");
-    for session_id in [&deleted_id, "deleted-child"] {
+    for session_id in [&deleted_id, &deleted_execution, "deleted-child"] {
         session_files
             .publish_artifact(
                 session_id,
@@ -583,10 +689,24 @@ async fn delete_sessions_remove_distinct_roots_and_collapse_duplicate_descendant
         .rename_session(&retained_id, "Retained")
         .await
         .expect("title retained session");
+    assert_eq!(
+        gateway
+            .delete_sessions(&["deleted-child".into()])
+            .await
+            .unwrap_err()
+            .code,
+        "unknown_session"
+    );
+    assert!(
+        checkpoints
+            .load(&deleted_execution)
+            .await
+            .unwrap()
+            .is_some()
+    );
     gateway
         .delete_sessions(&[
             deleted_id.clone(),
-            "deleted-child".into(),
             also_deleted_id.clone(),
             deleted_id.clone(),
         ])
@@ -595,7 +715,7 @@ async fn delete_sessions_remove_distinct_roots_and_collapse_duplicate_descendant
 
     assert!(
         checkpoints
-            .load(&deleted_id)
+            .load(&deleted_execution)
             .await
             .expect("load deleted")
             .is_none()
@@ -609,7 +729,7 @@ async fn delete_sessions_remove_distinct_roots_and_collapse_duplicate_descendant
     );
     assert!(
         checkpoints
-            .load(&also_deleted_id)
+            .load(&also_deleted_execution)
             .await
             .expect("load second deleted")
             .is_none()
@@ -620,6 +740,27 @@ async fn delete_sessions_remove_distinct_roots_and_collapse_duplicate_descendant
             .await
             .expect("deleted artifacts")
             .is_empty()
+    );
+    assert!(
+        session_files
+            .list_artifacts(&deleted_execution)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        session_files
+            .list_artifacts("deleted-child")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        checkpoints
+            .load(&retained_execution)
+            .await
+            .unwrap()
+            .is_some()
     );
     let metadata = load_session_metadata(&checkpoints)
         .await
@@ -661,22 +802,25 @@ async fn delete_sessions_preflight_all_roots_before_durable_removal() {
         .expect("create other root session");
     let root_id = root_host.session_id().to_owned();
     let other_id = other_host.session_id().to_owned();
+    let root_execution = participant_session_id(&gateway, &root_host).await;
+    let other_execution = participant_session_id(&gateway, &other_host).await;
     let checkpoints = Arc::clone(&gateway.state.lock().await.checkpoints);
     let root_checkpoint = checkpoints
-        .load(&root_id)
+        .load(&root_execution)
         .await
         .expect("load root")
         .expect("root checkpoint");
     let mut child = Checkpoint::empty("child");
     child.session_context = root_checkpoint.session_context.clone();
     checkpoints
-        .fork(&root_id, root_checkpoint.sequence, &child)
+        .fork(&root_execution, root_checkpoint.sequence, &child)
         .await
         .expect("fork child");
 
     let (commands, mut receiver) = mpsc::channel(1);
     tokio::spawn(async move {
-        if let Some(HostCommand::ProviderCutoverStatus { reply }) = receiver.recv().await {
+        if let Some((HostCommand::ProviderCutoverStatus { reply }, _owner)) = receiver.recv().await
+        {
             let _ = reply.send(ProviderCutoverStatus { idle: false });
         }
     });
@@ -709,10 +853,12 @@ async fn delete_sessions_preflight_all_roots_before_durable_removal() {
     assert!(state.sessions.contains_key(&root_id));
     assert!(state.sessions.contains_key(&other_id));
     assert!(state.sessions.contains_key("child"));
+    assert!(state.sessions.contains_key(&root_execution));
+    assert!(state.sessions.contains_key(&other_execution));
     drop(state);
     assert!(
         checkpoints
-            .load(&other_id)
+            .load(&other_execution)
             .await
             .expect("load other root")
             .is_some()
@@ -763,9 +909,15 @@ async fn opening_a_stopped_cached_chat_creates_a_fresh_actor() {
         .await
         .expect("create chat");
     let session_id = original.session_id().to_string();
+    let execution_id = participant_session_id(&gateway, &original).await;
+    let (original_execution, _) = gateway
+        .open_execution_with_cache(&execution_id, true)
+        .await
+        .unwrap();
 
     assert!(original.stop_if_idle().await);
     assert!(!original.is_alive());
+    assert!(!original_execution.is_alive());
     let rejection = original
         .begin_session_file_mutation(&bots)
         .expect_err("stopped chat must reject a stale upload");
@@ -777,53 +929,22 @@ async fn opening_a_stopped_cached_chat_creates_a_fresh_actor() {
 
     assert!(reopened.is_alive());
     assert!(!Arc::ptr_eq(&original.inner, &reopened.inner));
+    assert_eq!(
+        participant_session_id(&gateway, &reopened).await,
+        execution_id
+    );
+    let (new_execution, _) = gateway
+        .open_execution_with_cache(&execution_id, true)
+        .await
+        .unwrap();
+    assert!(!Arc::ptr_eq(
+        &original_execution.inner,
+        &new_execution.inner
+    ));
 }
 
 #[tokio::test]
-async fn opening_a_chat_rejects_tampered_bot_identity() {
-    let root = tempfile::tempdir().expect("root");
-    let workspace = root.path().join("workspace");
-    std::fs::create_dir(&workspace).expect("workspace");
-    let listen = "127.0.0.1:8741".parse().expect("listen address");
-    let (store, config) =
-        ConfigStore::initialize(root.path().join("state"), listen, None).expect("config");
-    let credentials =
-        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
-    let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let gateway = GatewayHost::start(store, config, credentials, bots)
-        .await
-        .expect("gateway");
-    let checkpoints = Arc::clone(&gateway.state.lock().await.checkpoints);
-
-    let host = create_test_session(&gateway, &workspace)
-        .await
-        .expect("create session");
-    let session_id = host.session_id().to_owned();
-    assert!(host.stop_if_idle().await);
-    while host.is_alive() {
-        tokio::task::yield_now().await;
-    }
-    let mut checkpoint = checkpoints
-        .load(&session_id)
-        .await
-        .expect("load checkpoint")
-        .expect("checkpoint");
-    checkpoint.session_context.bot_id = Uuid::new_v4().to_string();
-    checkpoint.sequence += 1;
-    checkpoints
-        .save(&checkpoint, &[], None)
-        .await
-        .expect("save tampered checkpoint");
-
-    let rejection = match gateway.open_session(&session_id).await {
-        Ok(_) => panic!("tampered Bot identity must be rejected"),
-        Err(rejection) => rejection,
-    };
-    assert_eq!(rejection.code, "invalid_session_bot");
-}
-
-#[tokio::test]
-async fn capacity_reclaims_an_unreferenced_idle_chat() {
+async fn capacity_shutdown_allows_gateway_ready_and_rejects_reopening_the_stopping_actor() {
     let root = tempfile::tempdir().expect("root");
     let state_dir = root.path().join("state");
     let listen = "127.0.0.1:8741".parse().expect("listen address");
@@ -837,13 +958,27 @@ async fn capacity_reclaims_an_unreferenced_idle_chat() {
     let mut state = gateway.state.lock().await;
     for index in 0..MAX_ACTIVE_SESSIONS {
         let (commands, mut receiver) = mpsc::channel(1);
+        let id = format!("chat-{index}");
+        let terminated = Arc::new(AtomicBool::new(false));
+        let termination = Arc::new(tokio::sync::Notify::new());
+        let gateway = gateway.clone();
+        let stopping_id = id.clone();
+        let actor_terminated = Arc::clone(&terminated);
+        let actor_termination = Arc::clone(&termination);
         tokio::spawn(async move {
-            if let Some(HostCommand::StopIfIdle { reply }) = receiver.recv().await {
+            if let Some((HostCommand::StopIfIdle { reply }, _owner)) = receiver.recv().await {
                 let _ = reply.send(true);
+                // Lifecycle shutdown may require the same state as a new connection.
+                gateway.ready().await.expect("Ready during shutdown");
+                assert!(matches!(
+                    gateway.open_execution_with_cache(&stopping_id, true).await,
+                    Err(rejection) if rejection.code == "session_stopping"
+                ));
+                actor_terminated.store(true, Ordering::Release);
+                actor_termination.notify_waiters();
             }
         });
         let (events, _) = broadcast::channel(1);
-        let id = format!("chat-{index}");
         state.sessions.insert(
             id.clone(),
             HostHandle {
@@ -852,8 +987,8 @@ async fn capacity_reclaims_an_unreferenced_idle_chat() {
                     commands,
                     events,
                     alive: Arc::new(AtomicBool::new(true)),
-                    terminated: Arc::new(AtomicBool::new(true)),
-                    termination: Arc::new(tokio::sync::Notify::new()),
+                    terminated,
+                    termination,
                     session_mutations: Arc::new(tokio::sync::RwLock::new(())),
                     realtime_voice: Arc::new(tokio::sync::Mutex::new(())),
                 }),
@@ -861,7 +996,13 @@ async fn capacity_reclaims_an_unreferenced_idle_chat() {
         );
     }
 
-    state.ensure_capacity().await.expect("reclaim capacity");
+    let state = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        gateway.ensure_capacity(state),
+    )
+    .await
+    .expect("shutdown must not hold gateway state")
+    .expect("reclaim capacity");
 
     assert_eq!(state.sessions.len(), MAX_ACTIVE_SESSIONS - 1);
 }

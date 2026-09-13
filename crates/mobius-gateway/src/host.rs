@@ -1,11 +1,13 @@
 //! Per-chat agent ownership, event sequencing, replay, and authenticated operations.
 
+mod approvals;
 mod catalog;
+mod chat;
+mod conversations;
 mod deletion;
 mod extensions;
 mod files;
 mod git;
-mod group;
 mod profile;
 mod providers;
 mod replay;
@@ -41,13 +43,13 @@ use uuid::Uuid;
 
 use crate::assembly::{BuiltAgent, assemble};
 use crate::bots::{ActiveRoutineRun, BeginRun, BotStore};
+use crate::chats::{ChatDelivery, ChatMessage, ChatRunOutcome, ChatStore};
 use crate::computer_runtime::desktop::DesktopControl;
 use crate::config::{
     ChatSpec, ConfigStore, CredentialStore, GatewayConfig,
     create_workspace_directory as create_workspace_directory_on_disk,
 };
 use crate::extensions::ExtensionStore;
-use crate::groups::{GroupDelivery, GroupMessage, GroupRunOutcome, GroupStore};
 use crate::provider_catalog::{
     configured_model_choices, configured_model_routes, provider_instances, provider_statuses,
 };
@@ -62,9 +64,9 @@ use crate::wire::{
 use crate::{Error, Result};
 
 use self::catalog::{
-    SessionCatalogMetadata, activity_catalog, background_approvals, hidden_bot_session_catalog,
-    load_session_metadata, restore_pending_approval_activities, save_session_metadata,
-    session_catalog, update_session_activity, validate_session_title,
+    SessionCatalogMetadata, activity_catalog, background_approvals, load_session_metadata,
+    restore_pending_approval_activities, save_session_metadata, session_catalog,
+    update_session_activity, validate_session_title,
 };
 use self::files::{
     WorkspaceFiles, WorkspaceRead, list as list_workspace_files, read as read_workspace_file,
@@ -93,20 +95,6 @@ pub(crate) const MAX_ACTIVE_SESSIONS: usize = 32;
 
 type SessionActivities = Arc<Mutex<catalog::SessionCatalog>>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum GroupDeliveryAttempt {
-    Submitted(String),
-    Rejected(String),
-}
-
-impl GroupDeliveryAttempt {
-    fn message_id(&self) -> &str {
-        match self {
-            Self::Submitted(message_id) | Self::Rejected(message_id) => message_id,
-        }
-    }
-}
-
 /// Machine-wide chat registry. A session has at most one resident agent owner.
 #[derive(Clone)]
 pub(crate) struct GatewayHost {
@@ -123,7 +111,7 @@ struct GatewayState {
     checkpoints: Arc<dyn CheckpointStore>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
-    group: Arc<GroupStore>,
+    chat_store: Arc<ChatStore>,
     contributions: Vec<FrontendContribution>,
     // ponytail: one lock is enough for at most 32 tiny catalog writes.
     catalog_lock: Arc<Mutex<()>>,
@@ -136,7 +124,7 @@ struct GatewayState {
     sessions: HashMap<String, HostHandle>,
     starting_sessions: Arc<StdMutex<HashMap<String, String>>>,
     idle_cleanup_tasks: Vec<JoinHandle<()>>,
-    group_delivery_task: Option<JoinHandle<()>>,
+    chat_delivery_task: Option<JoinHandle<()>>,
 }
 
 pub(crate) struct HostSnapshot {
@@ -190,11 +178,11 @@ impl GatewayHost {
         let scratchpad = ScratchpadStore::new(Arc::clone(&checkpoints));
         let session_files = SessionFileStore::new(store.state_dir());
         let config = Arc::new(StdMutex::new(config));
-        let (group, deliveries) = GroupStore::new(store.state_dir(), Arc::clone(&bots))?;
-        let group = Arc::new(group);
+        let (chat_store, deliveries) = ChatStore::new(store.state_dir(), Arc::clone(&bots))?;
+        let chat_store = Arc::new(chat_store);
         let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
         let activities = Arc::new(Mutex::new(catalog::SessionCatalog::default()));
-        restore_pending_approval_activities(&checkpoints, &activities).await?;
+        restore_pending_approval_activities(&checkpoints, &chat_store, &bots, &activities).await?;
         let host = Self {
             desktop: Arc::new(DesktopControl::default()),
             state: Arc::new(Mutex::new(GatewayState {
@@ -205,7 +193,7 @@ impl GatewayHost {
                 checkpoints,
                 scratchpad,
                 session_files,
-                group,
+                chat_store,
                 contributions,
                 catalog_lock: Arc::new(Mutex::new(())),
                 session_mutations: Arc::new(RwLock::new(())),
@@ -217,14 +205,17 @@ impl GatewayHost {
                 sessions: HashMap::new(),
                 starting_sessions: Arc::default(),
                 idle_cleanup_tasks: Vec::new(),
-                group_delivery_task: None,
+                chat_delivery_task: None,
             })),
             events,
         };
         host.reconcile_pending_bot_deletion()
             .await
             .map_err(|rejection| Error::Config(rejection.message))?;
-        host.reconcile_deleted_group_chats()
+        host.reconcile_deleted_chats()
+            .await
+            .map_err(|rejection| Error::Config(rejection.message))?;
+        host.reconcile_chat_cancellations()
             .await
             .map_err(|rejection| Error::Config(rejection.message))?;
         let files = host.state.lock().await.session_files.clone();
@@ -238,20 +229,20 @@ impl GatewayHost {
                 }));
             }
         });
-        let group_delivery_task = host.spawn_group_deliveries(deliveries);
-        host.state.lock().await.group_delivery_task = Some(group_delivery_task);
+        let chat_delivery_task = host.spawn_chat_deliveries(deliveries);
+        host.state.lock().await.chat_delivery_task = Some(chat_delivery_task);
         Ok(host)
     }
 
     pub(crate) async fn shutdown(&self) {
-        let (group_delivery_task, cleanup_tasks) = {
+        let (chat_delivery_task, cleanup_tasks) = {
             let mut state = self.state.lock().await;
             (
-                state.group_delivery_task.take(),
+                state.chat_delivery_task.take(),
                 std::mem::take(&mut state.idle_cleanup_tasks),
             )
         };
-        if let Some(task) = group_delivery_task {
+        if let Some(task) = chat_delivery_task {
             task.abort();
             let _ = task.await;
         }
@@ -487,7 +478,7 @@ impl GatewayHost {
             }
         }
         let bots = state.bots.bots().map_err(internal)?;
-        state.group.retry_pending();
+        state.chat_store.retry_pending();
         drop(state);
         self.broadcast_bots(&bots);
         Ok(bot)
@@ -507,31 +498,14 @@ impl GatewayHost {
         generate_ssh_identity_on_host().await
     }
 
+    #[cfg(test)]
     pub(crate) async fn create_session(
         &self,
         workspace: &Path,
         bot_id: &str,
     ) -> std::result::Result<HostHandle, Rejection> {
-        self.create_session_with_id(
-            workspace,
-            bot_id,
-            Uuid::new_v4().to_string(),
-            true,
-            "mobius-gateway",
-        )
-        .await
-    }
-
-    pub(crate) async fn hidden_bot_sessions(
-        &self,
-        bot_id: &str,
-    ) -> std::result::Result<Vec<SessionRecord>, Rejection> {
-        let _access = self.begin_mutation().await?;
-        let state = self.state.lock().await;
-        state.bots.bot(bot_id).map_err(invalid_bot)?;
-        hidden_bot_session_catalog(&state.checkpoints, &state.activities, bot_id)
+        self.create_chat(workspace, &[bot_id.to_owned()], Some(bot_id))
             .await
-            .map_err(internal)
     }
 
     async fn create_session_with_id(
@@ -544,8 +518,7 @@ impl GatewayHost {
     ) -> std::result::Result<HostHandle, Rejection> {
         validate_session_id(&session_id).map_err(|_| invalid_session_id())?;
         let mutation = self.begin_mutation().await?;
-        let mut state = self.state.lock().await;
-        state.ensure_capacity().await?;
+        let state = self.ensure_capacity(self.state.lock().await).await?;
         let tls = state
             .config
             .lock()
@@ -553,16 +526,15 @@ impl GatewayHost {
             .tls
             .clone();
         let bot = state.bots.bot(bot_id).map_err(invalid_bot)?;
-        if let Some(chat_id) = crate::groups::participant_chat_id(&session_id) {
-            let chat = state
-                .group
-                .load(chat_id)
-                .await
-                .map_err(internal)?
-                .ok_or_else(unknown_session)?;
-            if !chat.member_bot_ids.contains(&bot.id) {
-                return Err(invalid_session_bot());
-            }
+        if let Some(chat) = state
+            .chat_store
+            .chat_for_session(&session_id)
+            .await
+            .map_err(internal)?
+            && (chat.session_id(&bot.id) != Some(session_id.as_str())
+                || chat.workspace != workspace)
+        {
+            return Err(invalid_session_bot());
         }
         let starting = state.reserve_start(&session_id, &bot.id)?;
         let state_dir = state.store.state_dir().to_path_buf();
@@ -602,7 +574,7 @@ impl GatewayHost {
             Arc::clone(&state.checkpoints),
             state.scratchpad.clone(),
             state.session_files.clone(),
-            Arc::clone(&state.group),
+            Arc::clone(&state.chat_store),
             Arc::clone(&state.session_mutations),
             Arc::clone(&state.discovery_gate),
             Arc::clone(&self.desktop),
@@ -620,6 +592,93 @@ impl GatewayHost {
         }
         drop(starting);
         Ok(host)
+    }
+
+    async fn cancel_execution(&self, session_id: &str) -> std::result::Result<(), Rejection> {
+        let mutation = self.begin_mutation().await?;
+        let state = self.state.lock().await;
+        let checkpoint = state
+            .checkpoints
+            .load(session_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(unknown_session)?;
+        let tls = state
+            .config
+            .lock()
+            .map_err(|_| internal("gateway configuration lock is poisoned"))?
+            .tls
+            .clone();
+        let mut spec = ChatSpec::from_metadata(
+            &checkpoint.metadata,
+            &state.bots,
+            state.store.state_dir(),
+            tls.as_ref(),
+        )
+        .map_err(invalid_config)?;
+        spec.catalog_visible = false;
+        let starting = state.reserve_start(session_id, &spec.bot_id)?;
+        let cancel = session::cancel_execution(
+            state.store.clone(),
+            Arc::clone(&state.config),
+            spec,
+            Arc::clone(&state.credentials),
+            Arc::clone(&state.bots),
+            Arc::clone(&state.checkpoints),
+            state.scratchpad.clone(),
+            state.session_files.clone(),
+            Arc::clone(&state.chat_store),
+            Arc::clone(&state.discovery_gate),
+            Arc::clone(&self.desktop),
+            Arc::clone(&state.provider_epoch),
+            Arc::clone(&state.activities),
+            session_id.into(),
+        );
+        drop(state);
+        drop(mutation);
+        let result = cancel.await.map_err(internal);
+        drop(starting);
+        result
+    }
+
+    async fn validate_chat_bot(
+        &self,
+        workspace: &Path,
+        bot_id: &str,
+    ) -> std::result::Result<(), Rejection> {
+        let mutation = self.begin_mutation().await?;
+        let state = self.state.lock().await;
+        let store = state.store.clone();
+        let tls = state
+            .config
+            .lock()
+            .map_err(|_| internal("gateway configuration lock is poisoned"))?
+            .tls
+            .clone();
+        let bot = state.bots.bot(bot_id).map_err(invalid_bot)?;
+        let spec = ChatSpec::for_bot(workspace, &bot, store.state_dir(), tls.as_ref())
+            .map_err(invalid_config)?;
+        let prepare = session::prepare_agent(
+            Arc::clone(&state.config),
+            &spec,
+            &store,
+            Arc::clone(&state.credentials),
+            Arc::clone(&state.bots),
+            Arc::clone(&state.checkpoints),
+            state.scratchpad.clone(),
+            state.session_files.clone(),
+            Arc::clone(&state.chat_store),
+            Arc::clone(&state.discovery_gate),
+            Arc::clone(&self.desktop),
+            Uuid::new_v4().to_string(),
+            "Chat",
+            None,
+            Arc::clone(&state.provider_epoch),
+        );
+        drop(state);
+        drop(mutation);
+        drop(prepare.await.map_err(internal)?);
+        Ok(())
     }
 
     pub(crate) async fn create_workspace_directory(
@@ -653,8 +712,11 @@ impl GatewayHost {
             .open_session_with_cache(session_id, true)
             .await
             .map(|(host, _)| host)?;
-        let bot_id = host.bot_id().await?;
-        self.state.lock().await.group.notify_pending(&bot_id);
+        self.state
+            .lock()
+            .await
+            .chat_store
+            .notify_pending(host.session_id());
         Ok(host)
     }
 
@@ -666,19 +728,59 @@ impl GatewayHost {
         validate_session_id(session_id).map_err(|_| invalid_session_id())?;
         let mutation = self.begin_mutation().await?;
         let mut state = self.state.lock().await;
-        if let Some(host) = state.sessions.get(session_id)
-            && host.is_alive()
-        {
-            return Ok((host.clone(), false));
-        }
-        state.sessions.remove(session_id);
-        state.ensure_capacity().await?;
-        if let Some(chat) = state.group.load(session_id).await.map_err(internal)? {
-            let host = self.group_handle(&state, chat);
+        if let Some(chat) = state.chat_store.load(session_id).await.map_err(internal)? {
+            if let Some(host) = state.cached_session(session_id)? {
+                return Ok((host, false));
+            }
+            state = self.ensure_capacity(state).await?;
+            if let Some(host) = state.cached_session(session_id)? {
+                return Ok((host, false));
+            }
+            let host = self.chat_handle(&state, chat);
             if cache {
                 state.sessions.insert(session_id.into(), host.clone());
             }
             return Ok((host, !cache));
+        }
+        if let Some(chat) = state
+            .chat_store
+            .chat_for_session(session_id)
+            .await
+            .map_err(internal)?
+        {
+            let bot_id = chat
+                .participants
+                .iter()
+                .find(|participant| participant.session_id == session_id)
+                .ok_or_else(invalid_session_bot)?
+                .bot_id
+                .clone();
+            drop(state);
+            drop(mutation);
+            let host = Box::pin(self.open_session_with_cache(&chat.id, true))
+                .await?
+                .0;
+            return Ok((host.participant(bot_id).await?, false));
+        }
+        drop(state);
+        drop(mutation);
+        self.open_execution_with_cache(session_id, cache).await
+    }
+
+    async fn open_execution_with_cache(
+        &self,
+        session_id: &str,
+        cache: bool,
+    ) -> std::result::Result<(HostHandle, bool), Rejection> {
+        let mutation = self.begin_mutation().await?;
+        let mut state = self.state.lock().await;
+        if let Some(host) = state.cached_session(session_id)? {
+            return Ok((host, false));
+        }
+        state.sessions.remove(session_id);
+        state = self.ensure_capacity(state).await?;
+        if let Some(host) = state.cached_session(session_id)? {
+            return Ok((host, false));
         }
         let checkpoint = state
             .checkpoints
@@ -692,22 +794,14 @@ impl GatewayHost {
             .map_err(|_| internal("gateway configuration lock is poisoned"))?
             .tls
             .clone();
-        let starting = state.reserve_start(session_id, &checkpoint.session_context.bot_id)?;
-        let bots = Arc::clone(&state.bots);
-        let state_dir = state.store.state_dir().to_path_buf();
-        drop(state);
-        drop(mutation);
-        let metadata = checkpoint.metadata;
-        let mut spec = tokio::task::spawn_blocking(move || {
-            ChatSpec::from_metadata(&metadata, &bots, &state_dir, tls.as_ref())
-        })
-        .await
-        .map_err(internal)?
+        let mut spec = ChatSpec::from_metadata(
+            &checkpoint.metadata,
+            &state.bots,
+            state.store.state_dir(),
+            tls.as_ref(),
+        )
         .map_err(invalid_config)?;
         spec.catalog_visible = checkpoint.catalog_visible;
-        if checkpoint.session_context.bot_id != spec.bot_id {
-            return Err(invalid_session_bot());
-        }
         let workspace = spec.workspace_info();
         let workspace_label = workspace.path.display().to_string();
         if checkpoint.session_context.workspace_id.as_deref() != Some(workspace.id.as_str())
@@ -716,15 +810,18 @@ impl GatewayHost {
         {
             return Err(invalid_session_workspace());
         }
+        let starting = state.reserve_start(session_id, &spec.bot_id)?;
+        drop(state);
+        drop(mutation);
         let host = self
             .start_reserved_session(spec, starting, "mobius-gateway", cache)
             .await?;
         Ok((host, !cache))
     }
 
-    fn spawn_group_deliveries(
+    fn spawn_chat_deliveries(
         &self,
-        mut deliveries: mpsc::UnboundedReceiver<GroupDelivery>,
+        mut deliveries: mpsc::UnboundedReceiver<ChatDelivery>,
     ) -> JoinHandle<()> {
         let state = Arc::downgrade(&self.state);
         let events = self.events.clone();
@@ -733,286 +830,72 @@ impl GatewayHost {
             let Some(gateway_state) = state.upgrade() else {
                 return;
             };
-            let group = Arc::clone(&gateway_state.lock().await.group);
-            let startup = match group.pending_recipient_bot_ids().await {
-                Ok(startup) => startup,
-                Err(error) => {
-                    let _ = events.send(ServerFrame::new(ServerMessage::Error {
-                        code: "group_delivery".into(),
-                        message: error.to_string(),
-                        fatal: false,
-                    }));
-                    Vec::new()
-                }
+            let gateway = Self {
+                state: gateway_state,
+                events: events.clone(),
+                desktop: Arc::clone(&desktop),
             };
-            drop(gateway_state);
-
-            let mut attempts = HashMap::new();
-            for target_bot_id in startup {
-                let Some(gateway_state) = state.upgrade() else {
-                    return;
-                };
-                let gateway = Self {
-                    state: gateway_state,
-                    events: events.clone(),
-                    desktop: Arc::clone(&desktop),
-                };
-                gateway
-                    .handle_group_delivery(GroupDelivery::Pending { target_bot_id }, &mut attempts)
-                    .await;
-            }
-
+            gateway
+                .handle_chat_delivery(ChatDelivery::RetryPending)
+                .await;
+            drop(gateway);
             while let Some(delivery) = deliveries.recv().await {
                 let Some(gateway_state) = state.upgrade() else {
                     return;
                 };
-                let gateway = Self {
+                Self {
                     state: gateway_state,
                     events: events.clone(),
                     desktop: Arc::clone(&desktop),
-                };
-                gateway.handle_group_delivery(delivery, &mut attempts).await;
+                }
+                .handle_chat_delivery(delivery)
+                .await;
             }
         })
     }
 
-    async fn handle_group_delivery(
-        &self,
-        delivery: GroupDelivery,
-        attempts: &mut HashMap<String, GroupDeliveryAttempt>,
-    ) {
-        if let GroupDelivery::Changed { chat_id, records } = delivery {
-            let host = self.state.lock().await.sessions.get(&chat_id).cloned();
-            if let Some(host) = host {
-                for record in records {
-                    let _ = host
-                        .inner
-                        .events
-                        .send(ServerFrame::new(ServerMessage::AgentEvent {
-                            session_id: chat_id.clone(),
-                            record: group::record(record),
-                        }));
+    async fn handle_chat_delivery(&self, delivery: ChatDelivery) {
+        let result = async {
+            match delivery {
+                ChatDelivery::Changed { chat_id, records } => {
+                    let host = self
+                        .state
+                        .lock()
+                        .await
+                        .sessions
+                        .get(&chat_id)
+                        .filter(|host| host.is_alive())
+                        .cloned();
+                    if let Some(host) = host {
+                        host.send(HostCommand::Publish { records }).await?;
+                    }
+                    self.broadcast_sessions().await?;
                 }
-            }
-            if let Err(rejection) = self.broadcast_sessions().await {
-                let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
-                    code: "session_catalog".into(),
-                    message: rejection.message,
-                    fatal: false,
-                }));
-            }
-            return;
-        }
-        if matches!(&delivery, GroupDelivery::RetryPending) {
-            attempts.retain(|_, attempt| !matches!(attempt, GroupDeliveryAttempt::Rejected(_)));
-            let group = Arc::clone(&self.state.lock().await.group);
-            match group.pending_recipient_bot_ids().await {
-                Ok(targets) => {
-                    for target_bot_id in targets {
-                        group.notify_pending(&target_bot_id);
+                ChatDelivery::Pending { chat_id } => {
+                    let host = match self.open_session_with_cache(&chat_id, true).await {
+                        Ok((host, _)) => host,
+                        // Capacity removal retries durable deliveries after termination.
+                        Err(rejection) if rejection.code == "session_stopping" => return Ok(()),
+                        Err(rejection) => return Err(rejection),
+                    };
+                    host.send(HostCommand::Dispatch).await?;
+                }
+                ChatDelivery::RetryPending => {
+                    let chats = Arc::clone(&self.state.lock().await.chat_store);
+                    for chat_id in chats.pending_chat_ids().await.map_err(internal)? {
+                        chats.notify_pending(&chat_id);
                     }
                 }
-                Err(error) => {
-                    let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
-                        code: "group_delivery".into(),
-                        message: error.to_string(),
-                        fatal: false,
-                    }));
-                }
             }
-            return;
+            Ok::<_, Rejection>(())
         }
-        let target_bot_id = match delivery {
-            GroupDelivery::Changed { .. } | GroupDelivery::RetryPending => {
-                unreachable!("handled above")
-            }
-            GroupDelivery::Acknowledged {
-                target_bot_id,
-                message_id,
-            } => {
-                if attempts
-                    .get(&target_bot_id)
-                    .is_some_and(|current| current.message_id() != message_id)
-                {
-                    return;
-                }
-                attempts.remove(&target_bot_id);
-                target_bot_id
-            }
-            GroupDelivery::Rejected {
-                target_bot_id,
-                message_id,
-            } => {
-                let Some(GroupDeliveryAttempt::Submitted(current)) = attempts.get(&target_bot_id)
-                else {
-                    return;
-                };
-                if current != &message_id {
-                    return;
-                }
-                attempts.insert(target_bot_id, GroupDeliveryAttempt::Rejected(message_id));
-                return;
-            }
-            GroupDelivery::CapacityAvailable { target_bot_id } => {
-                if !matches!(
-                    attempts.get(&target_bot_id),
-                    Some(GroupDeliveryAttempt::Rejected(_))
-                ) {
-                    return;
-                }
-                attempts.remove(&target_bot_id);
-                target_bot_id
-            }
-            GroupDelivery::Pending { target_bot_id } => {
-                if attempts.contains_key(&target_bot_id) {
-                    return;
-                }
-                target_bot_id
-            }
-        };
-        if let Err(rejection) = self
-            .deliver_next_group_message(&target_bot_id, attempts)
-            .await
-        {
+        .await;
+        if let Err(rejection) = result {
             let _ = self.events.send(ServerFrame::new(ServerMessage::Error {
-                code: "group_delivery".into(),
+                code: "chat_delivery".into(),
                 message: rejection.message,
                 fatal: false,
             }));
-        }
-    }
-
-    async fn deliver_next_group_message(
-        &self,
-        target_bot_id: &str,
-        attempts: &mut HashMap<String, GroupDeliveryAttempt>,
-    ) -> std::result::Result<(), Rejection> {
-        let (group, bots, session_mutations) = {
-            let state = self.state.lock().await;
-            (
-                Arc::clone(&state.group),
-                Arc::clone(&state.bots),
-                Arc::clone(&state.session_mutations),
-            )
-        };
-        let _mutation = Arc::clone(&session_mutations).read_owned().await;
-        if bots.pending_bot_deletion().map_err(internal)?.is_some() {
-            return Ok(());
-        }
-        let Some(claim) = group
-            .claim_next_delivery(target_bot_id)
-            .await
-            .map_err(internal)?
-        else {
-            return Ok(());
-        };
-        let target_bot_id = target_bot_id.to_owned();
-        let message_id = claim.delivery().entry.id.clone();
-        attempts.insert(
-            target_bot_id.clone(),
-            GroupDeliveryAttempt::Submitted(message_id.clone()),
-        );
-        let gateway = self.clone();
-        drop(_mutation);
-        let task = tokio::spawn(async move {
-            if let Err(rejection) = gateway
-                .deliver_group_claim(claim, &target_bot_id, Arc::clone(&group), session_mutations)
-                .await
-            {
-                group.notify_rejected(&message_id, &target_bot_id);
-                let _ = gateway.events.send(ServerFrame::new(ServerMessage::Error {
-                    code: "group_delivery".into(),
-                    message: rejection.message,
-                    fatal: false,
-                }));
-            }
-        });
-        let mut state = self.state.lock().await;
-        state.idle_cleanup_tasks.retain(|task| !task.is_finished());
-        state.idle_cleanup_tasks.push(task);
-        Ok(())
-    }
-
-    async fn deliver_group_claim(
-        &self,
-        claim: crate::groups::GroupDeliveryClaim,
-        target_bot_id: &str,
-        group: Arc<GroupStore>,
-        session_mutations: Arc<RwLock<()>>,
-    ) -> std::result::Result<(), Rejection> {
-        let message_id = claim.delivery().entry.id.clone();
-        let session_id = claim.session_id().to_owned();
-        let (checkpoint_exists, message_recorded) = {
-            let state = self.state.lock().await;
-            let checkpoint_exists = state
-                .checkpoints
-                .load(&session_id)
-                .await
-                .map_err(internal)?
-                .is_some();
-            let message_recorded = if checkpoint_exists {
-                journal_contains_submission(state.checkpoints.as_ref(), &session_id, &message_id)
-                    .await
-                    .map_err(internal)?
-            } else {
-                false
-            };
-            (checkpoint_exists, message_recorded)
-        };
-        let host = if checkpoint_exists {
-            self.open_session_with_cache(&session_id, true).await?.0
-        } else {
-            let origin_label = "Group chat";
-            self.create_session_with_id(
-                &claim.delivery().workspace,
-                target_bot_id,
-                session_id,
-                false,
-                origin_label,
-            )
-            .await?
-        };
-        if message_recorded {
-            return Ok(());
-        }
-        let files = self.state.lock().await.session_files.clone();
-        for attachment in &claim.delivery().entry.message.attachments {
-            files
-                .grant_upload(&claim.delivery().chat_id, host.session_id(), attachment)
-                .await
-                .map_err(internal)?;
-        }
-        let submission = group_message_submission(claim.delivery().entry.clone());
-        let mutation = Arc::clone(&session_mutations).read_owned().await;
-        let Some(submission) = claim
-            .accept(host.submit(submission))
-            .await
-            .map_err(internal)?
-        else {
-            return Ok(());
-        };
-        drop(mutation);
-        match submission {
-            Ok(()) => Ok(()),
-            Err(rejection) if matches!(rejection.code, "agent_busy" | "agent_stopped") => {
-                let target_bot_id = target_bot_id.to_owned();
-                group.notify_rejected(&message_id, &target_bot_id);
-                tokio::spawn(async move {
-                    host.wait_idle().await;
-                    group.notify_capacity_available(&target_bot_id);
-                });
-                Ok(())
-            }
-            Err(rejection) if rejection.code == "gateway_busy" => {
-                group.notify_rejected(&message_id, target_bot_id);
-                tokio::spawn(notify_group_delivery_after_mutation(
-                    session_mutations,
-                    group,
-                    target_bot_id.to_owned(),
-                ));
-                Ok(())
-            }
-            Err(rejection) => Err(rejection),
         }
     }
 
@@ -1065,7 +948,7 @@ impl GatewayHost {
             (
                 Arc::clone(&state.checkpoints),
                 Arc::clone(&state.catalog_lock),
-                Arc::clone(&state.group),
+                Arc::clone(&state.chat_store),
             )
         };
         let _catalog = catalog_lock.lock().await;
@@ -1094,7 +977,7 @@ impl GatewayHost {
         include_provider_usage: bool,
     ) -> std::result::Result<ProfileSnapshot, Rejection> {
         let _access = self.begin_mutation().await?;
-        let (mut profile, checkpoints, config, store) = {
+        let (mut profile, checkpoints, config, store, chats) = {
             let state = self.state.lock().await;
             let config = state
                 .config
@@ -1107,6 +990,7 @@ impl GatewayHost {
                 Arc::clone(&state.checkpoints),
                 config,
                 state.store.clone(),
+                state.chat_store.chats(false).await.map_err(internal)?,
             )
         };
         drop(_access);
@@ -1122,7 +1006,8 @@ impl GatewayHost {
             let metadata = load_session_metadata(&checkpoints)
                 .await
                 .map_err(internal)?;
-            profile.recent_run_groups = recent_run_groups(recent_runs, &sessions, &metadata);
+            profile.recent_run_groups =
+                recent_run_groups(recent_runs, &sessions, &chats, &metadata);
         }
         if include_provider_usage {
             profile.provider_usage = provider_usage(&config, &store).await.map_err(internal)?;
@@ -1134,7 +1019,7 @@ impl GatewayHost {
         let state = self.state.lock().await;
         let sessions = state.visible_sessions().await?;
         let approvals = background_approvals(&state.activities).await;
-        state.group.retry_pending();
+        state.chat_store.retry_pending();
         drop(state);
         let _ = self.events.send(ServerFrame::new(ServerMessage::Sessions {
             request_id: None,
@@ -1154,23 +1039,77 @@ impl GatewayHost {
             bots: bots.to_vec(),
         }));
     }
+
+    async fn ensure_capacity<'a>(
+        &'a self,
+        mut state: tokio::sync::MutexGuard<'a, GatewayState>,
+    ) -> std::result::Result<tokio::sync::MutexGuard<'a, GatewayState>, Rejection> {
+        if state.resident_sessions() < MAX_ACTIVE_SESSIONS {
+            return Ok(state);
+        }
+        let candidates = state
+            .sessions
+            .iter()
+            .filter(|(_, host)| host.is_unreferenced())
+            .map(|(id, host)| (id.clone(), host.clone()))
+            .collect::<Vec<_>>();
+        for (id, host) in candidates {
+            // The cache and this candidate must still be the only owners.
+            if Arc::strong_count(&host.inner) != 2
+                || !state
+                    .sessions
+                    .get(&id)
+                    .is_some_and(|cached| Arc::ptr_eq(&cached.inner, &host.inner))
+            {
+                continue;
+            }
+            // Unreferenced actors have no queued or running admission commands.
+            // Keep selection atomic, but let lifecycle shutdown re-enter the gateway.
+            if host.request_stop_if_idle().await {
+                drop(state);
+                host.wait_terminated().await;
+                state = self.state.lock().await;
+                if state
+                    .sessions
+                    .get(&id)
+                    .is_some_and(|cached| Arc::ptr_eq(&cached.inner, &host.inner))
+                {
+                    state.sessions.remove(&id);
+                }
+                state.chat_store.retry_pending();
+                if state.resident_sessions() < MAX_ACTIVE_SESSIONS {
+                    return Ok(state);
+                }
+            }
+        }
+        Err(Rejection {
+            code: "session_limit",
+            message: format!(
+                "this gateway already has {MAX_ACTIVE_SESSIONS} connected or running chats"
+            ),
+            fatal: false,
+        })
+    }
 }
 
-async fn notify_group_delivery_after_mutation(
-    session_mutations: Arc<RwLock<()>>,
-    group: Arc<GroupStore>,
-    target_bot_id: String,
-) {
-    let completed = session_mutations.read_owned().await;
-    drop(completed);
-    group.notify_capacity_available(&target_bot_id);
-}
-
-async fn journal_contains_submission(
+async fn accepted_submission(
     checkpoints: &dyn CheckpointStore,
     session_id: &str,
     submission_id: &str,
 ) -> Result<bool> {
+    // ponytail: restart dedup scans one private journal; add a submission index if long chats make recovery slow.
+    if checkpoints
+        .load(session_id)
+        .await?
+        .is_some_and(|checkpoint| {
+            checkpoint
+                .pending_messages
+                .iter()
+                .any(|message| message.id() == submission_id)
+        })
+    {
+        return Ok(true);
+    }
     let mut before_sequence = None;
     loop {
         let page = checkpoints
@@ -1248,11 +1187,20 @@ impl Drop for SessionStartGuard {
 }
 
 impl GatewayState {
+    fn cached_session(&self, id: &str) -> std::result::Result<Option<HostHandle>, Rejection> {
+        match self.sessions.get(id) {
+            Some(host) if host.is_alive() => Ok(Some(host.clone())),
+            Some(host) if !host.inner.terminated.load(Ordering::Acquire) => Err(Rejection {
+                code: "session_stopping",
+                message: "this chat is stopping; retry shortly".into(),
+                fatal: false,
+            }),
+            _ => Ok(None),
+        }
+    }
+
     async fn visible_sessions(&self) -> std::result::Result<Vec<SessionRecord>, Rejection> {
-        let mut sessions = session_catalog(&self.checkpoints, &self.activities)
-            .await
-            .map_err(internal)?;
-        catalog::include_group_chats(&mut sessions, &self.group, &self.activities)
+        let sessions = session_catalog(&self.checkpoints, &self.chat_store, &self.activities)
             .await
             .map_err(internal)?;
         Ok(sessions)
@@ -1289,34 +1237,6 @@ impl GatewayState {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .len()
     }
-
-    async fn ensure_capacity(&mut self) -> std::result::Result<(), Rejection> {
-        if self.resident_sessions() < MAX_ACTIVE_SESSIONS {
-            return Ok(());
-        }
-        let candidates = self
-            .sessions
-            .iter()
-            .filter(|(_, host)| host.is_unreferenced())
-            .map(|(id, host)| (id.clone(), host.clone()))
-            .collect::<Vec<_>>();
-        for (id, host) in candidates {
-            if host.stop_if_idle().await {
-                self.sessions.remove(&id);
-                self.group.retry_pending();
-                if self.resident_sessions() < MAX_ACTIVE_SESSIONS {
-                    return Ok(());
-                }
-            }
-        }
-        Err(Rejection {
-            code: "session_limit",
-            message: format!(
-                "this gateway already has {MAX_ACTIVE_SESSIONS} connected or running chats"
-            ),
-            fatal: false,
-        })
-    }
 }
 
 async fn receive<T>(
@@ -1325,7 +1245,17 @@ async fn receive<T>(
     receiver.await.map_err(|_| stopped())?
 }
 
-fn group_message_submission(entry: GroupMessage) -> Submission {
+fn chat_message_submission(mut entry: ChatMessage) -> Submission {
+    if let Some(reply) = entry.message.reply.take() {
+        let text = format!(
+            "Replying to this earlier message:\n\n> {}\n\n{}",
+            reply.text.replace('\n', "\n> "),
+            entry.message.text,
+        );
+        if text.len() <= mobius::protocol::MAX_MESSAGE_BYTES {
+            entry.message.text = text;
+        }
+    }
     Submission {
         id: entry.id,
         op: Op::Message {
@@ -1415,7 +1345,7 @@ async fn require_catalog_session(
 ) -> std::result::Result<(), Rejection> {
     validate_session_id(session_id).map_err(|_| invalid_session_id())?;
     if state
-        .group
+        .chat_store
         .load(session_id)
         .await
         .map_err(internal)?
@@ -1435,9 +1365,9 @@ async fn require_catalog_session(
     Ok(())
 }
 
-fn invalid_group(error: impl std::fmt::Display) -> Rejection {
+fn invalid_chat(error: impl std::fmt::Display) -> Rejection {
     Rejection {
-        code: "invalid_group",
+        code: "invalid_chat",
         message: error.to_string(),
         fatal: false,
     }

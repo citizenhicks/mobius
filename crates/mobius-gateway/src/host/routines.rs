@@ -189,12 +189,9 @@ impl GatewayHost {
             fatal: false,
         })?;
         drop(_mutation);
-        let (host, temporary) = self.open_session_with_cache(&session_id, false).await?;
-        let page = host.history_page(before_sequence).await;
-        if temporary {
-            let _ = host.stop_if_idle().await;
-        }
-        let page = page?;
+        let page = self
+            .bot_conversation_history(&run.bot_id, &session_id, before_sequence)
+            .await?;
         let routine = bots
             .routine_record(&run.routine_id, Utc::now().timestamp())
             .map_err(invalid_routine)?;

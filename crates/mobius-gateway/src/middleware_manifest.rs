@@ -1,4 +1,4 @@
-//! Gateway composition registry for core-owned middleware manifests.
+//! Gateway composition registry for middleware manifests.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -23,8 +23,7 @@ pub(crate) enum BuiltinMiddleware {
     Compaction,
     ComputerControl,
     Scratchpad,
-    Sessions,
-    Bots,
+    Chats,
 }
 
 pub(crate) struct MiddlewareRegistration {
@@ -32,7 +31,7 @@ pub(crate) struct MiddlewareRegistration {
     pub(crate) manifest: &'static MiddlewareManifest,
 }
 
-pub(crate) const MIDDLEWARE: [MiddlewareRegistration; 15] = [
+pub(crate) const MIDDLEWARE: [MiddlewareRegistration; 14] = [
     MiddlewareRegistration {
         kind: BuiltinMiddleware::Sandbox,
         manifest: &mobius::backend::sandbox::MANIFEST,
@@ -86,12 +85,8 @@ pub(crate) const MIDDLEWARE: [MiddlewareRegistration; 15] = [
         manifest: &mobius::middleware::scratchpad::MANIFEST,
     },
     MiddlewareRegistration {
-        kind: BuiltinMiddleware::Sessions,
-        manifest: &mobius::middleware::sessions::MANIFEST,
-    },
-    MiddlewareRegistration {
-        kind: BuiltinMiddleware::Bots,
-        manifest: &mobius::middleware::bots::MANIFEST,
+        kind: BuiltinMiddleware::Chats,
+        manifest: &crate::chats::history::MANIFEST,
     },
 ];
 
@@ -267,12 +262,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_and_required_features_come_from_core_manifests() {
+    fn defaults_and_required_features_come_from_registered_manifests() {
         let config = default_config();
         let features = features(&[]);
 
         assert!(validate(&config).is_ok());
-        assert_eq!(config.setting("bots", "collaboration"), None);
+        assert!(definition("bots").is_err());
         assert_eq!(
             config.entries().collect::<BTreeSet<_>>(),
             BTreeSet::from([
@@ -299,7 +294,7 @@ mod tests {
                 .filter(|feature| feature.required)
                 .map(|feature| feature.id.as_str())
                 .collect::<BTreeSet<_>>(),
-            BTreeSet::from(["bots", "messages", "sandbox", "sessions", "tools"])
+            BTreeSet::from(["chats", "messages", "sandbox", "tools"])
         );
 
         let mut invalid = config;

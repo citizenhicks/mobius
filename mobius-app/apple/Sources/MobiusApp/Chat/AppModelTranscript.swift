@@ -26,7 +26,7 @@ extension ChatSessionModel {
         let message = type == "message" ? try? MessageEventPayload(json: event.msg) : nil
         let turnID =
             event.msg["turnId"]?.stringValue
-            ?? (selectedMemberBotIDs == nil ? activeTurnID : nil)
+            ?? ((selectedMemberBotIDs?.count ?? 0) <= 1 ? activeTurnID : nil)
         prepareTranscriptEvent(event, type: type, message: message)
         applyPresentation(from: record, turnID: turnID)
 
@@ -192,7 +192,7 @@ extension ChatSessionModel {
         case "model_step_started":
             if replayRequestID == nil { runStats.active?.modelCalls += 1 }
         case "turn_started":
-            if selectedMemberBotIDs != nil {
+            if (selectedMemberBotIDs?.count ?? 0) > 1 {
                 if record.sequence > (replaySnapshotSequence ?? 0),
                     let turnID = event.msg["turnId"]?.stringValue
                 {
@@ -246,10 +246,9 @@ extension ChatSessionModel {
         turnID: String?,
         aborted: Bool
     ) {
-        if selectedMemberBotIDs != nil {
+        if (selectedMemberBotIDs?.count ?? 0) > 1 {
             guard record.sequence > (replaySnapshotSequence ?? 0) else { return }
             if let turnID {
-                if pendingApproval?.turnID == turnID { approvalRequestID = nil }
                 activeTurnIDs.remove(turnID)
                 pendingApprovals.removeAll { $0.turnID == turnID }
             }
@@ -273,7 +272,6 @@ extension ChatSessionModel {
         onWorkspaceRefresh?()
         onSessionFilesRefresh?()
         pendingApproval = nil
-        approvalRequestID = nil
     }
 
     private func handleTranscriptStateEvent(
@@ -369,7 +367,7 @@ extension ChatSessionModel {
         pending.recovery.phase = .editing
         pendingWidgetEdit = pending
         flushComposerDraft()
-        stashedComposerDraft = pending.recovery.displacedDraft
+        stashedComposerDraft = ComposerDraft(text: pending.recovery.displacedDraft)
         suppressesComposerDraftSave = true
         composer = pending.recovery.editedInput
         suppressesComposerDraftSave = false
@@ -522,7 +520,8 @@ extension ChatSessionModel {
                         submissionId: rendered.submissionId, msg: rendered.event),
                     streamMetrics: [],
                     blocks: rendered.blocks,
-                    preview: nil
+                    preview: nil,
+                    recipientBotIds: []
                 ),
                 into: &pageEntries,
                 turnState: &turnState,
@@ -622,7 +621,9 @@ extension ChatSessionModel {
         to entries: inout [TranscriptEntry]
     ) {
         guard !message.text.isEmpty || !message.attachments.isEmpty else { return }
-        let metadata = TranscriptMessageMetadata(author: message.author, delivery: message.delivery)
+        let metadata = TranscriptMessageMetadata(
+            author: message.author, delivery: message.delivery,
+            recipientBotIDs: record.recipientBotIds)
         if message.author != .user,
             let entry = entries.first(where: { $0.sourceSequence == record.sequence })
         {
@@ -633,7 +634,7 @@ extension ChatSessionModel {
             return
         }
         let id: String
-        if let submissionID = record.event.submissionId {
+        if let submissionID = record.event.submissionId, message.delivery.startsTurn {
             id = submittedMessageID(submissionID)
         } else if let recordID {
             id = "message:record:\(recordID.utf8.count):\(recordID)"
@@ -999,6 +1000,9 @@ extension AppModel {
             }
         routineRunPreview = preview
         presentedRoutineRun = preview.run
+        chat.previewFileSource = preview.run.sessionId.map {
+            .botConversation(botID: preview.run.botId, conversationID: $0)
+        }
         routineRunPreviewNextBeforeSequence = preview.nextBeforeSequence
         routineRunPreviewRequestID = nil
         routineRunPreviewRequestBeforeSequence = nil

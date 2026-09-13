@@ -121,23 +121,34 @@ async fn voice_delegation_runs_one_bot_model_call_and_keeps_its_transcript() {
             config.bot_defaults.as_ref().unwrap().config.clone(),
         )
         .unwrap();
+    let (chats, _) = crate::chats::ChatStore::new(store.state_dir(), Arc::clone(&bots)).unwrap();
     let gateway = GatewayHost::start(store, config, credentials, bots)
         .await
         .unwrap();
     let host = gateway.create_session(&workspace, &bot.id).await.unwrap();
     let mut events = host.subscribe();
-    let parent = checkpoints.load(host.session_id()).await.unwrap().unwrap();
+    let execution_id = chats
+        .load(host.session_id())
+        .await
+        .unwrap()
+        .unwrap()
+        .participants[0]
+        .session_id
+        .clone();
+    gateway.open_session(&execution_id).await.unwrap();
+    let parent = checkpoints.load(&execution_id).await.unwrap().unwrap();
     let route = parent.model_route.clone().unwrap();
     let frontend: mobius::middleware::FrontendEventSink = Arc::new(|_| Ok(()));
     let mut transcript = VoiceTranscript::open(
         Arc::clone(&checkpoints),
-        host.session_id(),
+        &execution_id,
         Arc::clone(&frontend),
     )
     .await
     .unwrap();
     let voice_id = transcript.session_id().to_owned();
     let model = crate::host::RealtimeModel {
+        execution_session_id: parent.session_id.clone(),
         bot_name: "Builder".into(),
         bot_instructions: "You are Builder.".into(),
         router: Arc::new(ModelRouter::new(

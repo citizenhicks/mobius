@@ -45,7 +45,8 @@ final class MenuBarModel {
 
     var selectedChat: VoiceChat? { chats.first { $0.id == selectedChatID } }
     var selectedBot: VoiceBot? {
-        bots.first { $0.id == (selectedChat?.sessionContext.botId ?? draftBotID) }
+        let botID = selectedChat == nil ? draftBotID : selectedChat?.primaryBotId
+        return bots.first { $0.id == botID }
     }
     var workspacePath: String {
         selectedChat?.sessionContext.workspaceLabel ?? draftWorkspace ?? "."
@@ -60,7 +61,9 @@ final class MenuBarModel {
     }
     var chatGroups: [(workspace: String, chats: [VoiceChat])] {
         Dictionary(
-            grouping: chats.filter { $0.sessionContext.botId == selectedBot?.id }, by: \.workspace
+            grouping: chats.filter { chat in
+                selectedBot.map { chat.memberBotIds.contains($0.id) } ?? false
+            }, by: \.workspace
         )
         .map { (workspace: $0.key, chats: $0.value) }
         .sorted { $0.workspace.localizedStandardCompare($1.workspace) == .orderedAscending }
@@ -171,7 +174,8 @@ final class MenuBarModel {
                 "create_session",
                 [
                     "requestId": .string(opening.requestID), "workspace": .string(workspace),
-                    "botId": .string(botID),
+                    "botIds": .array([.string(botID)]),
+                    "primaryBotId": .string(botID),
                 ]))
     }
 
@@ -240,7 +244,7 @@ final class MenuBarModel {
     }
 
     func resolveApproval(approve: Bool) {
-        guard let approval, let selectedChatID, approvalSubmissionID == nil, chatIsReady else {
+        guard let approval, selectedChatID != nil, approvalSubmissionID == nil, chatIsReady else {
             return
         }
         let id = UUID().uuidString
@@ -253,16 +257,11 @@ final class MenuBarModel {
             ])
         send(
             GatewayRequest(
-                "submit",
+                "review_approval",
                 [
-                    "sessionId": .string(selectedChatID),
-                    "submission": .object([
-                        "id": .string(id),
-                        "op": .object([
-                            "type": .string("exec_approval"), "id": .string(approval.id),
-                            "decision": decision,
-                        ]),
-                    ]),
+                    "requestId": .string(id),
+                    "approvalRequestId": .string(approval.id),
+                    "decision": decision,
                 ]))
     }
 

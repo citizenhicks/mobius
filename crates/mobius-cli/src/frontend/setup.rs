@@ -48,7 +48,7 @@ pub(crate) async fn run(
     gateway: &mut ReadyPayload,
     session: &mut SessionReadyPayload,
 ) -> Result<()> {
-    if session.member_bot_ids.is_some() && mode == SetupMode::Login {
+    if session.member_bot_ids.len() != 1 && mode == SetupMode::Login {
         return run_gateway(terminal, mode, preferred_provider, sender, events, gateway).await;
     }
     run_bot(
@@ -58,7 +58,10 @@ pub(crate) async fn run(
         sender,
         events,
         gateway,
-        &session.session.context.bot_id,
+        session
+            .primary_bot_id
+            .as_deref()
+            .ok_or_else(|| Error::Config("this Chat has no primary Bot".into()))?,
     )
     .await
 }

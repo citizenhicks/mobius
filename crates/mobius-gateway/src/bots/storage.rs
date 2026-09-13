@@ -11,7 +11,7 @@ use crate::{Error, Result};
 
 pub(super) const STATE_FILE: &str = "bots.sqlite3";
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SCHEMA: &str = "
 BEGIN IMMEDIATE;
@@ -40,7 +40,7 @@ CREATE INDEX IF NOT EXISTS routine_runs_bot_recent
     ON routine_runs(bot_id, ordinal DESC);
 CREATE INDEX IF NOT EXISTS routine_runs_active
     ON routine_runs(routine_id) WHERE status = 'running';
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 COMMIT;
 ";
 
@@ -301,6 +301,21 @@ impl BotStorage {
             .collect()
     }
 
+    pub(super) fn routine_session_bot_id(&self, session_id: &str) -> Result<Option<String>> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        connection
+            .query_row(
+                "SELECT bot_id FROM routine_runs WHERE session_id = ?1 LIMIT 1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Error::from)
+    }
+
     pub(super) fn session_ids_for_routine(&self, routine_id: &str) -> Result<Vec<String>> {
         let connection = self
             .connection
@@ -551,22 +566,24 @@ mod tests {
 
     #[test]
     fn unsupported_schema_version_is_rejected() {
-        let directory = tempfile::tempdir().expect("storage directory");
-        let path = directory.path().join(STATE_FILE);
-        let connection = Connection::open(&path).expect("database");
-        connection
-            .pragma_update(None, "user_version", SCHEMA_VERSION + 1)
-            .expect("schema version");
-        drop(connection);
+        for version in [SCHEMA_VERSION - 1, SCHEMA_VERSION + 1] {
+            let directory = tempfile::tempdir().expect("storage directory");
+            let path = directory.path().join(STATE_FILE);
+            let connection = Connection::open(&path).expect("database");
+            connection
+                .pragma_update(None, "user_version", version)
+                .expect("schema version");
+            drop(connection);
 
-        let error = match BotStorage::open(&path) {
-            Ok(_) => panic!("unsupported schema must fail"),
-            Err(error) => error,
-        };
-        assert!(
-            error
-                .to_string()
-                .contains("unsupported Bot storage schema version")
-        );
+            let error = match BotStorage::open(&path) {
+                Ok(_) => panic!("unsupported schema must fail"),
+                Err(error) => error,
+            };
+            assert!(
+                error
+                    .to_string()
+                    .contains("unsupported Bot storage schema version")
+            );
+        }
     }
 }

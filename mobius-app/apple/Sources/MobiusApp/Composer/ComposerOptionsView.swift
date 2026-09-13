@@ -360,7 +360,7 @@ struct ComposerOptionsView: View {
     private var primaryAction: some View {
         if model.composerUsesPrimaryVoice {
             voiceButton
-        } else if model.chat.activeTurnID != nil && !canSend {
+        } else if model.canStopChat && !canSend {
             Button {
                 model.interrupt()
             } label: {

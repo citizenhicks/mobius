@@ -11,7 +11,7 @@ private struct GatewayStoreCleanupError: LocalizedError {
 }
 
 struct CachedTranscript: Codable, Sendable {
-    static let currentSchemaVersion = 5
+    static let currentSchemaVersion = 9
 
     private struct Entry: Codable, Sendable {
         let id: String
@@ -144,6 +144,7 @@ struct CachedTranscript: Codable, Sendable {
                 consume(entry.messageMetadata?.author.peerFields?.messageID),
                 consume(entry.messageMetadata?.author.peerFields?.sessionID),
                 consume(entry.messageMetadata?.author.peerFields?.handle),
+                (entry.messageMetadata?.recipientBotIDs ?? []).allSatisfy(consume),
                 consume(entry.reply?.text),
                 entry.files.allSatisfy({ file in
                     consume(file.id)
@@ -157,7 +158,7 @@ struct CachedTranscript: Codable, Sendable {
 }
 
 struct CachedChatCatalog: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 5
+    static let currentSchemaVersion = 6
 
     let schemaVersion: Int
     let bots: [BotRecord]
@@ -176,6 +177,7 @@ struct CachedChatCatalog: Codable, Equatable, Sendable {
                 sessionId: session.sessionId,
                 sessionContext: session.sessionContext,
                 memberBotIds: session.memberBotIds,
+                primaryBotId: session.primaryBotId,
                 parentSessionId: session.parentSessionId,
                 parentSequence: session.parentSequence,
                 sequence: session.sequence,
@@ -218,8 +220,10 @@ struct CachedChatCatalog: Codable, Equatable, Sendable {
             && sessionIDs.count == sessions.count
             && !sessionIDs.contains("")
             && sessions.allSatisfy { session in
-                Set(session.botIds).count == session.botIds.count
-                    && session.botIds.allSatisfy(botIDs.contains)
+                Set(session.memberBotIds).count == session.memberBotIds.count
+                    && session.memberBotIds.allSatisfy(botIDs.contains)
+                    && (session.primaryBotId.map(session.memberBotIds.contains)
+                        ?? session.memberBotIds.isEmpty)
             }
             && lastSessionID.map(sessionIDs.contains) ?? true
     }
@@ -436,7 +440,11 @@ private actor GatewayDiskStore {
     }
 
     private func isValid(_ draft: ComposerDraft) -> Bool {
-        guard draft.text.utf8.count <= maximumComposerBytes else { return false }
+        guard draft.text.utf8.count <= maximumComposerBytes,
+            draft.recipientBotIDs.count <= 100,
+            Set(draft.recipientBotIDs).count == draft.recipientBotIDs.count,
+            draft.recipientBotIDs.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 256 })
+        else { return false }
         guard let reply = draft.reply else { return true }
         return !reply.text.isEmpty
             && reply.text.utf8.count <= maximumComposerBytes

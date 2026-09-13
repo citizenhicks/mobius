@@ -476,6 +476,9 @@ mod tests {
         let selected = gateway.create_session(&workspace, &bot.id).await.unwrap();
         let sibling = gateway.create_session(&workspace, &bot.id).await.unwrap();
         let unrelated = gateway.create_session(&workspace, &other.id).await.unwrap();
+        selected.snapshot(None).await.unwrap();
+        sibling.snapshot(None).await.unwrap();
+        unrelated.snapshot(None).await.unwrap();
         let before = operations.counts();
         gateway
             .set_extension_hooks_trusted(EXTENSION_ID.into(), digest, true)

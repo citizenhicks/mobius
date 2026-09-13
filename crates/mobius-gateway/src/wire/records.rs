@@ -22,18 +22,18 @@ pub struct ReadyPayload {
 }
 
 /// One hidden Bot conversation currently waiting for a human execution decision.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BackgroundApproval {
-    pub session_id: String,
+    pub chat_id: Option<String>,
     pub bot_id: String,
-    pub turn_id: String,
-    pub request_id: String,
+    pub request: mobius::protocol::ExecApprovalRequestEvent,
 }
 
 /// Frontend-safe state for one opened session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionReadyPayload {
-    pub member_bot_ids: Option<Vec<String>>,
+    pub member_bot_ids: Vec<String>,
+    pub primary_bot_id: Option<String>,
     pub active_turn_ids: Vec<String>,
     pub pending_approvals: Vec<mobius::protocol::ExecApprovalRequestEvent>,
     pub latest_sequence: u64,
@@ -60,7 +60,8 @@ pub struct SessionWidget {
 /// One visible session with gateway-owned catalog presentation metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRecord {
-    pub member_bot_ids: Option<Vec<String>>,
+    pub member_bot_ids: Vec<String>,
+    pub primary_bot_id: Option<String>,
     pub session_id: String,
     pub session_context: mobius::protocol::SessionContext,
     pub parent_session_id: Option<String>,
@@ -73,6 +74,28 @@ pub struct SessionRecord {
     pub activity: SessionActivity,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// One materialized private execution conversation owned by a Bot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BotConversation {
+    pub conversation_id: String,
+    pub bot_id: String,
+    pub chat_id: Option<String>,
+    pub session_context: mobius::protocol::SessionContext,
+    pub sequence: u64,
+    pub first_user_message: Option<String>,
+    pub execution_stats: mobius::backend::checkpoint::ExecutionStats,
+    pub activity: SessionActivity,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// Newest-first private conversations and their durable catalog continuation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BotConversationPage {
+    pub conversations: Vec<BotConversation>,
+    pub next_cursor: Option<mobius::backend::checkpoint::SessionCursor>,
 }
 
 /// Gateway-observed lifecycle state for one session.
@@ -184,6 +207,7 @@ pub struct VersionedAgentConfig {
 #[serde(deny_unknown_fields)]
 pub struct AgentComposition {
     pub provider: ProviderConfig,
+    pub routine_creation: bool,
     pub realtime_voice: Option<String>,
     pub middleware: MiddlewareConfig,
     pub extensions: BTreeSet<String>,
@@ -502,6 +526,8 @@ pub struct RecordedEvent {
     pub sequence: u64,
     pub recorded_at_ms: i64,
     pub event: Event,
+    /// Durable Bot recipients of a public Chat message; empty for other events.
+    pub recipient_bot_ids: Vec<String>,
     pub stream_metrics: Vec<StreamMetrics>,
     pub blocks: Vec<RenderedBlock>,
     pub preview: Option<RenderedPreview>,

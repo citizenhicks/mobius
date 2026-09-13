@@ -58,13 +58,13 @@ impl GatewayHost {
         let mut file_deletion =
             prepare_session_tree_deletion(&mut state, &intent.session_ids, true).await?;
         let bot_store = Arc::clone(&state.bots);
-        let group_store = Arc::clone(&state.group);
+        let chat_store = Arc::clone(&state.chat_store);
         drop(state);
 
-        group_store
+        chat_store
             .remove_bot(&intent.bot_id)
             .await
-            .map_err(invalid_group)?;
+            .map_err(invalid_chat)?;
         if let Some(deletion) = deletion {
             bot_store.delete_bot(deletion).map_err(invalid_bot)?;
         }
@@ -123,12 +123,12 @@ impl GatewayHost {
             .prepare_bot_deletion(id, expected_revision)
             .map_err(invalid_bot)?;
         let bot_store = Arc::clone(&state.bots);
-        let group_store = Arc::clone(&state.group);
+        let chat_store = Arc::clone(&state.chat_store);
         let intent = bot_store
             .record_bot_deletion(&mut deletion, &session_roots, &session_ids)
             .map_err(invalid_bot)?;
         drop(state);
-        group_store.remove_bot(id).await.map_err(invalid_group)?;
+        chat_store.remove_bot(id).await.map_err(invalid_chat)?;
 
         bot_store.delete_bot(deletion).map_err(invalid_bot)?;
         bot_store.prepared.lock().await.remove(id);
@@ -170,30 +170,33 @@ impl GatewayHost {
         Ok((bots, session_ids))
     }
 
-    pub(super) async fn reconcile_deleted_group_chats(&self) -> std::result::Result<(), Rejection> {
+    pub(super) async fn reconcile_deleted_chats(&self) -> std::result::Result<(), Rejection> {
         let mut state = self.state.lock().await;
-        let groups = state.group.chats(true).await.map_err(internal)?;
-        if groups.is_empty() {
+        let chats = state.chat_store.chats(true).await.map_err(internal)?;
+        if chats.is_empty() {
             return Ok(());
         }
-        let ids = groups.into_iter().map(|chat| chat.id).collect::<Vec<_>>();
+        let ids = chats.iter().map(|chat| chat.id.clone()).collect::<Vec<_>>();
         let summaries = gateway_session_summaries(&state.checkpoints)
             .await
             .map_err(internal)?;
-        let roots = summaries
+        let roots = chats
             .iter()
-            .filter(|summary| {
-                crate::groups::participant_chat_id(&summary.session_id)
-                    .is_some_and(|id| ids.iter().any(|chat_id| chat_id == id))
+            .flat_map(|chat| {
+                chat.execution_participants()
+                    .map(|participant| participant.session_id.clone())
             })
-            .map(|summary| summary.session_id.clone())
             .collect::<Vec<_>>();
         let (_, mut deleted) = session_trees(roots.clone(), &summaries);
         deleted.extend(ids.iter().cloned());
         let mut files = prepare_session_tree_deletion(&mut state, &deleted, true).await?;
         let cleanup = remove_session_trees(&mut state, &roots, &deleted, &mut files, true).await?;
         if cleanup.is_none() {
-            state.group.finish_deletion(&ids).await.map_err(internal)?;
+            state
+                .chat_store
+                .finish_deletion(&ids)
+                .await
+                .map_err(internal)?;
         }
         drop(state);
         self.cleanup_session_files(files);
@@ -228,72 +231,37 @@ impl GatewayHost {
         let summaries = gateway_session_summaries(&state.checkpoints)
             .await
             .map_err(internal)?;
-        let groups = state.group.chats(false).await.map_err(internal)?;
-        let group_ids = groups
+        let chats = state.chat_store.chats(false).await.map_err(internal)?;
+        let chat_ids = chats
             .iter()
             .filter(|chat| selected.contains(&chat.id))
             .map(|chat| chat.id.clone())
             .collect::<Vec<_>>();
-        if selected.iter().any(|selected| {
-            !group_ids.contains(selected)
-                && !summaries
-                    .iter()
-                    .any(|session| session.catalog_visible && session.session_id == *selected)
-        }) {
+        if selected.iter().any(|id| !chat_ids.contains(id)) {
             return Err(unknown_session());
         }
-        let selected_set = selected.iter().map(String::as_str).collect::<HashSet<_>>();
-        let parents = summaries
+        let roots = chats
             .iter()
-            .map(|session| {
-                (
-                    session.session_id.as_str(),
-                    session.parent_session_id.as_deref(),
-                )
+            .filter(|chat| chat_ids.contains(&chat.id))
+            .flat_map(|chat| {
+                chat.execution_participants()
+                    .map(|participant| participant.session_id.clone())
             })
-            .collect::<HashMap<_, _>>();
-        let mut roots = selected
-            .iter()
-            .filter(|session_id| {
-                let mut ancestor = parents.get(session_id.as_str()).copied().flatten();
-                let mut visited = HashSet::new();
-                while let Some(parent) = ancestor {
-                    if !visited.insert(parent) {
-                        break;
-                    }
-                    if selected_set.contains(parent) {
-                        return false;
-                    }
-                    ancestor = parents.get(parent).copied().flatten();
-                }
-                true
-            })
-            .cloned()
             .collect::<Vec<_>>();
-        roots.extend(
-            state
-                .group
-                .participant_sessions(&roots)
-                .await
-                .map_err(internal)?
-                .into_iter()
-                .filter(|id| summaries.iter().any(|summary| &summary.session_id == id)),
-        );
-        roots.retain(|id| !group_ids.contains(id));
         let (_, mut deleted) = session_trees(roots.clone(), &summaries);
-        deleted.extend(group_ids.iter().cloned());
+        deleted.extend(chat_ids.iter().cloned());
         let mut file_deletion = prepare_session_tree_deletion(&mut state, &deleted, true).await?;
         state
-            .group
-            .mark_deleted(&group_ids)
+            .chat_store
+            .mark_deleted(&chat_ids)
             .await
             .map_err(internal)?;
         let cleanup =
-            remove_session_trees(&mut state, &roots, &deleted, &mut file_deletion, false).await?;
+            remove_session_trees(&mut state, &roots, &deleted, &mut file_deletion, true).await?;
         if cleanup.is_none() {
             state
-                .group
-                .finish_deletion(&group_ids)
+                .chat_store
+                .finish_deletion(&chat_ids)
                 .await
                 .map_err(internal)?;
         }
@@ -317,24 +285,28 @@ impl GatewayHost {
     }
 }
 
-fn bot_session_trees(bot_id: &str, summaries: &[SessionSummary]) -> (Vec<String>, Vec<String>) {
-    let owned = summaries
+async fn bot_session_roots(
+    chats: &crate::chats::ChatStore,
+    bots: &BotStore,
+    bot_id: &str,
+) -> Result<Vec<String>> {
+    let mut records = chats.chats(false).await?;
+    records.extend(chats.chats(true).await?);
+    let mut roots = records
         .iter()
-        .filter(|session| session.session_context.bot_id == bot_id)
-        .map(|session| session.session_id.clone())
-        .collect::<HashSet<_>>();
-    let roots = summaries
-        .iter()
-        .filter(|session| {
-            owned.contains(&session.session_id)
-                && session
-                    .parent_session_id
-                    .as_ref()
-                    .is_none_or(|parent| !owned.contains(parent))
-        })
-        .map(|session| session.session_id.clone())
+        .flat_map(|chat| chat.execution_participants())
+        .filter(|participant| participant.bot_id == bot_id)
+        .map(|participant| participant.session_id.clone())
         .collect::<Vec<_>>();
-    session_trees(roots, summaries)
+    roots.extend(
+        bots.history(None)?
+            .into_iter()
+            .filter(|run| run.bot_id == bot_id)
+            .filter_map(|run| run.session_id),
+    );
+    roots.sort();
+    roots.dedup();
+    Ok(roots)
 }
 
 pub(super) async fn prepare_bot_session_tree_deletion(
@@ -357,12 +329,16 @@ pub(super) async fn prepare_bot_session_tree_deletion(
     let summaries = gateway_session_summaries(&state.checkpoints)
         .await
         .map_err(internal)?;
-    let (_, session_ids) = bot_session_trees(bot_id, &summaries);
+    let mut roots = bot_session_roots(&state.chat_store, &state.bots, bot_id)
+        .await
+        .map_err(internal)?;
+    roots.retain(|root| summaries.iter().any(|summary| summary.session_id == *root));
+    let (_, session_ids) = session_trees(roots.clone(), &summaries);
     let file_deletion = prepare_session_tree_deletion(state, &session_ids, true).await?;
     let summaries = gateway_session_summaries(&state.checkpoints)
         .await
         .map_err(internal)?;
-    let (session_roots, session_ids) = bot_session_trees(bot_id, &summaries);
+    let (session_roots, session_ids) = session_trees(roots, &summaries);
     Ok((session_roots, session_ids, file_deletion))
 }
 
@@ -387,19 +363,30 @@ pub(super) fn session_trees(
 pub(super) async fn prepare_session_tree_deletion(
     state: &mut GatewayState,
     session_ids: &[String],
-    allow_pending_group: bool,
+    allow_pending_chat: bool,
 ) -> std::result::Result<SessionFileDeletion, Rejection> {
-    if state
+    let starting = state
         .starting_sessions
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .keys()
-        .any(|starting| {
-            session_ids.contains(starting)
-                || crate::groups::participant_chat_id(starting)
-                    .is_some_and(|chat| session_ids.iter().any(|id| id == chat))
-        })
-    {
+        .cloned()
+        .collect::<HashSet<_>>();
+    let mut starting_selected = session_ids.iter().any(|id| starting.contains(id));
+    if !starting.is_empty() && !starting_selected {
+        starting_selected = state
+            .chat_store
+            .chats(false)
+            .await
+            .map_err(internal)?
+            .iter()
+            .filter(|chat| session_ids.contains(&chat.id))
+            .any(|chat| {
+                chat.execution_participants()
+                    .any(|participant| starting.contains(&participant.session_id))
+            });
+    }
+    if starting_selected {
         return Err(Rejection {
             code: "agent_busy",
             message: "wait for this chat to finish starting before deleting it".into(),
@@ -413,16 +400,16 @@ pub(super) async fn prepare_session_tree_deletion(
             .await
             .map_err(internal);
     }
-    if !allow_pending_group
+    if !allow_pending_chat
         && state
-            .group
+            .chat_store
             .has_pending_source_sessions(session_ids)
             .await
             .map_err(internal)?
     {
         return Err(Rejection {
-            code: "session_has_pending_group_delivery",
-            message: "wait for this chat's pending Group deliveries before deleting it".into(),
+            code: "session_has_pending_delivery",
+            message: "wait for this chat's pending deliveries before deleting it".into(),
             fatal: false,
         });
     }
@@ -522,4 +509,97 @@ pub(super) async fn remove_session_trees(
     catalog.approvals.retain(|id, _| !session_ids.contains(id));
     catalog.snapshot = None;
     Ok((!cleanup_errors.is_empty()).then(|| internal(cleanup_errors.join("; "))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mobius::backend::checkpoint::{Checkpoint, CheckpointStore, sqlite::SqliteCheckpoint};
+
+    #[tokio::test]
+    async fn bot_roots_include_retired_participants_and_routines_then_follow_descendants() {
+        let root = tempfile::tempdir().unwrap();
+        let bots = Arc::new(BotStore::open(root.path()).unwrap());
+        let first = bots
+            .create_bot("First", "First", Default::default())
+            .unwrap();
+        let second = bots
+            .create_bot("Second", "Second", Default::default())
+            .unwrap();
+        let (chats, _) = crate::chats::ChatStore::new(root.path(), bots.clone()).unwrap();
+        let reassigned = chats
+            .create(root.path().into(), vec![first.id.clone()], Some(&first.id))
+            .await
+            .unwrap();
+        let retired = chats
+            .load(&reassigned)
+            .await
+            .unwrap()
+            .unwrap()
+            .session_id(&first.id)
+            .unwrap()
+            .to_owned();
+        chats.reassign(&reassigned, &second.id).await.unwrap();
+        let shared = chats
+            .create(
+                root.path().into(),
+                vec![first.id.clone(), second.id.clone()],
+                Some(&first.id),
+            )
+            .await
+            .unwrap();
+        let shared_chat = chats.load(&shared).await.unwrap().unwrap();
+        let first_shared = shared_chat.session_id(&first.id).unwrap().to_owned();
+        let second_shared = shared_chat.session_id(&second.id).unwrap().to_owned();
+        let routine = bots
+            .create_routine(
+                &first.id,
+                root.path(),
+                "Test",
+                crate::wire::RoutineSchedule {
+                    kind: crate::wire::RoutineScheduleKind::Once,
+                    at: Some(chrono::Utc::now().timestamp() + 60),
+                    every_seconds: None,
+                    expression: None,
+                    time_zone: None,
+                },
+                None,
+            )
+            .unwrap();
+        let crate::bots::BeginRun::Started(run) = bots.begin_run(&routine.id).unwrap() else {
+            panic!("run starts");
+        };
+        let expected = HashSet::from([
+            retired.clone(),
+            first_shared.clone(),
+            run.session_id().to_owned(),
+        ]);
+        let roots = bot_session_roots(&chats, &bots, &first.id).await.unwrap();
+        assert_eq!(roots.iter().cloned().collect::<HashSet<_>>(), expected);
+
+        let checkpoints: Arc<dyn CheckpointStore> =
+            Arc::new(SqliteCheckpoint::new(root.path().join("checkpoints.sqlite3")).unwrap());
+        for id in roots.iter().chain(std::iter::once(&second_shared)) {
+            checkpoints
+                .save(&Checkpoint::empty(id), &[], None)
+                .await
+                .unwrap();
+        }
+        checkpoints
+            .fork(&retired, 0, &Checkpoint::empty("child"))
+            .await
+            .unwrap();
+        checkpoints
+            .fork("child", 0, &Checkpoint::empty("grandchild"))
+            .await
+            .unwrap();
+        let summaries = gateway_session_summaries(&checkpoints).await.unwrap();
+        let (_, ids) = session_trees(roots, &summaries);
+        assert_eq!(ids.len(), 5);
+        assert!(ids.iter().any(|id| id == "child"));
+        assert!(ids.iter().any(|id| id == "grandchild"));
+        assert!(!ids.contains(&second_shared));
+        assert!(!ids.contains(&shared));
+        assert!(!ids.contains(&reassigned));
+    }
 }

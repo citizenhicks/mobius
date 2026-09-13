@@ -129,7 +129,7 @@ extension GatewayWireTests {
         }
 
         let untargeted = try decodeEnvelope(
-            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"message","author":{"type":"user"},"delivery":"turn","text":"Hello","attachments":[],"message_target":null}},"stream_metrics":[],"blocks":[],"preview":null}}"#
+            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"message","author":{"type":"user"},"delivery":"turn","text":"Hello","attachments":[],"message_target":null}},"recipient_bot_ids":[],"stream_metrics":[],"blocks":[],"preview":null}}"#
         )
         guard case .agentEvent(_, let record) = untargeted else {
             return XCTFail("Expected an agent event")
@@ -137,13 +137,13 @@ extension GatewayWireTests {
         XCTAssertEqual(record.event.msg["messageTarget"], JSONValue.null)
         XCTAssertThrowsError(
             try decodeEnvelope(
-                #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"message","author":{"type":"user"},"delivery":"turn","text":"Hello","attachments":[]}},"stream_metrics":[],"blocks":[],"preview":null}}"#
+                #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"message","author":{"type":"user"},"delivery":"turn","text":"Hello","attachments":[]}},"recipient_bot_ids":[],"stream_metrics":[],"blocks":[],"preview":null}}"#
             ))
     }
 
     func testMessageEventDecodesTypedAuthorAndActualDelivery() throws {
         let envelope = try decodeEnvelope(
-            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"submission_id":"peer-message-1","msg":{"type":"message","author":{"type":"peer","message_id":"message-1","session_id":"chat-reviewer","handle":"@reviewer"},"delivery":"steer","text":"Check the parser boundary.","attachments":[],"reply":{"target":{"checkpoint_sequence":9,"batch_item_count":1},"text":"Original decision"},"message_target":{"checkpoint_sequence":12,"batch_item_count":2}}},"stream_metrics":[],"blocks":[],"preview":null}}"#
+            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"submission_id":"peer-message-1","msg":{"type":"message","author":{"type":"peer","message_id":"message-1","session_id":"chat-reviewer","handle":"@reviewer"},"delivery":"steer","text":"Check the parser boundary.","attachments":[],"reply":{"target":{"checkpoint_sequence":9,"batch_item_count":1},"text":"Original decision"},"message_target":{"checkpoint_sequence":12,"batch_item_count":2}}},"recipient_bot_ids":[],"stream_metrics":[],"blocks":[],"preview":null}}"#
         )
         guard case .agentEvent(_, let record) = envelope else {
             return XCTFail("Expected an agent event")
@@ -267,10 +267,10 @@ extension GatewayWireTests {
 
     func testMalformedKnownAgentEventIsRejected() {
         let fixtures = [
-            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"turn_aborted","turn_id":"turn-1"}},"stream_metrics":[],"blocks":[],"preview":null}}"#,
-            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"assistant_message","session_id":"chat-1","turn_id":"turn-1","model_step_id":"step-1","content":[{"output_index":0,"part_index":0,"phase":"future_phase","text":"Working","annotations":[]}],"message_target":null}},"stream_metrics":[],"blocks":[],"preview":null}}"#,
-            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"message","author":{"type":"peer","message_id":"message-1","session_id":"chat-reviewer"},"delivery":"steer","text":"Review","attachments":[],"message_target":null}},"stream_metrics":[],"blocks":[],"preview":null}}"#,
-            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"message","author":{"type":"user"},"delivery":"later","text":"Review","attachments":[],"message_target":null}},"stream_metrics":[],"blocks":[],"preview":null}}"#,
+            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"turn_aborted","turn_id":"turn-1"}},"recipient_bot_ids":[],"stream_metrics":[],"blocks":[],"preview":null}}"#,
+            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"assistant_message","session_id":"chat-1","turn_id":"turn-1","model_step_id":"step-1","content":[{"output_index":0,"part_index":0,"phase":"future_phase","text":"Working","annotations":[]}],"message_target":null}},"recipient_bot_ids":[],"stream_metrics":[],"blocks":[],"preview":null}}"#,
+            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"message","author":{"type":"peer","message_id":"message-1","session_id":"chat-reviewer"},"delivery":"steer","text":"Review","attachments":[],"message_target":null}},"recipient_bot_ids":[],"stream_metrics":[],"blocks":[],"preview":null}}"#,
+            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"message","author":{"type":"user"},"delivery":"later","text":"Review","attachments":[],"message_target":null}},"recipient_bot_ids":[],"stream_metrics":[],"blocks":[],"preview":null}}"#,
         ]
 
         for fixture in fixtures {
@@ -280,12 +280,12 @@ extension GatewayWireTests {
 
     func testLegacyMessageAndTurnEventsAreRejected() {
         let fixtures = [
-            #"{"version":55,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"message","author":{"type":"user"},"delivery":"turn","message":"Hello","attachments":[],"message_target":null}},"stream_metrics":[],"blocks":[],"preview":null}}"#,
-            #"{"version":55,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"task_started","turn_id":"turn-1"}},"stream_metrics":[],"blocks":[],"preview":null}}"#,
-            #"{"version":55,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"task_complete","turn_id":"turn-1"}},"stream_metrics":[],"blocks":[],"preview":null}}"#,
-            #"{"version":55,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"agent_message","session_id":"chat-1","turn_id":"turn-1","model_step_id":"step-1","message":"Done","phase":"final_answer","message_target":null}},"stream_metrics":[],"blocks":[],"preview":null}}"#,
-            #"{"version":55,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"agent_message_content_delta","session_id":"chat-1","turn_id":"turn-1","model_step_id":"step-1","delta":"Done","phase":"final_answer"}},"stream_metrics":[],"blocks":[],"preview":null}}"#,
-            #"{"version":55,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"agent_reasoning_content_delta","session_id":"chat-1","turn_id":"turn-1","model_step_id":"step-1","delta":"Thinking"}},"stream_metrics":[],"blocks":[],"preview":null}}"#,
+            #"{"version":55,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"message","author":{"type":"user"},"delivery":"turn","message":"Hello","attachments":[],"message_target":null}},"recipient_bot_ids":[],"stream_metrics":[],"blocks":[],"preview":null}}"#,
+            #"{"version":55,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"task_started","turn_id":"turn-1"}},"recipient_bot_ids":[],"stream_metrics":[],"blocks":[],"preview":null}}"#,
+            #"{"version":55,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"task_complete","turn_id":"turn-1"}},"recipient_bot_ids":[],"stream_metrics":[],"blocks":[],"preview":null}}"#,
+            #"{"version":55,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"agent_message","session_id":"chat-1","turn_id":"turn-1","model_step_id":"step-1","message":"Done","phase":"final_answer","message_target":null}},"recipient_bot_ids":[],"stream_metrics":[],"blocks":[],"preview":null}}"#,
+            #"{"version":55,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"agent_message_content_delta","session_id":"chat-1","turn_id":"turn-1","model_step_id":"step-1","delta":"Done","phase":"final_answer"}},"recipient_bot_ids":[],"stream_metrics":[],"blocks":[],"preview":null}}"#,
+            #"{"version":55,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"agent_reasoning_content_delta","session_id":"chat-1","turn_id":"turn-1","model_step_id":"step-1","delta":"Thinking"}},"recipient_bot_ids":[],"stream_metrics":[],"blocks":[],"preview":null}}"#,
         ]
 
         for fixture in fixtures {
@@ -295,7 +295,7 @@ extension GatewayWireTests {
 
     func testUnknownAuxiliaryRenderedEventsAreRejected() {
         let fixtures = [
-            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"frontend","frontend_type":"preview","id":"/root/worker","title":"Worker","subtitle":"full","page_id":"latest","update":"replace","events":[],"next":null}},"stream_metrics":[],"blocks":[],"preview":{"id":"/root/worker","title":"Worker","subtitle":"full","page_id":"latest","update":"replace","events":[{"recorded_at_ms":1000,"event":{"type":"future_event"},"blocks":[]}],"next":null}}}"#
+            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"msg":{"type":"frontend","frontend_type":"preview","id":"/root/worker","title":"Worker","subtitle":"full","page_id":"latest","update":"replace","events":[],"next":null}},"recipient_bot_ids":[],"stream_metrics":[],"blocks":[],"preview":{"id":"/root/worker","title":"Worker","subtitle":"full","page_id":"latest","update":"replace","events":[{"recorded_at_ms":1000,"event":{"type":"future_event"},"blocks":[]}],"next":null}}}"#
         ]
 
         for fixture in fixtures {
@@ -310,7 +310,7 @@ extension GatewayWireTests {
 
     func testFrontendRenderAgentEventIsAccepted() throws {
         let fixture =
-            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"submission_id":"input-1","msg":{"type":"frontend","frontend_type":"render","capability":"tools","block":{"id":"call-1","group":"turn-1","update":"replace","state":"complete","role":"tool","title":"Read file","text":"Done","symbol":"task","format":"plain_text","tone":"neutral","content":[],"files":[]}}},"stream_metrics":[],"blocks":[{"capability":"tools","block":{"id":"call-1","group":"turn-1","update":"replace","state":"complete","role":"tool","title":"Read file","text":"Done","symbol":"task","format":"plain_text","tone":"neutral","content":[],"files":[]}}],"preview":null}}"#
+            #"{"version":27,"type":"agent_event","session_id":"chat-1","record":{"sequence":8,"recorded_at_ms":1000,"event":{"submission_id":"input-1","msg":{"type":"frontend","frontend_type":"render","capability":"tools","block":{"id":"call-1","group":"turn-1","update":"replace","state":"complete","role":"tool","title":"Read file","text":"Done","symbol":"task","format":"plain_text","tone":"neutral","content":[],"files":[]}}},"recipient_bot_ids":[],"stream_metrics":[],"blocks":[{"capability":"tools","block":{"id":"call-1","group":"turn-1","update":"replace","state":"complete","role":"tool","title":"Read file","text":"Done","symbol":"task","format":"plain_text","tone":"neutral","content":[],"files":[]}}],"preview":null}}"#
         let envelope = try decodeEnvelope(fixture)
 
         guard case .agentEvent(_, let record) = envelope else {
@@ -333,26 +333,22 @@ extension GatewayWireTests {
         XCTAssertNil(requestID)
         XCTAssertEqual(sessions.first?.sessionId, "chat-1")
         XCTAssertEqual(sessions.first?.pinned, true)
-        XCTAssertEqual(sessions.first?.sessionContext.botId, "bot-1")
+        XCTAssertEqual(sessions.first?.primaryBotId, "bot-1")
     }
 
-    func testBackgroundApprovalResponseCarriesHiddenSessionOwnership() throws {
+    func testBackgroundApprovalResponseCarriesTheRequestWithoutAnExecutionID() throws {
         let envelope = try decodeEnvelope(
-            #"{"version":64,"type":"background_approvals","approvals":[{"session_id":"work-1","bot_id":"bot-1","turn_id":"turn-1","request_id":"approval-1"}]}"#
+            #"{"version":78,"type":"background_approvals","approvals":[{"chat_id":null,"bot_id":"bot-1","request":{"id":"approval-1","turn_id":"turn-1","reason":"Run checks","calls":[]}}]}"#
         )
         guard case .backgroundApprovals(let approvals) = envelope else {
             return XCTFail("Expected background approvals")
         }
-        XCTAssertEqual(
-            approvals,
-            [
-                BackgroundApproval(
-                    sessionId: "work-1",
-                    botId: "bot-1",
-                    turnId: "turn-1",
-                    requestId: "approval-1"
-                )
-            ])
+        let approval = try XCTUnwrap(approvals.first)
+        XCTAssertNil(approval.chatId)
+        XCTAssertEqual(approval.botId, "bot-1")
+        XCTAssertEqual(approval.id, "approval-1")
+        XCTAssertEqual(approval.request["turnId"]?.stringValue, "turn-1")
+        XCTAssertEqual(approval.request["reason"]?.stringValue, "Run checks")
     }
 
     func testBotAndRoutineResponsesDecodeProtocolFields() throws {
@@ -579,17 +575,61 @@ extension GatewayWireTests {
         XCTAssertEqual(roundTrip, profile)
     }
 
-    func testBotSessionsResponseUsesTheExistingSessionRecord() throws {
-        let envelope = try decodeEnvelope(
-            #"{"version":60,"type":"bot_sessions","request_id":"bot-sessions-1","bot_id":"bot-1","sessions":[\#(sessionRecordJSON)]}"#
-        )
-        guard case .botSessions(let requestID, let botID, let sessions) = envelope else {
-            return XCTFail("Expected Bot sessions")
-        }
-        XCTAssertEqual(requestID, "bot-sessions-1")
+    func testPrivateBotConversationsRequireTheirOwnRecordAndCursor() throws {
+        let conversation =
+            #"{"conversation_id":"private-1","bot_id":"bot-1","chat_id":"chat-1","session_context":{"origin_label":"group"},"sequence":7,"first_user_message":null,"execution_stats":\#(executionStatsJSON),"activity":{"state":"idle","turn_id":null,"approval_request_id":null,"started_at":null,"last_outcome":null,"message":null},"created_at":100,"updated_at":200}"#
+        let fixture =
+            #"{"version":79,"type":"bot_conversations","request_id":"list-1","bot_id":"bot-1","page":{"conversations":[\#(conversation)],"next_cursor":{"updated_at":200,"sequence":7,"session_id":"private-1"}}}"#
+        guard
+            case .botConversations(let requestID, let botID, let page) = try decodeEnvelope(fixture)
+        else { return XCTFail("Expected private Bot conversations") }
+        XCTAssertEqual(requestID, "list-1")
         XCTAssertEqual(botID, "bot-1")
-        XCTAssertEqual(sessions.first?.sessionId, "chat-1")
-        XCTAssertEqual(sessions.first?.sessionContext.botId, "bot-1")
+        XCTAssertEqual(page.conversations.first?.id, "private-1")
+        XCTAssertEqual(page.conversations.first?.chatId, "chat-1")
+        XCTAssertEqual(page.nextCursor?.sessionId, "private-1")
+        for malformed in [
+            fixture.replacingOccurrences(
+                of: #","next_cursor":{"updated_at":200,"sequence":7,"session_id":"private-1"}"#,
+                with: ""),
+            fixture.replacingOccurrences(
+                of: #""conversation_id":"private-1""#, with: #""session_id":"private-1""#),
+            fixture.replacingOccurrences(of: #","chat_id":"chat-1""#, with: ""),
+            fixture.replacingOccurrences(of: #""bot_id":"bot-1""#, with: #""bot_id":"""#),
+        ] {
+            XCTAssertThrowsError(try decodeEnvelope(malformed))
+        }
+        XCTAssertThrowsError(
+            try decodeEnvelope(
+                #"{"version":79,"type":"bot_sessions","request_id":"old","bot_id":"bot-1","sessions":[]}"#
+            ))
+    }
+
+    func testPrivateBotHistoryDecodesToolEventsAndSharedRenderedBlocks() throws {
+        let pending =
+            #"{"capability":"tools","block":{"id":"read-1","group":"turn-1","update":"replace","state":"pending","role":"tool","title":"Read file","text":"Reading result.txt","symbol":"task","format":"plain_text","tone":"neutral","content":[],"files":[]}}"#
+        let complete = pending.replacingOccurrences(of: "pending", with: "complete")
+            .replacingOccurrences(of: "Reading result.txt", with: "Tool output")
+        let fixture =
+            #"{"version":79,"type":"bot_conversation_history","request_id":"history-1","bot_id":"bot-1","conversation_id":"private-1","records":[{"sequence":1,"recorded_at_ms":1000,"event":{"msg":{"type":"tool_call_begin","turn_id":"turn-1","call_id":"read-1","name":"read_file","arguments":{"path":"result.txt"}}},"recipient_bot_ids":[],"stream_metrics":[],"blocks":[\#(pending)],"preview":null},{"sequence":2,"recorded_at_ms":1100,"event":{"msg":{"type":"tool_call_end","turn_id":"turn-1","call_id":"read-1","name":"read_file","output":[{"type":"input_text","text":"Tool output"}],"is_error":false}},"recipient_bot_ids":[],"stream_metrics":[],"blocks":[\#(complete)],"preview":null}],"next_before_sequence":null}"#
+        guard
+            case .botConversationHistory(
+                let requestID, let botID, let conversationID, let records, let next) =
+                try decodeEnvelope(fixture)
+        else { return XCTFail("Expected private history") }
+        XCTAssertEqual(requestID, "history-1")
+        XCTAssertEqual(botID, "bot-1")
+        XCTAssertEqual(conversationID, "private-1")
+        XCTAssertEqual(
+            records.map { $0.event.msg["type"]?.stringValue }, ["tool_call_begin", "tool_call_end"])
+        XCTAssertEqual(records.last?.blocks.first?.block.text, "Tool output")
+        XCTAssertNil(next)
+        XCTAssertThrowsError(
+            try decodeEnvelope(
+                fixture.replacingOccurrences(of: #","next_before_sequence":null"#, with: "")))
+        XCTAssertThrowsError(
+            try decodeEnvelope(
+                fixture.replacingOccurrences(of: #""recipient_bot_ids":[],"#, with: "")))
     }
 
     func testPairedRejectedAndErrorResponsesDecode() throws {

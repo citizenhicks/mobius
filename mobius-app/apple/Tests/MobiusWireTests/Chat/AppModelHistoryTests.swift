@@ -4,6 +4,122 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testSteeringMessagesSharingATurnSubmissionPreserveTheOpeningMessage() throws {
+        let messages: [JSONValue] = [
+            .object(["type": .string("turn_started"), "turnId": .string("turn")]),
+            testMessageEvent(text: "Original question"),
+            testAssistantMessage(
+                turnID: "turn", modelStepID: "work", phase: "commentary", text: "Checking"),
+            testMessageEvent(delivery: .steer, text: "First correction"),
+            testMessageEvent(delivery: .steer, text: "Second correction"),
+            testAssistantMessage(turnID: "turn", modelStepID: "final", text: "Answer"),
+            .object(["type": .string("turn_complete"), "turnId": .string("turn")]),
+        ]
+        let records = messages.enumerated().map { index, message in
+            RecordedEvent(
+                sequence: UInt64(index + 1), recordedAtMs: Int64(index * 100),
+                event: AgentEventRecord(submissionId: "shared-input", msg: message),
+                streamMetrics: [], blocks: [], preview: nil)
+        }
+        let live = try model()
+        live.chat.selectedMemberBotIDs = ["bot-1"]
+        for record in records { live.chat.reduce(record: record) }
+        let history = try model()
+        history.chat.mergeHistory(Array(records.suffix(4)))
+        history.chat.mergeHistory(Array(records.prefix(3)))
+        let cached = CachedTranscript(
+            sequence: 7, nextBeforeSequence: nil, transcript: history.chat.transcript,
+            currentUsage: TokenUsage(), lastUsage: TokenUsage())
+        for entries in [live.chat.transcript, history.chat.transcript, cached.transcript] {
+            let window = TranscriptProjection.turnWindow(from: entries, maximumTurns: 1)
+            XCTAssertEqual(
+                window.entries.map(\.text),
+                [
+                    "Original question", "Checking", "First correction", "Second correction",
+                    "Answer",
+                ])
+            XCTAssertEqual(Set(entries.map(\.id)).count, entries.count)
+            XCTAssertEqual(window.entries.filter(\.startsTurn).count, 1)
+            XCTAssertTrue(entries.allSatisfy { $0.turnID == "turn" })
+            XCTAssertEqual(entries.last?.turnElapsedMs, 500)
+        }
+    }
+
+    func testPublicInputsRemainOutsideCompletedWorkAcrossHistoryPagesLiveAndCache() throws {
+        let records = (0..<2).flatMap { turn -> [RecordedEvent] in
+            let sequence = UInt64(turn * 5 + 1)
+            let turnID = "turn-\(turn)"
+            let submissionID = "input-\(turn)"
+            let messages = [
+                testMessageEvent(text: "Question \(turn)"),
+                JSONValue.object([
+                    "type": .string("turn_started"), "turnId": .string(turnID),
+                ]),
+                testAssistantMessage(
+                    turnID: turnID, modelStepID: "work-\(turn)",
+                    phase: "commentary", text: "Checking \(turn)"),
+                testAssistantMessage(
+                    turnID: turnID, modelStepID: "final-\(turn)",
+                    text: "# Answer \(turn)\n\n**Done.**"),
+                JSONValue.object([
+                    "type": .string("turn_complete"), "turnId": .string(turnID),
+                ]),
+            ]
+            return messages.enumerated().map { index, message in
+                RecordedEvent(
+                    sequence: sequence + UInt64(index), recordedAtMs: Int64(sequence * 100),
+                    event: AgentEventRecord(submissionId: submissionID, msg: message),
+                    streamMetrics: [], blocks: [], preview: nil)
+            }
+        }
+        let history = try model()
+        history.chat.mergeHistory(Array(records.suffix(4)))
+        XCTAssertEqual(
+            history.chat.transcriptProjection(breakBefore: nil).rows.map(\.kind),
+            [.workedGroup, .narrative])
+        history.chat.mergeHistory([records[5]])
+        XCTAssertEqual(
+            history.chat.transcriptProjection(breakBefore: nil).rows.map(\.kind),
+            [.user, .workedGroup, .narrative])
+        history.chat.mergeHistory(Array(records.prefix(5)))
+
+        let live = try model()
+        live.chat.selectedMemberBotIDs = ["bot-1"]
+        for record in records { live.chat.reduce(record: record) }
+        var preview: [TranscriptEntry] = []
+        var turnState = TranscriptHistoryTurnState()
+        for record in records {
+            history.chat.reduceHistory(record, into: &preview, turnState: &turnState)
+        }
+        // A cache saved before the execution starts still carries the typed user delivery.
+        for entry in history.chat.transcript where entry.kind == .user { entry.startsTurn = false }
+        let cached = CachedTranscript(
+            sequence: 10, nextBeforeSequence: nil, transcript: history.chat.transcript,
+            currentUsage: TokenUsage(), lastUsage: TokenUsage())
+        let restored = try JSONDecoder().decode(
+            CachedTranscript.self, from: JSONEncoder().encode(cached)
+        ).transcript
+        history.chat.mergeHistory([])
+
+        for entries in [history.chat.transcript, live.chat.transcript, preview, restored] {
+            let projection = TranscriptProjection(entries: entries)
+            XCTAssertEqual(
+                projection.rows.map(\.kind),
+                [.user, .workedGroup, .narrative, .user, .workedGroup, .narrative])
+            XCTAssertEqual(
+                projection.rows.filter { $0.kind == .user }.flatMap(\.records).map(\.text),
+                ["Question 0", "Question 1"])
+            XCTAssertEqual(
+                projection.rows.filter { $0.kind == .workedGroup }.flatMap(\.records).map(\.text),
+                ["Checking 0", "Checking 1"])
+            let window = TranscriptProjection.turnWindow(from: entries, maximumTurns: 1)
+            XCTAssertEqual(
+                window.entries.map(\.text), ["Question 1", "Checking 1", "# Answer 1\n\n**Done.**"])
+            XCTAssertEqual(window.turnCount, 1)
+            XCTAssertTrue(window.hasEarlierEntries)
+        }
+    }
+
     func testHistoricalReplayAppearsOnlyWhenTheSnapshotIsComplete() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model { request in await recorder.record(request) }
@@ -1176,34 +1292,4 @@ extension AppModelTests {
         XCTAssertTrue(model.chat.isLoadingTranscript)
     }
 
-    func testVisibleBotSessionIsRestoredWithoutOpeningOtherBotWork() async throws {
-        let recorder = GatewayRequestRecorder()
-        let model = try model { await recorder.record($0) }
-        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
-        model.gateway.accounts = [account]
-        model.gateway.selectedAccountID = account.id
-        model.chat.botSessionsBotID = "bot-1"
-        model.chat.botSessions = [
-            session(state: .idle), session(sessionID: "chat-2", state: .idle),
-        ]
-        model.destination = .bots
-        model.navigationPath = [.botSessions("bot-1")]
-        model.openBotSession("chat-1")
-        await model.chat.transcriptIOTask?.value
-        XCTAssertEqual(model.presentedChatSessionID, "chat-1")
-        XCTAssertTrue(model.isPresentingChat)
-        model.gateway.handle(
-            .ready(
-                ready(
-                    botDefaults: VersionedAgentConfig(revision: 1, config: composition()),
-                    sessions: []
-                )))
-        let request = await recorder.firstRequest(after: 0) {
-            if case .openSession = $0 { return true }
-            return false
-        }
-        guard case .openSession(_, "chat-1", nil) = try XCTUnwrap(request) else {
-            return XCTFail("Only the visible Bot session should reopen")
-        }
-    }
 }

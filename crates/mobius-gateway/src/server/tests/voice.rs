@@ -65,6 +65,9 @@ async fn signaling_requires_the_selected_session_is_ephemeral_and_keeps_chat_usa
     let server = GatewayServer::assemble(store, config, listener)
         .await
         .expect("gateway");
+    let gateway = server.host.clone();
+    let (chats, _) =
+        crate::chats::ChatStore::new(&root.path().join("state"), Arc::clone(&server.bots)).unwrap();
     let (shutdown, signal) = tokio::sync::oneshot::channel();
     let serving = tokio::spawn(server.serve_until(async move {
         let _ = signal.await;
@@ -102,16 +105,9 @@ async fn signaling_requires_the_selected_session_is_ephemeral_and_keeps_chat_usa
         create_bot_chat_with_config(&sender, &mut events, &workspace, composition.clone()).await;
     let (selected, _) =
         create_bot_chat_with_config(&sender, &mut events, &workspace, composition).await;
-    let before = checkpoints
-        .event_page(
-            &selected,
-            EventPageRequest {
-                before_sequence: None,
-                limit: 128,
-            },
-        )
-        .await
-        .expect("initial journal");
+    let execution_id = chats.load(&selected).await.unwrap().unwrap().participants[0]
+        .session_id
+        .clone();
     let request = Uuid::new_v4().to_string();
     sender
         .send(ClientMessage::StartRealtimeVoice {
@@ -147,6 +143,24 @@ async fn signaling_requires_the_selected_session_is_ephemeral_and_keeps_chat_usa
         );
     }
 
+    assert!(
+        checkpoints.load(&execution_id).await.unwrap().is_none(),
+        "opening a chat and rejecting invalid signaling must not start its execution"
+    );
+    gateway
+        .open_session(&execution_id)
+        .await
+        .expect("initialize the existing execution voice fixture");
+    let before = checkpoints
+        .event_page(
+            &execution_id,
+            EventPageRequest {
+                before_sequence: None,
+                limit: 128,
+            },
+        )
+        .await
+        .expect("initial journal");
     let request = Uuid::new_v4().to_string();
     sender
         .send(ClientMessage::StartRealtimeVoice {
@@ -197,7 +211,7 @@ async fn signaling_requires_the_selected_session_is_ephemeral_and_keeps_chat_usa
     }
     let after = checkpoints
         .event_page(
-            &selected,
+            &execution_id,
             EventPageRequest {
                 before_sequence: None,
                 limit: 128,
@@ -213,6 +227,7 @@ async fn signaling_requires_the_selected_session_is_ephemeral_and_keeps_chat_usa
     let submission_id = Uuid::new_v4().to_string();
     sender
         .send(ClientMessage::Submit {
+            recipient_bot_ids: Vec::new(),
             session_id: selected.clone(),
             submission: Submission {
                 id: submission_id.clone(),
@@ -258,7 +273,7 @@ async fn signaling_requires_the_selected_session_is_ephemeral_and_keeps_chat_usa
     );
     let journal = checkpoints
         .event_page(
-            &selected,
+            &execution_id,
             EventPageRequest {
                 before_sequence: None,
                 limit: 128,

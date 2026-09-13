@@ -3,6 +3,71 @@ import Foundation
 import XCTest
 
 extension GatewayWireTests {
+    func testPrivateBotConversationRequestsKeepOpaqueOwnershipAndRequiredCursors() throws {
+        let first = try requestObject(
+            .listBotConversations(requestID: "list", botID: "bot-1", cursor: nil))
+        XCTAssertEqual(first["type"] as? String, "list_bot_conversations")
+        XCTAssertEqual(first["bot_id"] as? String, "bot-1")
+        XCTAssertTrue(first["cursor"] is NSNull)
+        let next = try requestObject(
+            .listBotConversations(
+                requestID: "list", botID: "bot-1",
+                cursor: BotConversationCursor(updatedAt: 9, sequence: 4, sessionId: "private-1")))
+        let cursor = try XCTUnwrap(next["cursor"] as? [String: Any])
+        XCTAssertEqual(cursor["session_id"] as? String, "private-1")
+        XCTAssertEqual(cursor["updated_at"] as? Int, 9)
+        XCTAssertEqual(cursor["sequence"] as? Int, 4)
+        let history = try requestObject(
+            .getBotConversationHistory(
+                requestID: "history", botID: "bot-1", conversationID: "private-1",
+                beforeSequence: nil))
+        XCTAssertEqual(history["type"] as? String, "get_bot_conversation_history")
+        XCTAssertTrue(history["before_sequence"] is NSNull)
+        XCTAssertEqual(history["conversation_id"] as? String, "private-1")
+        XCTAssertNil(history["session_id"])
+        let file = try requestObject(
+            .readBotConversationFile(
+                requestID: "file", botID: "bot-1", conversationID: "private-1",
+                fileID: "output", offset: 8, maxBytes: 512))
+        XCTAssertEqual(file["type"] as? String, "read_bot_conversation_file")
+        XCTAssertEqual(file["bot_id"] as? String, "bot-1")
+        XCTAssertEqual(file["conversation_id"] as? String, "private-1")
+        XCTAssertEqual(file["offset"] as? Int, 8)
+        XCTAssertEqual(file["max_bytes"] as? Int, 512)
+        XCTAssertNil(file["session_id"])
+    }
+
+    func testChatRoutingStopAndApprovalUseGatewayEnvelopes() throws {
+        let request = try requestObject(
+            .submit(
+                sessionID: "chat-1",
+                submission: Submission(
+                    id: "message-1",
+                    op: .message(
+                        MessageSubmission(
+                            author: .user, text: "Review @helper and @src/app.swift",
+                            attachments: [], reply: nil, requestedDelivery: nil, targetTurnId: nil))
+                ),
+                recipientBotIDs: ["bot-2"]))
+        XCTAssertEqual(request["recipient_bot_ids"] as? [String], ["bot-2"])
+        let submission = try XCTUnwrap(request["submission"] as? [String: Any])
+        let op = try XCTUnwrap(submission["op"] as? [String: Any])
+        let message = try XCTUnwrap(op["message"] as? [String: Any])
+        XCTAssertNil(message["recipient_bot_ids"])
+        XCTAssertEqual(message["text"] as? String, "Review @helper and @src/app.swift")
+
+        let stop = try requestObject(.stopChat(requestID: "stop-1", sessionID: "chat-1"))
+        XCTAssertEqual(stop["type"] as? String, "stop_chat")
+        XCTAssertEqual(stop["session_id"] as? String, "chat-1")
+        XCTAssertNil(stop["turn_id"])
+        let review = try requestObject(
+            .reviewApproval(
+                requestID: "review-1", approvalRequestID: "approval-1", decision: .approved))
+        XCTAssertEqual(review["type"] as? String, "review_approval")
+        XCTAssertEqual(review["approval_request_id"] as? String, "approval-1")
+        XCTAssertNil(review["session_id"])
+    }
+
     func testScratchpadRequestAndResponseUseGatewayContributions() throws {
         let request = try requestObject(
             .submitContribution(
@@ -43,11 +108,13 @@ extension GatewayWireTests {
             .createSession(
                 requestID: "create-1",
                 workspace: "/srv/mobius",
-                botIDs: ["bot-1", "bot-2"]
+                botIDs: ["bot-1", "bot-2"],
+                primaryBotID: "bot-2"
             ))
         XCTAssertEqual(create["type"] as? String, "create_session")
         XCTAssertEqual(create["workspace"] as? String, "/srv/mobius")
         XCTAssertEqual(create["bot_ids"] as? [String], ["bot-1", "bot-2"])
+        XCTAssertEqual(create["primary_bot_id"] as? String, "bot-2")
 
         let attach = try requestObject(
             .attachSessionFolder(

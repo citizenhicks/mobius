@@ -4,6 +4,85 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testChatRecipientsSurviveCreationDraftPersistenceAndRejection() async throws {
+        let recorder = GatewayRequestRecorder()
+        let app = try model { await recorder.record($0) }
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        app.gateway.accounts = [account]
+        app.gateway.selectedAccountID = account.id
+        app.gateway.connectionState = .ready
+        let helper = bot()
+        let reviewer = bot(id: "bot-2", handle: "reviewer", name: "Reviewer")
+        let outsider = bot(id: "bot-3", handle: "outsider", name: "Outsider")
+        app.bots = [helper, reviewer, outsider]
+        app.chooseWorkspace("/srv/project")
+        app.selectBotForNewChat(reviewer)
+        app.selectBotForNewChat(helper)
+        app.selectPrimaryBotForNewChat(helper)
+        app.addComposerRecipient(reviewer)
+        app.addComposerRecipient(reviewer)
+        app.addComposerRecipient(outsider)
+        XCTAssertEqual(app.chat.composerRecipientBotIDs, [reviewer.id])
+        app.chat.composer = "Read @README.md and compare the result."
+        XCTAssertTrue(app.sendMessage())
+        let create = await recorder.firstRequest(after: 0) {
+            if case .createSession = $0 { return true }
+            return false
+        }
+        guard
+            case .createSession(let createID, _, let memberIDs, let primaryID) = try XCTUnwrap(
+                create)
+        else { return XCTFail("Expected group creation") }
+        XCTAssertEqual(memberIDs, [reviewer.id, helper.id])
+        XCTAssertEqual(primaryID, helper.id)
+        XCTAssertTrue(app.chat.composerRecipientBotIDs.isEmpty)
+        app.chat.composer = "Next draft"
+        app.addComposerRecipient(helper)
+        app.gateway.handle(
+            .sessionOpened(
+                requestID: createID,
+                payload: sessionReady(
+                    latestSequence: 0, sessionID: "group-1", memberBotIDs: memberIDs,
+                    primaryBotID: primaryID)))
+        app.gateway.handle(.sessionReplayComplete(requestID: createID, sessionID: "group-1"))
+        let sent = await recorder.firstRequest(after: 0) {
+            if case .submit = $0 { return true }
+            return false
+        }
+        guard case .submit("group-1", let submission, let recipients) = try XCTUnwrap(sent),
+            case .message(let message) = submission.op
+        else { return XCTFail("Expected group message") }
+        XCTAssertEqual(message.text, "Read @README.md and compare the result.")
+        XCTAssertEqual(recipients, [reviewer.id])
+        XCTAssertNil(message.targetTurnId)
+        XCTAssertEqual(app.chat.composer, "Next draft")
+        XCTAssertEqual(app.chat.composerRecipientBotIDs, [helper.id])
+        app.gateway.handle(.accepted(requestID: submission.id))
+        app.chat.flushComposerDraft()
+        await app.chat.composerDraftIOTask?.value
+        let saved = await app.chat.store.loadComposerDraft(
+            accountID: account.id, sessionID: "group-1")
+        XCTAssertEqual(saved, ComposerDraft(text: "Next draft", recipientBotIDs: [helper.id]))
+
+        let nextIndex = await recorder.requestCount()
+        XCTAssertTrue(app.sendMessage())
+        let next = await recorder.firstRequest(after: nextIndex) {
+            if case .submit = $0 { return true }
+            return false
+        }
+        guard case .submit(_, let nextSubmission, let nextRecipients) = try XCTUnwrap(next) else {
+            return XCTFail("Expected next message")
+        }
+        XCTAssertEqual(nextRecipients, [helper.id])
+        app.gateway.handle(
+            .rejected(
+                GatewayRejection(
+                    requestId: nextSubmission.id, code: "busy", message: "Try again", fatal: false))
+        )
+        XCTAssertEqual(app.chat.composer, "Next draft")
+        XCTAssertEqual(app.chat.composerRecipientBotIDs, [helper.id])
+    }
+
     func testSwitchingSessionsFlushesAndRestoresTextDrafts() async throws {
         let suiteName = UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -115,7 +194,7 @@ extension AppModelTests {
             sessionID: "chat-2"
         )
         XCTAssertEqual(submittedDraft, ComposerDraft(text: "Draft two", reply: secondReply))
-        guard case .submit(_, let submission) = try XCTUnwrap(submitRequest) else {
+        guard case .submit(_, let submission, _) = try XCTUnwrap(submitRequest) else {
             return XCTFail("Expected submitted draft")
         }
         model.gateway.handle(.accepted(requestID: submission.id))
@@ -232,6 +311,17 @@ extension AppModelTests {
         )
         XCTAssertEqual(removedEmpty, .empty)
         XCTAssertEqual(removedOversized, .empty)
+
+        for recipients in [[""], ["bot-1", "bot-1"], [String(repeating: "x", count: 257)]] {
+            await store.saveComposerDraft(
+                ComposerDraft(text: "Invalid recipients", recipientBotIDs: recipients),
+                accountID: firstAccount.id,
+                sessionID: "invalid-recipients"
+            )
+            let invalid = await store.loadComposerDraft(
+                accountID: firstAccount.id, sessionID: "invalid-recipients")
+            XCTAssertEqual(invalid, .empty)
+        }
 
         await store.saveComposerDraft(
             ComposerDraft(text: "Will corrupt"),

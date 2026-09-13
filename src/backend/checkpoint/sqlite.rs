@@ -464,15 +464,6 @@ impl CheckpointStore for SqliteCheckpoint {
                     "session page limit must be positive".into(),
                 ));
             }
-            if request
-                .bot_id
-                .as_ref()
-                .is_some_and(|bot_id| bot_id.trim().is_empty())
-            {
-                return Err(Error::Checkpoint(
-                    "session Bot filter cannot be blank".into(),
-                ));
-            }
             let query_limit = request
                 .limit
                 .checked_add(1)
@@ -496,8 +487,7 @@ impl CheckpointStore for SqliteCheckpoint {
                             sessions.session_context_json, sessions.execution_stats_json,
                             sessions.created_at, sessions.updated_at
                      FROM sessions
-                     WHERE (?5 IS NULL OR json_extract(sessions.session_context_json, '$.bot_id') = ?5)
-                       AND (?1 IS NULL
+                     WHERE (?1 IS NULL
                         OR (
                             sessions.updated_at,
                             sessions.latest_sequence,
@@ -513,8 +503,7 @@ impl CheckpointStore for SqliteCheckpoint {
                             cursor_updated_at,
                             cursor_sequence,
                             cursor_session_id,
-                            query_limit,
-                            request.bot_id
+                            query_limit
                         ],
                         session_row,
                     )?
@@ -933,7 +922,6 @@ fn session_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
 
 fn summary_from_row(row: SessionRow) -> Result<SessionSummary> {
     let session_context: SessionContext = serde_json::from_str(&row.6)?;
-    validate_session_context(&session_context)?;
     let execution_stats: ExecutionStats = serde_json::from_str(&row.7)?;
     Ok(SessionSummary {
         session_id: row.0,
@@ -1021,7 +1009,6 @@ fn validate_checkpoint(checkpoint: &Checkpoint) -> Result<()> {
             "pending model or tool work has no active execution".into(),
         ));
     }
-    validate_session_context(&checkpoint.session_context)?;
     if let Some(step) = &checkpoint.active_model_step {
         let execution = checkpoint
             .active_execution
@@ -1055,13 +1042,6 @@ fn validate_checkpoint(checkpoint: &Checkpoint) -> Result<()> {
                 message.id(),
             )));
         }
-    }
-    Ok(())
-}
-
-fn validate_session_context(context: &SessionContext) -> Result<()> {
-    if context.bot_id.trim().is_empty() {
-        return Err(Error::Checkpoint("session Bot ID cannot be blank".into()));
     }
     Ok(())
 }

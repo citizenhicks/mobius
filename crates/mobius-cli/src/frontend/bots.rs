@@ -154,12 +154,10 @@ mod tests {
     fn bot_conversations_include_shared_membership_in_recency_order() {
         let mut gateway = gateway(vec![bot("bot-a"), bot("bot-b")]);
         let direct = mobius_gateway::wire::SessionRecord {
-            member_bot_ids: None,
+            member_bot_ids: vec!["bot-a".into()],
+            primary_bot_id: Some("bot-a".into()),
             session_id: "direct".into(),
-            session_context: mobius::protocol::SessionContext {
-                bot_id: "bot-a".into(),
-                ..Default::default()
-            },
+            session_context: mobius::protocol::SessionContext::default(),
             parent_session_id: None,
             parent_sequence: None,
             sequence: 0,
@@ -173,8 +171,7 @@ mod tests {
         };
         let mut group = direct.clone();
         group.session_id = "group".into();
-        group.session_context.bot_id.clear();
-        group.member_bot_ids = Some(vec!["bot-a".into(), "bot-b".into()]);
+        group.member_bot_ids = vec!["bot-a".into(), "bot-b".into()];
         group.updated_at = 2;
         gateway.sessions = vec![direct, group];
 

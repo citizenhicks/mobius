@@ -21,6 +21,8 @@ extension AppModel {
         routineRunPreviewRequestID = nil
         routineRunPreviewRequestBeforeSequence = nil
         isLoadingRoutineRunPreview = false
+        botConversationState.request = nil
+        botConversationState.historyRequest = nil
         chat.discardPendingComposerAttachments()
         discardFilePresentation(preservingWorkspaceTextDraft: true)
         chat.cancelSessionFileThumbnailDownloads()
@@ -67,9 +69,8 @@ extension AppModel {
         chat.sessionOpeningID = nil
         chat.pendingCachedTranscript = nil
         chat.pendingPresentedTranscript = nil
-        chat.botSessionsRequestID = nil
-        chat.pendingBotSessionResume = nil
-        chat.isLoadingBotSessions = false
+        botConversationState.request = nil
+        botConversationState.historyRequest = nil
         chat.sessionMutationRequestID = nil
         botMutationRequestID = nil
         botMutationSuccessMessage = nil
@@ -106,8 +107,8 @@ extension AppModel {
             chat.chatTitleTasks.removeAll()
             chat.titleEligibleSessionIDs.removeAll()
             chat.pendingChatTitles.removeAll()
-            chat.botSessions = []
-            chat.botSessionsBotID = nil
+            closeBotConversation()
+            botConversationState = BotConversationState()
             chat.pendingNewChatWorkspace = nil
             chat.pendingNewChatBotIDs = []
             showsWorkspaceBrowser = false
@@ -117,6 +118,8 @@ extension AppModel {
             routineRunPreviewPollingTask = nil
             chat.sessions = []
             backgroundApprovals = []
+            presentedApproval = nil
+            approvalReviewRequest = nil
             chat.chatBotFilterIDs.removeAll()
             bots = []
             navigationPath = []
@@ -223,8 +226,8 @@ extension AppModel {
         discardFilePresentation()
     }
 
-    func resetSessionState(preservingComposerAttachments: Bool = false) {
+    func resetSessionState(preservingComposerContext: Bool = false) {
         resetRootSessionState()
-        chat.resetSessionState(preservingComposerAttachments: preservingComposerAttachments)
+        chat.resetSessionState(preservingComposerContext: preservingComposerContext)
     }
 }

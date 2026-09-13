@@ -1041,6 +1041,7 @@ extension AppModelTests {
         )
         model.chat.selectedSessionID = "chat-1"
         model.chat.pendingApproval = approval
+        model.gateway.connectionState = .ready
 
         model.resolveApproval(.approved)
         let failed = await eventually { model.toast?.tone == .error }

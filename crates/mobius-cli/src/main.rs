@@ -594,6 +594,7 @@ async fn create_session(
         .send(ClientMessage::CreateSession {
             request_id: request_id.clone(),
             workspace,
+            primary_bot_id: Some(bot_id.clone()),
             bot_ids: vec![bot_id],
         })
         .await
@@ -940,7 +941,8 @@ mod tests {
     #[test]
     fn only_an_unused_startup_chat_is_pristine() {
         let mut session = SessionRecord {
-            member_bot_ids: None,
+            member_bot_ids: vec!["bot-a".into()],
+            primary_bot_id: Some("bot-a".into()),
             session_id: "startup".into(),
             session_context: Default::default(),
             parent_session_id: None,

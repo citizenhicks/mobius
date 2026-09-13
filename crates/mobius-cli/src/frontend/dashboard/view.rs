@@ -535,13 +535,12 @@ pub(super) fn render_chats(frame: &mut ratatui::Frame<'_>, area: Rect, state: &m
                     SessionActivityState::Running => ("●", Role::Success),
                     SessionActivityState::AwaitingApproval => ("●", Role::Warning),
                 };
-                let bot = session.session_context.bot_id.as_str();
-                let bot = state
-                    .gateway
-                    .bots
+                let bot = session
+                    .member_bot_ids
                     .iter()
-                    .find(|candidate| candidate.id == bot)
-                    .map_or_else(String::new, |bot| format!(" · @{}", bot.handle));
+                    .filter_map(|id| state.gateway.bots.iter().find(|bot| &bot.id == id))
+                    .map(|bot| format!(" · @{}", bot.handle))
+                    .collect::<String>();
                 Line::styled(
                     format!(
                         " {symbol} {}{bot} · {}",

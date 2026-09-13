@@ -758,7 +758,7 @@ struct SessionCatalogRow: View {
     }
 
     private var ownershipDescription: String {
-        model.bots.filter { session.botIds.contains($0.id) }
+        model.bots.filter { session.memberBotIds.contains($0.id) }
             .map { "@\($0.handle)" }.joined(separator: ", ")
     }
 

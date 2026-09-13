@@ -1,8 +1,7 @@
 use mobius::backend::checkpoint::{Checkpoint, sqlite::SqliteCheckpoint};
 use mobius::backend::model::provider::HostedWebSearch;
-use mobius::middleware::bots::BotsBackend;
 
-use crate::groups::GroupStore;
+use crate::chats::ChatStore;
 use crate::provider_catalog::*;
 
 use super::*;
@@ -489,7 +488,6 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
     let original =
         ChatSpec::for_bot(&workspace, &original_bot, store.state_dir(), None).expect("chat spec");
     let mut checkpoint = Checkpoint::empty("chat");
-    checkpoint.session_context.bot_id = original_bot.id.clone();
     checkpoint.metadata = original.metadata().expect("chat metadata");
     checkpoint.metadata.insert(
         "capability.test".into(),
@@ -526,10 +524,10 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
     prepared.models = Arc::clone(&shared_router);
     let prepared = Arc::new(prepared);
     let gateway = Arc::new(Mutex::new(gateway));
-    let (groups, _deliveries) = GroupStore::new(store.state_dir(), Arc::clone(&bots)).unwrap();
-    let groups: Arc<dyn BotsBackend> = Arc::new(groups);
+    let (groups, _deliveries) = ChatStore::new(store.state_dir(), Arc::clone(&bots)).unwrap();
+    let groups = Arc::new(groups);
     let default_tools = {
-        let mut built = assemble(
+        let built = assemble(
             Arc::clone(&gateway),
             &original,
             &store,
@@ -539,6 +537,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
             Arc::new(tokio::sync::Mutex::new(())),
             Arc::new(crate::computer_runtime::desktop::DesktopControl::default()),
             Arc::clone(&groups),
+            Arc::clone(&bots),
             Some("chat".into()),
             "test",
             Arc::clone(&prepared),
@@ -555,6 +554,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
             Arc::new(tokio::sync::Mutex::new(())),
             Arc::new(crate::computer_runtime::desktop::DesktopControl::default()),
             Arc::clone(&groups),
+            Arc::clone(&bots),
             Some("sibling".into()),
             "test",
             Arc::clone(&prepared),
@@ -563,11 +563,16 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         .expect("assemble another chat from the same prepared Bot");
         assert!(Arc::ptr_eq(&built.model_router, &sibling.model_router));
         assert!(!Arc::ptr_eq(&built.sandbox, &sibling.sandbox));
-        let (sender, mut events) = sibling.agent.into_parts();
+        let (sender, mut events) = sibling
+            .agent
+            .start()
+            .await
+            .expect("start sibling")
+            .into_parts();
         drop(sender);
         while events.recv().await.is_some() {}
-        built
-            .agent
+        let mut agent = built.agent.start().await.expect("start default agent");
+        agent
             .sender()
             .submit(mobius::protocol::Op::Message {
                 message: mobius::protocol::MessageSubmission {
@@ -580,24 +585,20 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
                 },
             })
             .expect("submit default tool capture");
-        while let Some(event) = built.agent.next_event().await {
+        while let Some(event) = agent.next_event().await {
             if matches!(event.msg, mobius::protocol::EventMsg::TurnComplete(_)) {
                 break;
             }
         }
         let tools = captured_tools.lock().expect("captured tools").clone();
-        let (sender, mut events) = built.agent.into_parts();
+        let (sender, mut events) = agent.into_parts();
         drop(sender);
         while events.recv().await.is_some() {}
         tools
     };
     let mut composition = original_bot.config.config.clone();
     composition.middleware.set_enabled("scratchpad", false);
-    composition.middleware.set_setting(
-        "bots",
-        "routine_creation",
-        Some(mobius::protocol::FrontendSettingValue::String("on".into())),
-    );
+    composition.routine_creation = true;
     composition.system_prompt = "updated instructions".into();
     let updated_bot = bots
         .update_bot(
@@ -611,13 +612,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         .expect("updated Bot");
     let updated = ChatSpec::for_bot(&workspace, &updated_bot, store.state_dir(), None)
         .expect("updated chat spec");
-    assert!(routine_creation_enabled(
-        updated_bot
-            .config
-            .config
-            .middleware
-            .setting("bots", "routine_creation")
-    ));
+    assert!(updated_bot.config.config.routine_creation);
 
     let gateway_config = gateway.lock().expect("gateway config").clone();
     let mut prepared = prepare_bot(
@@ -632,7 +627,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
     .expect("prepare updated Bot");
     prepared.models = Arc::clone(&shared_router);
     let prepared = Arc::new(prepared);
-    let mut built = assemble(
+    let built = assemble(
         Arc::clone(&gateway),
         &updated,
         &store,
@@ -642,6 +637,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         Arc::new(tokio::sync::Mutex::new(())),
         Arc::new(crate::computer_runtime::desktop::DesktopControl::default()),
         groups,
+        Arc::clone(&bots),
         Some("chat".into()),
         "test",
         Arc::clone(&prepared),
@@ -658,8 +654,8 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         "---\nname: fixture\ndescription: Fixture skill.\n---\n"
     );
     assert!(Arc::ptr_eq(&prepared.models, &built.model_router));
-    built
-        .agent
+    let mut agent = built.agent.start().await.expect("start updated agent");
+    agent
         .sender()
         .submit(mobius::protocol::Op::Message {
             message: mobius::protocol::MessageSubmission {
@@ -673,7 +669,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         })
         .expect("submit prompt capture");
     tokio::time::timeout(Duration::from_secs(5), async {
-        while let Some(event) = built.agent.next_event().await {
+        while let Some(event) = agent.next_event().await {
             if let mobius::protocol::EventMsg::Error(error) = event.msg {
                 panic!("prompt capture agent failed: {error:?}");
             }
@@ -703,8 +699,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
                     && prompt.contains("Own updated fixture work.")
             })
     );
-    let scratchpad = built
-        .agent
+    let scratchpad = agent
         .frontend()
         .contributions()
         .iter()
@@ -713,7 +708,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
     assert_eq!(scratchpad.commands.len(), 1);
     assert_eq!(scratchpad.commands[0].name, "scratchpad");
     assert_eq!(scratchpad.widgets.len(), 1);
-    let (sender, mut events) = built.agent.into_parts();
+    let (sender, mut events) = agent.into_parts();
     drop(sender);
     while events.recv().await.is_some() {}
     let checkpoint = checkpoints
@@ -821,8 +816,8 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
     let scratchpad = ScratchpadStore::new(Arc::clone(&checkpoints));
     let session_files = SessionFileStore::new(store.state_dir());
     let bots = Arc::new(crate::bots::BotStore::open(store.state_dir()).expect("Bots"));
-    let (groups, _deliveries) = GroupStore::new(store.state_dir(), bots).unwrap();
-    let groups: Arc<dyn BotsBackend> = Arc::new(groups);
+    let (groups, _deliveries) = ChatStore::new(store.state_dir(), Arc::clone(&bots)).unwrap();
+    let groups = Arc::new(groups);
     let backend: Arc<dyn SandboxBackend> =
         Arc::new(LocalSandbox::new(&workspace).expect("sandbox"));
     let discover = |resolved: &ResolvedExtensions| {
@@ -846,6 +841,8 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
         scratchpad.clone(),
         session_files.clone(),
         Arc::clone(&groups),
+        Arc::clone(&bots),
+        false,
         Arc::clone(&backend),
         None,
         &active,
@@ -862,6 +859,8 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
         scratchpad,
         session_files,
         groups,
+        Arc::clone(&bots),
+        false,
         backend,
         None,
         &inactive,

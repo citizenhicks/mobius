@@ -295,8 +295,13 @@ async fn handle_terminal_input(
                 paste_clipboard(gateway, state, uploads, clipboard_preparation);
             }
             UiAction::Exit => {
-                interrupt_active_turn(sender, session_id, state).await;
+                let _ = stop_chat(sender, session_id).await;
                 return Ok(Some(FrontendExit::Exit));
+            }
+            UiAction::StopChat => {
+                if let Err(error) = stop_chat(sender, session_id).await {
+                    state.push(error.to_string(), TranscriptTone::Error);
+                }
             }
             UiAction::ChooseBot { workspace, clear } => {
                 choose_bot(gateway, session, workspace, clear, state);
@@ -422,7 +427,7 @@ fn choose_bot(
     state.open_bot_picker(
         &gateway.bots,
         workspace,
-        &session.session.context.bot_id,
+        session.primary_bot_id.as_deref().unwrap_or_default(),
         clear,
     );
 }
@@ -440,6 +445,7 @@ async fn create_session(
             request_id: request_id.clone(),
             workspace,
             bot_ids,
+            primary_bot_id: None,
         })
         .await;
     if let Err(error) = result {
@@ -733,10 +739,14 @@ async fn handle_clipboard_preparation(
     }
 }
 
-async fn interrupt_active_turn(sender: &GatewaySender, session_id: &str, state: &TuiState) {
-    if let Some(turn_id) = state.active_turn().map(str::to_owned) {
-        let _ = send_op(sender, session_id, Op::Interrupt { turn_id }).await;
-    }
+async fn stop_chat(sender: &GatewaySender, session_id: &str) -> Result<()> {
+    sender
+        .send(ClientMessage::StopChat {
+            request_id: Uuid::new_v4().to_string(),
+            session_id: session_id.into(),
+        })
+        .await
+        .map_err(|error| Error::Stopped(error.to_string()))
 }
 
 async fn send_and_report(sender: &GatewaySender, session_id: &str, op: Op, state: &mut TuiState) {
@@ -802,16 +812,8 @@ async fn open_bots(
     state: &mut TuiState,
     session_id: &str,
 ) -> bool {
-    let bot_id = session.session.context.bot_id.clone();
-    let result = bots::run(
-        terminal,
-        sender,
-        events,
-        gateway,
-        Some(&bot_id),
-        Some(&bot_id),
-    )
-    .await;
+    let bot_id = session.primary_bot_id.as_deref();
+    let result = bots::run(terminal, sender, events, gateway, bot_id, bot_id).await;
     if !gateway
         .sessions
         .iter()
@@ -879,7 +881,7 @@ fn sync_session_info(
     session: &SessionReadyPayload,
     gateway: &ReadyPayload,
 ) -> Result<()> {
-    let bot = if session.member_bot_ids.is_some() {
+    let bot = if session.member_bot_ids.len() != 1 {
         None
     } else {
         Some(session_bot(gateway, session)?)
@@ -973,10 +975,8 @@ fn enrich_resume_picker(
         if let Some(origin) = &session.session_context.origin_label {
             details.push(origin.clone());
         }
-        if let Some(members) = &session.member_bot_ids {
-            details.push(member_labels(members, bots));
-        } else if let Some(handle) = bot_handle(&session.session_context.bot_id, bots) {
-            details.push(format!("@{handle}"));
+        if !session.member_bot_ids.is_empty() {
+            details.push(member_labels(&session.member_bot_ids, bots));
         }
         details.push(format!("started {}", human_time(session.created_at)));
         option.description = details.join(" · ");
@@ -1020,14 +1020,18 @@ fn session_bot<'a>(
     gateway: &'a ReadyPayload,
     session: &SessionReadyPayload,
 ) -> Result<&'a BotRecord> {
+    let bot_id = session
+        .primary_bot_id
+        .as_deref()
+        .ok_or_else(|| Error::Config("this Chat has no primary Bot".into()))?;
     gateway
         .bots
         .iter()
-        .find(|bot| bot.id == session.session.context.bot_id)
+        .find(|bot| bot.id == bot_id && session.member_bot_ids.iter().any(|id| id == bot_id))
         .ok_or_else(|| {
             Error::Config(format!(
                 "session {} references unknown Bot {}",
-                session.session.session_id, session.session.context.bot_id
+                session.session.session_id, bot_id
             ))
         })
 }
@@ -1052,10 +1056,7 @@ fn agent_summary(
         return format!(
             "MÖBIUS v{} · {}\nworkspace: {}",
             env!("CARGO_PKG_VERSION"),
-            member_labels(
-                session.member_bot_ids.as_deref().unwrap_or_default(),
-                &gateway.bots
-            ),
+            member_labels(&session.member_bot_ids, &gateway.bots),
             super::terminal_text(&session.workspace.path.display().to_string()),
         );
     };
@@ -1127,11 +1128,23 @@ async fn send_op(
     op: Op,
 ) -> Result<String> {
     let id = Uuid::new_v4().to_string();
-    sender
-        .send(ClientMessage::Submit {
+    let message = match op {
+        Op::ExecApproval {
+            id: approval_request_id,
+            decision,
+        } => ClientMessage::ReviewApproval {
+            request_id: id.clone(),
+            approval_request_id,
+            decision,
+        },
+        op => ClientMessage::Submit {
             session_id: session_id.into(),
             submission: Submission { id: id.clone(), op },
-        })
+            recipient_bot_ids: Vec::new(),
+        },
+    };
+    sender
+        .send(message)
         .await
         .map(|()| id)
         .map_err(|error| Error::Stopped(error.to_string()))
@@ -1159,6 +1172,7 @@ mod tests {
                     submission_id: None,
                     msg: EventMsg::ContextCompacted,
                 },
+                recipient_bot_ids: Vec::new(),
                 stream_metrics: Vec::new(),
                 blocks: Vec::new(),
                 preview: None,
@@ -1309,7 +1323,7 @@ mod tests {
             String::new(),
         );
         let mut session = session_payload("group-chat");
-        session.member_bot_ids = Some(vec!["bot-a".into(), "bot-b".into()]);
+        session.member_bot_ids = vec!["bot-a".into(), "bot-b".into()];
         session.active_turn_ids = vec!["turn-a".into(), "turn-b".into()];
         session.pending_approvals = ["a", "b"]
             .map(|suffix| ExecApprovalRequestEvent {
@@ -1396,7 +1410,7 @@ mod tests {
         let mut state = TuiState::default();
         let mut gateway = ready_payload();
         let mut session = session_payload("session-a");
-        session.member_bot_ids = Some(vec!["bot-a".into()]);
+        session.member_bot_ids = vec!["bot-a".into()];
         session.latest_sequence = 2;
         session.active_turn_ids = vec!["current-turn".into()];
         session.pending_approvals = vec![ExecApprovalRequestEvent {
@@ -1484,7 +1498,8 @@ mod tests {
 
     fn session_payload(session_id: &str) -> SessionReadyPayload {
         SessionReadyPayload {
-            member_bot_ids: None,
+            member_bot_ids: vec!["bot-a".into()],
+            primary_bot_id: Some("bot-a".into()),
             active_turn_ids: Vec::new(),
             pending_approvals: Vec::new(),
             latest_sequence: 0,
@@ -1518,7 +1533,17 @@ mod tests {
         ReadyPayload {
             gateway_version: env!("CARGO_PKG_VERSION").into(),
             machine_name: String::new(),
-            bots: Vec::new(),
+            bots: vec![BotRecord {
+                id: "bot-a".into(),
+                handle: "alice".into(),
+                name: "Alice".into(),
+                description: String::new(),
+                tint: Default::default(),
+                config: VersionedAgentConfig {
+                    revision: 1,
+                    config: Default::default(),
+                },
+            }],
             sessions: Vec::new(),
             background_approvals: Vec::new(),
             providers: Vec::new(),
@@ -1614,7 +1639,8 @@ mod tests {
             })
             .collect();
         let mut session = session_payload("group");
-        session.member_bot_ids = Some(vec!["bot-ada".into(), "bot-grace".into()]);
+        session.member_bot_ids = vec!["bot-ada".into(), "bot-grace".into()];
+        session.primary_bot_id = Some("bot-ada".into());
         let catalog = UiCatalog::build(&[], &session.workspace.path).expect("catalog");
         let mut state = TuiState::new(
             &catalog,
@@ -1629,7 +1655,8 @@ mod tests {
         assert_eq!(state.model.model, "Group chat");
         assert!(state.agent_summary.contains("@ada, @grace"));
         assert_eq!(state.active_message_delivery, None);
-        session.member_bot_ids = None;
+        session.member_bot_ids = vec!["missing-bot".into()];
+        session.primary_bot_id = Some("missing-bot".into());
         assert!(sync_session(&mut state, &session, &gateway).is_err());
     }
 
@@ -1649,10 +1676,10 @@ mod tests {
             }],
         });
         let sessions = [SessionRecord {
-            member_bot_ids: Some(vec!["bot-a".into(), "bot-b".into()]),
+            member_bot_ids: vec!["bot-a".into(), "bot-b".into()],
+            primary_bot_id: Some("bot-a".into()),
             session_id: "session-a".into(),
             session_context: SessionContext {
-                bot_id: String::new(),
                 workspace_id: Some("workspace-a".into()),
                 workspace_label: Some("Project A".into()),
                 ..SessionContext::default()

@@ -137,6 +137,13 @@ async fn provider_removal_defers_chat_rebuild_and_deletes_credential() {
         .await
         .expect("chat");
     let session_id = host.session_id().to_owned();
+    let bot_id = host
+        .snapshot(None)
+        .await
+        .expect("Chat")
+        .ready
+        .primary_bot_id
+        .expect("Bot owner");
     let mut events = host.subscribe();
     let mut gateway_events = gateway.subscribe();
 
@@ -152,7 +159,6 @@ async fn provider_removal_defers_chat_rebuild_and_deletes_credential() {
         &gateway.state.lock().await.sessions[&session_id].inner,
         &host.inner
     ));
-    let bot_id = host.bot_id().await.expect("Bot owner");
     assert_eq!(
         ready
             .bots
@@ -240,6 +246,9 @@ async fn provider_removal_save_failure_keeps_idle_resident_and_config_usable() {
         .await
         .expect("chat");
     let session_id = host.session_id().to_owned();
+    host.snapshot(None).await.unwrap();
+    let operations = Arc::clone(&gateway.state.lock().await.store.runtime_operations);
+    let before = operations.counts();
     let config_path = root.path().join("state").join("gateway.toml");
     std::fs::remove_file(&config_path).expect("remove gateway config");
     std::fs::create_dir(&config_path).expect("block gateway config save");
@@ -276,6 +285,8 @@ async fn provider_removal_save_failure_keeps_idle_resident_and_config_usable() {
             .map(|credential| credential.api_key),
         Some("unused-secret".into())
     );
+    host.accepts_file_attachments().await.unwrap();
+    assert_eq!(operations.counts(), before);
 }
 
 #[tokio::test]
@@ -522,6 +533,8 @@ async fn credential_update_prepares_once_when_matching_chats_are_next_used() {
     let second = create_test_session(&gateway, &workspace)
         .await
         .expect("second chat");
+    first.snapshot(None).await.unwrap();
+    second.snapshot(None).await.unwrap();
     let operations = Arc::clone(&gateway.state.lock().await.store.runtime_operations);
     let before = operations.counts();
     let mut first_events = first.subscribe();
@@ -1054,6 +1067,7 @@ async fn provider_presentation_edits_do_not_prepare_or_assemble() {
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
     let host = create_test_session(&gateway, &workspace).await.unwrap();
+    host.snapshot(None).await.unwrap();
     let operations = Arc::clone(&gateway.state.lock().await.store.runtime_operations);
     let before = operations.counts();
     let ready = gateway
@@ -1084,6 +1098,7 @@ async fn unrelated_credential_edits_leave_prepared_chats_untouched() {
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
     let host = create_test_session(&gateway, &workspace).await.unwrap();
+    host.snapshot(None).await.unwrap();
     let operations = Arc::clone(&gateway.state.lock().await.store.runtime_operations);
     let before = operations.counts();
     gateway
@@ -1133,7 +1148,11 @@ async fn credential_refresh_retries_an_inflight_bot_preparation() {
     let before = operations.counts();
     let creating = {
         let gateway = gateway.clone();
-        tokio::spawn(async move { gateway.create_session(&workspace, &bot.id).await })
+        tokio::spawn(async move {
+            let host = gateway.create_session(&workspace, &bot.id).await?;
+            host.snapshot(None).await?;
+            Ok::<_, Rejection>(host)
+        })
     };
     tokio::time::timeout(Duration::from_secs(5), async {
         while operations.counts().0 == before.0 {

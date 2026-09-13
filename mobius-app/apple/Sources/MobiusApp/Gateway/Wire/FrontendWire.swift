@@ -469,6 +469,41 @@ struct RecordedEvent: Decodable, Sendable {
     let streamMetrics: [StreamMetrics]
     let blocks: [RenderedBlock]
     let preview: RenderedPreview?
+    let recipientBotIds: [String]
+
+    init(
+        sequence: UInt64, recordedAtMs: Int64, event: AgentEventRecord,
+        streamMetrics: [StreamMetrics], blocks: [RenderedBlock], preview: RenderedPreview?,
+        recipientBotIds: [String] = []
+    ) {
+        self.sequence = sequence
+        self.recordedAtMs = recordedAtMs
+        self.event = event
+        self.streamMetrics = streamMetrics
+        self.blocks = blocks
+        self.preview = preview
+        self.recipientBotIds = recipientBotIds
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+        let recipientBotIds = try container.decode([String].self, forKey: "recipientBotIds")
+        guard recipientBotIds.count <= 100,
+            Set(recipientBotIds).count == recipientBotIds.count,
+            recipientBotIds.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 256 })
+        else {
+            throw GatewayWireError.invalidFrame("recorded event has invalid recipient Bot IDs")
+        }
+        self.init(
+            sequence: try container.decode(UInt64.self, forKey: "sequence"),
+            recordedAtMs: try container.decode(Int64.self, forKey: "recordedAtMs"),
+            event: try container.decode(AgentEventRecord.self, forKey: "event"),
+            streamMetrics: try container.decode([StreamMetrics].self, forKey: "streamMetrics"),
+            blocks: try container.decode([RenderedBlock].self, forKey: "blocks"),
+            preview: try container.decodeIfPresent(RenderedPreview.self, forKey: "preview"),
+            recipientBotIds: recipientBotIds
+        )
+    }
 }
 
 enum ModelStepContentPhase: String, Decodable, Sendable {

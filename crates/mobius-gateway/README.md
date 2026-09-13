@@ -1,7 +1,7 @@
 # möbius Gateway
 
 `mobius-gateway` is the headless möbius runtime. One process owns machine
-credentials, usage, durable Bot profiles, Bot routines, and group chats
+credentials, usage, durable Bot profiles, Bot routines, and public chats
 while hosting up to 32 independent conversations. Every conversation belongs
 to exactly one Bot and owns only its canonical workspace and transcript; the
 Bot owns its model, reasoning, capabilities, approval policy, extensions, and
@@ -65,7 +65,7 @@ for building, packaging, and local connection requirements.
 
 Library hosts should signal shutdown through `GatewayServer::serve_until` and
 await its return. The server closes connections, finishes routine dispatch, stops
-group message delivery, and shuts down resident sessions, including active routines.
+chat message delivery, and shuts down resident sessions, including active routines.
 Dropping the serving future is not a graceful-shutdown boundary.
 
 Initialize and pair the default gateway:
@@ -133,8 +133,8 @@ the host-side recovery flow for a stopped gateway.
 
 By default, owner-only state is stored under `~/.mobius/gateway`. Set
 `MOBIUS_GATEWAY_STATE_DIR` or pass `--state-dir` to use another location.
-Bot profiles and routine history share `bots.sqlite3`; session checkpoints and
-journals use a separate database. Unsupported configuration and database versions
+Bot profiles and routine history share `bots.sqlite3`; public Chats use `chats.sqlite3`.
+Private execution checkpoints and journals use `checkpoints.sqlite3`. Unsupported configuration and database versions
 are rejected, not migrated or reset automatically. Back up state before upgrading.
 On Linux, run the gateway account without permitted or ambient capabilities;
 Bubblewrap rejects a non-root caller that retains them. Hosts that allow user,
@@ -220,18 +220,25 @@ mobius-gateway connect # add --endpoint tls://HOST:PORT for TLS
 
 Each Bot may own routines with one-time, interval, or standard five-field cron
 schedules, optionally bounded by an end time and pinned to a workspace. Every invocation creates a
-fresh hidden conversation owned by that Bot, exposed through routine history rather than the chat
+fresh hidden conversation owned by that Bot, exposed through routine history and the Bot's private
+conversations rather than the chat
 catalog; it never installs a system crontab entry or spawns a child CLI. Routine instructions are
 owner-only under the gateway state directory. With no clients
 and no active routines, the gateway exits after 72 hours. Stopping it manually also stops routine
 work; cron occurrences are not replayed after restart, and intervals catch up at most one overdue
 occurrence.
 
-Choose several Bots in New Chat to create a group in the selected workspace.
-Only exact member @mentions wake a Bot. Each member uses its own private Agent
-context, reads recent shared history automatically, and publishes its normal final
-answer to the conversation. Mentions in that answer can wake another member.
-The same Bot can join several groups. Shared history, attachments, and approvals
-use the normal chat controls; deleting a group preserves its Bots and routines.
+The Bot's Private conversations page lists its materialized Chat executions, previous
+Chat assignments, routine runs, and their subagents. These paged transcripts and
+attachments are read-only: inspection never starts an Agent or opens a public Chat.
+Routine previews use the same history path and transcript renderer.
+
+Choose one or more Bots in New Chat and select a primary with the king control.
+Messages without recipient pills go to the primary. Tap members in the Chat header
+to address a message; plain @mentions do not route work. Every participant has its
+own private execution context. A one-Bot Chat shows execution inline; a multi-Bot
+Chat publishes final replies, artifacts, approvals, and activity. Explicit validated
+recipient lists on Bot replies enable deliberate handoffs. Stop cancels active and
+pending work for the whole Chat. Deleting a Chat preserves its Bots and routines.
 See [Bots and context](BOTS.md) for history recovery, context boundaries, scratchpad
 knowledge, task lists, and subagents.

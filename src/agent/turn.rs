@@ -256,6 +256,9 @@ impl Runner {
                 ActiveRoute::Approval { .. } => {}
             }
         }
+        if inbox.receiver.is_closed() {
+            return Err(Error::Stopped("frontend disconnected".into()));
+        }
         Ok(SubmissionDrain {
             input_changed,
             interrupted: None,
@@ -281,14 +284,8 @@ impl Runner {
         ))
     }
 
-    async fn complete_turn(
-        &mut self,
-        submission_id: &str,
-        turn_id: &str,
-        events: Vec<Event>,
-    ) -> Result<()> {
+    async fn complete_turn(&mut self, turn_id: &str, events: Vec<Event>) -> Result<()> {
         self.finish_turn(
-            submission_id,
             turn_id,
             ExecutionOutcome::Completed,
             EventMsg::TurnComplete(TurnCompleteEvent {
@@ -310,7 +307,7 @@ impl Runner {
             .await
     }
 
-    async fn abort_with_events(
+    pub(super) async fn abort_with_events(
         &mut self,
         submission_id: &str,
         turn_id: &str,
@@ -325,7 +322,6 @@ impl Runner {
             self.state.active_model_step = None;
             self.state.pending_approval = None;
             self.finish_turn(
-                submission_id,
                 turn_id,
                 outcome,
                 EventMsg::TurnAborted(TurnAbortedEvent {
@@ -346,22 +342,30 @@ impl Runner {
 
     async fn finish_turn(
         &mut self,
-        submission_id: &str,
         turn_id: &str,
         outcome: ExecutionOutcome,
         terminal: EventMsg,
         mut events: Vec<Event>,
     ) -> Result<()> {
+        let submission_id = self
+            .state
+            .active_execution
+            .as_ref()
+            .ok_or_else(|| {
+                Error::Checkpoint("cannot finish a turn without an active execution".into())
+            })?
+            .submission_id
+            .clone();
         self.config.middleware.finish_message_turn(
             &mut self.state.pending_messages,
             turn_id,
             outcome,
         )?;
         events.extend(
-            self.turn_end_events(submission_id, turn_id, outcome)
+            self.turn_end_events(&submission_id, turn_id, outcome)
                 .await?,
         );
-        events.push(turn_event(submission_id, terminal));
+        events.push(turn_event(&submission_id, terminal));
         self.finish_and_persist_execution(outcome, events).await?;
         Ok(())
     }
