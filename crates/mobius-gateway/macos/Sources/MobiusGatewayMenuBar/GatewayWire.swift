@@ -1,7 +1,7 @@
 import Foundation
 
 // Checked against the Rust gateway by build.sh. This frontend consumes only voice and session data.
-let gatewayProtocolVersion = 80
+let gatewayProtocolVersion = 81
 let maximumGatewayFrameBytes = 50 * 1024 * 1024
 
 enum GatewayWireError: LocalizedError {
@@ -93,7 +93,7 @@ struct VoiceChat: Decodable, Identifiable, Equatable {
     var workspace: String { sessionContext.workspaceLabel ?? "." }
 
     struct Context: Decodable, Equatable {
-        let botId: String
+        let ownerId: String
         let workspaceId: String?
         let workspaceLabel: String?
     }

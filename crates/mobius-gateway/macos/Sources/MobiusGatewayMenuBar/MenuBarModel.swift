@@ -45,7 +45,7 @@ final class MenuBarModel {
 
     var selectedChat: VoiceChat? { chats.first { $0.id == selectedChatID } }
     var selectedBot: VoiceBot? {
-        bots.first { $0.id == (selectedChat?.sessionContext.botId ?? draftBotID) }
+        bots.first { $0.id == (selectedChat?.sessionContext.ownerId ?? draftBotID) }
     }
     var workspacePath: String {
         selectedChat?.sessionContext.workspaceLabel ?? draftWorkspace ?? "."
@@ -60,7 +60,7 @@ final class MenuBarModel {
     }
     var chatGroups: [(workspace: String, chats: [VoiceChat])] {
         Dictionary(
-            grouping: chats.filter { $0.sessionContext.botId == selectedBot?.id }, by: \.workspace
+            grouping: chats.filter { $0.sessionContext.ownerId == selectedBot?.id }, by: \.workspace
         )
         .map { (workspace: $0.key, chats: $0.value) }
         .sorted { $0.workspace.localizedStandardCompare($1.workspace) == .orderedAscending }
@@ -470,16 +470,22 @@ extension MenuBarModel {
         }
     }
 
-    private func receiveAgent(_ event: JSONValue) throws {
-        switch event["type"]?.stringValue {
-        case "exec_approval_request":
-            approval = try VoiceApproval(event)
+    private func receiveAgent(_ payload: JSONValue) throws {
+        guard let rawEvent = payload["type"]?.stringValue else {
+            throw GatewayWireError.invalidFrame("Agent event has no type.")
+        }
+        guard let event = AgentEventKind(rawValue: rawEvent) else {
+            throw GatewayWireError.invalidFrame("Unknown agent event \(rawEvent).")
+        }
+        switch event {
+        case .execApprovalRequest:
+            approval = try VoiceApproval(payload)
             approvalSubmissionID = nil
-        case "tool_call_begin", "turn_complete", "turn_aborted":
+        case .toolCallBegin, .turnComplete, .turnAborted:
             approval = nil
             approvalSubmissionID = nil
-        case "model_changed":
-            route = try event.requiredString("route")
+        case .modelChanged:
+            route = try payload.requiredString("route")
             stopVoice()
         default: break
         }

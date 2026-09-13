@@ -492,7 +492,8 @@ private final class GatewayFixture {
                 "parentSessionId": id == "child" ? .string("one") : .null,
                 "updatedAt": .integer(Int64(10 - index)),
                 "sessionContext": .object([
-                    "botId": .string(id == "two" ? "writer" : "bot"), "workspaceId": .string(id),
+                    "ownerId": .string(id == "two" ? "writer" : "bot"),
+                    "workspaceId": .string(id),
                     "workspaceLabel": .string(
                         "/work/\(workspace)/möbius"),
                 ]),
