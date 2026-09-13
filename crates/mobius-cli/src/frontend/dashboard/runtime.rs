@@ -5,8 +5,8 @@ use mobius::protocol::{EventMsg, FrontendWidgetContent, MAX_MESSAGE_BYTES, Op, S
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayClient, GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
-    ClientKind, ClientMessage, ClientStatus, ReadyPayload, ServerMessage, SessionActivityState,
-    SessionRecord,
+    ClientKind, ClientMessage, ClientStatus, ReadyPayload, ServerFrame, ServerMessage,
+    SessionActivityState, SessionRecord,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -25,6 +25,7 @@ use crate::frontend::bots;
 use crate::frontend::setup::{self, SetupMode};
 use crate::frontend::terminal::{INPUT_POLL, MAX_INPUT_BATCH, poll_event, terminal_text};
 use crate::gateway_accounts::{configured_token, dashboard_gateway_endpoint};
+use crate::gateway_error;
 
 pub(super) async fn connect(
     state_dir: PathBuf,
@@ -70,16 +71,25 @@ pub(super) async fn connect(
 }
 
 pub(super) async fn wait_ready(events: &mut GatewayEvents) -> Result<ReadyPayload> {
+    let mut events = events.scoped();
     loop {
         let frame = events
             .next()
             .await
             .map_err(gateway_error)?
             .ok_or_else(|| Error::Stopped("gateway disconnected before it was ready".into()))?;
-        match frame.message {
+        let ServerFrame { version, message } = frame;
+        match message {
             ServerMessage::Ready { payload } => return Ok(payload),
-            ServerMessage::Error { message, .. } => return Err(Error::Stopped(message)),
-            _ => {}
+            ServerMessage::Rejected { message, .. }
+            | ServerMessage::Error {
+                message,
+                fatal: true,
+                ..
+            } => return Err(Error::Stopped(message)),
+            message => events
+                .defer(ServerFrame { version, message })
+                .map_err(gateway_error)?,
         }
     }
 }
@@ -826,8 +836,4 @@ pub(super) fn ordered_sessions(sessions: &[SessionRecord]) -> Vec<&SessionRecord
     let mut sessions = sessions.iter().collect::<Vec<_>>();
     sessions.sort_by_key(|session| session.activity.state == SessionActivityState::Idle);
     sessions
-}
-
-pub(super) fn gateway_error(error: mobius_gateway::Error) -> Error {
-    Error::Stopped(error.to_string())
 }

@@ -85,9 +85,8 @@ mod text {
     pub const SETTING_MODEL_ROUTE_LABEL: &str = "Default model";
     pub const SETTING_MODEL_ROUTE_UNSET_LABEL: &str = "Inherit parent";
     pub const TOOL_INTERRUPT_AGENT_DESCRIPTION: &str = "Interrupt a subagent in this chat's task tree and return its prior status. Cannot target /root.";
-    pub const TOOL_LIST_AGENTS_DESCRIPTION: &str =
-        "List this chat's subagents and their canonical task paths; does not list peer Bots.";
-    pub const TOOL_PARAMETER_TARGET_DESCRIPTION: &str = "Exact canonical task path from spawn_agent or list_agents, such as /root/reviewer; not a Bot handle or Bot ID.";
+    pub const TOOL_LIST_AGENTS_DESCRIPTION: &str = "List this chat's subagents and their canonical task paths; does not list unrelated agent trees.";
+    pub const TOOL_PARAMETER_TARGET_DESCRIPTION: &str = "Exact canonical task path from spawn_agent or list_agents, such as /root/reviewer; not an agent nickname or owner ID.";
     pub const TOOL_SEND_MESSAGE_DESCRIPTION: &str = "Send collaboration context to an agent in this chat's subagent task tree; completed or interrupted children are started again for the message. A child may message its parent at the parent's canonical path, including /root. The root agent is never restarted.";
     pub const TOOL_SPAWN_AGENT_DESCRIPTION: &str = "Start an async child for independent work in this chat's subagent task tree; return its canonical task path.";
     pub const TOOL_SPAWN_AGENT_PARAMETER_FORK_TURNS_DESCRIPTION: &str = "`none` for a fresh child (default), a positive integer for required recent turns, or `all` only when full history is essential.";
@@ -125,6 +124,32 @@ pub const DEFAULT_MAX_DEPTH: u8 = text::DEFAULTS_MAX_DEPTH as u8;
 pub const DEFAULT_MAX_CONCURRENCY: usize = text::DEFAULTS_MAX_CONCURRENCY as usize;
 /// Default number of retained agents, including the root.
 pub const DEFAULT_MAX_AGENTS: usize = text::DEFAULTS_MAX_AGENTS as usize;
+
+/// Validates subagent tree limits shared by framework and host composition.
+pub fn validate_limits(max_depth: u8, max_concurrency: usize, max_agents: usize) -> Result<()> {
+    if max_depth == 0 || max_depth > MAX_CONFIGURED_DEPTH {
+        return Err(Error::Config(format!(
+            "subagent max depth must be between 1 and {MAX_CONFIGURED_DEPTH}"
+        )));
+    }
+    if !(2..=MAX_CONFIGURED_CONCURRENCY).contains(&max_concurrency) {
+        return Err(Error::Config(format!(
+            "subagent max concurrency must be between 2 and {MAX_CONFIGURED_CONCURRENCY}"
+        )));
+    }
+    if max_agents < max_concurrency {
+        return Err(Error::Config(
+            "subagent max agents must be at least max concurrency".into(),
+        ));
+    }
+    if max_agents > MAX_CONFIGURED_AGENTS {
+        return Err(Error::Config(format!(
+            "subagent max agents cannot exceed {MAX_CONFIGURED_AGENTS}"
+        )));
+    }
+    Ok(())
+}
+
 const SETTINGS: &[MiddlewareSettingManifest] = &[
     MiddlewareSettingManifest::Select {
         id: "model_route",
@@ -402,21 +427,7 @@ impl Subagents {
         max_agents: usize,
         launch_agent: SubagentLauncher,
     ) -> Result<Self> {
-        if max_depth == 0 || max_depth > MAX_CONFIGURED_DEPTH {
-            return Err(Error::Config(format!(
-                "subagent max depth must be between 1 and {MAX_CONFIGURED_DEPTH}"
-            )));
-        }
-        if max_concurrency > MAX_CONFIGURED_CONCURRENCY {
-            return Err(Error::Config(format!(
-                "subagent max concurrency cannot exceed {MAX_CONFIGURED_CONCURRENCY}"
-            )));
-        }
-        if max_agents > MAX_CONFIGURED_AGENTS {
-            return Err(Error::Config(format!(
-                "subagent max agents cannot exceed {MAX_CONFIGURED_AGENTS}"
-            )));
-        }
+        validate_limits(max_depth, max_concurrency, max_agents)?;
         Ok(Self {
             max_depth,
             files: None,
@@ -424,7 +435,7 @@ impl Subagents {
             default_model: None,
             default_reasoning: None,
             prompt: text::PROMPT_DEFAULT.into(),
-            shared: Arc::new(Shared::new(max_concurrency, max_agents)?),
+            shared: Arc::new(Shared::new(max_concurrency, max_agents)),
         })
     }
 

@@ -4,7 +4,7 @@ use super::super::*;
 async fn active_socket_sessions_are_never_evicted() {
     let provider = OpenAiSocket::new("test-key", "test-model").expect("provider");
     let mut active = Vec::new();
-    for index in 0..MAX_SOCKET_SESSIONS {
+    for index in 0..MAX_SESSION_ENTRIES {
         active.push(
             provider
                 .session(&format!("session-{index:03}"))
@@ -21,7 +21,7 @@ async fn active_socket_sessions_are_never_evicted() {
         .expect("idle session can be evicted");
 
     let sessions = provider.sessions.lock().await;
-    assert_eq!(sessions.len(), MAX_SOCKET_SESSIONS);
+    assert_eq!(sessions.len(), MAX_SESSION_ENTRIES);
     assert!(sessions.contains_key("overflow"));
     assert!(
         active
@@ -45,9 +45,9 @@ async fn idle_socket_sessions_remain_cached_below_capacity() {
 }
 
 #[tokio::test]
-async fn sticky_http_sessions_do_not_consume_websocket_capacity() {
+async fn http_fallback_session_entries_remain_bounded() {
     let provider = OpenAiSocket::new("test-key", "test-model").expect("provider");
-    for index in 0..MAX_SOCKET_SESSIONS {
+    for index in 0..MAX_SESSION_ENTRIES {
         let session = provider
             .session(&format!("fallback-{index:03}"))
             .await
@@ -58,16 +58,25 @@ async fn sticky_http_sessions_do_not_consume_websocket_capacity() {
     let overflow = provider
         .session("overflow")
         .await
-        .expect("HTTP-only sessions do not hold provider connections");
+        .expect("idle HTTP-only session can be evicted");
     assert!(!overflow.lock().await.use_http);
     drop(overflow);
 
     let sessions = provider.sessions.lock().await;
-    assert_eq!(sessions.len(), MAX_SOCKET_SESSIONS + 1);
-    for index in 0..MAX_SOCKET_SESSIONS {
-        let session = sessions
-            .get(&format!("fallback-{index:03}"))
-            .expect("sticky HTTP session retained");
+    assert_eq!(sessions.len(), MAX_SESSION_ENTRIES);
+    assert!(sessions.contains_key("overflow"));
+    assert_eq!(
+        sessions
+            .iter()
+            .filter(|(id, _)| id.starts_with("fallback-"))
+            .count(),
+        MAX_SESSION_ENTRIES - 1
+    );
+    for session in sessions
+        .iter()
+        .filter(|(id, _)| id.starts_with("fallback-"))
+        .map(|(_, session)| session)
+    {
         assert!(
             session
                 .try_lock()

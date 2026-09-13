@@ -256,7 +256,7 @@ fn session_summary(
     SessionSummary {
         session_id: session_id.into(),
         session_context: SessionContext {
-            bot_id: "test-bot".into(),
+            owner_id: "test-bot".into(),
             ..SessionContext::default()
         },
         parent_session_id: parent_session_id.map(str::to_owned),

@@ -19,6 +19,7 @@ fn test_permissions(mutation_call_ids: &[&str]) -> SandboxPermissions {
 }
 
 fn finalize_and_bind(catalog: &mut Catalog, calls: &[ToolCall]) -> Vec<BoundToolCall> {
+    catalog.register_search().expect("register tools_search");
     catalog.finalize().expect("finalize catalog");
     let materialized = catalog
         .deferred_definitions()

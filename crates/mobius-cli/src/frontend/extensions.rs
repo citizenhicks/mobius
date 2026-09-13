@@ -3,7 +3,8 @@
 use std::io;
 
 use mobius::{Error, Result};
-use mobius_gateway::client::{GatewayEvents, GatewaySender, MAX_PENDING_FRAMES};
+use mobius_gateway::MAX_EXTENSION_SOURCE_BYTES as MAX_SOURCE_BYTES;
+use mobius_gateway::client::{GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
     ClientMessage, ExtensionHookRecord, ExtensionKind, ExtensionRecord, ReadyPayload, ServerFrame,
     ServerMessage,
@@ -21,8 +22,7 @@ use uuid::Uuid;
 use super::terminal::{INPUT_POLL, MAX_INPUT_BATCH, TerminalGuard, poll_event};
 use super::terminal_text;
 use super::theme::{Role, current};
-
-const MAX_SOURCE_BYTES: usize = 4_096;
+use crate::gateway_error;
 
 type ExtensionsTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 
@@ -359,11 +359,11 @@ pub(in crate::frontend) async fn run(
     let mut state = ExtensionsState::new(gateway);
     let mut tick = tokio::time::interval(INPUT_POLL);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut deferred = Vec::new();
+    let mut events = events.scoped();
     let mut events_open = true;
     let mut dirty = true;
 
-    let result = 'screen: loop {
+    'screen: loop {
         if dirty {
             terminal.draw(|frame| render(frame, &state, gateway))?;
             dirty = false;
@@ -375,7 +375,12 @@ pub(in crate::frontend) async fn run(
                     Err(error) => break 'screen Err(gateway_error(error)),
                 };
                 match frame {
-                    Some(frame) => match frame.message {
+                    Some(frame) => {
+                        let ServerFrame { version, message } = frame;
+                        if let Some(error) = message.response_error(None) {
+                            break 'screen Err(Error::Stopped(error.message.into()));
+                        }
+                        match message {
                         ServerMessage::Ready { payload } => {
                             *gateway = payload;
                             state.clamp_selection(gateway);
@@ -398,12 +403,10 @@ pub(in crate::frontend) async fn run(
                             state.fail(message);
                         }
                         ServerMessage::Sessions { sessions, .. } => gateway.sessions = sessions,
-                        message if deferred.len() == MAX_PENDING_FRAMES => {
-                            break 'screen Err(Error::Stopped(format!(
-                                "gateway event backlog exceeds {MAX_PENDING_FRAMES} frames while managing extensions: {message:?}"
-                            )));
-                        }
-                        message => deferred.push(ServerFrame::new(message)),
+                        message => events
+                            .defer(ServerFrame { version, message })
+                            .map_err(gateway_error)?,
+                    }
                     },
                     None => {
                         events_open = false;
@@ -443,9 +446,7 @@ pub(in crate::frontend) async fn run(
                 }
             }
         }
-    };
-    events.prepend(deferred).map_err(gateway_error)?;
-    result
+    }
 }
 
 fn install_action(source: String) -> ScreenAction {
@@ -811,10 +812,6 @@ const fn extension_kind(kind: ExtensionKind) -> &'static str {
         ExtensionKind::Skill => "skill",
         ExtensionKind::Plugin => "plugin",
     }
-}
-
-fn gateway_error(error: mobius_gateway::Error) -> Error {
-    Error::Stopped(error.to_string())
 }
 
 #[cfg(test)]

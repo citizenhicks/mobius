@@ -15,7 +15,7 @@ pub(super) async fn gateway_session_summaries(
     loop {
         let page = checkpoints
             .list_sessions_page(SessionPageRequest {
-                bot_id: None,
+                owner_id: None,
                 cursor,
                 limit: SESSION_PAGE_SIZE,
             })
@@ -228,22 +228,24 @@ pub(super) fn active_run_summary(session_id: &str, active: &ActiveExecution) -> 
 }
 
 pub(super) async fn gateway_ready(
-    state: &GatewayState,
+    state: &GatewayReadySnapshot,
 ) -> std::result::Result<ReadyPayload, Rejection> {
-    let config = state
-        .config
-        .lock()
-        .map_err(|_| internal("gateway configuration lock is poisoned"))?
-        .clone();
-    let routes =
-        configured_model_routes(&config, &state.store, &state.credentials).map_err(internal)?;
+    let (routes, provider_instances) = {
+        let _credentials = state.credential_catalog_gate.lock().await;
+        (
+            configured_model_routes(&state.config, &state.store, &state.credentials)
+                .map_err(internal)?,
+            provider_instances(&state.config, &state.store, &state.credentials)
+                .map_err(internal)?,
+        )
+    };
     let models: Vec<_> = routes.iter().map(|route| route.choice.clone()).collect();
     let model_providers = routes
         .into_iter()
         .map(|route| (route.choice.route, route.provider.instance))
         .collect();
     let middleware_features = crate::middleware_manifest::features(&models);
-    let extensions = crate::extensions::records(&config);
+    let extensions = crate::extensions::records(&state.config);
     let mut contributions = state.contributions.clone();
     contributions.push(
         state
@@ -252,18 +254,20 @@ pub(super) async fn gateway_ready(
             .await
             .map_err(internal)?,
     );
+    let (sessions, background_approvals) = gateway_catalog(&state.checkpoints, &state.activities)
+        .await
+        .map_err(internal)?;
     Ok(ReadyPayload {
         gateway_version: env!("CARGO_PKG_VERSION").into(),
         machine_name: local_machine_name().map_err(internal)?,
         bots: state.bots.bots().map_err(internal)?,
-        sessions: state.visible_sessions().await?,
-        background_approvals: background_approvals(&state.activities).await,
+        sessions,
+        background_approvals,
         providers: provider_statuses(),
-        provider_instances: provider_instances(&config, &state.store, &state.credentials)
-            .map_err(internal)?,
+        provider_instances,
         models,
         model_providers,
-        bot_defaults: config.bot_defaults,
+        bot_defaults: state.config.bot_defaults.clone(),
         middleware_features,
         extensions,
         contributions,

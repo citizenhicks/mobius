@@ -7,6 +7,18 @@ use super::provider_instance_label;
 
 pub(super) type PreparedAction = Box<ClientMessage>;
 
+pub(super) struct RenderedResponse {
+    pub(super) text: String,
+    pub(super) severity: ResponseSeverity,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ResponseSeverity {
+    Neutral,
+    Error,
+    Fatal,
+}
+
 pub(super) fn prepare(action: GatewayAction) -> Result<PreparedAction> {
     match action {
         GatewayAction::Pair => Ok(send(|request_id| ClientMessage::CreatePairingCode {
@@ -22,30 +34,45 @@ pub(super) fn prepare(action: GatewayAction) -> Result<PreparedAction> {
 pub(super) fn render_response(
     message: &ServerMessage,
     provider_instances: &[ProviderInstance],
-) -> Option<String> {
+) -> Option<RenderedResponse> {
+    let response = |text, severity| Some(RenderedResponse { text, severity });
     match message {
         ServerMessage::Accepted { .. } => None,
-        ServerMessage::Rejected { message, .. } | ServerMessage::Error { message, .. } => {
-            Some(message.clone())
-        }
+        ServerMessage::Rejected { message, fatal, .. }
+        | ServerMessage::Error { message, fatal, .. } => response(
+            message.clone(),
+            if *fatal {
+                ResponseSeverity::Fatal
+            } else {
+                ResponseSeverity::Error
+            },
+        ),
         ServerMessage::ProviderCredentialSaved { provider, .. } => {
-            Some(format!("{provider}: configured"))
+            response(format!("{provider}: configured"), ResponseSeverity::Neutral)
         }
         ServerMessage::PairingCode {
             code, expires_at, ..
-        } => Some(format!("one-time code {code} · expires {expires_at}")),
+        } => response(
+            format!("one-time code {code} · expires {expires_at}"),
+            ResponseSeverity::Neutral,
+        ),
         ServerMessage::ProviderLoginStarted {
             provider,
             verification_url,
             user_code,
             ..
-        } => Some(format!(
-            "{provider} login · open {verification_url} · enter {user_code}"
-        )),
-        ServerMessage::ProviderLoginFinished { provider, .. } => {
-            Some(format!("{provider} login complete"))
-        }
-        ServerMessage::Profile { profile, .. } => Some(render_profile(profile, provider_instances)),
+        } => response(
+            format!("{provider} login · open {verification_url} · enter {user_code}"),
+            ResponseSeverity::Neutral,
+        ),
+        ServerMessage::ProviderLoginFinished { provider, .. } => response(
+            format!("{provider} login complete"),
+            ResponseSeverity::Neutral,
+        ),
+        ServerMessage::Profile { profile, .. } => response(
+            render_profile(profile, provider_instances),
+            ResponseSeverity::Neutral,
+        ),
         _ => None,
     }
 }

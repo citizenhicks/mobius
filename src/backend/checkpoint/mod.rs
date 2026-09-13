@@ -9,7 +9,6 @@ use serde_json::Value;
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
-use crate::backend::model::ToolCall;
 use crate::backend::sandbox::NetworkAccess;
 use crate::backend::sandbox::SandboxMode;
 use crate::protocol::Event;
@@ -24,10 +23,11 @@ use crate::protocol::ModelStepContentPhase;
 use crate::protocol::SessionContext;
 use crate::protocol::SessionFileReference;
 use crate::protocol::TokenUsage;
+use crate::protocol::ToolCall;
 
 pub mod sqlite;
 
-pub(crate) const CHECKPOINT_VERSION: u32 = 16;
+pub(crate) const CHECKPOINT_VERSION: u32 = 17;
 pub(crate) const MAX_QUEUED_MESSAGES: usize = 1_024;
 const TURN_PAGE_BATCH_SIZE: usize = 100;
 const MAX_QUEUED_OWNER_BYTES: usize = 256;
@@ -482,8 +482,8 @@ pub struct SessionCursor {
 /// Bounds one newest-first session catalog query.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionPageRequest {
-    /// Restricts sessions and cursor keys to this Bot; `None` lists every Bot.
-    pub bot_id: Option<String>,
+    /// Restricts sessions and cursor keys to this owner; `None` lists every owner.
+    pub owner_id: Option<String>,
     pub cursor: Option<SessionCursor>,
     pub limit: usize,
 }

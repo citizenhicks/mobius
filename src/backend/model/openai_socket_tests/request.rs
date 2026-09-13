@@ -1,6 +1,7 @@
 use super::super::*;
 use super::support::model_request;
-use crate::backend::model::{STREAM_RETRY_LIMIT, ToolDefinition, ToolLoad};
+use crate::backend::model::{STREAM_RETRY_LIMIT, ToolDefinition};
+use crate::protocol::ToolLoad;
 
 #[test]
 fn implicit_prompt_cache_omits_options() {

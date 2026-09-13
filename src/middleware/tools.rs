@@ -20,9 +20,7 @@ use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
 use crate::backend::model::TOOLS_SEARCH_NAME;
-use crate::backend::model::ToolCall;
 use crate::backend::model::ToolDefinition;
-use crate::backend::model::ToolLoad;
 #[cfg(test)]
 use crate::backend::sandbox::BackgroundCommandPoll;
 use crate::backend::sandbox::Sandbox;
@@ -37,6 +35,8 @@ use crate::protocol::FrontendBlockState;
 use crate::protocol::FrontendBlockUpdate;
 use crate::protocol::FrontendContribution;
 use crate::protocol::FrontendTone;
+use crate::protocol::ToolCall;
+use crate::protocol::ToolLoad;
 use crate::protocol::ToolLoadEvent;
 
 mod text {
@@ -88,7 +88,6 @@ use patch::{apply_patch_document, parse_patch_document, validate_patch_complexit
 const MAX_TOOL_OUTPUT_BYTES: usize = 40_000;
 const MAX_TOOL_UI_BYTES: usize = 512;
 const MAX_TOOL_UI_LINES: usize = 5;
-const MAX_TOOL_NAME_BYTES: usize = 256;
 const MAX_TOOL_SEARCH_QUERY_BYTES: usize = 512;
 const MAX_TOOL_SEARCH_RESULTS: usize = 8;
 const MAX_MUTATION_BYTES: usize = 40_000;
@@ -324,7 +323,7 @@ impl Catalog {
             return Err(Error::Config("tool catalog is already finalized".into()));
         }
         let definition = tool.definition();
-        validate_definition(&definition)?;
+        definition.validate()?;
         if definition.name == TOOLS_SEARCH_NAME {
             return Err(Error::Config(format!(
                 "tool name `{TOOLS_SEARCH_NAME}` is reserved"
@@ -342,25 +341,40 @@ impl Catalog {
         self.insert(name, entry)
     }
 
-    /// Freezes the registry and installs `tools_search` when deferred tools exist.
+    fn register_search(&mut self) -> Result<()> {
+        if self.finalized {
+            return Err(Error::Config("tool catalog is already finalized".into()));
+        }
+        let definition = tools_search_definition();
+        definition.validate()?;
+        self.insert(
+            definition.name.clone(),
+            RegisteredTool {
+                definition,
+                exposure: ToolExposure::Direct,
+                execution_mode: ExecutionMode::Exclusive,
+                approval: ApprovalRequirement::Never,
+                cancel_on_input: false,
+                handler: RegisteredHandler::Search,
+            },
+        )
+    }
+
+    /// Freezes the registry after all tool owners have registered their handlers.
     pub fn finalize(&mut self) -> Result<()> {
         if self.finalized {
             return Err(Error::Config("tool catalog is already finalized".into()));
         }
-        if !self.deferred_definitions.is_empty() {
-            let definition = tools_search_definition();
-            let name = definition.name.clone();
-            self.insert(
-                name,
-                RegisteredTool {
-                    definition,
-                    exposure: ToolExposure::Direct,
-                    execution_mode: ExecutionMode::Exclusive,
-                    approval: ApprovalRequirement::Never,
-                    cancel_on_input: false,
-                    handler: RegisteredHandler::Search,
-                },
-            )?;
+        let has_deferred = !self.deferred_definitions.is_empty();
+        let has_search = self.tools.contains_key(TOOLS_SEARCH_NAME);
+        if has_deferred && !has_search {
+            return Err(Error::Config(
+                "deferred tools require an owning tools_search middleware".into(),
+            ));
+        }
+        if !has_deferred && has_search {
+            self.tools.remove(TOOLS_SEARCH_NAME);
+            self.refresh_definitions();
         }
         self.revision = catalog_revision(&self.tools);
         self.finalized = true;
@@ -372,6 +386,11 @@ impl Catalog {
             return Err(Error::Duplicate(format!("tool `{name}`")));
         }
         self.tools.insert(name, entry);
+        self.refresh_definitions();
+        Ok(())
+    }
+
+    fn refresh_definitions(&mut self) {
         self.registered_definitions = self
             .tools
             .values()
@@ -392,7 +411,6 @@ impl Catalog {
             .map(|tool| tool.definition.clone())
             .collect::<Vec<_>>()
             .into();
-        Ok(())
     }
 
     /// Returns all registered definitions in stable name order.
@@ -819,24 +837,6 @@ pub fn tools_search_definition() -> ToolDefinition {
     }
 }
 
-fn validate_definition(definition: &ToolDefinition) -> Result<()> {
-    if definition.name.trim().is_empty() {
-        return Err(Error::Config("tool name cannot be empty".into()));
-    }
-    if definition.name.len() > MAX_TOOL_NAME_BYTES {
-        return Err(Error::Config(format!(
-            "tool name exceeds {MAX_TOOL_NAME_BYTES} bytes"
-        )));
-    }
-    if !definition.parameters.is_object() {
-        return Err(Error::Config(format!(
-            "tool `{}` parameters must be a JSON object",
-            definition.name
-        )));
-    }
-    Ok(())
-}
-
 fn object_hook_input(input: Value) -> Result<Value> {
     if input.is_object() {
         Ok(input)
@@ -1232,7 +1232,7 @@ impl Middleware for Tools {
         for tool in &self.tools {
             catalog.register(Arc::clone(tool))?;
         }
-        Ok(())
+        catalog.register_search()
     }
 
     fn prompt_section(&self, _runtime: &super::RuntimeContext) -> Result<Option<PromptSection>> {

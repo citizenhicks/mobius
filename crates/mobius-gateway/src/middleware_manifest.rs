@@ -158,14 +158,13 @@ pub(crate) fn validate(config: &MiddlewareConfig) -> Result<()> {
             )?;
         }
     }
-    if integer_setting(config, "subagents", "max_agents")?
-        < integer_setting(config, "subagents", "max_concurrency")?
-    {
-        return Err(Error::Config(
-            "middleware setting `subagents.max_agents` must be at least `subagents.max_concurrency`"
-                .into(),
-        ));
-    }
+    let max_depth = u8::try_from(integer_setting(config, "subagents", "max_depth")?)
+        .map_err(|_| Error::Config("subagent max depth must fit an unsigned byte".into()))?;
+    mobius::middleware::subagents::validate_limits(
+        max_depth,
+        usize_setting(config, "subagents", "max_concurrency")?,
+        usize_setting(config, "subagents", "max_agents")?,
+    )?;
     Ok(())
 }
 

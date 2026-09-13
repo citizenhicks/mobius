@@ -10,7 +10,7 @@ fn scratchpad(store: &ScratchpadStore) -> Scratchpad {
 
 fn session_context() -> crate::protocol::SessionContext {
     crate::protocol::SessionContext {
-        bot_id: "test-bot".into(),
+        owner_id: "test-bot".into(),
         ..crate::protocol::SessionContext::default()
     }
 }

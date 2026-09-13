@@ -17,7 +17,7 @@ use crate::wire::{
 };
 
 use super::session::ProviderRefresh;
-use super::{GatewayHost, Rejection, gateway_ready, internal, invalid_config};
+use super::{GatewayHost, Rejection, gateway_ready_after_unlock, internal, invalid_config};
 
 const MAX_LOGIN_REQUEST_ID_BYTES: usize = 128;
 
@@ -77,7 +77,7 @@ impl GatewayHost {
             state.store.save(&next).map_err(internal)?;
             *current = next;
         }
-        let payload = gateway_ready(&state).await?;
+        let payload = gateway_ready_after_unlock(state).await?;
         let _ = self.events.send(ServerFrame::new(ServerMessage::Ready {
             payload: payload.clone(),
         }));
@@ -88,6 +88,7 @@ impl GatewayHost {
         &self,
         instance: String,
     ) -> std::result::Result<(), Rejection> {
+        let credential_mutation = self.begin_credential_mutation().await;
         let base_url = {
             let state = self.state.lock().await;
             state
@@ -110,6 +111,7 @@ impl GatewayHost {
                 .map_err(invalid_config)?
                 .flatten()
         };
+        drop(credential_mutation);
         self.refresh_provider_sessions(ProviderRefresh::Instance { instance, base_url })
             .await
     }
@@ -122,6 +124,7 @@ impl GatewayHost {
         base_url: Option<String>,
         expires_at: Option<u64>,
     ) -> std::result::Result<(), Rejection> {
+        let credential_mutation = self.begin_credential_mutation().await;
         let (base_url, configured) = {
             let state = self.state.lock().await;
             let definition = provider(&provider_id).map_err(invalid_config)?;
@@ -159,6 +162,7 @@ impl GatewayHost {
                 .cloned();
             (base_url, configured)
         };
+        drop(credential_mutation);
         if let Some(configured) = configured {
             let mut selection = configured.selection;
             selection.endpoint_auth = ProviderEndpointAuth::ProviderDefault;
@@ -404,7 +408,7 @@ impl GatewayHost {
                 })
             });
         if current == next {
-            return gateway_ready(&state).await;
+            return gateway_ready_after_unlock(state).await;
         }
         let target_epoch = catalog_changed
             .then(|| {
@@ -443,7 +447,7 @@ impl GatewayHost {
         if let Some(target_epoch) = target_epoch {
             state.provider_epoch.store(target_epoch, Ordering::Release);
         }
-        let payload = gateway_ready(&state).await?;
+        let payload = gateway_ready_after_unlock(state).await?;
         let frame = ServerFrame::new(ServerMessage::Ready {
             payload: payload.clone(),
         });
@@ -486,7 +490,7 @@ impl GatewayHost {
             .ok_or_else(|| internal("provider catalog epoch overflow"))?;
         commit_provider_removal(&state, &instance).map_err(internal)?;
         state.provider_epoch.store(target_epoch, Ordering::Release);
-        let payload = gateway_ready(&state).await?;
+        let payload = gateway_ready_after_unlock(state).await?;
         let _ = self.events.send(ServerFrame::new(ServerMessage::Ready {
             payload: payload.clone(),
         }));

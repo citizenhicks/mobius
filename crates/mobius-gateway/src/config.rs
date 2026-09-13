@@ -24,6 +24,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Digest as _;
 
+#[cfg(test)]
+use crate::wire::RoutineInteractionPolicy;
 use crate::wire::{
     AgentComposition, DailyUsage, ProfileSnapshot, ProviderConfig, ProviderEndpointAuth,
     ProviderTint, VersionedAgentConfig, WorkspaceInfo,
@@ -49,12 +51,16 @@ const CLOUDFLARE_TOKEN_FILE: &str = "cloudflare-token";
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 const MAX_CREDENTIAL_STATE_BYTES: usize = 256 * 1024;
 const MAX_SYSTEM_PROMPT_BYTES: usize = 64 * 1024;
-pub(crate) const MAX_API_KEY_BYTES: usize = 16 * 1024;
+/// Maximum UTF-8 byte length accepted for a provider credential.
+pub const MAX_PROVIDER_API_KEY_BYTES: usize = 16 * 1024;
 const MAX_PROVIDER_CATALOG_ENTRIES: usize = 64;
 const MAX_PROVIDER_CATALOG_ENTRY_BYTES: usize = 1024;
 const MAX_PROVIDER_CATALOG_BYTES: usize = 16 * 1024;
 const MAX_CUSTOM_MODEL_ROUTES: usize = 64;
-const MAX_CLOUDFLARE_TOKEN_BYTES: usize = 16 * 1024;
+/// Maximum UTF-8 byte length accepted for a Cloudflare tunnel token.
+pub const MAX_CLOUDFLARE_TOKEN_BYTES: usize = 16 * 1024;
+/// Maximum UTF-8 byte length accepted for a provider label.
+pub const MAX_PROVIDER_LABEL_BYTES: usize = 128;
 const MAX_WORKSPACE_DIRECTORY_NAME_BYTES: usize = 255;
 const MAX_ATTACHED_FOLDERS: usize = 8;
 const SECONDS_PER_DAY: u64 = 86_400;

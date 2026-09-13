@@ -1,4 +1,5 @@
 use super::*;
+use crate::protocol::MAX_TOOL_NAME_BYTES;
 
 #[test]
 fn tool_prompts_match_installed_capabilities() {
@@ -114,7 +115,7 @@ fn oversized_tool_names_are_rejected_at_registration() {
 
     assert_eq!(
         error.to_string(),
-        "configuration error: tool name exceeds 256 bytes"
+        "configuration error: tool name exceeds size limit"
     );
 }
 

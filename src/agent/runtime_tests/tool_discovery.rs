@@ -226,7 +226,7 @@ async fn rebuild_discovers_then_exposes_an_optional_tool() {
     let load = requests[1]
         .2
         .iter()
-        .find_map(|item| crate::backend::model::ToolLoad::from_input(item).expect("valid load"))
+        .find_map(|item| crate::protocol::ToolLoad::from_input(item).expect("valid load"))
         .expect("tool load");
     assert_eq!(load.tools, ["optional_work"]);
 }
@@ -277,7 +277,7 @@ async fn native_materialization_can_call_a_deferred_tool_in_the_same_step() {
     assert_eq!(requests[0].0, [crate::backend::model::TOOLS_SEARCH_NAME]);
     assert_eq!(requests[0].1, ["optional_work"]);
     assert!(requests[1].2.iter().any(|item| {
-        crate::backend::model::ToolLoad::from_input(item)
+        crate::protocol::ToolLoad::from_input(item)
             .expect("valid load")
             .is_some()
     }));
@@ -476,7 +476,7 @@ async fn compaction_preserves_loaded_deferred_tools() {
     let loads = requests[2]
         .2
         .iter()
-        .filter_map(|item| crate::backend::model::ToolLoad::from_input(item).expect("valid load"))
+        .filter_map(|item| crate::protocol::ToolLoad::from_input(item).expect("valid load"))
         .collect::<Vec<_>>();
     assert_eq!(loads.len(), 1);
     assert_eq!(loads[0].tools, ["optional_work"]);

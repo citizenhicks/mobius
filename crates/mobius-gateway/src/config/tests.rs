@@ -11,6 +11,8 @@ fn test_bot() -> crate::wire::BotRecord {
             revision: 1,
             config: AgentComposition::default(),
         },
+        accepts_file_attachments: false,
+        routine_interaction_policy: RoutineInteractionPolicy::Unattended,
     }
 }
 
@@ -895,6 +897,8 @@ fn saving_defaults_is_revisioned_and_does_not_change_existing_chat_specs() {
         description: "Own fixture work.".into(),
         tint: ProviderTint::default(),
         config: registered.bot_defaults.clone().expect("Bot defaults"),
+        accepts_file_attachments: false,
+        routine_interaction_policy: RoutineInteractionPolicy::Unattended,
     };
     let chat = ChatSpec::for_bot(workspace.path(), &bot, state.path(), None).expect("chat spec");
     let mut replacement = registered
@@ -1462,7 +1466,7 @@ fn provider_credential_write_limit_is_atomic_and_reopenable() {
     let directory = tempfile::tempdir().expect("state directory");
     let path = directory.path().join("credentials.json");
     let credentials = CredentialStore::open(path.clone()).expect("credential store");
-    let api_key = "x".repeat(MAX_API_KEY_BYTES);
+    let api_key = "x".repeat(MAX_PROVIDER_API_KEY_BYTES);
     let mut accepted = Vec::new();
     let rejected = (0..64)
         .find_map(|index| {

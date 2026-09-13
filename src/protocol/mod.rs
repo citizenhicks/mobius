@@ -5,8 +5,6 @@ use serde::Deserializer;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::backend::model::ToolCall;
-
 pub use self::replay::events as replay_events;
 pub(crate) use self::replay::{
     ATTACHMENT_CONTEXT_MARKER, ATTACHMENTS_FIELD, CONTEXT_COMPACTED_MARKER, INTERNAL_MESSAGE_FIELD,
@@ -31,6 +29,9 @@ pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 
 /// Maximum UTF-8 bytes accepted in capability command input or a queued message edit.
 pub const MAX_CAPABILITY_INPUT_BYTES: usize = 64 * 1024;
+
+pub(crate) const MAX_TOOL_NAME_BYTES: usize = 256;
+pub(crate) const TOOL_LOAD_MARKER: &str = "tool_load";
 
 /// One immutable, session-bound file addressed by an opaque reference.
 ///
@@ -87,8 +88,8 @@ pub struct Submission {
 /// backends when it creates the agent.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionContext {
-    /// Identity of the Bot that currently owns this session.
-    pub bot_id: String,
+    /// Opaque identity of the framework host that owns this session.
+    pub owner_id: String,
     /// Opaque tenant or organization identifier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tenant_id: Option<String>,
@@ -107,6 +108,68 @@ pub struct SessionContext {
     /// Optional label describing what created the session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_label: Option<String>,
+}
+
+impl SessionContext {
+    /// Validates the framework-neutral session ownership boundary.
+    pub fn validate(&self) -> crate::Result<()> {
+        crate::validate_identifier(
+            "session owner ID",
+            &self.owner_id,
+            crate::MAX_IDENTIFIER_BYTES,
+        )
+    }
+}
+
+/// One model-requested function call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub call_id: String,
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
+/// A durable control item recording tool schemas materialized at one context position.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolLoad {
+    pub catalog_revision: String,
+    pub tools: Vec<String>,
+}
+
+impl ToolLoad {
+    /// Converts the typed control item into checkpoint model context.
+    #[must_use]
+    pub fn into_input(self) -> serde_json::Value {
+        serde_json::json!({
+            "type": TOOL_LOAD_MARKER,
+            "catalog_revision": self.catalog_revision,
+            "tools": self.tools,
+            INTERNAL_MESSAGE_FIELD: TOOL_LOAD_MARKER,
+        })
+    }
+
+    /// Decodes a tool-load control item while ignoring ordinary conversation input.
+    pub fn from_input(input: &serde_json::Value) -> crate::Result<Option<Self>> {
+        if input.get("type").and_then(serde_json::Value::as_str) != Some(TOOL_LOAD_MARKER) {
+            return Ok(None);
+        }
+        let load: Self = serde_json::from_value(input.clone())?;
+        if load.catalog_revision.trim().is_empty() || load.tools.is_empty() {
+            return Err(crate::Error::Checkpoint(
+                "invalid tool-load control item".into(),
+            ));
+        }
+        let mut names = std::collections::BTreeSet::new();
+        for name in &load.tools {
+            if name.trim().is_empty()
+                || name.len() > MAX_TOOL_NAME_BYTES
+                || !names.insert(name.as_str())
+            {
+                return Err(crate::Error::Checkpoint("invalid loaded tool name".into()));
+            }
+        }
+        Ok(Some(load))
+    }
 }
 
 /// Human-readable model settings exposed to frontends.
@@ -181,10 +244,8 @@ pub struct MessageSubmission {
 impl MessageSubmission {
     /// Validates neutral message and file-reference invariants at the agent boundary.
     pub fn validate(&self, limits: SessionFileLimits) -> crate::Result<()> {
-        const MAX_IDENTIFIER_BYTES: usize = 4 * 1024;
-
         if let Some(turn_id) = &self.target_turn_id {
-            validate_message_identifier("target turn ID", turn_id, MAX_IDENTIFIER_BYTES)?;
+            crate::validate_identifier("target turn ID", turn_id, crate::MAX_IDENTIFIER_BYTES)?;
         }
         if let Some(reply) = &self.reply {
             if reply.text.is_empty() {
@@ -208,7 +269,6 @@ pub(crate) fn validate_message_content(
     text: &str,
     attachments: &[SessionFileReference],
 ) -> crate::Result<()> {
-    const MAX_IDENTIFIER_BYTES: usize = 4 * 1024;
     const MAX_HANDLE_BYTES: usize = 256;
 
     if text.len() > MAX_MESSAGE_BYTES {
@@ -224,11 +284,11 @@ pub(crate) fn validate_message_content(
             handle,
             symbol,
         } => {
-            validate_message_identifier("peer message ID", message_id, MAX_IDENTIFIER_BYTES)?;
-            validate_message_identifier("peer session ID", session_id, MAX_IDENTIFIER_BYTES)?;
-            validate_message_identifier("peer handle", handle, MAX_HANDLE_BYTES)?;
+            crate::validate_identifier("peer message ID", message_id, crate::MAX_IDENTIFIER_BYTES)?;
+            crate::validate_identifier("peer session ID", session_id, crate::MAX_IDENTIFIER_BYTES)?;
+            crate::validate_identifier("peer handle", handle, MAX_HANDLE_BYTES)?;
             if let Some(symbol) = symbol {
-                validate_message_identifier("peer symbol", symbol.as_str(), MAX_HANDLE_BYTES)?;
+                crate::validate_identifier("peer symbol", symbol.as_str(), MAX_HANDLE_BYTES)?;
             }
             if text.trim().is_empty() {
                 return Err(crate::Error::Config("peer message cannot be empty".into()));
@@ -251,8 +311,8 @@ pub(crate) fn validate_message_content(
         if Uuid::parse_str(&attachment.id).is_err() {
             return Err(crate::Error::Config("attachment ID must be a UUID".into()));
         }
-        validate_message_identifier("attachment name", &attachment.name, 255)?;
-        validate_message_identifier("attachment media type", &attachment.media_type, 127)?;
+        crate::validate_identifier("attachment name", &attachment.name, 255)?;
+        crate::validate_identifier("attachment media type", &attachment.media_type, 127)?;
         if attachment.size == 0 {
             return Err(crate::Error::Config(
                 "attachment size must be positive".into(),
@@ -289,16 +349,6 @@ fn validate_message_attachments(
             "message attachments exceed the {}-byte session limit",
             limits.max_session_bytes
         )));
-    }
-    Ok(())
-}
-
-fn validate_message_identifier(name: &str, value: &str, limit: usize) -> crate::Result<()> {
-    if value.trim().is_empty() {
-        return Err(crate::Error::Config(format!("{name} cannot be empty")));
-    }
-    if value.len() > limit {
-        return Err(crate::Error::Config(format!("{name} exceeds size limit")));
     }
     Ok(())
 }
@@ -600,7 +650,7 @@ mod tests {
     #[test]
     fn tool_call_ready_stays_internal_to_the_agent_loop() {
         assert_eq!(
-            ModelEvent::ToolCallReady(crate::backend::model::ToolCall {
+            ModelEvent::ToolCallReady(crate::protocol::ToolCall {
                 call_id: "call-1".into(),
                 name: "read_file".into(),
                 arguments: json!({"path": "README.md"}),
@@ -706,7 +756,7 @@ mod tests {
         let event = EventMsg::SessionConfigured(SessionConfiguredEvent {
             session_id: "session-1".into(),
             context: SessionContext {
-                bot_id: "bot-1".into(),
+                owner_id: "bot-1".into(),
                 tenant_id: Some("tenant-1".into()),
                 user_id: Some("user-1".into()),
                 user_name: Some("Ada".into()),
@@ -728,7 +778,7 @@ mod tests {
                 "type": "session_configured",
                 "session_id": "session-1",
                 "context": {
-                    "bot_id": "bot-1",
+                    "owner_id": "bot-1",
                     "tenant_id": "tenant-1",
                     "user_id": "user-1",
                     "user_name": "Ada",
@@ -751,7 +801,7 @@ mod tests {
         let event = EventMsg::SessionResumeRequested(SessionResumeRequestedEvent {
             session_id: "session-2".into(),
             context: SessionContext {
-                bot_id: "bot-2".into(),
+                owner_id: "bot-2".into(),
                 workspace_label: Some("Project Two".into()),
                 origin_label: Some("routine".into()),
                 ..SessionContext::default()
@@ -764,7 +814,7 @@ mod tests {
                 "type": "session_resume_requested",
                 "session_id": "session-2",
                 "context": {
-                    "bot_id": "bot-2",
+                    "owner_id": "bot-2",
                     "workspace_label": "Project Two",
                     "origin_label": "routine"
                 }
@@ -773,12 +823,12 @@ mod tests {
     }
 
     #[test]
-    fn session_context_hard_requires_bot_ownership() {
+    fn session_context_hard_requires_owner_identity() {
         assert!(serde_json::from_value::<SessionContext>(json!({})).is_err());
         assert_eq!(
-            serde_json::from_value::<SessionContext>(json!({"bot_id": "bot-1"}))
-                .expect("required Bot context")
-                .bot_id,
+            serde_json::from_value::<SessionContext>(json!({"owner_id": "bot-1"}))
+                .expect("required owner context")
+                .owner_id,
             "bot-1"
         );
     }

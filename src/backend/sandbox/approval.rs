@@ -16,7 +16,6 @@ use super::SandboxMode;
 use super::SandboxPermissions;
 use crate::Error;
 use crate::Result;
-use crate::backend::model::ToolCall;
 use crate::preview_json;
 use crate::protocol::EventMsg;
 use crate::protocol::FrontendBlock;
@@ -26,6 +25,7 @@ use crate::protocol::FrontendSlot;
 use crate::protocol::FrontendTone;
 use crate::protocol::FrontendWidget;
 use crate::protocol::ReviewDecision;
+use crate::protocol::ToolCall;
 
 const CAPABILITY: &str = "sandbox";
 const MAX_SESSION_APPROVALS: usize = 64;

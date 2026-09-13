@@ -72,6 +72,11 @@ fn names(definitions: &[ToolDefinition]) -> Vec<&str> {
         .collect()
 }
 
+fn finalize(catalog: &mut Catalog) {
+    catalog.register_search().expect("register tools_search");
+    catalog.finalize().expect("finalize catalog");
+}
+
 fn function_call(name: &str) -> ToolCall {
     ToolCall {
         call_id: format!("call-{name}"),
@@ -116,7 +121,7 @@ fn finalization_partitions_exposure_and_adds_search_only_when_needed() {
             ToolExposure::Hidden,
         )))
         .expect("hidden tool");
-    catalog.finalize().expect("finalize catalog");
+    finalize(&mut catalog);
 
     assert_eq!(
         names(&catalog.direct_definitions()),
@@ -138,8 +143,24 @@ fn finalization_partitions_exposure_and_adds_search_only_when_needed() {
     direct_only
         .register(Arc::new(ReadFile))
         .expect("direct tool");
-    direct_only.finalize().expect("finalize catalog");
+    finalize(&mut direct_only);
     assert_eq!(names(&direct_only.direct_definitions()), ["read_file"]);
+}
+
+#[test]
+fn deferred_tools_require_an_explicit_search_owner() {
+    let mut catalog = Catalog::default();
+    catalog
+        .register(Arc::new(DefaultDeferredTool))
+        .expect("deferred tool");
+
+    assert_eq!(
+        catalog
+            .finalize()
+            .expect_err("ownerless tools_search must fail")
+            .to_string(),
+        "configuration error: deferred tools require an owning tools_search middleware"
+    );
 }
 
 #[test]
@@ -157,7 +178,7 @@ fn model_steps_and_search_reuse_registered_tool_definitions() {
     ));
     catalog.register(direct.clone()).expect("direct tool");
     catalog.register(deferred.clone()).expect("deferred tool");
-    catalog.finalize().expect("finalize");
+    finalize(&mut catalog);
     let registered = catalog.registered_definitions();
     let direct_definitions = catalog.direct_definitions();
     let deferred_definitions = catalog.deferred_definitions();
@@ -206,7 +227,7 @@ fn catalog_revision_is_order_independent_and_schema_sensitive() {
                 )))
                 .expect("register tool");
         }
-        catalog.finalize().expect("finalize catalog");
+        finalize(&mut catalog);
         catalog
     };
     let first = catalog(&[("alpha", "one"), ("beta", "two")]);
@@ -385,7 +406,7 @@ fn binding_enforces_current_exposure_and_step_materialization() {
             .register(Arc::new(NamedTool::new(name, "tool", exposure)))
             .expect("register tool");
     }
-    catalog.finalize().expect("finalize catalog");
+    finalize(&mut catalog);
 
     catalog
         .bind_call(function_call("direct"), &BTreeSet::new(), &BTreeSet::new())
@@ -449,7 +470,7 @@ async fn dispatch_rechecks_exposure_in_the_current_catalog() {
             ToolExposure::Deferred,
         )))
         .expect("visible tool");
-    visible.finalize().expect("finalize visible catalog");
+    finalize(&mut visible);
     let bound = visible
         .bind_call(
             function_call("changing"),
@@ -466,7 +487,7 @@ async fn dispatch_rechecks_exposure_in_the_current_catalog() {
             ToolExposure::Hidden,
         )))
         .expect("hidden tool");
-    hidden.finalize().expect("finalize hidden catalog");
+    finalize(&mut hidden);
 
     let result = execute_batch(
         &hidden,
@@ -497,7 +518,7 @@ async fn tools_search_executes_as_a_normal_bound_tool_and_reports_loaded_names()
             ToolExposure::Deferred,
         )))
         .expect("deferred tool");
-    catalog.finalize().expect("finalize catalog");
+    finalize(&mut catalog);
     let call = catalog
         .bind_call(
             ToolCall {

@@ -194,18 +194,15 @@ pub(super) async fn request_running_pairing_code(
         let frame = events.next().await?.ok_or_else(|| {
             Error::Protocol("gateway disconnected before returning a pairing code".into())
         })?;
+        if let Some(error) = frame.message.response_error(Some(&request_id)) {
+            return Err(Error::Protocol(error.message.into()));
+        }
         match frame.message {
             ServerMessage::PairingCode {
                 request_id: actual,
                 code,
                 expires_at,
             } if actual == request_id => return Ok(PairingGrant { code, expires_at }),
-            ServerMessage::Rejected {
-                request_id: actual,
-                message,
-                ..
-            } if actual == request_id => return Err(Error::Protocol(message)),
-            ServerMessage::Error { message, .. } => return Err(Error::Protocol(message)),
             _ => {}
         }
     }

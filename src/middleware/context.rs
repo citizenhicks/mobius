@@ -1,6 +1,5 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{self, Write};
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -8,18 +7,18 @@ use serde_json::Value;
 use super::MiddlewareStack;
 use super::tools::Catalog;
 use super::tools::ToolResult;
-use super::{approximate_item_tokens, approximate_tokens};
+use super::{approximate_item_tokens, approximate_tokens, serialized_len};
 use crate::agent::{AgentRole, WeakAgentSender};
 use crate::backend::checkpoint::{
     Checkpoint, CheckpointStore, ContextRewriteReason, ExecutionOutcome, MAX_QUEUED_MESSAGES,
     QueuedMessage as DurableQueuedMessage, QueuedMessageBoundary,
 };
-use crate::backend::model::{ModelRouter, ToolCall, message_input};
+use crate::backend::model::{ModelRouter, message_input};
 use crate::backend::sandbox::ApprovalPolicy;
 use crate::protocol::{
     EventMsg, FrontendEvent, MAX_CAPABILITY_INPUT_BYTES, MessageAuthor, MessageEvent,
     MessageSubmission, MessageTarget, ReviewDecision, SessionContext, SessionFileReference,
-    TokenUsage, message_metadata,
+    TokenUsage, ToolCall, message_metadata,
 };
 use crate::{Error, Result};
 
@@ -491,7 +490,6 @@ impl ModelContext<'_> {
     /// Estimates visible history, instructions, and tool schemas at four bytes per token.
     #[must_use]
     pub fn estimated_input_tokens(&self) -> i64 {
-        let mut bytes = ByteCounter::default();
         let Ok(tools) = self
             .tools
             .prepare(self.input(), self.available_tools.clone())
@@ -508,16 +506,16 @@ impl ModelContext<'_> {
                     .filter(|tool| tools.materialized().contains(&tool.name)),
             )
             .collect::<Vec<_>>();
-        if serde_json::to_writer(&mut bytes, &visible).is_err() {
+        let Some(tool_bytes) = serialized_len(&visible) else {
             return i64::MAX;
-        }
+        };
         let history = self
             .durable_input
             .iter()
             .map(approximate_item_tokens)
             .fold(0usize, usize::saturating_add);
         i64::try_from(history.saturating_add(approximate_tokens(
-            bytes.0.saturating_add(self.instructions.len()),
+            tool_bytes.saturating_add(self.instructions.len()),
         )))
         .unwrap_or(i64::MAX)
     }
@@ -807,20 +805,6 @@ pub(super) fn provisional_message_target(
             .ok_or_else(|| Error::Checkpoint("checkpoint sequence overflow".into()))?,
         batch_item_count,
     })
-}
-
-#[derive(Default)]
-struct ByteCounter(usize);
-
-impl Write for ByteCounter {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        self.0 = self.0.saturating_add(buffer.len());
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
 }
 
 /// Mutable state exposed to the middleware preparing conversation messages.

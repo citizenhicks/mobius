@@ -535,7 +535,7 @@ pub(super) fn render_chats(frame: &mut ratatui::Frame<'_>, area: Rect, state: &m
                     SessionActivityState::Running => ("●", Role::Success),
                     SessionActivityState::AwaitingApproval => ("●", Role::Warning),
                 };
-                let bot = session.session_context.bot_id.as_str();
+                let bot = session.session_context.owner_id.as_str();
                 let bot = state
                     .gateway
                     .bots

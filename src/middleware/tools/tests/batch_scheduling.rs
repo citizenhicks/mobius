@@ -329,6 +329,7 @@ fn unknown_tools_are_rejected_before_scheduling() {
     catalog
         .register(harness.tool("parallel", ExecutionMode::Parallel))
         .expect("register parallel tool");
+    catalog.register_search().expect("register tools_search");
     catalog.finalize().expect("finalize catalog");
 
     assert_eq!(

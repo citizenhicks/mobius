@@ -56,6 +56,15 @@ pub(super) async fn activity_catalog(
     Ok((sessions, catalog.approvals.values().cloned().collect()))
 }
 
+pub(super) async fn gateway_catalog(
+    checkpoints: &Arc<dyn CheckpointStore>,
+    activities: &SessionActivities,
+) -> Result<(Vec<SessionRecord>, Vec<BackgroundApproval>)> {
+    let mut catalog = activities.lock().await;
+    let sessions = refresh_catalog(checkpoints, &mut catalog).await?;
+    Ok((sessions, catalog.approvals.values().cloned().collect()))
+}
+
 async fn refresh_catalog(
     checkpoints: &Arc<dyn CheckpointStore>,
     catalog: &mut SessionCatalog,
@@ -100,7 +109,7 @@ pub(super) async fn restore_pending_approval_activities(
     loop {
         let page = checkpoints
             .list_sessions_page(SessionPageRequest {
-                bot_id: None,
+                owner_id: None,
                 cursor,
                 limit: SESSION_PAGE_SIZE,
             })
@@ -134,18 +143,6 @@ pub(super) async fn restore_pending_approval_activities(
     Ok(())
 }
 
-pub(super) async fn background_approvals(
-    activities: &SessionActivities,
-) -> Vec<BackgroundApproval> {
-    activities
-        .lock()
-        .await
-        .approvals
-        .values()
-        .cloned()
-        .collect()
-}
-
 pub(super) async fn update_session_activity(
     checkpoints: &Arc<dyn CheckpointStore>,
     activities: &SessionActivities,
@@ -168,7 +165,7 @@ impl SessionCatalog {
         {
             Some(BackgroundApproval {
                 session_id: summary.session_id.clone(),
-                bot_id: summary.session_context.bot_id.clone(),
+                bot_id: summary.session_context.owner_id.clone(),
                 turn_id: activity
                     .turn_id
                     .clone()
@@ -228,7 +225,7 @@ async fn filtered_session_catalog(
     while sessions.len() < SESSION_PAGE_SIZE {
         let page = checkpoints
             .list_sessions_page(SessionPageRequest {
-                bot_id: match filter {
+                owner_id: match filter {
                     CatalogFilter::Visible => None,
                     CatalogFilter::HiddenBot(id) => Some(id.into()),
                 },
@@ -245,7 +242,7 @@ async fn filtered_session_catalog(
                             .is_some_and(|item| item.hidden)
                 }
                 CatalogFilter::HiddenBot(bot_id) => {
-                    session.session_context.bot_id == bot_id
+                    session.session_context.owner_id == bot_id
                         && session.parent_session_id.is_none()
                         && !session.catalog_visible
                 }
@@ -458,7 +455,7 @@ mod tests {
             &self,
             request: SessionPageRequest,
         ) -> BoxFuture<'_, mobius::Result<SessionPage>> {
-            self.pages.lock().unwrap().push(request.bot_id.clone());
+            self.pages.lock().unwrap().push(request.owner_id.clone());
             Box::pin(async move {
                 let page = self.inner.list_sessions_page(request).await?;
                 self.rows.fetch_add(page.sessions.len(), Ordering::Relaxed);
@@ -479,7 +476,7 @@ mod tests {
                 .expect("checkpoints"),
         );
         let mut parent = Checkpoint::empty("parent");
-        parent.session_context.bot_id = "bot-fixture".into();
+        parent.session_context.owner_id = "bot-fixture".into();
         parent.session_context.workspace_id = Some("workspace".into());
         parent.sequence = 1;
         checkpoints
@@ -487,14 +484,14 @@ mod tests {
             .await
             .expect("save parent");
         let mut empty_root = Checkpoint::empty("empty-root");
-        empty_root.session_context.bot_id = "bot-fixture".into();
+        empty_root.session_context.owner_id = "bot-fixture".into();
         empty_root.session_context.workspace_id = Some("workspace".into());
         checkpoints
             .save(&empty_root, &[], None)
             .await
             .expect("save empty root");
         let mut child = Checkpoint::empty("child");
-        child.session_context.bot_id = "bot-fixture".into();
+        child.session_context.owner_id = "bot-fixture".into();
         child.session_context.workspace_id = Some("workspace".into());
         checkpoints
             .fork("parent", parent.sequence, &child)
@@ -528,7 +525,7 @@ mod tests {
         );
         for index in 0..=SESSION_PAGE_SIZE {
             let mut checkpoint = Checkpoint::empty(format!("{index:03}"));
-            checkpoint.session_context.bot_id = "bot-fixture".into();
+            checkpoint.session_context.owner_id = "bot-fixture".into();
             checkpoint.session_context.workspace_id = Some("workspace".into());
             checkpoint.sequence = 1;
             checkpoint.first_user_message = Some(if index == SESSION_PAGE_SIZE {
@@ -567,7 +564,7 @@ mod tests {
                 .expect("checkpoints"),
         );
         let mut checkpoint = Checkpoint::empty("active");
-        checkpoint.session_context.bot_id = "bot-fixture".into();
+        checkpoint.session_context.owner_id = "bot-fixture".into();
         checkpoints
             .save(&checkpoint, &[], None)
             .await
@@ -599,19 +596,19 @@ mod tests {
         );
         let mut root = Checkpoint::empty("hidden-root");
         root.catalog_visible = false;
-        root.session_context.bot_id = "bot-a".into();
+        root.session_context.owner_id = "bot-a".into();
         root.sequence = 1;
         checkpoints.save(&root, &[], None).await.expect("save root");
         let mut child = Checkpoint::empty("hidden-child");
         child.catalog_visible = false;
-        child.session_context.bot_id = "bot-a".into();
+        child.session_context.owner_id = "bot-a".into();
         checkpoints
             .fork("hidden-root", 1, &child)
             .await
             .expect("fork child");
         let mut other = Checkpoint::empty("other-root");
         other.catalog_visible = false;
-        other.session_context.bot_id = "bot-b".into();
+        other.session_context.owner_id = "bot-b".into();
         checkpoints
             .save(&other, &[], None)
             .await
@@ -640,7 +637,7 @@ mod tests {
         for (session_id, visible) in [("background", false), ("chat", true)] {
             let mut checkpoint = Checkpoint::empty(session_id);
             checkpoint.catalog_visible = visible;
-            checkpoint.session_context.bot_id = "bot-a".into();
+            checkpoint.session_context.owner_id = "bot-a".into();
             checkpoint.active_execution = Some(ActiveExecution {
                 submission_id: "submission".into(),
                 turn_id: "turn".into(),
@@ -672,7 +669,7 @@ mod tests {
         }
         let mut child = Checkpoint::empty("background-child");
         child.catalog_visible = false;
-        child.session_context.bot_id = "bot-a".into();
+        child.session_context.owner_id = "bot-a".into();
         checkpoints
             .fork("background", 0, &child)
             .await
@@ -691,7 +688,9 @@ mod tests {
                 ..SessionActivity::default()
             },
         );
-        let approvals = background_approvals(&activities).await;
+        let (_, approvals) = activity_catalog(&checkpoints, &activities)
+            .await
+            .expect("activity catalog");
 
         assert_eq!(
             approvals,
@@ -729,7 +728,7 @@ mod tests {
         {
             let mut checkpoint = Checkpoint::empty(id);
             checkpoint.catalog_visible = false;
-            checkpoint.session_context.bot_id = bot.into();
+            checkpoint.session_context.owner_id = bot.into();
             checkpoints.save(&checkpoint, &[], None).await.unwrap();
         }
         let result = hidden_bot_session_catalog(&checkpoints, &activities(), "target")
@@ -749,7 +748,7 @@ mod tests {
         let checkpoints: Arc<dyn CheckpointStore> = counted.clone();
         for id in ["chat", "unrelated", "background"] {
             let mut checkpoint = Checkpoint::empty(id);
-            checkpoint.session_context.bot_id = "bot".into();
+            checkpoint.session_context.owner_id = "bot".into();
             checkpoint.catalog_visible = id != "background";
             checkpoints.save(&checkpoint, &[], None).await.unwrap();
         }

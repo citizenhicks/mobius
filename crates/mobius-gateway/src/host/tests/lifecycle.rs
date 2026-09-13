@@ -32,24 +32,34 @@ async fn concurrent_catalog_updates_preserve_both_fields_for_resident_and_stoppe
         );
         rename.expect("rename");
         pin.expect("pin");
-        let sessions = gateway.sessions().await.expect("catalog");
-        let session = sessions
-            .iter()
-            .find(|session| session.session_id == session_id)
-            .expect("session");
-        assert_eq!(session.title.as_deref(), Some("Updated title"));
-        assert!(session.pinned);
         let mut catalog_updates = 0;
         let mut approval_updates = 0;
+        let mut latest_sessions = None;
         while let Ok(frame) = events.try_recv() {
             match frame.message {
-                ServerMessage::Sessions { .. } => catalog_updates += 1,
+                ServerMessage::Sessions { sessions, .. } => {
+                    catalog_updates += 1;
+                    latest_sessions = Some(sessions);
+                }
                 ServerMessage::BackgroundApprovals { .. } => approval_updates += 1,
                 _ => {}
             }
         }
         assert!(catalog_updates >= 2);
         assert!(approval_updates >= 2);
+        let sessions = latest_sessions.expect("broadcast catalog");
+        let session = sessions
+            .iter()
+            .find(|session| session.session_id == session_id)
+            .expect("broadcast session");
+        assert_eq!(session.title.as_deref(), Some("Updated title"));
+        assert!(session.pinned);
+        let ready = gateway.ready().await.expect("ready catalog");
+        assert!(ready.sessions.iter().any(|session| {
+            session.session_id == session_id
+                && session.title.as_deref() == Some("Updated title")
+                && session.pinned
+        }));
     }
 }
 
@@ -88,6 +98,9 @@ struct BlockingStateStore {
     block_next: AtomicBool,
     entered: tokio::sync::Notify,
     release: tokio::sync::Notify,
+    block_next_load: AtomicBool,
+    load_entered: tokio::sync::Notify,
+    load_release: tokio::sync::Notify,
 }
 
 impl BlockingStateStore {
@@ -97,6 +110,9 @@ impl BlockingStateStore {
             block_next: AtomicBool::new(false),
             entered: tokio::sync::Notify::new(),
             release: tokio::sync::Notify::new(),
+            block_next_load: AtomicBool::new(false),
+            load_entered: tokio::sync::Notify::new(),
+            load_release: tokio::sync::Notify::new(),
         }
     }
 }
@@ -159,7 +175,13 @@ impl CheckpointStore for BlockingStateStore {
         scope: &'a str,
         key: &'a str,
     ) -> mobius::BoxFuture<'a, mobius::Result<Option<serde_json::Value>>> {
-        self.inner.load_state(scope, key)
+        Box::pin(async move {
+            if self.block_next_load.swap(false, Ordering::SeqCst) {
+                self.load_entered.notify_one();
+                self.load_release.notified().await;
+            }
+            self.inner.load_state(scope, key).await
+        })
     }
 
     fn save_state<'a>(
@@ -176,6 +198,99 @@ impl CheckpointStore for BlockingStateStore {
             self.inner.save_state(scope, key, value).await
         })
     }
+}
+
+#[tokio::test]
+async fn ready_holds_one_gateway_generation_while_loading_catalogs() {
+    let root = tempfile::tempdir().expect("root");
+    let listen = "127.0.0.1:8741".parse().expect("listen address");
+    let (store, config) =
+        ConfigStore::initialize(root.path().join("state"), listen, None).expect("config");
+    let provider = ProviderConfig {
+        instance: "kimi-ready".into(),
+        provider: "kimi".into(),
+        model: "kimi-k3".into(),
+        base_url: Some("https://api.moonshot.ai/v1".into()),
+        endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
+        reasoning_effort: None,
+        web_search: mobius::backend::model::provider::HostedWebSearch::Off,
+    };
+    let config = config
+        .registering_provider(
+            provider.clone(),
+            "Kimi".into(),
+            Default::default(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("provider catalog");
+    store.save(&config).expect("save provider catalog");
+    let credentials =
+        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
+    credentials
+        .set(
+            &provider.instance,
+            &provider.provider,
+            "ready-secret",
+            provider.base_url.as_deref(),
+            None,
+        )
+        .expect("provider credential");
+    let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
+    let gateway = GatewayHost::start(store, config, credentials, bots)
+        .await
+        .expect("gateway");
+    let blocking = {
+        let mut state = gateway.state.lock().await;
+        let blocking = Arc::new(BlockingStateStore::new(Arc::clone(&state.checkpoints)));
+        state.scratchpad = ScratchpadStore::new(blocking.clone());
+        blocking
+    };
+    blocking.block_next_load.store(true, Ordering::SeqCst);
+    let ready = tokio::spawn({
+        let gateway = gateway.clone();
+        async move { gateway.ready().await }
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        blocking.load_entered.notified(),
+    )
+    .await
+    .expect("Ready reached catalog loading");
+
+    gateway
+        .clear_credential(provider.instance.clone())
+        .await
+        .expect("clear credential during Ready");
+
+    let mut mutation = tokio::spawn({
+        let gateway = gateway.clone();
+        async move { gateway.begin_exclusive_mutation().await }
+    });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), &mut mutation)
+            .await
+            .is_err()
+    );
+
+    blocking.load_release.notify_one();
+    let ready = ready.await.expect("Ready task").expect("Ready payload");
+    assert!(!ready.models.is_empty());
+    assert!(
+        ready
+            .provider_instances
+            .iter()
+            .any(|instance| instance.selection.instance == provider.instance && instance.configured)
+    );
+    mutation
+        .await
+        .expect("mutation task")
+        .expect("exclusive mutation");
+    let refreshed = gateway.ready().await.expect("refreshed Ready payload");
+    assert!(refreshed.models.is_empty());
+    assert!(refreshed.provider_instances.iter().any(|instance| {
+        instance.selection.instance == provider.instance && !instance.configured
+    }));
 }
 
 #[tokio::test]
@@ -808,7 +923,7 @@ async fn opening_a_chat_rejects_tampered_bot_identity() {
         .await
         .expect("load checkpoint")
         .expect("checkpoint");
-    checkpoint.session_context.bot_id = Uuid::new_v4().to_string();
+    checkpoint.session_context.owner_id = Uuid::new_v4().to_string();
     checkpoint.sequence += 1;
     checkpoints
         .save(&checkpoint, &[], None)
@@ -834,11 +949,17 @@ async fn capacity_reclaims_an_unreferenced_idle_chat() {
     let gateway = GatewayHost::start(store, config, credentials, bots)
         .await
         .expect("gateway");
+    let stop_entered = Arc::new(tokio::sync::Notify::new());
+    let stop_release = Arc::new(tokio::sync::Notify::new());
     let mut state = gateway.state.lock().await;
     for index in 0..MAX_ACTIVE_SESSIONS {
         let (commands, mut receiver) = mpsc::channel(1);
+        let entered = Arc::clone(&stop_entered);
+        let release = Arc::clone(&stop_release);
         tokio::spawn(async move {
             if let Some(HostCommand::StopIfIdle { reply }) = receiver.recv().await {
+                entered.notify_one();
+                release.notified().await;
                 let _ = reply.send(true);
             }
         });
@@ -861,7 +982,23 @@ async fn capacity_reclaims_an_unreferenced_idle_chat() {
         );
     }
 
-    state.ensure_capacity().await.expect("reclaim capacity");
+    drop(state);
+    let reclaim = {
+        let gateway = gateway.clone();
+        tokio::spawn(async move { gateway.ensure_capacity().await })
+    };
+    stop_entered.notified().await;
+    let guard = tokio::time::timeout(std::time::Duration::from_secs(1), gateway.state.lock())
+        .await
+        .expect("capacity reclaim must not hold global state while awaiting a chat");
+    assert_eq!(guard.sessions.len(), MAX_ACTIVE_SESSIONS - 1);
+    drop(guard);
+    stop_release.notify_one();
+    reclaim
+        .await
+        .expect("reclaim task")
+        .expect("reclaim capacity");
 
+    let state = gateway.state.lock().await;
     assert_eq!(state.sessions.len(), MAX_ACTIVE_SESSIONS - 1);
 }

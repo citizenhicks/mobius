@@ -16,9 +16,8 @@ use crate::backend::checkpoint::{
 };
 use crate::backend::model::{
     MAX_TOOL_CALLS, ModelEventSink, ModelOutput, ModelRequest, PromptCacheIdentity,
-    STREAM_RETRY_LIMIT, StreamingToolCalls, ToolCall, ToolDefinition,
-    durable_visible_message_index, insert_before_open_tool_calls, internal_user_message,
-    prompt_cache_key,
+    STREAM_RETRY_LIMIT, StreamingToolCalls, ToolDefinition, durable_visible_message_index,
+    insert_before_open_tool_calls, internal_user_message, prompt_cache_key,
 };
 use crate::backend::sandbox::SandboxAuthorization;
 use crate::middleware::tools::{PreparedToolSet, ToolResult};
@@ -26,7 +25,7 @@ use crate::middleware::{ModelContext, StopContext};
 use crate::protocol::{
     AssistantMessageEvent, Event, EventMsg, MessageTarget, ModelEvent, ModelEventTracker,
     ModelStepCompletedEvent, ModelStepDiagnostics, ModelStepOutcome, ModelStepStartedEvent,
-    SubmissionRejectedEvent, TokenUsage,
+    SubmissionRejectedEvent, TokenUsage, ToolCall,
 };
 use crate::{Error, Result};
 
@@ -216,7 +215,7 @@ impl Runner {
         let mut rewrite_reasons = Vec::new();
         let mut turn_stop = None;
         let mut durable_input = self.state.context.clone();
-        let mut transcript_delta = self.transcript_delta.clone();
+        let mut transcript_delta = Vec::new();
         let mut context_epoch = self.state.context_epoch;
         let mut compaction_count = self.state.compaction_count;
         let mut available_tools = self.catalog.exposed_names();
@@ -225,19 +224,17 @@ impl Runner {
         let model = Arc::clone(&self.config.model);
         let provider = self.config.provider.clone();
         let session_id = self.config.session_id.clone();
-        let session_context = self.config.session_context.clone();
-        let metadata = self.config.metadata.clone();
         let instructions = Arc::clone(&self.system_prompt);
         let last_usage = self.state.last_usage.clone();
         let catalog = Arc::clone(&self.catalog);
-        let runtime = self.runtime.clone();
+        let runtime = Arc::clone(&self.runtime);
         let middleware = self.config.middleware.clone();
         let prepare_model = middleware.prepare_model(ModelContext {
             model: &model,
             provider: &provider,
             session_id: &session_id,
-            session_context: &session_context,
-            metadata: &metadata,
+            session_context: &runtime.session_context,
+            metadata: &runtime.metadata,
             turn_id,
             model_step,
             context_window: self.config.context_window,
@@ -294,7 +291,7 @@ impl Runner {
                 if !rewrite_reasons.is_empty() {
                     context_epoch = self.state.context_epoch;
                     compaction_count = self.state.compaction_count;
-                    transcript_delta = self.transcript_delta.clone();
+                    transcript_delta.clear();
                     rewrite_reasons.clear();
                     middleware_events.clear();
                     checkpoint_changed = false;
@@ -304,7 +301,7 @@ impl Runner {
                 Err(error)
             }
         };
-        self.transcript_delta = transcript_delta;
+        self.transcript_delta.extend(transcript_delta);
         self.state.context_epoch = context_epoch;
         self.state.compaction_count = compaction_count;
         let usage_changed = !middleware_usage.is_empty();

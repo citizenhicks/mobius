@@ -153,7 +153,7 @@ async fn completed_tool_call_is_emitted_before_websocket_completion() {
     assert!(matches!(exchange, Exchange::Completed(_)));
     assert_eq!(
         *seen.lock().expect("events lock"),
-        vec![ModelEvent::ToolCallReady(crate::backend::model::ToolCall {
+        vec![ModelEvent::ToolCallReady(crate::protocol::ToolCall {
             call_id: "call-1".into(),
             name: "read_file".into(),
             arguments: serde_json::json!({"path": "README.md"}),

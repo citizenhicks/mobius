@@ -435,7 +435,7 @@ fn provider_credential_stdin_is_bounded() {
     assert!(
         read_provider_credential(std::io::Cursor::new(vec![
             b'x';
-            crate::config::MAX_API_KEY_BYTES
+            crate::config::MAX_PROVIDER_API_KEY_BYTES
                 + 1
         ]))
         .expect_err("oversized provider credential")

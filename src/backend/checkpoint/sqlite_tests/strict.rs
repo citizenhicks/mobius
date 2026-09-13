@@ -6,8 +6,8 @@ async fn checkpoint_version_hard_rejects_previous_generations() {
     let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
         .expect("open checkpoint database");
     let mut checkpoint = checkpoint("session");
-    assert_eq!(checkpoint.version, 16);
-    for version in [9, 11, 12, 13] {
+    assert_eq!(checkpoint.version, 17);
+    for version in [9, 11, 12, 13, 16] {
         checkpoint.version = version;
         let error = store
             .save(&checkpoint, &[], None)
@@ -24,7 +24,7 @@ async fn checkpoint_version_hard_rejects_previous_generations() {
 
 #[test]
 fn open_hard_rejects_previous_schema_generations() {
-    for version in [6, 7, 8] {
+    for version in [6, 7, 8, 9] {
         let workspace = tempfile::tempdir().expect("create workspace");
         let path = workspace.path().join("checkpoints.sqlite3");
         drop(SqliteCheckpoint::new(&path).expect("create current database"));
@@ -41,7 +41,7 @@ fn open_hard_rejects_previous_schema_generations() {
         assert_eq!(
             error.to_string(),
             format!(
-                "checkpoint error: unsupported SQLite schema version {version}; expected 9 \
+                "checkpoint error: unsupported SQLite schema version {version}; expected 10 \
                  (start with a fresh database)"
             )
         );
@@ -65,7 +65,7 @@ fn open_rejects_a_nonempty_unversioned_database() {
     assert_eq!(
         error.to_string(),
         "checkpoint error: unversioned SQLite database is not empty; expected schema version \
-             9 (start with a fresh database)"
+             10 (start with a fresh database)"
     );
 }
 

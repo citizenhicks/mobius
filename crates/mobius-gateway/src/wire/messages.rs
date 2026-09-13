@@ -612,3 +612,40 @@ pub enum ServerMessage {
         fatal: bool,
     },
 }
+
+/// One gateway response failure with its connection-level terminality preserved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GatewayResponseError<'a> {
+    pub message: &'a str,
+    pub fatal: bool,
+}
+
+impl ServerMessage {
+    /// Returns the error which terminates a wait for `request_id`, if any.
+    ///
+    /// A correlated rejection terminates that request. An uncorrelated global error
+    /// only terminates a wait when it also terminates the connection.
+    #[must_use]
+    pub fn response_error(&self, request_id: Option<&str>) -> Option<GatewayResponseError<'_>> {
+        match self {
+            Self::Rejected {
+                request_id: actual,
+                message,
+                fatal,
+                ..
+            } if request_id == Some(actual.as_str()) => Some(GatewayResponseError {
+                message,
+                fatal: *fatal,
+            }),
+            Self::Error {
+                message,
+                fatal: true,
+                ..
+            } => Some(GatewayResponseError {
+                message,
+                fatal: true,
+            }),
+            _ => None,
+        }
+    }
+}

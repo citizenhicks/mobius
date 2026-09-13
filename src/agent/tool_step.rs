@@ -9,13 +9,13 @@ use super::input::ActiveRoute;
 use super::input::Wait;
 use crate::Error;
 use crate::Result;
-use crate::backend::model::ToolCall;
 use crate::backend::model::tool_output;
 use crate::backend::sandbox::SandboxPermissions;
 use crate::middleware::tools::{PreparedToolSet, ToolResult, execute_batch};
 use crate::middleware::{PostToolUseContext, PreToolUseContext};
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
+use crate::protocol::ToolCall;
 use crate::protocol::ToolCallBeginEvent;
 use crate::protocol::ToolCallEndEvent;
 

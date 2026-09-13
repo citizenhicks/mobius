@@ -53,7 +53,6 @@ use self::recorder::EventRecorder;
 
 const SUBMISSION_QUEUE_CAPACITY: usize = 64;
 const EVENT_QUEUE_CAPACITY: usize = 256;
-const MAX_IDENTIFIER_BYTES: usize = 4 * 1024;
 const MAX_OPERATION_BYTES: usize = 256;
 const DEFAULT_INITIAL_REPLAY_BATCHES: usize = 100;
 
@@ -373,11 +372,15 @@ pub(crate) fn test_sender() -> WeakAgentSender {
 
 /// Validates one submission before callers perform more expensive boundary work.
 pub fn validate_submission(submission: &Submission) -> Result<()> {
-    validate_identifier("submission ID", &submission.id, MAX_IDENTIFIER_BYTES)?;
+    crate::validate_identifier("submission ID", &submission.id, crate::MAX_IDENTIFIER_BYTES)?;
     match &submission.op {
         Op::Message { message } => message.validate(session_file_limits()),
-        Op::Interrupt { turn_id } => validate_identifier("turn ID", turn_id, MAX_IDENTIFIER_BYTES),
-        Op::ExecApproval { id, .. } => validate_identifier("approval ID", id, MAX_IDENTIFIER_BYTES),
+        Op::Interrupt { turn_id } => {
+            crate::validate_identifier("turn ID", turn_id, crate::MAX_IDENTIFIER_BYTES)
+        }
+        Op::ExecApproval { id, .. } => {
+            crate::validate_identifier("approval ID", id, crate::MAX_IDENTIFIER_BYTES)
+        }
         Op::CapabilityCommand {
             capability,
             command,
@@ -385,8 +388,8 @@ pub fn validate_submission(submission: &Submission) -> Result<()> {
             input,
             target,
         } => {
-            validate_identifier("capability ID", capability, MAX_OPERATION_BYTES)?;
-            validate_identifier("command", command, MAX_OPERATION_BYTES)?;
+            crate::validate_identifier("capability ID", capability, MAX_OPERATION_BYTES)?;
+            crate::validate_identifier("command", command, MAX_OPERATION_BYTES)?;
             if arguments.len() > crate::protocol::MAX_CAPABILITY_INPUT_BYTES {
                 return Err(Error::Config(
                     "middleware command arguments exceed size limit".into(),
@@ -407,21 +410,13 @@ pub fn validate_submission(submission: &Submission) -> Result<()> {
             }
             Ok(())
         }
-        Op::SetModel { route } => validate_identifier("model route", route, MAX_IDENTIFIER_BYTES),
+        Op::SetModel { route } => {
+            crate::validate_identifier("model route", route, crate::MAX_IDENTIFIER_BYTES)
+        }
         Op::ResumeSession { session_id } => {
-            validate_identifier("session ID", session_id, MAX_IDENTIFIER_BYTES)
+            crate::validate_identifier("session ID", session_id, crate::MAX_IDENTIFIER_BYTES)
         }
     }
-}
-
-fn validate_identifier(name: &str, value: &str, limit: usize) -> Result<()> {
-    if value.trim().is_empty() {
-        return Err(Error::Config(format!("{name} cannot be empty")));
-    }
-    if value.len() > limit {
-        return Err(Error::Config(format!("{name} exceeds size limit")));
-    }
-    Ok(())
 }
 
 /// Bidirectional handle consumed by a frontend.
@@ -541,7 +536,7 @@ impl AgentEvents {
 
 struct Runner {
     config: AgentConfig,
-    runtime: RuntimeContext,
+    runtime: Arc<RuntimeContext>,
     system_prompt: Arc<str>,
     catalog: Arc<Catalog>,
     state: Checkpoint,
@@ -666,8 +661,9 @@ impl Runner {
             None,
         )
         .await?;
-        self.runtime.model_route = active_route;
-        self.runtime.model = active_model;
+        let runtime = Arc::make_mut(&mut self.runtime);
+        runtime.model_route = active_route;
+        runtime.model = active_model;
         Ok(())
     }
 

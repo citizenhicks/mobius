@@ -249,7 +249,7 @@ impl GatewayHost {
 fn bot_session_trees(bot_id: &str, summaries: &[SessionSummary]) -> (Vec<String>, Vec<String>) {
     let owned = summaries
         .iter()
-        .filter(|session| session.session_context.bot_id == bot_id)
+        .filter(|session| session.session_context.owner_id == bot_id)
         .map(|session| session.session_id.clone())
         .collect::<HashSet<_>>();
     let roots = summaries

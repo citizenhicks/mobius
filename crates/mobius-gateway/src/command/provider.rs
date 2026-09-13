@@ -3,7 +3,7 @@ use std::io::{IsTerminal as _, Read};
 use mobius::backend::model::provider::provider;
 
 use super::*;
-use crate::config::{ConfiguredProvider, MAX_API_KEY_BYTES};
+use crate::config::{ConfiguredProvider, MAX_PROVIDER_API_KEY_BYTES};
 use crate::wire::{ProviderConfig, ProviderEndpointAuth, ProviderTint};
 
 pub(super) async fn register_provider_command(
@@ -91,11 +91,11 @@ pub(super) fn read_provider_credential(mut input: impl Read) -> Result<String> {
     let mut bytes = Vec::new();
     input
         .by_ref()
-        .take((MAX_API_KEY_BYTES + 1) as u64)
+        .take((MAX_PROVIDER_API_KEY_BYTES + 1) as u64)
         .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_API_KEY_BYTES {
+    if bytes.len() > MAX_PROVIDER_API_KEY_BYTES {
         return Err(Error::Config(format!(
-            "API key must be 1–{MAX_API_KEY_BYTES} bytes"
+            "API key must be 1–{MAX_PROVIDER_API_KEY_BYTES} bytes"
         )));
     }
     String::from_utf8(bytes)
@@ -140,6 +140,9 @@ async fn request_provider_credential(
         let frame = events.next().await?.ok_or_else(|| {
             Error::Protocol("gateway disconnected before saving the provider credential".into())
         })?;
+        if let Some(error) = frame.message.response_error(Some(&request_id)) {
+            return Err(Error::Protocol(error.message.into()));
+        }
         match frame.message {
             ServerMessage::ProviderCredentialSaved {
                 request_id: actual,
@@ -151,12 +154,6 @@ async fn request_provider_credential(
             {
                 return Ok(());
             }
-            ServerMessage::Rejected {
-                request_id: actual,
-                message,
-                ..
-            } if actual == request_id => return Err(Error::Protocol(message)),
-            ServerMessage::Error { message, .. } => return Err(Error::Protocol(message)),
             _ => {}
         }
     }
@@ -187,16 +184,13 @@ async fn request_provider_registration(
         let frame = events.next().await?.ok_or_else(|| {
             Error::Protocol("gateway disconnected before registering the provider".into())
         })?;
+        if let Some(error) = frame.message.response_error(Some(&request_id)) {
+            return Err(Error::Protocol(error.message.into()));
+        }
         match frame.message {
             ServerMessage::GatewayConfigured {
                 request_id: actual, ..
             } if actual == request_id => return Ok(()),
-            ServerMessage::Rejected {
-                request_id: actual,
-                message,
-                ..
-            } if actual == request_id => return Err(Error::Protocol(message)),
-            ServerMessage::Error { message, .. } => return Err(Error::Protocol(message)),
             _ => {}
         }
     }
@@ -232,6 +226,9 @@ pub(super) async fn clear_provider_credential(
         let frame = events.next().await?.ok_or_else(|| {
             Error::Protocol("gateway disconnected before clearing the provider credential".into())
         })?;
+        if let Some(error) = frame.message.response_error(Some(&request_id)) {
+            return Err(Error::Protocol(error.message.into()));
+        }
         match frame.message {
             ServerMessage::ProviderCredentialCleared {
                 request_id: actual,
@@ -240,12 +237,6 @@ pub(super) async fn clear_provider_credential(
                 println!("{}", serde_json::json!({"instance": instance}));
                 return Ok(());
             }
-            ServerMessage::Rejected {
-                request_id: actual,
-                message,
-                ..
-            } if actual == request_id => return Err(Error::Protocol(message)),
-            ServerMessage::Error { message, .. } => return Err(Error::Protocol(message)),
             _ => {}
         }
     }

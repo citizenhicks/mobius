@@ -40,7 +40,7 @@ impl GatewayHost {
                 next
             };
             if !self.commit_extensions(&state, next)? {
-                return gateway_ready(&state).await;
+                return gateway_ready_after_unlock(state).await;
             }
             drop(state);
             self.finish_extension_mutation(&id, sessions_guard).await
@@ -119,7 +119,7 @@ impl GatewayHost {
                 next
             };
             if !self.commit_extensions(&state, next)? {
-                return gateway_ready(&state).await;
+                return gateway_ready_after_unlock(state).await;
             }
             drop(state);
             self.finish_extension_mutation(&id, sessions_guard).await
@@ -178,7 +178,7 @@ impl GatewayHost {
             next
         };
         if !self.commit_extensions(&state, next)? {
-            return gateway_ready(&state).await;
+            return gateway_ready_after_unlock(state).await;
         }
         drop(state);
         self.finish_extension_mutation(&id, sessions_guard).await
@@ -223,7 +223,7 @@ impl GatewayHost {
             next
         };
         if !self.commit_extensions(&state, next)? {
-            return gateway_ready(&state).await;
+            return gateway_ready_after_unlock(state).await;
         }
         drop(state);
         self.finish_extension_mutation(&id, sessions_guard).await
@@ -263,8 +263,7 @@ impl GatewayHost {
             }
         }
         drop(cache);
-        let payload = gateway_ready(&state).await?;
-        drop(state);
+        let payload = gateway_ready_after_unlock(state).await?;
         let _ = self.events.send(ServerFrame::new(ServerMessage::Ready {
             payload: payload.clone(),
         }));

@@ -153,26 +153,18 @@ impl HostState {
                 .as_ref()
                 .map(|active| active_run_summary(&checkpoint.session_id, active)),
         };
-        let context_limit_tokens = match self.running.session.model.model_context_window {
-            Some(context_window)
-                if self
-                    .running
+        let context_limit_tokens = self
+            .running
+            .session
+            .model
+            .model_context_window
+            .map(|window| {
+                self.running
                     .prepared
-                    .bot
-                    .config
-                    .config
-                    .middleware
-                    .enabled("compaction") =>
-            {
-                Some(
-                    crate::assembly::configured_compaction(
-                        &self.running.prepared.bot.config.config.middleware,
-                    )?
-                    .trigger_tokens(context_window),
-                )
-            }
-            context_window => context_window,
-        };
+                    .compaction
+                    .as_ref()
+                    .map_or(window, |compaction| compaction.trigger_tokens(window))
+            });
         Ok(SessionReadyPayload {
             active_turn_ids: checkpoint
                 .active_execution
@@ -205,6 +197,7 @@ impl HostState {
             tool_count: self.running.tool_count,
             compaction_count: checkpoint.compaction_count,
             context_limit_tokens,
+            active_message_delivery: self.running.prepared.active_message_delivery,
             run_stats,
         })
     }

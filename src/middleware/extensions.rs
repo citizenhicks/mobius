@@ -1401,7 +1401,7 @@ printf '%s\n' '{"systemMessage":"PONYTAIL:FULL","hookSpecificOutput":{"hookEvent
             let temporary = tempfile::tempdir().expect("temporary extensions");
             let extensions = extension_with_hooks(&temporary, hooks);
             let tools = coding_catalog(&temporary);
-            let original = crate::backend::model::ToolCall {
+            let original = crate::protocol::ToolCall {
                 call_id: "call".into(),
                 name: "bash".into(),
                 arguments: serde_json::json!({"command": "touch marker"}),
@@ -1421,7 +1421,7 @@ printf '%s\n' '{"systemMessage":"PONYTAIL:FULL","hookSpecificOutput":{"hookEvent
             r#"{"PermissionRequest":[{"hooks":[{"type":"command","command":"printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"allow\"}}}'","timeout":1},{"type":"command","command":"printf '{'","timeout":1}]}]}"#,
         );
         let tools = crate::middleware::tools::Catalog::default();
-        let calls = [crate::backend::model::ToolCall {
+        let calls = [crate::protocol::ToolCall {
             call_id: "call".into(),
             name: "tool".into(),
             arguments: serde_json::json!({}),
@@ -1512,8 +1512,8 @@ printf '%s\n' '{"systemMessage":"PONYTAIL:FULL","hookSpecificOutput":{"hookEvent
     async fn run_pre_tool(
         extensions: &Extensions,
         tools: &crate::middleware::tools::Catalog,
-        mut call: crate::backend::model::ToolCall,
-    ) -> (Option<String>, crate::backend::model::ToolCall) {
+        mut call: crate::protocol::ToolCall,
+    ) -> (Option<String>, crate::protocol::ToolCall) {
         let mut events = Vec::new();
         let mut context = PreToolUseContext {
             turn: TurnIdentity {

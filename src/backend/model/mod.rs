@@ -14,7 +14,7 @@ use sha2::Sha256;
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
-use crate::protocol::TokenUsage;
+use crate::protocol::{MAX_TOOL_NAME_BYTES, TOOL_LOAD_MARKER, TokenUsage, ToolCall};
 use crate::protocol::{
     ModelStepAnnotation, ModelStepContent, ModelStepContentPhase, PromptCacheMode,
     PromptCacheOutcome, ToolDiscoveryMode,
@@ -53,7 +53,6 @@ const MAX_MODEL_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_TOOL_CALLS: usize = 128;
 const MAX_TOOL_ARGUMENT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_TOOL_CALL_ID_BYTES: usize = 4 * 1024;
-const MAX_TOOL_NAME_BYTES: usize = 256;
 pub(crate) const STREAM_RETRY_LIMIT: usize = 5;
 /// Stable semantic name of the core deferred-tool discovery function.
 pub const TOOLS_SEARCH_NAME: &str = "tools_search";
@@ -64,57 +63,6 @@ pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub parameters: Value,
-}
-
-const TOOL_LOAD_MARKER: &str = "tool_load";
-
-/// A durable control item recording tool schemas materialized at one context position.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolLoad {
-    pub catalog_revision: String,
-    pub tools: Vec<String>,
-}
-
-impl ToolLoad {
-    /// Converts the typed control item into checkpoint model context.
-    #[must_use]
-    pub fn into_input(self) -> Value {
-        serde_json::json!({
-            "type": TOOL_LOAD_MARKER,
-            "catalog_revision": self.catalog_revision,
-            "tools": self.tools,
-            INTERNAL_MESSAGE_FIELD: TOOL_LOAD_MARKER,
-        })
-    }
-
-    /// Decodes a tool-load control item while ignoring ordinary conversation input.
-    pub fn from_input(input: &Value) -> Result<Option<Self>> {
-        if input.get("type").and_then(Value::as_str) != Some(TOOL_LOAD_MARKER) {
-            return Ok(None);
-        }
-        let load: Self = serde_json::from_value(input.clone())?;
-        if load.catalog_revision.trim().is_empty() || load.tools.is_empty() {
-            return Err(Error::Checkpoint("invalid tool-load control item".into()));
-        }
-        let mut names = BTreeSet::new();
-        for name in &load.tools {
-            if name.trim().is_empty()
-                || name.len() > MAX_TOOL_NAME_BYTES
-                || !names.insert(name.as_str())
-            {
-                return Err(Error::Checkpoint("invalid loaded tool name".into()));
-            }
-        }
-        Ok(Some(load))
-    }
-}
-
-/// One model-requested function call.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolCall {
-    pub call_id: String,
-    pub name: String,
-    pub arguments: Value,
 }
 
 impl ToolCall {
@@ -178,6 +126,19 @@ impl ToolCall {
         }
         self.name = name;
         self.arguments = arguments;
+        Ok(())
+    }
+}
+
+impl ToolDefinition {
+    pub(crate) fn validate(&self) -> Result<()> {
+        crate::validate_identifier("tool name", &self.name, MAX_TOOL_NAME_BYTES)?;
+        if !self.parameters.is_object() {
+            return Err(Error::Config(format!(
+                "tool `{}` parameters must be a JSON object",
+                self.name
+            )));
+        }
         Ok(())
     }
 }

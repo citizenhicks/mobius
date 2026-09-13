@@ -19,6 +19,16 @@ fn test_middleware() -> Subagents {
     .expect("subagents middleware")
 }
 
+#[test]
+fn limits_are_validated_at_one_public_boundary() {
+    for (depth, concurrency, agents) in [(0, 2, 2), (17, 2, 2), (1, 1, 2), (1, 65, 65)] {
+        assert!(validate_limits(depth, concurrency, agents).is_err());
+    }
+    assert!(validate_limits(1, 3, 2).is_err());
+    assert!(validate_limits(1, 2, 257).is_err());
+    validate_limits(16, 64, 256).expect("maximum supported limits");
+}
+
 fn preview_messages(events: &[crate::protocol::FrontendPreviewEvent]) -> Vec<EventMsg> {
     events.iter().map(|event| event.event.clone()).collect()
 }
@@ -161,11 +171,11 @@ async fn active_command_emits_a_subagent_transcript_preview() {
         .expect("checkpoint store"),
     );
     let mut root = Checkpoint::empty("root");
-    root.session_context.bot_id = "test-bot".into();
+    root.session_context.owner_id = "test-bot".into();
     checkpoints.save(&root, &[], None).await.expect("save root");
     let transcript = serde_json::json!({"role": "user", "content": "review this"});
     let mut child = Checkpoint::empty("child");
-    child.session_context.bot_id = "test-bot".into();
+    child.session_context.owner_id = "test-bot".into();
     child.sequence = 1;
     child.context.push(transcript.clone());
     checkpoints
@@ -287,10 +297,10 @@ async fn preview_continuation_loads_one_older_turn_through_registered_command() 
         .expect("checkpoint store"),
     );
     let mut root = Checkpoint::empty("root");
-    root.session_context.bot_id = "test-bot".into();
+    root.session_context.owner_id = "test-bot".into();
     checkpoints.save(&root, &[], None).await.expect("save root");
     let mut child = Checkpoint::empty("child");
-    child.session_context.bot_id = "test-bot".into();
+    child.session_context.owner_id = "test-bot".into();
     checkpoints
         .save(&child, &[], None)
         .await
@@ -511,7 +521,7 @@ async fn fork_persists_the_metadata_passed_to_the_child() {
         .expect("checkpoint store"),
     );
     let mut parent = Checkpoint::empty("parent");
-    parent.session_context.bot_id = "test-bot".into();
+    parent.session_context.owner_id = "test-bot".into();
     parent.metadata.insert(
         "gateway.chat".into(),
         serde_json::json!({"workspace": "/srv/project"}),

@@ -93,6 +93,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
             config.metadata.clone_from(&state.metadata);
         }
     }
+    state.session_context.validate()?;
     let (mut replay, next_before_sequence) = if is_new || config.initial_replay_batches == 0 {
         (Vec::new(), None)
     } else {
@@ -417,7 +418,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     });
     let mut runner = Runner {
         config,
-        runtime,
+        runtime: Arc::new(runtime),
         system_prompt,
         catalog: Arc::new(catalog),
         state,

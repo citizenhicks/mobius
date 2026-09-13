@@ -123,10 +123,10 @@ async fn errored_subagent_preview_ends_with_its_terminal_message() {
         .expect("checkpoint store"),
     );
     let mut root = Checkpoint::empty("root");
-    root.session_context.bot_id = "test-bot".into();
+    root.session_context.owner_id = "test-bot".into();
     checkpoints.save(&root, &[], None).await.expect("save root");
     let mut child = Checkpoint::empty("child");
-    child.session_context.bot_id = "test-bot".into();
+    child.session_context.owner_id = "test-bot".into();
     checkpoints
         .save(&child, &[], None)
         .await
@@ -675,7 +675,7 @@ async fn active_children_tracks_pending_and_terminal_agents() {
 
 #[tokio::test]
 async fn reserve_enforces_configured_concurrency_including_root() {
-    let shared = Shared::new(3, 4).expect("valid limits");
+    let shared = Shared::new(3, 4);
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(FailOnceStore {
         fail_next_save: AtomicBool::new(false),
         saved_state: StdMutex::new(None),
@@ -718,7 +718,7 @@ async fn reserve_enforces_configured_concurrency_including_root() {
 
 #[tokio::test]
 async fn reserve_enforces_configured_agent_limit_including_root() {
-    let shared = Shared::new(2, 3).expect("valid limits");
+    let shared = Shared::new(2, 3);
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(FailOnceStore {
         fail_next_save: AtomicBool::new(false),
         saved_state: StdMutex::new(None),
@@ -832,7 +832,7 @@ async fn terminal_update_is_retained_until_its_checkpoint_marker_is_acknowledged
 
 #[tokio::test]
 async fn running_parent_records_real_child_message_for_terminal_dedup() {
-    let shared = Shared::new(3, 3).expect("valid nested limits");
+    let shared = Shared::new(3, 3);
     let workspace = tempfile::tempdir().expect("workspace");
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(FailOnceStore {
         fail_next_save: AtomicBool::new(false),
@@ -875,6 +875,10 @@ async fn running_parent_records_real_child_message_for_terminal_dedup() {
             MiddlewareStack::new(vec![Arc::new(Messages::default())]).expect("middleware"),
             "test prompt",
         )
+        .session_context(crate::protocol::SessionContext {
+            owner_id: "test-owner".into(),
+            ..crate::protocol::SessionContext::default()
+        })
         .session_id("parent"),
     )
     .await
@@ -1277,5 +1281,5 @@ fn test_context(
 }
 
 fn test_shared() -> Shared {
-    Shared::new(2, 2).expect("valid test limits")
+    Shared::new(2, 2)
 }

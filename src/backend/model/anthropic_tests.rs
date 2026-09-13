@@ -721,7 +721,7 @@ async fn stream_normalizes_deltas_tools_usage_and_errors() {
         [
             ModelEvent::TextDelta(_),
             ModelEvent::ReasoningDelta(_),
-            ModelEvent::ToolCallReady(crate::backend::model::ToolCall { .. })
+            ModelEvent::ToolCallReady(crate::protocol::ToolCall { .. })
         ]
     ));
 

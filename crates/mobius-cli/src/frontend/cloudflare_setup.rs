@@ -3,7 +3,7 @@
 use std::io;
 
 use mobius::{Error, Result};
-use mobius_gateway::config::CloudflareConfig;
+use mobius_gateway::config::{CloudflareConfig, MAX_CLOUDFLARE_TOKEN_BYTES as MAX_TOKEN_BYTES};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -16,7 +16,6 @@ use super::terminal_text;
 use super::theme::{Role, current};
 
 const MAX_HOSTNAME_BYTES: usize = 253;
-const MAX_TOKEN_BYTES: usize = 16 * 1024;
 
 /// Validated values consumed by gateway initialization and never displayed again.
 pub enum CloudflareInit {
@@ -100,8 +99,8 @@ impl State {
         if self.field == Field::Quick {
             return Ok(CloudflareInit::Quick);
         }
-        let cloudflare = CloudflareConfig::named(&self.hostname).map_err(gateway_error)?;
-        CloudflareConfig::validate_token(&self.token).map_err(gateway_error)?;
+        let cloudflare = CloudflareConfig::named(&self.hostname).map_err(configuration_error)?;
+        CloudflareConfig::validate_token(&self.token).map_err(configuration_error)?;
         let hostname = cloudflare
             .hostname()
             .ok_or_else(|| Error::Config("named Cloudflare hostname is missing".into()))?;
@@ -112,7 +111,7 @@ impl State {
     }
 }
 
-fn gateway_error(error: mobius_gateway::Error) -> Error {
+fn configuration_error(error: mobius_gateway::Error) -> Error {
     Error::Config(error.to_string())
 }
 

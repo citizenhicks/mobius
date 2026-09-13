@@ -17,6 +17,8 @@ pub mod sandbox;
 pub mod server;
 pub mod wire;
 
+pub use extensions::MAX_EXTENSION_SOURCE_BYTES;
+
 /// Errors returned by the gateway library.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

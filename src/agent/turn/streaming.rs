@@ -11,12 +11,12 @@ use super::turn_event;
 use crate::agent::input::Wait;
 use crate::agent::tool_step::ToolCompletion;
 use crate::agent::{Runner, SubmissionInbox, send_event};
-use crate::backend::model::{ModelOutput, ToolCall};
+use crate::backend::model::ModelOutput;
 use crate::backend::sandbox::{SandboxAuthorization, SandboxPermissions};
 use crate::middleware::tools::{
     BoundToolCall, ExecutionMode, PreparedToolSet, ToolResult, execute_call,
 };
-use crate::protocol::{EventMsg, ToolCallBeginEvent};
+use crate::protocol::{EventMsg, ToolCall, ToolCallBeginEvent};
 use crate::{BoxFuture, Error, Result};
 
 #[derive(Default)]

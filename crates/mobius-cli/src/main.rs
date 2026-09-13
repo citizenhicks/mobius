@@ -18,9 +18,8 @@ use mobius_cli::gateway_accounts::{
     GatewayAccounts, configured_endpoint, configured_token, missing_local_token,
     validate_local_gateway_config,
 };
-use mobius_gateway::client::{
-    Endpoint, GatewayClient, GatewayEvents, GatewaySender, MAX_PENDING_FRAMES,
-};
+use mobius_cli::gateway_error;
+use mobius_gateway::client::{Endpoint, GatewayClient, GatewayEvents, GatewaySender};
 use mobius_gateway::config::state_dir;
 use mobius_gateway::wire::{
     BotRecord, ClientKind, ClientMessage, ReadyPayload, ServerFrame, ServerMessage,
@@ -623,31 +622,24 @@ async fn discard_session(
         })
         .await
         .map_err(gateway_error)?;
-    let mut deferred = Vec::new();
-    let result = loop {
+    let mut events = events.scoped();
+    loop {
         let frame = events.next().await.map_err(gateway_error)?.ok_or_else(|| {
             Error::Stopped("gateway disconnected before discarding the chat".into())
         })?;
-        match frame.message {
-            ServerMessage::Accepted { request_id: actual } if actual == request_id => break Ok(()),
+        let ServerFrame { version, message } = frame;
+        if let Some(error) = message.response_error(Some(&request_id)) {
+            return Err(Error::Stopped(error.message.into()));
+        }
+        match message {
+            ServerMessage::Accepted { request_id: actual } if actual == request_id => return Ok(()),
             ServerMessage::Ready { payload } => *gateway = payload,
             ServerMessage::Sessions { sessions, .. } => gateway.sessions = sessions,
-            ServerMessage::Rejected {
-                request_id: actual,
-                message,
-                ..
-            } if actual == request_id => break Err(Error::Stopped(message)),
-            ServerMessage::Error { message, .. } => break Err(Error::Stopped(message)),
-            message if deferred.len() == MAX_PENDING_FRAMES => {
-                break Err(Error::Stopped(format!(
-                    "gateway event backlog exceeds {MAX_PENDING_FRAMES} frames while discarding the chat: {message:?}"
-                )));
-            }
-            message => deferred.push(ServerFrame::new(message)),
+            message => events
+                .defer(ServerFrame { version, message })
+                .map_err(gateway_error)?,
         }
-    };
-    events.prepend(deferred).map_err(gateway_error)?;
-    result
+    }
 }
 
 async fn discard_pristine_bootstrap(
@@ -679,38 +671,31 @@ async fn refresh_sessions(
         })
         .await
         .map_err(gateway_error)?;
-    let mut deferred = Vec::new();
-    let result = loop {
+    let mut events = events.scoped();
+    loop {
         let frame =
             events.next().await.map_err(gateway_error)?.ok_or_else(|| {
                 Error::Stopped("gateway disconnected before listing chats".into())
             })?;
-        match frame.message {
+        let ServerFrame { version, message } = frame;
+        if let Some(error) = message.response_error(Some(&request_id)) {
+            return Err(Error::Stopped(error.message.into()));
+        }
+        match message {
             ServerMessage::Sessions {
                 request_id: Some(actual),
                 sessions,
             } if actual == request_id => {
                 gateway.sessions = sessions;
-                break Ok(());
+                return Ok(());
             }
             ServerMessage::Ready { payload } => *gateway = payload,
             ServerMessage::Sessions { sessions, .. } => gateway.sessions = sessions,
-            ServerMessage::Rejected {
-                request_id: actual,
-                message,
-                ..
-            } if actual == request_id => break Err(Error::Stopped(message)),
-            ServerMessage::Error { message, .. } => break Err(Error::Stopped(message)),
-            message if deferred.len() == MAX_PENDING_FRAMES => {
-                break Err(Error::Stopped(format!(
-                    "gateway event backlog exceeds {MAX_PENDING_FRAMES} frames while listing chats: {message:?}"
-                )));
-            }
-            message => deferred.push(ServerFrame::new(message)),
+            message => events
+                .defer(ServerFrame { version, message })
+                .map_err(gateway_error)?,
         }
-    };
-    events.prepend(deferred).map_err(gateway_error)?;
-    result
+    }
 }
 
 fn pristine_bootstrap(gateway: &ReadyPayload, session_id: &str) -> bool {
@@ -732,17 +717,26 @@ fn pristine_session(session: &SessionRecord) -> bool {
 }
 
 async fn wait_gateway_ready(events: &mut GatewayEvents) -> Result<ReadyPayload> {
+    let mut events = events.scoped();
     loop {
         let frame =
             events.next().await.map_err(gateway_error)?.ok_or_else(|| {
                 Error::Stopped("gateway disconnected before becoming ready".into())
             })?;
-        match frame.message {
+        let ServerFrame { version, message } = frame;
+        match message {
             ServerMessage::Ready { payload } => return Ok(payload),
-            ServerMessage::Rejected { message, .. } | ServerMessage::Error { message, .. } => {
+            ServerMessage::Rejected { message, .. }
+            | ServerMessage::Error {
+                message,
+                fatal: true,
+                ..
+            } => {
                 return Err(Error::Stopped(message));
             }
-            _ => {}
+            message => events
+                .defer(ServerFrame { version, message })
+                .map_err(gateway_error)?,
         }
     }
 }
@@ -752,43 +746,32 @@ async fn wait_session_opened(
     gateway: &mut ReadyPayload,
     request_id: &str,
 ) -> Result<SessionReadyPayload> {
-    let mut deferred = Vec::new();
-    let result = loop {
+    let mut events = events.scoped();
+    loop {
         let frame =
             events.next().await.map_err(gateway_error)?.ok_or_else(|| {
                 Error::Stopped("gateway disconnected before opening the chat".into())
             })?;
-        match frame.message {
+        let ServerFrame { version, message } = frame;
+        if let Some(error) = message.response_error(Some(request_id)) {
+            return Err(Error::Stopped(error.message.into()));
+        }
+        match message {
             ServerMessage::SessionOpened {
                 request_id: actual,
                 payload,
-            } if actual == request_id => break Ok(payload),
+            } if actual == request_id => return Ok(payload),
             ServerMessage::Ready { payload } => *gateway = payload,
             ServerMessage::Sessions { sessions, .. } => gateway.sessions = sessions,
-            ServerMessage::Rejected {
-                request_id: actual,
-                message,
-                ..
-            } if actual == request_id => break Err(Error::Stopped(message)),
-            ServerMessage::Error { message, .. } => break Err(Error::Stopped(message)),
-            message if deferred.len() == MAX_PENDING_FRAMES => {
-                break Err(Error::Stopped(format!(
-                    "gateway event backlog exceeds {MAX_PENDING_FRAMES} frames while opening a chat: {message:?}"
-                )));
-            }
-            message => deferred.push(ServerFrame::new(message)),
+            message => events
+                .defer(ServerFrame { version, message })
+                .map_err(gateway_error)?,
         }
-    };
-    events.prepend(deferred).map_err(gateway_error)?;
-    result
+    }
 }
 
 fn missing_token(endpoint: &Endpoint) -> mobius_gateway::Error {
     mobius_gateway::Error::Config(format!("pair mobius-cli with {endpoint} before connecting"))
-}
-
-fn gateway_error(error: mobius_gateway::Error) -> Error {
-    Error::Stopped(error.to_string())
 }
 
 #[cfg(test)]
@@ -919,6 +902,8 @@ mod tests {
                 revision: 1,
                 config: mobius_gateway::wire::AgentComposition::default(),
             },
+            accepts_file_attachments: false,
+            routine_interaction_policy: mobius_gateway::wire::RoutineInteractionPolicy::Unattended,
         }];
 
         assert_eq!(

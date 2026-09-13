@@ -721,7 +721,7 @@ async fn responses_emits_complete_tool_calls_in_output_order() {
 
     assert_eq!(
         *seen.lock().expect("events lock"),
-        vec![ModelEvent::ToolCallReady(crate::backend::model::ToolCall {
+        vec![ModelEvent::ToolCallReady(crate::protocol::ToolCall {
             call_id: "call-1".into(),
             name: "read_file".into(),
             arguments: serde_json::json!({"path": "README.md"}),

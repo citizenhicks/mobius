@@ -19,7 +19,6 @@ use super::PromptCacheMode;
 use super::StreamingToolCalls;
 use super::TOOLS_SEARCH_NAME;
 use super::ToolDefinition;
-use super::ToolLoad;
 use super::image_data_url;
 use super::image_input;
 use super::openai_auth::ApiKeyAuthorization;
@@ -47,6 +46,7 @@ use crate::protocol::ModelInfo;
 use crate::protocol::ModelStepAnnotation;
 use crate::protocol::TokenUsage;
 use crate::protocol::ToolDiscoveryMode;
+use crate::protocol::ToolLoad;
 use crate::protocol::WebSearchAction;
 
 mod manifest {

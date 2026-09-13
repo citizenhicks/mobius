@@ -64,8 +64,8 @@ mod tests {
     use super::*;
     use mobius::protocol::SessionFileLimits;
     use mobius_gateway::wire::{
-        AgentComposition, BotRecord, ProviderTint, ReadyPayload, Routine, RoutineRun,
-        RoutineRunStatus, RoutineSchedule, RoutineScheduleKind, ServerMessage,
+        AgentComposition, BotRecord, ProviderTint, ReadyPayload, Routine, RoutineInteractionPolicy,
+        RoutineRun, RoutineRunStatus, RoutineSchedule, RoutineScheduleKind, ServerMessage,
         VersionedAgentConfig,
     };
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -107,6 +107,8 @@ mod tests {
                 revision: 7,
                 config: AgentComposition::default(),
             },
+            accepts_file_attachments: false,
+            routine_interaction_policy: RoutineInteractionPolicy::Unattended,
         }
     }
 
@@ -156,7 +158,7 @@ mod tests {
         let direct = mobius_gateway::wire::SessionRecord {
             session_id: "direct".into(),
             session_context: mobius::protocol::SessionContext {
-                bot_id: "bot-a".into(),
+                owner_id: "bot-a".into(),
                 ..Default::default()
             },
             parent_session_id: None,
@@ -175,7 +177,7 @@ mod tests {
         recent.updated_at = 2;
         let mut other = direct.clone();
         other.session_id = "other".into();
-        other.session_context.bot_id = "bot-b".into();
+        other.session_context.owner_id = "bot-b".into();
         gateway.sessions = vec![direct, recent, other];
 
         assert_eq!(
@@ -334,29 +336,25 @@ mod tests {
             session_id: Some("session-a".into()),
             message: None,
         };
-        let mut deferred = Vec::new();
-        handle_frame(
+        let (_, deferred) = handle_frame(
             ServerMessage::RoutineHistory {
                 request_id: "other".into(),
                 runs: vec![run.clone()],
             },
             &mut gateway,
             &mut state,
-            &mut deferred,
-        )
-        .expect("defer unrelated response");
-        assert_eq!(deferred.len(), 1);
+        );
+        assert!(deferred.is_some());
 
-        handle_frame(
+        let (_, deferred) = handle_frame(
             ServerMessage::RoutineHistory {
                 request_id: "owned".into(),
                 runs: vec![run.clone()],
             },
             &mut gateway,
             &mut state,
-            &mut deferred,
-        )
-        .expect("accept correlated response");
+        );
+        assert!(deferred.is_none());
         assert_eq!(state.runs, vec![run.clone()]);
         assert!(matches!(
             message(request_action("Load run", FollowUp::None, |request_id| {

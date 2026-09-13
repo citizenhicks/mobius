@@ -120,7 +120,7 @@ async fn reassigning_chat_preserves_history_and_binds_the_target_bot() {
         assert_eq!(reassigned.bot_id().await.unwrap(), target.id);
         assert!(!reassigned.accepts_file_attachments().await.unwrap());
         let snapshot = reassigned.snapshot(None).await.unwrap();
-        assert_eq!(snapshot.ready.session.context.bot_id, target.id);
+        assert_eq!(snapshot.ready.session.context.owner_id, target.id);
         let after = checkpoints.load(&id).await.unwrap().unwrap();
         assert_eq!(after.context, before.context);
         assert_eq!(after.first_user_message, before.first_user_message);
@@ -148,7 +148,7 @@ async fn reassigning_chat_preserves_history_and_binds_the_target_bot() {
             .unwrap();
         assert_eq!(record.title.as_deref(), Some("Preserved title"));
         assert!(record.pinned);
-        assert_eq!(record.session_context.bot_id, target.id);
+        assert_eq!(record.session_context.owner_id, target.id);
         assert!(reassigned.stop_if_idle().await);
         assert_eq!(
             gateway
@@ -197,7 +197,7 @@ async fn failed_reassignment_restores_the_owner_and_running_chat() {
             .ready
             .session
             .context
-            .bot_id,
+            .owner_id,
         bot.id
     );
     std::fs::remove_file(workspace.join("AGENTS.md")).unwrap();
@@ -507,7 +507,7 @@ async fn deleting_a_completed_routine_run_removes_its_session_data() {
     };
     let session_id = active.session_id().to_owned();
     let mut checkpoint = Checkpoint::empty(&session_id);
-    checkpoint.session_context.bot_id = bot.id;
+    checkpoint.session_context.owner_id = bot.id;
     checkpoint.catalog_visible = false;
     checkpoints
         .save(&checkpoint, &[], None)

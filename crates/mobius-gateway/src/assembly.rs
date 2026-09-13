@@ -40,7 +40,10 @@ use crate::provider_catalog::{
     credential_is_configured, selected_base_url,
 };
 use crate::sandbox::GatewaySandbox;
-use crate::wire::{MiddlewareConfig, ProviderConfig, ProviderEndpointAuth, validate_session_id};
+use crate::wire::{
+    AgentComposition, MiddlewareConfig, ProviderConfig, ProviderEndpointAuth,
+    RoutineInteractionPolicy, validate_session_id,
+};
 use crate::{Error, Result};
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
@@ -71,6 +74,8 @@ pub(crate) struct PreparedBot {
     context_window: i64,
     model_providers: BTreeMap<String, String>,
     approval_policy: ApprovalPolicy,
+    pub(crate) active_message_delivery: ActiveMessageDelivery,
+    pub(crate) compaction: Option<Arc<Compaction>>,
     extensions: ResolvedExtensions,
     computer_runtime: Option<std::path::PathBuf>,
 }
@@ -117,13 +122,13 @@ pub(crate) async fn prepare_bot(
         };
     let choices = models.choices().cloned().collect::<Vec<_>>();
     crate::middleware_manifest::validate_choices(&config.middleware, &choices)?;
-    let approval_policy = crate::middleware_manifest::string_setting(
-        &config.middleware,
-        "sandbox",
-        "approval_policy",
-    )?
-    .ok_or_else(|| Error::Config("missing middleware setting `sandbox.approval_policy`".into()))?
-    .parse::<ApprovalPolicy>()?;
+    let approval_policy = configured_approval_policy(&config.middleware)?;
+    let active_message_delivery = configured_message_delivery(&config.middleware)?;
+    let compaction = config
+        .middleware
+        .enabled(mobius::middleware::compaction::MANIFEST.id)
+        .then(|| configured_compaction(&config.middleware).map(Arc::new))
+        .transpose()?;
     let computer_runtime =
         crate::computer_runtime::prepare(store.state_dir(), &config.middleware).await?;
     let extensions = ExtensionStore::new(store).resolve(gateway, &config.extensions)?;
@@ -145,6 +150,8 @@ pub(crate) async fn prepare_bot(
         context_window,
         model_providers,
         approval_policy,
+        active_message_delivery,
+        compaction,
         extensions,
         computer_runtime,
     })
@@ -231,10 +238,6 @@ pub(crate) async fn assemble(
                 )
             })
             .transpose()?;
-        let instructions = settings
-            .enabled("instructions")
-            .then(|| Instructions::discover(&workspace_path))
-            .transpose()?;
         let mut read_roots = extensions
             .as_ref()
             .map_or_else(Vec::new, Extensions::resource_roots);
@@ -266,16 +269,13 @@ pub(crate) async fn assemble(
             sandbox.attached_folders(workspace_path.clone(), attached_folders.clone())
         };
         let middleware = build_middleware(
-            &settings,
+            &resources,
             &workspace_path,
             gateway_for_middleware,
             scratchpad,
             session_files,
             backend,
-            instructions,
-            resolved_extensions,
             extensions,
-            computer_runtime.as_deref(),
         )?;
         Ok((gateway_sandbox, Arc::new(sandbox), middleware))
     })
@@ -316,7 +316,7 @@ pub(crate) async fn assemble(
         persist_usage(&gateway, &usage_store, provider, usage)
     })
     .session_context(SessionContext {
-        bot_id: chat.bot_id.clone(),
+        owner_id: chat.bot_id.clone(),
         user_name: local_user_name(),
         workspace_id: Some(workspace.id),
         workspace_label: Some(workspace.path.display().to_string()),
@@ -625,22 +625,17 @@ pub(crate) fn configured_compaction(settings: &MiddlewareConfig) -> Result<Compa
     ))
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the headless composition root keeps middleware dependencies explicit"
-)]
 fn build_middleware(
-    settings: &MiddlewareConfig,
+    prepared: &PreparedBot,
     workspace: &std::path::Path,
     gateway: Arc<Mutex<GatewayConfig>>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
     backend: Arc<dyn SandboxBackend>,
-    mut instructions: Option<Instructions>,
-    resolved_extensions: &ResolvedExtensions,
     mut extensions: Option<Extensions>,
-    computer_runtime: Option<&std::path::Path>,
 ) -> Result<BuiltMiddleware> {
+    let settings = &prepared.bot.config.config.middleware;
+    let resolved_extensions = &prepared.extensions;
     let mut entries: Vec<Arc<dyn Middleware>> = Vec::new();
     let mut subagent_template = None;
     let mut subagents = None;
@@ -656,27 +651,19 @@ fn build_middleware(
             }
             BuiltinMiddleware::Artifacts => Arc::new(Artifacts::new(session_files.clone())),
             BuiltinMiddleware::Tools => Arc::new(Tools::coding(session_files.clone())),
-            BuiltinMiddleware::Instructions => Arc::new(
-                instructions
-                    .take()
-                    .ok_or_else(|| Error::Config("instructions were not discovered".into()))?,
-            ),
+            BuiltinMiddleware::Instructions => Arc::new(Instructions::discover(workspace)?),
             BuiltinMiddleware::Scratchpad => Arc::new(
                 Scratchpad::new(scratchpad.clone()).agent_enabled(settings.enabled("scratchpad")),
             ),
-            BuiltinMiddleware::Extensions => Arc::new(
+            BuiltinMiddleware::Extensions => Arc::new(activate_extensions(
                 extensions
                     .take()
-                    .ok_or_else(|| Error::Config("extensions were not discovered".into()))?
-                    .activate_plugins(
-                        resolved_extensions
-                            .plugins
-                            .iter()
-                            .map(|plugin| plugin.activation(Arc::clone(&gateway))),
-                        workspace,
-                        Arc::clone(&backend),
-                    )?,
-            ),
+                    .ok_or_else(|| Error::Config("extensions were not discovered".into()))?,
+                resolved_extensions,
+                Arc::clone(&gateway),
+                workspace,
+                Arc::clone(&backend),
+            )?),
             BuiltinMiddleware::Tasks => Arc::new(Tasks),
             BuiltinMiddleware::Subagents => {
                 let template = Arc::new(OnceLock::<AgentConfig>::new());
@@ -712,28 +699,10 @@ fn build_middleware(
                 subagent_template = Some(template);
                 middleware
             }
-            BuiltinMiddleware::Messages => {
-                let delivery = match crate::middleware_manifest::string_setting(
-                    settings, "messages", "delivery",
-                )? {
-                    Some("steer") => ActiveMessageDelivery::Steer,
-                    Some("queue") => ActiveMessageDelivery::Queue,
-                    Some(value) => {
-                        return Err(Error::Config(format!(
-                            "unsupported messages delivery `{value}`"
-                        )));
-                    }
-                    None => {
-                        return Err(Error::Config(
-                            "missing middleware setting `messages.delivery`".into(),
-                        ));
-                    }
-                };
-                Arc::new(Messages::new(
-                    crate::middleware_manifest::usize_setting(settings, "messages", "max_pending")?,
-                    delivery,
-                )?)
-            }
+            BuiltinMiddleware::Messages => Arc::new(Messages::new(
+                crate::middleware_manifest::usize_setting(settings, "messages", "max_pending")?,
+                prepared.active_message_delivery,
+            )?),
             BuiltinMiddleware::ContextOffloading => Arc::new(ContextOffloading::new(
                 crate::middleware_manifest::integer_setting(
                     settings,
@@ -742,7 +711,9 @@ fn build_middleware(
                 )?,
             )?),
             BuiltinMiddleware::ComputerControl => {
-                let runtime = computer_runtime
+                let runtime = prepared
+                    .computer_runtime
+                    .as_deref()
                     .ok_or_else(|| Error::Config("computer runtime was not prepared".into()))?;
                 Arc::new(mobius::middleware::computer_control::ComputerControl::new(
                     session_files.clone(),
@@ -753,7 +724,11 @@ fn build_middleware(
                     runtime.join("computer-control.md"),
                 )?)
             }
-            BuiltinMiddleware::Compaction => Arc::new(configured_compaction(settings)?),
+            BuiltinMiddleware::Compaction => prepared
+                .compaction
+                .as_ref()
+                .map(Arc::clone)
+                .ok_or_else(|| Error::Config("compaction policy was not prepared".into()))?,
             BuiltinMiddleware::Sessions => Arc::new(
                 Sessions::new(crate::middleware_manifest::usize_setting(
                     settings,
@@ -770,6 +745,60 @@ fn build_middleware(
         subagent_template,
         subagents,
     })
+}
+
+fn activate_extensions(
+    extensions: Extensions,
+    resolved: &ResolvedExtensions,
+    gateway: Arc<Mutex<GatewayConfig>>,
+    workspace: &std::path::Path,
+    backend: Arc<dyn SandboxBackend>,
+) -> Result<Extensions> {
+    extensions
+        .activate_plugins(
+            resolved
+                .plugins
+                .iter()
+                .map(|plugin| plugin.activation(Arc::clone(&gateway))),
+            workspace,
+            backend,
+        )
+        .map_err(Error::from)
+}
+
+fn configured_approval_policy(settings: &MiddlewareConfig) -> Result<ApprovalPolicy> {
+    crate::middleware_manifest::string_setting(settings, "sandbox", "approval_policy")?
+        .ok_or_else(|| {
+            Error::Config("missing middleware setting `sandbox.approval_policy`".into())
+        })?
+        .parse::<ApprovalPolicy>()
+        .map_err(Error::from)
+}
+
+fn configured_message_delivery(settings: &MiddlewareConfig) -> Result<ActiveMessageDelivery> {
+    match crate::middleware_manifest::string_setting(settings, "messages", "delivery")? {
+        Some("steer") => Ok(ActiveMessageDelivery::Steer),
+        Some("queue") => Ok(ActiveMessageDelivery::Queue),
+        Some(value) => Err(Error::Config(format!(
+            "unsupported messages delivery `{value}`"
+        ))),
+        None => Err(Error::Config(
+            "missing middleware setting `messages.delivery`".into(),
+        )),
+    }
+}
+
+pub(crate) fn bot_semantics(config: &AgentComposition) -> Result<(bool, RoutineInteractionPolicy)> {
+    let accepts_file_attachments = config
+        .middleware
+        .enabled(mobius::middleware::attachments::MANIFEST.id);
+    let routine_interaction_policy = match configured_approval_policy(&config.middleware)? {
+        ApprovalPolicy::Ask => RoutineInteractionPolicy::MayPauseForApproval,
+        ApprovalPolicy::Allow | ApprovalPolicy::AllowNetwork | ApprovalPolicy::FullAccess => {
+            RoutineInteractionPolicy::Unattended
+        }
+    };
+    Ok((accepts_file_attachments, routine_interaction_policy))
 }
 
 #[cfg(test)]

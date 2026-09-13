@@ -19,7 +19,7 @@ use crate::protocol::TurnStartedEvent;
 
 fn checkpoint(session_id: impl Into<String>) -> Checkpoint {
     let mut checkpoint = Checkpoint::empty(session_id);
-    checkpoint.session_context.bot_id = "test-bot".into();
+    checkpoint.session_context.owner_id = "test-bot".into();
     checkpoint
 }
 

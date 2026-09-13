@@ -2,9 +2,9 @@
 
 use super::*;
 use crate::ProviderError;
-use crate::backend::model::{ToolCall, ToolDefinition};
+use crate::backend::model::ToolDefinition;
 use crate::middleware::tools::{ExecutionMode, Tool, ToolContext, ToolExposure, Tools};
-use crate::protocol::ModelEvent;
+use crate::protocol::{ModelEvent, ToolCall};
 
 #[derive(Clone, Copy)]
 enum Terminal {

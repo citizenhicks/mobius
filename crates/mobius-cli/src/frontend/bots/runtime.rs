@@ -1,7 +1,7 @@
 use std::io;
 
 use mobius::{Error, Result};
-use mobius_gateway::client::{GatewayEvents, GatewaySender, MAX_PENDING_FRAMES};
+use mobius_gateway::client::{GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{ClientMessage, ReadyPayload, ServerFrame, ServerMessage};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -14,6 +14,7 @@ use super::state::BotsState;
 use super::{Action, FollowUp};
 use crate::frontend::setup;
 use crate::frontend::terminal::{INPUT_POLL, MAX_INPUT_BATCH, poll_event};
+use crate::gateway_error;
 
 type BotsTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 
@@ -30,11 +31,11 @@ pub(in crate::frontend) async fn run(
     request_routines(sender, &mut state).await?;
     let mut tick = tokio::time::interval(INPUT_POLL);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut deferred = Vec::new();
+    let mut events = events.scoped();
     let mut events_open = true;
     let mut dirty = true;
 
-    let result = 'screen: loop {
+    'screen: loop {
         if dirty {
             terminal.draw(|frame| render(frame, &state, gateway))?;
             dirty = false;
@@ -47,8 +48,14 @@ pub(in crate::frontend) async fn run(
                 };
                 match frame {
                     Some(frame) => {
-                        let follow_up =
-                            handle_frame(frame.message, gateway, &mut state, &mut deferred)?;
+                        if let Some(error) = frame.message.response_error(None) {
+                            break 'screen Err(Error::Stopped(error.message.into()));
+                        }
+                        let (follow_up, deferred) =
+                            handle_frame(frame.message, gateway, &mut state);
+                        if let Some(frame) = deferred {
+                            events.defer(frame).map_err(gateway_error)?;
+                        }
                         request_follow_up(sender, &mut state, follow_up).await?;
                     }
                     None => {
@@ -83,7 +90,7 @@ pub(in crate::frontend) async fn run(
                                 mode,
                                 None,
                                 sender,
-                                events,
+                                events.reborrow(),
                                 gateway,
                                 &bot_id,
                             ).await {
@@ -105,18 +112,16 @@ pub(in crate::frontend) async fn run(
                 }
             }
         }
-    };
-    events.prepend(deferred).map_err(gateway_error)?;
-    result
+    }
 }
 
 pub(super) fn handle_frame(
     message: ServerMessage,
     gateway: &mut ReadyPayload,
     state: &mut BotsState,
-    deferred: &mut Vec<ServerFrame>,
-) -> Result<FollowUp> {
+) -> (FollowUp, Option<ServerFrame>) {
     let mut follow_up = FollowUp::None;
+    let mut deferred = None;
     match message {
         ServerMessage::Ready { payload } => *gateway = payload,
         ServerMessage::GatewayConfigured {
@@ -124,13 +129,10 @@ pub(super) fn handle_frame(
             payload,
         } => {
             *gateway = payload.clone();
-            defer(
-                ServerMessage::GatewayConfigured {
-                    request_id,
-                    payload,
-                },
-                deferred,
-            )?;
+            deferred = Some(ServerFrame::new(ServerMessage::GatewayConfigured {
+                request_id,
+                payload,
+            }));
         }
         ServerMessage::Sessions {
             request_id,
@@ -138,13 +140,10 @@ pub(super) fn handle_frame(
         } => {
             gateway.sessions = sessions.clone();
             if request_id.is_some() {
-                defer(
-                    ServerMessage::Sessions {
-                        request_id,
-                        sessions,
-                    },
-                    deferred,
-                )?;
+                deferred = Some(ServerFrame::new(ServerMessage::Sessions {
+                    request_id,
+                    sessions,
+                }));
             }
         }
         ServerMessage::Bots { request_id, bots } => {
@@ -155,7 +154,7 @@ pub(super) fn handle_frame(
             {
                 follow_up = state.complete().unwrap_or(FollowUp::None);
             } else if request_id.is_some() {
-                defer(ServerMessage::Bots { request_id, bots }, deferred)?;
+                deferred = Some(ServerFrame::new(ServerMessage::Bots { request_id, bots }));
             }
         }
         ServerMessage::Routines {
@@ -186,19 +185,9 @@ pub(super) fn handle_frame(
             message,
             ..
         } if pending_matches(state, &request_id) => state.fail(message),
-        message => defer(message, deferred)?,
+        message => deferred = Some(ServerFrame::new(message)),
     }
-    Ok(follow_up)
-}
-
-fn defer(message: ServerMessage, deferred: &mut Vec<ServerFrame>) -> Result<()> {
-    if deferred.len() == MAX_PENDING_FRAMES {
-        return Err(Error::Stopped(format!(
-            "gateway event backlog exceeds {MAX_PENDING_FRAMES} frames while managing Bots: {message:?}"
-        )));
-    }
-    deferred.push(ServerFrame::new(message));
-    Ok(())
+    (follow_up, deferred)
 }
 
 fn pending_matches(state: &BotsState, request_id: &str) -> bool {
@@ -248,8 +237,4 @@ async fn request_follow_up(
         FollowUp::Routines => request_routines(sender, state).await,
         FollowUp::Runs(routine_id) => request_runs(sender, state, routine_id).await,
     }
-}
-
-fn gateway_error(error: impl std::fmt::Display) -> Error {
-    Error::Stopped(error.to_string())
 }

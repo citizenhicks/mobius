@@ -92,7 +92,7 @@ async fn sqlite_persists_latest_checkpoint_transcript_and_fork_lineage() {
     let path = workspace.path().join("mobius.sqlite3");
     let store = SqliteCheckpoint::new(&path).expect("open checkpoint database");
     let mut empty = Checkpoint::empty("session");
-    empty.session_context.bot_id = "test-bot".into();
+    empty.session_context.owner_id = "test-bot".into();
     store
         .save(&empty, &[], None)
         .await
@@ -159,7 +159,7 @@ async fn sqlite_persists_latest_checkpoint_transcript_and_fork_lineage() {
     let store = SqliteCheckpoint::new(&path).expect("reopen checkpoint database");
     let sessions = store
         .list_sessions_page(SessionPageRequest {
-            bot_id: None,
+            owner_id: None,
             cursor: None,
             limit: 100,
         })

@@ -23,7 +23,8 @@ use crate::wire::{ExtensionHookRecord, ExtensionKind, ExtensionRecord};
 use crate::{Error, Result};
 
 const MAX_EXTENSIONS: usize = 64;
-const MAX_SOURCE_BYTES: usize = 4_096;
+/// Maximum UTF-8 byte length of an extension source URL.
+pub const MAX_EXTENSION_SOURCE_BYTES: usize = 4_096;
 const MAX_REFERENCE_BYTES: usize = 256;
 const MAX_SUBDIRECTORY_BYTES: usize = 1_024;
 const MAX_PACKAGE_FILES: usize = 4_096;
@@ -332,7 +333,7 @@ impl ExtensionSource {
     }
 
     fn validate(&self) -> Result<()> {
-        if self.url.len() > MAX_SOURCE_BYTES || self.url.trim() != self.url {
+        if self.url.len() > MAX_EXTENSION_SOURCE_BYTES || self.url.trim() != self.url {
             return Err(Error::Config("extension URL is invalid".into()));
         }
         let parsed = Url::parse(&self.url)

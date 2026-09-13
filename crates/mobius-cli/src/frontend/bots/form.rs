@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use mobius::protocol::MAX_MESSAGE_BYTES;
+use mobius_gateway::bots::{MAX_BOT_DESCRIPTION_BYTES, MAX_BOT_NAME_BYTES};
 use mobius_gateway::wire::{
     BotRecord, ClientMessage, ReadyPayload, Routine, RoutineSchedule, RoutineScheduleKind,
 };
@@ -8,9 +9,6 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::{Action, FollowUp, moved, request_action};
 use crate::frontend::terminal_text;
-
-const MAX_BOT_NAME_BYTES: usize = 128;
-const MAX_BOT_DESCRIPTION_BYTES: usize = 2 * 1024;
 
 pub(super) enum Form {
     Bot(Box<BotForm>),

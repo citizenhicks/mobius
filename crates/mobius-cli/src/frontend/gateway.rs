@@ -2,7 +2,7 @@
 
 use std::io;
 
-use mobius::{Error, Result};
+use mobius::Result;
 use mobius_gateway::client::{Endpoint, GatewayClient};
 use mobius_gateway::wire::ClientKind;
 use ratatui::Terminal;
@@ -18,6 +18,7 @@ use super::terminal::{INPUT_POLL, MAX_INPUT_BATCH, poll_event};
 use super::terminal_text;
 use super::theme::{Role, current};
 use crate::gateway_accounts::{GatewayAccounts, environment_override_message};
+use crate::gateway_error;
 
 const MAX_ENDPOINT_BYTES: usize = 4 * 1024;
 const MAX_PAIRING_CODE_BYTES: usize = 512;
@@ -550,8 +551,4 @@ fn content_area(area: Rect) -> Rect {
         width,
         area.height.saturating_sub(2),
     )
-}
-
-fn gateway_error(error: mobius_gateway::Error) -> Error {
-    Error::Stopped(error.to_string())
 }

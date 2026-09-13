@@ -7,7 +7,7 @@
 //! # Embedded composition
 //!
 //! The caller owns every runtime dependency. Include exactly one message-handling middleware,
-//! give new sessions a non-empty [`protocol::SessionContext::bot_id`], and keep draining events
+//! give new sessions a non-empty [`protocol::SessionContext::owner_id`], and keep draining events
 //! while commands are active.
 //!
 //! ```rust,no_run
@@ -56,7 +56,7 @@
 //!             "You are a concise coding agent.",
 //!         )
 //!         .session_context(SessionContext {
-//!             bot_id: "embedded".into(),
+//!             owner_id: "embedded".into(),
 //!             ..SessionContext::default()
 //!         }),
 //!     )
@@ -309,6 +309,18 @@ pub enum Error {
 
 /// Result type shared by möbius modules.
 pub type Result<T> = std::result::Result<T, Error>;
+
+pub(crate) const MAX_IDENTIFIER_BYTES: usize = 4 * 1024;
+
+pub(crate) fn validate_identifier(name: &str, value: &str, limit: usize) -> Result<()> {
+    if value.trim().is_empty() {
+        return Err(Error::Config(format!("{name} cannot be empty")));
+    }
+    if value.len() > limit {
+        return Err(Error::Config(format!("{name} exceeds size limit")));
+    }
+    Ok(())
+}
 
 pub(crate) fn preview_json(value: &serde_json::Value) -> String {
     let value = value.to_string();

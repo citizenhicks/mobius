@@ -473,9 +473,10 @@ fn validate_stored_credential(instance: &str, credential: &StoredCredential) -> 
             credential.provider
         )));
     }
-    if credential.api_key.trim().is_empty() || credential.api_key.len() > MAX_API_KEY_BYTES {
+    if credential.api_key.trim().is_empty() || credential.api_key.len() > MAX_PROVIDER_API_KEY_BYTES
+    {
         return Err(Error::Config(format!(
-            "API key must be 1–{MAX_API_KEY_BYTES} bytes"
+            "API key must be 1–{MAX_PROVIDER_API_KEY_BYTES} bytes"
         )));
     }
     definition.validate_base_url(credential.base_url.as_deref())?;
@@ -483,9 +484,9 @@ fn validate_stored_credential(instance: &str, credential: &StoredCredential) -> 
 }
 
 fn validate_new_api_key(api_key: &str) -> Result<()> {
-    if api_key.is_empty() || api_key.len() > MAX_API_KEY_BYTES {
+    if api_key.is_empty() || api_key.len() > MAX_PROVIDER_API_KEY_BYTES {
         return Err(Error::Config(format!(
-            "API key must be 1–{MAX_API_KEY_BYTES} bytes"
+            "API key must be 1–{MAX_PROVIDER_API_KEY_BYTES} bytes"
         )));
     }
     if !api_key.bytes().all(|byte| byte.is_ascii_graphic()) {

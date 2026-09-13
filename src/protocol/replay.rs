@@ -4,7 +4,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
-use crate::backend::model::ToolLoad;
 use crate::protocol::AssistantMessageEvent;
 use crate::protocol::EventMsg;
 use crate::protocol::MessageEvent;
@@ -13,6 +12,7 @@ use crate::protocol::ModelStepContent;
 use crate::protocol::ModelStepContentPhase;
 use crate::protocol::ToolCallBeginEvent;
 use crate::protocol::ToolCallEndEvent;
+use crate::protocol::ToolLoad;
 use crate::protocol::ToolLoadEvent;
 
 pub(crate) const INTERNAL_MESSAGE_FIELD: &str = "_mobius_internal";
@@ -270,8 +270,6 @@ fn arguments(value: Option<&Value>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::model::internal_user_message;
-    use crate::backend::model::message_input;
     use crate::protocol::{
         MessageAuthor, MessageDelivery, ModelStepAnnotation, SessionFileReference,
     };
@@ -281,15 +279,27 @@ mod tests {
     }
 
     fn typed_user_message(text: &str, attachments: Vec<SessionFileReference>) -> Value {
-        message_input(&MessageEvent {
+        let event = MessageEvent {
             author: MessageAuthor::User,
             delivery: MessageDelivery::Turn,
             text: text.into(),
             attachments,
             reply: None,
             message_target: None,
+        };
+        serde_json::json!({
+            "role": "user",
+            "content": [{"type": "input_text", "text": text}],
+            MESSAGE_METADATA_FIELD: event,
         })
-        .expect("typed user message")
+    }
+
+    fn internal_user_message(kind: &str, text: &str) -> Value {
+        serde_json::json!({
+            "role": "user",
+            "content": [{"type": "input_text", "text": text}],
+            INTERNAL_MESSAGE_FIELD: kind,
+        })
     }
 
     #[test]

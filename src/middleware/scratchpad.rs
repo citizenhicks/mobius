@@ -346,7 +346,7 @@ pub struct Scratchpad {
 }
 
 impl Scratchpad {
-    /// Creates scratchpad middleware for one Bot backed by shared durable stores.
+    /// Creates scratchpad middleware for one session owner backed by shared durable stores.
     #[must_use]
     pub fn new(store: ScratchpadStore) -> Self {
         Self {

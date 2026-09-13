@@ -430,6 +430,45 @@ fn bot_profile_update_preserves_identity_and_persists_exact_revision() {
 }
 
 #[test]
+fn bot_records_project_runtime_semantics_without_persisting_them() {
+    let (_root, store, _) = fixture();
+    let mut config = AgentComposition::default();
+    config
+        .middleware
+        .set_enabled(mobius::middleware::attachments::MANIFEST.id, true);
+    config.middleware.set_setting(
+        "sandbox",
+        "approval_policy",
+        Some(mobius::protocol::FrontendSettingValue::String("ask".into())),
+    );
+
+    let bot = store
+        .create_bot("Semantic", "Project semantic capabilities.", config)
+        .expect("create Bot");
+
+    assert!(bot.accepts_file_attachments);
+    assert_eq!(
+        bot.routine_interaction_policy,
+        crate::wire::RoutineInteractionPolicy::MayPauseForApproval
+    );
+
+    let catalog = store
+        .storage
+        .load_catalog()
+        .expect("load catalog")
+        .expect("persisted catalog");
+    let catalog: serde_json::Value = serde_json::from_str(&catalog).expect("catalog JSON");
+    let stored = catalog["bots"]
+        .as_array()
+        .expect("stored Bots")
+        .iter()
+        .find(|stored| stored["id"] == bot.id)
+        .expect("stored Bot");
+    assert!(stored.get("accepts_file_attachments").is_none());
+    assert!(stored.get("routine_interaction_policy").is_none());
+}
+
+#[test]
 fn bot_rename_derives_unique_handles_without_colliding_with_itself() {
     let (_root, store, _) = fixture();
     create_bot(&store, "builder");
@@ -1155,7 +1194,110 @@ fn cron_next_occurrence_uses_iana_timezone_across_dst() {
         .expect("timestamp")
         .timestamp();
 
-    assert_eq!(routine.next_run_at(now), Some(expected));
+    assert_eq!(
+        next_cron_occurrence(&routine.schedule, now, false).expect("next cron occurrence"),
+        expected
+    );
+}
+
+#[test]
+fn reopening_during_dst_fallback_does_not_replay_an_ambiguous_cron_time() {
+    let (root, store, workspace) = fixture();
+    let bot = create_bot(&store, "dst_restart");
+    let routine = store
+        .create_routine(
+            &bot.id,
+            &workspace,
+            "cross fallback",
+            cron("30 1 * * *", "America/New_York"),
+            None,
+        )
+        .expect("routine");
+    let stale = Utc
+        .with_ymd_and_hms(2024, 11, 2, 5, 30, 0)
+        .single()
+        .expect("stale timestamp")
+        .timestamp();
+    let now = Utc
+        .with_ymd_and_hms(2024, 11, 3, 6, 15, 0)
+        .single()
+        .expect("restart timestamp")
+        .timestamp();
+    let expected = Utc
+        .with_ymd_and_hms(2024, 11, 4, 6, 30, 0)
+        .single()
+        .expect("next timestamp")
+        .timestamp();
+    let mut state = store.fresh_state().expect("Bot state");
+    let stored = state
+        .routines
+        .iter_mut()
+        .find(|stored| stored.id == routine.id)
+        .expect("stored routine");
+    stored.next_run_at = Some(stale);
+    stored.last_matched_minute = None;
+    store.save(&state).expect("persist stale cron cursor");
+    drop(store);
+
+    let reopened = BotStore::open(&root.path().join("state")).expect("reopen Bot store");
+    assert!(reopened.poll_due(now).expect("poll due").due.is_empty());
+    assert_eq!(
+        reopened
+            .routine_record(&routine.id, now)
+            .expect("routine record")
+            .next_run_at,
+        Some(expected)
+    );
+}
+
+#[test]
+fn reopening_does_not_dispatch_a_missed_cron_minute() {
+    let (root, store, workspace) = fixture();
+    let bot = create_bot(&store, "missed_cron");
+    let routine = store
+        .create_routine(
+            &bot.id,
+            &workspace,
+            "do not backfill",
+            cron("0 9 * * *", "UTC"),
+            None,
+        )
+        .expect("routine");
+    let stale = Utc
+        .with_ymd_and_hms(2024, 3, 10, 9, 0, 0)
+        .single()
+        .expect("stale timestamp")
+        .timestamp();
+    let now = Utc
+        .with_ymd_and_hms(2024, 3, 11, 10, 0, 0)
+        .single()
+        .expect("restart timestamp")
+        .timestamp();
+    let expected = Utc
+        .with_ymd_and_hms(2024, 3, 12, 9, 0, 0)
+        .single()
+        .expect("next timestamp")
+        .timestamp();
+    let mut state = store.fresh_state().expect("Bot state");
+    let stored = state
+        .routines
+        .iter_mut()
+        .find(|stored| stored.id == routine.id)
+        .expect("stored routine");
+    stored.next_run_at = Some(stale);
+    stored.last_matched_minute = None;
+    store.save(&state).expect("persist stale cron cursor");
+    drop(store);
+
+    let reopened = BotStore::open(&root.path().join("state")).expect("reopen Bot store");
+    assert!(reopened.poll_due(now).expect("poll due").due.is_empty());
+    assert_eq!(
+        reopened
+            .routine_record(&routine.id, now)
+            .expect("routine record")
+            .next_run_at,
+        Some(expected)
+    );
 }
 
 #[test]
@@ -1248,7 +1390,7 @@ fn persisted_routine_paths_must_stay_in_the_private_directory() {
     let (root, store, workspace) = fixture();
     let bot = create_bot(&store, "path_guard");
     let mut state = BotState::default();
-    state.bots.push(bot.clone());
+    state.bots.push(StoredBot::from(&bot));
     state.routines.push(StoredRoutine {
         id: Uuid::new_v4().to_string(),
         bot_id: bot.id,

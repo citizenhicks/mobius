@@ -2,8 +2,12 @@
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
+use std::io::{self, Write};
 use std::sync::Arc;
 
+use serde::Serialize;
+use serde::Serializer;
+use serde::ser::SerializeMap;
 use serde_json::Value;
 
 use crate::BoxFuture;
@@ -414,22 +418,6 @@ impl MiddlewareStack {
             }
         }
         catalog.finalize()?;
-        if catalog
-            .registered_definitions()
-            .iter()
-            .any(|definition| definition.name == crate::backend::model::TOOLS_SEARCH_NAME)
-        {
-            let tools = self
-                .entries
-                .iter()
-                .find(|entry| entry.name() == tools::MANIFEST.id)
-                .ok_or_else(|| Error::Config("tools_search has no owning middleware".into()))?;
-            validate_tool_rendering(
-                tools.as_ref(),
-                crate::backend::model::TOOLS_SEARCH_NAME,
-                &runtime.session_id,
-            )?;
-        }
         Ok(catalog)
     }
 
@@ -1012,6 +1000,16 @@ pub(crate) const fn approximate_tokens(bytes: usize) -> usize {
 }
 
 pub(crate) fn approximate_item_tokens(item: &Value) -> usize {
+    let has_image = crate::protocol::content_parts(item).is_some_and(|parts| {
+        parts
+            .iter()
+            .any(|part| part.get("type").and_then(Value::as_str) == Some("input_image"))
+    });
+    if !has_image {
+        return serialized_len(&PublicItem(item))
+            .map_or(0, approximate_tokens)
+            .max(1);
+    }
     let mut item = item.clone();
     let mut image_tokens = 0usize;
     if let Some(parts) = crate::protocol::content_parts_mut(&mut item) {
@@ -1034,10 +1032,48 @@ pub(crate) fn approximate_item_tokens(item: &Value) -> usize {
     if let Some(fields) = item.as_object_mut() {
         fields.retain(|name, _| !name.starts_with('_'));
     }
-    serde_json::to_vec(&item)
-        .map_or(0, |bytes| approximate_tokens(bytes.len()))
+    serialized_len(&item)
+        .map_or(0, approximate_tokens)
         .saturating_add(image_tokens)
         .max(1)
+}
+
+fn serialized_len<T: Serialize + ?Sized>(value: &T) -> Option<usize> {
+    let mut bytes = ByteCounter::default();
+    serde_json::to_writer(&mut bytes, value).ok()?;
+    Some(bytes.0)
+}
+
+struct PublicItem<'a>(&'a Value);
+
+impl Serialize for PublicItem<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let Some(fields) = self.0.as_object() else {
+            return self.0.serialize(serializer);
+        };
+        let mut map = serializer.serialize_map(None)?;
+        for (name, value) in fields.iter().filter(|(name, _)| !name.starts_with('_')) {
+            map.serialize_entry(name, value)?;
+        }
+        map.end()
+    }
+}
+
+#[derive(Default)]
+struct ByteCounter(usize);
+
+impl Write for ByteCounter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.0 = self.0.saturating_add(buffer.len());
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

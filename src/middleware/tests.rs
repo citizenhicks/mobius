@@ -24,6 +24,23 @@ struct LifecycleProbe {
 
 struct CompactInputRewrite;
 
+#[test]
+fn token_estimation_serializes_borrowed_public_fields() {
+    let item = serde_json::json!({
+        "role": "user",
+        "content": "hello",
+        "_private": "ignored"
+    });
+    let public = serde_json::json!({"role": "user", "content": "hello"});
+    let expected = approximate_tokens(serde_json::to_vec(&public).expect("json").len()).max(1);
+
+    assert_eq!(approximate_item_tokens(&item), expected);
+    assert_eq!(
+        serialized_len(&public),
+        Some(serde_json::to_vec(&public).expect("json").len())
+    );
+}
+
 impl Middleware for CompactInputRewrite {
     fn name(&self) -> &'static str {
         "compact_input_rewrite"
@@ -280,7 +297,7 @@ fn lifecycle_stop_decisions_keep_the_first_reason() {
 #[test]
 fn pre_tool_rewrite_rejects_invalid_calls_without_mutation() {
     let tools = Catalog::default();
-    let original = crate::backend::model::ToolCall {
+    let original = crate::protocol::ToolCall {
         call_id: "call".into(),
         name: "read".into(),
         arguments: serde_json::json!({"path": "README.md"}),

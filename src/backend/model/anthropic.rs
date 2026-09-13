@@ -22,7 +22,6 @@ use super::StreamingToolCalls;
 use super::TOOL_ERROR_FIELD;
 use super::TOOLS_SEARCH_NAME;
 use super::ToolDefinition;
-use super::ToolLoad;
 use super::image_input;
 use super::provider::HostedWebSearch;
 use super::provider::ProviderAuth;
@@ -44,6 +43,7 @@ use crate::protocol::ModelStepContent;
 use crate::protocol::ModelStepContentPhase;
 use crate::protocol::TokenUsage;
 use crate::protocol::ToolDiscoveryMode;
+use crate::protocol::ToolLoad;
 use crate::protocol::WebSearchAction;
 
 mod manifest {
@@ -55,39 +55,40 @@ mod manifest {
     pub const CUSTOM_ENDPOINT_TOOL_DISCOVERY: Option<ToolDiscoveryMode> =
         Some(ToolDiscoveryMode::Rebuild);
     pub const DEFAULT_MODEL: Option<&str> = Some("claude-sonnet-5");
+    const REASONING: &[ReasoningPreset] = &[
+        ReasoningPreset {
+            id: "low",
+            label: "Low",
+            description: "Prefer speed and lower cost",
+        },
+        ReasoningPreset {
+            id: "medium",
+            label: "Medium",
+            description: "Balance reasoning and latency",
+        },
+        ReasoningPreset {
+            id: "high",
+            label: "High",
+            description: "Anthropic's default reasoning effort",
+        },
+        ReasoningPreset {
+            id: "xhigh",
+            label: "Extra high",
+            description: "Extended effort for long-horizon work",
+        },
+        ReasoningPreset {
+            id: "max",
+            label: "Maximum",
+            description: "Use maximum available reasoning",
+        },
+    ];
     pub const MODELS: &[ModelPreset] = &[
         ModelPreset {
             id: "claude-sonnet-5",
             label: "Claude Sonnet 5",
             description: "Fast frontier model for coding and agents",
             context_window: 1000000,
-            reasoning: &[
-                ReasoningPreset {
-                    id: "low",
-                    label: "Low",
-                    description: "Prefer speed and lower cost",
-                },
-                ReasoningPreset {
-                    id: "medium",
-                    label: "Medium",
-                    description: "Balance reasoning and latency",
-                },
-                ReasoningPreset {
-                    id: "high",
-                    label: "High",
-                    description: "Anthropic's default reasoning effort",
-                },
-                ReasoningPreset {
-                    id: "xhigh",
-                    label: "Extra high",
-                    description: "Extended effort for long-horizon work",
-                },
-                ReasoningPreset {
-                    id: "max",
-                    label: "Maximum",
-                    description: "Use maximum available reasoning",
-                },
-            ],
+            reasoning: REASONING,
             default_reasoning: Some("high"),
             tool_discovery: ToolDiscoveryMode::Rebuild,
         },
@@ -96,33 +97,7 @@ mod manifest {
             label: "Claude Opus 4.8",
             description: "Highest-capability Anthropic model",
             context_window: 1000000,
-            reasoning: &[
-                ReasoningPreset {
-                    id: "low",
-                    label: "Low",
-                    description: "Prefer speed and lower cost",
-                },
-                ReasoningPreset {
-                    id: "medium",
-                    label: "Medium",
-                    description: "Balance reasoning and latency",
-                },
-                ReasoningPreset {
-                    id: "high",
-                    label: "High",
-                    description: "Anthropic's default reasoning effort",
-                },
-                ReasoningPreset {
-                    id: "xhigh",
-                    label: "Extra high",
-                    description: "Extended effort for long-horizon work",
-                },
-                ReasoningPreset {
-                    id: "max",
-                    label: "Maximum",
-                    description: "Use maximum available reasoning",
-                },
-            ],
+            reasoning: REASONING,
             default_reasoning: Some("high"),
             tool_discovery: ToolDiscoveryMode::Native,
         },

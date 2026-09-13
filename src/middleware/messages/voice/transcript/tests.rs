@@ -12,7 +12,7 @@ async fn discarded_speech_stays_cleared_in_history_and_resumed_task_context() {
     let checkpoints: Arc<dyn CheckpointStore> =
         Arc::new(SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3")).unwrap());
     let mut parent = Checkpoint::empty("parent");
-    parent.session_context.bot_id = "bot".into();
+    parent.session_context.owner_id = "bot".into();
     checkpoints.save(&parent, &[], None).await.unwrap();
     let sink: FrontendEventSink = Arc::new(|_| Ok(()));
     let mut voice = VoiceTranscript::open(Arc::clone(&checkpoints), "parent", Arc::clone(&sink))
@@ -58,7 +58,7 @@ async fn voice_transcript_is_linked_read_only_and_resumes_without_reusing_messag
     let checkpoints: Arc<dyn CheckpointStore> =
         Arc::new(SqliteCheckpoint::new(&path).expect("store"));
     let mut parent = Checkpoint::empty("parent");
-    parent.session_context.bot_id = "bot".into();
+    parent.session_context.owner_id = "bot".into();
     parent.context = vec![serde_json::json!({"role":"user","content":"private parent task"})];
     checkpoints
         .save(&parent, &parent.context, None)
@@ -198,7 +198,7 @@ async fn voice_transcript_is_linked_read_only_and_resumes_without_reusing_messag
     assert!(!child.catalog_visible);
     let catalog = checkpoints
         .list_sessions_page(SessionPageRequest {
-            bot_id: None,
+            owner_id: None,
             cursor: None,
             limit: 10,
         })
@@ -234,7 +234,7 @@ async fn preview_page_keeps_an_unfinished_message_whole() {
         SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3")).expect("store"),
     );
     let mut parent = Checkpoint::empty("parent");
-    parent.session_context.bot_id = "bot".into();
+    parent.session_context.owner_id = "bot".into();
     checkpoints.save(&parent, &[], None).await.expect("parent");
     let voice = VoiceTranscript::open(Arc::clone(&checkpoints), "parent", Arc::new(|_| Ok(())))
         .await
@@ -290,7 +290,7 @@ async fn voice_history_stops_before_expanding_an_oversized_unfinished_prefix() {
     let checkpoints =
         SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3")).expect("store");
     let mut child = Checkpoint::empty("voice");
-    child.session_context.bot_id = "bot".into();
+    child.session_context.owner_id = "bot".into();
     checkpoints.save(&child, &[], None).await.expect("child");
     let large = "x".repeat(MAX_MESSAGE_BYTES);
     for index in 0..PAGE_SIZE + 9 {

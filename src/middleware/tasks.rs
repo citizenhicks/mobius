@@ -330,11 +330,11 @@ mod tests {
     use std::sync::Mutex;
 
     use crate::backend::checkpoint::sqlite::SqliteCheckpoint;
-    use crate::backend::model::ToolCall;
     use crate::backend::sandbox::local::LocalSandbox;
     use crate::backend::sandbox::{ApprovalPolicy, NetworkAccess, Sandbox, SandboxPermissions};
-    use crate::middleware::tools::execute_batch;
+    use crate::middleware::tools::{Tools, execute_batch};
     use crate::protocol::SessionContext;
+    use crate::protocol::ToolCall;
 
     use super::*;
 
@@ -387,6 +387,9 @@ mod tests {
         let tasks = Tasks;
         let mut catalog = Catalog::default();
         tasks.register(&mut catalog, &runtime).expect("register");
+        Tools::new(Vec::new())
+            .register(&mut catalog, &runtime)
+            .expect("register tools_search owner");
         catalog.finalize().expect("finalize catalog");
         let sandbox = Arc::new(Sandbox::new(
             Arc::new(LocalSandbox::new(temporary.path()).expect("sandbox")),

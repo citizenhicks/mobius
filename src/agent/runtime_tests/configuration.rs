@@ -257,6 +257,30 @@ async fn zero_model_step_limit_is_rejected_at_agent_creation() {
 }
 
 #[tokio::test]
+async fn blank_session_owner_is_rejected_at_agent_creation() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+            .expect("checkpoint store"),
+    );
+    let result = create_agent(
+        config(workspace.path(), checkpoints, "blank-owner").session_context(SessionContext {
+            owner_id: " ".into(),
+            ..SessionContext::default()
+        }),
+    )
+    .await;
+    let Err(error) = result else {
+        panic!("blank session owner must fail");
+    };
+
+    assert_eq!(
+        error.to_string(),
+        "configuration error: session owner ID cannot be empty"
+    );
+}
+
+#[tokio::test]
 async fn completed_pre_model_effects_are_settled_when_a_later_hook_fails() {
     let workspace = tempfile::tempdir().expect("workspace");
     let checkpoints = Arc::new(

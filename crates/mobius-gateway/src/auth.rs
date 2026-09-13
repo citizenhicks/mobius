@@ -13,7 +13,8 @@ use uuid::Uuid;
 
 use crate::{Error, Result};
 
-const MAX_CREDENTIAL_BYTES: usize = 512;
+/// Maximum UTF-8 byte length of one gateway client bearer credential.
+pub const MAX_CLIENT_CREDENTIAL_BYTES: usize = 512;
 const MAX_CLIENT_LABEL_BYTES: usize = 128;
 const MAX_CLIENTS: usize = 32;
 const PAIRING_LIFETIME_SECONDS: i64 = 10 * 60;
@@ -199,7 +200,7 @@ impl AuthStore {
 
     /// Verifies a bearer token against every paired client digest.
     pub fn authenticate(&self, token: &str) -> Result<ClientIdentity> {
-        if token.is_empty() || token.len() > MAX_CREDENTIAL_BYTES {
+        if token.is_empty() || token.len() > MAX_CLIENT_CREDENTIAL_BYTES {
             return Err(Error::Unauthorized);
         }
         let candidate = digest(token);
@@ -345,7 +346,7 @@ fn validate_auth_state(state: &AuthState) -> Result<()> {
 }
 
 fn credential_matches(candidate: &str, expected: &[u8; 32]) -> bool {
-    if candidate.is_empty() || candidate.len() > MAX_CREDENTIAL_BYTES {
+    if candidate.is_empty() || candidate.len() > MAX_CLIENT_CREDENTIAL_BYTES {
         return false;
     }
     bool::from(digest(candidate).ct_eq(expected))

@@ -214,7 +214,7 @@ impl Runner {
         }
         self.state.active_execution = Some(ActiveExecution {
             submission_id: submission_id.into(),
-            turn_id: turn_id.clone(),
+            turn_id,
             started_at_ms: unix_timestamp_ms()?,
             model_calls: 0,
             tool_calls: 0,

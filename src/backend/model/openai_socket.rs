@@ -72,44 +72,45 @@ mod manifest {
     pub const TOOL_DISCOVERY: ToolDiscoveryMode = ToolDiscoveryMode::Native;
     pub const CUSTOM_ENDPOINT_TOOL_DISCOVERY: Option<ToolDiscoveryMode> = None;
     pub const DEFAULT_MODEL: Option<&str> = Some("gpt-5.6-sol");
+    const REASONING: &[ReasoningPreset] = &[
+        ReasoningPreset {
+            id: "none",
+            label: "None",
+            description: "Skip reasoning for the lowest latency",
+        },
+        ReasoningPreset {
+            id: "low",
+            label: "Low",
+            description: "Faster answers for straightforward work",
+        },
+        ReasoningPreset {
+            id: "medium",
+            label: "Medium",
+            description: "Balanced reasoning and latency",
+        },
+        ReasoningPreset {
+            id: "high",
+            label: "High",
+            description: "Deeper reasoning for complex work",
+        },
+        ReasoningPreset {
+            id: "xhigh",
+            label: "Extra high",
+            description: "Extended reasoning for demanding work",
+        },
+        ReasoningPreset {
+            id: "max",
+            label: "Maximum",
+            description: "Maximum reasoning for the hardest work",
+        },
+    ];
     pub const MODELS: &[ModelPreset] = &[
         ModelPreset {
             id: "gpt-5.6-sol",
             label: "5.6 Sol",
             description: "Frontier capability for complex work",
             context_window: 1050000,
-            reasoning: &[
-                ReasoningPreset {
-                    id: "none",
-                    label: "None",
-                    description: "Skip reasoning for the lowest latency",
-                },
-                ReasoningPreset {
-                    id: "low",
-                    label: "Low",
-                    description: "Faster answers for straightforward work",
-                },
-                ReasoningPreset {
-                    id: "medium",
-                    label: "Medium",
-                    description: "Balanced reasoning and latency",
-                },
-                ReasoningPreset {
-                    id: "high",
-                    label: "High",
-                    description: "Deeper reasoning for complex work",
-                },
-                ReasoningPreset {
-                    id: "xhigh",
-                    label: "Extra high",
-                    description: "Extended reasoning for demanding work",
-                },
-                ReasoningPreset {
-                    id: "max",
-                    label: "Maximum",
-                    description: "Maximum reasoning for the hardest work",
-                },
-            ],
+            reasoning: REASONING,
             default_reasoning: Some("medium"),
             tool_discovery: ToolDiscoveryMode::Native,
         },
@@ -118,38 +119,7 @@ mod manifest {
             label: "5.6 Terra",
             description: "Balance intelligence and cost",
             context_window: 1050000,
-            reasoning: &[
-                ReasoningPreset {
-                    id: "none",
-                    label: "None",
-                    description: "Skip reasoning for the lowest latency",
-                },
-                ReasoningPreset {
-                    id: "low",
-                    label: "Low",
-                    description: "Faster answers for straightforward work",
-                },
-                ReasoningPreset {
-                    id: "medium",
-                    label: "Medium",
-                    description: "Balanced reasoning and latency",
-                },
-                ReasoningPreset {
-                    id: "high",
-                    label: "High",
-                    description: "Deeper reasoning for complex work",
-                },
-                ReasoningPreset {
-                    id: "xhigh",
-                    label: "Extra high",
-                    description: "Extended reasoning for demanding work",
-                },
-                ReasoningPreset {
-                    id: "max",
-                    label: "Maximum",
-                    description: "Maximum reasoning for the hardest work",
-                },
-            ],
+            reasoning: REASONING,
             default_reasoning: Some("medium"),
             tool_discovery: ToolDiscoveryMode::Native,
         },
@@ -158,38 +128,7 @@ mod manifest {
             label: "5.6 Luna",
             description: "Efficient, high-volume workloads",
             context_window: 1050000,
-            reasoning: &[
-                ReasoningPreset {
-                    id: "none",
-                    label: "None",
-                    description: "Skip reasoning for the lowest latency",
-                },
-                ReasoningPreset {
-                    id: "low",
-                    label: "Low",
-                    description: "Faster answers for straightforward work",
-                },
-                ReasoningPreset {
-                    id: "medium",
-                    label: "Medium",
-                    description: "Balanced reasoning and latency",
-                },
-                ReasoningPreset {
-                    id: "high",
-                    label: "High",
-                    description: "Deeper reasoning for complex work",
-                },
-                ReasoningPreset {
-                    id: "xhigh",
-                    label: "Extra high",
-                    description: "Extended reasoning for demanding work",
-                },
-                ReasoningPreset {
-                    id: "max",
-                    label: "Maximum",
-                    description: "Maximum reasoning for the hardest work",
-                },
-            ],
+            reasoning: REASONING,
             default_reasoning: Some("medium"),
             tool_discovery: ToolDiscoveryMode::Native,
         },
@@ -237,7 +176,7 @@ mod manifest {
 }
 const OPENAI_HTTP_URL: &str = "https://api.openai.com/v1";
 const OPENAI_SOCKET_URL: &str = "wss://api.openai.com/v1/responses";
-const MAX_SOCKET_SESSIONS: usize = 128;
+const MAX_SESSION_ENTRIES: usize = 128;
 const COMPACTION_STREAM_RETRY_LIMIT: usize = 2;
 const COMPACTION_RETRY_BASE_DELAY: Duration = Duration::from_millis(200);
 
@@ -561,17 +500,13 @@ impl OpenAiSocket {
         }
 
         let mut close = Vec::new();
-        let websocket_sessions = sessions
-            .values()
-            .filter(|session| session.try_lock().map_or(true, |state| !state.use_http))
-            .count();
-        if websocket_sessions >= MAX_SOCKET_SESSIONS {
+        while sessions.len() >= MAX_SESSION_ENTRIES {
             let idle = sessions
                 .iter()
                 .filter(|(_, session)| Arc::strong_count(session) == 1)
                 .filter_map(|(id, session)| {
                     let state = session.try_lock().ok()?;
-                    (!state.use_http).then_some((id.clone(), state.last_used_at))
+                    Some((id.clone(), state.last_used_at))
                 })
                 .min_by_key(|(_, last_used_at)| *last_used_at)
                 .map(|(id, _)| id);
@@ -584,8 +519,7 @@ impl OpenAiSocket {
                 }
             } else {
                 return Err(Error::Provider(
-                    format!("all {MAX_SOCKET_SESSIONS} WebSocket sessions are currently active")
-                        .into(),
+                    format!("all {MAX_SESSION_ENTRIES} model sessions are currently active").into(),
                 ));
             }
         }

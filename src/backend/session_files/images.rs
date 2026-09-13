@@ -59,7 +59,7 @@ impl SessionFileStore {
             .await
     }
 
-    /// Grants an authenticated chat's exact upload to one trusted Bot execution.
+    /// Grants an authenticated chat's exact upload to one trusted agent execution.
     pub async fn grant_upload(
         &self,
         source: &str,

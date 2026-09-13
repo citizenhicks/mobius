@@ -502,7 +502,7 @@ mod tests {
                 .expect("checkpoint store"),
         );
         let mut checkpoint = Checkpoint::empty("session-1");
-        checkpoint.session_context.bot_id = "test-bot".into();
+        checkpoint.session_context.owner_id = "test-bot".into();
         checkpoints
             .save(&checkpoint, &[], None)
             .await
@@ -518,7 +518,7 @@ mod tests {
             .expect("checkpoint store");
         for session_id in ["current", "other"] {
             let mut checkpoint = Checkpoint::empty(session_id);
-            checkpoint.session_context.bot_id = "test-bot".into();
+            checkpoint.session_context.owner_id = "test-bot".into();
             store
                 .save(&checkpoint, &[], None)
                 .await

@@ -12,7 +12,6 @@ use crate::Error;
 use crate::Result;
 use crate::backend::checkpoint::ExecutionOutcome;
 use crate::backend::checkpoint::PendingApproval;
-use crate::backend::model::ToolCall;
 use crate::backend::sandbox::SandboxApprovalRequest;
 use crate::backend::sandbox::SandboxPermissions;
 use crate::middleware::PermissionRequestContext;
@@ -20,6 +19,7 @@ use crate::middleware::tools::ToolResult;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
 use crate::protocol::ReviewDecision;
+use crate::protocol::ToolCall;
 
 struct ApprovalResponse {
     submission_id: String,

@@ -46,6 +46,7 @@ pub struct SessionReadyPayload {
     pub tool_count: usize,
     pub compaction_count: u64,
     pub context_limit_tokens: Option<i64>,
+    pub active_message_delivery: mobius::protocol::ActiveMessageDelivery,
     pub run_stats: RunStats,
 }
 
@@ -572,6 +573,16 @@ pub struct BotRecord {
     pub description: String,
     pub tint: ProviderTint,
     pub config: VersionedAgentConfig,
+    pub accepts_file_attachments: bool,
+    pub routine_interaction_policy: RoutineInteractionPolicy,
+}
+
+/// Whether unattended routine work can stop for a human execution decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutineInteractionPolicy {
+    Unattended,
+    MayPauseForApproval,
 }
 
 /// One Bot-owned routine.

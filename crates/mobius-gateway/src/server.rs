@@ -232,12 +232,13 @@ impl GatewayServer {
                 () = &mut shutdown => break Ok(()),
                 _ = routine_timer.tick() => {
                     let now = Utc::now().timestamp();
-                    let routines_active = self.bots.has_active_routines(now)?;
+                    let poll = self.bots.poll_due(now)?;
+                    let routines_active = poll.active;
                     if has_active_routines && !routines_active && connections.is_empty() {
                         inactivity.as_mut().reset(tokio::time::Instant::now() + inactivity_timeout);
                     }
                     has_active_routines = routines_active;
-                    let due = self.bots.take_due(now)?;
+                    let due = poll.due;
                     if !due.is_empty() {
                         let host = self.host.clone();
                         routine_dispatchers.spawn(async move {

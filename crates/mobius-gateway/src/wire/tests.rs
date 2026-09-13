@@ -58,6 +58,44 @@ fn bounded_request_ids_still_allow_bulk_file_frames() {
 }
 
 #[test]
+fn response_errors_preserve_correlation_and_connection_terminality() {
+    let rejection = ServerMessage::Rejected {
+        request_id: "owned".into(),
+        code: "invalid".into(),
+        message: "no".into(),
+        fatal: true,
+    };
+    assert_eq!(
+        rejection.response_error(Some("owned")),
+        Some(GatewayResponseError {
+            message: "no",
+            fatal: true,
+        })
+    );
+    assert_eq!(rejection.response_error(Some("other")), None);
+
+    let nonfatal = ServerMessage::Error {
+        code: "cleanup".into(),
+        message: "later".into(),
+        fatal: false,
+    };
+    assert_eq!(nonfatal.response_error(Some("owned")), None);
+
+    let fatal = ServerMessage::Error {
+        code: "stopped".into(),
+        message: "gone".into(),
+        fatal: true,
+    };
+    assert_eq!(
+        fatal.response_error(Some("owned")),
+        Some(GatewayResponseError {
+            message: "gone",
+            fatal: true,
+        })
+    );
+}
+
+#[test]
 fn session_file_bytes_use_standard_base64_and_round_trip() {
     let expected = ClientFrame::new(ClientMessage::UploadSessionFileChunk {
         request_id: "request-upload".into(),
@@ -864,7 +902,7 @@ fn session_record_exposes_only_frontend_catalog_fields() {
     let record = SessionRecord {
         session_id: "session-a".into(),
         session_context: mobius::protocol::SessionContext {
-            bot_id: "bot-a".into(),
+            owner_id: "bot-a".into(),
             ..mobius::protocol::SessionContext::default()
         },
         parent_session_id: None,
@@ -1067,7 +1105,7 @@ fn server_frame_decodes_session_opened_with_a_widget_action_tag() {
             "session": {
                 "session_id": "session-a",
                 "context": {
-                    "bot_id": "bot-a"
+                    "owner_id": "bot-a"
                 },
                 "model": {
                     "route": "default",
@@ -1104,6 +1142,7 @@ fn server_frame_decodes_session_opened_with_a_widget_action_tag() {
             "tool_count": 3,
             "compaction_count": 2,
             "context_limit_tokens": 250000,
+            "active_message_delivery": "steer",
             "run_stats": {
                 "run_count": 0,
                 "failed_run_count": 0,

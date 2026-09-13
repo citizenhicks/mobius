@@ -60,7 +60,7 @@ use crate::wire::{
 use crate::{Error, Result};
 
 use self::catalog::{
-    SessionCatalogMetadata, activity_catalog, background_approvals, hidden_bot_session_catalog,
+    SessionCatalogMetadata, activity_catalog, gateway_catalog, hidden_bot_session_catalog,
     load_session_metadata, restore_pending_approval_activities, save_session_metadata,
     session_catalog, update_session_activity, validate_session_title,
 };
@@ -96,6 +96,7 @@ type SessionActivities = Arc<Mutex<catalog::SessionCatalog>>;
 pub(crate) struct GatewayHost {
     pub(crate) desktop: Arc<DesktopControl>,
     state: Arc<Mutex<GatewayState>>,
+    capacity_gate: Arc<Mutex<()>>,
     events: broadcast::Sender<ServerFrame>,
 }
 
@@ -110,6 +111,7 @@ struct GatewayState {
     contributions: Vec<FrontendContribution>,
     // ponytail: one lock is enough for at most 32 tiny catalog writes.
     catalog_lock: Arc<Mutex<()>>,
+    credential_catalog_gate: Arc<Mutex<()>>,
     session_mutations: Arc<RwLock<()>>,
     extension_mutations: Arc<Mutex<()>>,
     discovery_gate: Arc<Mutex<()>>,
@@ -119,6 +121,26 @@ struct GatewayState {
     sessions: HashMap<String, HostHandle>,
     starting_sessions: Arc<StdMutex<HashMap<String, String>>>,
     idle_cleanup_tasks: Vec<JoinHandle<()>>,
+}
+
+struct GatewayReadySnapshot {
+    store: ConfigStore,
+    config: GatewayConfig,
+    credentials: Arc<CredentialStore>,
+    credential_catalog_gate: Arc<Mutex<()>>,
+    bots: Arc<BotStore>,
+    checkpoints: Arc<dyn CheckpointStore>,
+    scratchpad: ScratchpadStore,
+    contributions: Vec<FrontendContribution>,
+    activities: SessionActivities,
+}
+
+async fn gateway_ready_after_unlock(
+    state: tokio::sync::MutexGuard<'_, GatewayState>,
+) -> std::result::Result<ReadyPayload, Rejection> {
+    let snapshot = state.ready_snapshot()?;
+    drop(state);
+    gateway_ready(&snapshot).await
 }
 
 pub(crate) struct HostSnapshot {
@@ -187,6 +209,7 @@ impl GatewayHost {
                 session_files,
                 contributions,
                 catalog_lock: Arc::new(Mutex::new(())),
+                credential_catalog_gate: Arc::new(Mutex::new(())),
                 session_mutations: Arc::new(RwLock::new(())),
                 extension_mutations: Arc::new(Mutex::new(())),
                 discovery_gate,
@@ -197,6 +220,7 @@ impl GatewayHost {
                 starting_sessions: Arc::default(),
                 idle_cleanup_tasks: Vec::new(),
             })),
+            capacity_gate: Arc::new(Mutex::new(())),
             events,
         };
         host.reconcile_pending_bot_deletion()
@@ -251,6 +275,11 @@ impl GatewayHost {
         Ok(mutation)
     }
 
+    async fn begin_credential_mutation(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        let gate = Arc::clone(&self.state.lock().await.credential_catalog_gate);
+        gate.lock_owned().await
+    }
+
     async fn begin_exclusive_mutation(
         &self,
     ) -> std::result::Result<tokio::sync::OwnedRwLockWriteGuard<()>, Rejection> {
@@ -276,8 +305,9 @@ impl GatewayHost {
 
     pub(crate) async fn ready(&self) -> std::result::Result<ReadyPayload, Rejection> {
         self.reconcile_pending_bot_deletion().await?;
-        let state = self.state.lock().await;
-        gateway_ready(&state).await
+        let _mutation = self.begin_mutation().await?;
+        let snapshot = self.state.lock().await.ready_snapshot()?;
+        gateway_ready(&snapshot).await
     }
 
     pub(crate) async fn contributions(
@@ -315,8 +345,16 @@ impl GatewayHost {
 
     pub(crate) async fn sessions(&self) -> std::result::Result<Vec<SessionRecord>, Rejection> {
         let _access = self.begin_mutation().await?;
-        let state = self.state.lock().await;
-        state.visible_sessions().await
+        let (checkpoints, activities) = {
+            let state = self.state.lock().await;
+            (
+                Arc::clone(&state.checkpoints),
+                Arc::clone(&state.activities),
+            )
+        };
+        session_catalog(&checkpoints, &activities)
+            .await
+            .map_err(internal)
     }
 
     pub(crate) async fn probe_git_credential(
@@ -489,9 +527,15 @@ impl GatewayHost {
         bot_id: &str,
     ) -> std::result::Result<Vec<SessionRecord>, Rejection> {
         let _access = self.begin_mutation().await?;
-        let state = self.state.lock().await;
-        state.bots.bot(bot_id).map_err(invalid_bot)?;
-        hidden_bot_session_catalog(&state.checkpoints, &state.activities, bot_id)
+        let (checkpoints, activities) = {
+            let state = self.state.lock().await;
+            state.bots.bot(bot_id).map_err(invalid_bot)?;
+            (
+                Arc::clone(&state.checkpoints),
+                Arc::clone(&state.activities),
+            )
+        };
+        hidden_bot_session_catalog(&checkpoints, &activities, bot_id)
             .await
             .map_err(internal)
     }
@@ -506,8 +550,7 @@ impl GatewayHost {
     ) -> std::result::Result<HostHandle, Rejection> {
         validate_session_id(&session_id).map_err(|_| invalid_session_id())?;
         let mutation = self.begin_mutation().await?;
-        let mut state = self.state.lock().await;
-        state.ensure_capacity().await?;
+        let state = self.state.lock().await;
         let tls = state
             .config
             .lock()
@@ -515,11 +558,9 @@ impl GatewayHost {
             .tls
             .clone();
         let bot = state.bots.bot(bot_id).map_err(invalid_bot)?;
-        let starting = state.reserve_start(&session_id, &bot.id)?;
         let state_dir = state.store.state_dir().to_path_buf();
         let workspace = workspace.to_path_buf();
         drop(state);
-        drop(mutation);
         let mut spec = tokio::task::spawn_blocking(move || {
             ChatSpec::for_bot(&workspace, &bot, &state_dir, tls.as_ref())
         })
@@ -527,6 +568,14 @@ impl GatewayHost {
         .map_err(internal)?
         .map_err(invalid_workspace)?;
         spec.catalog_visible = catalog_visible;
+        let capacity = self.ensure_capacity().await?;
+        let starting = self
+            .state
+            .lock()
+            .await
+            .reserve_start(&session_id, &spec.bot_id)?;
+        drop(capacity);
+        drop(mutation);
         let host = self
             .start_reserved_session(spec, starting, origin_label, true)
             .await?;
@@ -611,31 +660,34 @@ impl GatewayHost {
     ) -> std::result::Result<(HostHandle, bool), Rejection> {
         validate_session_id(session_id).map_err(|_| invalid_session_id())?;
         let mutation = self.begin_mutation().await?;
-        let mut state = self.state.lock().await;
-        if let Some(host) = state.sessions.get(session_id)
-            && host.is_alive()
         {
-            return Ok((host.clone(), false));
+            let mut state = self.state.lock().await;
+            if let Some(host) = state.sessions.get(session_id)
+                && host.is_alive()
+            {
+                return Ok((host.clone(), false));
+            }
+            state.sessions.remove(session_id);
         }
-        state.sessions.remove(session_id);
-        state.ensure_capacity().await?;
-        let checkpoint = state
-            .checkpoints
+        let (checkpoints, config, bots, state_dir) = {
+            let state = self.state.lock().await;
+            (
+                Arc::clone(&state.checkpoints),
+                Arc::clone(&state.config),
+                Arc::clone(&state.bots),
+                state.store.state_dir().to_path_buf(),
+            )
+        };
+        let checkpoint = checkpoints
             .load(session_id)
             .await
             .map_err(internal)?
             .ok_or_else(unknown_session)?;
-        let tls = state
-            .config
+        let tls = config
             .lock()
             .map_err(|_| internal("gateway configuration lock is poisoned"))?
             .tls
             .clone();
-        let starting = state.reserve_start(session_id, &checkpoint.session_context.bot_id)?;
-        let bots = Arc::clone(&state.bots);
-        let state_dir = state.store.state_dir().to_path_buf();
-        drop(state);
-        drop(mutation);
         let metadata = checkpoint.metadata;
         let mut spec = tokio::task::spawn_blocking(move || {
             ChatSpec::from_metadata(&metadata, &bots, &state_dir, tls.as_ref())
@@ -644,7 +696,7 @@ impl GatewayHost {
         .map_err(internal)?
         .map_err(invalid_config)?;
         spec.catalog_visible = checkpoint.catalog_visible;
-        if checkpoint.session_context.bot_id != spec.bot_id {
+        if checkpoint.session_context.owner_id != spec.bot_id {
             return Err(invalid_session_bot());
         }
         let workspace = spec.workspace_info();
@@ -655,6 +707,18 @@ impl GatewayHost {
         {
             return Err(invalid_session_workspace());
         }
+        let capacity = self.ensure_capacity().await?;
+        let mut state = self.state.lock().await;
+        if let Some(host) = state.sessions.get(session_id)
+            && host.is_alive()
+        {
+            return Ok((host.clone(), false));
+        }
+        state.sessions.remove(session_id);
+        let starting = state.reserve_start(session_id, &checkpoint.session_context.owner_id)?;
+        drop(state);
+        drop(capacity);
+        drop(mutation);
         let host = self
             .start_reserved_session(spec, starting, "mobius-gateway", cache)
             .await?;
@@ -667,11 +731,12 @@ impl GatewayHost {
         bot_id: &str,
     ) -> std::result::Result<(), Rejection> {
         let _mutation = self.begin_mutation().await?;
-        {
+        let checkpoints = {
             let state = self.state.lock().await;
-            require_catalog_session(&state, session_id).await?;
             state.bots.bot(bot_id).map_err(internal)?;
-        }
+            Arc::clone(&state.checkpoints)
+        };
+        require_catalog_session(&checkpoints, session_id).await?;
         drop(_mutation);
         let (host, _) = self.open_session_with_cache(session_id, true).await?;
         host.reassign_bot(bot_id.to_owned()).await?;
@@ -706,12 +771,12 @@ impl GatewayHost {
     ) -> std::result::Result<(), Rejection> {
         let (checkpoints, catalog_lock) = {
             let state = self.state.lock().await;
-            require_catalog_session(&state, session_id).await?;
             (
                 Arc::clone(&state.checkpoints),
                 Arc::clone(&state.catalog_lock),
             )
         };
+        require_catalog_session(&checkpoints, session_id).await?;
         let _catalog = catalog_lock.lock().await;
         if checkpoints
             .load(session_id)
@@ -774,10 +839,16 @@ impl GatewayHost {
     }
 
     async fn broadcast_sessions(&self) -> std::result::Result<(), Rejection> {
-        let state = self.state.lock().await;
-        let sessions = state.visible_sessions().await?;
-        let approvals = background_approvals(&state.activities).await;
-        drop(state);
+        let (checkpoints, activities) = {
+            let state = self.state.lock().await;
+            (
+                Arc::clone(&state.checkpoints),
+                Arc::clone(&state.activities),
+            )
+        };
+        let (sessions, approvals) = gateway_catalog(&checkpoints, &activities)
+            .await
+            .map_err(internal)?;
         let _ = self.events.send(ServerFrame::new(ServerMessage::Sessions {
             request_id: None,
             sessions,
@@ -851,10 +922,23 @@ impl Drop for SessionStartGuard {
 }
 
 impl GatewayState {
-    async fn visible_sessions(&self) -> std::result::Result<Vec<SessionRecord>, Rejection> {
-        session_catalog(&self.checkpoints, &self.activities)
-            .await
-            .map_err(internal)
+    fn ready_snapshot(&self) -> std::result::Result<GatewayReadySnapshot, Rejection> {
+        let config = self
+            .config
+            .lock()
+            .map_err(|_| internal("gateway configuration lock is poisoned"))?
+            .clone();
+        Ok(GatewayReadySnapshot {
+            store: self.store.clone(),
+            config,
+            credentials: Arc::clone(&self.credentials),
+            credential_catalog_gate: Arc::clone(&self.credential_catalog_gate),
+            bots: Arc::clone(&self.bots),
+            checkpoints: Arc::clone(&self.checkpoints),
+            scratchpad: self.scratchpad.clone(),
+            contributions: self.contributions.clone(),
+            activities: Arc::clone(&self.activities),
+        })
     }
 
     fn reserve_start(
@@ -862,6 +946,9 @@ impl GatewayState {
         id: &str,
         bot_id: &str,
     ) -> std::result::Result<SessionStartGuard, Rejection> {
+        if self.resident_sessions() >= MAX_ACTIVE_SESSIONS {
+            return Err(session_limit());
+        }
         let mut starting = self
             .starting_sessions
             .lock()
@@ -888,24 +975,44 @@ impl GatewayState {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .len()
     }
+}
 
-    async fn ensure_capacity(&mut self) -> std::result::Result<(), Rejection> {
+impl GatewayHost {
+    async fn ensure_capacity(
+        &self,
+    ) -> std::result::Result<tokio::sync::OwnedMutexGuard<()>, Rejection> {
+        let capacity = Arc::clone(&self.capacity_gate).lock_owned().await;
         for attempt in 0..2 {
-            if self.resident_sessions() < MAX_ACTIVE_SESSIONS {
-                return Ok(());
-            }
-            let candidates = self
-                .sessions
-                .iter()
-                .filter(|(_, host)| host.is_unreferenced())
-                .map(|(id, host)| (id.clone(), host.clone()))
-                .collect::<Vec<_>>();
-            for (id, host) in candidates {
+            let candidates = {
+                let state = self.state.lock().await;
+                if state.resident_sessions() < MAX_ACTIVE_SESSIONS {
+                    return Ok(capacity);
+                }
+                state
+                    .sessions
+                    .iter()
+                    .filter(|(_, host)| host.is_unreferenced())
+                    .map(|(id, _)| id.clone())
+                    .collect::<Vec<_>>()
+            };
+            for id in candidates {
+                let Some(host) = ({
+                    let mut state = self.state.lock().await;
+                    state
+                        .sessions
+                        .get(&id)
+                        .is_some_and(HostHandle::is_unreferenced)
+                        .then(|| state.sessions.remove(&id))
+                        .flatten()
+                }) else {
+                    continue;
+                };
                 if host.stop_if_idle().await {
-                    self.sessions.remove(&id);
-                    if self.resident_sessions() < MAX_ACTIVE_SESSIONS {
-                        return Ok(());
+                    if self.state.lock().await.resident_sessions() < MAX_ACTIVE_SESSIONS {
+                        return Ok(capacity);
                     }
+                } else {
+                    self.state.lock().await.sessions.entry(id).or_insert(host);
                 }
             }
             if attempt == 0 {
@@ -913,13 +1020,17 @@ impl GatewayState {
                 tokio::task::yield_now().await;
             }
         }
-        Err(Rejection {
-            code: "session_limit",
-            message: format!(
-                "this gateway already has {MAX_ACTIVE_SESSIONS} connected or running chats"
-            ),
-            fatal: false,
-        })
+        Err(session_limit())
+    }
+}
+
+fn session_limit() -> Rejection {
+    Rejection {
+        code: "session_limit",
+        message: format!(
+            "this gateway already has {MAX_ACTIVE_SESSIONS} connected or running chats"
+        ),
+        fatal: false,
     }
 }
 
@@ -1005,12 +1116,11 @@ fn unknown_session() -> Rejection {
 }
 
 async fn require_catalog_session(
-    state: &GatewayState,
+    checkpoints: &Arc<dyn CheckpointStore>,
     session_id: &str,
 ) -> std::result::Result<(), Rejection> {
     validate_session_id(session_id).map_err(|_| invalid_session_id())?;
-    let checkpoint = state
-        .checkpoints
+    let checkpoint = checkpoints
         .load(session_id)
         .await
         .map_err(internal)?

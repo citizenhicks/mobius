@@ -604,7 +604,7 @@ pub(super) fn sessions_for_bot<'a>(
     let mut sessions = gateway
         .sessions
         .iter()
-        .filter(|session| session.session_context.bot_id == bot_id)
+        .filter(|session| session.session_context.owner_id == bot_id)
         .collect::<Vec<_>>();
     sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_at));
     sessions

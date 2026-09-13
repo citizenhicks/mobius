@@ -224,8 +224,10 @@ pub(super) fn validate_instance_id(instance: &str) -> Result<()> {
 
 /// A label is the user-facing name of one provider instance.
 pub(super) fn validate_provider_label(label: &str) -> Result<()> {
-    if label.trim().is_empty() || label.len() > 128 {
-        return Err(Error::Config("provider label must be 1–128 bytes".into()));
+    if label.trim().is_empty() || label.len() > MAX_PROVIDER_LABEL_BYTES {
+        return Err(Error::Config(format!(
+            "provider label must be 1–{MAX_PROVIDER_LABEL_BYTES} bytes"
+        )));
     }
     if label.chars().any(char::is_control) {
         return Err(Error::Config(

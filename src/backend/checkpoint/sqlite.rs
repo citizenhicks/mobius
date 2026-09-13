@@ -48,7 +48,7 @@ mod event_journal;
 use self::event_journal::StreamMetricAccumulator;
 use self::event_journal::store_event;
 
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 const SCHEMA: &str = "
@@ -106,7 +106,7 @@ CREATE INDEX IF NOT EXISTS execution_journal_recent_idx
     ON execution_journal(started_at_ms DESC, session_id DESC, sequence DESC);
 CREATE INDEX IF NOT EXISTS event_journal_step_idx
     ON event_journal(session_id, model_step_id, event_kind);
-PRAGMA user_version = 9;
+PRAGMA user_version = 10;
 COMMIT;
 ";
 
@@ -464,14 +464,16 @@ impl CheckpointStore for SqliteCheckpoint {
                     "session page limit must be positive".into(),
                 ));
             }
-            if request
-                .bot_id
-                .as_ref()
-                .is_some_and(|bot_id| bot_id.trim().is_empty())
-            {
-                return Err(Error::Checkpoint(
-                    "session Bot filter cannot be blank".into(),
-                ));
+            if let Some(owner_id) = &request.owner_id {
+                crate::validate_identifier(
+                    "session owner filter",
+                    owner_id,
+                    crate::MAX_IDENTIFIER_BYTES,
+                )
+                .map_err(|error| match error {
+                    Error::Config(message) => Error::Checkpoint(message),
+                    error => error,
+                })?;
             }
             let query_limit = request
                 .limit
@@ -496,7 +498,7 @@ impl CheckpointStore for SqliteCheckpoint {
                             sessions.session_context_json, sessions.execution_stats_json,
                             sessions.created_at, sessions.updated_at
                      FROM sessions
-                     WHERE (?5 IS NULL OR json_extract(sessions.session_context_json, '$.bot_id') = ?5)
+                     WHERE (?5 IS NULL OR json_extract(sessions.session_context_json, '$.owner_id') = ?5)
                        AND (?1 IS NULL
                         OR (
                             sessions.updated_at,
@@ -514,7 +516,7 @@ impl CheckpointStore for SqliteCheckpoint {
                             cursor_sequence,
                             cursor_session_id,
                             query_limit,
-                            request.bot_id
+                            request.owner_id
                         ],
                         session_row,
                     )?
@@ -1060,10 +1062,10 @@ fn validate_checkpoint(checkpoint: &Checkpoint) -> Result<()> {
 }
 
 fn validate_session_context(context: &SessionContext) -> Result<()> {
-    if context.bot_id.trim().is_empty() {
-        return Err(Error::Checkpoint("session Bot ID cannot be blank".into()));
-    }
-    Ok(())
+    context.validate().map_err(|error| match error {
+        Error::Config(message) => Error::Checkpoint(message),
+        error => error,
+    })
 }
 
 fn validate_execution(checkpoint: &Checkpoint, execution: &ExecutionRecord) -> Result<()> {

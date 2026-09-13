@@ -10,7 +10,6 @@ use serde::Serialize;
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
-use crate::backend::model::ToolCall;
 use crate::middleware::Middleware;
 use crate::middleware::PromptSection;
 use crate::middleware::RuntimeContext;
@@ -26,6 +25,7 @@ use crate::protocol::FrontendContribution;
 use crate::protocol::FrontendEvent;
 use crate::protocol::FrontendTone;
 use crate::protocol::ReviewDecision;
+use crate::protocol::ToolCall;
 
 mod approval;
 mod background;

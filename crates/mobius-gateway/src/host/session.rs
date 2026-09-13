@@ -705,13 +705,13 @@ async fn start_agent(
         }
     };
     if let Some(mut checkpoint) = checkpoints.load(&session_id).await?
-        && checkpoint.session_context.bot_id != spec.bot_id
+        && checkpoint.session_context.owner_id != spec.bot_id
     {
         checkpoint.sequence = checkpoint
             .sequence
             .checked_add(1)
             .ok_or_else(|| Error::Config("checkpoint sequence overflow".into()))?;
-        checkpoint.session_context.bot_id.clone_from(&spec.bot_id);
+        checkpoint.session_context.owner_id.clone_from(&spec.bot_id);
         checkpoint.metadata.extend(spec.metadata()?);
         checkpoints.save(&checkpoint, &[], None).await?;
     }

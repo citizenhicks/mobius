@@ -5,6 +5,7 @@ use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
+use mobius_gateway::auth::MAX_CLIENT_CREDENTIAL_BYTES as MAX_TOKEN_BYTES;
 use mobius_gateway::client::{Endpoint, token_from_env};
 use mobius_gateway::config::{ConfigStore, GatewayConfig};
 use mobius_gateway::{Error, Result};
@@ -12,7 +13,6 @@ use serde::{Deserialize, Serialize};
 
 const MAX_STORE_BYTES: usize = 64 * 1024;
 const MAX_ACCOUNTS: usize = 64;
-const MAX_TOKEN_BYTES: usize = 512;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

@@ -25,18 +25,15 @@ use crate::frontend::catalog::{GatewayAction, UiCatalog};
 use crate::frontend::dashboard::render_capability_overlay;
 use crate::frontend::extensions;
 use crate::frontend::gateway;
-use crate::frontend::gateway_actions::{prepare, render_response};
+use crate::frontend::gateway_actions::{ResponseSeverity, prepare, render_response};
 use crate::frontend::setup;
 use crate::frontend::terminal::{INPUT_POLL, MAX_INPUT_BATCH, TerminalGuard, poll_event};
 use mobius::backend::checkpoint::ExecutionOutcome;
-use mobius::protocol::{
-    ActiveMessageDelivery, EventMsg, FrontendEvent, FrontendSettingKind, FrontendSettingValue,
-    MiddlewareFeature, ModelInfo, Op, Submission,
-};
+use mobius::protocol::{EventMsg, FrontendEvent, ModelInfo, Op, Submission};
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
-    BotRecord, ClientMessage, MiddlewareConfig, ReadyPayload, ServerMessage, SessionActivityState,
+    BotRecord, ClientMessage, ReadyPayload, ServerMessage, SessionActivityState,
     SessionReadyPayload, SessionRecord, WorkspaceFileScope,
 };
 use uuid::Uuid;
@@ -422,7 +419,7 @@ fn choose_bot(
     state.open_bot_picker(
         &gateway.bots,
         workspace,
-        &session.session.context.bot_id,
+        &session.session.context.owner_id,
         clear,
     );
 }
@@ -596,8 +593,15 @@ fn handle_server_message(
             }
         }
         message => {
-            if let Some(message) = render_response(&message, &gateway.provider_instances) {
-                state.push(message, TranscriptTone::Neutral);
+            if let Some(response) = render_response(&message, &gateway.provider_instances) {
+                let tone = match response.severity {
+                    ResponseSeverity::Neutral => TranscriptTone::Neutral,
+                    ResponseSeverity::Error | ResponseSeverity::Fatal => TranscriptTone::Error,
+                };
+                if response.severity == ResponseSeverity::Fatal {
+                    state.disconnected = true;
+                }
+                state.push(response.text, tone);
             }
         }
     }
@@ -802,7 +806,7 @@ async fn open_bots(
     state: &mut TuiState,
     session_id: &str,
 ) -> bool {
-    let bot_id = session.session.context.bot_id.clone();
+    let bot_id = session.session.context.owner_id.clone();
     let result = bots::run(
         terminal,
         sender,
@@ -889,43 +893,10 @@ fn sync_session_info(
         .map(super::terminal_text);
     state.model_route.clone_from(&session.session.model.route);
     state.agent_summary = agent_summary(gateway, session, bot);
-    state.active_message_delivery = Some(composer_message_delivery(
-        &gateway.middleware_features,
-        &bot.config.config.middleware,
-    ));
+    state.active_message_delivery = Some(session.active_message_delivery);
     state.context_limit = session.context_limit_tokens;
     state.usage.apply_context_limit(state.context_limit);
     Ok(())
-}
-
-fn composer_message_delivery(
-    features: &[MiddlewareFeature],
-    config: &MiddlewareConfig,
-) -> ActiveMessageDelivery {
-    for feature in features {
-        for setting in &feature.settings {
-            let FrontendSettingKind::Select { options, .. } = &setting.kind else {
-                continue;
-            };
-            if !setting.composer
-                || options.len() != 2
-                || !options.iter().any(|option| option.value == "steer")
-                || !options.iter().any(|option| option.value == "queue")
-            {
-                continue;
-            }
-            let Some(FrontendSettingValue::String(value)) =
-                config.setting(&feature.id, &setting.id)
-            else {
-                continue;
-            };
-            return match value.as_str() {
-                "queue" => ActiveMessageDelivery::Queue,
-                _ => ActiveMessageDelivery::Steer,
-            };
-        }
-    }
-    ActiveMessageDelivery::Steer
 }
 
 fn enrich_resume_picker(
@@ -966,7 +937,7 @@ fn enrich_resume_picker(
         if let Some(origin) = &session.session_context.origin_label {
             details.push(origin.clone());
         }
-        if let Some(handle) = bot_handle(&session.session_context.bot_id, bots) {
+        if let Some(handle) = bot_handle(&session.session_context.owner_id, bots) {
             details.push(format!("@{handle}"));
         }
         details.push(format!("started {}", human_time(session.created_at)));
@@ -1001,11 +972,11 @@ fn session_bot<'a>(
     gateway
         .bots
         .iter()
-        .find(|bot| bot.id == session.session.context.bot_id)
+        .find(|bot| bot.id == session.session.context.owner_id)
         .ok_or_else(|| {
             Error::Config(format!(
                 "session {} references unknown Bot {}",
-                session.session.session_id, session.session.context.bot_id
+                session.session.session_id, session.session.context.owner_id
             ))
         })
 }
@@ -1104,12 +1075,12 @@ async fn send_op(
 mod tests {
     use super::*;
     use mobius::protocol::{
-        Event, EventMsg, FrontendPickerOption, FrontendSetting, FrontendSettingOption,
-        FrontendTone, ModelChangedEvent, SessionConfiguredEvent, SessionContext, SessionFileLimits,
+        ActiveMessageDelivery, Event, EventMsg, FrontendPickerOption, ModelChangedEvent,
+        SessionConfiguredEvent, SessionContext, SessionFileLimits,
     };
     use mobius_gateway::wire::{
-        ReadyPayload, RecordedEvent, RunStats, SessionActivity, SessionReadyPayload,
-        VersionedAgentConfig, WorkspaceInfo,
+        ReadyPayload, RecordedEvent, RoutineInteractionPolicy, RunStats, SessionActivity,
+        SessionReadyPayload, VersionedAgentConfig, WorkspaceInfo,
     };
 
     fn replay_event(sequence: u64) -> ServerMessage {
@@ -1401,7 +1372,7 @@ mod tests {
             session: SessionConfiguredEvent {
                 session_id: session_id.into(),
                 context: SessionContext {
-                    bot_id: "bot-a".into(),
+                    owner_id: "bot-a".into(),
                     ..SessionContext::default()
                 },
                 model: ModelChangedEvent {
@@ -1416,6 +1387,7 @@ mod tests {
             tool_count: 0,
             compaction_count: 0,
             context_limit_tokens: None,
+            active_message_delivery: ActiveMessageDelivery::Steer,
             run_stats: RunStats::default(),
         }
     }
@@ -1434,6 +1406,8 @@ mod tests {
                     revision: 1,
                     config: Default::default(),
                 },
+                accepts_file_attachments: false,
+                routine_interaction_policy: RoutineInteractionPolicy::Unattended,
             }],
             sessions: Vec::new(),
             background_approvals: Vec::new(),
@@ -1457,62 +1431,6 @@ mod tests {
     }
 
     #[test]
-    fn composer_delivery_uses_the_advertised_session_setting() {
-        let features = [MiddlewareFeature {
-            id: "messages".into(),
-            label: "Messages".into(),
-            description: String::new(),
-            required: true,
-            settings: vec![FrontendSetting {
-                id: "delivery".into(),
-                label: "Delivery".into(),
-                description: String::new(),
-                composer: true,
-                kind: FrontendSettingKind::Select {
-                    options: vec![
-                        FrontendSettingOption {
-                            disables: Vec::new(),
-                            value: "steer".into(),
-                            label: "Steer".into(),
-                            description: String::new(),
-                            symbol: None,
-                            tone: FrontendTone::Neutral,
-                        },
-                        FrontendSettingOption {
-                            disables: Vec::new(),
-                            value: "queue".into(),
-                            label: "Queue".into(),
-                            description: String::new(),
-                            symbol: None,
-                            tone: FrontendTone::Neutral,
-                        },
-                    ],
-                    unset_label: None,
-                },
-            }],
-        }];
-        let mut config: MiddlewareConfig = serde_json::from_value(serde_json::json!({
-            "enabled": [],
-            "settings": {}
-        }))
-        .expect("middleware config");
-
-        assert_eq!(
-            composer_message_delivery(&features, &config),
-            ActiveMessageDelivery::Steer
-        );
-        config.set_setting(
-            "messages",
-            "delivery",
-            Some(FrontendSettingValue::String("queue".into())),
-        );
-        assert_eq!(
-            composer_message_delivery(&features, &config),
-            ActiveMessageDelivery::Queue
-        );
-    }
-
-    #[test]
     fn resume_picker_uses_live_session_and_bot_metadata() {
         let mut event = EventMsg::Frontend(FrontendEvent::Picker {
             title: "Resume chat".into(),
@@ -1530,7 +1448,7 @@ mod tests {
         let sessions = [SessionRecord {
             session_id: "session-a".into(),
             session_context: SessionContext {
-                bot_id: "bot-a".into(),
+                owner_id: "bot-a".into(),
                 workspace_id: Some("workspace-a".into()),
                 workspace_label: Some("Project A".into()),
                 ..SessionContext::default()
@@ -1559,6 +1477,8 @@ mod tests {
                 revision: 1,
                 config: Default::default(),
             },
+            accepts_file_attachments: false,
+            routine_interaction_policy: RoutineInteractionPolicy::Unattended,
         }];
         enrich_resume_picker(&mut event, &sessions, &bots, "workspace-a");
 

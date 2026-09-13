@@ -35,8 +35,10 @@ const MAX_ROUTINE_INSTRUCTIONS_BYTES: usize =
     MAX_MESSAGE_BYTES - ROUTINE_SUBMISSION_PREFIX.len() - 2;
 const MAX_STATE_BYTES: u64 = 1024 * 1024;
 const MAX_HANDLE_BYTES: usize = 64;
-const MAX_NAME_BYTES: usize = 128;
-const MAX_DESCRIPTION_BYTES: usize = 2 * 1024;
+/// Maximum UTF-8 byte length of a Bot display name.
+pub const MAX_BOT_NAME_BYTES: usize = 128;
+/// Maximum UTF-8 byte length of a Bot description.
+pub const MAX_BOT_DESCRIPTION_BYTES: usize = 2 * 1024;
 pub(crate) const MOBIUS_HANDLE: &str = "mobius";
 const USER_HANDLE: &str = "user";
 const MOBIUS_NAME: &str = "Mobius";
@@ -90,7 +92,7 @@ impl StoredRoutine {
                 )
                 .ok_or_else(|| Error::Config("interval schedule overflows its timestamp".into()))?,
             ),
-            RoutineScheduleKind::Cron => None,
+            RoutineScheduleKind::Cron => Some(next_cron_occurrence(&self.schedule, now, true)?),
         };
         Ok(())
     }
@@ -136,17 +138,64 @@ impl StoredRoutine {
         if self.schedule.kind != RoutineScheduleKind::Cron {
             return self.next_run_at;
         }
-        let expression = self.schedule.expression.as_deref()?;
-        let schedule = Cron::from_str(expression).ok()?;
-        let time_zone = self.schedule.time_zone.as_deref()?.parse::<Tz>().ok()?;
-        let now = Utc
-            .timestamp_opt(now, 0)
-            .single()?
-            .with_timezone(&time_zone);
-        let next = schedule.find_next_occurrence(&now, false).ok()?.timestamp();
+        let next = self
+            .next_run_at
+            .or_else(|| next_cron_occurrence(&self.schedule, now, false).ok())?;
         self.ends_at
             .map_or(Some(next), |ends_at| (next <= ends_at).then_some(next))
     }
+}
+
+fn next_cron_occurrence(
+    schedule: &RoutineSchedule,
+    now: i64,
+    inclusive_current_minute: bool,
+) -> Result<i64> {
+    let expression = schedule
+        .expression
+        .as_deref()
+        .ok_or_else(|| Error::Config("cron schedule is missing its expression".into()))?;
+    let cron = Cron::from_str(expression)
+        .map_err(|error| Error::Config(format!("invalid persisted cron schedule: {error}")))?;
+    let time_zone = schedule
+        .time_zone
+        .as_deref()
+        .ok_or_else(|| Error::Config("cron schedule is missing its time zone".into()))?
+        .parse::<Tz>()
+        .map_err(|error| Error::Config(format!("invalid persisted cron time zone: {error}")))?;
+    let utc_minute = Utc
+        .timestamp_opt(now, 0)
+        .single()
+        .and_then(|time| time.with_second(0))
+        .ok_or_else(|| Error::Config("cron timestamp is outside the supported range".into()))?;
+    let local_time = utc_minute.with_timezone(&time_zone);
+    let minimum = local_time.timestamp();
+    let mut cursor = local_time;
+    let mut inclusive = inclusive_current_minute;
+    let mut previous = None;
+    loop {
+        let next = cron
+            .find_next_occurrence(&cursor, inclusive)
+            .map_err(|error| Error::Config(format!("invalid persisted cron schedule: {error}")))?;
+        let timestamp = next.timestamp();
+        if timestamp > minimum || (inclusive_current_minute && timestamp == minimum) {
+            return Ok(timestamp);
+        }
+        if previous.is_some_and(|previous| timestamp <= previous) {
+            return Err(Error::Config(
+                "persisted cron schedule did not advance its timestamp".into(),
+            ));
+        }
+        previous = Some(timestamp);
+        cursor = next;
+        inclusive = false;
+    }
+}
+
+/// One scheduler tick derived from a single locked catalog snapshot.
+pub(crate) struct RoutinePoll {
+    pub(crate) active: bool,
+    pub(crate) due: Vec<(String, ActiveRoutineRun)>,
 }
 
 /// Result of reserving one task invocation.
@@ -226,9 +275,51 @@ impl ActiveRoutineRun {
 #[serde(deny_unknown_fields)]
 struct BotState {
     version: u32,
-    bots: Vec<BotRecord>,
+    bots: Vec<StoredBot>,
     routines: Vec<StoredRoutine>,
     pending_bot_deletion: Option<PendingBotDeletion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredBot {
+    id: String,
+    handle: String,
+    name: String,
+    description: String,
+    tint: ProviderTint,
+    config: VersionedAgentConfig,
+}
+
+impl StoredBot {
+    fn record(&self) -> Result<BotRecord> {
+        let (accepts_file_attachments, routine_interaction_policy) =
+            crate::assembly::bot_semantics(&self.config.config)?;
+        Ok(BotRecord {
+            id: self.id.clone(),
+            handle: self.handle.clone(),
+            name: self.name.clone(),
+            description: self.description.clone(),
+            tint: self.tint,
+            config: self.config.clone(),
+            accepts_file_attachments,
+            routine_interaction_policy,
+        })
+    }
+}
+
+#[cfg(test)]
+impl From<&BotRecord> for StoredBot {
+    fn from(bot: &BotRecord) -> Self {
+        Self {
+            id: bot.id.clone(),
+            handle: bot.handle.clone(),
+            name: bot.name.clone(),
+            description: bot.description.clone(),
+            tint: bot.tint,
+            config: bot.config.clone(),
+        }
+    }
 }
 
 impl Default for BotState {
@@ -285,7 +376,7 @@ impl BotStore {
         let config = defaults.config.clone();
         validate_agent_composition(&config)?;
         let mut state = BotState::default();
-        let bot = BotRecord {
+        let bot = StoredBot {
             id: Uuid::new_v4().to_string(),
             handle: MOBIUS_HANDLE.into(),
             name: MOBIUS_NAME.into(),
@@ -296,10 +387,11 @@ impl BotStore {
                 config,
             },
         };
-        state.bots.push(bot.clone());
+        let record = bot.record()?;
+        state.bots.push(bot);
         validate_state(&state, &self.routines_dir)?;
         self.save(&state)?;
-        Ok(Some(bot))
+        Ok(Some(record))
     }
 
     pub(crate) fn create_bot(
@@ -315,7 +407,7 @@ impl BotStore {
             let id = Uuid::new_v4().to_string();
             let handle = next_handle(state, &name, &id);
             let tint = next_tint(state);
-            let bot = BotRecord {
+            let bot = StoredBot {
                 id,
                 handle,
                 name,
@@ -326,8 +418,9 @@ impl BotStore {
                     config,
                 },
             };
-            state.bots.push(bot.clone());
-            Ok(bot)
+            let record = bot.record()?;
+            state.bots.push(bot);
+            Ok(record)
         })
     }
 
@@ -358,13 +451,14 @@ impl BotStore {
             bot.name = name;
             bot.description = description;
             bot.tint = tint;
-            bot.config = VersionedAgentConfig {
+            let config = VersionedAgentConfig {
                 revision: expected_revision
                     .checked_add(1)
                     .ok_or_else(|| Error::Config("Bot revision overflow".into()))?,
                 config,
             };
-            Ok(bot.clone())
+            bot.config = config;
+            bot.record()
         })
     }
 
@@ -565,7 +659,7 @@ impl BotStore {
             }
             index
         };
-        let bot = state.bots.remove(index);
+        let bot = state.bots.remove(index).record()?;
         state.routines.retain(|routine| routine.bot_id != bot_id);
         validate_state(&state, &self.routines_dir)?;
         let catalog = catalog_json(&state)?;
@@ -580,24 +674,30 @@ impl BotStore {
     }
 
     pub(crate) fn bots(&self) -> Result<Vec<BotRecord>> {
-        Ok(self.fresh_state()?.bots)
+        self.fresh_state()?
+            .bots
+            .iter()
+            .map(StoredBot::record)
+            .collect()
     }
 
     pub(crate) fn bot(&self, id: &str) -> Result<BotRecord> {
         self.fresh_state()?
             .bots
-            .into_iter()
+            .iter()
             .find(|bot| bot.id == id)
-            .ok_or_else(|| Error::Config(format!("unknown Bot `{id}`")))
+            .ok_or_else(|| Error::Config(format!("unknown Bot `{id}`")))?
+            .record()
     }
 
     #[cfg(test)]
     pub(crate) fn mobius(&self) -> Result<BotRecord> {
         self.fresh_state()?
             .bots
-            .into_iter()
+            .iter()
             .find(|bot| bot.handle == MOBIUS_HANDLE)
-            .ok_or_else(|| Error::Config("the built-in @mobius Bot is missing".into()))
+            .ok_or_else(|| Error::Config("the built-in @mobius Bot is missing".into()))?
+            .record()
     }
 
     /// Writes and registers one Bot-owned routine.
@@ -859,62 +959,52 @@ impl BotStore {
     }
 
     /// Reserves due routines and records their invocations atomically.
+    #[cfg(test)]
     pub(crate) fn take_due(&self, now: i64) -> Result<Vec<(String, ActiveRoutineRun)>> {
+        Ok(self.poll_due(now)?.due)
+    }
+
+    /// Observes routine activity and reserves due work from one state load.
+    pub(crate) fn poll_due(&self, now: i64) -> Result<RoutinePoll> {
         let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
         state_lock.lock()?;
         let mut state = self.fresh_state()?;
+        let active = state
+            .routines
+            .iter()
+            .any(|routine| routine.enabled && !routine.is_finished(now))
+            || self.storage.has_running_routines()?;
         if state.pending_bot_deletion.is_some() {
-            return Ok(Vec::new());
+            return Ok(RoutinePoll {
+                active,
+                due: Vec::new(),
+            });
         }
         let minute = now.div_euclid(60);
         let mut runs = Vec::new();
         let mut due = Vec::new();
+        let mut schedule_changed = false;
+        for routine in &mut state.routines {
+            if routine.enabled
+                && !routine.is_finished(now)
+                && routine.schedule.kind == RoutineScheduleKind::Cron
+            {
+                let stale = routine
+                    .next_run_at
+                    .is_some_and(|next| next.div_euclid(60) < minute);
+                if routine.next_run_at.is_none() || stale {
+                    routine.next_run_at = Some(next_cron_occurrence(&routine.schedule, now, true)?);
+                    schedule_changed = true;
+                }
+            }
+        }
         for index in 0..state.routines.len() {
             let routine = &state.routines[index];
             if !routine.enabled || routine.is_finished(now) {
                 continue;
             }
-            let should_run = match routine.schedule.kind {
-                RoutineScheduleKind::Once | RoutineScheduleKind::Interval => {
-                    routine.next_run_at.is_some_and(|next| next <= now)
-                }
-                RoutineScheduleKind::Cron => {
-                    if routine.last_matched_minute == Some(minute) {
-                        false
-                    } else {
-                        let expression =
-                            routine.schedule.expression.as_deref().ok_or_else(|| {
-                                Error::Config("cron schedule is missing its expression".into())
-                            })?;
-                        let schedule = Cron::from_str(expression).map_err(|error| {
-                            Error::Config(format!("invalid persisted cron schedule: {error}"))
-                        })?;
-                        let time_zone = routine
-                            .schedule
-                            .time_zone
-                            .as_deref()
-                            .ok_or_else(|| {
-                                Error::Config("cron schedule is missing its time zone".into())
-                            })?
-                            .parse::<Tz>()
-                            .map_err(|error| {
-                                Error::Config(format!("invalid persisted cron time zone: {error}"))
-                            })?;
-                        let local_time = Utc
-                            .timestamp_opt(now, 0)
-                            .single()
-                            .and_then(|time| time.with_timezone(&time_zone).with_second(0))
-                            .ok_or_else(|| {
-                                Error::Config(
-                                    "cron timestamp is outside the supported range".into(),
-                                )
-                            })?;
-                        schedule.is_time_matching(&local_time).map_err(|error| {
-                            Error::Config(format!("invalid persisted cron schedule: {error}"))
-                        })?
-                    }
-                }
-            };
+            let should_run = routine.last_matched_minute != Some(minute)
+                && routine.next_run_at.is_some_and(|next| next <= now);
             if !should_run {
                 continue;
             }
@@ -925,8 +1015,12 @@ impl BotStore {
                 match stored.schedule.kind {
                     RoutineScheduleKind::Once => stored.next_run_at = None,
                     RoutineScheduleKind::Interval => stored.advance_interval(now)?,
-                    RoutineScheduleKind::Cron => {}
+                    RoutineScheduleKind::Cron => {
+                        stored.next_run_at =
+                            Some(next_cron_occurrence(&stored.schedule, now, false)?);
+                    }
                 }
+                schedule_changed = true;
             }
             let run = match self.try_routine_lock(&routine.id)? {
                 Some(lock) => {
@@ -956,8 +1050,11 @@ impl BotStore {
             validate_state(&state, &self.routines_dir)?;
             let catalog = catalog_json(&state)?;
             self.storage.save_catalog_and_runs(&catalog, &runs)?;
+        } else if schedule_changed {
+            validate_state(&state, &self.routines_dir)?;
+            self.save(&state)?;
         }
-        Ok(due)
+        Ok(RoutinePoll { active, due })
     }
 
     /// Starts an overlap-locked invocation or records an overlap skip.
@@ -1237,9 +1334,9 @@ fn validate_handle(handle: &str) -> Result<String> {
 
 fn validate_name(name: &str) -> Result<String> {
     let name = name.trim();
-    if name.is_empty() || name.len() > MAX_NAME_BYTES {
+    if name.is_empty() || name.len() > MAX_BOT_NAME_BYTES {
         return Err(Error::Config(format!(
-            "Bot name must be 1–{MAX_NAME_BYTES} bytes"
+            "Bot name must be 1–{MAX_BOT_NAME_BYTES} bytes"
         )));
     }
     Ok(name.into())
@@ -1247,9 +1344,9 @@ fn validate_name(name: &str) -> Result<String> {
 
 fn validate_description(description: &str) -> Result<String> {
     let description = description.trim();
-    if description.is_empty() || description.len() > MAX_DESCRIPTION_BYTES {
+    if description.is_empty() || description.len() > MAX_BOT_DESCRIPTION_BYTES {
         return Err(Error::Config(format!(
-            "Bot description must be 1–{MAX_DESCRIPTION_BYTES} bytes"
+            "Bot description must be 1–{MAX_BOT_DESCRIPTION_BYTES} bytes"
         )));
     }
     Ok(description.into())
@@ -1498,7 +1595,7 @@ fn new_run(
     }
 }
 
-fn find_bot_mut<'a>(state: &'a mut BotState, id: &str) -> Result<&'a mut BotRecord> {
+fn find_bot_mut<'a>(state: &'a mut BotState, id: &str) -> Result<&'a mut StoredBot> {
     state
         .bots
         .iter_mut()

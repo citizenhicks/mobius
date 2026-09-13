@@ -75,6 +75,13 @@ pub struct GatewaySender {
 pub struct GatewayEvents {
     reader: FrameReader<ReadHalf<BoxedTransport>>,
     pending: VecDeque<ServerFrame>,
+    scoped_deferred: usize,
+}
+
+/// A focused read which restores every explicitly deferred frame when it ends.
+pub struct GatewayEventScope<'a> {
+    events: &'a mut GatewayEvents,
+    deferred: Vec<ServerFrame>,
 }
 
 impl Endpoint {
@@ -312,6 +319,7 @@ impl GatewayClient {
             events: GatewayEvents {
                 reader: FrameReader::new(reader),
                 pending: VecDeque::new(),
+                scoped_deferred: 0,
             },
         }
     }
@@ -373,20 +381,52 @@ impl GatewayEvents {
         Ok(Some(frame))
     }
 
-    /// Restores temporarily consumed frames ahead of unread transport data.
-    pub fn prepend(&mut self, frames: Vec<ServerFrame>) -> Result<()> {
-        if self.pending.len() + frames.len() > MAX_PENDING_FRAMES {
+    /// Starts a focused response wait without consuming unrelated gateway events.
+    pub fn scoped(&mut self) -> GatewayEventScope<'_> {
+        GatewayEventScope {
+            events: self,
+            deferred: Vec::new(),
+        }
+    }
+}
+
+impl GatewayEventScope<'_> {
+    /// Receives the next frame from the shared ordered stream.
+    pub async fn next(&mut self) -> Result<Option<ServerFrame>> {
+        self.events.next().await
+    }
+
+    /// Reborrows the underlying stream for a nested focused operation.
+    pub fn reborrow(&mut self) -> &mut GatewayEvents {
+        self.events
+    }
+
+    /// Defers one unrelated frame for the scope's caller to consume later.
+    pub fn defer(&mut self, frame: ServerFrame) -> Result<()> {
+        validate_version(frame.version)?;
+        if self
+            .events
+            .pending
+            .len()
+            .saturating_add(self.events.scoped_deferred)
+            >= MAX_PENDING_FRAMES
+        {
             return Err(Error::Protocol(format!(
                 "gateway event backlog exceeds {MAX_PENDING_FRAMES} frames"
             )));
         }
-        for frame in &frames {
-            validate_version(frame.version)?;
-        }
-        for frame in frames.into_iter().rev() {
-            self.pending.push_front(frame);
-        }
+        self.deferred.push(frame);
+        self.events.scoped_deferred += 1;
         Ok(())
+    }
+}
+
+impl Drop for GatewayEventScope<'_> {
+    fn drop(&mut self) {
+        self.events.scoped_deferred -= self.deferred.len();
+        for frame in self.deferred.drain(..).rev() {
+            self.events.pending.push_front(frame);
+        }
     }
 }
 
@@ -492,39 +532,96 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepended_frames_are_returned_in_order() {
+    async fn scoped_wait_restores_deferred_frames_on_early_return() {
+        let (transport, _peer) = tokio::io::duplex(64);
+        let (reader, _writer) = tokio::io::split(Box::new(transport) as BoxedTransport);
+        let mut events = GatewayEvents {
+            reader: FrameReader::new(reader),
+            pending: VecDeque::from([
+                ServerFrame::new(ServerMessage::Accepted {
+                    request_id: "unrelated".into(),
+                }),
+                ServerFrame::new(ServerMessage::Accepted {
+                    request_id: "expected".into(),
+                }),
+            ]),
+            scoped_deferred: 0,
+        };
+
+        {
+            let mut scope = events.scoped();
+            let unrelated = scope.next().await.expect("next").expect("unrelated");
+            scope.defer(unrelated).expect("defer");
+            let expected = scope.next().await.expect("next").expect("expected");
+            assert!(matches!(
+                expected.message,
+                ServerMessage::Accepted { request_id } if request_id == "expected"
+            ));
+        }
+
+        let restored = events.next().await.expect("next").expect("restored");
+        assert!(matches!(
+            restored.message,
+            ServerMessage::Accepted { request_id } if request_id == "unrelated"
+        ));
+    }
+
+    #[tokio::test]
+    async fn nested_scopes_share_the_bounded_deferred_backlog() {
+        let (transport, mut peer) = tokio::io::duplex(1024);
+        write_frame(
+            &mut peer,
+            &ServerFrame::new(ServerMessage::Accepted {
+                request_id: "overflow".into(),
+            }),
+        )
+        .await
+        .expect("write overflow frame");
+        let (reader, _writer) = tokio::io::split(Box::new(transport) as BoxedTransport);
+        let pending = (0..MAX_PENDING_FRAMES)
+            .map(|index| {
+                ServerFrame::new(ServerMessage::Accepted {
+                    request_id: index.to_string(),
+                })
+            })
+            .collect();
+        let mut events = GatewayEvents {
+            reader: FrameReader::new(reader),
+            pending,
+            scoped_deferred: 0,
+        };
+
+        {
+            let mut outer = events.scoped();
+            let frame = outer.next().await.expect("next").expect("outer frame");
+            outer.defer(frame).expect("outer defer");
+            let mut inner = outer.reborrow().scoped();
+            for _ in 1..MAX_PENDING_FRAMES {
+                let frame = inner.next().await.expect("next").expect("inner frame");
+                inner.defer(frame).expect("inner defer");
+            }
+            let overflow = inner.next().await.expect("next").expect("overflow frame");
+            assert!(inner.defer(overflow).is_err());
+        }
+
+        assert_eq!(events.pending.len(), MAX_PENDING_FRAMES);
+    }
+
+    #[tokio::test]
+    async fn scoped_defer_rejects_an_invalid_protocol_version() {
         let (transport, _peer) = tokio::io::duplex(64);
         let (reader, _writer) = tokio::io::split(Box::new(transport) as BoxedTransport);
         let mut events = GatewayEvents {
             reader: FrameReader::new(reader),
             pending: VecDeque::new(),
+            scoped_deferred: 0,
         };
-        events
-            .prepend(vec![
-                ServerFrame::new(ServerMessage::Accepted {
-                    request_id: "first".into(),
-                }),
-                ServerFrame::new(ServerMessage::Accepted {
-                    request_id: "second".into(),
-                }),
-            ])
-            .expect("defer frames");
-
-        for expected in ["first", "second"] {
-            let frame = events.next().await.expect("next frame").expect("frame");
-            assert!(matches!(
-                frame.message,
-                ServerMessage::Accepted { request_id } if request_id == expected
-            ));
-        }
-        let mut invalid = ServerFrame::new(ServerMessage::Accepted {
+        let mut frame = ServerFrame::new(ServerMessage::Accepted {
             request_id: "invalid".into(),
         });
-        invalid.version = 0;
-        assert!(events.prepend(vec![invalid]).is_err());
-        let frame = ServerFrame::new(ServerMessage::Accepted {
-            request_id: "overflow".into(),
-        });
-        assert!(events.prepend(vec![frame; MAX_PENDING_FRAMES + 1]).is_err());
+        frame.version = crate::wire::PROTOCOL_VERSION.saturating_sub(1);
+
+        assert!(events.scoped().defer(frame).is_err());
+        assert!(events.pending.is_empty());
     }
 }

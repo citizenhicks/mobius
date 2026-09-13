@@ -8,6 +8,9 @@ use std::io;
 
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
+use mobius_gateway::config::{
+    MAX_PROVIDER_API_KEY_BYTES as MAX_API_KEY_BYTES, MAX_PROVIDER_LABEL_BYTES,
+};
 use mobius_gateway::wire::{ReadyPayload, SessionReadyPayload};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -16,10 +19,7 @@ use self::runtime::{apply, apply_gateway, edit};
 use self::state::SetupState;
 use super::terminal::TerminalGuard;
 
-const MAX_API_KEY_BYTES: usize = 16 * 1024;
 const MAX_ENDPOINT_BYTES: usize = 4 * 1024;
-// Matches the gateway's provider label bound.
-const MAX_PROVIDER_LABEL_BYTES: usize = 128;
 const MAX_MODEL_IDS_BYTES: usize = 16 * 1024;
 const MIN_INLINE_DESCRIPTION_WIDTH: usize = 20;
 
@@ -55,7 +55,7 @@ pub(crate) async fn run(
         sender,
         events,
         gateway,
-        &session.session.context.bot_id,
+        &session.session.context.owner_id,
     )
     .await
 }

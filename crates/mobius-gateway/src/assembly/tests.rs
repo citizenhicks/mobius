@@ -486,7 +486,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
     let original =
         ChatSpec::for_bot(&workspace, &original_bot, store.state_dir(), None).expect("chat spec");
     let mut checkpoint = Checkpoint::empty("chat");
-    checkpoint.session_context.bot_id = original_bot.id.clone();
+    checkpoint.session_context.owner_id = original_bot.id.clone();
     checkpoint.metadata = original.metadata().expect("chat metadata");
     checkpoint.metadata.insert(
         "capability.test".into(),
@@ -788,17 +788,6 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
         .resolve(&gateway, &BTreeSet::new())
         .expect("inactive extensions");
     let gateway = Arc::new(Mutex::new(gateway));
-    let mut settings = crate::middleware_manifest::default_config();
-    for feature in &MIDDLEWARE {
-        if !feature.manifest.required {
-            settings.set_enabled(feature.manifest.id, false);
-        }
-    }
-    settings.set_enabled("extensions", true);
-    let checkpoints: Arc<dyn CheckpointStore> =
-        Arc::new(SqliteCheckpoint::new(store.checkpoints_path()).expect("checkpoints"));
-    let scratchpad = ScratchpadStore::new(Arc::clone(&checkpoints));
-    let session_files = SessionFileStore::new(store.state_dir());
     let backend: Arc<dyn SandboxBackend> =
         Arc::new(LocalSandbox::new(&workspace).expect("sandbox"));
     let discover = |resolved: &ResolvedExtensions| {
@@ -814,46 +803,19 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
     };
     let active_extensions = discover(&active);
     let inactive_extensions = discover(&inactive);
-    let active = build_middleware(
-        &settings,
-        &workspace,
-        Arc::clone(&gateway),
-        scratchpad.clone(),
-        session_files.clone(),
-        Arc::clone(&backend),
-        None,
+    let active = activate_extensions(
+        active_extensions,
         &active,
-        Some(active_extensions),
-        None,
-    )
-    .expect("active middleware")
-    .stack;
-    let inactive = build_middleware(
-        &settings,
+        Arc::clone(&gateway),
         &workspace,
-        gateway,
-        scratchpad,
-        session_files,
-        backend,
-        None,
-        &inactive,
-        Some(inactive_extensions),
-        None,
+        Arc::clone(&backend),
     )
-    .expect("inactive middleware")
-    .stack;
-    let active = active
-        .frontend()
-        .expect("active frontend")
-        .into_iter()
-        .find(|contribution| contribution.capability == "extensions")
-        .expect("active extensions");
-    let inactive = inactive
-        .frontend()
-        .expect("inactive frontend")
-        .into_iter()
-        .find(|contribution| contribution.capability == "extensions")
-        .expect("inactive extensions");
+    .expect("active middleware");
+    let inactive =
+        activate_extensions(inactive_extensions, &inactive, gateway, &workspace, backend)
+            .expect("inactive middleware");
+    let active = active.frontend();
+    let inactive = inactive.frontend();
 
     assert_eq!(
         active.count,

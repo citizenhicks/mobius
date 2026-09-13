@@ -110,7 +110,7 @@ pub enum RealtimeVoiceCommand {
         handoff_id: String,
         text: String,
     },
-    /// Background Bot context or progress; it must not initiate a voice response.
+    /// Background agent context or progress; it must not initiate a voice response.
     Context {
         text: String,
     },

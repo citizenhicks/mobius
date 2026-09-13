@@ -118,23 +118,13 @@ impl AgentStatus {
 }
 
 impl Shared {
-    pub(super) fn new(max_concurrency: usize, max_agents: usize) -> Result<Self> {
-        if max_concurrency < 2 {
-            return Err(Error::Config(
-                "subagent max concurrency must be at least 2 (including root)".into(),
-            ));
-        }
-        if max_agents < max_concurrency {
-            return Err(Error::Config(
-                "subagent max agents must be at least max concurrency".into(),
-            ));
-        }
-        Ok(Self {
+    pub(super) fn new(max_concurrency: usize, max_agents: usize) -> Self {
+        Self {
             roots: Mutex::default(),
             changed: Notify::new(),
             max_concurrency,
             max_agents,
-        })
+        }
     }
 
     pub(super) async fn session_start(&self, context: RuntimeContext) -> Result<()> {

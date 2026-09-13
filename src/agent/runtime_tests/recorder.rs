@@ -44,7 +44,7 @@ impl Model for BlockingRetainingModel {
 
 fn test_checkpoint(session_id: &str) -> Checkpoint {
     let mut checkpoint = Checkpoint::empty(session_id);
-    checkpoint.session_context.bot_id = "test-bot".into();
+    checkpoint.session_context.owner_id = "test-bot".into();
     checkpoint
 }
 

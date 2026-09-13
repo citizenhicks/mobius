@@ -7,6 +7,8 @@ use mobius_gateway::client::{GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{ClientMessage, ServerMessage};
 use uuid::Uuid;
 
+use crate::gateway_error;
+
 pub async fn run(
     sender: GatewaySender,
     mut events: GatewayEvents,
@@ -43,18 +45,15 @@ pub async fn run(
             events.next().await.map_err(gateway_error)?.ok_or_else(|| {
                 Error::Stopped("gateway disconnected before turn completion".into())
             })?;
+        if let Some(error) = frame.message.response_error(Some(&submission_id)) {
+            return Err(Error::Stopped(error.message.into()));
+        }
         let event = match frame.message {
             ServerMessage::AgentEvent {
                 session_id: actual,
                 record,
                 ..
             } if actual == session_id => record.event,
-            ServerMessage::Rejected {
-                request_id,
-                message,
-                ..
-            } if request_id == submission_id => return Err(Error::Stopped(message)),
-            ServerMessage::Error { message, .. } => return Err(Error::Stopped(message)),
             _ => continue,
         };
         match event.msg {
@@ -118,8 +117,4 @@ pub async fn run(
             _ => {}
         }
     }
-}
-
-fn gateway_error(error: mobius_gateway::Error) -> Error {
-    Error::Stopped(error.to_string())
 }

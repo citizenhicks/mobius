@@ -37,7 +37,6 @@ use crate::backend::model::ModelRequest;
 use crate::backend::model::ModelRouter;
 use crate::backend::model::STREAM_RETRY_LIMIT;
 use crate::backend::model::TOOL_ERROR_FIELD;
-use crate::backend::model::ToolCall;
 use crate::backend::model::ToolDefinition;
 use crate::backend::sandbox::ApprovalPolicy;
 use crate::backend::sandbox::Sandbox;
@@ -78,6 +77,7 @@ use crate::protocol::PromptCacheMode;
 use crate::protocol::SessionContext;
 use crate::protocol::SessionFileReference;
 use crate::protocol::TokenUsage;
+use crate::protocol::ToolCall;
 use crate::protocol::ToolCallEndEvent;
 use crate::protocol::WarningEvent;
 use crate::protocol::WebSearchAction;
@@ -98,7 +98,7 @@ use tokio::sync::Notify;
 
 fn test_session_context() -> SessionContext {
     SessionContext {
-        bot_id: "test-bot".into(),
+        owner_id: "test-bot".into(),
         ..SessionContext::default()
     }
 }

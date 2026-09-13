@@ -77,7 +77,7 @@ async fn catalogue_mutations_do_not_require_selecting_the_target_chat() {
         .await
         .expect("load reassigned chat")
         .expect("chat");
-    assert_eq!(reassigned.session_context.bot_id, target_bot_id);
+    assert_eq!(reassigned.session_context.owner_id, target_bot_id);
 
     sender
         .send(ClientMessage::RenameSession {

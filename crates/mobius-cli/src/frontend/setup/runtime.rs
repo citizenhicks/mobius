@@ -1,5 +1,5 @@
 use mobius::{Error, Result};
-use mobius_gateway::client::{GatewayEvents, GatewaySender, MAX_PENDING_FRAMES};
+use mobius_gateway::client::{GatewayEventScope, GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
     AgentComposition, BotRecord, ClientMessage, ProviderConfig, ReadyPayload, ServerFrame,
     ServerMessage,
@@ -12,6 +12,7 @@ use super::state::{Authentication, Flow, SetupState};
 use super::view::draw;
 use super::{SetupMode, SetupTerminal};
 use crate::frontend::terminal::{INPUT_POLL, MAX_INPUT_BATCH, poll_event};
+use crate::gateway_error;
 
 pub(super) async fn edit(
     terminal: &mut SetupTerminal,
@@ -250,13 +251,14 @@ pub(super) async fn update_bot(
         })
         .await
         .map_err(gateway_error)?;
-    let mut deferred = Vec::new();
-    let result = loop {
-        let frame = match next_frame(terminal, state, events, false).await {
-            Ok(frame) => frame,
-            Err(error) => break Err(error),
-        };
-        match frame.message {
+    let mut events = events.scoped();
+    loop {
+        let frame = next_frame(terminal, state, &mut events, false).await?;
+        let ServerFrame { version, message } = frame;
+        if let Some(error) = message.response_error(Some(&request_id)) {
+            return Err(Error::Stopped(error.message.into()));
+        }
+        match message {
             ServerMessage::Bots {
                 request_id: Some(actual),
                 bots,
@@ -265,24 +267,13 @@ pub(super) async fn update_bot(
                     .into_iter()
                     .find(|updated| updated.id == bot.id)
                     .ok_or_else(|| Error::Stopped("gateway did not return the updated Bot".into()));
-                break updated;
+                return updated;
             }
-            ServerMessage::Rejected {
-                request_id: actual,
-                message,
-                ..
-            } if actual == request_id => break Err(Error::Stopped(message)),
-            ServerMessage::Error { message, .. } => break Err(Error::Stopped(message)),
-            message if deferred.len() == MAX_PENDING_FRAMES => {
-                break Err(Error::Stopped(format!(
-                    "gateway event backlog exceeds {MAX_PENDING_FRAMES} frames while updating the Bot: {message:?}"
-                )));
-            }
-            message => deferred.push(ServerFrame::new(message)),
+            message => events
+                .defer(ServerFrame { version, message })
+                .map_err(gateway_error)?,
         }
-    };
-    events.prepend(deferred).map_err(gateway_error)?;
-    result
+    }
 }
 
 pub(super) async fn wait_gateway_configured(
@@ -292,33 +283,23 @@ pub(super) async fn wait_gateway_configured(
     request_id: &str,
     operation: &str,
 ) -> Result<ReadyPayload> {
-    let mut deferred = Vec::new();
-    let result = loop {
-        let frame = match next_frame(terminal, state, events, false).await {
-            Ok(frame) => frame,
-            Err(error) => break Err(error),
-        };
-        match frame.message {
+    let mut events = events.scoped();
+    loop {
+        let frame = next_frame(terminal, state, &mut events, false).await?;
+        let ServerFrame { version, message } = frame;
+        if let Some(error) = message.response_error(Some(request_id)) {
+            return Err(Error::Stopped(error.message.into()));
+        }
+        match message {
             ServerMessage::GatewayConfigured {
                 request_id: actual,
                 payload,
-            } if actual == request_id => break Ok(payload),
-            ServerMessage::Rejected {
-                request_id: actual,
-                message,
-                ..
-            } if actual == request_id => break Err(Error::Stopped(message)),
-            ServerMessage::Error { message, .. } => break Err(Error::Stopped(message)),
-            message if deferred.len() == MAX_PENDING_FRAMES => {
-                break Err(Error::Stopped(format!(
-                    "gateway event backlog exceeds {MAX_PENDING_FRAMES} frames while {operation}: {message:?}"
-                )));
-            }
-            message => deferred.push(ServerFrame::new(message)),
+            } if actual == request_id => return Ok(payload),
+            message => events
+                .defer(ServerFrame { version, message })
+                .map_err(|error| Error::Stopped(format!("{operation}: {error}")))?,
         }
-    };
-    events.prepend(deferred).map_err(gateway_error)?;
-    result
+    }
 }
 
 pub(super) async fn set_credential(
@@ -436,12 +417,9 @@ pub(super) async fn wait_for_response(
     expected: ExpectedResponse<'_>,
 ) -> Result<()> {
     let mut progress = ResponseProgress::new(expected);
-    let mut deferred = Vec::new();
-    let result = loop {
-        let frame = match next_frame(terminal, state, events, expected.is_login()).await {
-            Ok(frame) => frame,
-            Err(error) => break Err(error),
-        };
+    let mut events = events.scoped();
+    loop {
+        let frame = next_frame(terminal, state, &mut events, expected.is_login()).await?;
         let defer = match observe_response(
             terminal,
             state,
@@ -451,22 +429,15 @@ pub(super) async fn wait_for_response(
             &mut progress,
         ) {
             Ok(defer) => defer,
-            Err(error) => break Err(error),
+            Err(error) => return Err(error),
         };
         if progress.accepted && progress.completed {
-            break Ok(());
-        }
-        if defer && deferred.len() == MAX_PENDING_FRAMES {
-            break Err(Error::Stopped(format!(
-                "gateway event backlog exceeds {MAX_PENDING_FRAMES} frames"
-            )));
+            return Ok(());
         }
         if defer {
-            deferred.push(frame);
+            events.defer(frame).map_err(gateway_error)?;
         }
-    };
-    events.prepend(deferred).map_err(gateway_error)?;
-    result
+    }
 }
 
 fn observe_response(
@@ -477,18 +448,14 @@ fn observe_response(
     expected: ExpectedResponse<'_>,
     progress: &mut ResponseProgress,
 ) -> Result<bool> {
-    match message {
-        ServerMessage::Accepted { request_id: actual } if actual == request_id => {
-            progress.accepted = true;
-            return Ok(false);
-        }
-        ServerMessage::Rejected {
-            request_id: actual,
-            message,
-            ..
-        } if actual == request_id => return Err(Error::Stopped(message.clone())),
-        ServerMessage::Error { message, .. } => return Err(Error::Stopped(message.clone())),
-        _ => {}
+    if let ServerMessage::Accepted { request_id: actual } = message
+        && actual == request_id
+    {
+        progress.accepted = true;
+        return Ok(false);
+    }
+    if let Some(error) = message.response_error(Some(request_id)) {
+        return Err(Error::Stopped(error.message.into()));
     }
     match expected {
         ExpectedResponse::Credential { .. } => {
@@ -573,7 +540,7 @@ fn reject_invalid_setup_response(message: &ServerMessage, request_id: &str) -> R
 pub(super) async fn next_frame(
     terminal: &mut SetupTerminal,
     state: &SetupState,
-    events: &mut GatewayEvents,
+    events: &mut GatewayEventScope<'_>,
     cancellable: bool,
 ) -> Result<ServerFrame> {
     loop {
@@ -612,8 +579,4 @@ pub(super) async fn next_frame(
             }
         }
     }
-}
-
-pub(super) fn gateway_error(error: mobius_gateway::Error) -> Error {
-    Error::Stopped(error.to_string())
 }

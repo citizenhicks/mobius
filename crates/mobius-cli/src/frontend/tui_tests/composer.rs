@@ -173,6 +173,8 @@ fn bot_picker_creates_the_chat_for_the_selected_bot() {
                 revision: 1,
                 config: mobius_gateway::wire::AgentComposition::default(),
             },
+            accepts_file_attachments: false,
+            routine_interaction_policy: mobius_gateway::wire::RoutineInteractionPolicy::Unattended,
         },
         mobius_gateway::wire::BotRecord {
             id: "bot-b".into(),
@@ -184,6 +186,8 @@ fn bot_picker_creates_the_chat_for_the_selected_bot() {
                 revision: 1,
                 config: mobius_gateway::wire::AgentComposition::default(),
             },
+            accepts_file_attachments: false,
+            routine_interaction_policy: mobius_gateway::wire::RoutineInteractionPolicy::Unattended,
         },
     ];
     let workspace = std::path::PathBuf::from("/srv/project");
