@@ -126,8 +126,8 @@ extension AppModelTests {
         let request = await recorder.firstRequest(after: 0) {
             if case .createSession = $0 { true } else { false }
         }
-        guard case .createSession(let requestID, "/srv/project", let botIDs, _) = request,
-            botIDs == ["bot-1"]
+        guard case .createSession(let requestID, "/srv/project", let botIDs) = request,
+            botIDs == "bot-1"
         else {
             return XCTFail("Primary voice action should create a voice chat")
         }
@@ -200,7 +200,7 @@ extension AppModelTests {
         let request = await recorder.firstRequest(after: 0) {
             if case .submit = $0 { true } else { false }
         }
-        guard case .submit("chat-1", let submission, _) = try XCTUnwrap(request) else {
+        guard case .submit("chat-1", let submission) = try XCTUnwrap(request) else {
             return XCTFail("Expected the existing capability command flow")
         }
         func preview(_ events: [RenderedEventRecord]) -> RenderedPreview {
@@ -278,9 +278,8 @@ extension AppModelTests {
             if case .createSession = $0 { true } else { false }
         }
         guard
-            case .createSession(let requestID, "/srv/project", let botIDs, _) = try XCTUnwrap(
-                request),
-            botIDs == ["bot-2"]
+            case .createSession(let requestID, "/srv/project", let botIDs) = try XCTUnwrap(request),
+            botIDs == "bot-2"
         else {
             return XCTFail("Expected the selected workspace and Bot")
         }

@@ -47,7 +47,6 @@ pub(super) enum UiAction {
     None,
     PasteClipboard,
     Submit(Op),
-    StopChat,
     Gateway(GatewayAction),
     GatewaySettings,
     Extensions,
@@ -63,7 +62,7 @@ pub(super) enum UiAction {
     },
     CreateSession {
         workspace: PathBuf,
-        bot_ids: Vec<String>,
+        bot_id: String,
         clear: bool,
     },
 }
@@ -178,7 +177,12 @@ impl TuiState {
                 self.slash_menu_dismissed = true;
                 UiAction::None
             }
-            KeyCode::Esc if self.input.is_empty() && self.is_working() => UiAction::StopChat,
+            KeyCode::Esc if self.input.is_empty() && self.is_working() => self
+                .active_turn()
+                .map(str::to_owned)
+                .map_or(UiAction::None, |turn_id| {
+                    UiAction::Submit(Op::Interrupt { turn_id })
+                }),
             KeyCode::Esc => UiAction::None,
             KeyCode::Backspace => {
                 if self.input.is_empty() {
@@ -343,29 +347,7 @@ impl TuiState {
                 }
                 UiAction::None
             }
-            KeyCode::Char(' ') => {
-                if let Some(super::PickerOption {
-                    action: super::PickerAction::CreateSession { checked, .. },
-                    ..
-                }) = picker.options.get_mut(picker.selected)
-                {
-                    *checked = !*checked;
-                }
-                UiAction::None
-            }
             KeyCode::Enter => {
-                let mut bot_ids = picker
-                    .options
-                    .iter()
-                    .filter_map(|option| match &option.action {
-                        super::PickerAction::CreateSession {
-                            bot_id,
-                            checked: true,
-                            ..
-                        } => Some(bot_id.clone()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
                 let action = picker
                     .options
                     .get(picker.selected)
@@ -377,17 +359,11 @@ impl TuiState {
                         workspace,
                         bot_id,
                         clear,
-                        ..
-                    } => {
-                        if bot_ids.is_empty() {
-                            bot_ids.push(bot_id);
-                        }
-                        UiAction::CreateSession {
-                            workspace,
-                            bot_ids,
-                            clear,
-                        }
-                    }
+                    } => UiAction::CreateSession {
+                        workspace,
+                        bot_id,
+                        clear,
+                    },
                 })
             }
             _ => UiAction::None,
@@ -404,7 +380,7 @@ impl TuiState {
         self.preview = None;
         self.capability_overlay = None;
         self.picker = Some(super::PickerState {
-            title: "Select Bots".into(),
+            title: "Select Bot".into(),
             selected: bots
                 .iter()
                 .position(|bot| bot.id == current_bot_id)
@@ -420,7 +396,6 @@ impl TuiState {
                         workspace: workspace.clone(),
                         bot_id: bot.id.clone(),
                         clear,
-                        checked: false,
                     },
                 })
                 .collect(),
@@ -784,7 +759,6 @@ impl TuiState {
                     UiAction::Submit(op)
                 }
                 CommandAction::Gateway(action) => UiAction::Gateway(action),
-                CommandAction::StopChat => UiAction::StopChat,
                 CommandAction::GatewaySettings => UiAction::GatewaySettings,
                 CommandAction::Extensions => UiAction::Extensions,
                 CommandAction::Bots => UiAction::Bots,

@@ -47,7 +47,7 @@ mod startup;
 mod tool_step;
 mod turn;
 
-pub use self::startup::{PreparedAgent, create_agent, prepare_agent};
+pub use self::startup::create_agent;
 
 use self::recorder::EventRecorder;
 

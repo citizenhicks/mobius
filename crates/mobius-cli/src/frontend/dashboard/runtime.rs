@@ -508,23 +508,16 @@ pub(super) async fn submit_operation(
     session_id: &str,
     op: Op,
 ) -> Result<()> {
-    let request_id = Uuid::new_v4().to_string();
-    let message = match op {
-        Op::ExecApproval {
-            id: approval_request_id,
-            decision,
-        } => ClientMessage::ReviewApproval {
-            request_id,
-            approval_request_id,
-            decision,
-        },
-        op => ClientMessage::Submit {
+    sender
+        .send(ClientMessage::Submit {
             session_id: session_id.into(),
-            recipient_bot_ids: Vec::new(),
-            submission: Submission { id: request_id, op },
-        },
-    };
-    sender.send(message).await.map_err(gateway_error)
+            submission: Submission {
+                id: Uuid::new_v4().to_string(),
+                op,
+            },
+        })
+        .await
+        .map_err(gateway_error)
 }
 
 pub(super) fn handle_navigation_key(state: &mut DashboardState, key: KeyEvent, area: Rect) -> bool {

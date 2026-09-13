@@ -46,8 +46,9 @@ extension AppModel {
             download.requestID = id
             chat.sessionFileDownload = download
             gateway.transmit(
-                download.source.readRequest(
+                .readSessionFile(
                     requestID: id,
+                    sessionID: sessionID,
                     fileID: fileID,
                     offset: nextOffset,
                     maxBytes: 256 * 1024

@@ -20,11 +20,8 @@ final class AppModel {
     var generatedSshIdentity: GeneratedSshIdentity?
     var gitDiffs: [GitDiffScope: GitDiffState] = [:]
     var bots: [BotRecord] = []
-    var botConversationState = BotConversationState()
     var eventReadRevisions: [String: String] = [:]
     var backgroundApprovals: [BackgroundApproval] = []
-    var presentedApproval: PendingApproval?
-    var approvalReviewRequest: (id: String, approvalID: String)?
     var showsCloudOffer = false
 
     var modelChoices: [ModelChoice] = []
@@ -413,12 +410,13 @@ final class AppModel {
 
     var canModifySelectedSession: Bool {
         canOpenSession
+            && !selectedSessionIsHidden
             && chat.activeTurnID == nil
             && chat.pendingApproval == nil
     }
 
     var canBeginReply: Bool {
-        chat.canBeginReply
+        chat.canBeginReply && !selectedSessionIsHidden
     }
 
     func isCapabilityEnabled(_ capability: String) -> Bool {
@@ -434,7 +432,6 @@ final class AppModel {
     var isSwitchingGitBranch: Bool { gitBranchRequestID != nil }
 
     var attachmentsEnabled: Bool {
-        if selectedChatIsGroup { return true }
         if chat.activeTurnID == nil, let bot = selectedBot {
             return bot.config.config.middleware.enabled.contains("attachments")
         }
@@ -442,7 +439,6 @@ final class AppModel {
     }
 
     var selectedRouteSupportsImageInput: Bool {
-        if selectedChatIsGroup { return true }
         let route =
             chat.activeTurnID == nil
             ? modelRoute(for: selectedBot?.config.config) ?? chat.selectedModelRoute
@@ -469,7 +465,7 @@ final class AppModel {
         attachmentsEnabled
             && (gateway.connectionState.isReady || isChangingWorkspace)
             && (chat.selectedSessionID != nil
-                || chat.pendingNewChatWorkspace != nil && !chat.pendingNewChatBotIDs.isEmpty)
+                || chat.pendingNewChatWorkspace != nil && selectedBot != nil)
             && chat.sessionFileLimits != nil
             && chat.pendingWidgetEdit == nil
     }
@@ -514,10 +510,9 @@ final class AppModel {
         let hasPendingSession =
             sessionID == nil
             && chat.pendingNewChatWorkspace != nil
-            && !chat.pendingNewChatBotIDs.isEmpty
-            && chat.pendingNewChatBotIDs.allSatisfy { id in bots.contains { $0.id == id } }
+            && chat.pendingNewChatBotID.map { botID in bots.contains { $0.id == botID } } == true
         guard sessionID != nil || hasPendingSession else { return false }
-        guard sessionID == nil || chat.pendingNewChatBotIDs.isEmpty else { return false }
+        guard sessionID == nil || chat.pendingNewChatBotID == nil else { return false }
         guard !composerHasUnfinishedAttachments else { return false }
         if let pending = chat.pendingWidgetEdit {
             guard let sessionID,
@@ -554,11 +549,11 @@ final class AppModel {
 
     func canMutateBot(_ botID: String) -> Bool {
         guard canMutateBots else { return false }
-        if selectedSession?.memberBotIds.contains(botID) == true, chat.activeTurnID != nil {
+        if selectedSession?.sessionContext.botId == botID, chat.activeTurnID != nil {
             return false
         }
         return !chat.sessions.contains {
-            $0.memberBotIds.contains(botID) && $0.activity.state != .idle
+            $0.sessionContext.botId == botID && $0.activity.state != .idle
         }
     }
 
@@ -766,49 +761,33 @@ final class AppModel {
     var selectedSession: SessionRecord? {
         guard let selectedSessionID = chat.selectedSessionID else { return nil }
         return chat.sessions.first { $0.sessionId == selectedSessionID }
+            ?? chat.botSessions.first { $0.sessionId == selectedSessionID }
     }
 
-    var selectedChatIsGroup: Bool {
-        chat.selectedSessionID == nil
-            ? chat.pendingNewChatBotIDs.count > 1
-            : (chat.selectedMemberBotIDs ?? selectedSession?.memberBotIds ?? []).count > 1
-    }
-
-    var selectedChatBots: [BotRecord] {
-        let ids =
-            chat.selectedSessionID == nil
-            ? chat.pendingNewChatBotIDs
-            : chat.selectedMemberBotIDs ?? selectedSession?.memberBotIds ?? []
-        return ids.compactMap { id in bots.first { $0.id == id } }
-    }
-
-    var selectedChatPrimaryBotID: String? {
-        chat.selectedSessionID == nil
-            ? chat.pendingNewChatPrimaryBotID
-            : chat.selectedPrimaryBotID ?? selectedSession?.primaryBotId
+    var selectedSessionIsHidden: Bool {
+        guard let selectedSessionID = chat.selectedSessionID else { return false }
+        return chat.botSessions.contains { $0.sessionId == selectedSessionID }
+            || chat.botSessionsBotID != nil
+                && !chat.sessions.contains { $0.sessionId == selectedSessionID }
     }
 
     var selectedBot: BotRecord? {
-        guard !selectedChatIsGroup,
-            let botID = selectedChatPrimaryBotID
-        else {
+        guard let botID = selectedSession?.sessionContext.botId ?? chat.pendingNewChatBotID else {
             return nil
         }
         return bots.first { $0.id == botID }
     }
 
     func bot(for session: SessionRecord) -> BotRecord? {
-        guard !session.isGroup else { return nil }
-        return bots.first { $0.id == session.primaryBotId }
+        bots.first { $0.id == session.sessionContext.botId }
     }
 
     func bot(forSessionID sessionID: String?) -> BotRecord? {
         guard let sessionID else { return nil }
-        if let session = chat.sessions.first(where: { $0.sessionId == sessionID }) {
+        if let session = chat.sessions.first(where: { $0.sessionId == sessionID })
+            ?? chat.botSessions.first(where: { $0.sessionId == sessionID })
+        {
             return bot(for: session)
-        }
-        if let conversation = botConversationState.presented, conversation.id == sessionID {
-            return bots.first { $0.id == conversation.botId }
         }
         guard let approval = backgroundApproval(forSessionID: sessionID) else { return nil }
         return bots.first { $0.id == approval.botId }
@@ -816,7 +795,7 @@ final class AppModel {
 
     func backgroundApproval(forSessionID sessionID: String?) -> BackgroundApproval? {
         guard let sessionID else { return nil }
-        return backgroundApprovals.first { $0.chatId == sessionID }
+        return backgroundApprovals.first { $0.sessionId == sessionID }
     }
 
     func hasBackgroundApproval(forBotID botID: String) -> Bool {
@@ -827,9 +806,6 @@ final class AppModel {
         switch target {
         case .session(let sessionID):
             bot(forSessionID: sessionID)
-        case .approval(let requestID):
-            backgroundApprovals.first { $0.id == requestID }
-                .flatMap { approval in bots.first { $0.id == approval.botId } }
         case .routineRun(let runID):
             routineRuns.first { $0.id == runID }
                 .flatMap { run in bots.first { $0.id == run.botId } }
@@ -868,7 +844,9 @@ final class AppModel {
         if let pendingTitle = chat.pendingChatTitles[sessionID]?.displayTitle {
             return pendingTitle
         }
-        let session = chat.sessions.first(where: { $0.sessionId == sessionID })
+        let session =
+            chat.sessions.first(where: { $0.sessionId == sessionID })
+            ?? chat.botSessions.first(where: { $0.sessionId == sessionID })
         return session.map { String(displayedTitle(for: $0).prefix(72)) }
             ?? localizedString("new conversation")
     }

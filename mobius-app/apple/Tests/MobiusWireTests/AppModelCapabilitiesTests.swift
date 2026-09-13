@@ -47,7 +47,7 @@ extension AppModelTests {
         let request = await recorder.firstRequest(after: 0) {
             if case .submit = $0 { true } else { false }
         }
-        guard case .submit("chat-1", let submission, _) = try XCTUnwrap(request),
+        guard case .submit("chat-1", let submission) = try XCTUnwrap(request),
             case .capabilityCommand(
                 let capability, let command, let arguments, let input, let target) = submission.op
         else { return XCTFail("Expected a capability command, not a model message") }
@@ -297,7 +297,7 @@ extension AppModelTests {
             if case .submit = $0 { return true }
             return false
         }
-        guard case .submit(let sessionID, _, _) = try XCTUnwrap(request) else {
+        guard case .submit(let sessionID, _) = try XCTUnwrap(request) else {
             return XCTFail("Expected scratchpad submission")
         }
         XCTAssertEqual(sessionID, "chat-1")
@@ -579,11 +579,11 @@ extension AppModelTests {
         let requestCount = await recorder.requestCount()
         model.submitMessageAction(widget, target: target)
         let request = await recorder.firstRequest(after: requestCount) {
-            guard case .submit("chat-1", _, _) = $0 else { return false }
+            guard case .submit("chat-1", _) = $0 else { return false }
             return true
         }
         let requests = await recorder.requests()
-        guard case .submit(let sessionID, let submission, _) = try XCTUnwrap(request),
+        guard case .submit(let sessionID, let submission) = try XCTUnwrap(request),
             case .capabilityCommand(
                 let capability,
                 let command,
@@ -854,11 +854,8 @@ extension AppModelTests {
                 approvalRequestID: "approval-1"
             )
         ])
-        XCTAssertNil(model.toast)
-        model.applyBackgroundApprovals(
-            [backgroundApproval(chatID: "chat-1")], notifyingNew: true)
         XCTAssertEqual(model.toast?.tone, .warning)
-        XCTAssertEqual(model.toast?.target, .approval("approval-1"))
+        XCTAssertEqual(model.toast?.target, .session("chat-1"))
         XCTAssertEqual(model.attentionSessionIDs, ["chat-1"])
 
         model.applySessions([session(state: .idle, outcome: .completed)])

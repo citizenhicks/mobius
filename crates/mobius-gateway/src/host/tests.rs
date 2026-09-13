@@ -4,16 +4,9 @@ use mobius::protocol::{SessionContext, TokenUsage};
 use super::*;
 use mobius::backend::checkpoint::ExecutionStats;
 
-mod approvals;
 mod bots;
-mod conversation_replies;
-mod conversations;
-mod group_delivery;
-mod group_management;
-mod history_paging;
 mod lifecycle;
 mod projection;
-mod recipients;
 mod replay;
 
 pub(crate) async fn ensure_test_bot(
@@ -59,19 +52,4 @@ pub(crate) async fn create_test_session(
 ) -> std::result::Result<HostHandle, Rejection> {
     let bot = ensure_test_bot(gateway).await?;
     gateway.create_session(workspace, &bot.id).await
-}
-
-async fn chat_execution_id(gateway: &GatewayHost, chat_id: &str, bot_id: &str) -> String {
-    gateway
-        .state
-        .lock()
-        .await
-        .chat_store
-        .load(chat_id)
-        .await
-        .unwrap()
-        .unwrap()
-        .session_id(bot_id)
-        .unwrap()
-        .to_owned()
 }

@@ -25,10 +25,10 @@ extension AppModelTests {
         XCTAssertEqual(app.composerWidgets(in: .composerFooter).count, 1)
         app.chat.selectedSessionID = nil
         app.chat.pendingNewChatWorkspace = "/srv/project"
-        app.chat.pendingNewChatBotIDs = ["bot-1"]
+        app.chat.pendingNewChatBotID = "bot-1"
         XCTAssertEqual(app.composerWidgets(in: .composerFooter).count, 3)
         XCTAssertEqual(app.chat.pendingNewChatWorkspace, "/srv/project")
-        XCTAssertEqual(app.chat.pendingNewChatBotIDs, ["bot-1"])
+        XCTAssertEqual(app.chat.pendingNewChatBotID, "bot-1")
         let restored = AppModel(store: app.store, settingsDefaults: app.settingsDefaults)
         XCTAssertTrue(restored.simplifiedChatUI)
         app.setSimplifiedChatUI(false)
@@ -150,101 +150,45 @@ extension AppModelTests {
         add(attachment)
 
         app.bots = [bot(), bot(id: "bot-2", handle: "reviewer", name: "Reviewer")]
-        var group = session(sessionID: "group-1", state: .idle, title: "Review the release")
-        group.memberBotIds = ["bot-1", "bot-2"]
-        group.primaryBotId = "bot-1"
-        app.chat.sessions = [group]
-        app.chat.selectedSessionID = group.sessionId
-        app.chat.selectedMemberBotIDs = group.memberBotIds
+        let chat = session(sessionID: "chat-1", state: .idle, title: "Review the release")
+        app.chat.sessions = [chat]
+        app.chat.selectedSessionID = chat.sessionId
         app.chat.pendingApproval = nil
         app.chat.activeTurnIDs = []
         app.workspace = WorkspaceInfo(id: "project", path: "/srv/project")
         app.chat.reduce(
-            record: recorded(1, testMessageEvent(text: "Check this release.")))
+            record: recorded(1, testMessageEvent(text: "@helper @reviewer Check this release.")))
         app.chat.reduce(
             record: recorded(
                 2,
                 testMessageEvent(
                     author: .peer(
-                        messageID: "review", sessionID: "group-1", handle: "reviewer",
+                        messageID: "review", sessionID: "private-reviewer", handle: "reviewer",
                         symbol: nil),
-                    text: "The release checks pass. Helper can prepare the notes.")))
-        let groupHost = UIHostingController(
+                    text: "The release checks pass. @helper can prepare the notes.")))
+        let chatHost = UIHostingController(
             rootView: NavigationStack { ChatView() }.modifier(MobiusTheme()).environment(app))
-        window.rootViewController = groupHost
+        window.rootViewController = chatHost
         func editors(in view: UIView) -> [UITextView] {
             (view as? UITextView).map { [$0] } ?? view.subviews.flatMap { editors(in: $0) }
         }
         let composerAppeared = await eventually {
-            editors(in: groupHost.view).contains { $0.isEditable && $0.bounds.height > 0 }
+            editors(in: chatHost.view).contains { $0.isEditable && $0.bounds.height > 0 }
         }
         XCTAssertTrue(composerAppeared)
-        let editor = try XCTUnwrap(editors(in: groupHost.view).first { $0.isEditable })
+        let editor = try XCTUnwrap(editors(in: chatHost.view).first { $0.isEditable })
         XCTAssertTrue(editor.becomeFirstResponder())
-        editor.insertText("Please prepare the release notes.")
-        XCTAssertTrue(editor.text.contains("Please prepare"))
+        editor.insertText("@helper Please prepare the release notes.")
+        XCTAssertTrue(editor.text.contains("@helper"))
         editor.resignFirstResponder()
         try await Task.sleep(for: .milliseconds(500))
-        let groupImage = UIGraphicsImageRenderer(bounds: groupHost.view.bounds).image { _ in
-            groupHost.view.drawHierarchy(in: groupHost.view.bounds, afterScreenUpdates: true)
+        let chatImage = UIGraphicsImageRenderer(bounds: chatHost.view.bounds).image { _ in
+            chatHost.view.drawHierarchy(in: chatHost.view.bounds, afterScreenUpdates: true)
         }
-        let groupAttachment = XCTAttachment(image: groupImage)
-        groupAttachment.name = "group-chat"
-        groupAttachment.lifetime = .keepAlways
-        add(groupAttachment)
-        let members = try XCTUnwrap(
-            testAccessibilityElements(groupHost.view).first {
-                $0.accessibilityLabel == "Group members"
-            })
-        XCTAssertTrue(members.accessibilityActivate())
-        let popupAppeared = await eventually {
-            groupHost.presentedViewController?.isBeingPresented == false
-                && groupHost.presentedViewController?.transitionCoordinator == nil
-                && testAccessibilityElements(window).contains {
-                    $0.accessibilityLabel == "Add Reviewer as recipient"
-                }
-        }
-        XCTAssertTrue(popupAppeared)
-        let popupImage = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
-            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
-        }
-        let popupAttachment = XCTAttachment(image: popupImage)
-        popupAttachment.name = "group-members-popup"
-        popupAttachment.lifetime = .keepAlways
-        add(popupAttachment)
-        let reviewer = try XCTUnwrap(
-            testAccessibilityElements(window).first {
-                $0.accessibilityLabel == "Add Reviewer as recipient"
-            })
-        XCTAssertTrue(reviewer.accessibilityActivate())
-        let recipientAppeared = await eventually {
-            testAccessibilityElements(window).contains {
-                $0.accessibilityLabel == "Remove recipient Reviewer"
-            }
-        }
-        XCTAssertTrue(recipientAppeared)
-        let pickerDismissed = await eventually { groupHost.presentedViewController == nil }
-        XCTAssertTrue(pickerDismissed)
-        let composerFocused = await eventually {
-            editors(in: groupHost.view).contains { $0.isEditable && $0.isFirstResponder }
-        }
-        XCTAssertTrue(composerFocused, "Focus requests: \(app.chat.composerFocusRequest)")
-        XCTAssertEqual(app.chat.composerRecipientBotIDs, ["bot-2"])
-        editor.resignFirstResponder()
-        try await Task.sleep(for: .milliseconds(350))
-        let recipientImage = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
-            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
-        }
-        let recipientAttachment = XCTAttachment(image: recipientImage)
-        recipientAttachment.name = "group-composer-recipient"
-        recipientAttachment.lifetime = .keepAlways
-        add(recipientAttachment)
-        let remove = try XCTUnwrap(
-            testAccessibilityElements(window).first {
-                $0.accessibilityLabel == "Remove recipient Reviewer"
-            })
-        XCTAssertTrue(remove.accessibilityActivate())
-        XCTAssertTrue(app.chat.composerRecipientBotIDs.isEmpty)
+        let chatAttachment = XCTAttachment(image: chatImage)
+        chatAttachment.name = "peer-message-chat"
+        chatAttachment.lifetime = .keepAlways
+        add(chatAttachment)
     }
 
     private func eventCentreModel() throws -> AppModel {
@@ -260,8 +204,11 @@ extension AppModelTests {
         ]
         app.chat.selectedSessionID = "chat-1"
         app.chat.pendingApproval = PendingApproval(id: "request-1", reason: "Run checks", calls: [])
-        app.backgroundApprovals = [backgroundApproval(id: "request-2", turnID: "turn-2")]
-
+        app.backgroundApprovals = [
+            BackgroundApproval(
+                sessionId: "work-1", botId: "bot-1",
+                turnId: "turn-2", requestId: "request-2")
+        ]
         app.extensions = [extensionRecord(hooksTrusted: false)]
         app.routineRuns = [
             RoutineRun(

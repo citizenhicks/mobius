@@ -23,7 +23,6 @@ struct AgentComposition: Codable, Equatable, Sendable {
     var extensions: Set<String>
     var systemPrompt: String
     var maxModelSteps: UInt64
-    var routineCreation = false
     var realtimeVoice: String? = nil
 }
 
@@ -34,7 +33,6 @@ extension AgentComposition {
         case extensions
         case systemPrompt
         case maxModelSteps
-        case routineCreation
         case realtimeVoice
     }
 
@@ -54,7 +52,6 @@ extension AgentComposition {
             extensions: try container.decode(Set<String>.self, forKey: .extensions),
             systemPrompt: try container.decode(String.self, forKey: .systemPrompt),
             maxModelSteps: maxModelSteps,
-            routineCreation: try container.decode(Bool.self, forKey: .routineCreation),
             realtimeVoice: try container.decodeIfPresent(String.self, forKey: .realtimeVoice)
         )
     }

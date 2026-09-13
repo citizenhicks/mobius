@@ -169,13 +169,13 @@ struct ComposerOptionsView: View {
         // ponytail: overlap 44pt targets by 4pt; split groups if boundary taps misfire.
         HStack(spacing: -MobiusSpace.xs) {
             if model.attachmentsEnabled { addAttachmentControl }
-            if !isCompact && !model.selectedChatIsGroup {
+            if !isCompact {
                 ForEach(composerSettings) { item in
                     ComposerSettingMenu(item: item)
                 }
             }
             Spacer(minLength: MobiusSpace.s)
-            if !isCompact && !model.selectedChatIsGroup { modelMenu }
+            if !isCompact { modelMenu }
             actionButtons
         }
         .sheet(isPresented: $showsModelSelection) {
@@ -360,7 +360,7 @@ struct ComposerOptionsView: View {
     private var primaryAction: some View {
         if model.composerUsesPrimaryVoice {
             voiceButton
-        } else if model.canStopChat && !canSend {
+        } else if model.chat.activeTurnID != nil && !canSend {
             Button {
                 model.interrupt()
             } label: {
@@ -512,7 +512,6 @@ struct ComposerOptionsView: View {
     }
 
     private var sendHint: LocalizedStringResource {
-        if model.selectedChatIsGroup { return "Posts to the group chat" }
         guard model.chat.composerTargetTurnID != nil else { return "Starts a new turn" }
         return model.activeMessageDelivery == .steer
             ? "Long press to send after this turn"

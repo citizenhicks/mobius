@@ -73,7 +73,6 @@ pub(crate) struct CommandContext<'a> {
 #[derive(Debug, PartialEq)]
 pub(crate) enum CommandAction {
     Submit(Op),
-    StopChat,
     Gateway(GatewayAction),
     GatewaySettings,
     Extensions,
@@ -305,7 +304,14 @@ impl UiCatalog {
                 clear: true,
             },
             CommandHandler::Status => CommandAction::Print(context.status.to_string()),
-            CommandHandler::Interrupt => CommandAction::StopChat,
+            CommandHandler::Interrupt => context.active_turn.map_or_else(
+                || CommandAction::Print("no active turn to interrupt".into()),
+                |turn_id| {
+                    CommandAction::Submit(Op::Interrupt {
+                        turn_id: turn_id.to_string(),
+                    })
+                },
+            ),
             CommandHandler::Exit => CommandAction::Exit,
             CommandHandler::Capability { capability } => {
                 CommandAction::Submit(Op::CapabilityCommand {
@@ -408,7 +414,7 @@ fn cli_commands() -> Vec<UiCommand> {
         ),
         command(
             "interrupt",
-            "stop all work in this chat",
+            "stop the active turn",
             false,
             CommandHandler::Interrupt,
         ),

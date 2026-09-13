@@ -7,7 +7,8 @@
 //! # Embedded composition
 //!
 //! The caller owns every runtime dependency. Include exactly one message-handling middleware,
-//! and keep draining events while commands are active.
+//! give new sessions a non-empty [`protocol::SessionContext::bot_id`], and keep draining events
+//! while commands are active.
 //!
 //! ```rust,no_run
 //! use std::path::Path;
@@ -20,6 +21,7 @@
 //! use mobius::backend::sandbox::{ApprovalPolicy, Sandbox, local::LocalSandbox};
 //! use mobius::middleware::{Middleware, MiddlewareStack};
 //! use mobius::middleware::{messages::Messages, tools::Tools};
+//! use mobius::protocol::SessionContext;
 //!
 //! async fn build_agent(
 //!     workspace: &Path,
@@ -52,7 +54,11 @@
 //!             checkpoints,
 //!             MiddlewareStack::new(middleware)?,
 //!             "You are a concise coding agent.",
-//!         ),
+//!         )
+//!         .session_context(SessionContext {
+//!             bot_id: "embedded".into(),
+//!             ..SessionContext::default()
+//!         }),
 //!     )
 //!     .await
 //! }

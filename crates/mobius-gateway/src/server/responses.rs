@@ -17,14 +17,6 @@ pub(super) async fn write_session_history(
         records: page.records,
         next_before_sequence: page.next_before_sequence,
     });
-    write_history_frame(writer, request_id, frame).await
-}
-
-pub(super) async fn write_history_frame(
-    writer: &mut (impl AsyncWrite + Unpin),
-    request_id: String,
-    frame: ServerFrame,
-) -> Result<()> {
     if encoded_frame_fits(&frame)? {
         return write_frame(writer, &frame).await;
     }

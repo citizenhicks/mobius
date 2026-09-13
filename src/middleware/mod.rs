@@ -37,6 +37,7 @@ pub mod instructions;
 pub mod manifest;
 pub mod messages;
 pub mod scratchpad;
+pub mod sessions;
 pub mod subagents;
 pub mod tasks;
 pub mod tools;
@@ -535,12 +536,6 @@ impl MiddlewareStack {
             context.queued_messages.scope(entry.name());
         }
         entry.active_command(context).await
-    }
-
-    pub(crate) fn message_boundary_events(&self, submission_id: &str) -> Result<Vec<EventMsg>> {
-        Ok(self
-            .message_handler_required()?
-            .message_boundary_events(submission_id))
     }
 
     pub(crate) fn stage_model_messages(

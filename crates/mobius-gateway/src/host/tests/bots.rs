@@ -41,36 +41,14 @@ pub(super) async fn gateway_with_bot() -> (tempfile::TempDir, GatewayHost, crate
     (root, gateway, bot)
 }
 
-async fn execution_session_id(gateway: &GatewayHost, chat: &HostHandle, bot_id: &str) -> String {
-    chat.participant(bot_id.into())
-        .await
-        .expect("initialize participant");
-    gateway
-        .state
-        .lock()
-        .await
-        .chat_store
-        .load(chat.session_id())
-        .await
-        .unwrap()
-        .unwrap()
-        .session_id(bot_id)
-        .unwrap()
-        .to_owned()
-}
-
 #[tokio::test]
-async fn reassigning_chat_preserves_history_and_binds_a_fresh_target_execution() {
+async fn reassigning_chat_preserves_history_and_binds_the_target_bot() {
     let (root, gateway, bot) = gateway_with_bot().await;
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
-    let (bots, checkpoints, chats) = {
+    let (bots, checkpoints) = {
         let state = gateway.state.lock().await;
-        (
-            Arc::clone(&state.bots),
-            Arc::clone(&state.checkpoints),
-            Arc::clone(&state.chat_store),
-        )
+        (Arc::clone(&state.bots), Arc::clone(&state.checkpoints))
     };
     let mut config = bot.config.config.clone();
     config.system_prompt = "Follow the target Bot instructions.".into();
@@ -104,20 +82,20 @@ async fn reassigning_chat_preserves_history_and_binds_a_fresh_target_execution()
             .await
             .unwrap();
         gateway.set_session_pinned(&id, true).await.unwrap();
-        let before = chats.load(&id).await.unwrap().unwrap();
-        let old_session = before.session_id(&bot.id).unwrap().to_owned();
-        let old_checkpoint = checkpoints.load(&old_session).await.unwrap();
-        let history = chats
-            .event_page(
-                &id,
-                mobius::backend::checkpoint::EventPageRequest {
-                    before_sequence: None,
-                    limit: 100,
-                },
-            )
+        let before = checkpoints.load(&id).await.unwrap().unwrap();
+        assert_eq!(
+            before.first_user_message.as_deref(),
+            Some("Preserve this conversation")
+        );
+        let history_request = mobius::backend::checkpoint::TranscriptPageRequest {
+            before_sequence: None,
+            max_batches: 100,
+        };
+        let history = checkpoints
+            .transcript_page(&id, history_request.clone())
             .await
             .unwrap();
-        assert!(!history.events.is_empty());
+        assert!(!history.batches.is_empty());
         let voice = host.claim_realtime_voice().unwrap();
         assert_eq!(
             gateway
@@ -129,86 +107,56 @@ async fn reassigning_chat_preserves_history_and_binds_a_fresh_target_execution()
         );
         drop(voice);
         assert!(gateway.reassign_session(&id, "missing-bot").await.is_err());
-        assert_eq!(
-            host.snapshot(None)
-                .await
-                .unwrap()
-                .ready
-                .primary_bot_id
-                .unwrap(),
-            bot.id
-        );
+        assert_eq!(host.bot_id().await.unwrap(), bot.id);
         if stopped {
             assert!(host.stop_if_idle().await);
         }
         gateway.reassign_session(&id, &target.id).await.unwrap();
         let reassigned = gateway.open_session(&id).await.unwrap();
         assert_eq!(reassigned.session_id(), id);
-        assert_eq!(
-            reassigned
-                .snapshot(None)
-                .await
-                .unwrap()
-                .ready
-                .primary_bot_id
-                .unwrap(),
-            target.id
-        );
+        if !stopped {
+            assert!(Arc::ptr_eq(&host.inner, &reassigned.inner));
+        }
+        assert_eq!(reassigned.bot_id().await.unwrap(), target.id);
         assert!(!reassigned.accepts_file_attachments().await.unwrap());
         let snapshot = reassigned.snapshot(None).await.unwrap();
-        assert_eq!(
-            snapshot.ready.primary_bot_id.as_deref(),
-            Some(target.id.as_str())
-        );
-        let after = chats.load(&id).await.unwrap().unwrap();
+        assert_eq!(snapshot.ready.session.context.bot_id, target.id);
+        let after = checkpoints.load(&id).await.unwrap().unwrap();
+        assert_eq!(after.context, before.context);
         assert_eq!(after.first_user_message, before.first_user_message);
-        assert_eq!(after.workspace, before.workspace);
-        assert_ne!(after.session_id(&target.id), Some(old_session.as_str()));
-        assert!(
-            after
-                .execution_participants()
-                .any(|participant| participant.session_id == old_session
-                    && participant.bot_id == bot.id)
+        assert_eq!(after.execution_stats, before.execution_stats);
+        assert_eq!(
+            after.session_context.workspace_id,
+            before.session_context.workspace_id
         );
         assert_eq!(
-            checkpoints.load(&old_session).await.unwrap(),
-            old_checkpoint
-        );
-        assert_eq!(
-            chats
-                .event_page(
-                    &id,
-                    mobius::backend::checkpoint::EventPageRequest {
-                        before_sequence: None,
-                        limit: 100
-                    }
-                )
+            checkpoints
+                .transcript_page(&id, history_request)
                 .await
-                .unwrap()
-                .events,
-            history.events
+                .unwrap(),
+            history
         );
-        let record = gateway
-            .sessions()
-            .await
-            .unwrap()
-            .into_iter()
+        let spec =
+            ChatSpec::from_metadata(&after.metadata, &bots, &root.path().join("state"), None)
+                .unwrap();
+        assert_eq!(spec.bot_id, target.id);
+        assert_eq!(spec.workspace, workspace.canonicalize().unwrap());
+        let catalog = gateway.sessions().await.unwrap();
+        let record = catalog
+            .iter()
             .find(|record| record.session_id == id)
             .unwrap();
         assert_eq!(record.title.as_deref(), Some("Preserved title"));
         assert!(record.pinned);
-        assert_eq!(record.member_bot_ids, vec![target.id.clone()]);
+        assert_eq!(record.session_context.bot_id, target.id);
         assert!(reassigned.stop_if_idle().await);
         assert_eq!(
             gateway
                 .open_session(&id)
                 .await
                 .unwrap()
-                .snapshot(None)
+                .bot_id()
                 .await
-                .unwrap()
-                .ready
-                .primary_bot_id
                 .unwrap(),
             target.id
         );
@@ -217,61 +165,47 @@ async fn reassigning_chat_preserves_history_and_binds_a_fresh_target_execution()
 }
 
 #[tokio::test]
-async fn failed_reassignment_preserves_the_participant_and_running_chat() {
+async fn failed_reassignment_restores_the_owner_and_running_chat() {
     let (root, gateway, bot) = gateway_with_bot().await;
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
     let host = gateway.create_session(&workspace, &bot.id).await.unwrap();
-    let (bots, chats) = {
+    let (bots, checkpoints) = {
         let state = gateway.state.lock().await;
-        (Arc::clone(&state.bots), Arc::clone(&state.chat_store))
+        (Arc::clone(&state.bots), Arc::clone(&state.checkpoints))
     };
-    let before = chats.load(host.session_id()).await.unwrap().unwrap();
+    let before = checkpoints.load(host.session_id()).await.unwrap().unwrap();
     let mut config = bot.config.config.clone();
     config.middleware.set_enabled("instructions", true);
     let target = bots
         .create_bot("Instructions", "Read workspace instructions", config)
         .unwrap();
+    // Only the target Bot loads this file, so assembly fails after ownership is saved.
     std::fs::write(workspace.join("AGENTS.md"), [0xff]).unwrap();
     gateway
         .reassign_session(host.session_id(), &target.id)
         .await
         .unwrap_err();
-    let after = chats.load(host.session_id()).await.unwrap().unwrap();
-    assert_eq!(after.session_id(&bot.id), before.session_id(&bot.id));
-    assert_eq!(after.member_bot_ids(), before.member_bot_ids());
+    let after = checkpoints.load(host.session_id()).await.unwrap().unwrap();
+    assert_eq!(after.session_context, before.session_context);
+    assert_eq!(after.metadata, before.metadata);
+    assert_eq!(host.bot_id().await.unwrap(), bot.id);
     assert_eq!(
         host.snapshot(None)
             .await
             .unwrap()
             .ready
-            .primary_bot_id
-            .unwrap(),
+            .session
+            .context
+            .bot_id,
         bot.id
-    );
-    assert_eq!(
-        host.snapshot(None)
-            .await
-            .unwrap()
-            .ready
-            .primary_bot_id
-            .as_deref(),
-        Some(bot.id.as_str())
     );
     std::fs::remove_file(workspace.join("AGENTS.md")).unwrap();
     gateway
         .reassign_session(host.session_id(), &target.id)
         .await
         .unwrap();
-    assert_eq!(
-        host.snapshot(None)
-            .await
-            .unwrap()
-            .ready
-            .primary_bot_id
-            .unwrap(),
-        target.id
-    );
+    assert_eq!(host.bot_id().await.unwrap(), target.id);
     gateway.shutdown().await;
 }
 
@@ -281,7 +215,6 @@ async fn saving_bot_prepares_once_and_chats_bind_it_when_next_used() {
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("workspace");
     let host = gateway.create_session(&workspace, &bot.id).await.unwrap();
-    host.snapshot(None).await.unwrap();
     let bots = Arc::clone(&gateway.state.lock().await.bots);
     let prepared = Arc::clone(bots.prepared.lock().await.get(&bot.id).unwrap());
     let sibling = gateway.create_session(&workspace, &bot.id).await.unwrap();
@@ -375,13 +308,6 @@ async fn session_owners_wait_for_the_cascade_gate() {
     let (root, gateway, bot) = gateway_with_bot().await;
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("workspace");
-    let mobius = gateway
-        .state
-        .lock()
-        .await
-        .bots
-        .mobius()
-        .expect("Mobius Bot");
     let deletable = gateway
         .create_session(&workspace, &bot.id)
         .await
@@ -425,16 +351,6 @@ async fn session_owners_wait_for_the_cascade_gate() {
         let bot_id = bot.id.clone();
         async move { gateway.create_session(&workspace, &bot_id).await }
     });
-    let mut creating_group = tokio::spawn({
-        let gateway = gateway.clone();
-        let workspace = workspace.clone();
-        let bot_id = bot.id.clone();
-        async move {
-            gateway
-                .create_chat(&workspace, &[mobius.id, bot_id], None)
-                .await
-        }
-    });
     let mut deleting_session = tokio::spawn({
         let gateway = gateway.clone();
         let session_id = deletable_id.clone();
@@ -447,11 +363,6 @@ async fn session_owners_wait_for_the_cascade_gate() {
 
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(50), &mut creating_session,)
-            .await
-            .is_err()
-    );
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(50), &mut creating_group,)
             .await
             .is_err()
     );
@@ -471,10 +382,6 @@ async fn session_owners_wait_for_the_cascade_gate() {
         .await
         .expect("session task")
         .expect("create session");
-    creating_group
-        .await
-        .expect("group task")
-        .expect("create group");
     deleting_session
         .await
         .expect("delete task")
@@ -493,16 +400,10 @@ async fn session_owners_wait_for_the_cascade_gate() {
 }
 
 #[tokio::test]
-async fn routine_sessions_stay_hidden_and_group_membership_does_not_dispatch_results() {
+async fn routine_sessions_stay_hidden() {
     let (root, gateway, bot) = gateway_with_bot().await;
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("workspace");
-    let groups = Arc::clone(&gateway.state.lock().await.chat_store);
-    let member = gateway.state.lock().await.bots.mobius().expect("member");
-    let group = gateway
-        .create_chat(&workspace, &[member.id, bot.id.clone()], None)
-        .await
-        .unwrap();
     let routine = {
         let state = gateway.state.lock().await;
         state
@@ -571,8 +472,6 @@ async fn routine_sessions_stay_hidden_and_group_membership_does_not_dispatch_res
     })
     .await
     .expect("routine completion");
-    assert!(group.snapshot(None).await.unwrap().replay.is_empty());
-    assert!(groups.pending_chat_ids().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -608,6 +507,7 @@ async fn deleting_a_completed_routine_run_removes_its_session_data() {
     };
     let session_id = active.session_id().to_owned();
     let mut checkpoint = Checkpoint::empty(&session_id);
+    checkpoint.session_context.bot_id = bot.id;
     checkpoint.catalog_visible = false;
     checkpoints
         .save(&checkpoint, &[], None)
@@ -659,7 +559,7 @@ async fn bot_delete_preflight_preserves_sessions_when_instructions_are_invalid()
         .create_session(&workspace, &bot.id)
         .await
         .expect("create Bot chat");
-    let chat_id = execution_session_id(&gateway, &chat, &bot.id).await;
+    let chat_id = chat.session_id().to_owned();
     let (bots, checkpoints) = {
         let state = gateway.state.lock().await;
         (Arc::clone(&state.bots), Arc::clone(&state.checkpoints))
@@ -708,7 +608,7 @@ async fn bot_delete_rejects_an_active_upload_before_any_owner_commit() {
         .create_session(&workspace, &bot.id)
         .await
         .expect("create Bot chat");
-    let chat_id = execution_session_id(&gateway, &chat, &bot.id).await;
+    let chat_id = chat.session_id().to_owned();
     let (bots, checkpoints, files) = {
         let state = gateway.state.lock().await;
         (
@@ -753,7 +653,7 @@ async fn bot_delete_rejects_an_active_upload_before_any_owner_commit() {
 }
 
 #[tokio::test]
-async fn startup_finishes_a_bot_cascade_after_group_membership_removal() {
+async fn startup_finishes_a_bot_cascade() {
     let (root, gateway, bot) = gateway_with_bot().await;
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("workspace");
@@ -761,55 +661,26 @@ async fn startup_finishes_a_bot_cascade_after_group_membership_removal() {
         .create_session(&workspace, &bot.id)
         .await
         .expect("create Bot chat");
-    let chat_id = execution_session_id(&gateway, &chat, &bot.id).await;
-    let mobius = gateway
-        .state
-        .lock()
-        .await
-        .bots
-        .mobius()
-        .expect("Mobius Bot");
-    let group_id = gateway
-        .create_chat(&workspace, &[bot.id.clone(), mobius.id.clone()], None)
-        .await
-        .unwrap()
-        .session_id()
-        .to_owned();
-    let (deletion, file_deletion, bot_store, groups) = {
+    let chat_id = chat.session_id().to_owned();
+    let (deletion, file_deletion, bot_store) = {
         let mut state = gateway.state.lock().await;
         let (roots, ids, file_deletion) = prepare_bot_session_tree_deletion(&mut state, &bot.id)
             .await
             .expect("prepare files");
         let bot_store = Arc::clone(&state.bots);
-        let groups = Arc::clone(&state.chat_store);
         let mut deletion = bot_store
             .prepare_bot_deletion(&bot.id, bot.config.revision)
             .expect("prepare Bot deletion");
         bot_store
             .record_bot_deletion(&mut deletion, &roots, &ids)
             .expect("record deletion intent");
-        drop(state);
-        groups
-            .remove_bot(&bot.id)
-            .await
-            .expect("persist group membership removal");
-        (deletion, file_deletion, bot_store, groups)
+        (deletion, file_deletion, bot_store)
     };
     assert!(bot_store.bot(&bot.id).is_ok());
-    assert_eq!(
-        groups
-            .load(&group_id)
-            .await
-            .unwrap()
-            .unwrap()
-            .member_bot_ids(),
-        vec![mobius.id.clone()]
-    );
 
     drop(deletion);
     drop(file_deletion);
     drop(bot_store);
-    drop(groups);
     drop(gateway);
 
     let (store, config) = ConfigStore::open(root.path().join("state")).expect("reopen config");
@@ -830,16 +701,6 @@ async fn startup_finishes_a_bot_cascade_after_group_membership_removal() {
             .is_none()
     );
     let state = recovered.state.lock().await;
-    assert_eq!(
-        state
-            .chat_store
-            .load(&group_id)
-            .await
-            .unwrap()
-            .unwrap()
-            .member_bot_ids(),
-        vec![mobius.id]
-    );
     assert!(
         state
             .checkpoints
@@ -860,7 +721,7 @@ async fn startup_rejects_an_unrecoverable_bot_cascade_before_serving() {
         .create_session(&workspace, &bot.id)
         .await
         .expect("create Bot chat");
-    let chat_id = execution_session_id(&gateway, &chat, &bot.id).await;
+    let chat_id = chat.session_id().to_owned();
     let (mobius, bot_store) = {
         let state = gateway.state.lock().await;
         (
@@ -920,7 +781,7 @@ async fn startup_rejects_an_unrecoverable_bot_cascade_before_serving() {
     );
     assert_eq!(
         gateway
-            .bot_conversations(&mobius.id, None)
+            .hidden_bot_sessions(&mobius.id)
             .await
             .expect_err("pending recovery blocks hidden Bot sessions")
             .code,
@@ -958,15 +819,6 @@ async fn startup_rejects_an_unrecoverable_bot_cascade_before_serving() {
             .code,
         "bot_deletion_recovery"
     );
-    assert_eq!(
-        gateway
-            .create_chat(&workspace, &[mobius.id, bot.id.clone()], None)
-            .await
-            .err()
-            .expect("pending recovery blocks group creation")
-            .code,
-        "bot_deletion_recovery"
-    );
     drop(chat);
     drop(unrelated);
     drop(gateway);
@@ -996,7 +848,7 @@ async fn startup_rejects_an_unrecoverable_bot_cascade_before_serving() {
 }
 
 #[tokio::test]
-async fn deleting_a_bot_removes_owned_state_and_preserves_its_group() {
+async fn deleting_a_bot_removes_owned_state() {
     let (root, gateway, bot) = gateway_with_bot().await;
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("workspace");
@@ -1004,14 +856,13 @@ async fn deleting_a_bot_removes_owned_state_and_preserves_its_group() {
         .create_session(&workspace, &bot.id)
         .await
         .expect("create Bot chat");
-    let chat_id = execution_session_id(&gateway, &chat, &bot.id).await;
-    let (bots, checkpoints, session_files, mobius) = {
+    let chat_id = chat.session_id().to_owned();
+    let (bots, checkpoints, session_files) = {
         let state = gateway.state.lock().await;
         (
             Arc::clone(&state.bots),
             Arc::clone(&state.checkpoints),
             state.session_files.clone(),
-            state.bots.mobius().expect("Mobius Bot"),
         )
     };
     let parent = checkpoints
@@ -1042,7 +893,7 @@ async fn deleting_a_bot_removes_owned_state_and_preserves_its_group() {
             .expect("publish owned artifact");
     }
     gateway
-        .rename_session(chat.session_id(), "Keep public Chat title")
+        .rename_session(&chat_id, "Delete with Bot")
         .await
         .expect("rename chat");
     gateway
@@ -1093,10 +944,6 @@ async fn deleting_a_bot_removes_owned_state_and_preserves_its_group() {
     bots.finish_run(run, RoutineRunStatus::Succeeded, None)
         .expect("finish routine");
 
-    let group = gateway
-        .create_chat(&workspace, &[bot.id.clone(), mobius.id.clone()], None)
-        .await
-        .unwrap();
     let (remaining, deleted_sessions) = gateway
         .delete_bot(&bot.id, bot.config.revision)
         .await
@@ -1138,15 +985,11 @@ async fn deleting_a_bot_removes_owned_state_and_preserves_its_group() {
             .expect("load deleted scratchpad")
             .is_none()
     );
-    assert_eq!(
-        load_session_metadata(&checkpoints)
+    assert!(
+        !load_session_metadata(&checkpoints)
             .await
             .expect("session metadata")
-            .get(chat.session_id())
-            .unwrap()
-            .title
-            .as_deref(),
-        Some("Keep public Chat title")
+            .contains_key(&chat_id)
     );
     assert!(
         !gateway
@@ -1158,10 +1001,6 @@ async fn deleting_a_bot_removes_owned_state_and_preserves_its_group() {
             .await
             .activities
             .contains_key(&chat_id)
-    );
-    assert_eq!(
-        group.snapshot(None).await.unwrap().ready.member_bot_ids,
-        vec![mobius.id]
     );
 }
 
@@ -1200,8 +1039,7 @@ async fn routine_acceptance_keeps_the_gateway_registry_locked() {
     let actor_release = Arc::clone(&release);
     let actor_bots = Arc::clone(&bots);
     tokio::spawn(async move {
-        let Some((HostCommand::RunRoutine { run, reply, .. }, _owner)) = receiver.recv().await
-        else {
+        let Some(HostCommand::RunRoutine { run, reply, .. }) = receiver.recv().await else {
             panic!("routine command");
         };
         let _ = received.send(());
@@ -1270,6 +1108,10 @@ async fn routine_command_gate_rejection_terminalizes_the_run() {
     let (root, gateway, bot) = gateway_with_bot().await;
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("workspace");
+    let host = gateway
+        .create_session(&workspace, &bot.id)
+        .await
+        .expect("chat");
     let (bots, gate, routine, run) = {
         let state = gateway.state.lock().await;
         let routine = state
@@ -1298,16 +1140,6 @@ async fn routine_command_gate_rejection_terminalizes_the_run() {
             run,
         )
     };
-    let host = gateway
-        .create_session_with_id(
-            &workspace,
-            &bot.id,
-            run.session_id().to_owned(),
-            false,
-            "Routine",
-        )
-        .await
-        .expect("private routine execution");
     let _mutation = gate.write_owned().await;
 
     let rejection = host
@@ -1401,14 +1233,11 @@ async fn stopped_host_terminalizes_a_queued_unconsumed_routine() {
     let (commands, mut receiver) = mpsc::channel(1);
     let (reply, response) = tokio::sync::oneshot::channel();
     commands
-        .send((
-            HostCommand::RunRoutine {
-                run,
-                input: "queued routine".into(),
-                reply,
-            },
-            None,
-        ))
+        .send(HostCommand::RunRoutine {
+            run,
+            input: "queued routine".into(),
+            reply,
+        })
         .await
         .expect("queue routine command");
     receiver.close();
@@ -1472,8 +1301,8 @@ async fn bot_presentation_edits_do_not_prepare_or_reassemble_chats() {
     std::fs::create_dir(&workspace).expect("workspace");
     let host = gateway.create_session(&workspace, &bot.id).await.unwrap();
     let operations = Arc::clone(&gateway.state.lock().await.store.runtime_operations);
-    let before_sequence = host.snapshot(None).await.unwrap().ready.latest_sequence;
     let before = operations.counts();
+    let before_sequence = host.snapshot(None).await.unwrap().ready.latest_sequence;
     let mut current = bot;
     for (name, tint) in [
         ("reviewer", crate::wire::ProviderTint::Purple),
@@ -1494,9 +1323,6 @@ async fn bot_presentation_edits_do_not_prepare_or_reassemble_chats() {
     }
     gateway
         .create_session(&workspace, &current.id)
-        .await
-        .unwrap()
-        .snapshot(None)
         .await
         .unwrap();
     assert_eq!(

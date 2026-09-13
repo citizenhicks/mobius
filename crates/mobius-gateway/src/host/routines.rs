@@ -79,8 +79,7 @@ impl GatewayHost {
             .await
             .map_err(internal)?;
         let session_ids = session_trees(roots, &summaries).1;
-        let mut file_deletion =
-            prepare_session_tree_deletion(&mut state, &session_ids, false).await?;
+        let mut file_deletion = prepare_session_tree_deletion(&mut state, &session_ids).await?;
         let summaries = gateway_session_summaries(&state.checkpoints)
             .await
             .map_err(internal)?;
@@ -189,9 +188,12 @@ impl GatewayHost {
             fatal: false,
         })?;
         drop(_mutation);
-        let page = self
-            .bot_conversation_history(&run.bot_id, &session_id, before_sequence)
-            .await?;
+        let (host, temporary) = self.open_session_with_cache(&session_id, false).await?;
+        let page = host.history_page(before_sequence).await;
+        if temporary {
+            let _ = host.stop_if_idle().await;
+        }
+        let page = page?;
         let routine = bots
             .routine_record(&run.routine_id, Utc::now().timestamp())
             .map_err(invalid_routine)?;
@@ -226,8 +228,7 @@ impl GatewayHost {
         } else {
             Vec::new()
         };
-        let mut file_deletion =
-            prepare_session_tree_deletion(&mut state, &session_ids, false).await?;
+        let mut file_deletion = prepare_session_tree_deletion(&mut state, &session_ids).await?;
         state.bots.delete_run(run_id).map_err(invalid_routine)?;
         let cleanup = if let Some(session_root) = session_root.filter(|_| !session_ids.is_empty()) {
             remove_session_trees(

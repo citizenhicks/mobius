@@ -15502,38 +15502,6 @@
         }
       }
     },
-    "Background work" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Travail en arrière-plan"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Hintergrundarbeit"
-          }
-        }
-      }
-    },
-    "Background work awaiting approval" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Travail en arrière-plan en attente d’approbation"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Hintergrundarbeit wartet auf Genehmigung"
-          }
-        }
-      }
-    },
     "Bot AI model" : {
       "localizations" : {
         "fr" : {
@@ -15914,22 +15882,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Chats"
-          }
-        }
-      }
-    },
-    "Coworkers" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Collaborateurs"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Teammitglieder"
           }
         }
       }
@@ -16574,22 +16526,6 @@
         }
       }
     },
-    "Private Bot conversations stay out of Chats." : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Les conversations privées des Bots n’apparaissent pas dans Conversations."
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Private Bot-Gespräche erscheinen nicht unter „Chats“."
-          }
-        }
-      }
-    },
     "Rebuilds context · cache miss" : {
       "localizations" : {
         "fr" : {
@@ -16602,22 +16538,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Baut den Kontext neu auf · Cache-Miss"
-          }
-        }
-      }
-    },
-    "Remove Coworker" : {
-      "localizations" : {
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Retirer un collaborateur"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Teammitglied entfernen"
           }
         }
       }
@@ -18521,29 +18441,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Anderen Anbieter wählen"
-          }
-        }
-      }
-    },
-    "Leader and coworkers" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Leader and coworkers"
-          }
-        },
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Chef et collaborateurs"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Leitung und Teammitglieder"
           }
         }
       }

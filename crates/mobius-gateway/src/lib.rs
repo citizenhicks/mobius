@@ -3,7 +3,6 @@
 mod assembly;
 pub mod auth;
 pub mod bots;
-mod chats;
 pub mod client;
 mod cloudflare;
 pub mod command;
@@ -14,7 +13,6 @@ mod host;
 mod middleware_manifest;
 mod provider_catalog;
 mod publication;
-mod routines;
 pub mod sandbox;
 pub mod server;
 pub mod wire;

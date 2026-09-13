@@ -5,88 +5,6 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
-    func testPrivateConversationFilesKeepTheirOwnerAcrossChunksAndSheetDismissal() async throws {
-        let recorder = GatewayRequestRecorder()
-        let model = try model { await recorder.record($0) }
-        model.gateway.connectionState = .ready
-        model.chat.selectedSessionID = "public-chat"
-        model.botConversationState.presented = privateBotConversation()
-        model.chat.previewFileSource = .botConversation(botID: "bot-1", conversationID: "private-1")
-        model.workspaceFiles = [WorkspaceFileRecord(path: "result.txt", size: 4)]
-        let link = try XCTUnwrap(URL(string: "workspace:///result.txt"))
-        XCTAssertNil(model.workspaceFile(for: link))
-        let file = SessionFileReference(
-            id: "result", name: "result.txt", size: 4, mediaType: "text/plain")
-        model.previewSessionFile(file, sessionID: "private-1")
-        let first = await recorder.firstRequest(after: 0) {
-            if case .readBotConversationFile = $0 { return true }
-            return false
-        }
-        guard
-            case .readBotConversationFile(let firstID, "bot-1", "private-1", "result", 0, _) =
-                try XCTUnwrap(first)
-        else { return XCTFail("Expected private file read") }
-        model.closeBotConversation()
-        XCTAssertEqual(model.workspaceFile(for: link)?.path, "result.txt")
-        model.gateway.handle(
-            .sessionFileChunk(
-                requestID: firstID, sessionID: "private-1", fileID: "result",
-                offset: 0, data: Data("te".utf8), nextOffset: 2))
-        let second = await recorder.firstRequest(after: 1) {
-            if case .readBotConversationFile = $0 { return true }
-            return false
-        }
-        guard
-            case .readBotConversationFile(let secondID, "bot-1", "private-1", "result", 2, _) =
-                try XCTUnwrap(second)
-        else { return XCTFail("Expected the same private owner on the next chunk") }
-        model.gateway.handle(
-            .sessionFileChunk(
-                requestID: secondID, sessionID: "private-1", fileID: "result",
-                offset: 2, data: Data("st".utf8), nextOffset: nil))
-        let presented = await eventually { model.textFilePreview?.contents == "test" }
-        XCTAssertTrue(presented)
-        XCTAssertEqual(model.chat.selectedSessionID, "public-chat")
-        XCTAssertNil(model.textFilePreview?.workspaceSessionID)
-        let requests = await recorder.requests()
-        XCTAssertFalse(
-            requests.contains {
-                if case .readSessionFile = $0 { return true }; return false
-            })
-    }
-
-    func testPrivateConversationThumbnailsUseThePrivateFileRoute() async throws {
-        let recorder = GatewayRequestRecorder()
-        let model = try model { await recorder.record($0) }
-        model.gateway.connectionState = .ready
-        model.chat.previewFileSource = .botConversation(botID: "bot-1", conversationID: "private-1")
-        let file = SessionFileReference(
-            id: "image", name: "image.png", size: 4, mediaType: "image/png")
-        model.chat.requestSessionFileThumbnail(file, sessionID: "private-1")
-        let first = await recorder.firstRequest(after: 0) {
-            if case .readBotConversationFile = $0 { return true }
-            return false
-        }
-        guard
-            case .readBotConversationFile(let firstID, "bot-1", "private-1", "image", 0, _) =
-                try XCTUnwrap(first)
-        else { return XCTFail("Expected private thumbnail source") }
-        model.chat.previewFileSource = nil
-        model.gateway.handle(
-            .sessionFileChunk(
-                requestID: firstID, sessionID: "private-1", fileID: "image",
-                offset: 0, data: Data([1, 2]), nextOffset: 2))
-        let second = await recorder.firstRequest(after: 1) {
-            if case .readBotConversationFile = $0 { return true }
-            return false
-        }
-        guard
-            case .readBotConversationFile(_, "bot-1", "private-1", "image", 2, _) = try XCTUnwrap(
-                second)
-        else { return XCTFail("Thumbnail continuation must preserve the private source") }
-        model.chat.cancelSessionFileThumbnailDownloads()
-    }
-
     func testFileRequestLoadingStatesNotifyObserversOnStartAndReset() async throws {
         let model = try model { _ in }
         model.gateway.connectionState = .ready
@@ -398,6 +316,28 @@ extension AppModelTests {
         XCTAssertEqual(fuzzySuggestions.matches.first?.label, "@src/main.rs")
     }
 
+    func testNewChatKeepsReferencesForTheSameFolderAndClearsThemWhenItChanges() throws {
+        let model = try model()
+        let file = WorkspaceFileRecord(path: "Sources/App.swift", size: 1)
+        model.gateway.connectionState = .ready
+        model.workspace = WorkspaceInfo(id: "workspace-1", path: "/srv/project")
+        model.workspaceFiles = [file]
+        model.chat.selectedSessionID = "chat-1"
+        model.navigationPath = [.chat(.session("chat-1"))]
+
+        model.chooseWorkspace("/srv/project")
+
+        let text = "Review @app"
+        XCTAssertEqual(
+            model.referenceSuggestions(in: text, cursor: text.endIndex)?.matches.first?.label,
+            "@Sources/App.swift"
+        )
+
+        model.chooseWorkspace("/srv/other")
+        XCTAssertTrue(model.workspaceFiles.isEmpty)
+        XCTAssertNil(model.referenceSuggestions(in: text, cursor: text.endIndex))
+    }
+
     func testWorkspaceSourceFileUsesTextPreview() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model(requestSender: { request in
@@ -705,7 +645,7 @@ extension AppModelTests {
         })
         model.gateway.connectionState = .ready
         model.chat.selectedSessionID = "chat-1"
-        let run = RoutineRun(
+        model.presentedRoutineRun = RoutineRun(
             id: "run-1",
             routineId: "routine-1",
             botId: "bot-1",
@@ -715,8 +655,6 @@ extension AppModelTests {
             sessionId: "routine-session-1",
             message: nil
         )
-        model.presentRoutineRun(run)
-        defer { model.closeRoutineRunPreview() }
         let data = try tinyPNGData()
         let file = SessionFileReference(
             id: "routine-image",
@@ -727,15 +665,12 @@ extension AppModelTests {
 
         model.chat.requestSessionFileThumbnail(file, sessionID: "routine-session-1")
         let request = await recorder.firstRequest(after: 0) {
-            guard case .readBotConversationFile(_, "bot-1", let sessionID, let fileID, _, _) = $0
-            else {
+            guard case .readSessionFile(_, let sessionID, let fileID, _, _) = $0 else {
                 return false
             }
             return sessionID == "routine-session-1" && fileID == file.id
         }
-        guard
-            case .readBotConversationFile(let requestID, "bot-1", _, _, _, _) = try XCTUnwrap(
-                request)
+        guard case .readSessionFile(let requestID, _, _, _, _) = try XCTUnwrap(request)
         else { return XCTFail("Expected routine thumbnail read") }
 
         model.gateway.handle(
@@ -768,8 +703,7 @@ extension AppModelTests {
         model.chat.requestSessionFileThumbnail(file, sessionID: "routine-session-1")
 
         XCTAssertEqual(model.chat.sessionFileThumbnailDownload?.sessionID, "chat-1")
-        XCTAssertEqual(
-            model.chat.queuedSessionFileThumbnails.first?.source.sessionID, "routine-session-1")
+        XCTAssertEqual(model.chat.queuedSessionFileThumbnails.first?.sessionID, "routine-session-1")
         XCTAssertEqual(model.chat.requestedSessionFileThumbnailKeys.count, 2)
         model.chat.cancelSessionFileThumbnailDownloads()
     }

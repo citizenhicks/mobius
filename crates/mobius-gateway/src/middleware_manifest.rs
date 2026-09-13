@@ -1,4 +1,4 @@
-//! Gateway composition registry for middleware manifests.
+//! Gateway composition registry for core-owned middleware manifests.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -23,7 +23,7 @@ pub(crate) enum BuiltinMiddleware {
     Compaction,
     ComputerControl,
     Scratchpad,
-    Chats,
+    Sessions,
 }
 
 pub(crate) struct MiddlewareRegistration {
@@ -85,8 +85,8 @@ pub(crate) const MIDDLEWARE: [MiddlewareRegistration; 14] = [
         manifest: &mobius::middleware::scratchpad::MANIFEST,
     },
     MiddlewareRegistration {
-        kind: BuiltinMiddleware::Chats,
-        manifest: &crate::chats::history::MANIFEST,
+        kind: BuiltinMiddleware::Sessions,
+        manifest: &mobius::middleware::sessions::MANIFEST,
     },
 ];
 
@@ -262,12 +262,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_and_required_features_come_from_registered_manifests() {
+    fn defaults_and_required_features_come_from_core_manifests() {
         let config = default_config();
         let features = features(&[]);
 
         assert!(validate(&config).is_ok());
-        assert!(definition("bots").is_err());
+        assert_eq!(config.setting("bots", "collaboration"), None);
         assert_eq!(
             config.entries().collect::<BTreeSet<_>>(),
             BTreeSet::from([
@@ -294,7 +294,7 @@ mod tests {
                 .filter(|feature| feature.required)
                 .map(|feature| feature.id.as_str())
                 .collect::<BTreeSet<_>>(),
-            BTreeSet::from(["chats", "messages", "sandbox", "tools"])
+            BTreeSet::from(["messages", "sandbox", "sessions", "tools"])
         );
 
         let mut invalid = config;

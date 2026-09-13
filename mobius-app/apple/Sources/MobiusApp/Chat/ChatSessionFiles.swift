@@ -10,13 +10,6 @@ private let maximumDiscardedFileThumbnailRequestIDs = 32
 private let maximumFileThumbnailPixelDimension = 384
 
 extension ChatSessionModel {
-    func fileSource(forSessionID sessionID: String) -> SessionFileSource {
-        if let previewFileSource, previewFileSource.sessionID == sessionID {
-            return previewFileSource
-        }
-        return .session(sessionID)
-    }
-
     nonisolated static func loadImportedAttachment(
         _ url: URL,
         maximumBytes: Int
@@ -189,7 +182,6 @@ extension ChatSessionModel {
             fileThumbnails[.session(sessionID: sessionID, fileID: file.id)] == nil
         else { return }
         let key = FileThumbnailKey.session(sessionID: sessionID, fileID: file.id)
-        let source = fileSource(forSessionID: sessionID)
         let canDownloadSource = Self.isFileThumbnailCandidate(
             mediaType: file.mediaType,
             size: file.size
@@ -197,7 +189,7 @@ extension ChatSessionModel {
         guard requestedSessionFileThumbnailKeys.insert(key).inserted else { return }
         guard let accountID = gateway.selectedAccountID else {
             if canDownloadSource {
-                queueSessionFileThumbnail(file, source: source, key: key)
+                queueSessionFileThumbnail(file, sessionID: sessionID, key: key)
             } else {
                 requestedSessionFileThumbnailKeys.remove(key)
             }
@@ -232,7 +224,7 @@ extension ChatSessionModel {
                 )
             }
             if canDownloadSource {
-                self.queueSessionFileThumbnail(file, source: source, key: key)
+                self.queueSessionFileThumbnail(file, sessionID: sessionID, key: key)
             } else {
                 self.requestedSessionFileThumbnailKeys.remove(key)
             }
@@ -241,13 +233,13 @@ extension ChatSessionModel {
 
     private func queueSessionFileThumbnail(
         _ file: SessionFileReference,
-        source: SessionFileSource,
+        sessionID: String,
         key: FileThumbnailKey
     ) {
         guard requestedSessionFileThumbnailKeys.contains(key),
             fileThumbnails[key] == nil
         else { return }
-        queuedSessionFileThumbnails.append((source, file))
+        queuedSessionFileThumbnails.append((sessionID, file))
         startNextSessionFileThumbnailDownload()
     }
 
@@ -257,8 +249,7 @@ extension ChatSessionModel {
         else { return }
 
         while !queuedSessionFileThumbnails.isEmpty {
-            let (source, file) = queuedSessionFileThumbnails.removeFirst()
-            let sessionID = source.sessionID
+            let (sessionID, file) = queuedSessionFileThumbnails.removeFirst()
             let key = FileThumbnailKey.session(sessionID: sessionID, fileID: file.id)
             guard fileThumbnails[key] == nil else {
                 requestedSessionFileThumbnailKeys.remove(key)
@@ -267,13 +258,14 @@ extension ChatSessionModel {
             let id = requestID("session-file-thumbnail")
             sessionFileThumbnailDownload = SessionFileThumbnailDownload(
                 file: file,
-                source: source,
+                sessionID: sessionID,
                 data: Data(),
                 requestID: id
             )
             gateway.transmit(
-                source.readRequest(
+                .readSessionFile(
                     requestID: id,
+                    sessionID: sessionID,
                     fileID: file.id,
                     offset: 0,
                     maxBytes: 256 * 1024
@@ -677,8 +669,9 @@ extension ChatSessionModel {
             download.requestID = id
             sessionFileThumbnailDownload = download
             gateway.transmit(
-                download.source.readRequest(
+                .readSessionFile(
                     requestID: id,
+                    sessionID: sessionID,
                     fileID: fileID,
                     offset: nextOffset,
                     maxBytes: 256 * 1024

@@ -15,18 +15,6 @@ fn test_bot() -> crate::wire::BotRecord {
 }
 
 #[test]
-fn routine_creation_is_an_explicit_bot_policy() {
-    let mut encoded = serde_json::to_value(AgentComposition::default()).expect("composition");
-    assert_eq!(encoded["routine_creation"], false);
-    assert!(encoded["middleware"]["settings"].get("bots").is_none());
-    encoded
-        .as_object_mut()
-        .expect("composition object")
-        .remove("routine_creation");
-    assert!(serde_json::from_value::<AgentComposition>(encoded).is_err());
-}
-
-#[test]
 fn gateway_config_is_machine_scoped() {
     let config = GatewayConfig::new(DEFAULT_LISTEN, None).expect("gateway config");
     let serialized = serde_json::to_value(config).expect("serialize gateway config");
@@ -108,7 +96,7 @@ fn opening_unmigratable_versions_never_rewrites_config() {
 }
 
 #[tokio::test]
-async fn previous_config_version_is_rejected_without_opening_the_bot_catalog() {
+async fn previous_storage_generation_is_rejected_without_initializing_a_new_catalog() {
     let root = tempfile::tempdir().expect("temporary directory");
     let state = root.path().join("state");
     let (_, mut config) =
@@ -116,8 +104,8 @@ async fn previous_config_version_is_rejected_without_opening_the_bot_catalog() {
     config.version = CONFIG_VERSION - 1;
     let contents = toml::to_string_pretty(&config).expect("previous configuration");
     fs::write(state.join(CONFIG_FILE), &contents).expect("save previous configuration");
-    let previous_catalog = state.join("bots.sqlite3");
-    fs::write(&previous_catalog, b"previous Bot database").expect("previous catalog");
+    let previous_catalog = state.join("bots.json");
+    fs::write(&previous_catalog, b"previous Bot state").expect("previous catalog");
 
     let error = match crate::server::GatewayServer::open(state.clone()).await {
         Ok(_) => panic!("previous storage generation must be rejected"),
@@ -129,9 +117,10 @@ async fn previous_config_version_is_rejected_without_opening_the_bot_catalog() {
             .to_string()
             .contains("unsupported gateway config version")
     );
+    assert!(!state.join("bots.sqlite3").exists());
     assert_eq!(
         fs::read(previous_catalog).expect("unchanged catalog"),
-        b"previous Bot database"
+        b"previous Bot state"
     );
     assert_eq!(
         fs::read_to_string(state.join(CONFIG_FILE)).expect("unchanged config"),
@@ -175,6 +164,7 @@ fn generated_toml_round_trips_manifest_settings() {
     assert!(contents.starts_with(&format!("version = {CONFIG_VERSION}\n")));
     assert!(contents.contains("max_model_steps = 2042"));
     assert!(contents.contains("[bot_defaults.config.middleware.settings.context_offloading]"));
+    assert!(contents.contains("[bot_defaults.config.middleware.settings.sessions]"));
     assert!(contents.contains("[bot_defaults.config.middleware.settings.messages]"));
     assert!(contents.contains("delivery = \"steer\""));
     assert_eq!(restored, config);

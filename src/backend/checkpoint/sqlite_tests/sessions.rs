@@ -6,6 +6,7 @@ async fn session_context_round_trips_through_save_catalog_and_fork() {
     let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
         .expect("open checkpoint database");
     let context = crate::protocol::SessionContext {
+        bot_id: "test-bot".into(),
         workspace_id: Some("workspace-1".into()),
         workspace_label: Some("Project One".into()),
         origin_label: Some("routine".into()),
@@ -23,6 +24,7 @@ async fn session_context_round_trips_through_save_catalog_and_fork() {
         .expect("fork session");
     let page = store
         .list_sessions_page(SessionPageRequest {
+            bot_id: None,
             cursor: None,
             limit: 10,
         })
@@ -44,6 +46,60 @@ async fn session_context_round_trips_through_save_catalog_and_fork() {
                 .collect::<Vec<_>>(),
         ),
         (context.clone(), context.clone(), vec![&context, &context])
+    );
+}
+
+#[tokio::test]
+async fn save_rejects_a_blank_bot_id() {
+    let workspace = tempfile::tempdir().expect("create workspace");
+    let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+        .expect("open checkpoint database");
+    let mut checkpoint = checkpoint("session");
+    checkpoint.session_context.bot_id = " ".into();
+
+    let error = store
+        .save(&checkpoint, &[], None)
+        .await
+        .expect_err("blank Bot ID must fail");
+
+    assert_eq!(
+        error.to_string(),
+        "checkpoint error: session Bot ID cannot be blank"
+    );
+}
+
+#[tokio::test]
+async fn session_catalog_rejects_a_blank_bot_id() {
+    let workspace = tempfile::tempdir().expect("create workspace");
+    let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+        .expect("open checkpoint database");
+    store
+        .save(&checkpoint("session"), &[], None)
+        .await
+        .expect("save session");
+    store
+        .run(|connection| {
+            connection.execute(
+                "UPDATE sessions SET session_context_json = ?1 WHERE session_id = ?2",
+                [r#"{"bot_id":" "}"#, "session"],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("replace session context");
+
+    let error = store
+        .list_sessions_page(SessionPageRequest {
+            bot_id: None,
+            cursor: None,
+            limit: 1,
+        })
+        .await
+        .expect_err("blank catalog Bot ID must fail");
+
+    assert_eq!(
+        error.to_string(),
+        "checkpoint error: session Bot ID cannot be blank"
     );
 }
 
@@ -250,6 +306,7 @@ async fn session_catalog_reads_context_without_decoding_the_checkpoint() {
     let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
         .expect("open checkpoint database");
     let context = SessionContext {
+        bot_id: "test-bot".into(),
         workspace_id: Some("workspace-1".into()),
         ..SessionContext::default()
     };
@@ -272,6 +329,7 @@ async fn session_catalog_reads_context_without_decoding_the_checkpoint() {
 
     let page = store
         .list_sessions_page(SessionPageRequest {
+            bot_id: None,
             cursor: None,
             limit: 1,
         })
@@ -279,6 +337,56 @@ async fn session_catalog_reads_context_without_decoding_the_checkpoint() {
         .expect("list sessions");
 
     assert_eq!(page.sessions[0].session_context, context);
+}
+
+#[tokio::test]
+async fn session_catalog_filters_bot_membership_before_pagination() {
+    let workspace = tempfile::tempdir().expect("create workspace");
+    let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+        .expect("open checkpoint database");
+    for (session_id, bot_id) in [
+        ("a", "owner"),
+        ("b", "foreign"),
+        ("c", "owner"),
+        ("d", "foreign"),
+    ] {
+        let mut session = checkpoint(session_id);
+        session.session_context.bot_id = bot_id.into();
+        store.save(&session, &[], None).await.expect("save session");
+    }
+    let first = store
+        .list_sessions_page(SessionPageRequest {
+            bot_id: Some("owner".into()),
+            cursor: None,
+            limit: 1,
+        })
+        .await
+        .expect("first owned page");
+    assert_eq!(first.sessions[0].session_id, "c");
+    assert_eq!(
+        first.next_cursor.as_ref().expect("owned cursor").session_id,
+        "c"
+    );
+    let second = store
+        .list_sessions_page(SessionPageRequest {
+            bot_id: Some("owner".into()),
+            cursor: first.next_cursor,
+            limit: 1,
+        })
+        .await
+        .expect("second owned page");
+    assert_eq!(second.sessions[0].session_id, "a");
+    assert!(second.next_cursor.is_none());
+    assert!(
+        store
+            .list_sessions_page(SessionPageRequest {
+                bot_id: Some(" ".into()),
+                cursor: None,
+                limit: 1,
+            })
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -295,6 +403,7 @@ async fn session_catalog_continues_from_a_stable_cursor() {
 
     let first = store
         .list_sessions_page(SessionPageRequest {
+            bot_id: None,
             cursor: None,
             limit: 2,
         })
@@ -302,6 +411,7 @@ async fn session_catalog_continues_from_a_stable_cursor() {
         .expect("load first page");
     let second = store
         .list_sessions_page(SessionPageRequest {
+            bot_id: None,
             cursor: first.next_cursor.clone(),
             limit: 2,
         })

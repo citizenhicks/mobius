@@ -21,8 +21,6 @@ extension AppModel {
         routineRunPreviewRequestID = nil
         routineRunPreviewRequestBeforeSequence = nil
         isLoadingRoutineRunPreview = false
-        botConversationState.request = nil
-        botConversationState.historyRequest = nil
         chat.discardPendingComposerAttachments()
         discardFilePresentation(preservingWorkspaceTextDraft: true)
         chat.cancelSessionFileThumbnailDownloads()
@@ -69,8 +67,9 @@ extension AppModel {
         chat.sessionOpeningID = nil
         chat.pendingCachedTranscript = nil
         chat.pendingPresentedTranscript = nil
-        botConversationState.request = nil
-        botConversationState.historyRequest = nil
+        chat.botSessionsRequestID = nil
+        chat.pendingBotSessionResume = nil
+        chat.isLoadingBotSessions = false
         chat.sessionMutationRequestID = nil
         botMutationRequestID = nil
         botMutationSuccessMessage = nil
@@ -107,10 +106,10 @@ extension AppModel {
             chat.chatTitleTasks.removeAll()
             chat.titleEligibleSessionIDs.removeAll()
             chat.pendingChatTitles.removeAll()
-            closeBotConversation()
-            botConversationState = BotConversationState()
+            chat.botSessions = []
+            chat.botSessionsBotID = nil
             chat.pendingNewChatWorkspace = nil
-            chat.pendingNewChatBotIDs = []
+            chat.pendingNewChatBotID = nil
             showsWorkspaceBrowser = false
             directoryListing = nil
             directoryError = nil
@@ -118,8 +117,6 @@ extension AppModel {
             routineRunPreviewPollingTask = nil
             chat.sessions = []
             backgroundApprovals = []
-            presentedApproval = nil
-            approvalReviewRequest = nil
             chat.chatBotFilterIDs.removeAll()
             bots = []
             navigationPath = []
@@ -226,8 +223,8 @@ extension AppModel {
         discardFilePresentation()
     }
 
-    func resetSessionState(preservingComposerContext: Bool = false) {
+    func resetSessionState(preservingComposerAttachments: Bool = false) {
         resetRootSessionState()
-        chat.resetSessionState(preservingComposerContext: preservingComposerContext)
+        chat.resetSessionState(preservingComposerAttachments: preservingComposerAttachments)
     }
 }

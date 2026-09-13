@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use mobius::Error as MobiusError;
-use mobius::agent::{AgentConfig, PreparedAgent, create_agent, prepare_agent};
+use mobius::agent::{Agent, AgentConfig, create_agent};
 use mobius::backend::checkpoint::CheckpointStore;
 use mobius::backend::model::provider::{
     HttpClient, ProviderAuth, ProviderBuildConfig, ProviderCredential, ProviderDefinition,
@@ -22,14 +22,13 @@ use mobius::middleware::extensions::{Extensions, MANIFEST as EXTENSIONS_MANIFEST
 use mobius::middleware::instructions::Instructions;
 use mobius::middleware::messages::Messages;
 use mobius::middleware::scratchpad::{Scratchpad, ScratchpadStore};
+use mobius::middleware::sessions::Sessions;
 use mobius::middleware::subagents::{SubagentLaunch, SubagentLauncher, Subagents};
 use mobius::middleware::tasks::Tasks;
 use mobius::middleware::tools::Tools;
 use mobius::middleware::{Middleware, MiddlewareStack};
 use mobius::protocol::{ActiveMessageDelivery, ModelChoice, ModelInfo, SessionContext, TokenUsage};
 
-use crate::bots::BotStore;
-use crate::chats::{ChatStore, context::ChatContext, history::ChatHistory};
 use crate::config::{
     ChatSpec, ConfigStore, CredentialStore, DEFAULT_CONTEXT_WINDOW, GatewayConfig,
     effective_reasoning_effort, local_user_name, model_route_id,
@@ -40,7 +39,6 @@ use crate::provider_catalog::{
     CatalogRoute, catalog_routes, configured_model_providers, configured_model_routes,
     credential_is_configured, selected_base_url,
 };
-use crate::routines::Routines;
 use crate::sandbox::GatewaySandbox;
 use crate::wire::{MiddlewareConfig, ProviderConfig, ProviderEndpointAuth, validate_session_id};
 use crate::{Error, Result};
@@ -153,7 +151,7 @@ pub(crate) async fn prepare_bot(
 }
 
 pub(crate) struct BuiltAgent {
-    pub(crate) agent: PreparedAgent,
+    pub(crate) agent: Agent,
     pub(crate) model_router: Arc<ModelRouter>,
     pub(crate) sandbox: Arc<Sandbox>,
     pub(crate) gateway_sandbox: Arc<GatewaySandbox>,
@@ -180,8 +178,6 @@ pub(crate) async fn assemble(
     session_files: SessionFileStore,
     discovery_gate: Arc<tokio::sync::Mutex<()>>,
     desktop: Arc<crate::computer_runtime::desktop::DesktopControl>,
-    chats: Arc<ChatStore>,
-    bots: Arc<BotStore>,
     session_id: Option<String>,
     origin_label: &str,
     prepared: Arc<PreparedBot>,
@@ -204,7 +200,6 @@ pub(crate) async fn assemble(
     let approval_policy = prepared.approval_policy;
     let settings = prepared.bot.config.config.middleware.clone();
     let workspace_path = chat.workspace.clone();
-    let bot_id = chat.bot_id.clone();
     let attached_folders = chat.attached_folders.clone();
     let state_dir = store.state_dir().to_path_buf();
     let computer_runtime = prepared.computer_runtime.clone();
@@ -273,13 +268,9 @@ pub(crate) async fn assemble(
         let middleware = build_middleware(
             &settings,
             &workspace_path,
-            &bot_id,
             gateway_for_middleware,
             scratchpad,
             session_files,
-            chats,
-            bots,
-            resources.bot.config.config.routine_creation,
             backend,
             instructions,
             resolved_extensions,
@@ -325,6 +316,7 @@ pub(crate) async fn assemble(
         persist_usage(&gateway, &usage_store, provider, usage)
     })
     .session_context(SessionContext {
+        bot_id: chat.bot_id.clone(),
         user_name: local_user_name(),
         workspace_id: Some(workspace.id),
         workspace_label: Some(workspace.path.display().to_string()),
@@ -339,7 +331,7 @@ pub(crate) async fn assemble(
             .set(agent_config.clone())
             .map_err(|_| Error::Config("subagent launcher was initialized twice".into()))?;
     }
-    let agent = prepare_agent(agent_config).await?;
+    let agent = create_agent(agent_config).await?;
     let model_router = agent.model_router();
     Ok(BuiltAgent {
         agent,
@@ -640,13 +632,9 @@ pub(crate) fn configured_compaction(settings: &MiddlewareConfig) -> Result<Compa
 fn build_middleware(
     settings: &MiddlewareConfig,
     workspace: &std::path::Path,
-    bot_id: &str,
     gateway: Arc<Mutex<GatewayConfig>>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
-    chats: Arc<ChatStore>,
-    bots: Arc<BotStore>,
-    routine_creation: bool,
     backend: Arc<dyn SandboxBackend>,
     mut instructions: Option<Instructions>,
     resolved_extensions: &ResolvedExtensions,
@@ -766,27 +754,16 @@ fn build_middleware(
                 )?)
             }
             BuiltinMiddleware::Compaction => Arc::new(configured_compaction(settings)?),
-            BuiltinMiddleware::Chats => Arc::new(ChatHistory::new(
-                Arc::clone(&chats),
-                Arc::clone(&bots),
-                session_files.clone(),
-                bot_id.to_owned(),
-                crate::middleware_manifest::usize_setting(settings, "chats", "page_size")?,
-            )?),
+            BuiltinMiddleware::Sessions => Arc::new(
+                Sessions::new(crate::middleware_manifest::usize_setting(
+                    settings,
+                    "sessions",
+                    "page_size",
+                )?)?
+                .session_files(session_files.clone()),
+            ),
         };
         entries.push(middleware);
-    }
-    entries.push(Arc::new(ChatContext::new(
-        chats,
-        Arc::clone(&bots),
-        bot_id.to_owned(),
-    )));
-    if routine_creation {
-        entries.push(Arc::new(Routines::new(
-            bots,
-            bot_id.to_owned(),
-            workspace.to_owned(),
-        )));
     }
     Ok(BuiltMiddleware {
         stack: MiddlewareStack::new(entries)?,

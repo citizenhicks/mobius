@@ -17,10 +17,13 @@ final class ChatSessionModel {
     var onOpenChat: (@MainActor (String) -> Void)?
 
     var sessions: [SessionRecord] = []
+    var botSessions: [SessionRecord] = []
+    var botSessionsBotID: String?
+    var isLoadingBotSessions = false
     var chatBotFilterIDs: Set<String> = []
     var chatCatalogSessions: [SessionRecord] {
         guard !chatBotFilterIDs.isEmpty else { return sessions }
-        return sessions.filter { !chatBotFilterIDs.isDisjoint(with: $0.memberBotIds) }
+        return sessions.filter { chatBotFilterIDs.contains($0.sessionContext.botId) }
     }
     var chatPresentationRevision = 0
     var sessionToReassign: SessionRecord?
@@ -31,8 +34,6 @@ final class ChatSessionModel {
     var unreadSessionIDs: Set<String> = []
     @ObservationIgnored var sessionReadCursors: [String: SessionReadCursor]?
 
-    var selectedMemberBotIDs: [String]?
-    var selectedPrimaryBotID: String?
     var selectedSessionID: String? {
         didSet {
             if oldValue != selectedSessionID { stopRealtimeVoice() }
@@ -61,9 +62,6 @@ final class ChatSessionModel {
     var composerReply: MessageReply? {
         didSet { scheduleComposerDraftSave() }
     }
-    var composerRecipientBotIDs: [String] = [] {
-        didSet { scheduleComposerDraftSave() }
-    }
     var messageNavigationRequest: MessageNavigationRequest?
     @ObservationIgnored var transcriptProjectionCache:
         (key: TranscriptProjectionKey, projection: TranscriptProjection)?
@@ -72,7 +70,6 @@ final class ChatSessionModel {
     @ObservationIgnored var transcriptMutationPreservesPrefix = false
     var hasComposerContext: Bool {
         !composerAttachments.isEmpty || composerReply != nil || pendingWidgetEdit != nil
-            || !composerRecipientBotIDs.isEmpty
     }
 
     var composerFocusRequest = 0
@@ -87,9 +84,7 @@ final class ChatSessionModel {
         get { activeTurnIDs.min() }
         set { activeTurnIDs = newValue.map { [$0] } ?? [] }
     }
-    var composerTargetTurnID: String? {
-        (selectedMemberBotIDs?.count ?? 0) > 1 ? nil : activeTurnID
-    }
+    var composerTargetTurnID: String? { activeTurnID }
     var steeringDeliveryRevision = 0
     var contextTokens = 0
     var sessionCompactionCount: UInt64 = 0
@@ -118,16 +113,9 @@ final class ChatSessionModel {
     var currentUsage = TokenUsage()
     var lastUsage = TokenUsage()
     var pendingNewChatWorkspace: String?
-    var pendingNewChatBotIDs: [String] = [] {
-        didSet {
-            if !pendingNewChatBotIDs.contains(pendingNewChatPrimaryBotID ?? "") {
-                pendingNewChatPrimaryBotID = pendingNewChatBotIDs.first
-            }
-        }
-    }
-    var pendingNewChatPrimaryBotID: String?
+    var pendingNewChatBotID: String?
     var pendingWidgetEdit: PendingWidgetEdit?
-    var stashedComposerDraft: ComposerDraft?
+    var stashedComposerDraft: String?
     var isLoadingComposerEditRecovery = false
     var pendingChatTitles: [String: PendingChatTitle] = [:]
     @ObservationIgnored var chatTitleTasks: [String: Task<Void, Never>] = [:]
@@ -161,9 +149,12 @@ final class ChatSessionModel {
     @ObservationIgnored var sessionRequestID: String?
     @ObservationIgnored var sessionOpeningID: String?
     @ObservationIgnored var pendingCachedTranscript: CachedTranscript?
+    @ObservationIgnored var botSessionsRequestID: String?
+    @ObservationIgnored var pendingBotSessionResume: (botID: String, sessionID: String)?
     @ObservationIgnored var pendingDeletedSessionIDs: [String] = []
     @ObservationIgnored var pendingDeletedPresentedSessionID: String?
     @ObservationIgnored var sessionToRestoreID: String?
+    @ObservationIgnored var approvalRequestID: String?
     @ObservationIgnored var sessionFilesRequestID: String?
     @ObservationIgnored var sessionFileUploadRequests: [String: SessionFileUploadRequest] = [:]
     @ObservationIgnored var abandonedSessionFileUploadRequests:
@@ -172,12 +163,11 @@ final class ChatSessionModel {
     @ObservationIgnored var sessionFileData: [UUID: Data] = [:]
     @ObservationIgnored var activeSessionFileUpload: ActiveSessionFileUpload?
     @ObservationIgnored var sessionFileDownload: SessionFileDownload?
-    @ObservationIgnored var previewFileSource: SessionFileSource?
     @ObservationIgnored var fileThumbnailOrder: [FileThumbnailKey] = []
     @ObservationIgnored var requestedSessionFileThumbnailKeys: Set<FileThumbnailKey> = []
     @ObservationIgnored var discardedSessionFileThumbnailRequestIDs: Set<String> = []
     @ObservationIgnored var queuedSessionFileThumbnails:
-        [(source: SessionFileSource, file: SessionFileReference)] = []
+        [(sessionID: String, file: SessionFileReference)] = []
     @ObservationIgnored var sessionFileThumbnailDownload: SessionFileThumbnailDownload?
     @ObservationIgnored var latestSequence: UInt64?
     @ObservationIgnored var sessionOpenCursor: UInt64?
@@ -260,6 +250,7 @@ final class ChatSessionModel {
             && selectedSessionID != nil
             && sessionRequestID == nil
             && sessionMutationRequestID == nil
+            && !botSessions.contains(where: { $0.sessionId == selectedSessionID })
             && !isLoadingComposerDraft
             && !isLoadingComposerEditRecovery
             && pendingWidgetEdit == nil
@@ -535,16 +526,11 @@ final class ChatSessionModel {
         }
     }
 
-    func resetSessionState(preservingComposerContext: Bool = false) {
+    func resetSessionState(preservingComposerAttachments: Bool = false) {
         stopRealtimeVoice()
-        selectedMemberBotIDs = nil
-        selectedPrimaryBotID = nil
+        composerReply = nil
         messageNavigationRequest = nil
-        if !preservingComposerContext {
-            composerReply = nil
-            composerRecipientBotIDs = []
-            discardComposerAttachments()
-        }
+        if !preservingComposerAttachments { discardComposerAttachments() }
         cancelSessionFileThumbnailDownloads()
         attachedFolders = nil
         sessionFiles = []
@@ -578,6 +564,7 @@ final class ChatSessionModel {
         modelContextWindow = nil
         contextLimitTokens = nil
         pendingApproval = nil
+        approvalRequestID = nil
         pendingPicker = nil
         mountedWidgets = []
         previews = []

@@ -95,7 +95,7 @@ extension AppModelTests {
             if case .submit = request { return true }
             return false
         }
-        guard case .submit(let sessionID, let editSubmission, _) = try XCTUnwrap(editRequest),
+        guard case .submit(let sessionID, let editSubmission) = try XCTUnwrap(editRequest),
             case .capabilityCommand(
                 let capability,
                 let command,
@@ -143,7 +143,7 @@ extension AppModelTests {
         }
         let editedSubmission = try XCTUnwrap(
             editedRequest.flatMap { request -> Submission? in
-                guard case .submit(_, let submission, _) = request else { return nil }
+                guard case .submit(_, let submission) = request else { return nil }
                 return submission
             })
         guard case .message(let message) = editedSubmission.op
@@ -243,7 +243,7 @@ extension AppModelTests {
         model.sendMessage()
         try await Task.sleep(for: .milliseconds(50))
         let submissions = await recorder.requests().compactMap { request -> Submission? in
-            guard case .submit(_, let submission, _) = request else { return nil }
+            guard case .submit(_, let submission) = request else { return nil }
             return submission
         }
         guard case .message(let message) = try XCTUnwrap(submissions.last).op else {
@@ -415,7 +415,7 @@ extension AppModelTests {
             settingsDefaults: defaults,
             requestSender: { request in
                 await recorder.record(request)
-                if case .submit(_, let submission, _) = request,
+                if case .submit(_, let submission) = request,
                     case .message(let message) = submission.op,
                     message.text == "New gateway message"
                 {
@@ -440,7 +440,7 @@ extension AppModelTests {
         await fulfillment(of: [ordinaryMessageSent], timeout: 1)
 
         let submissions = await recorder.requests().compactMap { request -> Submission? in
-            guard case .submit(_, let submission, _) = request else { return nil }
+            guard case .submit(_, let submission) = request else { return nil }
             return submission
         }
         guard case .message(let message) = try XCTUnwrap(submissions.last).op else {
@@ -475,7 +475,7 @@ extension AppModelTests {
         try await Task.sleep(for: .milliseconds(30))
 
         let submissions = await recorder.requests().compactMap { request -> Submission? in
-            guard case .submit(_, let submission, _) = request else { return nil }
+            guard case .submit(_, let submission) = request else { return nil }
             return submission
         }
         guard case .message(let message) = try XCTUnwrap(submissions.last).op else {
@@ -576,7 +576,7 @@ extension AppModelTests {
         let requestCount = await recorder.requestCount()
         model.sendMessage()
         let request = await recorder.firstRequest(after: requestCount) { request in
-            guard case .submit(_, let submission, _) = request,
+            guard case .submit(_, let submission) = request,
                 case .capabilityCommand = submission.op
             else { return false }
             return true
@@ -584,7 +584,7 @@ extension AppModelTests {
 
         let requests = await recorder.requests()
         XCTAssertEqual(requests.count, requestCount + 1)
-        guard case .submit(_, let submission, _) = try XCTUnwrap(request),
+        guard case .submit(_, let submission) = try XCTUnwrap(request),
             case .capabilityCommand = submission.op
         else { return XCTFail("Expected only the edit-removal command") }
         XCTAssertEqual(model.chat.composer, "Do not lose this")

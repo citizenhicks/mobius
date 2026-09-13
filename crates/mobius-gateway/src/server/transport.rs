@@ -9,7 +9,6 @@ use rustls::pki_types::pem::{self, PemObject as _};
 use serde::Deserialize;
 use tokio::io::{AsyncWriteExt as _, ReadBuf};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
-use tokio::task::JoinHandle;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::protocol::{Message, Role};
 
@@ -37,13 +36,7 @@ pub(super) struct ConnectionContext {
 
 struct PendingProfile {
     request_id: String,
-    task: JoinHandle<std::result::Result<ProfileSnapshot, Rejection>>,
-}
-
-impl Drop for PendingProfile {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
+    future: Pin<Box<dyn Future<Output = std::result::Result<ProfileSnapshot, Rejection>> + Send>>,
 }
 
 impl ConnectionAdmission {
@@ -722,14 +715,7 @@ async fn next_profile(
         return std::future::pending().await;
     };
     let request_id = pending.request_id.clone();
-    let result = (&mut pending.task).await.unwrap_or_else(|error| {
-        Err(Rejection {
-            code: "profile_failed",
-            message: error.to_string(),
-            fatal: false,
-        })
-    });
-    (request_id, result)
+    (request_id, pending.future.as_mut().await)
 }
 
 async fn complete_profile_request(
@@ -789,8 +775,7 @@ fn profile_request(
     let gateway = host.clone();
     PendingProfile {
         request_id,
-        // Keep lock-owning work progressing while this connection handles another request.
-        task: tokio::spawn(async move {
+        future: Box::pin(async move {
             gateway.reconcile_pending_bot_deletion().await?;
             gateway.profile(include_provider_usage).await
         }),
@@ -908,54 +893,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn profile_progresses_while_the_connection_waits_for_gateway_state() {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .max_blocking_threads(1)
-            .build()
-            .unwrap()
-            .block_on(async {
-                let root = tempfile::tempdir().unwrap();
-                let (server, _) = GatewayServer::bootstrap(
-                    root.path().join("state"),
-                    "127.0.0.1:0".parse().unwrap(),
-                )
-                .await
-                .unwrap();
-                let (release, wait) = std::sync::mpsc::channel();
-                let blocked = tokio::task::spawn_blocking(move || wait.recv().unwrap());
-                let mut pending = Some(profile_request(&server.host, "profile".into(), false));
-
-                // Pause the profile at its database read, then handle another request.
-                assert!(futures_util::poll!(Box::pin(next_profile(&mut pending))).is_pending());
-                release.send(()).unwrap();
-                blocked.await.unwrap();
-                tokio::time::timeout(Duration::from_secs(5), server.host.ready())
-                    .await
-                    .expect("profile must release gateway state without another profile poll")
-                    .unwrap();
-                assert!(next_profile(&mut pending).await.1.is_ok());
-            });
-    }
-
-    #[tokio::test]
-    async fn disconnect_cancels_pending_profile_work() {
-        let (started, running) = oneshot::channel();
-        let (released, release) = oneshot::channel::<()>();
-        let pending = PendingProfile {
-            request_id: "profile".into(),
-            task: tokio::spawn(async move {
-                let _release = released;
-                started.send(()).unwrap();
-                std::future::pending().await
-            }),
-        };
-        running.await.unwrap();
-        drop(pending);
-        assert!(release.await.is_err());
-    }
-
     #[tokio::test]
     async fn profile_queue_rejects_displaced_id_and_preserves_active_and_latest() {
         let (mut writer, reader) = tokio::io::duplex(4096);
@@ -963,7 +900,7 @@ mod tests {
         let (release, wait) = oneshot::channel();
         let mut pending = Some(PendingProfile {
             request_id: "profile-1".into(),
-            task: tokio::spawn(async move {
+            future: Box::pin(async move {
                 wait.await.expect("active profile release");
                 Ok::<_, Rejection>(profile())
             }),

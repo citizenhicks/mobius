@@ -14,7 +14,6 @@ struct RealtimeVoiceCall: Equatable {
 
 extension AppModel {
     var selectedRouteSupportsRealtimeVoice: Bool {
-        guard !selectedChatIsGroup else { return false }
         let route =
             chat.selectedSessionID == nil
             ? modelRoute(for: selectedBot?.config.config ?? botDefaultsSnapshot?.config)
@@ -30,7 +29,7 @@ extension AppModel {
 
     var canStartRealtimeVoice: Bool {
         gateway.connectionState.isReady && selectedRouteSupportsRealtimeVoice
-            && (chat.selectedSessionID != nil || !chat.pendingNewChatBotIDs.isEmpty)
+            && (chat.selectedSessionID != nil || chat.pendingNewChatBotID != nil)
     }
 
     var composerUsesPrimaryVoice: Bool {

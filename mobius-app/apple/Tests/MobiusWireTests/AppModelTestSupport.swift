@@ -493,7 +493,7 @@ final class AppModelTests: XCTestCase {
         }
         let submission = try XCTUnwrap(
             request.flatMap { request -> Submission? in
-                guard case .submit(_, let submission, _) = request else { return nil }
+                guard case .submit(_, let submission) = request else { return nil }
                 return submission
             })
         model.chat.reduce(
@@ -511,25 +511,6 @@ final class AppModelTests: XCTestCase {
         return submission
     }
 
-    func backgroundApproval(
-        id: String = "approval-1",
-        botID: String = "bot-1",
-        chatID: String? = nil,
-        turnID: String = "turn-1"
-    ) -> BackgroundApproval {
-        BackgroundApproval(
-            chatId: chatID, botId: botID,
-            request: .object([
-                "id": .string(id), "turnId": .string(turnID), "reason": .string("Run checks"),
-                "calls": .array([
-                    .object([
-                        "callId": .string("call-1"), "name": .string("bash"),
-                        "arguments": .object(["command": .string("cargo test")]),
-                    ])
-                ]),
-            ]))
-    }
-
     func sessionReady(
         latestSequence: UInt64,
         nextBeforeSequence: UInt64? = nil,
@@ -540,15 +521,11 @@ final class AppModelTests: XCTestCase {
         widgets: [SessionWidget] = [],
         attachedFolders: [String] = [],
         compactionCount: UInt64 = 0,
-        memberBotIDs: [String]? = nil,
-        primaryBotID: String? = nil,
         activeTurnIDs: [String]? = nil,
         pendingApprovals: [JSONValue] = [],
         runStats: RunStats = RunStats()
     ) -> SessionReadyPayload {
         SessionReadyPayload(
-            memberBotIds: memberBotIDs ?? [botID],
-            primaryBotId: primaryBotID ?? memberBotIDs?.first ?? botID,
             activeTurnIds: activeTurnIDs ?? runStats.active.map { [$0.turnId] } ?? [],
             pendingApprovals: pendingApprovals,
             latestSequence: latestSequence,
@@ -559,6 +536,7 @@ final class AppModelTests: XCTestCase {
             session: SessionConfigured(
                 sessionId: sessionID,
                 context: SessionContext(
+                    botId: botID,
                     tenantId: nil,
                     userId: nil,
                     userName: nil,
@@ -601,10 +579,10 @@ final class AppModelTests: XCTestCase {
             if case .createSession = $0 { return true }
             return false
         }
-        guard case .createSession(let requestID, _, let botID, _) = try XCTUnwrap(request) else {
+        guard case .createSession(let requestID, _, let botID) = try XCTUnwrap(request) else {
             return XCTFail("Expected a create-session request")
         }
-        XCTAssertEqual(botID, ["bot-1"])
+        XCTAssertEqual(botID, "bot-1")
         model.gateway.handle(
             .sessionOpened(
                 requestID: requestID,
@@ -626,12 +604,12 @@ final class AppModelTests: XCTestCase {
         let requestCount = await recorder.requestCount()
         model.sendMessage()
         let request = await recorder.firstRequest(after: requestCount) { request in
-            guard case .submit(let submittedSessionID, _, _) = request else { return false }
+            guard case .submit(let submittedSessionID, _) = request else { return false }
             return submittedSessionID == sessionID
         }
         let submission = try XCTUnwrap(
             request.flatMap { request -> Submission? in
-                guard case .submit(_, let submission, _) = request else { return nil }
+                guard case .submit(_, let submission) = request else { return nil }
                 return submission
             })
         try await Task.sleep(for: .milliseconds(30))
@@ -757,6 +735,7 @@ final class AppModelTests: XCTestCase {
         SessionRecord(
             sessionId: sessionID,
             sessionContext: SessionContext(
+                botId: botID,
                 tenantId: nil,
                 userId: nil,
                 userName: nil,
@@ -764,8 +743,6 @@ final class AppModelTests: XCTestCase {
                 workspaceLabel: workspaceLabel,
                 originLabel: originLabel
             ),
-            memberBotIds: [botID],
-            primaryBotId: botID,
             parentSessionId: nil,
             parentSequence: nil,
             sequence: sequence,

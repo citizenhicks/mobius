@@ -91,7 +91,7 @@ fn new_and_clear_keep_distinct_terminal_semantics() {
 }
 
 #[test]
-fn composer_stops_the_whole_chat_from_slash_and_escape() {
+fn composer_targets_interrupt_at_the_active_turn() {
     let catalog = default_catalog();
     let mut slash = state();
     slash.start_turn("turn-1".into());
@@ -106,12 +106,15 @@ fn composer_stops_the_whole_chat_from_slash_and_escape() {
 
     assert_eq!(
         (slash_action, escape_action),
-        (UiAction::StopChat, UiAction::StopChat)
+        (
+            UiAction::Submit(Op::Interrupt {
+                turn_id: "turn-1".into()
+            }),
+            UiAction::Submit(Op::Interrupt {
+                turn_id: "turn-1".into()
+            })
+        )
     );
-    let mut queued = state();
-    queued.input = "/interrupt".into();
-    queued.cursor = queued.input.len();
-    assert_eq!(queued.submit_input(&catalog), UiAction::StopChat);
 }
 
 #[test]
@@ -158,7 +161,7 @@ fn generic_picker_submits_the_selected_operation() {
 }
 
 #[test]
-fn bot_picker_creates_individual_and_group_chats() {
+fn bot_picker_creates_the_chat_for_the_selected_bot() {
     let bots = [
         mobius_gateway::wire::BotRecord {
             id: "bot-a".into(),
@@ -193,44 +196,9 @@ fn bot_picker_creates_individual_and_group_chats() {
             &default_catalog(),
         ),
         UiAction::CreateSession {
-            workspace: workspace.clone(),
-            bot_ids: vec!["bot-b".into()],
-            clear: false,
-        }
-    );
-    state.open_bot_picker(&bots, workspace.clone(), "bot-a", true);
-    for code in [
-        KeyCode::Char(' '),
-        KeyCode::Char(' '),
-        KeyCode::Char(' '),
-        KeyCode::Down,
-        KeyCode::Char(' '),
-    ] {
-        assert_eq!(
-            state.handle_key(KeyEvent::new(code, KeyModifiers::NONE), &default_catalog()),
-            UiAction::None
-        );
-    }
-    let mut terminal = Terminal::new(TestBackend::new(100, 20)).expect("terminal");
-    terminal
-        .draw(|frame| view::render(frame, &mut state, &default_catalog()))
-        .expect("Bot picker");
-    let screen = terminal.backend().to_string();
-    assert!(
-        screen.contains("Space toggle")
-            && screen.contains("[x] @ada")
-            && screen.contains("[x] @grace"),
-        "{screen}"
-    );
-    assert_eq!(
-        state.handle_key(
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &default_catalog()
-        ),
-        UiAction::CreateSession {
             workspace,
-            bot_ids: vec!["bot-a".into(), "bot-b".into()],
-            clear: true,
+            bot_id: "bot-b".into(),
+            clear: false,
         }
     );
 }
@@ -555,26 +523,6 @@ fn attachment_only_submission_is_a_user_turn() {
         })
     );
     assert!(state.attachments.is_empty());
-}
-
-#[test]
-fn group_messages_keep_attachments_without_targeting_a_member_turn() {
-    let mut state = state();
-    state.active_message_delivery = None;
-    state.start_turn("member-turn".into());
-    state.input = "@reviewer check this".into();
-    state.cursor = state.input.len();
-    state.attachments.push(attachment("report.pdf"));
-    let action = state.handle_key(
-        KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT),
-        &default_catalog(),
-    );
-    let UiAction::Submit(Op::Message { message }) = action else {
-        panic!("expected group message");
-    };
-    assert_eq!(message.attachments, vec![attachment("report.pdf")]);
-    assert_eq!(message.target_turn_id, None);
-    assert_eq!(message.requested_delivery, None);
 }
 
 #[test]

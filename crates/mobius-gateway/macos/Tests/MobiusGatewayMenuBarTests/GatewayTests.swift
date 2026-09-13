@@ -279,14 +279,11 @@ import Testing
     #expect(model.voiceCall == nil)
     #expect(model.approval?.calls.first?.arguments.contains("echo hello") == true)
     model.resolveApproval(approve: true)
-    try await eventually {
-        fixture.requests.contains { $0["type"]?.stringValue == "review_approval" }
-    }
-    let submitted = try #require(
-        fixture.requests.last { $0["type"]?.stringValue == "review_approval" })
-    #expect(submitted["sessionId"] == nil)
-    #expect(submitted["approvalRequestId"]?.stringValue == "review")
-    #expect(submitted["decision"]?.stringValue == "approved")
+    try await eventually { fixture.requests.contains { $0["type"]?.stringValue == "submit" } }
+    let submitted = try #require(fixture.requests.last { $0["type"]?.stringValue == "submit" })
+    #expect(submitted["sessionId"]?.stringValue == "two")
+    #expect(submitted["submission"]?["op"]?["id"]?.stringValue == "review")
+    #expect(submitted["submission"]?["op"]?["decision"]?.stringValue == "approved")
     try await eventually { model.approval == nil }
     model.voice.updateAudioLevels(RealtimeAudioLevels(microphone: 0.4, playback: 0.8))
     model.voice.isMuted = true
@@ -476,7 +473,7 @@ private final class GatewayFixture {
                 ])
         case "open_session": opened(request)
         case "list_sessions": send("sessions", ["sessions": .array(Self.chats)])
-        case "review_approval": send("accepted", ["requestId": request["requestId"] ?? .null])
+        case "submit": send("accepted", ["requestId": request["submission"]?["id"] ?? .null])
         default: break
         }
     }
@@ -491,13 +488,11 @@ private final class GatewayFixture {
                 }
             return .object([
                 "sessionId": .string(id),
-                "memberBotIds": .array([.string(id == "two" ? "writer" : "bot")]),
-                "primaryBotId": .string(id == "two" ? "writer" : "bot"),
                 "title": .string(id == "one" ? "Computer use" : "Release notes"),
                 "parentSessionId": id == "child" ? .string("one") : .null,
                 "updatedAt": .integer(Int64(10 - index)),
                 "sessionContext": .object([
-                    "workspaceId": .string(id),
+                    "botId": .string(id == "two" ? "writer" : "bot"), "workspaceId": .string(id),
                     "workspaceLabel": .string(
                         "/work/\(workspace)/möbius"),
                 ]),

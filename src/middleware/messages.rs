@@ -299,9 +299,11 @@ impl Middleware for Messages {
                 "message could not be queued".into(),
             ));
         }
-        context.events.push(EventMsg::Frontend(
-            self.queued_widget(context.submission_id, &event),
-        ));
+        if !matches!(boundary, QueuedMessageBoundary::Turn) {
+            context.events.push(EventMsg::Frontend(
+                self.queued_widget(context.submission_id, &event),
+            ));
+        }
         Ok(SubmissionResult::Accepted {
             input_changed: matches!(boundary, QueuedMessageBoundary::Steer { .. }),
         })
@@ -515,6 +517,32 @@ mod tests {
                 .map(|message| message.delivery),
             Some(MessageDelivery::Queue)
         );
+    }
+
+    #[test]
+    fn immediate_turn_does_not_publish_a_queued_widget() {
+        let stack = MiddlewareStack::new(vec![Arc::new(Messages::default())]).expect("stack");
+        let mut queued = Vec::new();
+        let mut events = Vec::new();
+
+        let result = stack
+            .route_message(&mut MessageRouteContext {
+                submission_id: "message-1",
+                message: &user(None),
+                active_turn_id: None,
+                queued_messages: MessageQueue::new(&mut queued),
+                events: &mut events,
+            })
+            .expect("route message");
+
+        assert_eq!(
+            result,
+            SubmissionResult::Accepted {
+                input_changed: false
+            }
+        );
+        assert!(events.is_empty());
+        assert_eq!(queued.len(), 1);
     }
 
     #[tokio::test]

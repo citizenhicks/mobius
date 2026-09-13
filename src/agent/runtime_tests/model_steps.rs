@@ -418,14 +418,14 @@ async fn interrupt_during_stream_retry_backoff_cancels_the_retry() {
     });
     let mut agent = create_agent(config_with_model(
         workspace.path(),
-        Arc::clone(&checkpoints),
+        checkpoints,
         "stream-backoff-interrupt",
         "test",
         model.clone(),
     ))
     .await
     .expect("create agent");
-    let original_submission_id = agent
+    agent
         .sender()
         .submit(user_op("hello"))
         .expect("submit input");
@@ -437,82 +437,20 @@ async fn interrupt_during_stream_retry_backoff_cancels_the_retry() {
             break completed.turn_id;
         }
     };
-    let interrupt_submission_id = agent
+    agent
         .sender()
         .submit(Op::Interrupt { turn_id })
         .expect("interrupt turn");
 
-    let terminal = tokio::time::timeout(std::time::Duration::from_secs(1), async {
-        loop {
-            let event = agent.next_event().await.expect("agent event");
-            if matches!(event.msg, EventMsg::TurnAborted(_)) {
-                break event;
-            }
-        }
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while !matches!(
+            agent.next_event().await.expect("agent event").msg,
+            EventMsg::TurnAborted(_)
+        ) {}
     })
     .await
     .expect("backoff cancellation");
-    assert_eq!(
-        terminal.submission_id.as_deref(),
-        Some(original_submission_id.as_str())
-    );
-    assert_ne!(
-        terminal.submission_id.as_deref(),
-        Some(interrupt_submission_id.as_str())
-    );
-    let journal = checkpoints
-        .event_page(
-            "stream-backoff-interrupt",
-            EventPageRequest {
-                before_sequence: None,
-                limit: 100,
-            },
-        )
-        .await
-        .expect("durable events");
-    assert!(journal.events.iter().any(|record| record.event == terminal));
     assert_eq!(model.calls.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test]
-async fn shutdown_cancels_accepted_input_before_the_model_starts() {
-    let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3")).expect("checkpoints"),
-    );
-    let model = Arc::new(ScriptedModel {
-        outputs: Mutex::new(VecDeque::from([scripted_message("Must not run")])),
-        tool_counts: Mutex::new(Vec::new()),
-        inputs: Mutex::new(Vec::new()),
-    });
-    let agent = create_agent(config_with_model(
-        workspace.path(),
-        Arc::clone(&checkpoints),
-        "shutdown-inbox",
-        "test",
-        model.clone(),
-    ))
-    .await
-    .expect("agent");
-    agent
-        .sender()
-        .submit(user_op("queued work"))
-        .expect("accepted input");
-    let (sender, mut events) = agent.into_parts();
-    drop(sender);
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        while events.recv().await.is_some() {}
-    })
-    .await
-    .expect("shutdown completes");
-    assert!(model.inputs.lock().expect("model inputs").is_empty());
-    let checkpoint = checkpoints
-        .load("shutdown-inbox")
-        .await
-        .expect("checkpoint")
-        .expect("saved");
-    assert!(checkpoint.active_execution.is_none());
-    assert!(checkpoint.pending_messages.is_empty());
 }
 
 #[tokio::test]

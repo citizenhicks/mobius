@@ -19,7 +19,6 @@ pub(super) fn recorded(
             submission_id: preview.as_ref().map(|_| "preview-request".into()),
             msg: event,
         },
-        recipient_bot_ids: Vec::new(),
         stream_metrics: Vec::new(),
         blocks,
         preview,

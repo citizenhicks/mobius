@@ -548,7 +548,7 @@ private struct TranscriptRow: View {
     @ViewBuilder
     private var messageMetadata: some View {
         if let metadata = entry.messageMetadata {
-            MessageMetadata(delivery: metadata.delivery, recipientBotIDs: metadata.recipientBotIDs)
+            MessageMetadata(delivery: metadata.delivery)
         }
     }
 
@@ -667,13 +667,6 @@ private struct TranscriptRow: View {
         if isUser {
             Button("you", glyph: .userFocus) {}
                 .disabled(true)
-            if let recipients = entry.messageMetadata?.recipientBotIDs, !recipients.isEmpty {
-                let names = recipients.map { botID in
-                    model.bots.first { $0.id == botID }?.name ?? String(localized: "Removed Bot")
-                }
-                Button(verbatim: names.formatted(.list(type: .and)), glyph: .aiScan) {}
-                    .disabled(true)
-            }
         } else if let bot = displayedBot {
             if let image = MobiusGlyph.aiScan.menuImage(bot.tint.color) {
                 Button(action: {}) {
@@ -701,45 +694,10 @@ private struct TranscriptRow: View {
 }
 
 private struct MessageMetadata: View {
-    @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
     let delivery: MessageDelivery
-    let recipientBotIDs: [String]
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            row
-            ScrollView(.horizontal) {
-                row
-            }
-            .scrollIndicators(.hidden)
-            .scrollBounceBehavior(.basedOnSize)
-            .defaultScrollAnchor(.trailing, for: .alignment)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-        .font(MobiusStyle.metadataFont)
-        .foregroundStyle(palette.muted)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityLabel)
-    }
-
-    private var row: some View {
-        HStack(spacing: MobiusSpace.xs) {
-            author
-            if !recipientBotIDs.isEmpty {
-                Text(verbatim: "→")
-                HStack(spacing: MobiusSpace.m) {
-                    ForEach(recipientBotIDs, id: \.self) { botID in
-                        recipient(botID)
-                    }
-                }
-            }
-        }
-        .lineLimit(1)
-        .fixedSize(horizontal: true, vertical: false)
-    }
-
-    private var author: some View {
         HStack(spacing: MobiusSpace.xs) {
             MobiusIcon(
                 glyph,
@@ -754,22 +712,10 @@ private struct MessageMetadata: View {
             }
             Text("you")
         }
-    }
-
-    private func recipient(_ botID: String) -> some View {
-        let bot = model.bots.first { $0.id == botID }
-        return HStack(spacing: MobiusSpace.xs) {
-            MobiusIcon(
-                .aiScan, size: MobiusStyle.glyphMark,
-                foreground: bot?.tint.color ?? palette.muted, gutter: false)
-            if recipientBotIDs.count == 1 {
-                Text(verbatim: recipientName(botID))
-            }
-        }
-    }
-
-    private func recipientName(_ botID: String) -> String {
-        model.bots.first { $0.id == botID }?.name ?? String(localized: "Removed Bot")
+        .font(MobiusStyle.metadataFont)
+        .foregroundStyle(palette.muted)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityLabel)
     }
 
     private var glyph: MobiusGlyph {
@@ -791,10 +737,7 @@ private struct MessageMetadata: View {
     private var accessibilityLabel: Text {
         let author = String(localized: "you")
         let delivery = deliveryLabel.map { String(localized: $0) }
-        let sender = [delivery, author].compactMap { $0 }.joined(separator: ", ")
-        guard !recipientBotIDs.isEmpty else { return Text(verbatim: sender) }
-        let recipients = recipientBotIDs.map(recipientName).formatted(.list(type: .and))
-        return Text("\(sender), to \(recipients)")
+        return Text(verbatim: [delivery, author].compactMap { $0 }.joined(separator: ", "))
     }
 }
 

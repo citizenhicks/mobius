@@ -69,7 +69,7 @@ struct BotsView: View {
         } message: {
             if let botToDelete {
                 Text(
-                    "This permanently deletes routines and run history owned by @\(botToDelete.handle) and removes the Bot from chats. Chat history stays available. Active work must finish first."
+                    "This permanently deletes every conversation, routine, and run history owned by @\(botToDelete.handle). Active work must finish first."
                 )
             }
         }
@@ -91,16 +91,17 @@ struct BotsView: View {
     }
 
     private var headerActions: some View {
-        Button {
-            newBotFormID = UUID()
-        } label: {
-            MobiusIcon(.aiScan, gutter: false)
+        HeaderActionGroup {
+            Button {
+                newBotFormID = UUID()
+            } label: {
+                MobiusIcon(.aiScan, gutter: false)
+            }
+            .disabled(!model.canMutateBots || newBotFormID != nil)
+            .groupedHeaderAction(prominent: true)
+            .accessibilityLabel("New Bot")
+            .help("New Bot")
         }
-        .disabled(!model.canMutateBots || newBotFormID != nil)
-        .tint(palette.accent)
-        .buttonBorderShape(.circle)
-        .accessibilityLabel("New Bot")
-        .help("New Bot")
     }
 
     private func botRow(_ bot: BotRecord) -> some View {
@@ -315,35 +316,19 @@ struct BotDetailView: View {
 
                     routineSections
 
-                    if !pendingApprovals.isEmpty {
-                        Section("Approvals") {
-                            ForEach(pendingApprovals) { approval in
-                                SettingsNavigationRow(
-                                    hint: "Review the requested action",
-                                    open: { model.openApproval(approval.id) },
-                                    marks: EmptyView.init
-                                ) {
-                                    SettingsRowLabel(
-                                        title: .localized("Approval required"),
-                                        detail: .verbatim(
-                                            approval.request["reason"]?.stringValue ?? "")
-                                    ) {
-                                        MobiusIcon(.shieldCheck, foreground: palette.warning)
-                                    }
-                                }
-                            }
-                        }
-                    }
-
                     Section("Run history") {
                         if botRuns.isEmpty {
                             Text("No routine runs yet.")
                                 .foregroundStyle(palette.muted)
                         } else {
                             ForEach(botRuns.prefix(visibleRunCount)) { run in
+                                let approval = model.backgroundApproval(
+                                    forSessionID: run.sessionId
+                                )
                                 RoutineRunRow(
                                     run: run,
                                     name: routineName(run.routineId),
+                                    awaitsApproval: approval != nil,
                                     open: { model.presentRoutineRun(run) },
                                     delete: { model.deleteRoutineRun(run) }
                                 )
@@ -358,11 +343,11 @@ struct BotDetailView: View {
 
                     Section {
                         SettingsNavigationRow(
-                            hint: "Shows private conversation history for this Bot",
-                            open: { model.openBotConversations(bot.id) },
+                            hint: "Shows conversations handled by this Bot",
+                            open: { model.openBotChats(bot.id) },
                             marks: EmptyView.init
                         ) {
-                            SettingsRowLabel(title: "Private conversations") {
+                            SettingsRowLabel(title: "Conversations") {
                                 MobiusIcon(
                                     .note01,
                                     size: MobiusStyle.glyphLead,
@@ -371,7 +356,6 @@ struct BotDetailView: View {
                                 .accessibilityHidden(true)
                             }
                         }
-
                     }
                 }
                 .navigationSubtitle("@\(bot.handle)")
@@ -454,10 +438,6 @@ struct BotDetailView: View {
         }
     }
 
-    private var pendingApprovals: [BackgroundApproval] {
-        model.backgroundApprovals.filter { $0.botId == botID }
-    }
-
     private var botRuns: [RoutineRun] {
         model.routineRuns.filter { $0.botId == botID }.sorted { $0.startedAt > $1.startedAt }
     }
@@ -477,138 +457,4 @@ struct BotDetailView: View {
     private func routineName(_ id: String) -> String {
         model.routines.first { $0.id == id }?.instructions ?? "Routine"
     }
-}
-
-struct BotConversationsView: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.mobiusPalette) private var palette
-    let botID: String
-
-    var body: some View {
-        Group {
-            if let bot {
-                PageScaffold(
-                    title: "Private conversations",
-                    detail: "Read-only history of this Bot’s work."
-                ) {
-                    Section {
-                        if let error = state.error {
-                            StatusBanner(
-                                tone: .error, title: .localized("Conversations unavailable"),
-                                detail: .verbatim(error))
-                        }
-                        if state.request != nil && state.conversations.isEmpty {
-                            SettingsLoadingRows(label: "Loading conversations") {
-                                SettingsRowLabel(title: "Private conversation", detail: "Bot work")
-                                {
-                                    MobiusIcon(.aiScan, foreground: bot.tint.color)
-                                        .unredacted()
-                                }
-                                SettingsRowLabel(title: "Earlier conversation", detail: "Bot work")
-                                {
-                                    MobiusIcon(.aiScan, foreground: bot.tint.color)
-                                        .unredacted()
-                                }
-                            }
-                        } else if state.conversations.isEmpty {
-                            Text("No private conversations yet.")
-                                .foregroundStyle(palette.muted)
-                        } else {
-                            ForEach(state.conversations) { conversation in
-                                SettingsNavigationRow(
-                                    hint: "Shows read-only conversation history",
-                                    open: { model.presentBotConversation(conversation) },
-                                    marks: {
-                                        SessionActivityIndicator(
-                                            state: conversation.activity.state, isUnread: false)
-                                    }
-                                ) {
-                                    SettingsRowLabel(
-                                        title: .verbatim(
-                                            ChatTitleWriter.preview(
-                                                for: conversation.firstUserMessage)
-                                                ?? model.localizedString("Private conversation")),
-                                        detail: .verbatim(
-                                            conversation.sessionContext.originLabel ?? "")
-                                    ) {
-                                        MobiusIcon(.aiScan, foreground: bot.tint.color)
-                                            .accessibilityHidden(true)
-                                    }
-                                }
-                                .disabled(!model.gateway.connectionState.isReady)
-                            }
-                        }
-                        if state.nextCursor != nil {
-                            CatalogMoreButton(accessibilityLabel: "Show more private conversations")
-                            {
-                                model.loadMoreBotConversations()
-                            }
-                            .disabled(
-                                state.request != nil || !model.gateway.connectionState.isReady)
-                        }
-                    }
-                }
-                .navigationSubtitle("@\(bot.handle)")
-            } else {
-                MobiusUnavailable(
-                    title: "Bot unavailable", glyph: .aiScan,
-                    detail: "This Bot is no longer available.")
-            }
-        }
-        .task(id: "\(botID):\(model.gateway.connectionState.isReady)") {
-            model.refreshBotConversations(botID)
-        }
-        .refreshable { model.refreshBotConversations(botID) }
-    }
-
-    private var bot: BotRecord? { model.bots.first { $0.id == botID } }
-    private var state: BotConversationState { model.botConversationState }
-}
-
-struct BotConversationTranscriptSheet: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.mobiusPalette) private var palette
-
-    var body: some View {
-        ReadOnlyTranscriptSheet(
-            entries: state.entries,
-            fileSessionID: state.presented?.id,
-            hasEarlier: state.nextBeforeSequence != nil,
-            isLoading: state.historyRequest != nil,
-            isRunning: false,
-            loadEarlier: model.loadEarlierBotConversationHistoryAndWait,
-            header: {
-                VStack(alignment: .leading, spacing: MobiusSpace.s) {
-                    HStack(spacing: MobiusSpace.s) {
-                        VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
-                            Text("Private conversation")
-                                .font(MobiusStyle.controlFont.weight(.semibold))
-                            if let bot = model.bot(forSessionID: state.presented?.id) {
-                                Text(verbatim: bot.name)
-                                    .font(MobiusStyle.metadataFont)
-                                    .foregroundStyle(palette.muted)
-                            }
-                        }
-                        Spacer(minLength: 0)
-                        Button("Refresh", glyph: .arrowClockwise) {
-                            model.loadBotConversationHistory()
-                        }
-                        .disabled(
-                            state.historyRequest != nil || !model.gateway.connectionState.isReady)
-                    }
-                    if let error = state.historyError {
-                        StatusBanner(
-                            tone: .error, title: .localized("Conversation unavailable"),
-                            detail: .verbatim(error))
-                    }
-                }
-                .padding(MobiusSpace.l)
-            }
-        )
-        .task(id: model.gateway.connectionState.isReady) {
-            if state.entries.isEmpty { model.loadBotConversationHistory() }
-        }
-    }
-
-    private var state: BotConversationState { model.botConversationState }
 }

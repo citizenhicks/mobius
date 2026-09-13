@@ -88,92 +88,42 @@ private struct NewChatFolderPicker: View {
 private struct NewChatBotPicker: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
-    @State private var showsBots = false
 
     var body: some View {
-        let selectedBots = model.selectedChatBots
-        Button {
-            showsBots = true
+        Menu {
+            Picker(
+                "Bot",
+                selection: Binding(
+                    get: { model.chat.pendingNewChatBotID },
+                    set: { id in
+                        if let bot = model.bots.first(where: { $0.id == id }) {
+                            model.selectBotForNewChat(bot)
+                        }
+                    }
+                )
+            ) {
+                ForEach(model.bots) { bot in
+                    Label {
+                        Text(verbatim: bot.name)
+                    } icon: {
+                        MobiusGlyph.aiScan.menuImage(bot.tint.color)
+                    }
+                    .tag(Optional(bot.id))
+                }
+            }
+            .pickerStyle(.inline)
         } label: {
             MobiusMenuLabel(
-                text: selectedBots.first.map { .verbatim($0.name) } ?? .localized("Choose Bots"),
+                text: model.selectedBot.map { .verbatim($0.name) } ?? .localized("Choose Bot"),
                 glyph: .aiScan,
-                detail: selectedBots.count > 1 ? .verbatim("+ \(selectedBots.count - 1)") : nil,
-                glyphColor: selectedBots.first?.tint.color ?? palette.muted
+                glyphColor: model.selectedBot?.tint.color ?? palette.muted
             )
-            .frame(minWidth: MobiusStyle.iconButtonSize, minHeight: MobiusStyle.iconButtonSize)
+            .frame(minHeight: MobiusStyle.iconButtonSize)
         }
-        .accessibilityLabel("Bots")
-        .accessibilityValue(selectedBots.map(\.name).joined(separator: ", "))
-        .accessibilityHint("Choose one Bot for a chat, or several for a group chat")
-        .sensoryFeedback(.selection, trigger: model.chat.pendingNewChatBotIDs)
-        .sensoryFeedback(.selection, trigger: model.chat.pendingNewChatPrimaryBotID)
-        .popover(isPresented: $showsBots, arrowEdge: .bottom) {
-            ViewThatFits(in: .vertical) {
-                botChoices.fixedSize(horizontal: false, vertical: true)
-                ScrollView { botChoices }
-            }
-            .frame(width: 340)
-            .frame(maxHeight: 440)
-            .presentationCompactAdaptation(.popover)
-        }
-    }
-
-    private var botChoices: some View {
-        VStack(spacing: 0) {
-            ForEach(model.bots) { bot in
-                let isSelected = model.chat.pendingNewChatBotIDs.contains(bot.id)
-                let isPrimary = model.chat.pendingNewChatPrimaryBotID == bot.id
-                HStack(spacing: 0) {
-                    Button {
-                        model.selectPrimaryBotForNewChat(bot)
-                    } label: {
-                        BotPickerIcon(bot: bot, isPrimary: isPrimary)
-                            .frame(width: MobiusStyle.rowTouch, height: MobiusStyle.rowTouch)
-                            .contentShape(Rectangle())
-                    }
-                    .disabled(!isSelected)
-                    .accessibilityLabel("Make \(bot.name) primary")
-                    .accessibilityAddTraits(isPrimary ? .isSelected : [])
-                    .accessibilityHint("Responds when no recipients are selected")
-                    Button {
-                        model.selectBotForNewChat(bot, selected: !isSelected)
-                    } label: {
-                        HStack(spacing: MobiusSpace.s) {
-                            Text(verbatim: "\(bot.name) · @\(bot.handle)")
-                                .lineLimit(1)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            if isSelected { MobiusIcon(.check) }
-                        }
-                        .frame(minHeight: MobiusStyle.rowTouch)
-                        .contentShape(Rectangle())
-                    }
-                    .accessibilityAddTraits(isSelected ? .isSelected : [])
-                }
-                .buttonStyle(.mobiusPlain)
-                .foregroundStyle(.primary)
-            }
-        }
-        .padding(.horizontal, MobiusSpace.l)
-        .padding(.vertical, MobiusSpace.s)
-    }
-}
-
-private struct BotPickerIcon: View {
-    let bot: BotRecord
-    let isPrimary: Bool
-
-    var body: some View {
-        MobiusIcon(.aiScan, foreground: bot.tint.color)
-            .overlay(alignment: .topTrailing) {
-                if isPrimary {
-                    Circle()
-                        .fill(bot.tint.color)
-                        .frame(width: 6, height: 6)
-                        .offset(x: MobiusSpace.xxs, y: -MobiusSpace.xxs)
-                }
-            }
-            .accessibilityHidden(true)
+        .accessibilityLabel("Bot")
+        .accessibilityValue(model.selectedBot?.name ?? model.localizedString("Choose Bot"))
+        .accessibilityHint("Choose the Bot for this chat")
+        .sensoryFeedback(.selection, trigger: model.chat.pendingNewChatBotID)
     }
 }
 
@@ -252,13 +202,6 @@ private struct SessionComposerSurface: View {
             suggestions: referenceSuggestions,
             send: { model.sendMessage() },
             context: { close in
-                if !chat.composerRecipientBotIDs.isEmpty {
-                    BotRecipientsView(botIDs: chat.composerRecipientBotIDs) { botID in
-                        chat.composerRecipientBotIDs.removeAll { $0 == botID }
-                    }
-                    .padding(.horizontal, MobiusSpace.m)
-                    .padding(.top, MobiusSpace.s)
-                }
                 if let reply = chat.composerReply {
                     ReplyQuoteView(
                         reply: reply,
@@ -307,7 +250,6 @@ private struct ComposerActivityView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
     @State private var totals = DiffLineTotals()
-    @State private var showsRecipients = false
     let showBotSettings: () -> Void
 
     var body: some View {
@@ -342,28 +284,10 @@ private struct ComposerActivityView: View {
                     .accessibilityHint("Opens modified files")
                 }
 
-                if model.selectedChatIsGroup {
-                    Button {
-                        showsRecipients = true
-                    } label: {
-                        MobiusBadge(text: .verbatim(""), glyph: .userGroup02, interactive: true)
-                            .frame(
-                                minWidth: MobiusStyle.iconButtonSize,
-                                minHeight: MobiusStyle.iconButtonSize)
-                    }
-                    .buttonStyle(.mobiusPlain)
-                    .accessibilityLabel("Group members")
-                    .accessibilityValue(model.selectedChatBots.map(\.name).joined(separator: ", "))
-                    .accessibilityHint("Choose recipients for this message")
-                    .popover(isPresented: $showsRecipients, arrowEdge: .bottom) {
-                        GroupRecipientsPicker { showsRecipients = false }
-                            .presentationCompactAdaptation(.popover)
-                            .onDisappear { model.chat.composerFocusRequest &+= 1 }
-                    }
-                } else if let bot = model.selectedBot {
+                if let bot = model.selectedBot {
                     BotActivityBadge(bot: bot, action: showBotSettings)
                 }
-                if !model.simplifiedChatUI && !model.selectedChatIsGroup { SessionStatsBadge() }
+                if !model.simplifiedChatUI { SessionStatsBadge() }
             }
             .frame(minHeight: MobiusStyle.iconButtonSize)
             .scrollableRow()
@@ -381,54 +305,6 @@ private struct ComposerActivityView: View {
         }
     }
 
-}
-
-private struct GroupRecipientsPicker: View {
-    @Environment(AppModel.self) private var model
-    let didSelect: () -> Void
-
-    var body: some View {
-        ViewThatFits(in: .vertical) {
-            members.fixedSize(horizontal: false, vertical: true)
-            ScrollView { members }
-        }
-        .frame(width: 340)
-        .frame(maxHeight: 440)
-    }
-
-    private var members: some View {
-        VStack(spacing: 0) {
-            ForEach(model.selectedChatBots) { bot in
-                Button {
-                    model.addComposerRecipient(bot)
-                    didSelect()
-                } label: {
-                    HStack(spacing: MobiusSpace.s) {
-                        BotPickerIcon(
-                            bot: bot, isPrimary: model.selectedChatPrimaryBotID == bot.id)
-                        Text(verbatim: "\(bot.name) · @\(bot.handle)")
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        if model.chat.composerRecipientBotIDs.contains(bot.id) {
-                            MobiusIcon(.check)
-                        }
-                    }
-                    .frame(minHeight: MobiusStyle.rowTouch)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.mobiusPlain)
-                .foregroundStyle(.primary)
-                .accessibilityLabel("Add \(bot.name) as recipient")
-                .accessibilityValue(
-                    model.selectedChatPrimaryBotID == bot.id ? Text("Primary Bot") : Text("")
-                )
-                .accessibilityAddTraits(
-                    model.chat.composerRecipientBotIDs.contains(bot.id) ? .isSelected : [])
-            }
-        }
-        .padding(.horizontal, MobiusSpace.l)
-        .padding(.vertical, MobiusSpace.s)
-    }
 }
 
 private struct BotActivityBadge: View {
@@ -728,7 +604,6 @@ struct ApprovalView: View {
             .buttonStyle(.mobiusGlass)
             .buttonBorderShape(.capsule)
             .frame(maxWidth: .infinity, alignment: .trailing)
-            .disabled(model.approvalReviewRequest != nil || !model.gateway.connectionState.isReady)
         }
         .padding(MobiusStyle.cardPadding)
         .background(palette.warning.opacity(0.09), in: MobiusStyle.cardShape)
@@ -741,17 +616,10 @@ struct ApprovalView: View {
 
     @ViewBuilder
     private var actions: some View {
-        Button("Abort", role: .destructive) {
-            model.resolveApproval(.abort, approvalID: approval.id)
-        }
-        Button("Deny") {
-            model.resolveApproval(
-                .denied(rejection: "Denied in möbius App"), approvalID: approval.id)
-        }
-        Button("Approve for session") {
-            model.resolveApproval(.approvedForSession, approvalID: approval.id)
-        }
-        Button("Approve once") { model.resolveApproval(.approved, approvalID: approval.id) }
+        Button("Abort", role: .destructive) { model.resolveApproval(.abort) }
+        Button("Deny") { model.resolveApproval(.denied(rejection: "Denied in möbius App")) }
+        Button("Approve for session") { model.resolveApproval(.approvedForSession) }
+        Button("Approve once") { model.resolveApproval(.approved) }
             .mobiusProminentButton()
     }
 }

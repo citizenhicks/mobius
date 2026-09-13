@@ -162,7 +162,7 @@ fn completed_execution_stats_keep_the_flat_wire_shape() {
 }
 
 #[test]
-fn recent_runs_group_under_the_explicit_chat_owner_in_source_order() {
+fn recent_runs_group_under_the_nearest_visible_session_in_source_order() {
     let sessions = vec![
         session_summary("root", None, true, Some("Root preview")),
         session_summary("nested-agent", Some("agent"), false, None),
@@ -185,15 +185,7 @@ fn recent_runs_group_under_the_explicit_chat_owner_in_source_order() {
         },
     );
 
-    let chats = sessions.iter().filter(|session| session.catalog_visible).map(|session| {
-        serde_json::from_value(serde_json::json!({
-            "id": session.session_id, "sequence": 0, "first_user_message": session.first_user_message,
-            "created_at": 0, "updated_at": 0, "deleted": false, "workspace": "/tmp",
-            "participants": [{"bot_id":"bot", "session_id":session.session_id, "published_sequence":0}],
-            "retired_participants": [], "primary_bot_id":"bot", "pending":[]
-        })).unwrap()
-    }).collect::<Vec<crate::chats::Chat>>();
-    let groups = recent_run_groups(records, &sessions, &chats, &metadata);
+    let groups = recent_run_groups(records, &sessions, &metadata);
     let projection = groups
         .iter()
         .map(|group| {
@@ -215,12 +207,12 @@ fn recent_runs_group_under_the_explicit_chat_owner_in_source_order() {
             (
                 "root",
                 "Renamed root",
-                vec![("root", "nested"), ("root", "root")]
+                vec![("nested-agent", "nested"), ("root", "root")]
             ),
             (
                 "fork",
                 "Untitled",
-                vec![("fork", "fork-agent"), ("fork", "fork")]
+                vec![("fork-agent", "fork-agent"), ("fork", "fork")]
             )
         ]
     );
@@ -246,15 +238,7 @@ fn recent_runs_omit_metadata_hidden_roots() {
         },
     );
 
-    let chats = sessions.iter().filter(|session| session.catalog_visible).map(|session| {
-        serde_json::from_value(serde_json::json!({
-            "id": session.session_id, "sequence": 0, "first_user_message": session.first_user_message,
-            "created_at": 0, "updated_at": 0, "deleted": false, "workspace": "/tmp",
-            "participants": [{"bot_id":"bot", "session_id":session.session_id, "published_sequence":0}],
-            "retired_participants": [], "primary_bot_id":"bot", "pending":[]
-        })).unwrap()
-    }).collect::<Vec<crate::chats::Chat>>();
-    let groups = recent_run_groups(records, &sessions, &chats, &metadata);
+    let groups = recent_run_groups(records, &sessions, &metadata);
 
     assert!(matches!(
         groups.as_slice(),
@@ -271,7 +255,10 @@ fn session_summary(
 ) -> SessionSummary {
     SessionSummary {
         session_id: session_id.into(),
-        session_context: SessionContext::default(),
+        session_context: SessionContext {
+            bot_id: "test-bot".into(),
+            ..SessionContext::default()
+        },
         parent_session_id: parent_session_id.map(str::to_owned),
         parent_sequence: parent_session_id.map(|_| 0),
         sequence: 0,

@@ -1,5 +1,6 @@
 import SwiftUI
 import Accessibility
+import QuickLook
 
 private let debugStartsOnDetail: Bool = {
     #if DEBUG
@@ -66,17 +67,8 @@ struct AppShell: View {
             ReassignChatSheet(session: session)
                 .mobiusSheet(detents: [.medium, .large])
         }
-        .sheet(item: $model.botConversationState.presented, onDismiss: model.closeBotConversation) {
-            _ in
-            BotConversationTranscriptSheet()
-        }
         .sheet(item: $model.presentedRoutineRun, onDismiss: model.closeRoutineRunPreview) { _ in
             RoutineRunTranscriptSheet()
-        }
-        .sheet(item: $model.presentedApproval) { approval in
-            ApprovalView(approval: approval)
-                .padding(MobiusSpace.l)
-                .mobiusSheet(detents: [.medium, .large])
         }
         .alert(
             "Rename chat",
@@ -137,16 +129,29 @@ struct AppShell: View {
                 "Update the app to connect to this gateway. Install the latest version from the App Store, then reopen the app."
             )
         }
-        .modifier(
-            FilePresentationModifier(
-                isEnabled: chat.presentedPreview == nil && model.presentedRoutineRun == nil
-                    && model.botConversationState.presented == nil)
-        )
+        .quickLookPreview($model.previewURL)
         .sheet(isPresented: $model.showsCloudOffer) {
             PairingView(canCancel: true, initialSetup: .cloud)
                 .frame(maxWidth: 560)
                 .padding(MobiusSpace.xl)
                 .mobiusSheet(detents: [.large])
+        }
+        .sheet(
+            item: presentedTextFilePreview,
+            onDismiss: {
+                // App lock hides the sheet through the presentation binding while retaining its
+                // in-memory workspace draft. A user dismissal clears the bound item first.
+                guard model.textFilePreview == nil else { return }
+                model.closeFilePresentation()
+            }
+        ) { preview in
+            TextFilePreviewView(preview: preview)
+        }
+        .sheet(item: $model.sessionFileShareItem, onDismiss: model.closeFilePresentation) { file in
+            SessionFileShareView(file: file)
+        }
+        .onChange(of: model.previewURL) { oldValue, newValue in
+            if oldValue != nil, newValue == nil { model.closeFilePresentation() }
         }
         .preferredColorScheme(preferredColorScheme)
         .onAppear {
@@ -227,6 +232,16 @@ struct AppShell: View {
         ).post()
     }
 
+    private var presentedTextFilePreview: Binding<TextFilePreview?> {
+        Binding(
+            get: { filePresentationsAreSuppressed ? nil : model.textFilePreview },
+            set: { preview in
+                guard !filePresentationsAreSuppressed else { return }
+                model.textFilePreview = preview
+            }
+        )
+    }
+
     /// Compact iOS reveals the sidebar under the detail; everything else keeps the split view,
     /// where two columns fit side by side and nothing has to slide out of the way.
     @ViewBuilder
@@ -264,7 +279,6 @@ struct AppShell: View {
                     switch route {
                     case .chat: ChatView()
                     case .bot(let id): BotDetailView(botID: id)
-                    case .botConversations(let id): BotConversationsView(botID: id)
                     case .settings(.gateway(let id)): GatewayDetailView(id: id)
                     case .settings(.provider(let instance)): ProviderDetailView(instance: instance)
                     case .settings(.extensionPackage(let id)): ExtensionDetailView(id: id)

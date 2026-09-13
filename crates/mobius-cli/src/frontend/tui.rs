@@ -133,7 +133,6 @@ enum PickerAction {
         workspace: PathBuf,
         bot_id: String,
         clear: bool,
-        checked: bool,
     },
 }
 

@@ -43,10 +43,6 @@ pub(super) async fn selected_broadcast(
     }
 }
 
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "the protocol dispatcher keeps authenticated operations explicit"
-)]
 pub(super) async fn handle_message(
     message: ClientMessage,
     auth: &AuthStore,
@@ -87,16 +83,14 @@ pub(super) async fn handle_message(
         ClientMessage::CreateSession {
             request_id,
             workspace,
-            bot_ids,
-            primary_bot_id,
+            bot_id,
         } => {
             return create_session(
                 writer,
                 connection.selected,
                 request_id,
                 workspace,
-                bot_ids,
-                primary_bot_id,
+                bot_id,
                 gateway,
             )
             .await;
@@ -187,41 +181,7 @@ pub(super) async fn handle_message(
         ClientMessage::Submit {
             session_id,
             submission,
-            recipient_bot_ids,
-        } => {
-            return submit(
-                writer,
-                &connection,
-                session_id,
-                submission,
-                recipient_bot_ids,
-            )
-            .await;
-        }
-        ClientMessage::ReviewApproval {
-            request_id,
-            approval_request_id,
-            decision,
-        } => {
-            return write_result(
-                writer,
-                request_id,
-                gateway
-                    .review_approval(&approval_request_id, decision)
-                    .await,
-            )
-            .await;
-        }
-        ClientMessage::StopChat {
-            request_id,
-            session_id,
-        } => {
-            let result = match require_selected(&*connection.selected, &session_id) {
-                Ok(host) => host.stop().await,
-                Err(rejection) => Err(rejection),
-            };
-            return write_result(writer, request_id, result).await;
-        }
+        } => return submit(writer, &connection, session_id, submission).await,
         ClientMessage::GetContributions { request_id } => {
             return contribution_response(writer, request_id, gateway.contributions().await).await;
         }
@@ -655,57 +615,8 @@ pub(super) async fn handle_message(
         ClientMessage::StartRealtimeVoice { .. } | ClientMessage::EndRealtimeVoice { .. } => {
             unreachable!("voice messages are handled before general dispatch")
         }
-        ClientMessage::ListBotConversations {
-            request_id,
-            bot_id,
-            cursor,
-        } => {
-            return list_bot_conversations(writer, request_id, bot_id, cursor, gateway).await;
-        }
-        ClientMessage::GetBotConversationHistory {
-            request_id,
-            bot_id,
-            conversation_id,
-            before_sequence,
-        } => {
-            return get_bot_conversation_history(
-                writer,
-                request_id,
-                bot_id,
-                conversation_id,
-                before_sequence,
-                gateway,
-            )
-            .await;
-        }
-        ClientMessage::ReadBotConversationFile {
-            request_id,
-            bot_id,
-            conversation_id,
-            file_id,
-            offset,
-            max_bytes,
-        } => {
-            return match gateway
-                .read_bot_conversation_file(&bot_id, &conversation_id, &file_id, offset, max_bytes)
-                .await
-            {
-                Ok(chunk) => {
-                    write_frame(
-                        writer,
-                        &ServerFrame::new(ServerMessage::SessionFileChunk {
-                            request_id,
-                            session_id: conversation_id,
-                            file_id,
-                            offset: chunk.offset,
-                            data: chunk.data,
-                            next_offset: chunk.next_offset,
-                        }),
-                    )
-                    .await
-                }
-                Err(rejection) => write_rejection(writer, request_id, rejection).await,
-            };
+        ClientMessage::ListBotSessions { request_id, bot_id } => {
+            return list_bot_sessions(writer, request_id, bot_id, gateway).await;
         }
     }
     Ok(())
@@ -797,51 +708,20 @@ async fn list_sessions(
     }
 }
 
-async fn list_bot_conversations(
+async fn list_bot_sessions(
     writer: &mut (impl AsyncWrite + Unpin),
     request_id: String,
     bot_id: String,
-    cursor: Option<mobius::backend::checkpoint::SessionCursor>,
     gateway: &GatewayHost,
 ) -> Result<()> {
-    match gateway.bot_conversations(&bot_id, cursor).await {
-        Ok(page) => {
+    match gateway.hidden_bot_sessions(&bot_id).await {
+        Ok(sessions) => {
             write_frame(
                 writer,
-                &ServerFrame::new(ServerMessage::BotConversations {
+                &ServerFrame::new(ServerMessage::BotSessions {
                     request_id,
                     bot_id,
-                    page,
-                }),
-            )
-            .await
-        }
-        Err(rejection) => write_rejection(writer, request_id, rejection).await,
-    }
-}
-
-async fn get_bot_conversation_history(
-    writer: &mut (impl AsyncWrite + Unpin),
-    request_id: String,
-    bot_id: String,
-    conversation_id: String,
-    before_sequence: Option<u64>,
-    gateway: &GatewayHost,
-) -> Result<()> {
-    match gateway
-        .bot_conversation_history(&bot_id, &conversation_id, before_sequence)
-        .await
-    {
-        Ok(page) => {
-            write_history_frame(
-                writer,
-                request_id.clone(),
-                ServerFrame::new(ServerMessage::BotConversationHistory {
-                    request_id,
-                    bot_id,
-                    conversation_id,
-                    records: page.records,
-                    next_before_sequence: page.next_before_sequence,
+                    sessions,
                 }),
             )
             .await
@@ -855,14 +735,10 @@ async fn create_session(
     selected: &mut Option<SelectedChat>,
     request_id: String,
     workspace: PathBuf,
-    bot_ids: Vec<String>,
-    primary_bot_id: Option<String>,
+    bot_id: String,
     gateway: &GatewayHost,
 ) -> Result<()> {
-    match gateway
-        .create_chat(&workspace, &bot_ids, primary_bot_id.as_deref())
-        .await
-    {
+    match gateway.create_session(&workspace, &bot_id).await {
         Ok(host) => open_selected(writer, selected, request_id, host, None).await,
         Err(rejection) => write_rejection(writer, request_id, rejection).await,
     }
@@ -1061,7 +937,6 @@ async fn submit(
     connection: &ConnectionSessionState<'_>,
     session_id: String,
     submission: Submission,
-    recipient_bot_ids: Vec<String>,
 ) -> Result<()> {
     let request_id = submission.id.clone();
     let host = match require_selected(&*connection.selected, &session_id) {
@@ -1118,12 +993,7 @@ async fn submit(
             }
         }
     }
-    write_result(
-        writer,
-        request_id,
-        host.submit_to(submission, recipient_bot_ids).await,
-    )
-    .await
+    write_result(writer, request_id, host.submit(submission).await).await
 }
 
 async fn submit_contribution(

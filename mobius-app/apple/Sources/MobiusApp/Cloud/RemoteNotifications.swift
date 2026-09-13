@@ -88,7 +88,7 @@ enum RemoteNotification: Equatable {
     case session(
         eventID: String,
         kind: SessionNotificationKind,
-        sessionID: String?,
+        sessionID: String,
         runCount: UInt64?,
         approvalRequestID: String?
     )
@@ -111,16 +111,14 @@ enum RemoteNotification: Equatable {
             return
         }
         guard let kind = SessionNotificationKind(rawValue: rawKind),
-            userInfo["sessionId"] != nil
+            let sessionID = Self.identifier(userInfo["sessionId"])
         else { return nil }
-        let sessionID = Self.identifier(userInfo["sessionId"])
-        if let value = userInfo["sessionId"], !(value is NSNull), sessionID == nil { return nil }
         let runCount = Self.exactUInt64(userInfo["runCount"])
         let approvalRequestID = Self.optionalIdentifier(userInfo["approvalRequestId"])
         let hasRequiredCursor =
             switch kind {
             case .awaitingApproval: approvalRequestID != nil
-            case .completed, .aborted, .failed: runCount != nil && sessionID != nil
+            case .completed, .aborted, .failed: runCount != nil
             }
         guard hasRequiredCursor else { return nil }
         self = .session(
@@ -406,18 +404,12 @@ extension AppModel {
             !catalogAlreadyIncludes(notification)
         else { return }
         switch notification {
-        case .session(_, .awaitingApproval, _, _, let approvalRequestID):
-            if let approvalRequestID {
-                presentApprovalNotification(
-                    requestID: approvalRequestID,
-                    botName: agentName ?? localizedString("Bot"))
-            }
-        case .session(_, let kind, let sessionID, let runCount, _):
-            guard let sessionID else { return }
+        case .session(_, let kind, let sessionID, let runCount, let approvalRequestID):
             presentSessionNotification(
                 kind,
                 sessionID: sessionID,
                 runCount: runCount,
+                approvalRequestID: approvalRequestID,
                 agentName: agentName,
                 detail: kind == .completed ? detail : nil
             )
@@ -449,17 +441,20 @@ extension AppModel {
         switch notification {
         case .subscriptionExpired:
             return false
-        case .session(_, .awaitingApproval, _, _, let requestID):
-            guard let requestID else { return false }
-            cloud.pendingRemoteNotification = nil
-            prepareToOpenNotification()
-            openApproval(requestID)
-            return true
-        case .session(_, _, let sessionID, _, _):
-            guard let sessionID,
-                canOpenSession || chat.selectedSessionID == sessionID,
-                chat.sessions.contains(where: { $0.sessionId == sessionID })
-            else { return false }
+        case .session(_, let kind, let sessionID, _, let requestID):
+            guard canOpenSession || chat.selectedSessionID == sessionID else { return false }
+            if kind == .awaitingApproval,
+                let requestID,
+                let approval = backgroundApprovals.first(where: {
+                    $0.sessionId == sessionID && $0.requestId == requestID
+                })
+            {
+                cloud.pendingRemoteNotification = nil
+                prepareToOpenNotification()
+                resumeBotSession(botID: approval.botId, sessionID: approval.sessionId)
+                return true
+            }
+            guard chat.sessions.contains(where: { $0.sessionId == sessionID }) else { return false }
             cloud.pendingRemoteNotification = nil
             prepareToOpenNotification()
             openChat(sessionID)
@@ -471,9 +466,11 @@ extension AppModel {
         prepareToOpenNotification()
         switch target {
         case .session(let sessionID):
-            if chat.sessions.contains(where: { $0.sessionId == sessionID }) { openChat(sessionID) }
-        case .approval(let requestID):
-            openApproval(requestID)
+            if let approval = backgroundApproval(forSessionID: sessionID) {
+                resumeBotSession(botID: approval.botId, sessionID: approval.sessionId)
+            } else if chat.sessions.contains(where: { $0.sessionId == sessionID }) {
+                openChat(sessionID)
+            }
         case .extensionPackage(let id):
             destination = .extensions
             navigationPath = [.settings(.extensionPackage(id))]
@@ -484,11 +481,6 @@ extension AppModel {
                 if run.sessionId != nil { presentRoutineRun(run) }
             }
         }
-    }
-
-    func presentApprovalNotification(requestID: String, botName: String) {
-        guard cloud.rememberNotification(.approval(requestID: requestID)) else { return }
-        showToast("\(botName) needs approval.", tone: .warning, target: .approval(requestID))
     }
 
     func presentSessionNotification(
@@ -509,7 +501,7 @@ extension AppModel {
         let botName =
             bot(forSessionID: sessionID)?.name
             ?? remoteAgentName
-            ?? sessionTitle(sessionID)
+            ?? localizedString("Bot")
         let finished = localizedString("Finished.")
         let completionMessage = "\(botName): \(completionPreview ?? finished)"
         let refinesCompletedNotification =
@@ -527,13 +519,17 @@ extension AppModel {
         ), !cloud.rememberNotification(key), !refinesCompletedNotification {
             return
         }
-        let title = sessionTitle(sessionID)
+        let isHiddenApproval =
+            kind == .awaitingApproval
+            && !chat.sessions.contains(where: { $0.sessionId == sessionID })
+        let title =
+            backgroundApproval(forSessionID: sessionID) != nil || isHiddenApproval
+            ? botName
+            : sessionTitle(sessionID)
         let isActiveChat = chat.selectedSessionID == sessionID && isChatVisible
         switch kind {
         case .awaitingApproval:
-            showToast(
-                "\(title) needs approval.", tone: .warning,
-                target: approvalRequestID.map(AppNotificationTarget.approval))
+            showToast("\(title) needs approval.", tone: .warning, target: .session(sessionID))
         case .completed:
             guard !isActiveChat else { return }
             showToast(
@@ -678,8 +674,10 @@ extension AppModel {
             return false
         case .session(_, .awaitingApproval, let sessionID, _, let requestID):
             guard let requestID else { return false }
-            if backgroundApprovals.contains(where: { $0.id == requestID }) { return true }
-            guard let sessionID,
+            if let approval = backgroundApproval(forSessionID: sessionID) {
+                return approval.requestId == requestID
+            }
+            guard
                 let session = chat.sessions.first(where: {
                     $0.sessionId == sessionID
                 })
@@ -689,7 +687,7 @@ extension AppModel {
         case .session(_, .completed, let sessionID, let runCount, _),
             .session(_, .aborted, let sessionID, let runCount, _),
             .session(_, .failed, let sessionID, let runCount, _):
-            guard let sessionID,
+            guard
                 let session = chat.sessions.first(where: {
                     $0.sessionId == sessionID
                 }), let runCount

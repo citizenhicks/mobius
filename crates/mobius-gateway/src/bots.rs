@@ -25,7 +25,7 @@ use crate::wire::{
 };
 use crate::{Error, Result};
 
-const STATE_VERSION: u32 = 5;
+const STATE_VERSION: u32 = 6;
 const STATE_FILE: &str = storage::STATE_FILE;
 const STATE_LOCK_FILE: &str = "bots-state.lock";
 const ROUTINES_DIR: &str = "routines";
@@ -1033,10 +1033,6 @@ impl BotStore {
             .map(|id| self.resolve_history_routine(&state, id))
             .transpose()?;
         self.storage.history(routine_id.as_deref())
-    }
-
-    pub(crate) fn routine_session_bot_id(&self, session_id: &str) -> Result<Option<String>> {
-        self.storage.routine_session_bot_id(session_id)
     }
 
     fn resolve_history_routine(&self, state: &BotState, id: &str) -> Result<String> {

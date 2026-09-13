@@ -20,16 +20,8 @@ extension AppModel {
         case .sessionOpened, .sessionReplayComplete, .sessionHistory, .sessionChanged:
             handleSessionEnvelope(envelope)
         case .gatewayConfigured, .contributionsChanged, .accepted, .rejected,
-            .agentEvent, .sessions, .backgroundApprovals, .bots:
+            .agentEvent, .sessions, .backgroundApprovals, .botSessions, .bots:
             handleGatewayUpdateEnvelope(envelope)
-        case .botConversations(let requestID, let botID, let page):
-            applyBotConversations(requestID: requestID, botID: botID, page: page)
-        case .botConversationHistory(
-            let requestID, let botID, let conversationID, let records, let nextBeforeSequence
-        ):
-            applyBotConversationHistory(
-                requestID: requestID, botID: botID, conversationID: conversationID,
-                records: records, nextBeforeSequence: nextBeforeSequence)
         case .providerCredentialSaved, .pairingCode, .providerLoginStarted,
             .providerLoginFinished, .gitCredentialStatus, .sshIdentities,
             .sshIdentityGenerated, .profile:
@@ -105,6 +97,8 @@ extension AppModel {
         case .backgroundApprovals(let approvals):
             applyBackgroundApprovals(approvals, notifyingNew: true)
             refreshRoutines()
+        case .botSessions(let requestID, let botID, let sessions):
+            applyBotSessionsResponse(requestID: requestID, botID: botID, sessions: sessions)
         case .bots(let requestID, let bots):
             applyBotsResponse(requestID: requestID, bots: bots)
         default:
@@ -115,9 +109,29 @@ extension AppModel {
     private func applySessionResponse(requestID: String?, sessions: [SessionRecord]) {
         if requestID == chat.sessionMutationRequestID {
             chat.sessionMutationRequestID = nil
+            chat.pendingDeletedSessionIDs = []
             chat.pendingDeletedPresentedSessionID = nil
         }
         applySessionCatalog(sessions)
+    }
+
+    private func applyBotSessionsResponse(
+        requestID: String?,
+        botID: String,
+        sessions: [SessionRecord]
+    ) {
+        guard requestID == chat.botSessionsRequestID, botID == chat.botSessionsBotID else { return }
+        chat.botSessionsRequestID = nil
+        chat.isLoadingBotSessions = false
+        let valid = applyBotSessions(sessions, botID: botID)
+        guard let resume = chat.pendingBotSessionResume, resume.botID == botID else { return }
+        chat.pendingBotSessionResume = nil
+        guard valid else { return }
+        guard sessions.contains(where: { $0.sessionId == resume.sessionID }) else {
+            showToast("That Bot work is no longer available.", tone: .warning)
+            return
+        }
+        openBotSession(resume.sessionID)
     }
 
     private func applyBotsResponse(requestID: String?, bots: [BotRecord]) {
@@ -376,22 +390,16 @@ extension AppModel {
             guard let self,
                 let draft = await self.chat.takePendingNewChatDraft(requestID: requestID)
             else { return }
-            self.chat.pendingNewChatBotIDs = []
-            let nextDraft = ComposerDraft(
-                text: self.chat.composer, reply: self.chat.composerReply,
-                recipientBotIDs: self.chat.composerRecipientBotIDs)
+            self.chat.pendingNewChatBotID = nil
+            let nextDraft = self.chat.composer
             self.chat.suppressesComposerDraftSave = true
             self.chat.composer = draft.text
-            self.chat.composerReply = draft.reply
-            self.chat.composerRecipientBotIDs = draft.recipientBotIDs
             self.chat.suppressesComposerDraftSave = false
             self.chat.stashedComposerDraft = nextDraft
             guard self.sendMessage() else {
                 self.chat.stashedComposerDraft = nil
                 self.chat.suppressesComposerDraftSave = true
-                self.chat.composer = nextDraft.text
-                self.chat.composerReply = nextDraft.reply
-                self.chat.composerRecipientBotIDs = nextDraft.recipientBotIDs
+                self.chat.composer = nextDraft
                 self.chat.suppressesComposerDraftSave = false
                 self.chat.restoreDraft(draft)
                 return
@@ -415,7 +423,9 @@ extension AppModel {
                 clearSelectedSession()
                 return
             }
-            if chat.sessions.contains(where: { $0.sessionId == sessionToRestoreID }) {
+            if chat.sessions.contains(where: { $0.sessionId == sessionToRestoreID })
+                || chat.botSessions.contains(where: { $0.sessionId == sessionToRestoreID })
+            {
                 chat.restoreSession(sessionToRestoreID)
             } else {
                 showToast("The previously selected chat is no longer available.", tone: .error)
@@ -511,12 +521,7 @@ extension AppModel {
         opened: Bool,
         replayRequestID: String? = nil
     ) {
-        let bot =
-            payload.memberBotIds.count == 1
-            ? bots.first(where: { $0.id == payload.primaryBotId }) : nil
-        let validMembers = validChatMembers(
-            payload.memberBotIds, primaryBotID: payload.primaryBotId)
-        guard validMembers else {
+        guard let bot = bots.first(where: { $0.id == payload.session.context.botId }) else {
             cancelVoiceChatIntent()
             chat.restorePendingDrafts()
             chat.sessionRequestID = nil
@@ -525,7 +530,7 @@ extension AppModel {
             chat.pendingCachedTranscript = nil
             chat.pendingPresentedTranscript = nil
             isChangingWorkspace = false
-            chat.pendingNewChatBotIDs = []
+            chat.pendingNewChatBotID = nil
             gateway.connectionState = .ready
             showToast("The gateway returned a chat with an unknown Bot.", tone: .error)
             return
@@ -549,7 +554,7 @@ extension AppModel {
                 to: gateway.selectedAccountID.map {
                     ComposerDraftOwner(accountID: $0, sessionID: payload.session.sessionId)
                 })
-            resetSessionState(preservingComposerContext: createdByThisClient)
+            resetSessionState(preservingComposerAttachments: createdByThisClient)
         }
         if opened {
             chat.latestSequence = cursor
@@ -583,10 +588,8 @@ extension AppModel {
         isChangingWorkspace = false
         showsWorkspaceBrowser = false
         chat.pendingNewChatWorkspace = nil
-        if !createdWithPendingDraft, chat.pendingDrafts.isEmpty { chat.pendingNewChatBotIDs = [] }
+        if !createdWithPendingDraft, chat.pendingDrafts.isEmpty { chat.pendingNewChatBotID = nil }
         chat.selectedSessionID = payload.session.sessionId
-        chat.selectedMemberBotIDs = payload.memberBotIds
-        chat.selectedPrimaryBotID = payload.primaryBotId
         if createdByThisClient {
             destination = .chats
             navigationPath = [.chat(.session(payload.session.sessionId))]
@@ -613,17 +616,13 @@ extension AppModel {
         chat.sessionCompactionCount = payload.compactionCount
         chat.activeTurnIDs = Set(payload.activeTurnIds)
         chat.pendingApprovals = payload.pendingApprovals.compactMap(chat.decodeApproval)
-        if let bot {
-            agentDraft = refreshedAgentDraft(
-                currentDraft: agentDraft,
-                currentSnapshot: agentSnapshot,
-                incomingSnapshot: bot.config
-            )
-            agentSnapshot = bot.config
-        } else {
-            agentDraft = nil
-            agentSnapshot = nil
-        }
+        chat.approvalRequestID = nil
+        agentDraft = refreshedAgentDraft(
+            currentDraft: agentDraft,
+            currentSnapshot: agentSnapshot,
+            incomingSnapshot: bot.config
+        )
+        agentSnapshot = bot.config
         if !opened { gateway.connectionState = .ready }
         if let accountID = gateway.selectedAccountID {
             chat.prepareComposerEditRecovery(
@@ -639,19 +638,13 @@ extension AppModel {
     func applySessionCatalog(_ records: [SessionRecord]) {
         guard
             records.allSatisfy({ session in
-                validChatMembers(session.memberBotIds, primaryBotID: session.primaryBotId)
+                bots.contains { $0.id == session.sessionContext.botId }
             })
         else {
             showToast("The gateway returned a chat with an unknown Bot.", tone: .error)
             return
         }
         applySessions(records)
-    }
-
-    private func validChatMembers(_ ids: [String], primaryBotID: String?) -> Bool {
-        Set(ids).count == ids.count
-            && ids.allSatisfy { id in bots.contains { $0.id == id } }
-            && (primaryBotID.map(ids.contains) ?? ids.isEmpty)
     }
 
     func applySessions(_ records: [SessionRecord]) {
@@ -743,6 +736,19 @@ extension AppModel {
         return true
     }
 
+    @discardableResult
+    func applyBotSessions(_ records: [SessionRecord], botID: String) -> Bool {
+        guard chat.botSessionsBotID == botID,
+            Set(records.map(\.sessionId)).count == records.count,
+            records.allSatisfy({ $0.sessionContext.botId == botID })
+        else {
+            showToast("The gateway returned invalid Bot work.", tone: .error)
+            return false
+        }
+        chat.botSessions = records
+        return true
+    }
+
     func applyBots(_ records: [BotRecord]) {
         guard Set(records.map(\.id)).count == records.count,
             Set(records.map(\.handle)).count == records.count,
@@ -762,17 +768,27 @@ extension AppModel {
             showToast("The gateway returned invalid Bot state.", tone: .error)
             return
         }
+        let selectedHiddenBotID =
+            selectedSessionIsHidden
+            ? selectedSession?.sessionContext.botId ?? chat.botSessionsBotID
+            : nil
         bots = records
         let botIDs = Set(records.map(\.id))
-        if let botID = botConversationState.botID, !botIDs.contains(botID) {
-            closeBotConversation()
-            botConversationState = BotConversationState()
+        if let botSessionsBotID = chat.botSessionsBotID, !botIDs.contains(botSessionsBotID) {
+            self.chat.botSessionsBotID = nil
+            chat.botSessionsRequestID = nil
+            chat.pendingBotSessionResume = nil
+            chat.botSessions = []
+            chat.isLoadingBotSessions = false
+        }
+        if let selectedHiddenBotID, !botIDs.contains(selectedHiddenBotID) {
+            clearSelectedSession()
         }
         chat.chatBotFilterIDs.formIntersection(botIDs)
         backgroundApprovals.removeAll { !botIDs.contains($0.botId) }
         routines.removeAll { !botIDs.contains($0.botId) }
         routineRuns.removeAll { !botIDs.contains($0.botId) }
-        if !selectedChatIsGroup, let botID = selectedSession?.primaryBotId,
+        if let botID = selectedSession?.sessionContext.botId,
             let bot = records.first(where: { $0.id == botID })
         {
             agentDraft = refreshedAgentDraft(
@@ -814,30 +830,28 @@ extension AppModel {
         notifyingNew: Bool
     ) -> Bool {
         let botIDs = Set(bots.map(\.id))
-        guard Set(records.map(\.id)).count == records.count,
+        guard Set(records.map(\.sessionId)).count == records.count,
+            Set(records.map(\.requestId)).count == records.count,
             records.allSatisfy({ approval in
-                !approval.id.isEmpty && botIDs.contains(approval.botId)
-                    && approval.request["turnId"]?.stringValue?.isEmpty == false
-                    && chat.decodeApproval(approval.request) != nil
-                    && approval.chatId?.isEmpty != true
+                !approval.sessionId.isEmpty
+                    && !approval.botId.isEmpty
+                    && !approval.turnId.isEmpty
+                    && !approval.requestId.isEmpty
+                    && botIDs.contains(approval.botId)
             })
         else {
             showToast("The gateway returned invalid background approval state.", tone: .error)
             return false
         }
-        let previousRequestIDs = Set(backgroundApprovals.map(\.id))
+        let previousRequestIDs = Set(backgroundApprovals.map(\.requestId))
         backgroundApprovals = records
-        if let sessionID = chat.selectedSessionID {
-            chat.pendingApprovals = records.filter { $0.chatId == sessionID }
-                .compactMap { chat.decodeApproval($0.request) }
-        }
-        if let presentedApproval, !records.contains(where: { $0.id == presentedApproval.id }) {
-            self.presentedApproval = nil
-        }
         if notifyingNew {
-            for approval in records where !previousRequestIDs.contains(approval.id) {
-                let name = bots.first { $0.id == approval.botId }?.name ?? localizedString("Bot")
-                presentApprovalNotification(requestID: approval.id, botName: name)
+            for approval in records where !previousRequestIDs.contains(approval.requestId) {
+                presentSessionNotification(
+                    .awaitingApproval,
+                    sessionID: approval.sessionId,
+                    approvalRequestID: approval.requestId
+                )
             }
         }
         if gateway.connectionState.isReady { _ = openPendingRemoteNotification() }
@@ -851,6 +865,16 @@ extension AppModel {
         guard let previous, previous.activity != session.activity else { return }
         let activity = session.activity
         let sessionID = session.sessionId
+        if activity.state == .awaitingApproval,
+            let approvalRequestID = activity.approvalRequestId,
+            previous.activity.approvalRequestId != approvalRequestID
+        {
+            presentSessionNotification(
+                .awaitingApproval,
+                sessionID: sessionID,
+                approvalRequestID: approvalRequestID
+            )
+        }
         guard activity.state == .idle,
             previous.activity.state != .idle || session.sequence > previous.sequence
         else { return }
@@ -904,11 +928,9 @@ extension AppModel {
     private func handleAccepted(_ requestID: String) {
         chat.acceptSessionFileDeletionRequest(requestID)
         if chat.pendingDrafts[requestID] != nil { chat.flushComposerDraft() }
-        if let review = approvalReviewRequest, requestID == review.id {
-            chat.pendingApprovals.removeAll { $0.id == review.approvalID }
-            backgroundApprovals.removeAll { $0.id == review.approvalID }
-            if presentedApproval?.id == review.approvalID { presentedApproval = nil }
-            approvalReviewRequest = nil
+        if requestID == chat.approvalRequestID {
+            if !chat.pendingApprovals.isEmpty { chat.pendingApprovals.removeFirst() }
+            chat.approvalRequestID = nil
         }
         if requestID == chat.sessionMutationRequestID {
             for sessionID in chat.pendingDeletedSessionIDs {
@@ -921,11 +943,11 @@ extension AppModel {
                     if chat.composerDraftOwner == owner { chat.discardComposerDraft() }
                 }
             }
-            chat.pendingDeletedSessionIDs = []
             chat.pendingDeletedPresentedSessionID = nil
             gateway.transmit(.listSessions(requestID: requestID)) { [weak self] _ in
                 if self?.chat.sessionMutationRequestID == requestID {
                     self?.chat.sessionMutationRequestID = nil
+                    self?.chat.pendingDeletedSessionIDs = []
                 }
             }
         }
@@ -967,13 +989,19 @@ extension AppModel {
             rejection.requestId == chat.sessionMutationRequestID
             ? chat.pendingDeletedPresentedSessionID
             : nil
+        let requestWasInvalidatedByDelete =
+            rejection.code == "unknown_session"
+            && rejection.requestId != chat.sessionMutationRequestID
+            && !chat.pendingDeletedSessionIDs.isEmpty
         handleRejectedTranscript(rejection)
         if retryRejectedSessionReplay(rejection) { return }
         handleRejectedFiles(rejection, thumbnail: rejectedFileThumbnailDownload)
         handleRejectedConfiguration(rejection, deletedSessionID: deletedPresentedSessionID)
         handleRejectedWorkspace(rejection)
         handleRejectedCapabilities(rejection)
-        if (!rejectedFileThumbnail && !rejectedAbandonedUpload) || rejection.fatal {
+        if ((!rejectedFileThumbnail && !rejectedAbandonedUpload)
+            || rejection.fatal) && !requestWasInvalidatedByDelete
+        {
             showToast(
                 verbatim: rejection.message,
                 tone: rejection.code == "revision_conflict" || rejection.code == "agent_busy"
@@ -1076,8 +1104,8 @@ extension AppModel {
             botDefaultsRequestID = nil
             submittedBotDefaultsDraft = nil
         }
-        if rejection.requestId == approvalReviewRequest?.id {
-            approvalReviewRequest = nil
+        if rejection.requestId == chat.approvalRequestID {
+            chat.approvalRequestID = nil
         }
         if rejection.requestId == chat.sessionRequestID {
             cancelVoiceChatIntent()
@@ -1125,7 +1153,11 @@ extension AppModel {
     }
 
     private func handleRejectedCapabilities(_ rejection: GatewayRejection) {
-        rejectBotConversationRequest(rejection)
+        if rejection.requestId == chat.botSessionsRequestID {
+            chat.botSessionsRequestID = nil
+            chat.pendingBotSessionResume = nil
+            chat.isLoadingBotSessions = false
+        }
         if rejection.requestId == botMutationRequestID {
             botMutationRequestID = nil
             botMutationSuccessMessage = nil

@@ -71,30 +71,14 @@ pub enum ClientMessage {
     ListSessions {
         request_id: String,
     },
-    ListBotConversations {
+    ListBotSessions {
         request_id: String,
         bot_id: String,
-        cursor: Option<mobius::backend::checkpoint::SessionCursor>,
-    },
-    GetBotConversationHistory {
-        request_id: String,
-        bot_id: String,
-        conversation_id: String,
-        before_sequence: Option<u64>,
-    },
-    ReadBotConversationFile {
-        request_id: String,
-        bot_id: String,
-        conversation_id: String,
-        file_id: String,
-        offset: u64,
-        max_bytes: usize,
     },
     CreateSession {
         request_id: String,
         workspace: PathBuf,
-        bot_ids: Vec<String>,
-        primary_bot_id: Option<String>,
+        bot_id: String,
     },
     CreateWorkspaceDirectory {
         request_id: String,
@@ -138,16 +122,6 @@ pub enum ClientMessage {
     Submit {
         session_id: String,
         submission: Submission,
-        recipient_bot_ids: Vec<String>,
-    },
-    ReviewApproval {
-        request_id: String,
-        approval_request_id: String,
-        decision: mobius::protocol::ReviewDecision,
-    },
-    StopChat {
-        request_id: String,
-        session_id: String,
     },
     StartRealtimeVoice {
         request_id: String,
@@ -534,17 +508,10 @@ pub enum ServerMessage {
         approvals: Vec<BackgroundApproval>,
     },
 
-    BotConversations {
+    BotSessions {
         request_id: String,
         bot_id: String,
-        page: BotConversationPage,
-    },
-    BotConversationHistory {
-        request_id: String,
-        bot_id: String,
-        conversation_id: String,
-        records: Vec<RecordedEvent>,
-        next_before_sequence: Option<u64>,
+        sessions: Vec<SessionRecord>,
     },
     Bots {
         #[serde(default, skip_serializing_if = "Option::is_none")]

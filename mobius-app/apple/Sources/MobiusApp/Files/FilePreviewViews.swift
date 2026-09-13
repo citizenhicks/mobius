@@ -1,53 +1,7 @@
 import Foundation
 import SwiftUI
 import HighlightSwift
-import QuickLook
 import UIKit
-
-struct FilePresentationModifier: ViewModifier {
-    @Environment(AppModel.self) private var model
-    @Environment(\.scenePhase) private var scenePhase
-    var isEnabled = true
-
-    func body(content: Content) -> some View {
-        content
-            .quickLookPreview(presentation(\.previewURL))
-            .sheet(
-                item: presentation(\.textFilePreview),
-                onDismiss: {
-                    guard !isSuppressed, model.textFilePreview == nil else { return }
-                    model.closeFilePresentation()
-                },
-                content: TextFilePreviewView.init
-            )
-            .sheet(
-                item: presentation(\.sessionFileShareItem),
-                onDismiss: {
-                    guard !isSuppressed else { return }
-                    model.closeFilePresentation()
-                },
-                content: SessionFileShareView.init
-            )
-            .onChange(of: model.previewURL) { oldValue, newValue in
-                if isEnabled, oldValue != nil, newValue == nil { model.closeFilePresentation() }
-            }
-    }
-
-    private var isSuppressed: Bool {
-        !isEnabled || model.isAppLocked || model.appLockEnabled && scenePhase != .active
-    }
-
-    private func presentation<Value>(_ keyPath: ReferenceWritableKeyPath<AppModel, Value?>)
-        -> Binding<Value?>
-    {
-        Binding(
-            get: { isSuppressed ? nil : model[keyPath: keyPath] },
-            set: { value in
-                guard !isSuppressed else { return }
-                model[keyPath: keyPath] = value
-            })
-    }
-}
 
 struct InspectorLoadingView: View {
     let title: MobiusText
@@ -455,7 +409,6 @@ struct ReadOnlyTranscriptSheet<Header: View>: View {
             }
         }
         .mobiusSheet(selection: $selectedDetent)
-        .modifier(FilePresentationModifier())
         .onChange(of: isWaitingForModel, initial: true) { _, isWaiting in
             waiting.update(isWaiting: isWaiting)
         }

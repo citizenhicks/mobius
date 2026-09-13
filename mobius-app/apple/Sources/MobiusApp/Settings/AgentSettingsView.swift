@@ -90,13 +90,6 @@ struct AgentSettingsView: View {
                 }
 
                 Section("Capabilities") {
-                    Toggle(isOn: routineCreation) {
-                        SettingsRowLabel(
-                            title: "Create routines",
-                            detail: "Allow this Bot to schedule its own work."
-                        )
-                    }
-                    .sensoryFeedback(.selection, trigger: routineCreation.wrappedValue)
                     ForEach(model.middlewareFeatures, id: \.id) { feature in
                         capabilityRow(feature)
                     }
@@ -556,13 +549,6 @@ struct AgentSettingsView: View {
         Binding(
             get: { draft?.maxModelSteps ?? 1 },
             set: { value in updateDraft { $0.maxModelSteps = Swift.max(value, 1) } }
-        )
-    }
-
-    private var routineCreation: Binding<Bool> {
-        Binding(
-            get: { draft?.routineCreation ?? false },
-            set: { value in updateDraft { $0.routineCreation = value } }
         )
     }
 

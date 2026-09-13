@@ -178,7 +178,6 @@ fn history_frame_bound_rejects_one_oversized_turn() {
                     message: "x".repeat(MAX_FRAME_BYTES),
                 }),
             },
-            recipient_bot_ids: Vec::new(),
             stream_metrics: Vec::new(),
             blocks: Vec::new(),
             preview: None,

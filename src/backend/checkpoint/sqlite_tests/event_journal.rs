@@ -156,16 +156,12 @@ async fn event_turn_page_keeps_long_turns_whole() {
         .await
         .expect("append inter-turn metadata");
 
-    let latest = event_turn_page(None, false, usize::MAX, |request| {
-        store.event_page("session", request)
-    })
-    .await
-    .expect("load latest turn");
-    let older = event_turn_page(latest.next_before_sequence, false, usize::MAX, |request| {
-        store.event_page("session", request)
-    })
-    .await
-    .expect("load older turn");
+    let latest = event_turn_page(&store, "session", None)
+        .await
+        .expect("load latest turn");
+    let older = event_turn_page(&store, "session", latest.next_before_sequence)
+        .await
+        .expect("load older turn");
 
     assert!(matches!(
         latest.into_chronological().as_slice(),
@@ -182,10 +178,6 @@ async fn event_turn_page_keeps_long_turns_whole() {
                     msg: EventMsg::TurnComplete(completed),
                     ..
                 },
-                ..
-            },
-            JournalEvent {
-                event: Event { msg: EventMsg::Warning(_), .. },
                 ..
             }
         ] if started.turn_id == "latest" && completed.turn_id == "latest"

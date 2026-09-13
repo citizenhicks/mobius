@@ -148,6 +148,10 @@ extension AppModel {
         guard canCreateSession else { return }
         if newVoiceChatIntent == .selectingWorkspace { newVoiceChatIntent = .selectingBot }
         if chat.selectedSessionID == nil, case .chat(.new)? = navigationPath.last {
+            if chat.pendingNewChatWorkspace != path {
+                workspaceFiles = []
+                workspaceFilesTruncated = false
+            }
             chat.pendingNewChatWorkspace = path
             workspaceError = nil
             showsWorkspaceBrowser = false
@@ -156,12 +160,16 @@ extension AppModel {
         }
         chat.changeComposerDraftOwner(to: nil)
         chat.discardComposerAttachments()
+        let retainedWorkspaceFiles = workspace?.path == path ? workspaceFiles : []
+        let retainedWorkspaceFilesTruncated = workspace?.path == path && workspaceFilesTruncated
         resetRootSessionState()
+        workspaceFiles = retainedWorkspaceFiles
+        workspaceFilesTruncated = retainedWorkspaceFilesTruncated
         chat.selectedSessionID = nil
         chat.sessionToRestoreID = nil
         chat.sessionOpenCursor = nil
         chat.pendingNewChatWorkspace = path
-        chat.pendingNewChatBotIDs = []
+        chat.pendingNewChatBotID = nil
         workspaceError = nil
         chat.resetSessionState()
         destination = .chats

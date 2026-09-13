@@ -295,13 +295,8 @@ async fn handle_terminal_input(
                 paste_clipboard(gateway, state, uploads, clipboard_preparation);
             }
             UiAction::Exit => {
-                let _ = stop_chat(sender, session_id).await;
+                interrupt_active_turn(sender, session_id, state).await;
                 return Ok(Some(FrontendExit::Exit));
-            }
-            UiAction::StopChat => {
-                if let Err(error) = stop_chat(sender, session_id).await {
-                    state.push(error.to_string(), TranscriptTone::Error);
-                }
             }
             UiAction::ChooseBot { workspace, clear } => {
                 choose_bot(gateway, session, workspace, clear, state);
@@ -309,11 +304,11 @@ async fn handle_terminal_input(
             }
             UiAction::CreateSession {
                 workspace,
-                bot_ids,
+                bot_id,
                 clear,
             } => {
                 *pending_session_creation =
-                    create_session(sender, workspace, bot_ids, clear, state).await;
+                    create_session(sender, workspace, bot_id, clear, state).await;
             }
             UiAction::Submit(op) => send_and_report(sender, session_id, op, state).await,
             UiAction::Gateway(action) => send_gateway_action(sender, action, state).await,
@@ -427,7 +422,7 @@ fn choose_bot(
     state.open_bot_picker(
         &gateway.bots,
         workspace,
-        session.primary_bot_id.as_deref().unwrap_or_default(),
+        &session.session.context.bot_id,
         clear,
     );
 }
@@ -435,7 +430,7 @@ fn choose_bot(
 async fn create_session(
     sender: &GatewaySender,
     workspace: std::path::PathBuf,
-    bot_ids: Vec<String>,
+    bot_id: String,
     clear: bool,
     state: &mut TuiState,
 ) -> Option<PendingSessionCreation> {
@@ -444,8 +439,7 @@ async fn create_session(
         .send(ClientMessage::CreateSession {
             request_id: request_id.clone(),
             workspace,
-            bot_ids,
-            primary_bot_id: None,
+            bot_id,
         })
         .await;
     if let Err(error) = result {
@@ -739,14 +733,10 @@ async fn handle_clipboard_preparation(
     }
 }
 
-async fn stop_chat(sender: &GatewaySender, session_id: &str) -> Result<()> {
-    sender
-        .send(ClientMessage::StopChat {
-            request_id: Uuid::new_v4().to_string(),
-            session_id: session_id.into(),
-        })
-        .await
-        .map_err(|error| Error::Stopped(error.to_string()))
+async fn interrupt_active_turn(sender: &GatewaySender, session_id: &str, state: &TuiState) {
+    if let Some(turn_id) = state.active_turn().map(str::to_owned) {
+        let _ = send_op(sender, session_id, Op::Interrupt { turn_id }).await;
+    }
 }
 
 async fn send_and_report(sender: &GatewaySender, session_id: &str, op: Op, state: &mut TuiState) {
@@ -812,8 +802,16 @@ async fn open_bots(
     state: &mut TuiState,
     session_id: &str,
 ) -> bool {
-    let bot_id = session.primary_bot_id.as_deref();
-    let result = bots::run(terminal, sender, events, gateway, bot_id, bot_id).await;
+    let bot_id = session.session.context.bot_id.clone();
+    let result = bots::run(
+        terminal,
+        sender,
+        events,
+        gateway,
+        Some(&bot_id),
+        Some(&bot_id),
+    )
+    .await;
     if !gateway
         .sessions
         .iter()
@@ -881,16 +879,8 @@ fn sync_session_info(
     session: &SessionReadyPayload,
     gateway: &ReadyPayload,
 ) -> Result<()> {
-    let bot = if session.member_bot_ids.len() != 1 {
-        None
-    } else {
-        Some(session_bot(gateway, session)?)
-    };
-    state.model.model = if bot.is_some() {
-        super::terminal_text(&session.session.model.model)
-    } else {
-        "Group chat".into()
-    };
+    let bot = session_bot(gateway, session)?;
+    state.model.model = super::terminal_text(&session.session.model.model);
     state.model.reasoning_effort = session
         .session
         .model
@@ -899,9 +889,10 @@ fn sync_session_info(
         .map(super::terminal_text);
     state.model_route.clone_from(&session.session.model.route);
     state.agent_summary = agent_summary(gateway, session, bot);
-    state.active_message_delivery = bot.map(|bot| {
-        composer_message_delivery(&gateway.middleware_features, &bot.config.config.middleware)
-    });
+    state.active_message_delivery = Some(composer_message_delivery(
+        &gateway.middleware_features,
+        &bot.config.config.middleware,
+    ));
     state.context_limit = session.context_limit_tokens;
     state.usage.apply_context_limit(state.context_limit);
     Ok(())
@@ -975,8 +966,8 @@ fn enrich_resume_picker(
         if let Some(origin) = &session.session_context.origin_label {
             details.push(origin.clone());
         }
-        if !session.member_bot_ids.is_empty() {
-            details.push(member_labels(&session.member_bot_ids, bots));
+        if let Some(handle) = bot_handle(&session.session_context.bot_id, bots) {
+            details.push(format!("@{handle}"));
         }
         details.push(format!("started {}", human_time(session.created_at)));
         option.description = details.join(" · ");
@@ -997,19 +988,6 @@ fn session_status(session: &SessionRecord) -> &'static str {
     }
 }
 
-fn member_labels(members: &[String], bots: &[BotRecord]) -> String {
-    members
-        .iter()
-        .map(|id| {
-            bot_handle(id, bots).map_or_else(
-                || super::terminal_text(id),
-                |handle| format!("@{}", super::terminal_text(handle)),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 fn bot_handle<'a>(bot_id: &str, bots: &'a [BotRecord]) -> Option<&'a str> {
     bots.iter()
         .find(|bot| bot.id == bot_id)
@@ -1020,18 +998,14 @@ fn session_bot<'a>(
     gateway: &'a ReadyPayload,
     session: &SessionReadyPayload,
 ) -> Result<&'a BotRecord> {
-    let bot_id = session
-        .primary_bot_id
-        .as_deref()
-        .ok_or_else(|| Error::Config("this Chat has no primary Bot".into()))?;
     gateway
         .bots
         .iter()
-        .find(|bot| bot.id == bot_id && session.member_bot_ids.iter().any(|id| id == bot_id))
+        .find(|bot| bot.id == session.session.context.bot_id)
         .ok_or_else(|| {
             Error::Config(format!(
                 "session {} references unknown Bot {}",
-                session.session.session_id, bot_id
+                session.session.session_id, session.session.context.bot_id
             ))
         })
 }
@@ -1047,19 +1021,7 @@ fn human_time(timestamp_ms: i64) -> String {
     )
 }
 
-fn agent_summary(
-    gateway: &ReadyPayload,
-    session: &SessionReadyPayload,
-    bot: Option<&BotRecord>,
-) -> String {
-    let Some(bot) = bot else {
-        return format!(
-            "MÖBIUS v{} · {}\nworkspace: {}",
-            env!("CARGO_PKG_VERSION"),
-            member_labels(&session.member_bot_ids, &gateway.bots),
-            super::terminal_text(&session.workspace.path.display().to_string()),
-        );
-    };
+fn agent_summary(gateway: &ReadyPayload, session: &SessionReadyPayload, bot: &BotRecord) -> String {
     let bot_label = format!("@{}", bot.handle);
     let providers = gateway
         .provider_instances
@@ -1128,23 +1090,11 @@ async fn send_op(
     op: Op,
 ) -> Result<String> {
     let id = Uuid::new_v4().to_string();
-    let message = match op {
-        Op::ExecApproval {
-            id: approval_request_id,
-            decision,
-        } => ClientMessage::ReviewApproval {
-            request_id: id.clone(),
-            approval_request_id,
-            decision,
-        },
-        op => ClientMessage::Submit {
+    sender
+        .send(ClientMessage::Submit {
             session_id: session_id.into(),
             submission: Submission { id: id.clone(), op },
-            recipient_bot_ids: Vec::new(),
-        },
-    };
-    sender
-        .send(message)
+        })
         .await
         .map(|()| id)
         .map_err(|error| Error::Stopped(error.to_string()))
@@ -1172,7 +1122,6 @@ mod tests {
                     submission_id: None,
                     msg: EventMsg::ContextCompacted,
                 },
-                recipient_bot_ids: Vec::new(),
                 stream_metrics: Vec::new(),
                 blocks: Vec::new(),
                 preview: None,
@@ -1312,7 +1261,7 @@ mod tests {
     }
 
     #[test]
-    fn group_snapshot_restores_current_work_and_keeps_the_next_approval_after_completion() {
+    fn session_snapshot_restores_current_work_and_approval() {
         use mobius::protocol::{ExecApprovalRequestEvent, TurnCompleteEvent};
         let catalog = UiCatalog::build(&[], std::path::Path::new("/tmp")).unwrap();
         let mut state = TuiState::new(
@@ -1322,17 +1271,14 @@ mod tests {
             String::new(),
             String::new(),
         );
-        let mut session = session_payload("group-chat");
-        session.member_bot_ids = vec!["bot-a".into(), "bot-b".into()];
-        session.active_turn_ids = vec!["turn-a".into(), "turn-b".into()];
-        session.pending_approvals = ["a", "b"]
-            .map(|suffix| ExecApprovalRequestEvent {
-                id: format!("approval-{suffix}"),
-                turn_id: format!("turn-{suffix}"),
-                calls: Vec::new(),
-                reason: format!("@bot-{suffix}: approve work"),
-            })
-            .to_vec();
+        let mut session = session_payload("session-a");
+        session.active_turn_ids = vec!["turn-a".into()];
+        session.pending_approvals = vec![ExecApprovalRequestEvent {
+            id: "approval-a".into(),
+            turn_id: "turn-a".into(),
+            calls: Vec::new(),
+            reason: "approve work".into(),
+        }];
         sync_session(&mut state, &session, &ready_payload()).unwrap();
         assert!(state.active_turn().is_some());
         assert_eq!(
@@ -1345,63 +1291,8 @@ mod tests {
             }),
             Vec::new(),
         );
-        assert!(state.active_turn().is_some());
-        assert_eq!(
-            state.approval().map(|request| request.id.as_str()),
-            Some("approval-b")
-        );
-        state.handle_agent_event(
-            EventMsg::TurnComplete(TurnCompleteEvent {
-                turn_id: "turn-b".into(),
-            }),
-            Vec::new(),
-        );
         assert!(state.active_turn().is_none());
         assert!(state.approval().is_none());
-    }
-
-    #[test]
-    fn another_group_member_starting_and_completing_preserves_the_pending_approval() {
-        use mobius::protocol::{ExecApprovalRequestEvent, TurnCompleteEvent, TurnStartedEvent};
-        let catalog = UiCatalog::build(&[], std::path::Path::new("/tmp")).unwrap();
-        let mut state = TuiState::new(
-            &catalog,
-            "/tmp".into(),
-            ModelInfo::default(),
-            String::new(),
-            String::new(),
-        );
-        state.handle_agent_event(
-            EventMsg::ExecApprovalRequest(ExecApprovalRequestEvent {
-                id: "approval-a".into(),
-                turn_id: "turn-a".into(),
-                calls: Vec::new(),
-                reason: "Approve member A".into(),
-            }),
-            Vec::new(),
-        );
-        state.handle_agent_event(
-            EventMsg::TurnStarted(TurnStartedEvent {
-                turn_id: "turn-b".into(),
-                model_context_window: None,
-            }),
-            Vec::new(),
-        );
-        assert_eq!(
-            state.approval().map(|request| request.id.as_str()),
-            Some("approval-a")
-        );
-        state.handle_agent_event(
-            EventMsg::TurnComplete(TurnCompleteEvent {
-                turn_id: "turn-b".into(),
-            }),
-            Vec::new(),
-        );
-        assert_eq!(
-            state.approval().map(|request| request.id.as_str()),
-            Some("approval-a")
-        );
-        assert!(state.active_turn().is_some());
     }
 
     #[test]
@@ -1410,7 +1301,6 @@ mod tests {
         let mut state = TuiState::default();
         let mut gateway = ready_payload();
         let mut session = session_payload("session-a");
-        session.member_bot_ids = vec!["bot-a".into()];
         session.latest_sequence = 2;
         session.active_turn_ids = vec!["current-turn".into()];
         session.pending_approvals = vec![ExecApprovalRequestEvent {
@@ -1498,8 +1388,6 @@ mod tests {
 
     fn session_payload(session_id: &str) -> SessionReadyPayload {
         SessionReadyPayload {
-            member_bot_ids: vec!["bot-a".into()],
-            primary_bot_id: Some("bot-a".into()),
             active_turn_ids: Vec::new(),
             pending_approvals: Vec::new(),
             latest_sequence: 0,
@@ -1512,7 +1400,10 @@ mod tests {
             git: None,
             session: SessionConfiguredEvent {
                 session_id: session_id.into(),
-                context: SessionContext::default(),
+                context: SessionContext {
+                    bot_id: "bot-a".into(),
+                    ..SessionContext::default()
+                },
                 model: ModelChangedEvent {
                     route: String::new(),
                     model: String::new(),
@@ -1535,8 +1426,8 @@ mod tests {
             machine_name: String::new(),
             bots: vec![BotRecord {
                 id: "bot-a".into(),
-                handle: "alice".into(),
-                name: "Alice".into(),
+                handle: "ada".into(),
+                name: "Ada".into(),
                 description: String::new(),
                 tint: Default::default(),
                 config: VersionedAgentConfig {
@@ -1622,46 +1513,7 @@ mod tests {
     }
 
     #[test]
-    fn group_session_hydrates_members_without_an_individual_bot_configuration() {
-        let mut gateway = ready_payload();
-        gateway.bots = ["ada", "grace"]
-            .into_iter()
-            .map(|handle| BotRecord {
-                id: format!("bot-{handle}"),
-                handle: handle.into(),
-                name: handle.into(),
-                description: String::new(),
-                tint: Default::default(),
-                config: VersionedAgentConfig {
-                    revision: 1,
-                    config: Default::default(),
-                },
-            })
-            .collect();
-        let mut session = session_payload("group");
-        session.member_bot_ids = vec!["bot-ada".into(), "bot-grace".into()];
-        session.primary_bot_id = Some("bot-ada".into());
-        let catalog = UiCatalog::build(&[], &session.workspace.path).expect("catalog");
-        let mut state = TuiState::new(
-            &catalog,
-            session.workspace.path.clone(),
-            ModelInfo::default(),
-            String::new(),
-            String::new(),
-        );
-
-        sync_session(&mut state, &session, &gateway).expect("group hydration");
-
-        assert_eq!(state.model.model, "Group chat");
-        assert!(state.agent_summary.contains("@ada, @grace"));
-        assert_eq!(state.active_message_delivery, None);
-        session.member_bot_ids = vec!["missing-bot".into()];
-        session.primary_bot_id = Some("missing-bot".into());
-        assert!(sync_session(&mut state, &session, &gateway).is_err());
-    }
-
-    #[test]
-    fn resume_picker_uses_live_session_and_group_metadata() {
+    fn resume_picker_uses_live_session_and_bot_metadata() {
         let mut event = EventMsg::Frontend(FrontendEvent::Picker {
             title: "Resume chat".into(),
             options: vec![FrontendPickerOption {
@@ -1676,10 +1528,9 @@ mod tests {
             }],
         });
         let sessions = [SessionRecord {
-            member_bot_ids: vec!["bot-a".into(), "bot-b".into()],
-            primary_bot_id: Some("bot-a".into()),
             session_id: "session-a".into(),
             session_context: SessionContext {
+                bot_id: "bot-a".into(),
                 workspace_id: Some("workspace-a".into()),
                 workspace_label: Some("Project A".into()),
                 ..SessionContext::default()
@@ -1720,7 +1571,7 @@ mod tests {
                 .description
                 .starts_with("running · this workspace")
         );
-        assert!(options[0].description.contains("@curie, bot-b"));
+        assert!(options[0].description.contains("@curie"));
         assert!(options[0].description.contains("started "));
         assert!(!options[0].description.contains("Unix"));
     }

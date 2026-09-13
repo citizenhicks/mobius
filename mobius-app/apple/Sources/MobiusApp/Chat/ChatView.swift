@@ -33,13 +33,27 @@ struct ChatView: View {
                 scrollToBottomRequest: scrollToBottomRequest
             )
             .id(transcriptPresentationID)
-            ComposerView(showBotSettings: presentSelectedBotSettings)
-                .onGeometryChange(for: CGFloat.self) { geometry in
-                    geometry.size.height
-                } action: { height in
-                    composerHeight = height
-                }
-                .zIndex(1)
+            if model.selectedSessionIsHidden, let approval = model.chat.pendingApproval {
+                ApprovalView(approval: approval)
+                    .frame(maxWidth: MobiusStyle.transcriptWidth)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, MobiusSpace.l)
+                    .padding(.bottom, MobiusSpace.m)
+                    .onGeometryChange(for: CGFloat.self) { geometry in
+                        geometry.size.height
+                    } action: { height in
+                        composerHeight = height
+                    }
+                    .zIndex(1)
+            } else if !model.selectedSessionIsHidden {
+                ComposerView(showBotSettings: presentSelectedBotSettings)
+                    .onGeometryChange(for: CGFloat.self) { geometry in
+                        geometry.size.height
+                    } action: { height in
+                        composerHeight = height
+                    }
+                    .zIndex(1)
+            }
             if !isAtBottom {
                 Button("Scroll to latest", glyph: .arrowDown) {
                     scrollToBottomRequest += 1
@@ -100,7 +114,7 @@ struct ChatView: View {
             // One item holding both, so the spacing is this stack's rather than the bar's
             // between two items. The 44pt targets still touch; only the slack goes.
             ToolbarItem(placement: .primaryAction) {
-                if model.chat.selectedSessionID != nil {
+                if model.chat.selectedSessionID != nil, !model.selectedSessionIsHidden {
                     HeaderActionGroup {
                         newChatButton
                         ChatOptionsMenu(
@@ -156,7 +170,7 @@ struct ChatView: View {
     }
 
     private var bottomInset: CGFloat {
-        composerHeight
+        model.selectedSessionIsHidden && model.chat.pendingApproval == nil ? 0 : composerHeight
     }
 
     private var workspaceName: String {
@@ -166,6 +180,7 @@ struct ChatView: View {
     }
 
     private var chatSubtitle: String {
+        if model.selectedSessionIsHidden { return model.gateway.gatewayMachineName }
         return [workspaceName, model.gateway.gatewayMachineName]
             .filter { !$0.isEmpty }
             .joined(separator: " • ")
@@ -223,18 +238,15 @@ private struct ChatOptionsMenu: View {
                 }
                 .disabled(
                     model.chat.selectedSessionID == nil || !model.gateway.connectionState.isReady)
-                if !model.selectedChatIsGroup {
-                    Button {
-                        model.loadDirectory(
-                            model.workspace?.path
-                                ?? (model.selectedGatewayIsMobiusCloud ? "." : "/")
-                        )
-                        showsFolderAttachmentBrowser = true
-                    } label: {
-                        MobiusLabel(title: "Attach folder…", glyph: .folderPlus)
-                    }
-                    .disabled(!model.canModifySelectedSession)
+                Button {
+                    model.loadDirectory(
+                        model.workspace?.path ?? (model.selectedGatewayIsMobiusCloud ? "." : "/")
+                    )
+                    showsFolderAttachmentBrowser = true
+                } label: {
+                    MobiusLabel(title: "Attach folder…", glyph: .folderPlus)
                 }
+                .disabled(!model.canModifySelectedSession)
                 if let path = model.workspace?.path {
                     Button {
                         copyToPasteboard(path)
@@ -247,21 +259,19 @@ private struct ChatOptionsMenu: View {
                 }
             }
             Section("Actions") {
-                if !model.selectedChatIsGroup {
-                    Button {
-                        guard let bot = model.selectedBot else { return }
-                        model.beginEditingBot(bot)
-                        presentedBotSettings = bot
-                    } label: {
-                        MobiusLabel(title: "Bot agent settings", glyph: .slidersHorizontal)
+                Button {
+                    guard let bot = model.selectedBot else { return }
+                    model.beginEditingBot(bot)
+                    presentedBotSettings = bot
+                } label: {
+                    MobiusLabel(title: "Bot agent settings", glyph: .slidersHorizontal)
+                }
+                .disabled(model.selectedBot == nil)
+                if let session = model.selectedSession {
+                    Button("Reassign Bot", glyph: .aiScan) {
+                        model.chat.sessionToReassign = session
                     }
-                    .disabled(model.selectedBot == nil)
-                    if let session = model.selectedSession {
-                        Button("Reassign Bot", glyph: .aiScan) {
-                            model.chat.sessionToReassign = session
-                        }
-                        .disabled(!model.canReassignSession(session))
-                    }
+                    .disabled(!model.canReassignSession(session))
                 }
                 ForEach(model.chat.chatMenuWidgets) { widget in
                     Button {
@@ -336,15 +346,10 @@ struct ChatInfoView: View {
                 Text("Chat info")
                     .font(MobiusStyle.titleFont)
                 detail("Workspace", value: model.workspace?.path)
-                if model.selectedChatIsGroup {
-                    detail(
-                        "Bots",
-                        value: model.selectedChatBots.map { "\($0.name) (@\($0.handle))" }.joined(
-                            separator: "\n"))
-                } else if let bot = model.selectedBot {
+                if let bot = model.selectedBot {
                     detail("Bot", value: "\(bot.name) (@\(bot.handle))")
-                    detail("Model", value: model.chatModelLabel)
                 }
+                detail("Model", value: model.chatModelLabel)
                 detail("Gateway", value: model.gateway.gatewayMachineName)
                 Divider()
                 VStack(alignment: .leading, spacing: MobiusSpace.s) {
@@ -434,8 +439,8 @@ struct ReassignChatSheet: View {
         }
     }
 
-    private var currentBotID: String? {
-        model.chat.sessions.first { $0.sessionId == session.sessionId }?.primaryBotId
-            ?? session.primaryBotId
+    private var currentBotID: String {
+        model.chat.sessions.first { $0.sessionId == session.sessionId }?.sessionContext.botId
+            ?? session.sessionContext.botId
     }
 }

@@ -110,6 +110,7 @@ struct StaticPrompt(&'static str);
 
 fn test_session_context() -> SessionContext {
     SessionContext {
+        bot_id: "test-bot".into(),
         ..SessionContext::default()
     }
 }

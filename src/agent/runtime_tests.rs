@@ -97,7 +97,10 @@ use serde_json::Value;
 use tokio::sync::Notify;
 
 fn test_session_context() -> SessionContext {
-    SessionContext::default()
+    SessionContext {
+        bot_id: "test-bot".into(),
+        ..SessionContext::default()
+    }
 }
 
 struct TestModel;
@@ -771,6 +774,3 @@ mod streaming_tools;
 mod tool_discovery;
 #[path = "runtime_tests/usage_and_approval.rs"]
 mod usage_and_approval;
-
-#[path = "runtime_tests/prepared.rs"]
-mod prepared;

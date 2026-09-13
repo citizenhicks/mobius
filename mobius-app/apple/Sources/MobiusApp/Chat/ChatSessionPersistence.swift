@@ -43,8 +43,7 @@ extension ChatSessionModel {
             return
         }
         guard stashedComposerDraft == nil else { return }
-        let draft = ComposerDraft(
-            text: composer, reply: composerReply, recipientBotIDs: composerRecipientBotIDs)
+        let draft = ComposerDraft(text: composer, reply: composerReply)
         composerDraftSaveTask = Task { [weak self] in
             do {
                 try await Task.sleep(for: .milliseconds(400))
@@ -62,8 +61,7 @@ extension ChatSessionModel {
         composerDraftSaveTask = nil
         guard stashedComposerDraft == nil, let owner = composerDraftOwner else { return }
         enqueueComposerDraftSave(
-            ComposerDraft(
-                text: composer, reply: composerReply, recipientBotIDs: composerRecipientBotIDs),
+            ComposerDraft(text: composer, reply: composerReply),
             owner: owner
         )
     }
@@ -246,7 +244,7 @@ extension ChatSessionModel {
         var pending = current
         pending.recovery.phase = .editing
         pendingWidgetEdit = pending
-        stashedComposerDraft = ComposerDraft(text: pending.recovery.displacedDraft)
+        stashedComposerDraft = pending.recovery.displacedDraft
         suppressesComposerDraftSave = true
         composer = pending.recovery.editedInput
         suppressesComposerDraftSave = false
@@ -318,8 +316,7 @@ extension ChatSessionModel {
         }
         let previousDraft = ComposerDraft(
             text: pendingWidgetEdit?.recovery.displacedDraft ?? composer,
-            reply: pendingWidgetEdit == nil ? composerReply : nil,
-            recipientBotIDs: pendingWidgetEdit == nil ? composerRecipientBotIDs : []
+            reply: pendingWidgetEdit == nil ? composerReply : nil
         )
         pendingWidgetEdit = nil
         stashedComposerDraft = nil
@@ -333,7 +330,6 @@ extension ChatSessionModel {
         suppressesComposerDraftSave = true
         composer = previousOwner == nil ? previousDraft.text : ""
         composerReply = previousOwner == nil ? previousDraft.reply : nil
-        composerRecipientBotIDs = previousOwner == nil ? previousDraft.recipientBotIDs : []
         suppressesComposerDraftSave = false
         let store = store
         composerDraftIOTask = Task { [weak self] in
@@ -354,13 +350,11 @@ extension ChatSessionModel {
                 composerDraftGeneration == generation,
                 composerDraftOwner == owner
             else { return }
-            let current = ComposerDraft(
-                text: composer, reply: composerReply, recipientBotIDs: composerRecipientBotIDs)
+            let current = ComposerDraft(text: composer, reply: composerReply)
             let merged = restored.appending(current)
             suppressesComposerDraftSave = true
             composer = merged.text
             composerReply = merged.reply
-            composerRecipientBotIDs = merged.recipientBotIDs
             suppressesComposerDraftSave = false
             isLoadingComposerDraft = false
             scheduleComposerDraftSave()
@@ -378,7 +372,6 @@ extension ChatSessionModel {
         composer = ""
         suppressesComposerDraftSave = false
         composerReply = nil
-        composerRecipientBotIDs = []
     }
 
     func invalidateComposerEditRecovery(for owner: ComposerDraftOwner? = nil) {
@@ -399,16 +392,12 @@ extension ChatSessionModel {
     }
 
     func restoreDraft(_ draft: PendingComposerDraft) {
-        let restored = ComposerDraft(
-            text: draft.text, reply: draft.reply, recipientBotIDs: draft.recipientBotIDs
-        ).appending(
-            ComposerDraft(
-                text: composer, reply: composerReply, recipientBotIDs: composerRecipientBotIDs)
+        let restored = ComposerDraft(text: draft.text, reply: draft.reply).appending(
+            ComposerDraft(text: composer, reply: composerReply)
         )
         suppressesComposerDraftSave = true
         composer = restored.text
         composerReply = restored.reply
-        composerRecipientBotIDs = restored.recipientBotIDs
         suppressesComposerDraftSave = false
         scheduleComposerDraftSave()
         let currentIDs = Set(

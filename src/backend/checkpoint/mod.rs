@@ -1,6 +1,6 @@
 //! Durable agent checkpoints.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -27,7 +27,7 @@ use crate::protocol::TokenUsage;
 
 pub mod sqlite;
 
-pub(crate) const CHECKPOINT_VERSION: u32 = 15;
+pub(crate) const CHECKPOINT_VERSION: u32 = 16;
 pub(crate) const MAX_QUEUED_MESSAGES: usize = 1_024;
 const TURN_PAGE_BATCH_SIZE: usize = 100;
 const MAX_QUEUED_OWNER_BYTES: usize = 256;
@@ -482,6 +482,8 @@ pub struct SessionCursor {
 /// Bounds one newest-first session catalog query.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionPageRequest {
+    /// Restricts sessions and cursor keys to this Bot; `None` lists every Bot.
+    pub bot_id: Option<String>,
     pub cursor: Option<SessionCursor>,
     pub limit: usize,
 }
@@ -585,139 +587,79 @@ impl EventPage {
     }
 }
 
-/// Loads the newest complete turn and any overlapping turns before an event cursor.
-///
-/// `input_precedes_start` includes the correlated input published before `TurnStarted`;
-/// execution journals instead record that input after the start. Storage batches are
-/// bounded independently of turn length, and an oversized turn fails without truncation.
-pub async fn event_turn_page<
-    E: From<Error>,
-    F: Future<Output = std::result::Result<EventPage, E>>,
->(
+/// Loads the newest logical turn before a durable event cursor.
+pub async fn event_turn_page(
+    checkpoints: &dyn CheckpointStore,
+    session_id: &str,
     before_sequence: Option<u64>,
-    input_precedes_start: bool,
-    max_bytes: usize,
-    mut load_page: impl FnMut(EventPageRequest) -> F,
-) -> std::result::Result<EventPage, E> {
+) -> Result<EventPage> {
     let mut cursor = before_sequence;
-    let mut result = EventPage::default();
-    let mut pending_turns = HashSet::new();
-    let mut pending_inputs = HashSet::new();
-    let mut seen_inputs = HashSet::new();
-    let mut input_boundary = None;
-    let mut turn_boundary = None;
+    let mut latest_sequence = 0;
+    let mut events = Vec::new();
     let mut found_start = false;
-    let mut bytes = 0_usize;
+    let mut has_earlier_turn = false;
+
     loop {
-        let page = load_page(EventPageRequest {
-            before_sequence: cursor,
-            limit: TURN_PAGE_BATCH_SIZE,
-        })
-        .await?;
-        if result.events.is_empty() {
-            result.latest_sequence = page.latest_sequence;
+        let page = checkpoints
+            .event_page(
+                session_id,
+                EventPageRequest {
+                    before_sequence: cursor,
+                    limit: TURN_PAGE_BATCH_SIZE,
+                },
+            )
+            .await?;
+        if events.is_empty() {
+            latest_sequence = page.latest_sequence;
         }
-        let page_len = page.events.len();
-        for journal in page.events {
-            if let Some(boundary) = turn_boundary
-                && (history_turn_id(&journal.event.msg).is_some()
-                    || matches!(
-                        journal.event.msg,
-                        EventMsg::TurnStarted(_) | EventMsg::Message(_)
-                    ))
-            {
-                result.events.truncate(boundary);
-                result.next_before_sequence = result.events.last().map(|event| event.sequence);
-                return Ok(result);
-            }
-            // A lone public input may precede an older active start, so look back
-            // until an older completed turn or another input confirms its boundary.
-            if let Some(boundary) = input_boundary
-                && pending_turns.is_empty()
-                && matches!(
-                    journal.event.msg,
-                    EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_) | EventMsg::Message(_)
-                )
-            {
-                result.events.truncate(boundary);
-                result.next_before_sequence = result.events.last().map(|event| event.sequence);
-                return Ok(result);
-            }
-            bytes = bytes.saturating_add(serde_json::to_vec(&journal).map_err(Error::from)?.len());
-            if bytes > max_bytes {
-                return Err(Error::Checkpoint(format!(
-                    "one history turn exceeds the {max_bytes}-byte page limit"
-                ))
-                .into());
-            }
-            let event = &journal.event;
-            match &event.msg {
-                EventMsg::TurnStarted(started) => {
-                    found_start = true;
-                    pending_turns.remove(&started.turn_id);
-                    input_boundary = None;
-                    if input_precedes_start
-                        && let Some(id) = &event.submission_id
-                        && !seen_inputs.contains(id)
-                    {
-                        pending_inputs.insert(id.clone());
-                    }
+        for event in page.events {
+            if found_start {
+                if matches!(&event.event.msg, EventMsg::TurnStarted(_)) {
+                    has_earlier_turn = true;
+                    break;
                 }
-                EventMsg::Message(message) => {
-                    if let Some(id) = &event.submission_id {
-                        pending_inputs.remove(id);
-                        seen_inputs.insert(id.clone());
-                    }
-                    if input_precedes_start
-                        && !found_start
-                        && pending_turns.is_empty()
-                        && matches!(message.author, MessageAuthor::User)
-                        && matches!(
-                            message.delivery,
-                            MessageDelivery::Turn | MessageDelivery::Queue
-                        )
-                    {
-                        input_boundary = Some(result.events.len() + 1);
-                    }
-                }
-                message => {
-                    if let Some(turn_id) = history_turn_id(message) {
-                        pending_turns.insert(turn_id.to_owned());
-                    }
-                }
+            } else {
+                found_start = matches!(&event.event.msg, EventMsg::TurnStarted(_));
+                events.push(event);
             }
-            result.events.push(journal);
-            if found_start && pending_turns.is_empty() && pending_inputs.is_empty() {
-                // Look past lifecycle metadata before offering another turn page.
-                turn_boundary.get_or_insert(result.events.len());
-            }
+        }
+        if has_earlier_turn {
+            break;
         }
         let Some(next) = page.next_before_sequence else {
-            return Ok(result);
+            break;
         };
-        if cursor.is_some_and(|previous| next >= previous) || page_len == 0 {
-            return Err(Error::Checkpoint("history page cursor did not advance".into()).into());
-        }
         cursor = Some(next);
     }
-}
 
-fn history_turn_id(event: &EventMsg) -> Option<&str> {
-    match event {
-        EventMsg::TurnComplete(event) => Some(&event.turn_id),
-        EventMsg::TurnAborted(event) => Some(&event.turn_id),
-        EventMsg::AssistantMessage(event) => Some(&event.turn_id),
-        EventMsg::AssistantContentDelta(event) => Some(&event.turn_id),
-        EventMsg::ModelStepStarted(event) => Some(&event.turn_id),
-        EventMsg::ModelStepCompleted(event) => Some(&event.turn_id),
-        EventMsg::ToolCallBegin(event) => Some(&event.turn_id),
-        EventMsg::ToolCallEnd(event) => Some(&event.turn_id),
-        EventMsg::ToolLoad(event) => Some(&event.turn_id),
-        EventMsg::ExecApprovalRequest(event) => Some(&event.turn_id),
-        EventMsg::WebSearchBegin(event) => Some(&event.turn_id),
-        EventMsg::WebSearchEnd(event) => Some(&event.turn_id),
-        _ => None,
-    }
+    let Some((start_index, turn_id)) = events.iter().enumerate().find_map(|(index, event)| {
+        let EventMsg::TurnStarted(started) = &event.event.msg else {
+            return None;
+        };
+        Some((index, started.turn_id.as_str()))
+    }) else {
+        return Ok(EventPage {
+            latest_sequence,
+            events: Vec::new(),
+            next_before_sequence: None,
+        });
+    };
+    let page_start = events[..start_index]
+        .iter()
+        .position(|event| match &event.event.msg {
+            EventMsg::TurnComplete(completed) => completed.turn_id == turn_id,
+            EventMsg::TurnAborted(aborted) => aborted.turn_id == turn_id,
+            _ => false,
+        })
+        .unwrap_or(0);
+    let next_before_sequence = has_earlier_turn.then_some(events[start_index].sequence);
+    let events = events.drain(page_start..=start_index).collect();
+
+    Ok(EventPage {
+        latest_sequence,
+        events,
+        next_before_sequence,
+    })
 }
 
 impl TranscriptPage {

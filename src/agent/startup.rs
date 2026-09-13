@@ -5,7 +5,6 @@ use super::AgentConfig;
 use super::EventRecorder;
 use super::Runner;
 use super::SUBMISSION_QUEUE_CAPACITY;
-use super::SubmissionInbox;
 use super::send_event;
 use super::submission_channel;
 use super::try_send_event;
@@ -54,12 +53,7 @@ async fn failed_start(config: &AgentConfig, runtime: &RuntimeContext, primary: E
 }
 
 /// Validates capabilities, restores a checkpoint, and starts the agent loop.
-pub async fn create_agent(config: AgentConfig) -> Result<Agent> {
-    prepare_agent(config).await?.start().await
-}
-
-/// Validates and restores an agent without starting lifecycle hooks or execution.
-pub async fn prepare_agent(mut config: AgentConfig) -> Result<PreparedAgent> {
+pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     if config.context_window <= 0 {
         return Err(Error::Config("context window must be positive".into()));
     }
@@ -305,256 +299,47 @@ pub async fn prepare_agent(mut config: AgentConfig) -> Result<PreparedAgent> {
             Some(state.finish_execution(ExecutionOutcome::Aborted, unix_timestamp_ms()?)?);
         state_changed = true;
     }
-    let model_choices = config.model.choices().cloned().collect();
-    let model_router = Arc::clone(&config.model);
-    let weak_frontend = Arc::downgrade(&runtime.frontend);
-    let frontend_sink: crate::middleware::FrontendEventSink = Arc::new(move |event| {
-        let frontend = weak_frontend
-            .upgrade()
-            .ok_or_else(|| Error::Stopped("agent frontend stopped".into()))?;
-        frontend(event)
-    });
-    let runner = Runner {
-        config,
-        runtime,
-        system_prompt,
-        catalog: Arc::new(catalog),
-        state,
-        transcript_delta: recovery_delta,
-        pending_session_start_stop: None,
-        turn_end_turn_id: None,
-        events: event_tx.clone(),
-    };
-    let agent = Agent {
-        sender,
-        events: event_rx,
-        model_router,
-        frontend,
-        frontend_sink,
-        session,
-        model,
-        model_choices,
-        tool_count,
-        next_before_sequence,
-    };
-    Ok(PreparedAgent {
-        agent,
-        runner,
-        inbox,
-        startup: Startup {
-            is_new,
-            state_changed,
-            recovery_execution,
-            recovery_events,
-            session_event,
-            replay,
-            pending_frontend,
-        },
-    })
-}
-
-/// Restored runtime that has not entered lifecycle hooks or the agent loop.
-/// Drop it to discard preparation, or choose exactly one execution boundary.
-pub struct PreparedAgent {
-    agent: Agent,
-    runner: Runner,
-    inbox: SubmissionInbox,
-    startup: Startup,
-}
-
-struct Startup {
-    is_new: bool,
-    state_changed: bool,
-    recovery_execution: Option<ExecutionRecord>,
-    recovery_events: Vec<Event>,
-    session_event: Event,
-    replay: Vec<EventMsg>,
-    pending_frontend: Arc<std::sync::Mutex<Option<Vec<crate::protocol::FrontendEvent>>>>,
-}
-
-impl PreparedAgent {
-    /// Returns presentation capabilities without entering lifecycle hooks.
-    #[must_use]
-    pub fn frontend(&self) -> &FrontendExtensions {
-        self.agent.frontend()
-    }
-
-    /// Returns restored session metadata without entering lifecycle hooks.
-    #[must_use]
-    pub fn session(&self) -> &SessionConfiguredEvent {
-        self.agent.session()
-    }
-
-    /// Returns the prepared tool count without starting execution.
-    #[must_use]
-    pub const fn tool_count(&self) -> usize {
-        self.agent.tool_count()
-    }
-
-    /// Returns the configured router without starting execution.
-    #[must_use]
-    pub fn model_router(&self) -> Arc<crate::backend::model::ModelRouter> {
-        Arc::clone(&self.agent.model_router)
-    }
-
-    /// Starts lifecycle hooks, then launches restored and newly submitted work.
-    pub async fn start(self) -> Result<Agent> {
-        let Self {
-            agent,
-            mut runner,
-            inbox,
-            mut startup,
-        } = self;
-        let session_start = runner
-            .config
+    let start_source = initial_hook_source(is_new);
+    let session_start = config
+        .middleware
+        .session_start(
+            &runtime,
+            &state.pending_messages,
+            start_source,
+            &mut state.context,
+        )
+        .await?;
+    state_changed |= session_start.input_changed;
+    let pending_session_start_stop = session_start.stop_reason;
+    if let Some(execution) = &recovery_execution {
+        let mut messages = Vec::new();
+        if let Err(error) = config
             .middleware
-            .session_start(
-                &runner.runtime,
-                &runner.state.pending_messages,
-                initial_hook_source(startup.is_new),
-                &mut runner.state.context,
-            )
-            .await?;
-        startup.state_changed |= session_start.input_changed;
-        runner.pending_session_start_stop = session_start.stop_reason;
-        if let Err(error) = runner.finish_preparation(startup).await {
-            return Err(failed_start(&runner.config, &runner.runtime, error).await);
-        }
-        runner.transcript_delta.clear();
-        tokio::spawn(async move {
-            let run = runner.run(inbox).await;
-            let session_end = runner.config.middleware.session_end(&runner.runtime).await;
-            let result = match (run, session_end) {
-                (Err(primary), Err(rollback)) => Err(Error::Rollback {
-                    primary: Box::new(primary),
-                    rollback: Box::new(rollback),
-                }),
-                (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-                (Ok(()), Ok(())) => Ok(()),
-            };
-            runner.publish_shutdown_error(result).await;
-        });
-        Ok(agent)
-    }
-
-    /// Cancels restored work without starting lifecycle hooks or the agent loop.
-    /// Drain the returned agent's events to observe durable cancellation completion.
-    #[must_use]
-    pub fn cancel(self) -> Agent {
-        let Self {
-            agent,
-            mut runner,
-            mut inbox,
-            startup,
-        } = self;
-        inbox.receiver.close();
-        tokio::spawn(async move {
-            let result = async {
-                runner.finish_preparation(startup).await?;
-                runner.transcript_delta.clear();
-                runner.cancel_prepared_work().await
-            }
-            .await;
-            runner.publish_shutdown_error(result).await;
-        });
-        agent
-    }
-}
-
-impl Runner {
-    async fn publish_shutdown_error(&self, result: Result<()>) {
-        if let Err(error) = result {
-            let _ = send_event(
-                &self.events,
-                Event {
-                    submission_id: None,
-                    msg: EventMsg::Error(ErrorEvent::from_error(&error)),
-                },
-            )
-            .await;
-        }
-    }
-
-    async fn cancel_prepared_work(&mut self) -> Result<()> {
-        let previous_state = self.state.clone();
-        let mut events = Vec::new();
-        for message in std::mem::take(&mut self.state.pending_messages) {
-            let submission_id = message.id();
-            events.extend(
-                self.config
-                    .middleware
-                    .message_boundary_events(submission_id)?
-                    .into_iter()
-                    .map(|msg| Event {
-                        submission_id: Some(submission_id.into()),
-                        msg,
-                    }),
-            );
-            events.push(Event {
-                submission_id: Some(submission_id.into()),
-                msg: EventMsg::SubmissionRejected(crate::protocol::SubmissionRejectedEvent {
-                    message: "cancelled before execution".into(),
-                }),
-            });
-        }
-        let result = if let Some(active) = self.state.active_execution.clone() {
-            self.abort_with_events(
-                &active.submission_id,
-                &active.turn_id,
-                "cancelled before execution",
-                ExecutionOutcome::Aborted,
-                events,
-            )
+            .turn_end(TurnEndContext {
+                session_id: &config.session_id,
+                turn_id: &execution.turn_id,
+                outcome: ExecutionOutcome::Aborted,
+                queued_messages: &state.pending_messages,
+                owner: None,
+                events: &mut messages,
+            })
             .await
-        } else if events.is_empty() {
-            Ok(())
-        } else {
-            self.persist_with_events(events, None).await.map(|_| ())
-        };
-        if result.is_err() {
-            self.state = previous_state;
+        {
+            return Err(failed_start(&config, &runtime, error).await);
         }
-        result
+        recovery_events.extend(messages.into_iter().map(|msg| Event {
+            submission_id: Some(execution.submission_id.clone()),
+            msg,
+        }));
+        recovery_events.push(Event {
+            submission_id: Some(execution.submission_id.clone()),
+            msg: EventMsg::TurnAborted(TurnAbortedEvent {
+                turn_id: execution.turn_id.clone(),
+                reason: "interrupted by restart".into(),
+            }),
+        });
     }
-
-    async fn finish_preparation(&mut self, startup: Startup) -> Result<()> {
-        let Startup {
-            is_new,
-            state_changed,
-            recovery_execution,
-            mut recovery_events,
-            session_event,
-            replay,
-            pending_frontend,
-        } = startup;
-        let config = &self.config;
-        let state = &mut self.state;
-        let event_tx = &self.events;
-        if let Some(execution) = &recovery_execution {
-            let mut messages = Vec::new();
-            config
-                .middleware
-                .turn_end(TurnEndContext {
-                    session_id: &config.session_id,
-                    turn_id: &execution.turn_id,
-                    outcome: ExecutionOutcome::Aborted,
-                    queued_messages: &state.pending_messages,
-                    owner: None,
-                    events: &mut messages,
-                })
-                .await?;
-            recovery_events.extend(messages.into_iter().map(|msg| Event {
-                submission_id: Some(execution.submission_id.clone()),
-                msg,
-            }));
-            recovery_events.push(Event {
-                submission_id: Some(execution.submission_id.clone()),
-                msg: EventMsg::TurnAborted(TurnAbortedEvent {
-                    turn_id: execution.turn_id.clone(),
-                    reason: "interrupted by restart".into(),
-                }),
-            });
-        }
+    let finish_start = async {
         if is_new || state_changed {
             if !is_new {
                 state.sequence = state
@@ -566,14 +351,14 @@ impl Runner {
             startup_events.append(&mut recovery_events);
             event_tx
                 .save(
-                    state,
-                    &self.transcript_delta,
+                    &state,
+                    &recovery_delta,
                     recovery_execution.as_ref(),
                     startup_events,
                 )
                 .await?;
         } else {
-            send_event(event_tx, session_event).await?;
+            send_event(&event_tx, session_event).await?;
         }
         let frontend_events = pending_frontend
             .lock()
@@ -582,7 +367,7 @@ impl Runner {
             .ok_or_else(|| Error::Stopped("middleware frontend queue already drained".into()))?;
         for update in frontend_events {
             send_event(
-                event_tx,
+                &event_tx,
                 Event {
                     submission_id: None,
                     msg: EventMsg::Frontend(update),
@@ -592,7 +377,7 @@ impl Runner {
         }
         if !replay.is_empty() {
             try_send_event(
-                event_tx,
+                &event_tx,
                 Event {
                     submission_id: None,
                     msg: EventMsg::SessionHistory(SessionHistoryEvent { events: replay }),
@@ -601,7 +386,7 @@ impl Runner {
         }
         if let Some(last_token_usage) = state.last_usage.clone() {
             try_send_event(
-                event_tx,
+                &event_tx,
                 Event {
                     submission_id: None,
                     msg: EventMsg::TokenCount(TokenCountEvent {
@@ -617,6 +402,64 @@ impl Runner {
         }
         event_tx.flush().await
     }
+    .await;
+    if let Err(error) = finish_start {
+        return Err(failed_start(&config, &runtime, error).await);
+    }
+    let model_choices = config.model.choices().cloned().collect();
+    let model_router = Arc::clone(&config.model);
+    let weak_frontend = Arc::downgrade(&runtime.frontend);
+    let frontend_sink: crate::middleware::FrontendEventSink = Arc::new(move |event| {
+        let frontend = weak_frontend
+            .upgrade()
+            .ok_or_else(|| Error::Stopped("agent frontend stopped".into()))?;
+        frontend(event)
+    });
+    let mut runner = Runner {
+        config,
+        runtime,
+        system_prompt,
+        catalog: Arc::new(catalog),
+        state,
+        transcript_delta: Vec::new(),
+        pending_session_start_stop,
+        turn_end_turn_id: None,
+        events: event_tx.clone(),
+    };
+    tokio::spawn(async move {
+        let run = runner.run(inbox).await;
+        let session_end = runner.config.middleware.session_end(&runner.runtime).await;
+        let error = match (run, session_end) {
+            (Err(primary), Err(rollback)) => Some(Error::Rollback {
+                primary: Box::new(primary),
+                rollback: Box::new(rollback),
+            }),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Some(error),
+            (Ok(()), Ok(())) => None,
+        };
+        if let Some(error) = error {
+            let _ = send_event(
+                &event_tx,
+                Event {
+                    submission_id: None,
+                    msg: EventMsg::Error(ErrorEvent::from_error(&error)),
+                },
+            )
+            .await;
+        }
+    });
+    Ok(Agent {
+        sender,
+        events: event_rx,
+        model_router,
+        frontend,
+        frontend_sink,
+        session,
+        model,
+        model_choices,
+        tool_count,
+        next_before_sequence,
+    })
 }
 
 #[cfg(test)]

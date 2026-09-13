@@ -4,35 +4,6 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
-    func testGroupAttachmentPostsWhileMembersAreRunningWithoutTargetingATurn() async throws {
-        let recorder = GatewayRequestRecorder()
-        let app = try model { await recorder.record($0) }
-        app.gateway.connectionState = .ready
-        app.chat.selectedSessionID = "group"
-        app.chat.selectedMemberBotIDs = ["bot-1", "bot-2"]
-        app.chat.activeTurnIDs = ["turn-a", "turn-b"]
-        let attachment = SessionFileReference(
-            id: "file-1", name: "notes.txt", size: 3, mediaType: "text/plain")
-        app.chat.composerAttachments = [
-            ComposerAttachment(
-                id: UUID(), name: attachment.name, size: attachment.size,
-                mediaType: attachment.mediaType, state: .uploaded(attachment))
-        ]
-        app.chat.composer = "@reviewer review this"
-        XCTAssertTrue(app.canImportAttachments)
-        XCTAssertTrue(app.sendMessage(delivery: .steer))
-        let request = await recorder.firstRequest(after: 0) {
-            if case .submit = $0 { return true }
-            return false
-        }
-        guard case .submit("group", let submission, _) = try XCTUnwrap(request),
-            case .message(let message) = submission.op
-        else { return XCTFail("Expected group message") }
-        XCTAssertEqual(message.attachments, [attachment])
-        XCTAssertNil(message.targetTurnId)
-        XCTAssertNil(message.requestedDelivery)
-    }
-
     func testIdleChatAttachmentControlUsesUpdatedBotWithoutReopeningChat() throws {
         let model = try model()
         model.gateway.connectionState = .ready
@@ -111,7 +82,7 @@ extension AppModelTests {
             if case .createSession = request { return true }
             return false
         }
-        guard case .createSession(let createID, _, _, _) = try XCTUnwrap(create) else {
+        guard case .createSession(let createID, _, _) = try XCTUnwrap(create) else {
             return XCTFail("Expected session creation")
         }
 
@@ -132,7 +103,7 @@ extension AppModelTests {
                     sessionID: "chat-created",
                     contributions: [fileAttachmentContribution()]
                 )))
-        XCTAssertTrue(model.chat.pendingNewChatBotIDs.isEmpty)
+        XCTAssertNil(model.chat.pendingNewChatBotID)
 
         let begin = await recorder.firstRequest(after: 0) { request in
             if case .beginSessionFileUpload = request { return true }
@@ -210,7 +181,7 @@ extension AppModelTests {
             if case .submit = request { return true }
             return false
         }
-        guard case .submit("chat-created", let submission, _) = try XCTUnwrap(submit),
+        guard case .submit("chat-created", let submission) = try XCTUnwrap(submit),
             case .message(let message) = submission.op
         else { return XCTFail("Expected first message submission") }
         XCTAssertEqual(message.text, "Review this image")
@@ -666,7 +637,7 @@ extension AppModelTests {
             return false
         }
         let submit = try XCTUnwrap(submitRequest)
-        guard case .submit(_, let submission, _) = submit,
+        guard case .submit(_, let submission) = submit,
             case .message(let message) = submission.op
         else { return XCTFail("Expected attachment submission") }
         XCTAssertEqual(message.text, "")
@@ -772,10 +743,10 @@ extension AppModelTests {
         let requestCount = await recorder.requestCount()
         model.sendMessage()
         let request = await recorder.firstRequest(after: requestCount) {
-            guard case .submit("chat-1", _, _) = $0 else { return false }
+            guard case .submit("chat-1", _) = $0 else { return false }
             return true
         }
-        guard case .submit(_, let submission, _) = try XCTUnwrap(request) else {
+        guard case .submit(_, let submission) = try XCTUnwrap(request) else {
             return XCTFail("Expected attachment submission")
         }
         guard case .message(let message) = submission.op else {

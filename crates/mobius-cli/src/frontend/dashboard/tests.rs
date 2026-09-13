@@ -281,8 +281,6 @@ fn editable_action_replaces_its_advertised_input_before_submission() {
 
 fn session(id: &str, state: SessionActivityState) -> SessionRecord {
     SessionRecord {
-        member_bot_ids: vec!["bot-a".into()],
-        primary_bot_id: Some("bot-a".into()),
         session_id: id.into(),
         session_context: SessionContext::default(),
         parent_session_id: None,

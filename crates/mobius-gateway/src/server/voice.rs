@@ -37,15 +37,14 @@ impl ConnectionVoice {
                 let model = host.realtime_model().await.map_err(rejected)?;
                 let transcript = VoiceTranscript::open(
                     Arc::clone(&model.checkpoints),
-                    &model.execution_session_id,
+                    &session,
                     Arc::clone(&model.frontend),
                 )
                 .await?;
-                let parent = model
-                    .checkpoints
-                    .load(&model.execution_session_id)
-                    .await?
-                    .ok_or_else(|| Error::Protocol("voice parent session disappeared".into()))?;
+                let parent =
+                    model.checkpoints.load(&session).await?.ok_or_else(|| {
+                        Error::Protocol("voice parent session disappeared".into())
+                    })?;
                 let voice_context = transcript.task_context().await?;
                 let call = model
                     .router

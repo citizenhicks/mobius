@@ -995,7 +995,8 @@ impl Runner {
             self.persist_with_events(hook_events, None).await?;
             return Ok(false);
         }
-        self.complete_turn(turn_id, hook_events).await?;
+        self.complete_turn(submission_id, turn_id, hook_events)
+            .await?;
         Ok(true)
     }
 
@@ -1128,6 +1129,7 @@ impl Runner {
                     PreparedModel::Aborted => return Ok(()),
                     PreparedModel::Stopped(reason) => {
                         self.complete_turn(
+                            &submission_id,
                             &turn_id,
                             vec![turn_event(
                                 &submission_id,

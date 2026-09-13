@@ -296,7 +296,6 @@ async fn framed_reader_retains_a_partial_prefix_when_cancelled() {
 #[test]
 fn client_frame_round_trip_preserves_a_unified_message() {
     let expected = ClientFrame::new(ClientMessage::Submit {
-        recipient_bot_ids: Vec::new(),
         session_id: "session-a".into(),
         submission: Submission {
             id: "submission-a".into(),
@@ -385,10 +384,9 @@ fn protocol_v10_rejects_an_untargeted_capability_shape() {
 #[test]
 fn session_creation_requires_a_gateway_workspace_and_bot() {
     let frame = ClientFrame::new(ClientMessage::CreateSession {
-        primary_bot_id: None,
         request_id: "request-a".into(),
         workspace: PathBuf::from("/srv/mobius/project"),
-        bot_ids: vec!["bot-a".into()],
+        bot_id: "bot-a".into(),
     });
 
     let encoded = serde_json::to_value(frame).expect("encode session creation");
@@ -400,65 +398,37 @@ fn session_creation_requires_a_gateway_workspace_and_bot() {
             "type": "create_session",
             "request_id": "request-a",
             "workspace": "/srv/mobius/project",
-            "bot_ids": ["bot-a"],
-            "primary_bot_id": null
+            "bot_id": "bot-a"
         })
     );
 }
 
 #[test]
-fn bot_conversation_frames_are_scoped_and_paged() {
-    let list = ClientFrame::new(ClientMessage::ListBotConversations {
+fn hidden_bot_session_frames_are_gateway_scoped() {
+    let list = ClientFrame::new(ClientMessage::ListBotSessions {
         request_id: "request-hidden".into(),
         bot_id: "bot-a".into(),
-        cursor: None,
     });
-    let response = ServerFrame::new(ServerMessage::BotConversations {
+    let response = ServerFrame::new(ServerMessage::BotSessions {
         request_id: "request-hidden".into(),
         bot_id: "bot-a".into(),
-        page: BotConversationPage {
-            conversations: Vec::new(),
-            next_cursor: None,
-        },
+        sessions: Vec::new(),
     });
-    let encoded = serde_json::to_value(&list).expect("encode private Bot conversations request");
-    assert_eq!(encoded["type"], "list_bot_conversations");
+
     assert_eq!(
-        serde_json::from_value::<ClientFrame>(encoded).unwrap(),
-        list
+        serde_json::to_value(list).expect("encode hidden Bot sessions request")["type"],
+        "list_bot_sessions"
     );
     assert_eq!(
-        serde_json::to_value(response).expect("encode private Bot conversations response"),
+        serde_json::to_value(response).expect("encode hidden Bot sessions response"),
         serde_json::json!({
             "version": PROTOCOL_VERSION,
-            "type": "bot_conversations",
+            "type": "bot_sessions",
             "request_id": "request-hidden",
             "bot_id": "bot-a",
-            "page": {"conversations": [], "next_cursor": null}
+            "sessions": []
         })
     );
-    for message in [
-        ClientMessage::GetBotConversationHistory {
-            request_id: "history".into(),
-            bot_id: "bot-a".into(),
-            conversation_id: "private-id".into(),
-            before_sequence: Some(5),
-        },
-        ClientMessage::ReadBotConversationFile {
-            request_id: "file".into(),
-            bot_id: "bot-a".into(),
-            conversation_id: "private-id".into(),
-            file_id: "file-id".into(),
-            offset: 0,
-            max_bytes: 1024,
-        },
-    ] {
-        let frame = ClientFrame::new(message);
-        assert_eq!(
-            serde_json::from_value::<ClientFrame>(serde_json::to_value(&frame).unwrap()).unwrap(),
-            frame
-        );
-    }
 }
 
 #[test]
@@ -844,7 +814,6 @@ fn agent_events_identify_their_session() {
                 submission_id: None,
                 msg: EventMsg::ContextCompacted,
             },
-            recipient_bot_ids: Vec::new(),
             stream_metrics: Vec::new(),
             blocks: Vec::new(),
             preview: None,
@@ -855,16 +824,6 @@ fn agent_events_identify_their_session() {
 
     assert_eq!(encoded["session_id"], "session-a");
     assert_eq!(encoded["record"]["sequence"], 1);
-    assert_eq!(
-        encoded["record"]["recipient_bot_ids"],
-        serde_json::json!([])
-    );
-    let mut missing_recipients = encoded["record"].clone();
-    missing_recipients
-        .as_object_mut()
-        .unwrap()
-        .remove("recipient_bot_ids");
-    assert!(serde_json::from_value::<RecordedEvent>(missing_recipients).is_err());
 }
 
 #[test]
@@ -886,7 +845,6 @@ fn agent_events_preserve_every_web_search_query() {
                     },
                 }),
             },
-            recipient_bot_ids: Vec::new(),
             stream_metrics: Vec::new(),
             blocks: Vec::new(),
             preview: None,
@@ -904,10 +862,11 @@ fn agent_events_preserve_every_web_search_query() {
 #[test]
 fn session_record_exposes_only_frontend_catalog_fields() {
     let record = SessionRecord {
-        member_bot_ids: vec!["bot-a".into()],
-        primary_bot_id: Some("bot-a".into()),
         session_id: "session-a".into(),
-        session_context: mobius::protocol::SessionContext::default(),
+        session_context: mobius::protocol::SessionContext {
+            bot_id: "bot-a".into(),
+            ..mobius::protocol::SessionContext::default()
+        },
         parent_session_id: None,
         parent_sequence: None,
         sequence: 3,
@@ -1105,11 +1064,11 @@ fn server_frame_decodes_session_opened_with_a_widget_action_tag() {
             "next_before_sequence": 2,
             "workspace": { "id": "workspace-a", "path": "/workspace" },
             "git": null,
-            "member_bot_ids": ["bot-a"],
-            "primary_bot_id": "bot-a",
             "session": {
                 "session_id": "session-a",
-                "context": {},
+                "context": {
+                    "bot_id": "bot-a"
+                },
                 "model": {
                     "route": "default",
                     "model": "model-a",
@@ -1220,7 +1179,6 @@ fn session_history_page_has_a_correlated_cursor() {
                 submission_id: None,
                 msg: EventMsg::ContextCompacted,
             },
-            recipient_bot_ids: Vec::new(),
             stream_metrics: Vec::new(),
             blocks: Vec::new(),
             preview: None,

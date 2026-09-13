@@ -17,7 +17,6 @@ pub async fn run(
     sender
         .send(ClientMessage::Submit {
             session_id: session_id.clone(),
-            recipient_bot_ids: Vec::new(),
             submission: Submission {
                 id: submission_id.clone(),
                 op: Op::Message {
@@ -72,10 +71,15 @@ pub async fn run(
                         .into(),
                 ));
                 sender
-                    .send(ClientMessage::ReviewApproval {
-                        request_id: Uuid::new_v4().to_string(),
-                        approval_request_id: request.id,
-                        decision: ReviewDecision::Abort,
+                    .send(ClientMessage::Submit {
+                        session_id: session_id.clone(),
+                        submission: Submission {
+                            id: Uuid::new_v4().to_string(),
+                            op: Op::ExecApproval {
+                                id: request.id,
+                                decision: ReviewDecision::Abort,
+                            },
+                        },
                     })
                     .await
                     .map_err(gateway_error)?;

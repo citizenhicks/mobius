@@ -631,17 +631,9 @@ struct SessionCatalogRow: View {
             } label: {
                 HStack(spacing: MobiusSpace.s) {
                     VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
-                        HStack(spacing: MobiusSpace.xs) {
-                            if session.isGroup {
-                                MobiusIcon(
-                                    .userGroup02, size: MobiusStyle.glyphInline, gutter: false
-                                )
-                                .accessibilityLabel("Group chat")
-                            }
-                            MobiusTitleText(verbatim: model.displayedTitle(for: session))
-                                .lineLimit(1)
-                        }
-                        if session.isGroup || model.bot(for: session) != nil { ownershipLine }
+                        MobiusTitleText(verbatim: model.displayedTitle(for: session))
+                            .lineLimit(1)
+                        if model.bot(for: session) != nil { ownershipLine }
                         if let supportingText, !supportingText.isEmpty {
                             Text(verbatim: supportingText)
                                 .font(MobiusStyle.captionFont)
@@ -758,8 +750,7 @@ struct SessionCatalogRow: View {
     }
 
     private var ownershipDescription: String {
-        model.bots.filter { session.memberBotIds.contains($0.id) }
-            .map { "@\($0.handle)" }.joined(separator: ", ")
+        model.bot(for: session).map { "@\($0.handle)" } ?? ""
     }
 
     private func accessibilityValue(isUnread: Bool, selection: Bool?) -> Text {

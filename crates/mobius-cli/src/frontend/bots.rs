@@ -151,13 +151,14 @@ mod tests {
     }
 
     #[test]
-    fn bot_conversations_include_shared_membership_in_recency_order() {
+    fn bot_conversations_include_only_the_owner_in_recency_order() {
         let mut gateway = gateway(vec![bot("bot-a"), bot("bot-b")]);
         let direct = mobius_gateway::wire::SessionRecord {
-            member_bot_ids: vec!["bot-a".into()],
-            primary_bot_id: Some("bot-a".into()),
             session_id: "direct".into(),
-            session_context: mobius::protocol::SessionContext::default(),
+            session_context: mobius::protocol::SessionContext {
+                bot_id: "bot-a".into(),
+                ..Default::default()
+            },
             parent_session_id: None,
             parent_sequence: None,
             sequence: 0,
@@ -169,20 +170,22 @@ mod tests {
             created_at: 1,
             updated_at: 1,
         };
-        let mut group = direct.clone();
-        group.session_id = "group".into();
-        group.member_bot_ids = vec!["bot-a".into(), "bot-b".into()];
-        group.updated_at = 2;
-        gateway.sessions = vec![direct, group];
+        let mut recent = direct.clone();
+        recent.session_id = "recent".into();
+        recent.updated_at = 2;
+        let mut other = direct.clone();
+        other.session_id = "other".into();
+        other.session_context.bot_id = "bot-b".into();
+        gateway.sessions = vec![direct, recent, other];
 
         assert_eq!(
             sessions_for_bot(&gateway, "bot-a")
                 .iter()
                 .map(|session| session.session_id.as_str())
                 .collect::<Vec<_>>(),
-            ["group", "direct"]
+            ["recent", "direct"]
         );
-        assert_eq!(sessions_for_bot(&gateway, "bot-b")[0].session_id, "group");
+        assert_eq!(sessions_for_bot(&gateway, "bot-b")[0].session_id, "other");
         assert!(sessions_for_bot(&gateway, "unrelated").is_empty());
     }
 

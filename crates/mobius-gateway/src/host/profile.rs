@@ -15,6 +15,7 @@ pub(super) async fn gateway_session_summaries(
     loop {
         let page = checkpoints
             .list_sessions_page(SessionPageRequest {
+                bot_id: None,
                 cursor,
                 limit: SESSION_PAGE_SIZE,
             })
@@ -137,71 +138,72 @@ pub(super) fn run_summary(record: ExecutionRecord) -> RunSummary {
 pub(super) fn recent_run_groups(
     records: Vec<ExecutionRecord>,
     sessions: &[SessionSummary],
-    chats: &[crate::chats::Chat],
     metadata: &SessionCatalogMetadata,
 ) -> Vec<SessionRunGroup> {
-    let parents = sessions
+    let sessions_by_id = sessions
         .iter()
-        .map(|session| {
-            (
-                session.session_id.as_str(),
-                session.parent_session_id.as_deref(),
-            )
-        })
-        .collect::<HashMap<_, _>>();
-    let owners = chats
-        .iter()
-        .flat_map(|chat| {
-            chat.execution_participants()
-                .map(move |participant| (participant.session_id.as_str(), chat))
-        })
+        .map(|session| (session.session_id.as_str(), session))
         .collect::<HashMap<_, _>>();
     let mut groups: Vec<SessionRunGroup> = Vec::new();
     for record in records {
-        let mut execution_id = record.session_id.as_str();
-        let mut owner = owners.get(execution_id).copied();
-        for _ in 0..sessions.len() {
-            if owner.is_some() {
-                break;
-            }
-            let Some(parent) = parents.get(execution_id).copied().flatten() else {
-                break;
-            };
-            execution_id = parent;
-            owner = owners.get(execution_id).copied();
-        }
-        let Some(chat) = owner else {
+        let Some(root) = visible_session(&record.session_id, &sessions_by_id) else {
             continue;
         };
-        if metadata.get(&chat.id).is_some_and(|item| item.hidden) {
+        if metadata
+            .get(&root.session_id)
+            .is_some_and(|item| item.hidden)
+        {
             continue;
         }
-        let mut run = run_summary(record);
-        run.session_id.clone_from(&chat.id);
-        if let Some(group) = groups.iter_mut().find(|group| group.session_id == chat.id) {
+        let run = run_summary(record);
+        if let Some(group) = groups
+            .iter_mut()
+            .find(|group| group.session_id == root.session_id)
+        {
             group.runs.push(run);
         } else {
-            let title = metadata
-                .get(&chat.id)
-                .and_then(|item| item.title.as_deref())
-                .map(str::trim)
-                .filter(|title| !title.is_empty())
-                .or_else(|| {
-                    chat.first_user_message
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|title| !title.is_empty())
-                })
-                .unwrap_or("Untitled")
-                .to_owned();
             groups.push(SessionRunGroup {
-                session_id: chat.id.clone(),
-                title,
+                session_id: root.session_id.clone(),
+                title: session_run_group_title(root, metadata),
                 runs: vec![run],
             });
         }
     }
     groups
+}
+
+pub(super) fn visible_session<'a>(
+    session_id: &str,
+    sessions: &'a HashMap<&str, &'a SessionSummary>,
+) -> Option<&'a SessionSummary> {
+    let mut session = *sessions.get(session_id)?;
+    for _ in 0..sessions.len() {
+        if session.catalog_visible {
+            return Some(session);
+        }
+        session = *sessions.get(session.parent_session_id.as_deref()?)?;
+    }
+    None
+}
+
+pub(super) fn session_run_group_title(
+    session: &SessionSummary,
+    metadata: &SessionCatalogMetadata,
+) -> String {
+    metadata
+        .get(&session.session_id)
+        .and_then(|item| item.title.as_deref())
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .or_else(|| {
+            session
+                .first_user_message
+                .as_deref()
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+        })
+        .unwrap_or("Untitled")
+        .to_owned()
 }
 
 pub(super) fn active_run_summary(session_id: &str, active: &ActiveExecution) -> RunSummary {

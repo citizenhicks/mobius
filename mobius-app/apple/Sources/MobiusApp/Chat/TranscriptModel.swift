@@ -240,9 +240,7 @@ final class TranscriptEntry: Identifiable {
         self.pending = pending
         self.modelStepID = modelStepID
         self.turnID = turnID
-        // Public inputs precede execution turn_started events, including in cached history.
-        self.startsTurn =
-            startsTurn || (kind == .user && messageMetadata?.delivery.startsTurn == true)
+        self.startsTurn = startsTurn
         self.turnTerminal = turnTerminal
         self.turnElapsedMs = turnElapsedMs
         self.sourceSequence = sourceSequence
@@ -259,7 +257,6 @@ final class TranscriptEntry: Identifiable {
 struct TranscriptMessageMetadata: Codable, Equatable, Sendable {
     let author: MessageAuthor
     let delivery: MessageDelivery
-    var recipientBotIDs: [String] = []
 }
 
 extension FrontendWidget {

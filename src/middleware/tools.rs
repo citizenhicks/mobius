@@ -651,8 +651,8 @@ impl Catalog {
     }
 }
 
-/// Ranks matching documents with the same bounded text search used by tool discovery.
-pub fn rank_bm25(documents: &[String], query: &str, limit: usize) -> Vec<usize> {
+/// Ranks text with the same BM25 setup used by deferred tool discovery.
+pub(crate) fn rank_bm25(documents: &[String], query: &str, limit: usize) -> Vec<usize> {
     if documents.is_empty() || limit == 0 {
         return Vec::new();
     }
@@ -1299,8 +1299,7 @@ impl Middleware for Tools {
     }
 }
 
-/// Renders the ordinary lifecycle of a tool owned by a capability.
-pub fn render_tool_event(
+pub(crate) fn render_tool_event(
     event: &EventMsg,
     owns: impl Fn(&str) -> bool,
     heading: impl Fn(&str, &Value) -> ToolHeading,
@@ -1356,12 +1355,9 @@ pub fn render_tool_event(
     }
 }
 
-/// Capability-owned title and argument detail for an ordinary tool event.
-pub struct ToolHeading {
-    /// Short tool title.
-    pub title: String,
-    /// Human-readable argument detail.
-    pub detail: String,
+pub(crate) struct ToolHeading {
+    pub(crate) title: String,
+    pub(crate) detail: String,
 }
 
 impl From<&str> for ToolHeading {

@@ -1085,14 +1085,7 @@ fn render_picker_menu(frame: &mut Frame<'_>, area: Rect, picker: &super::PickerS
             };
             MenuItem {
                 value: String::new(),
-                label: match &option.action {
-                    super::PickerAction::CreateSession { checked, .. } => format!(
-                        "{} {}",
-                        if *checked { "[x]" } else { "[ ]" },
-                        terminal_text(&option.label)
-                    ),
-                    _ => terminal_text(&option.label),
-                },
+                label: terminal_text(&option.label),
                 description: terminal_text(&description),
             }
         })
@@ -1107,20 +1100,13 @@ fn render_picker_popup(frame: &mut Frame<'_>, picker: &super::PickerState) {
     }
     let theme = current();
     frame.render_widget(Clear, area);
-    let block =
-        Block::bordered()
-            .style(theme.style(Role::Canvas))
-            .border_style(theme.style(Role::Info))
-            .title(Line::styled(
-                if picker.options.iter().any(|option| {
-                    matches!(option.action, super::PickerAction::CreateSession { .. })
-                }) {
-                    " ↑↓ select · Space toggle · Enter start chat · Esc close "
-                } else {
-                    " ↑↓ select · Enter open · Esc close "
-                },
-                theme.style(Role::Accent).add_modifier(Modifier::BOLD),
-            ));
+    let block = Block::bordered()
+        .style(theme.style(Role::Canvas))
+        .border_style(theme.style(Role::Info))
+        .title(Line::styled(
+            " ↑↓ select · Enter open · Esc close ",
+            theme.style(Role::Accent).add_modifier(Modifier::BOLD),
+        ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     render_picker_menu(frame, inner, picker);

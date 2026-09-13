@@ -24,7 +24,7 @@
 
 möbius is an open-source runtime for coding agents, with terminal and native Apple clients.
 Create **Bots** with their own models, instructions, tools, and approval policies. Work with
-those Bots across devices, schedule recurring jobs, or assemble a team to collaborate.
+those Bots across devices, schedule recurring jobs, or delegate focused subagents.
 Your **gateway** runs the agents and keeps their workspaces and saved conversations together.
 
 Underneath the apps is a small, modular Rust framework you can embed in your own software.
@@ -37,8 +37,8 @@ Underneath the apps is a small, modular Rust framework you can embed in your own
   capabilities, instructions, and permissions. Each chat keeps its own transcript and workspace selection.
 - **Put repeat work on a schedule.** Run a task once, at an interval, daily, weekly, or on a
   cron schedule. Each routine run starts a fresh conversation and keeps its results in run history.
-- **Let Bots collaborate.** Select Bots and a primary in New Chat. Tap members to address a message;
-  otherwise the primary responds. Within a task, subagents can take on bounded parallel work.
+- **Delegate focused work.** Each chat has one Bot; within its task, subagents can take on
+  bounded parallel work and report back as typed message events.
 - **Keep long tasks moving.** Durable checkpoints, context compaction, and searchable history
   let agents resume work and recover earlier details.
 - **Choose the tools and boundaries.** Enable capabilities per Bot, add skills, review plugin
@@ -143,7 +143,7 @@ open-source gateway in a dedicated microVM. Cloud is currently in beta and is op
 flowchart LR
     Terminal["Terminal · mobius"] <--> Gateway["Your gateway"]
     Apple["iPhone & iPad"] <--> Gateway
-    Gateway --> Agents["Bots · routines · group chats"]
+    Gateway --> Agents["Bots · chats · routines"]
     Gateway --> Work["Workspaces · Git · saved conversations"]
     Gateway --> Models["Your model providers"]
 ```
@@ -156,7 +156,7 @@ you configure; changing clients preserves the agent's runtime and saved work.
 | --- | --- |
 | **Gateway** | The runtime on your Mac, Linux machine, or cloud host. It serves all your paired clients. |
 | **Bot** | A reusable agent profile: purpose, model, tools, instructions, and approval policy. |
-| **Chat** | A conversation with one or more Bots, a primary responder, a workspace, and a durable transcript. |
+| **Chat** | A conversation with one Bot, a selected workspace, and its own durable transcript. |
 | **Routine** | A scheduled task owned by a Bot. Each run gets a fresh conversation. |
 
 Protected execution uses **Seatbelt on macOS** and **Bubblewrap on Linux** and fails closed
@@ -232,7 +232,7 @@ connectors are not yet supported.
 | Package | Role |
 | --- | --- |
 | [`mobius`](https://crates.io/crates/mobius) | Embeddable Rust agent framework. |
-| [`mobius-gateway`](https://crates.io/crates/mobius-gateway) | Headless runtime library: authentication, Bots, chats, routines, and group chats. |
+| [`mobius-gateway`](https://crates.io/crates/mobius-gateway) | Headless runtime library: authentication, Bots, chats, and routines. |
 | [`mobius-cli`](https://crates.io/crates/mobius-cli) | Installs the `mobius` terminal client and `mobius-gateway` executable. |
 | [Apple app](https://github.com/citizenhicks/mobius/tree/main/mobius-app/apple) | Native SwiftUI client for iPhone and iPad. |
 
@@ -244,7 +244,7 @@ connectors are not yet supported.
 | [Terminal manual](https://mobius.thinkingsand.dev/manual) | Command reference and manual pages. |
 | [CLI guide](https://github.com/citizenhicks/mobius/blob/main/crates/mobius-cli/README.md) | Installation, provider setup, and terminal controls. |
 | [Gateway guide](https://github.com/citizenhicks/mobius/blob/main/crates/mobius-gateway/README.md) | Hosting, pairing, authentication, and sandbox policy. |
-| [Bots and context](https://github.com/citizenhicks/mobius/blob/main/crates/mobius-gateway/BOTS.md) | Routines, group chats, subagents, and memory boundaries. |
+| [Bots and context](https://github.com/citizenhicks/mobius/blob/main/crates/mobius-gateway/BOTS.md) | Chats, routines, subagents, and memory boundaries. |
 | [Apple guide](https://github.com/citizenhicks/mobius/blob/main/mobius-app/apple/README.md) | Building and testing the iPhone and iPad app. |
 
 Contributions and [issue reports](https://github.com/citizenhicks/mobius/issues) are welcome.

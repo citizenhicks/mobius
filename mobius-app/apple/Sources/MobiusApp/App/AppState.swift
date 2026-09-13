@@ -42,7 +42,6 @@ enum SettingsRoute: Hashable {
 enum AppRoute: Hashable {
     case chat(ChatRoute)
     case bot(String)
-    case botConversations(String)
     case settings(SettingsRoute)
 }
 
@@ -200,7 +199,6 @@ struct AppToast: Identifiable {
 
 enum AppNotificationTarget: Equatable {
     case session(String)
-    case approval(String)
     case extensionPackage(String)
     case routineRun(String)
 }
@@ -226,24 +224,19 @@ struct ComposerDraft: Codable, Equatable, Sendable {
 
     let text: String
     let reply: MessageReply?
-    let recipientBotIDs: [String]
 
-    init(text: String, reply: MessageReply? = nil, recipientBotIDs: [String] = []) {
+    init(text: String, reply: MessageReply? = nil) {
         self.text = text
         self.reply = reply
-        self.recipientBotIDs = recipientBotIDs
     }
 
-    var isEmpty: Bool { text.isEmpty && reply == nil && recipientBotIDs.isEmpty }
+    var isEmpty: Bool { text.isEmpty && reply == nil }
 
     func appending(_ later: Self) -> Self {
         if isEmpty { return later }
         if later.isEmpty { return self }
         let text = [text, later.text].filter { !$0.isEmpty }.joined(separator: "\n\n")
-        return Self(
-            text: text, reply: reply == later.reply ? reply : nil,
-            recipientBotIDs: recipientBotIDs
-                + later.recipientBotIDs.filter { !recipientBotIDs.contains($0) })
+        return Self(text: text, reply: reply == later.reply ? reply : nil)
     }
 }
 
@@ -251,18 +244,15 @@ struct PendingComposerDraft {
     let text: String
     let attachments: [SessionFileReference]
     let reply: MessageReply?
-    let recipientBotIDs: [String]
 
     init(
         text: String,
         attachments: [SessionFileReference],
-        reply: MessageReply? = nil,
-        recipientBotIDs: [String] = []
+        reply: MessageReply? = nil
     ) {
         self.text = text
         self.attachments = attachments
         self.reply = reply
-        self.recipientBotIDs = recipientBotIDs
     }
 }
 
@@ -315,8 +305,7 @@ struct ActiveSessionFileUpload {
 struct SessionFileDownload {
     let generation: UUID
     let file: SessionFileReference
-    let source: SessionFileSource
-    var sessionID: String { source.sessionID }
+    let sessionID: String
     let purpose: SessionFileDownloadPurpose
     var data: Data
     var requestID: String
@@ -329,37 +318,9 @@ enum FileThumbnailKey: Hashable, Sendable {
 
 struct SessionFileThumbnailDownload {
     let file: SessionFileReference
-    let source: SessionFileSource
-    var sessionID: String { source.sessionID }
+    let sessionID: String
     var data: Data
     var requestID: String
-}
-
-enum SessionFileSource: Equatable, Sendable {
-    case session(String)
-    case botConversation(botID: String, conversationID: String)
-
-    var sessionID: String {
-        switch self {
-        case .session(let id): id
-        case .botConversation(_, let id): id
-        }
-    }
-
-    func readRequest(requestID: String, fileID: String, offset: Int64, maxBytes: Int)
-        -> GatewayRequest
-    {
-        switch self {
-        case .session(let sessionID):
-            .readSessionFile(
-                requestID: requestID, sessionID: sessionID, fileID: fileID,
-                offset: offset, maxBytes: maxBytes)
-        case .botConversation(let botID, let conversationID):
-            .readBotConversationFile(
-                requestID: requestID, botID: botID, conversationID: conversationID,
-                fileID: fileID, offset: UInt64(offset), maxBytes: maxBytes)
-        }
-    }
 }
 
 enum SessionFileDownloadPurpose: Equatable {
@@ -719,7 +680,7 @@ struct ApprovalCall: Identifiable, Equatable {
     let arguments: String
 }
 
-struct PendingApproval: Identifiable, Equatable {
+struct PendingApproval: Equatable {
     let id: String
     var turnID: String? = nil
     let reason: String

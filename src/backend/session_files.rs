@@ -302,7 +302,7 @@ impl SessionFileStore {
         Ok(())
     }
 
-    /// Validates a group deletion and prevents new upload reservations until it completes.
+    /// Validates a batch deletion and prevents new upload reservations until it completes.
     pub async fn prepare_delete_sessions(
         &self,
         session_ids: &[String],
