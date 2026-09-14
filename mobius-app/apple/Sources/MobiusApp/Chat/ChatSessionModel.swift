@@ -438,11 +438,12 @@ final class ChatSessionModel {
         self.locale = locale
     }
 
-    isolated deinit {
+    deinit {
         composerDraftSaveTask?.cancel()
         transcriptIOTask?.cancel()
+        deltaFlushTask?.cancel()
+        chatTitleTasks.values.forEach { $0.cancel() }
         realtimeVoiceTask?.cancel()
-        realtimeVoice.close()
     }
 
     func showToast(_ resource: LocalizedStringResource, tone: ToastTone = .info) {

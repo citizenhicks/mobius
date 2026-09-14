@@ -72,7 +72,7 @@ final class MobiusCloudModel {
         pushTokenRemovalPending = settingsDefaults.bool(forKey: pushTokenRemovalPendingKey)
     }
 
-    isolated deinit {
+    deinit {
         cloudPurchaseUpdateTask?.cancel()
         cloudPurchaseTasks.values.forEach { $0.cancel() }
         cloudAuthenticationRequestTask?.cancel()

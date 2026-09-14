@@ -1109,6 +1109,7 @@ final class MobiusCloudTests: XCTestCase {
             cloudClient: client,
             cloudPurchases: purchases
         )
+        model.cloud.observeCloudPurchaseUpdates()
 
         stream.continuation.yield(purchase)
         await fulfillment(of: [transactionFinished], timeout: 1)
@@ -1193,6 +1194,7 @@ final class MobiusCloudTests: XCTestCase {
             cloudClient: client,
             cloudPurchases: purchases
         )
+        model.cloud.observeCloudPurchaseUpdates()
 
         stream.continuation.yield(
             MobiusCloudPurchase(
@@ -3864,6 +3866,7 @@ final class MobiusCloudTests: XCTestCase {
                 updates: { updates }
             )
         )
+        model.cloud.observeCloudPurchaseUpdates()
         let purchaseUpdates = try XCTUnwrap(model.cloud.cloudPurchaseUpdateTask)
         let reconnectRecoveredGateway = model.cloud.callbacks.reconnectRecoveredGateway
         var recoveryCallbacks = 0

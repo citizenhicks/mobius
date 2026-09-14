@@ -214,6 +214,7 @@ extension AppModel {
 
     func appDidEnterBackground() {
         appIsInBackground = true
+        refreshAppLockPreference()
         appLockAuthenticationGeneration = UUID()
         startupTask?.cancel()
         appActivationTask?.cancel()
@@ -251,6 +252,7 @@ extension AppModel {
 
     func appDidBecomeActive() async {
         guard !Task.isCancelled else { return }
+        refreshAppLockPreference()
         appIsInBackground = false
         gateway.setAppInBackground(false)
         if startedAccountID == nil, gateway.connectionState == .disconnected {
@@ -273,6 +275,16 @@ extension AppModel {
             setSceneActive(true)
         }
         await cloud.refreshRemoteNotificationRegistration()
+    }
+
+    private func refreshAppLockPreference() {
+        appLockEnabled = settingsDefaults.bool(forKey: appLockEnabledKey)
+        if appLockEnabled {
+            if appIsInBackground { isAppLocked = true }
+        } else {
+            isAppLocked = false
+            appLockError = nil
+        }
     }
 
     func beginAppActivation() {

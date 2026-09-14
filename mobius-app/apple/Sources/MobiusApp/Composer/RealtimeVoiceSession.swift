@@ -68,6 +68,11 @@ final class RealtimeVoiceSession: NSObject {
         super.init()
     }
 
+    deinit {
+        peer?.delegate = nil
+        peer?.close()
+    }
+
     func offer() async throws -> String {
         try Task.checkCancellation()
         let generation = generation

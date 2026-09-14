@@ -165,6 +165,8 @@ struct SidebarDrawer<Sidebar: View, Detail: View>: View {
 struct SidebarView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.supportsMultipleWindows) private var supportsMultipleWindows
     let showDetail: (AppDestination) -> Void
     @State private var showsConnectionDetails = false
 
@@ -254,6 +256,13 @@ struct SidebarView: View {
             HStack {
                 settingsButton
                 Spacer()
+                if supportsMultipleWindows {
+                    Button("New window", systemImage: "plus.rectangle.on.rectangle") {
+                        openWindow(value: AppWindowState())
+                    }
+                    .mobiusIconButton()
+                    .help("New window")
+                }
                 Button("Event Centre", glyph: model.hasUnreadEvents ? .bellDot : .bell) {
                     showDetail(.eventCentre)
                 }

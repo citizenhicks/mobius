@@ -639,6 +639,77 @@ extension AppModelTests {
         XCTAssertFalse(model.gateway.connectionState.isReady)
     }
 
+    func testStartRestoresTheWindowChatInsteadOfTheGlobalLastChat() async throws {
+        let suiteName = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let store = GatewayStore(
+            defaults: defaults,
+            catalogDirectory: root.appendingPathComponent("Catalogs", isDirectory: true),
+            transcriptDirectory: root.appendingPathComponent("Transcripts", isDirectory: true),
+            thumbnailDirectory: root.appendingPathComponent("Thumbnails", isDirectory: true),
+            draftDirectory: root.appendingPathComponent("Drafts", isDirectory: true)
+        )
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        try store.save(account, token: "test-token")
+        addTeardownBlock { try await store.remove(account) }
+        await store.saveChatCatalog(
+            CachedChatCatalog(
+                bots: [bot()],
+                sessions: [
+                    session(sessionID: "chat-1", state: .idle),
+                    session(sessionID: "chat-2", state: .idle, sequence: 8),
+                ],
+                lastSessionID: "chat-1"
+            ),
+            accountID: account.id
+        )
+        await store.saveTranscript(
+            accountID: account.id,
+            sessionID: "chat-2",
+            sequence: 8,
+            transcript: [
+                TranscriptEntry(
+                    id: "window-answer",
+                    text: "Restored in this window",
+                    kind: .assistant,
+                    format: "plain_text",
+                    pending: false
+                )
+            ],
+            currentUsage: TokenUsage(),
+            lastUsage: TokenUsage()
+        )
+        let model = AppModel(
+            client: GatewayClient(),
+            store: GatewayStore(
+                defaults: defaults,
+                catalogDirectory: root.appendingPathComponent("Catalogs", isDirectory: true),
+                transcriptDirectory: root.appendingPathComponent("Transcripts", isDirectory: true),
+                thumbnailDirectory: root.appendingPathComponent("Thumbnails", isDirectory: true),
+                draftDirectory: root.appendingPathComponent("Drafts", isDirectory: true)
+            ),
+            settingsDefaults: defaults,
+            requestSender: { _ in },
+            connectionOpener: { _ in AsyncThrowingStream { _ in } },
+            windowState: AppWindowState(
+                destination: .chats,
+                navigationPath: [.chat(.session("chat-2"))]
+            )
+        )
+
+        await model.start()
+
+        XCTAssertEqual(model.chat.selectedSessionID, "chat-2")
+        XCTAssertEqual(model.navigationPath, [.chat(.session("chat-2"))])
+        XCTAssertEqual(model.chat.displayedTranscript.map(\.text), ["Restored in this window"])
+    }
+
     func testConcurrentStartsOpenOnlyOneConnection() async throws {
         let suiteName = UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

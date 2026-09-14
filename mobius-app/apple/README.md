@@ -116,9 +116,9 @@ applies Cloud entitlement policy before starting a gateway connection.
 
 ### Lifecycle and stale work
 
-`App/MobiusApp.swift` owns aggregate app lifecycle and shared startup/activation.
-`App/AppShell.swift` owns per-window chat-visibility tokens and privacy coverage.
-A window losing chat visibility must not tear down the shared connection.
+`App/MobiusApp.swift` owns scene creation, restoration, and per-window startup/activation.
+Each window owns its `AppModel` and gateway connection; the active-scene registry routes Siri
+and notification actions. `App/AppShell.swift` owns chat visibility and privacy coverage.
 
 Reject late work at its owner: Gateway uses `connectionGeneration`; Chat uses
 transcript/composer generations and request IDs; Cloud uses `operationGeneration`

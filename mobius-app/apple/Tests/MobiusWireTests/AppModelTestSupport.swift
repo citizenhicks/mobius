@@ -231,7 +231,8 @@ extension GatewayEnvelope {
 final class AppModelTests: XCTestCase {
     func model(
         requestSender: (@MainActor @Sendable (GatewayRequest) async throws -> Void)? = nil,
-        titleWriter: ChatTitleWriter? = nil
+        titleWriter: ChatTitleWriter? = nil,
+        cloudPurchases: MobiusCloudPurchases? = nil
     ) throws -> AppModel {
         let suiteName = UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -250,7 +251,8 @@ final class AppModelTests: XCTestCase {
                 authenticate: { _ in false }
             ),
             requestSender: requestSender,
-            titleWriter: titleWriter
+            titleWriter: titleWriter,
+            cloudPurchases: cloudPurchases
         )
         model.chat.sessionFileLimits = testSessionFileLimits()
         model.bots = [bot()]

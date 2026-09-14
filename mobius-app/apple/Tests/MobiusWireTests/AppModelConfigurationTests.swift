@@ -4,6 +4,86 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testWindowStateRoundTripsNavigation() throws {
+        let state = AppWindowState(
+            destination: .providers,
+            navigationPath: [.settings(.provider("openai"))]
+        )
+
+        let encoded = try JSONEncoder().encode(state)
+        let decoded = try JSONDecoder().decode(AppWindowState.self, from: encoded)
+
+        XCTAssertEqual(decoded.id, state.id)
+        XCTAssertEqual(decoded.destination, .providers)
+        XCTAssertEqual(decoded.navigationPath, [.settings(.provider("openai"))])
+
+        var moved = state
+        moved.destination = .chats
+        moved.navigationPath = []
+        XCTAssertEqual(moved, state)
+        XCTAssertEqual(moved.hashValue, state.hashValue)
+    }
+
+    func testSceneRegistryRoutesActionsToTheActiveWindow() async throws {
+        let registry = AppSceneRegistry()
+        let cloudPurchases = MobiusCloudPurchases.live()
+        registry.openChats()
+
+        var first: AppModel? = try model(cloudPurchases: cloudPurchases)
+        first?.destination = .profile
+        first?.navigationPath = [.settings(.provider("first"))]
+        registry.register(try XCTUnwrap(first))
+        XCTAssertEqual(first?.destination, .chats)
+        XCTAssertTrue(try XCTUnwrap(first).navigationPath.isEmpty)
+
+        first?.destination = .gateway
+        registry.setActive(true, model: try XCTUnwrap(first))
+        XCTAssertNotNil(first?.cloud.cloudPurchaseUpdateTask)
+        var second: AppModel? = try model(cloudPurchases: cloudPurchases)
+        second?.destination = .profile
+        second?.navigationPath = [.settings(.provider("second"))]
+        registry.setActive(true, model: try XCTUnwrap(second))
+        XCTAssertNil(second?.cloud.cloudPurchaseUpdateTask)
+
+        second?.cloud.cloudSession = MobiusCloudSession(
+            userID: UUID(),
+            expiresAt: .distantFuture
+        )
+        registry.cloudAuthenticationDidChange(in: try XCTUnwrap(second))
+        XCTAssertNil(first?.cloud.cloudPurchaseUpdateTask)
+        XCTAssertNotNil(second?.cloud.cloudPurchaseUpdateTask)
+
+        registry.openChats()
+        XCTAssertEqual(first?.destination, .gateway)
+        XCTAssertEqual(second?.destination, .chats)
+        XCTAssertTrue(try XCTUnwrap(second).navigationPath.isEmpty)
+
+        second?.destination = .profile
+        registry.setActive(false, model: try XCTUnwrap(second))
+        registry.openChats()
+        XCTAssertEqual(first?.destination, .chats)
+        XCTAssertEqual(second?.destination, .profile)
+
+        first?.cloud.cloudSession = MobiusCloudSession(
+            userID: UUID(),
+            expiresAt: .distantFuture
+        )
+        second?.cloud.cloudSession = nil
+        registry.cloudAuthenticationDidChange(in: try XCTUnwrap(second))
+        let signedOut = await eventually { first?.cloud.cloudSession == nil }
+        XCTAssertTrue(signedOut)
+
+        registry.unregister(try XCTUnwrap(first))
+        XCTAssertNil(first?.cloud.cloudPurchaseUpdateTask)
+        XCTAssertNotNil(second?.cloud.cloudPurchaseUpdateTask)
+        first = nil
+        XCTAssertNil(first)
+        registry.unregister(try XCTUnwrap(second))
+        XCTAssertNil(second?.cloud.cloudPurchaseUpdateTask)
+        second = nil
+        XCTAssertNil(second)
+    }
+
     func testBotCreationResetsFailureAndWaitsForItsMatchingResponse() throws {
         let model = try model { _ in }
         model.gateway.connectionState = .ready

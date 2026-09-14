@@ -25,6 +25,7 @@ extension MobiusCloudModel {
         let updates = cloudPurchases.updates()
         cloudPurchaseUpdateTask = Task { @MainActor [weak self] in
             for await purchase in updates {
+                guard !Task.isCancelled else { break }
                 guard let self, let requestedSession = cloudSession else { continue }
                 let generation = operationGeneration
                 var activeSession = requestedSession
@@ -65,6 +66,11 @@ extension MobiusCloudModel {
                 }
             }
         }
+    }
+
+    func stopObservingCloudPurchaseUpdates() {
+        cloudPurchaseUpdateTask?.cancel()
+        cloudPurchaseUpdateTask = nil
     }
 
     func refreshCloudAccount(synchronizePurchases: Bool = false) async {
@@ -537,6 +543,16 @@ extension MobiusCloudModel {
             )
         } else {
             toast("Signed out of möbius Cloud.", tone: .info)
+        }
+    }
+
+    func applyCloudSignOutFromAnotherWindow() async {
+        guard cloudSession != nil else { return }
+        let selectedCloudGateway = cloudGateway
+        invalidateInFlightOperations()
+        clearCloudAccountState()
+        if let selectedCloudGateway {
+            _ = await callbacks.removeGateway?(selectedCloudGateway)
         }
     }
 

@@ -69,7 +69,7 @@ final class GatewayConnectionModel {
         if selectedAccountID == nil { selectedAccountID = accounts.first?.id }
     }
 
-    isolated deinit {
+    deinit {
         openingTask?.cancel()
         eventTask?.cancel()
         reconnectTask?.cancel()

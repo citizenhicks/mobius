@@ -188,7 +188,8 @@ final class AppModel {
         reconnectDelay: (@Sendable (Int) -> Duration)? = nil,
         titleWriter: ChatTitleWriter? = nil,
         cloudClient: MobiusCloudClient? = nil,
-        cloudPurchases: MobiusCloudPurchases? = nil
+        cloudPurchases: MobiusCloudPurchases? = nil,
+        windowState: AppWindowState = AppWindowState()
     ) {
         let client = client ?? GatewayClient()
         let store = store ?? GatewayStore()
@@ -239,6 +240,8 @@ final class AppModel {
             !settingsDefaults.bool(forKey: "welcome-completed")
             && gateway.accounts.isEmpty && !cloud.hasCloudAccount
         if !showsWelcome { settingsDefaults.set(true, forKey: "welcome-completed") }
+        destination = windowState.destination
+        navigationPath = windowState.navigationPath
         gateway.locale = language.locale
         restoreSessionReadState(for: gateway.selectedAccountID)
         showsPairing = gateway.accounts.isEmpty
@@ -251,6 +254,7 @@ final class AppModel {
                 gateway.pairingEndpoint = endpoint
                 gateway.pairingCode = code
             }
+            if environment["MOBIUS_PAGE"] != nil { navigationPath = [] }
             switch ProcessInfo.processInfo.environment["MOBIUS_PAGE"] {
             case "gateway": destination = .gateway
             case "providers": destination = .providers
@@ -340,19 +344,14 @@ final class AppModel {
                 self?.openPendingRemoteNotification()
             }
         )
-        cloud.observeCloudPurchaseUpdates()
     }
 
-    isolated deinit {
-        gateway.shutdown()
+    deinit {
         startupTask?.cancel()
         appActivationTask?.cancel()
         eventCentreRefreshTask?.cancel()
-        chat.deltaFlushTask?.cancel()
-        chat.composerDraftSaveTask?.cancel()
         pairingCodeExpiryTask?.cancel()
         toastDismissTask?.cancel()
-        chat.chatTitleTasks.values.forEach { $0.cancel() }
     }
 
     var selectedGatewayIsMobiusCloud: Bool {

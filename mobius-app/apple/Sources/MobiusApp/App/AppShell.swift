@@ -35,9 +35,10 @@ struct AppShell: View {
                     .padding(MobiusSpace.xl)
             } else {
                 shell
-                    .sheet(isPresented: $model.showsInspector) {
+                    .inspector(isPresented: $model.showsInspector) {
                         FilesView()
-                            .frame(idealWidth: 720, idealHeight: 720)
+                            .inspectorColumnWidth(min: 320, ideal: 480, max: 720)
+                            .frame(idealHeight: 720)
                             .overlay(alignment: .top) {
                                 compactInspectorToastOverlay
                             }
@@ -492,13 +493,12 @@ struct AppShell: View {
             scenePhase == .active,
             !model.isAppLocked,
             !model.showsPairing,
-            !model.showsWorkspaceBrowser,
-            !model.showsInspector
+            !model.showsWorkspaceBrowser
         else { return false }
         guard case .chat = model.navigationPath.last else { return false }
         // The drawer, not the split view's column, decides whether the chat is on screen in
         // compact: `compactColumn` no longer moves there, so reading it would report the chat
         // permanently hidden and stop delivering it as visible.
-        return horizontalSizeClass != .compact || !sidebarIsOpen
+        return horizontalSizeClass != .compact || (!sidebarIsOpen && !model.showsInspector)
     }
 }

@@ -65,7 +65,7 @@ struct MobiusCloudPurchases {
             unfinishedPurchases: bridge.unfinishedPurchases,
             currentEntitlements: bridge.currentEntitlements(synchronize:),
             purchase: bridge.purchase(userID:tier:),
-            updates: { bridge.updates },
+            updates: bridge.updates,
             manage: bridge.showSubscriptionManagement,
             appStoreURL: bridge.appStoreURL
         )
@@ -74,32 +74,20 @@ struct MobiusCloudPurchases {
 
 @MainActor
 private final class StoreKitCloudBridge {
-    let updates: AsyncStream<MobiusCloudPurchase>
-
-    private let updateContinuation: AsyncStream<MobiusCloudPurchase>.Continuation
-    private var updateTask: Task<Void, Never>?
-
-    init() {
-        let stream = AsyncStream.makeStream(
-            of: MobiusCloudPurchase.self,
-            bufferingPolicy: .unbounded
-        )
-        updates = stream.stream
-        updateContinuation = stream.continuation
-
-        updateTask = Task { [continuation = stream.continuation] in
-            for await verification in Transaction.updates {
-                guard !Task.isCancelled else { break }
-                guard let purchase = try? await Self.purchase(from: verification) else { continue }
-                continuation.yield(purchase)
+    func updates() -> AsyncStream<MobiusCloudPurchase> {
+        AsyncStream { continuation in
+            let task = Task {
+                for await verification in Transaction.updates {
+                    guard !Task.isCancelled else { break }
+                    guard let purchase = try? await Self.purchase(from: verification) else {
+                        continue
+                    }
+                    continuation.yield(purchase)
+                }
+                continuation.finish()
             }
-            continuation.finish()
+            continuation.onTermination = { _ in task.cancel() }
         }
-    }
-
-    deinit {
-        updateTask?.cancel()
-        updateContinuation.finish()
     }
 
     func displayPrices() async throws -> [MobiusCloudTier: String] {

@@ -2,7 +2,21 @@ import Foundation
 import CoreGraphics
 import LocalAuthentication
 
-enum AppDestination: Hashable {
+struct AppWindowState: Codable, Hashable, Sendable {
+    var id = UUID()
+    var destination: AppDestination = .chats
+    var navigationPath: [AppRoute] = []
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.id == rhs.id
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+}
+
+enum AppDestination: Codable, Hashable, Sendable {
     case chats
     case gateway
     case botDefaults
@@ -31,7 +45,7 @@ enum AppDestination: Hashable {
 }
 
 /// A detail page pushed from one of the settings sections.
-enum SettingsRoute: Hashable {
+enum SettingsRoute: Codable, Hashable, Sendable {
     case gateway(UUID)
     case provider(String)
     case extensionPackage(String)
@@ -39,7 +53,7 @@ enum SettingsRoute: Hashable {
 
 /// Everything the detail column can push. Settings details join the same stack as
 /// chats so the interactive back gesture pops the page instead of the column.
-enum AppRoute: Hashable {
+enum AppRoute: Codable, Hashable, Sendable {
     case chat(ChatRoute)
     case bot(String)
     case settings(SettingsRoute)
@@ -96,7 +110,7 @@ struct WorkspaceSessions: Identifiable {
     }
 }
 
-enum ChatRoute: Identifiable, Hashable {
+enum ChatRoute: Codable, Identifiable, Hashable, Sendable {
     case new
     case session(String)
 

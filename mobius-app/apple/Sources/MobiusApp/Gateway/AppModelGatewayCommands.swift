@@ -39,8 +39,9 @@ extension AppModel {
 
     private func performStart(account: GatewayAccount, generation: UUID) async {
         let catalog = await store.loadChatCatalog(accountID: account.id)
+        let sessionID = startupSessionID(in: catalog)
         let cachedTranscript: CachedTranscript? =
-            if let sessionID = catalog?.lastSessionID {
+            if let sessionID {
                 await store.loadTranscript(accountID: account.id, sessionID: sessionID)
             } else {
                 nil
@@ -52,17 +53,27 @@ extension AppModel {
         if let catalog {
             applyBots(catalog.bots)
             applySessionCatalog(catalog.sessions)
-            if let sessionID = catalog.lastSessionID {
+        }
+        if let sessionID, sessionID == startupSessionID(in: catalog) {
+            if presentedChatSessionID == nil {
                 destination = .chats
                 navigationPath = [.chat(.session(sessionID))]
+            }
+            chat.sessionToRestoreID = sessionID
+            if catalog?.sessions.contains(where: { $0.sessionId == sessionID }) == true {
                 chat.presentCachedSession(sessionID, transcript: cachedTranscript)
-                chat.sessionToRestoreID = sessionID
                 cacheChatCatalog(lastSessionID: sessionID)
             }
         }
         startedAccountID = account.id
         guard !appIsInBackground else { return }
         connect(to: account)
+    }
+
+    private func startupSessionID(in catalog: CachedChatCatalog?) -> String? {
+        if let presentedChatSessionID { return presentedChatSessionID }
+        guard destination == .chats, navigationPath.isEmpty else { return nil }
+        return catalog?.lastSessionID
     }
 
     func applyPairingSetup(_ rawValue: String) {

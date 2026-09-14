@@ -32,6 +32,7 @@ struct ChatsView: View {
     private static let sessionPageSize = 10
 
     @Environment(AppModel.self) private var model
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.mobiusPalette) private var palette
     @Environment(\.locale) private var locale
     @State private var collapsedWorkspaces: Set<String> = []
@@ -76,7 +77,7 @@ struct ChatsView: View {
                     .help("Delete selected chats")
                 }
             } else {
-                if usesIPadLayout {
+                if usesWideToolbar {
                     ToolbarItem(placement: .primaryAction) {
                         organizationMenu
                     }
@@ -90,7 +91,7 @@ struct ChatsView: View {
                     }
                 }
                 DefaultToolbarItem(kind: .search, placement: .bottomBar)
-                if !usesIPadLayout {
+                if !usesWideToolbar {
                     ToolbarSpacer(.fixed, placement: .bottomBar)
                     ToolbarItem(placement: .bottomBar) {
                         newChatButtons
@@ -118,9 +119,7 @@ struct ChatsView: View {
         }
     }
 
-    private var usesIPadLayout: Bool {
-        MobiusLayout.usesIPadLayout(platform: GatewayClientKind.currentApplePlatform)
-    }
+    private var usesWideToolbar: Bool { horizontalSizeClass == .regular }
 
     private var catalogHeading: some View {
         HStack(spacing: MobiusSpace.s) {

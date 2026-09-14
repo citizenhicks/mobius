@@ -60,6 +60,36 @@ private final class PushTokenRaceHarness {
 
 @MainActor
 extension AppModelTests {
+    func testAppLockRefreshesAcrossWindowLifecycleBoundaries() async throws {
+        let suiteName = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let authenticator = AppLockAuthenticator(
+            method: { .faceID },
+            authenticate: { _ in true }
+        )
+        let first = AppModel(
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults,
+            appLockAuthenticator: authenticator
+        )
+        let second = AppModel(
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults,
+            appLockAuthenticator: authenticator
+        )
+
+        await first.setAppLockEnabled(true)
+        second.appDidEnterBackground()
+        XCTAssertTrue(second.appLockEnabled)
+        XCTAssertTrue(second.isAppLocked)
+
+        await first.setAppLockEnabled(false)
+        await second.appDidBecomeActive()
+        XCTAssertFalse(second.appLockEnabled)
+        XCTAssertFalse(second.isAppLocked)
+    }
+
     func testAppLockAuthenticatesBeforePersistingAndKeepsWorkspaceDraftInMemory() async throws {
         let suiteName = UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

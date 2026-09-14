@@ -181,8 +181,9 @@ final class MobiusAppDelegate: NSObject, UIApplicationDelegate,
         return true
     }
 
-    func attach(_ cloud: MobiusCloudModel) {
+    func attach(_ cloud: MobiusCloudModel?) {
         self.cloud = cloud
+        guard let cloud else { return }
         if let pendingDeviceToken {
             self.pendingDeviceToken = nil
             cloud.receivedRemoteNotificationDeviceToken(pendingDeviceToken)
