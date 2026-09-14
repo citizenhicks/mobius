@@ -1,6 +1,17 @@
 import Foundation
 
 extension AppModel {
+    func handlePairingRepairRequired() {
+        guard selectedGatewayIsMobiusCloud, cloud.hasCloudAccount else {
+            showsPairing = true
+            return
+        }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if !(await self.cloud.connectCloudGateway()) { self.showsPairing = true }
+        }
+    }
+
     func handleGatewayDisconnected(_ message: String) {
         invalidateProviderUsage()
         cancelVoiceChatIntent()

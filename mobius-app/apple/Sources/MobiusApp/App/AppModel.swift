@@ -286,15 +286,7 @@ final class AppModel {
             self?.showsAppUpdateAlert = true
         }
         gateway.onPairingRepairRequired = { [weak self] in
-            guard let self else { return }
-            guard self.selectedGatewayIsMobiusCloud, self.cloud.hasCloudAccount else {
-                self.showsPairing = true
-                return
-            }
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                if !(await self.cloud.connectCloudGateway()) { self.showsPairing = true }
-            }
+            self?.handlePairingRepairRequired()
         }
         chat.onToast = { [weak self] message, tone in
             self?.showToast(verbatim: message, tone: tone)
