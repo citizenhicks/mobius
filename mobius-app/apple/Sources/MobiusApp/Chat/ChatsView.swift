@@ -264,7 +264,7 @@ struct ChatsView: View {
                     ForEach(model.providerUsage) { usage in
                         ForEach(usage.limits ?? []) { limit in
                             Text(
-                                "\(model.providerLabel(for: usage.provider)) · \(limit.label) • \(limit.remainingFraction.formatted(.percent.precision(.fractionLength(0)).locale(locale))) remaining"
+                                "\(limit.label) • \(limit.remainingFraction.formatted(.percent.precision(.fractionLength(0)).locale(locale))) remaining"
                             )
                         }
                     }

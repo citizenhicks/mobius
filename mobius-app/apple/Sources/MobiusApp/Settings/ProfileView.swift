@@ -59,10 +59,7 @@ struct ProfileView: View {
                     ForEach(model.providerUsage) { usage in
                         ForEach(usage.limits ?? []) { limit in
                             UsageLimitBar(
-                                title: Text(
-                                    verbatim:
-                                        "\(model.providerLabel(for: usage.provider)) · \(limit.label)"
-                                ),
+                                title: Text(limit.label),
                                 remainingFraction: limit.remainingFraction,
                                 resetText: Text(limit.resetDescription(locale: locale))
                             )
