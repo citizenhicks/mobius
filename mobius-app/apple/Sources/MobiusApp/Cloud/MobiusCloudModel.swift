@@ -57,12 +57,22 @@ final class MobiusCloudModel {
         cloudClient: MobiusCloudClient,
         cloudPurchases: MobiusCloudPurchases
     ) {
+        let restoredSession: MobiusCloudSession?
+        let sessionLoadError: String?
+        do {
+            restoredSession = try cloudClient.loadSession()
+            sessionLoadError = nil
+        } catch {
+            restoredSession = nil
+            sessionLoadError = error.localizedDescription
+        }
         self.gateway = gateway
         self.settingsDefaults = settingsDefaults
         self.remoteNotifications = remoteNotifications
         self.cloudClient = cloudClient
         self.cloudPurchases = cloudPurchases
-        cloudSession = try? cloudClient.loadSession()
+        cloudSession = restoredSession
+        cloudError = sessionLoadError
         let pushInstallationID =
             settingsDefaults.string(forKey: pushInstallationIDKey)
             .flatMap(UUID.init(uuidString:)) ?? UUID()

@@ -2493,6 +2493,66 @@ final class MobiusCloudTests: XCTestCase {
             ])
     }
 
+    func testMissingCloudGatewayTokenRepairsWithFreshPairingGrant() async throws {
+        let userID = UUID()
+        let token = String(repeating: "t", count: 43)
+        let service = "app.mobius.cloud.tests.\(UUID())"
+        let sessionStore = MobiusCloudSessionStore(service: service)
+        defer { try? sessionStore.remove() }
+        var requests: [URLRequest] = []
+        let responses = [
+            #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#,
+            #"{"userId":"\#(userID.uuidString)","email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2023-11-14T22:13:20Z"}"#,
+            #"{"status":"ready"}"#,
+            #"{"endpoint":"wss://cloud.example","pairingCode":"fresh-code","expiresAt":"2099-01-01T00:00:00Z"}"#,
+        ]
+        let client = MobiusCloudClient(store: sessionStore) { request in
+            requests.append(request)
+            return try self.response(for: request, json: responses[requests.count - 1])
+        }
+        _ = try await client.authenticate(
+            authorizationCode: "apple-code",
+            nonce: String(repeating: "n", count: 43)
+        )
+
+        let suite = "app.mobius.cloud.tests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let account = GatewayAccount(
+            endpoint: try GatewayEndpoint("wss://cloud.example"),
+            cloudUserID: userID
+        )
+        defaults.set(try JSONEncoder().encode([account]), forKey: "paired-gateways")
+        let gatewayStore = GatewayStore(defaults: defaults)
+        gatewayStore.select(account)
+        let gatewayRequests = GatewayRequestRecorder()
+        let model = AppModel(
+            store: gatewayStore,
+            settingsDefaults: defaults,
+            requestSender: { request in await gatewayRequests.record(request) },
+            connectionOpener: { _ in AsyncThrowingStream { _ in } },
+            cloudClient: client,
+            cloudPurchases: emptyCloudPurchases()
+        )
+
+        model.connect(to: account)
+        let pairRequest = await gatewayRequests.firstRequest(after: 0) {
+            if case .pair = $0 { return true }
+            return false
+        }
+        guard case .pair(let code, _, _) = try XCTUnwrap(pairRequest) else {
+            return XCTFail("Expected a fresh Cloud pairing request")
+        }
+        XCTAssertEqual(code, "fresh-code")
+        XCTAssertFalse(model.showsPairing)
+
+        model.gateway.handle(.paired(clientID: "cloud-client", token: "gateway-token"))
+        let repaired = await eventually { model.cloud.cloudAction == .idle }
+        XCTAssertTrue(repaired)
+        XCTAssertEqual(try gatewayStore.token(for: account), "gateway-token")
+        try await gatewayStore.remove(account)
+    }
+
     func testCloudPairingRetriesWithFreshGrantAfterFailureResetOrCancellation() async throws {
         let userID = UUID()
         let token = String(repeating: "t", count: 43)

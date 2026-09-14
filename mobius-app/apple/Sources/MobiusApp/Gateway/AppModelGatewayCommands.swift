@@ -6,6 +6,11 @@ extension AppModel {
         guard !Task.isCancelled else { return }
         gateway.setAppInBackground(appIsInBackground)
         guard let account = gateway.selectedAccount else {
+            if gateway.accountRecoveryRequired, cloud.hasCloudAccount,
+                await cloud.connectCloudGateway()
+            {
+                return
+            }
             #if DEBUG
                 if !gateway.pairingCode.isEmpty, !gateway.pairingEndpoint.isEmpty {
                     pair()

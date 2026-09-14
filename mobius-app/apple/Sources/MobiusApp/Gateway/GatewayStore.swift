@@ -621,6 +621,7 @@ final class GatewayStore {
     private let keychainDelete: (CFDictionary) -> OSStatus
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private(set) var accountsLoadError: StoreError?
 
     init(
         defaults: UserDefaults = .standard,
@@ -649,10 +650,22 @@ final class GatewayStore {
     }
 
     func loadAccounts() -> [GatewayAccount] {
-        guard let data = defaults.data(forKey: accountsKey),
-            let accounts = try? decoder.decode([GatewayAccount].self, from: data)
-        else { return [] }
-        return accounts
+        guard defaults.object(forKey: accountsKey) != nil else {
+            accountsLoadError = nil
+            return []
+        }
+        guard let data = defaults.data(forKey: accountsKey) else {
+            accountsLoadError = .invalidAccounts
+            return []
+        }
+        do {
+            let accounts = try decoder.decode([GatewayAccount].self, from: data)
+            accountsLoadError = nil
+            return accounts
+        } catch {
+            accountsLoadError = .invalidAccounts
+            return []
+        }
     }
 
     func save(_ account: GatewayAccount, token: String) throws {
@@ -665,6 +678,7 @@ final class GatewayStore {
         }
         defaults.set(try encoder.encode(accounts), forKey: accountsKey)
         defaults.set(account.id.uuidString, forKey: selectedAccountKey)
+        accountsLoadError = nil
     }
 
     func selectedAccountID() -> UUID? {
@@ -950,6 +964,7 @@ extension GatewayStore {
         case missingAccount
         case invalidToken
         case invalidEditRecovery
+        case invalidAccounts
         case missingToken
         case keychain(OSStatus)
 
@@ -959,6 +974,8 @@ extension GatewayStore {
             case .missingAccount: "This gateway is no longer saved."
             case .invalidToken: "The gateway token is invalid."
             case .invalidEditRecovery: "The queued message edit is too large to save safely."
+            case .invalidAccounts:
+                "Saved gateway information couldn’t be read. Reconnect the gateway."
             case .missingToken: "This gateway needs to be paired again."
             case .keychain: nil
             }

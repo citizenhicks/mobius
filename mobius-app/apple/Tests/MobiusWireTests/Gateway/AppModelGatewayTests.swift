@@ -298,6 +298,20 @@ extension AppModelTests {
         await model.gateway.shutdown().value
     }
 
+    func testUnreadableGatewayCatalogRequestsRecovery() throws {
+        let suite = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(Data("not-json".utf8), forKey: "paired-gateways")
+
+        let gateway = GatewayConnectionModel(
+            client: GatewayClient(), store: GatewayStore(defaults: defaults))
+
+        XCTAssertTrue(gateway.accounts.isEmpty)
+        XCTAssertTrue(gateway.accountRecoveryRequired)
+        XCTAssertNotNil(gateway.pairingError)
+    }
+
     func testBackgroundPreservesPairingUntilItsCloudContinuationCompletes() async throws {
         let suiteName = UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

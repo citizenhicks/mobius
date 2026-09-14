@@ -11,6 +11,7 @@ final class GatewayConnectionModel {
     var pairingEndpoint = "wss://"
     var pairingCode = ""
     var pairingError: String?
+    private(set) var accountRecoveryRequired = false
     var locale = Locale.current
 
     @ObservationIgnored private let client: GatewayClient
@@ -65,6 +66,8 @@ final class GatewayConnectionModel {
                 return .milliseconds(Int64(seconds * 1_000))
             }
         accounts = store.loadAccounts()
+        accountRecoveryRequired = store.accountsLoadError != nil
+        pairingError = store.accountsLoadError?.errorDescription
         selectedAccountID = store.selectedAccountID()
         if selectedAccountID == nil { selectedAccountID = accounts.first?.id }
     }
@@ -217,6 +220,10 @@ final class GatewayConnectionModel {
 
     func reloadAccounts() {
         accounts = store.loadAccounts()
+        accountRecoveryRequired = store.accountsLoadError != nil
+        if let error = store.accountsLoadError {
+            pairingError = localizedErrorDescription(error)
+        }
         selectedAccountID = store.selectedAccountID() ?? accounts.first?.id
     }
 
@@ -324,6 +331,7 @@ final class GatewayConnectionModel {
             do {
                 try store.save(account, token: token)
                 accounts = store.loadAccounts()
+                accountRecoveryRequired = false
                 selectedAccountID = account.id
                 pendingPairingAccount = nil
                 pairingCode = ""
