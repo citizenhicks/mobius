@@ -174,7 +174,7 @@ pub(super) fn apply_patch_document(content: &str, document: &PatchDocument) -> R
             if let Err(error) = diffy::apply(suffix, &patch) {
                 return Err(unmatched_patch_error(suffix, &patch, &error));
             }
-            return Err(Error::Tool("Patch rejected: context was not found.".into()));
+            return Err(Error::Tool("patch rejected: context was not found".into()));
         };
         cursor += match_start;
         if patch.hunks().is_empty() {

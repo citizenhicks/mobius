@@ -16,6 +16,9 @@ const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 /// Builds the streaming HTTP client shared by provider construction.
 ///
 /// Clone the returned client freely: every clone shares one connection pool.
+/// # Errors
+///
+/// Returns an error if validation or an operation required by this function fails.
 pub fn streaming_client() -> Result<Client> {
     streaming_client_with_idle_timeout(STREAM_IDLE_TIMEOUT)
 }

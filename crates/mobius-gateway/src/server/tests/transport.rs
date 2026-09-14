@@ -20,6 +20,20 @@ fn connection_diagnostics_do_not_render_peer_controlled_errors() {
     }
 }
 
+#[test]
+fn pre_auth_frames_reject_unknown_fields() {
+    let error = serde_json::from_value::<PreAuthClientFrame>(serde_json::json!({
+        "version": crate::wire::PROTOCOL_VERSION,
+        "type": "authenticate",
+        "token": "secret",
+        "client_kind": "cli",
+        "unexpected": true,
+    }))
+    .expect_err("reject unknown pre-auth field");
+
+    assert!(error.to_string().contains("unknown field `unexpected`"));
+}
+
 async fn next_websocket_frame(websocket: &mut WebSocketStream<TcpStream>) -> ServerFrame {
     let Message::Binary(payload) = websocket
         .next()
@@ -209,11 +223,12 @@ async fn websocket_preserves_a_pipelined_bulk_frame_across_authentication() {
     .expect("encode pair frame");
     append_masked_binary_frame(&mut pipelined, &pairing);
     let request_id = "post-auth-list";
-    let post_auth = serde_json::to_vec(&serde_json::json!({
-        "version": crate::wire::PROTOCOL_VERSION,
-        "type": "list_sessions",
-        "request_id": request_id,
-        "padding": "x".repeat(MAX_PRE_AUTH_FRAME_BYTES + 1),
+    let post_auth = serde_json::to_vec(&ClientFrame::new(ClientMessage::UploadSessionFileChunk {
+        request_id: request_id.into(),
+        session_id: "missing-session".into(),
+        upload_id: "missing-upload".into(),
+        offset: 0,
+        data: vec![0; MAX_PRE_AUTH_FRAME_BYTES],
     }))
     .expect("encode post-auth frame");
     assert!(post_auth.len() > MAX_PRE_AUTH_FRAME_BYTES);
@@ -234,18 +249,20 @@ async fn websocket_preserves_a_pipelined_bulk_frame_across_authentication() {
     let paired = next_websocket_frame(&mut websocket).await;
     let authenticated = next_websocket_frame(&mut websocket).await;
     let ready = next_websocket_frame(&mut websocket).await;
-    let sessions = next_websocket_frame(&mut websocket).await;
+    let rejection = next_websocket_frame(&mut websocket).await;
 
     assert!(matches!(
-        (paired.message, authenticated.message, ready.message, sessions.message),
+        (
+            paired.message,
+            authenticated.message,
+            ready.message,
+            rejection.message
+        ),
         (
             ServerMessage::Paired { .. },
             ServerMessage::Authenticated,
             ServerMessage::Ready { .. },
-            ServerMessage::Sessions {
-                request_id: Some(actual),
-                ..
-            }
+            ServerMessage::Rejected { request_id: actual, .. }
         ) if actual == request_id
     ));
     drop(websocket);

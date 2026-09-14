@@ -128,6 +128,54 @@ async fn active_connection_pump_forwards_bursts_without_blocking_ping() {
 }
 
 #[tokio::test]
+async fn active_connection_retires_when_the_event_queue_is_full() {
+    use futures_util::SinkExt as _;
+    use futures_util::StreamExt as _;
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("WebSocket listener");
+    let address = listener.local_addr().expect("WebSocket address");
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("WebSocket connection");
+        let mut socket = tokio_tungstenite::accept_async(stream)
+            .await
+            .expect("WebSocket handshake");
+        socket
+            .next()
+            .await
+            .expect("response request")
+            .expect("valid response request");
+        for index in 0..=SOCKET_EVENT_CAPACITY {
+            socket
+                .send(Message::text(index.to_string()))
+                .await
+                .expect("stream message");
+        }
+    });
+    let (socket, _) = connect_async(format!("ws://{address}"))
+        .await
+        .expect("client connection");
+    let mut connection = OpenAiWsConnection::new(socket);
+    connection
+        .start(Message::text("request"))
+        .await
+        .expect("start exchange");
+
+    timeout(Duration::from_secs(1), async {
+        while connection.is_usable() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("full event queue retires the connection");
+
+    assert_eq!(connection.messages.len(), SOCKET_EVENT_CAPACITY);
+    connection.close().await;
+    server.await.expect("WebSocket server");
+}
+
+#[tokio::test]
 async fn idle_connection_remains_reusable() {
     use futures_util::SinkExt as _;
     use futures_util::StreamExt as _;

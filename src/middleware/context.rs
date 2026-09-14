@@ -122,6 +122,9 @@ impl<'a> MessageQueue<'a> {
     }
 
     /// Appends one prepared message, or returns `false` when it is full or duplicated.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn enqueue(
         &mut self,
         id: &str,
@@ -145,6 +148,9 @@ impl<'a> MessageQueue<'a> {
     }
 
     /// Atomically replaces one owned item while preserving its queue position.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn replace(&mut self, id: &str, replacement_id: &str, event: MessageEvent) -> Result<bool> {
         let owner = self.owner()?;
         let Some(index) = self
@@ -253,15 +259,25 @@ impl TryFrom<DurableQueuedMessage> for PreparedMessage {
 /// Durable runtime identity exposed while middleware starts a session.
 #[derive(Clone)]
 pub struct RuntimeContext {
+    /// The sender.
     pub sender: WeakAgentSender,
+    /// The checkpoints.
     pub checkpoints: Arc<dyn CheckpointStore>,
+    /// The session identifier.
     pub session_id: String,
+    /// The model route.
     pub model_route: String,
+    /// The model.
     pub model: String,
+    /// The approval policy.
     pub approval_policy: ApprovalPolicy,
+    /// The session context.
     pub session_context: SessionContext,
+    /// The metadata.
     pub metadata: BTreeMap<String, Value>,
+    /// The role.
     pub role: AgentRole,
+    /// The frontend.
     pub frontend: FrontendEventSink,
 }
 
@@ -279,22 +295,30 @@ impl RuntimeContext {
 /// Stable facts shared by hooks that run within one active turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TurnIdentity<'a> {
+    /// The session identifier.
     pub session_id: &'a str,
+    /// The turn identifier.
     pub turn_id: &'a str,
+    /// The model.
     pub model: &'a str,
+    /// The approval policy.
     pub approval_policy: ApprovalPolicy,
 }
 
 /// Why [`Middleware::session_start`](super::Middleware::session_start) is running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionStartSource {
+    /// Selects the startup case.
     Startup,
+    /// Selects the resume case.
     Resume,
+    /// Selects the compact case.
     Compact,
 }
 
 /// Mutable state shared by the declaration-ordered `SessionStart` hooks.
 pub struct SessionStartContext<'a> {
+    /// The runtime.
     pub runtime: &'a RuntimeContext,
     pub(crate) source: SessionStartSource,
     pub(crate) queued_messages: QueuedMessageSnapshot,
@@ -305,11 +329,13 @@ pub struct SessionStartContext<'a> {
 
 impl SessionStartContext<'_> {
     #[must_use]
+    /// Returns the session-start source.
     pub fn source(&self) -> SessionStartSource {
         self.source
     }
 
     #[must_use]
+    /// Returns the queued messages.
     pub fn queued_messages(&self) -> &QueuedMessageSnapshot {
         &self.queued_messages
     }
@@ -327,6 +353,9 @@ impl SessionStartContext<'_> {
     }
 
     /// Stops the active turn after session-start processing completes.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn stop(&mut self, reason: impl Into<String>) -> Result<()> {
         set_stop_reason(&mut self.stop_reason, "session-start stop", reason)
     }
@@ -340,10 +369,15 @@ impl SessionStartContext<'_> {
 
 /// Mutable state exposed before a prepared next-turn message enters durable context.
 pub struct MessageSubmitContext<'a> {
+    /// The turn.
     pub turn: TurnIdentity<'a>,
+    /// The author.
     pub author: &'a MessageAuthor,
+    /// The message.
     pub message: &'a str,
+    /// The attachments.
     pub attachments: &'a [SessionFileReference],
+    /// The events.
     pub events: &'a mut Vec<EventMsg>,
     pub(crate) input: Vec<Value>,
     pub(crate) rejection: Option<String>,
@@ -356,6 +390,9 @@ impl MessageSubmitContext<'_> {
     }
 
     /// Rejects the submission without treating the policy decision as a hook failure.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn reject(&mut self, reason: impl Into<String>) -> Result<()> {
         let reason = hook_message("prompt rejection", reason)?;
         if self.rejection.is_none() {
@@ -372,14 +409,23 @@ pub(crate) struct MessageSubmitResult {
 
 /// Mutable state exposed immediately before a model request.
 pub struct ModelContext<'a> {
+    /// The model.
     pub model: &'a ModelRouter,
+    /// The provider.
     pub provider: &'a str,
+    /// The session identifier.
     pub session_id: &'a str,
+    /// The session context.
     pub session_context: &'a SessionContext,
+    /// The metadata.
     pub metadata: &'a BTreeMap<String, Value>,
+    /// The turn identifier.
     pub turn_id: &'a str,
+    /// The model step.
     pub model_step: usize,
+    /// The context window.
     pub context_window: i64,
+    /// The instructions.
     pub instructions: &'a str,
     pub(crate) checkpoint_sequence: u64,
     pub(crate) available_tools: &'a mut BTreeSet<String>,
@@ -391,9 +437,13 @@ pub struct ModelContext<'a> {
     pub(crate) rewrite_reasons: &'a mut Vec<ContextRewriteReason>,
     pub(crate) turn_stop: &'a mut Option<String>,
     pub(crate) queued_messages: Vec<DurableQueuedMessage>,
+    /// The last usage.
     pub last_usage: Option<&'a TokenUsage>,
+    /// The tools.
     pub tools: &'a Catalog,
+    /// The events.
     pub events: &'a mut Vec<EventMsg>,
+    /// The usage.
     pub usage: &'a mut Vec<TokenUsage>,
     /// Set when this hook changes durable checkpoint state.
     pub(crate) checkpoint_changed: &'a mut bool,
@@ -403,6 +453,7 @@ pub struct ModelContext<'a> {
 
 /// Live capability state used to hide registered tools at a model boundary.
 pub struct ToolExposureContext<'a> {
+    /// The session identifier.
     pub session_id: &'a str,
     pub(crate) supports_tool_image_input: bool,
     pub(crate) input: &'a [Value],
@@ -443,6 +494,9 @@ impl ModelContext<'_> {
     }
 
     /// Replaces active model context and advances its rewrite epoch once per boundary.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn rewrite_input(
         &mut self,
         reason: ContextRewriteReason,
@@ -480,6 +534,9 @@ impl ModelContext<'_> {
     }
 
     /// Appends durable input to model context and its transcript journal.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn push_input(&mut self, item: Value) -> Result<MessageTarget> {
         self.durable_input.push(item.clone());
         self.transcript_delta.push(item);
@@ -572,11 +629,17 @@ impl ModelContext<'_> {
 
 /// Request-only model input exposed after every durable `PreModel` hook.
 pub struct ModelRequestContext<'a> {
+    /// The role.
     pub role: &'a AgentRole,
+    /// The model.
     pub model: &'a ModelRouter,
+    /// The provider.
     pub provider: &'a str,
+    /// The session identifier.
     pub session_id: &'a str,
+    /// The turn identifier.
     pub turn_id: &'a str,
+    /// The model step.
     pub model_step: usize,
     pub(crate) input: Cow<'a, [Value]>,
 }
@@ -596,7 +659,9 @@ impl ModelRequestContext<'_> {
 
 /// Mutable policy boundary for one normalized model-requested tool call.
 pub struct PreToolUseContext<'a> {
+    /// The turn.
     pub turn: TurnIdentity<'a>,
+    /// The events.
     pub events: &'a mut Vec<EventMsg>,
     pub(crate) tools: &'a Catalog,
     pub(crate) call: &'a mut ToolCall,
@@ -612,6 +677,9 @@ impl PreToolUseContext<'_> {
     }
 
     /// Replaces the tool name and arguments while preserving the provider call ID.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn replace(&mut self, name: impl Into<String>, arguments: Value) -> Result<()> {
         self.call.replace(name.into(), arguments)
     }
@@ -622,6 +690,9 @@ impl PreToolUseContext<'_> {
     }
 
     /// Denies the call. Later middleware may observe but cannot undo the denial.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn deny(&mut self, reason: impl Into<String>) -> Result<()> {
         let reason = hook_message("tool denial", reason)?;
         if self.denial.is_none() {
@@ -639,10 +710,15 @@ impl PreToolUseContext<'_> {
 
 /// Mutable policy boundary for a sandbox approval request.
 pub struct PermissionRequestContext<'a> {
+    /// The turn.
     pub turn: TurnIdentity<'a>,
+    /// The calls.
     pub calls: &'a [ToolCall],
+    /// The requested call identifiers.
     pub requested_call_ids: &'a [String],
+    /// The reason.
     pub reason: &'a str,
+    /// The events.
     pub events: &'a mut Vec<EventMsg>,
     pub(crate) tools: &'a Catalog,
     pub(crate) decision: Option<ReviewDecision>,
@@ -663,6 +739,9 @@ impl PermissionRequestContext<'_> {
     }
 
     /// Denies this request. The decision cannot be weakened by later middleware.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn deny(&mut self, reason: impl Into<String>) -> Result<()> {
         let reason = hook_message("permission denial", reason)?;
         if !matches!(self.decision, Some(ReviewDecision::Denied { .. })) {
@@ -674,8 +753,11 @@ impl PermissionRequestContext<'_> {
 
 /// Mutable model-visible result exposed after an executed tool call.
 pub struct PostToolUseContext<'a> {
+    /// The turn.
     pub turn: TurnIdentity<'a>,
+    /// The call.
     pub call: &'a ToolCall,
+    /// The events.
     pub events: &'a mut Vec<EventMsg>,
     pub(crate) tools: &'a Catalog,
     pub(crate) result: &'a mut ToolResult,
@@ -701,16 +783,24 @@ impl PostToolUseContext<'_> {
 
 /// State exposed immediately before or after context compaction.
 pub struct CompactContext<'a> {
+    /// The session identifier.
     pub session_id: &'a str,
+    /// The turn identifier.
     pub turn_id: &'a str,
+    /// The model.
     pub model: &'a str,
+    /// The input.
     pub input: &'a [Value],
+    /// The events.
     pub events: &'a mut Vec<EventMsg>,
     pub(crate) stop_reason: Option<String>,
 }
 
 impl CompactContext<'_> {
     /// Stops the active turn at this compaction boundary.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn stop(&mut self, reason: impl Into<String>) -> Result<()> {
         set_stop_reason(&mut self.stop_reason, "compaction stop", reason)
     }
@@ -724,7 +814,9 @@ impl CompactContext<'_> {
 
 /// Mutable policy boundary immediately before normal turn completion.
 pub struct StopContext<'a> {
+    /// The turn.
     pub turn: TurnIdentity<'a>,
+    /// The events.
     pub events: &'a mut Vec<EventMsg>,
     pub(crate) role: &'a AgentRole,
     pub(crate) stop_hook_active: bool,
@@ -734,16 +826,19 @@ pub struct StopContext<'a> {
 
 impl StopContext<'_> {
     #[must_use]
+    /// Returns the agent role.
     pub fn role(&self) -> &AgentRole {
         self.role
     }
 
     #[must_use]
+    /// Stops hook active.
     pub fn stop_hook_active(&self) -> bool {
         self.stop_hook_active
     }
 
     #[must_use]
+    /// Returns the last assistant message.
     pub fn last_assistant_message(&self) -> Option<&str> {
         self.last_assistant_message
     }
@@ -755,6 +850,9 @@ impl StopContext<'_> {
     }
 
     /// Requests one more model step with hidden context.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn continue_with(&mut self, prompt: impl Into<String>) -> Result<()> {
         if self.stop_hook_active {
             return Err(Error::Config(
@@ -809,51 +907,74 @@ pub(super) fn provisional_message_target(
 
 /// Mutable state exposed to the middleware preparing conversation messages.
 pub struct MessageRouteContext<'a> {
+    /// The submission identifier.
     pub submission_id: &'a str,
+    /// The message.
     pub message: &'a MessageSubmission,
+    /// The active turn identifier.
     pub active_turn_id: Option<&'a str>,
+    /// The queued messages.
     pub queued_messages: MessageQueue<'a>,
+    /// The events.
     pub events: &'a mut Vec<EventMsg>,
 }
 
 /// Mutable turn state exposed to a capability command that can run immediately.
 pub struct ActiveCommandContext<'a> {
+    /// The checkpoints.
     pub checkpoints: &'a dyn CheckpointStore,
+    /// The submission identifier.
     pub submission_id: &'a str,
+    /// The session identifier.
     pub session_id: &'a str,
+    /// The metadata.
     pub metadata: &'a BTreeMap<String, Value>,
+    /// The active turn identifier.
     pub active_turn_id: &'a str,
+    /// The command.
     pub command: &'a str,
+    /// The arguments.
     pub arguments: &'a str,
+    /// The input.
     pub input: Option<&'a str>,
+    /// The target.
     pub target: Option<MessageTarget>,
+    /// The queued messages.
     pub queued_messages: MessageQueue<'a>,
+    /// The events.
     pub events: &'a mut Vec<EventMsg>,
 }
 
 /// Result of one middleware-owned submission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubmissionResult {
+    /// Selects the accepted case.
     Accepted {
+        /// The input changed.
         input_changed: bool,
     },
     /// The operation completed without changing durable turn state; publish its events now.
     Handled,
+    /// Selects the rejected case.
     Rejected(String),
 }
 
 /// State exposed when the loop finishes or aborts a turn.
 pub struct TurnEndContext<'a> {
+    /// The session identifier.
     pub session_id: &'a str,
+    /// The turn identifier.
     pub turn_id: &'a str,
     pub(crate) outcome: ExecutionOutcome,
     pub(crate) queued_messages: &'a [DurableQueuedMessage],
     pub(crate) owner: Option<&'static str>,
+    /// The events.
     pub events: &'a mut Vec<EventMsg>,
 }
 
 impl TurnEndContext<'_> {
     #[must_use]
+    /// Returns the turn outcome.
     pub fn outcome(&self) -> ExecutionOutcome {
         self.outcome
     }
@@ -870,13 +991,21 @@ impl TurnEndContext<'_> {
 
 /// State available to a middleware-owned frontend command.
 pub struct MiddlewareCommandContext<'a> {
+    /// The command.
     pub command: &'a str,
+    /// The arguments.
     pub arguments: &'a str,
+    /// The input.
     pub input: Option<&'a str>,
+    /// The target.
     pub target: Option<MessageTarget>,
+    /// The session identifier.
     pub session_id: &'a str,
+    /// The session context.
     pub session_context: &'a SessionContext,
+    /// The checkpoint.
     pub checkpoint: &'a Checkpoint,
+    /// The checkpoints.
     pub checkpoints: Arc<dyn CheckpointStore>,
 }
 

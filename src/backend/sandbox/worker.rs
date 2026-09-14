@@ -21,7 +21,9 @@ const MAX_HOST_REPLY_BYTES: usize = 64 * 1024 * 1024;
 /// Trusted runtime command supplied by the owning capability, never by tool arguments.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkerCommand {
+    /// The executable.
     pub executable: PathBuf,
+    /// The arguments.
     pub arguments: Vec<String>,
 }
 
@@ -39,6 +41,9 @@ pub struct WorkerProcess {
 impl WorkerProcess {
     /// Launches a command already configured with the backend's filesystem and network policy.
     #[cfg(unix)]
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn spawn(command: &mut Command) -> Result<Self> {
         command
             .stdin(Stdio::piped())

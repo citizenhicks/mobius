@@ -1,3 +1,4 @@
+//! Command-line entry point for the möbius gateway.
 use std::path::PathBuf;
 
 use clap::Parser as _;

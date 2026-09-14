@@ -48,21 +48,27 @@ struct ClientToken {
 /// Identity returned after a successful authentication handshake.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientIdentity {
+    /// The identifier.
     pub id: String,
+    /// The label.
     pub label: String,
 }
 
 /// A newly issued bearer token. Only the digest is persisted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IssuedToken {
+    /// The client identifier.
     pub client_id: String,
+    /// The token.
     pub token: String,
 }
 
 /// One pending code that may be consumed by exactly one new client.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairingGrant {
+    /// The code.
     pub code: String,
+    /// The expires at.
     pub expires_at: i64,
 }
 
@@ -82,6 +88,9 @@ pub struct AuthStore {
 
 impl AuthStore {
     /// Creates fresh auth state and returns the short-lived bootstrap code.
+    /// # Errors
+    ///
+    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn initialize(path: impl Into<PathBuf>) -> Result<(Self, PairingGrant)> {
         let path = path.into();
         let grant = new_pairing_grant()?;
@@ -103,6 +112,9 @@ impl AuthStore {
     }
 
     /// Opens previously initialized authentication state.
+    /// # Errors
+    ///
+    /// Returns an error if the resource cannot be read, decoded, or validated.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
         let contents = fs::read(&path)?;
@@ -118,6 +130,9 @@ impl AuthStore {
     }
 
     /// Consumes the pending code and appends an independently issued client token.
+    /// # Errors
+    ///
+    /// Returns an error if authentication fails or its stored state is invalid.
     pub fn pair(&self, code: &str, client_label: &str) -> Result<IssuedToken> {
         self.pair_at(code, client_label, unix_timestamp()?)
     }
@@ -182,6 +197,9 @@ impl AuthStore {
     }
 
     /// Replaces any unused pairing code without invalidating paired clients.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn create_pairing_code(&self) -> Result<PairingGrant> {
         let mut state = self.lock_state()?;
         if state.clients.len() == MAX_CLIENTS {
@@ -199,6 +217,9 @@ impl AuthStore {
     }
 
     /// Verifies a bearer token against every paired client digest.
+    /// # Errors
+    ///
+    /// Returns an error if authentication fails or its stored state is invalid.
     pub fn authenticate(&self, token: &str) -> Result<ClientIdentity> {
         if token.is_empty() || token.len() > MAX_CLIENT_CREDENTIAL_BYTES {
             return Err(Error::Unauthorized);

@@ -107,14 +107,18 @@ pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
 /// Whether a tool can overlap other calls in its model-produced batch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionMode {
+    /// Selects the parallel case.
     Parallel,
+    /// Selects the exclusive case.
     Exclusive,
 }
 
 /// Whether a tool requires sandbox mutation approval.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalRequirement {
+    /// Selects the never case.
     Never,
+    /// Selects the always case.
     Always,
 }
 
@@ -131,8 +135,11 @@ pub enum ToolExposure {
 
 /// Dependencies available only to terminal tool handlers.
 pub struct ToolContext {
+    /// The sandbox.
     pub sandbox: Arc<Sandbox>,
+    /// The permissions.
     pub permissions: ToolPermissions,
+    /// The turn identifier.
     pub turn_id: String,
     input: ToolInput,
 }
@@ -152,6 +159,9 @@ impl ToolContext {
     }
 
     /// Adds provider-neutral context immediately after this tool output.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn push_input(&self, item: Value) -> Result<()> {
         self.input.push(item)
     }
@@ -221,6 +231,9 @@ pub trait Tool: Send + Sync {
     }
 
     /// Maps a hook rewrite back into provider-facing arguments.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     fn rewrite_hook_input(&self, input: Value) -> Result<Value> {
         object_hook_input(input)
     }
@@ -307,17 +320,20 @@ impl PreparedToolSet {
             ));
         }
         self.materialized.extend(tools.iter().cloned());
-        materialization_effects(
+        Ok(materialization_effects(
             &self.catalog_revision,
             tools.iter().cloned(),
             turn_id,
             load_id,
-        )
+        ))
     }
 }
 
 impl Catalog {
     /// Registers one tool and rejects invalid definitions or duplicate names.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn register(&mut self, tool: Arc<dyn Tool>) -> Result<()> {
         if self.finalized {
             return Err(Error::Config("tool catalog is already finalized".into()));
@@ -361,6 +377,9 @@ impl Catalog {
     }
 
     /// Freezes the registry after all tool owners have registered their handlers.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn finalize(&mut self) -> Result<()> {
         if self.finalized {
             return Err(Error::Config("tool catalog is already finalized".into()));
@@ -432,6 +451,9 @@ impl Catalog {
     }
 
     /// Returns the stable schema and exposure fingerprint of this finalized catalog.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn revision(&self) -> Result<&str> {
         if self.finalized {
             Ok(&self.revision)
@@ -516,6 +538,9 @@ impl Catalog {
     }
 
     /// Searches currently deferred tools using BM25 relevance ranking.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn search_deferred(
         &self,
         query: &str,
@@ -554,6 +579,9 @@ impl Catalog {
     }
 
     /// Validates a model-returned call against this catalog and its step materialization.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn bind_call(
         &self,
         call: ToolCall,
@@ -774,16 +802,16 @@ fn materialization_effects(
     tools: impl IntoIterator<Item = String>,
     turn_id: &str,
     load_id: &str,
-) -> Result<ToolEffects> {
+) -> ToolEffects {
     let tools = tools.into_iter().collect::<Vec<_>>();
     if tools.is_empty() {
-        return Ok(ToolEffects::default());
+        return ToolEffects::default();
     }
     let load = ToolLoad {
         catalog_revision: catalog_revision.into(),
         tools,
     };
-    Ok(ToolEffects {
+    ToolEffects {
         input: vec![load.clone().into_input()],
         events: vec![EventMsg::ToolLoad(ToolLoadEvent {
             turn_id: turn_id.into(),
@@ -791,7 +819,7 @@ fn materialization_effects(
             catalog_revision: load.catalog_revision,
             tools: load.tools,
         })],
-    })
+    }
 }
 
 /// A tool call proven callable for one model step.
@@ -850,9 +878,13 @@ fn object_hook_input(input: Value) -> Result<Value> {
 /// The result returned to the model for one tool call.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolResult {
+    /// The call identifier.
     pub call_id: String,
+    /// The name.
     pub name: String,
+    /// The output.
     pub output: crate::protocol::ToolContent,
+    /// The is error.
     pub is_error: bool,
     pub(crate) handler_executed: bool,
     pub(crate) additional_input: Vec<Value>,
@@ -1010,29 +1042,17 @@ pub(crate) async fn execute_call(
                     };
                 }
             };
-            match materialization_effects(&catalog_revision, output.loaded_tools, turn_id, &call_id)
-            {
-                Ok(effects) => {
-                    additional_input.extend(effects.input);
-                    ToolResult {
-                        call_id,
-                        name,
-                        output: cap_content(output.content.content),
-                        is_error: output.content.is_error,
-                        handler_executed: true,
-                        additional_input,
-                        events: effects.events,
-                    }
-                }
-                Err(error) => ToolResult {
-                    call_id,
-                    name,
-                    output: capped(&error.to_string(), MAX_TOOL_OUTPUT_BYTES).into(),
-                    is_error: true,
-                    handler_executed: true,
-                    additional_input: Vec::new(),
-                    events: Vec::new(),
-                },
+            let effects =
+                materialization_effects(&catalog_revision, output.loaded_tools, turn_id, &call_id);
+            additional_input.extend(effects.input);
+            ToolResult {
+                call_id,
+                name,
+                output: cap_content(output.content.content),
+                is_error: output.content.is_error,
+                handler_executed: true,
+                additional_input,
+                events: effects.events,
             }
         }
         Ok(Err(error)) => ToolResult {

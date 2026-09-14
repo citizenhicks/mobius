@@ -160,6 +160,9 @@ impl Default for Compaction {
 
 impl Compaction {
     /// Creates a threshold-based compaction policy.
+    /// # Errors
+    ///
+    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new(at_tokens: i64) -> Result<Self> {
         if at_tokens <= 0 {
             return Err(Error::Config(

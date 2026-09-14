@@ -62,6 +62,9 @@ impl ModelRouter {
     }
 
     /// Sets request image limits independently from file storage limits.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn image_input_limits(mut self, limits: super::ImageInputLimits) -> Result<Self> {
         if limits.max_images == 0 || limits.max_encoded_bytes == 0 {
             return Err(Error::Config(
@@ -73,11 +76,17 @@ impl ModelRouter {
     }
 
     /// Reports whether the route accepts images associated with a tool call.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn supports_tool_image_input(&self, provider: &str) -> Result<bool> {
         Ok(self.provider(provider)?.supports_tool_image_input())
     }
 
     /// Registers another provider.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn register(&mut self, id: impl Into<String>, provider: Arc<dyn Model>) -> Result<()> {
         let id = id.into();
         if self.routes.iter().any(|route| route.choice.route == id) {
@@ -92,6 +101,9 @@ impl ModelRouter {
     }
 
     /// Cancels paid operations when their credential expires or is revoked.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn set_credential_lifetime(
         &mut self,
         id: &str,
@@ -115,6 +127,9 @@ impl ModelRouter {
     }
 
     /// Resolves one route and optional reasoning effort through the model catalog.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn resolve_choice(
         &self,
         route: &str,
@@ -140,6 +155,9 @@ impl ModelRouter {
     }
 
     /// Replaces display metadata for one registered route.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn configure_choice(&mut self, mut choice: ModelChoice) -> Result<()> {
         if choice.group.trim().is_empty() || choice.model.trim().is_empty() {
             return Err(Error::Config(
@@ -170,6 +188,9 @@ impl ModelRouter {
     }
 
     /// Streams one response through the selected provider.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn respond(
         &self,
         provider: &str,
@@ -196,6 +217,9 @@ impl ModelRouter {
     }
 
     /// Validates media before an active-context rewrite is committed.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied value is invalid.
     pub async fn validate_media(
         &self,
         provider: &str,
@@ -214,21 +238,33 @@ impl ModelRouter {
     }
 
     /// Reports whether one route has a native compaction endpoint.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn compaction_endpoint(&self, provider: &str) -> Result<bool> {
         Ok(self.provider(provider)?.compaction_endpoint())
     }
 
     /// Reports whether one route accepts native image input.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn supports_image_input(&self, provider: &str) -> Result<bool> {
         Ok(self.provider(provider)?.supports_image_input())
     }
 
     /// Reports whether one route can negotiate realtime voice.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn supports_realtime_voice(&self, provider: &str) -> Result<bool> {
         Ok(self.provider(provider)?.supports_realtime_voice())
     }
 
     /// Starts a provider-owned voice call through the selected model route.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn start_realtime_voice(
         &self,
         provider: &str,
@@ -246,6 +282,9 @@ impl ModelRouter {
     }
 
     /// Reports deferred-tool cache behavior for one route.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn tool_discovery(&self, provider: &str) -> Result<ToolDiscoveryMode> {
         Ok(self.provider(provider)?.tool_discovery())
     }
@@ -284,16 +323,25 @@ impl ModelRouter {
     }
 
     /// Reports prompt-cache support for one route.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn prompt_cache_capability(&self, provider: &str) -> Result<PromptCacheMode> {
         Ok(self.provider(provider)?.prompt_cache_capability())
     }
 
     /// Returns provider-owned pricing for one route when it is known.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn pricing(&self, provider: &str) -> Result<Option<ModelPricing>> {
         Ok(self.provider(provider)?.pricing())
     }
 
     /// Estimates one completed request from provider-owned rates.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn estimated_cost_microusd(
         &self,
         provider: &str,
@@ -329,6 +377,9 @@ impl ModelRouter {
     }
 
     /// Compacts context through the selected provider.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn compact(
         &self,
         provider: &str,

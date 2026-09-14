@@ -118,6 +118,9 @@ pub struct SqliteCheckpoint {
 
 impl SqliteCheckpoint {
     /// Opens or creates a durable checkpoint database.
+    /// # Errors
+    ///
+    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
         prepare_path(&path)?;

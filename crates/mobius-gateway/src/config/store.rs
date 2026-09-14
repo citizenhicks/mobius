@@ -44,6 +44,9 @@ pub(super) struct UsageHistory {
 
 impl ConfigStore {
     /// Initializes an owner-only state directory and new config file.
+    /// # Errors
+    ///
+    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn initialize(
         state_dir: PathBuf,
         listen: SocketAddr,
@@ -57,6 +60,9 @@ impl ConfigStore {
     }
 
     /// Initializes state for an account-free Cloudflare Quick Tunnel.
+    /// # Errors
+    ///
+    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn initialize_quick_cloudflare(
         state_dir: PathBuf,
         listen: SocketAddr,
@@ -65,6 +71,9 @@ impl ConfigStore {
     }
 
     /// Initializes state for one user-owned Cloudflare Tunnel.
+    /// # Errors
+    ///
+    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn initialize_named_cloudflare(
         state_dir: PathBuf,
         listen: SocketAddr,
@@ -104,6 +113,9 @@ impl ConfigStore {
     }
 
     /// Opens and validates persisted gateway configuration.
+    /// # Errors
+    ///
+    /// Returns an error if the resource cannot be read, decoded, or validated.
     pub fn open(state_dir: PathBuf) -> Result<(Self, GatewayConfig)> {
         let state_dir = fs::canonicalize(state_dir)?;
         validate_private_state_dir(&state_dir)?;
@@ -127,6 +139,9 @@ impl ConfigStore {
     }
 
     /// Atomically replaces validated persistent configuration.
+    /// # Errors
+    ///
+    /// Returns an error if the value cannot be encoded or persisted.
     pub fn save(&self, config: &GatewayConfig) -> Result<()> {
         self.save_with_mode(config, false)
     }
@@ -214,6 +229,9 @@ impl ConfigStore {
 
 impl CredentialStore {
     /// Opens credential state, treating a missing file as an empty store.
+    /// # Errors
+    ///
+    /// Returns an error if the resource cannot be read, decoded, or validated.
     pub fn open(path: PathBuf) -> Result<Self> {
         let values = match fs::read(&path) {
             Ok(contents) => {
@@ -235,6 +253,9 @@ impl CredentialStore {
     }
 
     /// Atomically replaces one instance's API key after provider and size validation.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn set(
         &self,
         instance: &str,
@@ -281,6 +302,9 @@ impl CredentialStore {
     }
 
     /// Resolves a secret and its lifetime under the same lock.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn get(
         &self,
         instance: &str,
@@ -334,6 +358,9 @@ impl CredentialStore {
     }
 
     /// Atomically removes one instance-scoped API-key credential.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn remove(&self, instance: &str) -> Result<bool> {
         super::validation::validate_instance_id(instance)?;
         let mut values = self
@@ -352,6 +379,9 @@ impl CredentialStore {
 }
 
 /// Resolves the gateway state directory from the environment or home directory.
+/// # Errors
+///
+/// Returns an error if validation or an operation required by this function fails.
 pub fn state_dir() -> Result<PathBuf> {
     if let Some(path) = env::var_os("MOBIUS_GATEWAY_STATE_DIR") {
         if path.is_empty() {
@@ -372,6 +402,9 @@ pub fn state_dir() -> Result<PathBuf> {
 }
 
 /// Loads a connector token from an owner-only regular file without exposing its contents.
+/// # Errors
+///
+/// Returns an error if the resource cannot be read, decoded, or validated.
 pub fn load_cloudflare_token(path: &Path) -> Result<String> {
     #[cfg(unix)]
     let file = fs::OpenOptions::new()

@@ -80,7 +80,9 @@ pub const DEFAULT_CONTEXT_WINDOW: i64 = 272_000;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TlsConfig {
+    /// The certificate.
     pub certificate: PathBuf,
+    /// The private key.
     pub private_key: PathBuf,
 }
 
@@ -91,7 +93,10 @@ pub enum CloudflareConfig {
     /// Account-free tunnel with an address assigned at process startup.
     Quick,
     /// User-owned tunnel with a stable published hostname.
-    Named { hostname: String },
+    Named {
+        /// The published tunnel hostname.
+        hostname: String,
+    },
 }
 
 /// Durable machine-wide settings and defaults for one gateway process.
@@ -99,9 +104,13 @@ pub enum CloudflareConfig {
 #[serde(deny_unknown_fields)]
 pub struct GatewayConfig {
     version: u32,
+    /// The listen.
     pub listen: SocketAddr,
+    /// The TLS.
     pub tls: Option<TlsConfig>,
+    /// The cloudflare.
     pub cloudflare: Option<CloudflareConfig>,
+    /// The bot defaults.
     pub bot_defaults: Option<VersionedAgentConfig>,
     pub(crate) configured_providers: BTreeMap<String, ConfiguredProvider>,
     pub(crate) installed_extensions: BTreeMap<String, crate::extensions::InstalledExtension>,
@@ -169,6 +178,9 @@ impl Default for AgentComposition {
 
 impl GatewayConfig {
     /// Builds validated machine-wide settings and Bot-creation defaults.
+    /// # Errors
+    ///
+    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new(listen: SocketAddr, tls: Option<TlsConfig>) -> Result<Self> {
         let config = Self {
             version: CONFIG_VERSION,
@@ -185,6 +197,9 @@ impl GatewayConfig {
     }
 
     /// Builds a loopback gateway exposed through Cloudflare Tunnel.
+    /// # Errors
+    ///
+    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new_cloudflare(listen: SocketAddr, cloudflare: CloudflareConfig) -> Result<Self> {
         let mut config = Self::new(listen, None)?;
         config.cloudflare = Some(cloudflare);
@@ -312,6 +327,9 @@ impl GatewayConfig {
     }
 
     /// Records one live token-usage increment and reports whether daily usage changed.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn observe_usage(&mut self, provider: &str, usage: &TokenUsage) -> Result<bool> {
         self.usage.observe(provider, usage, SystemTime::now())
     }
@@ -340,6 +358,9 @@ impl GatewayConfig {
     }
 
     /// Validates every persisted trust-boundary field.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied value is invalid.
     pub fn validate(&self) -> Result<()> {
         if self.version != CONFIG_VERSION {
             return Err(Error::Config(format!(
@@ -587,6 +608,9 @@ impl TlsConfig {
 
 impl CloudflareConfig {
     /// Validates and normalizes a stable public hostname.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn named(hostname: &str) -> Result<Self> {
         let hostname = hostname.trim().to_ascii_lowercase();
         let config = Self::Named { hostname };
@@ -610,6 +634,9 @@ impl CloudflareConfig {
     }
 
     /// Validates one tunnel-scoped connector token without retaining it.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied value is invalid.
     pub fn validate_token(token: &str) -> Result<()> {
         validate_cloudflare_token(token).map(|_| ())
     }

@@ -9,6 +9,10 @@ use uuid::Uuid;
 
 use crate::gateway_error;
 
+/// Runs one task through the headless gateway client.
+/// # Errors
+///
+/// Returns an error if validation or an operation required to complete the request fails.
 pub async fn run(
     sender: GatewaySender,
     mut events: GatewayEvents,

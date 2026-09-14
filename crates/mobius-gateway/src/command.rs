@@ -103,6 +103,9 @@ const MAX_BACKGROUND_ERROR_BYTES: u64 = 16 * 1024;
 const CONNECTION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Runs a gateway command with arguments excluding the executable name.
+/// # Errors
+///
+/// Returns an error if validation or an operation required to complete the request fails.
 pub async fn run(
     arguments: Vec<OsString>,
     save_local_client: fn(&Endpoint, String) -> Result<()>,
@@ -125,6 +128,9 @@ pub async fn run(
 }
 
 /// Runs an already parsed gateway command.
+/// # Errors
+///
+/// Returns an error if validation or an operation required to complete the request fails.
 pub async fn run_cli(
     cli: GatewayCli,
     save_local_client: fn(&Endpoint, String) -> Result<()>,

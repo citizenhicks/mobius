@@ -27,6 +27,10 @@ pub use dashboard::{run as run_gateway_dashboard, run_provider as run_gateway_pr
 pub use reinitialize::confirm as confirm_gateway_reinitialize;
 pub use setup::run_gateway_login;
 
+/// Returns the run extensions.
+/// # Errors
+///
+/// Returns an error if validation or an operation required to complete the request fails.
 pub async fn run_extensions(
     sender: GatewaySender,
     events: GatewayEvents,
@@ -79,6 +83,10 @@ fn provider_instance_label<'a>(
         .map(|entry| entry.label.as_str())
 }
 
+/// Runs the interactive terminal frontend.
+/// # Errors
+///
+/// Returns an error if validation or an operation required to complete the request fails.
 pub async fn run(
     sender: GatewaySender,
     events: GatewayEvents,
@@ -93,8 +101,12 @@ pub async fn run(
 
 /// Why a frontend returned control to its launcher.
 pub enum FrontendExit {
+    /// Selects the exit case.
     Exit,
+    /// Selects the resume case.
     Resume(String),
+    /// Selects the reload case.
     Reload,
+    /// Selects the reconnect case.
     Reconnect,
 }

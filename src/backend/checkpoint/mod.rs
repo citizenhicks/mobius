@@ -39,8 +39,11 @@ const MAX_QUEUED_MESSAGE_BYTES: usize = MAX_MESSAGE_BYTES * 2;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ExecutionPhase {
+    /// Selects the model case.
     Model,
+    /// Selects the completion case.
     Completion {
+        /// The last assistant message.
         last_assistant_message: Option<String>,
     },
 }
@@ -48,23 +51,36 @@ pub enum ExecutionPhase {
 /// Mutable state for the user turn currently running.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActiveExecution {
+    /// The submission identifier.
     pub submission_id: String,
+    /// The turn identifier.
     pub turn_id: String,
+    /// The started at milliseconds.
     pub started_at_ms: i64,
+    /// The model calls.
     pub model_calls: u64,
+    /// The tool calls.
     pub tool_calls: u64,
+    /// The failed tool calls.
     pub failed_tool_calls: u64,
+    /// The usage.
     pub usage: TokenUsage,
+    /// The next model step.
     pub next_model_step: usize,
+    /// The stop hook active.
     pub stop_hook_active: bool,
+    /// The phase.
     pub phase: ExecutionPhase,
 }
 
 /// The model step currently in flight for an active execution.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActiveModelStep {
+    /// The model step identifier.
     pub model_step_id: String,
+    /// The step index.
     pub step_index: usize,
+    /// The started at milliseconds.
     pub started_at_ms: i64,
 }
 
@@ -72,37 +88,59 @@ pub struct ActiveModelStep {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionOutcome {
+    /// Selects the completed case.
     Completed,
+    /// Selects the aborted case.
     Aborted,
+    /// Selects the failed case.
     Failed,
 }
 
 /// Durable observability record for one completed user turn.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionRecord {
+    /// The session identifier.
     pub session_id: String,
+    /// The submission identifier.
     pub submission_id: String,
+    /// The turn identifier.
     pub turn_id: String,
+    /// The started at milliseconds.
     pub started_at_ms: i64,
+    /// The finished at milliseconds.
     pub finished_at_ms: i64,
+    /// The elapsed milliseconds.
     pub elapsed_ms: u64,
+    /// The outcome.
     pub outcome: ExecutionOutcome,
+    /// The model calls.
     pub model_calls: u64,
+    /// The tool calls.
     pub tool_calls: u64,
+    /// The failed tool calls.
     pub failed_tool_calls: u64,
+    /// The usage.
     pub usage: TokenUsage,
 }
 
 /// Aggregate execution metrics for one durable session.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionStats {
+    /// The run count.
     pub run_count: u64,
+    /// The failed run count.
     pub failed_run_count: u64,
+    /// The aborted run count.
     pub aborted_run_count: u64,
+    /// The model calls.
     pub model_calls: u64,
+    /// The tool calls.
     pub tool_calls: u64,
+    /// The failed tool calls.
     pub failed_tool_calls: u64,
+    /// The elapsed milliseconds.
     pub elapsed_ms: u64,
+    /// The usage.
     pub usage: TokenUsage,
 }
 
@@ -110,8 +148,11 @@ pub struct ExecutionStats {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContextRewriteReason {
+    /// Selects the context offloading case.
     ContextOffloading,
+    /// Selects the compaction case.
     Compaction,
+    /// Selects the scratchpad case.
     Scratchpad,
 }
 
@@ -128,7 +169,9 @@ impl ContextRewriteReason {
 /// The latest deliberate active-context rewrite.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextRewrite {
+    /// The epoch.
     pub epoch: u64,
+    /// The reasons.
     pub reasons: Vec<ContextRewriteReason>,
 }
 
@@ -171,15 +214,25 @@ impl ExecutionStats {
 /// A tool batch waiting for a frontend decision.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PendingApproval {
+    /// The submission identifier.
     pub submission_id: String,
+    /// The turn identifier.
     pub turn_id: String,
+    /// The request identifier.
     pub request_id: String,
+    /// The approval call identifiers.
     pub approval_call_ids: Vec<String>,
+    /// The authorized call identifiers.
     pub authorized_call_ids: Vec<String>,
+    /// The calls.
     pub calls: Vec<ToolCall>,
+    /// The reason.
     pub reason: String,
+    /// The sandbox mode.
     pub sandbox_mode: SandboxMode,
+    /// The network access.
     pub network_access: NetworkAccess,
+    /// The decision received.
     pub decision_received: bool,
 }
 
@@ -209,8 +262,14 @@ impl PendingApproval {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum QueuedMessageBoundary {
+    /// Selects the turn case.
     Turn,
-    Steer { turn_id: String },
+    /// Steers the active turn.
+    Steer {
+        /// The active turn identifier.
+        turn_id: String,
+    },
+    /// Selects the queue case.
     Queue,
 }
 
@@ -343,25 +402,45 @@ pub struct Checkpoint {
     #[cfg(test)]
     #[serde(skip)]
     pub(crate) clone_count: CloneCount,
+    /// The version.
     pub version: u32,
+    /// The session identifier.
     pub session_id: String,
+    /// The session context.
     pub session_context: SessionContext,
+    /// The metadata.
     pub metadata: BTreeMap<String, Value>,
+    /// The catalog visible.
     pub catalog_visible: bool,
+    /// The first user message.
     pub first_user_message: Option<String>,
+    /// The model route.
     pub model_route: Option<String>,
+    /// The sequence.
     pub sequence: u64,
+    /// The context.
     pub context: Vec<Value>,
+    /// The context epoch.
     pub context_epoch: u64,
+    /// The compaction count.
     pub compaction_count: u64,
+    /// The last context rewrite.
     pub last_context_rewrite: Option<ContextRewrite>,
+    /// The total usage.
     pub total_usage: TokenUsage,
+    /// The last usage.
     pub last_usage: Option<TokenUsage>,
+    /// The pending messages.
     pub pending_messages: Vec<QueuedMessage>,
+    /// The active execution.
     pub active_execution: Option<ActiveExecution>,
+    /// The active model step.
     pub active_model_step: Option<ActiveModelStep>,
+    /// The execution stats.
     pub execution_stats: ExecutionStats,
+    /// The pending tools.
     pub pending_tools: Vec<ToolCall>,
+    /// The pending approval.
     pub pending_approval: Option<PendingApproval>,
 }
 
@@ -459,23 +538,36 @@ impl Checkpoint {
 /// Catalog metadata for one durable session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionSummary {
+    /// The session identifier.
     pub session_id: String,
+    /// The session context.
     pub session_context: SessionContext,
+    /// The parent session identifier.
     pub parent_session_id: Option<String>,
+    /// The parent sequence.
     pub parent_sequence: Option<u64>,
+    /// The sequence.
     pub sequence: u64,
+    /// The catalog visible.
     pub catalog_visible: bool,
+    /// The first user message.
     pub first_user_message: Option<String>,
+    /// The execution stats.
     pub execution_stats: ExecutionStats,
+    /// The created at.
     pub created_at: i64,
+    /// The updated at.
     pub updated_at: i64,
 }
 
 /// Stable key for continuing a newest-first session catalog query.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionCursor {
+    /// The updated at.
     pub updated_at: i64,
+    /// The sequence.
     pub sequence: u64,
+    /// The session identifier.
     pub session_id: String,
 }
 
@@ -484,50 +576,65 @@ pub struct SessionCursor {
 pub struct SessionPageRequest {
     /// Restricts sessions and cursor keys to this owner; `None` lists every owner.
     pub owner_id: Option<String>,
+    /// The cursor.
     pub cursor: Option<SessionCursor>,
+    /// The limit.
     pub limit: usize,
 }
 
 /// One page of durable sessions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionPage {
+    /// The sessions.
     pub sessions: Vec<SessionSummary>,
+    /// The next cursor.
     pub next_cursor: Option<SessionCursor>,
 }
 
 /// One append-only transcript delta at its durable checkpoint sequence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TranscriptBatch {
+    /// The sequence.
     pub sequence: u64,
+    /// The created at.
     pub created_at: i64,
+    /// The items.
     pub items: Vec<Value>,
 }
 
 /// Bounds one newest-first execution-journal query.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionPageRequest {
+    /// The before sequence.
     pub before_sequence: Option<u64>,
+    /// The limit.
     pub limit: usize,
 }
 
 /// One newest-first page of terminal user-turn records.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionPage {
+    /// The executions.
     pub executions: Vec<ExecutionRecord>,
+    /// The next before sequence.
     pub next_before_sequence: Option<u64>,
 }
 
 /// Bounds one newest-first transcript query.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TranscriptPageRequest {
+    /// The before sequence.
     pub before_sequence: Option<u64>,
+    /// The max batches.
     pub max_batches: usize,
 }
 
 /// One newest-first page of transcript deltas.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TranscriptPage {
+    /// The batches.
     pub batches: Vec<TranscriptBatch>,
+    /// The next before sequence.
     pub next_before_sequence: Option<u64>,
 }
 
@@ -547,25 +654,35 @@ pub struct JournalEvent {
 /// One normalized event paired with its framework receipt time.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TimestampedEvent {
+    /// The recorded at milliseconds.
     pub recorded_at_ms: i64,
+    /// The event.
     pub event: Event,
 }
 
 /// Delivery metrics for one typed text stream within a completed model step.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamMetrics {
+    /// The phase.
     pub phase: ModelStepContentPhase,
+    /// The first delta at milliseconds.
     pub first_delta_at_ms: i64,
+    /// The last delta at milliseconds.
     pub last_delta_at_ms: i64,
+    /// The chunk count.
     pub chunk_count: u64,
+    /// The utf8 bytes.
     pub utf8_bytes: u64,
+    /// The longest gap milliseconds.
     pub longest_gap_ms: u64,
 }
 
 /// Bounds one newest-first event-journal query.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventPageRequest {
+    /// The before sequence.
     pub before_sequence: Option<u64>,
+    /// The limit.
     pub limit: usize,
 }
 
@@ -574,7 +691,9 @@ pub struct EventPageRequest {
 pub struct EventPage {
     /// Durable sequence high-water, including intentionally discarded transient events.
     pub latest_sequence: u64,
+    /// The events.
     pub events: Vec<JournalEvent>,
+    /// The next before sequence.
     pub next_before_sequence: Option<u64>,
 }
 
@@ -588,6 +707,9 @@ impl EventPage {
 }
 
 /// Loads the newest logical turn before a durable event cursor.
+/// # Errors
+///
+/// Returns an error if validation or an operation required by this function fails.
 pub async fn event_turn_page(
     checkpoints: &dyn CheckpointStore,
     session_id: &str,

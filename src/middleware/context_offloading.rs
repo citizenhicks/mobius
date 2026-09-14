@@ -57,6 +57,9 @@ pub struct ContextOffloading {
 
 impl ContextOffloading {
     /// Creates a tool-output retention policy.
+    /// # Errors
+    ///
+    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new(stale_after_tokens: i64) -> Result<Self> {
         let stale_after_tokens = usize::try_from(stale_after_tokens)
             .map_err(|_| Error::Config("context offloading threshold must be positive".into()))?;

@@ -896,7 +896,7 @@ impl SetupState {
             ));
         }
         if model_ids.iter().collect::<BTreeSet<_>>().len() != model_ids.len() {
-            return Err(Error::Config("Model IDs must be unique".into()));
+            return Err(Error::Config("model IDs must be unique".into()));
         }
         Ok(model_ids)
     }
@@ -945,7 +945,7 @@ impl SetupState {
                 .selected_base_url()
                 .is_none_or(|url| url.trim().is_empty())
         {
-            return Err(Error::Config("Base URL is required".into()));
+            return Err(Error::Config("base URL is required".into()));
         }
         Ok(())
     }
@@ -1000,7 +1000,7 @@ impl SetupState {
         let web_search = definition
             .web_search
             .get(self.web_search)
-            .ok_or_else(|| Error::Config("Hosted web-search selection is invalid".into()))?
+            .ok_or_else(|| Error::Config("hosted web-search selection is invalid".into()))?
             .value
             .parse::<HostedWebSearch>()?;
         let base_url = self.selected_base_url();
@@ -1014,7 +1014,7 @@ impl SetupState {
             ProviderEndpointAuth::ProviderDefault
         };
         if model.is_empty() {
-            return Err(Error::Config("Model is required".into()));
+            return Err(Error::Config("model is required".into()));
         }
         config.provider = ProviderConfig {
             instance: self.target_instance(),

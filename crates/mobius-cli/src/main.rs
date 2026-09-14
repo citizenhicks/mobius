@@ -1,3 +1,4 @@
+//! Command-line entry point for möbius.
 use std::env;
 use std::fs::{File, OpenOptions};
 use std::io::{IsTerminal as _, Read as _};

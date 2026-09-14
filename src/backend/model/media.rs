@@ -10,7 +10,9 @@ use crate::{Error, Result};
 /// Request admission policy, independent of stored-file and decoder limits.
 #[derive(Debug, Clone, Copy)]
 pub struct ImageInputLimits {
+    /// The max images.
     pub max_images: usize,
+    /// The max encoded bytes.
     pub max_encoded_bytes: usize,
 }
 

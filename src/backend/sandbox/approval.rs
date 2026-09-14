@@ -35,9 +35,13 @@ const MAX_SESSION_APPROVALS: usize = 64;
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalPolicy {
     #[default]
+    /// Selects the ask case.
     Ask,
+    /// Selects the allow case.
     Allow,
+    /// Selects the allow network case.
     AllowNetwork,
+    /// Selects the full access case.
     FullAccess,
 }
 

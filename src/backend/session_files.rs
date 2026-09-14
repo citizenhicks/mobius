@@ -64,8 +64,11 @@ pub const fn session_file_limits() -> SessionFileLimits {
 /// One bounded range read from a stored session file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionFileChunk {
+    /// The offset.
     pub offset: u64,
+    /// The data.
     pub data: Vec<u8>,
+    /// The next offset.
     pub next_offset: Option<u64>,
 }
 
@@ -178,6 +181,9 @@ impl SessionFileStore {
     }
 
     /// Starts one connection-owned user upload.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn begin_upload(
         &self,
         session_id: &str,
@@ -196,6 +202,9 @@ impl SessionFileStore {
     }
 
     /// Publishes one immutable agent artifact.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn publish_artifact(
         &self,
         session_id: &str,
@@ -214,18 +223,27 @@ impl SessionFileStore {
     }
 
     /// Lists completed user uploads for one session.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn list_uploads(&self, session_id: &str) -> Result<Vec<SessionFileReference>> {
         self.list_origin(session_id, SessionFileOrigin::Upload)
             .await
     }
 
     /// Lists completed agent artifacts for one session.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn list_artifacts(&self, session_id: &str) -> Result<Vec<SessionFileReference>> {
         self.list_origin(session_id, SessionFileOrigin::Artifact)
             .await
     }
 
     /// Lists every completed file together with the side that produced it.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn list_files(&self, session_id: &str) -> Result<Vec<SessionFileRecord>> {
         validate_session_id(session_id)?;
         self.ensure_initialized().await?;
@@ -277,6 +295,9 @@ impl SessionFileStore {
     }
 
     /// Permanently removes every upload and artifact owned by one idle session.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn delete_session(&self, session_id: &str) -> Result<()> {
         let mut deletion = self
             .prepare_delete_sessions(&[session_id.to_owned()])
@@ -285,6 +306,9 @@ impl SessionFileStore {
     }
 
     /// Permanently removes one completed user upload.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn delete_upload(&self, session_id: &str, file_id: &str) -> Result<()> {
         validate_session_id(session_id)?;
         validate_file_id(file_id)?;
@@ -303,6 +327,9 @@ impl SessionFileStore {
     }
 
     /// Validates a batch deletion and prevents new upload reservations until it completes.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn prepare_delete_sessions(
         &self,
         session_ids: &[String],
@@ -363,6 +390,9 @@ impl SessionFileStore {
     /// Retries workspace cleanup left by completed session deletions.
     ///
     /// Run outside gateway mutation locks: a workspace may be unavailable.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn cleanup_deleted_sessions(&self) -> Result<()> {
         self.ensure_initialized().await?;
         let mut entries = tokio::fs::read_dir(self.root.as_ref()).await?;
@@ -410,6 +440,9 @@ impl SessionFileStore {
     }
 
     /// Reads one bounded byte range from either kind of stored session file.
+    /// # Errors
+    ///
+    /// Returns an error if the resource cannot be read, decoded, or validated.
     pub async fn read_chunk(
         &self,
         session_id: &str,
@@ -422,6 +455,9 @@ impl SessionFileStore {
     }
 
     /// Verifies that a frontend reference names the exact user upload.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn verify_upload(
         &self,
         session_id: &str,
@@ -690,6 +726,9 @@ impl SessionFileStore {
 
 impl SessionFileDeletion {
     /// Durably removes files from the live catalog without opening any workspace.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn stage(&mut self) -> Result<()> {
         if self.commit.is_none() {
             return Ok(());
@@ -709,6 +748,9 @@ impl SessionFileDeletion {
     }
 
     /// Finishes staged workspace cleanup without holding the file commit lock.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn delete(&mut self) -> Result<()> {
         if self.session_ids.is_empty() {
             self.commit.take();
@@ -738,11 +780,15 @@ pub struct PendingSessionFileWrite {
 
 impl PendingSessionFileWrite {
     #[must_use]
+    /// Returns the pending file identifier.
     pub fn id(&self) -> &str {
         &self.record.file.id
     }
 
     /// Appends the next exact chunk.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn append(&mut self, offset: u64, data: &[u8]) -> Result<u64> {
         if data.is_empty() || data.len() > MAX_UPLOAD_CHUNK_BYTES {
             return Err(Error::Tool(format!(
@@ -774,6 +820,9 @@ impl PendingSessionFileWrite {
     }
 
     /// Atomically publishes a complete session file.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn finish(mut self) -> Result<SessionFileReference> {
         if self.written != self.record.file.size {
             return Err(Error::Tool(format!(

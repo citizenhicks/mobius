@@ -40,6 +40,9 @@ pub struct VoiceTranscript {
 
 impl VoiceTranscript {
     /// Opens the parent's durable voice transcript without starting an Agent or copying context.
+    /// # Errors
+    ///
+    /// Returns an error if the resource cannot be read, decoded, or validated.
     pub async fn open(
         checkpoints: Arc<dyn CheckpointStore>,
         parent_session_id: &str,
@@ -85,6 +88,9 @@ impl VoiceTranscript {
     }
 
     /// Freezes the private discussion at request receipt, including unfinished speech.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn task_context(&self) -> Result<String> {
         let history = history_page(self.checkpoints.as_ref(), &self.session_id, None)
             .await?
@@ -93,6 +99,9 @@ impl VoiceTranscript {
     }
 
     /// Journals normalized speech with a fresh canonical identity for this provider call.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn record(
         &mut self,
         input_id: &str,
@@ -163,6 +172,9 @@ impl VoiceTranscript {
     }
 
     /// Keeps speech already received when the call stops before its provider final event.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn finish(&mut self) -> Result<()> {
         let pending = self
             .recordings

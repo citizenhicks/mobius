@@ -1,3 +1,4 @@
+//! Generates the möbius command-line manual page.
 use std::path::PathBuf;
 
 use chrono::NaiveDate;

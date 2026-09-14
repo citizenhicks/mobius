@@ -137,7 +137,7 @@ async fn apply_patch_edits_an_absolute_path_in_an_attached_folder() {
     assert!(no_op.is_error);
     assert_eq!(
         no_op.output.text(),
-        "tool error: Patch rejected: patch applies but makes no changes."
+        "tool error: patch rejected: patch applies but makes no changes"
     );
     assert_eq!(
         std::fs::read_to_string(&path).expect("read unchanged file"),

@@ -272,6 +272,9 @@ pub(super) struct RegisterProviderOptions {
 
 impl GatewayCli {
     /// Returns the interactive frontend selected by this command line, if any.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn frontend_command(&self) -> Result<Option<FrontendCommand>> {
         let command = match &self.command {
             None => FrontendCommand::Dashboard(self.resolved_state_dir()?),

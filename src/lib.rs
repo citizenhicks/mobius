@@ -269,37 +269,54 @@ impl From<&str> for ProviderError {
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("configuration error: {0}")]
+    /// Selects the config case.
     Config(String),
     #[error("duplicate registration: {0}")]
+    /// Selects the duplicate case.
     Duplicate(String),
     #[error("unknown registration: {0}")]
+    /// Selects the unknown case.
     Unknown(String),
     #[error("provider error: {0}")]
+    /// Selects the provider case.
     Provider(#[from] ProviderError),
     #[error("authentication error: {0}")]
+    /// Selects the auth case.
     Auth(String),
     #[error("sandbox rejected path: {0}")]
+    /// Selects the sandbox case.
     Sandbox(String),
     #[error("tool error: {0}")]
+    /// Selects the tool case.
     Tool(String),
     #[error("checkpoint error: {0}")]
+    /// Selects the checkpoint case.
     Checkpoint(String),
     #[error("agent busy: {0}")]
+    /// Selects the busy case.
     Busy(String),
     #[error("agent stopped: {0}")]
+    /// Selects the stopped case.
     Stopped(String),
     #[error("{primary}; rollback failed: {rollback}")]
+    /// Selects the rollback case.
     Rollback {
+        /// The primary.
         primary: Box<Error>,
+        /// The rollback.
         rollback: Box<Error>,
     },
     #[error(transparent)]
+    /// Selects the I/O case.
     Io(#[from] std::io::Error),
     #[error(transparent)]
+    /// Selects the HTTP case.
     Http(#[from] reqwest::Error),
     #[error(transparent)]
+    /// Selects the JSON case.
     Json(#[from] serde_json::Error),
     #[error("checkpoint storage error")]
+    /// Selects the SQLite case.
     Sqlite(
         #[source]
         #[from]

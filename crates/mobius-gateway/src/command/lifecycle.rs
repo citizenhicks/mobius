@@ -81,6 +81,9 @@ pub(super) async fn serve_in_background(state_dir: PathBuf) -> Result<()> {
 
 /// Starts the configured detached gateway unless its process is already running.
 #[cfg(unix)]
+/// # Errors
+///
+/// Returns an error if the supplied value is invalid.
 pub async fn ensure_background_gateway(state_dir: PathBuf) -> Result<()> {
     let (store, _) = ConfigStore::open(state_dir.clone())?;
     if running_process_pid(&store.state_dir().join(PROCESS_FILE))?.is_some() {

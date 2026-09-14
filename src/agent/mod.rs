@@ -65,9 +65,13 @@ pub const DEFAULT_MAX_MODEL_STEPS: usize = 2042;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum AgentRole {
     #[default]
+    /// Selects the main case.
     Main,
+    /// Selects the subagent case.
     Subagent {
+        /// The parent session identifier.
         parent_session_id: String,
+        /// The parent turn identifier.
         parent_turn_id: String,
     },
 }
@@ -129,6 +133,9 @@ impl AgentConfig {
     }
 
     /// Gives a child agent its own sandbox temporary files and execution lifetime.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn isolated_execution(mut self) -> Result<Self> {
         self.sandbox = Arc::new(self.sandbox.isolated_execution()?);
         Ok(self)
@@ -210,6 +217,9 @@ impl AgentConfig {
     }
 
     /// Selects a registered model route and optional reasoning effort.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn model_route(mut self, route: &str, reasoning_effort: Option<&str>) -> Result<Self> {
         self.select_model_with_reasoning(route, reasoning_effort)?;
         self.model_route_configured = true;
@@ -269,6 +279,9 @@ impl AgentSender {
     }
 
     /// Sends a submission with a caller-controlled correlation ID.
+    /// # Errors
+    ///
+    /// Returns an error if the transport fails or returns invalid data.
     pub fn send(&self, submission: Submission) -> Result<()> {
         validate_submission(&submission)?;
         let mut last_sequence = self
@@ -298,6 +311,9 @@ impl AgentSender {
     }
 
     /// Submits a command and returns its correlation ID.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn submit(&self, op: Op) -> Result<String> {
         let id = Uuid::new_v4().to_string();
         self.send(Submission { id: id.clone(), op })?;
@@ -371,6 +387,9 @@ pub(crate) fn test_sender() -> WeakAgentSender {
 }
 
 /// Validates one submission before callers perform more expensive boundary work.
+/// # Errors
+///
+/// Returns an error if the supplied value is invalid.
 pub fn validate_submission(submission: &Submission) -> Result<()> {
     crate::validate_identifier("submission ID", &submission.id, crate::MAX_IDENTIFIER_BYTES)?;
     match &submission.op {
@@ -529,6 +548,9 @@ impl AgentEvents {
     }
 
     /// Attempts to receive the next event without waiting.
+    /// # Errors
+    ///
+    /// Returns an error if no event is ready or the event channel has closed.
     pub fn try_recv(&mut self) -> std::result::Result<Event, mpsc::error::TryRecvError> {
         self.inner.try_recv().map(|record| record.event)
     }

@@ -11,6 +11,9 @@ const MAX_DECODE_BYTES: u64 = 256 * 1024 * 1024;
 
 impl SessionFileStore {
     /// Reopens an owned image and retains its bytes independently of an upload.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn inspect_image(
         &self,
         session_id: &str,
@@ -39,6 +42,9 @@ impl SessionFileStore {
     }
 
     /// Publishes owned stored bytes without copying or re-encoding them.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn publish_reference(
         &self,
         session_id: &str,
@@ -49,6 +55,9 @@ impl SessionFileStore {
     }
 
     /// Grants a trusted fork access to an exact parent file, preserving its ID.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn grant_file(
         &self,
         parent: &str,
@@ -60,6 +69,9 @@ impl SessionFileStore {
     }
 
     /// Grants an authenticated chat's exact upload to one trusted agent execution.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn grant_upload(
         &self,
         source: &str,
@@ -72,6 +84,9 @@ impl SessionFileStore {
     }
 
     /// Publishes an execution's exact artifact in its owning chat without copying bytes.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn share_artifact(
         &self,
         source: &str,
@@ -125,6 +140,9 @@ impl SessionFileStore {
     }
 
     /// Validates and records an immutable image without publishing an artifact.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn ingest_image(
         &self,
         session_id: &str,
@@ -155,6 +173,9 @@ impl SessionFileStore {
     }
 
     /// Reads an exact file reference authorized by the owning session.
+    /// # Errors
+    ///
+    /// Returns an error if the resource cannot be read, decoded, or validated.
     pub async fn read_file(
         &self,
         session_id: &str,
@@ -170,6 +191,9 @@ impl SessionFileStore {
     }
 
     /// Resolves an opaque file ID inside the authorized session.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn file_reference(
         &self,
         session_id: &str,
@@ -180,6 +204,9 @@ impl SessionFileStore {
 }
 
 /// Retains referenced files before a trusted fork; text-only forks need no file store.
+/// # Errors
+///
+/// Returns an error if validation or an operation required by this function fails.
 pub async fn grant_context(
     files: Option<&SessionFileStore>,
     parent: &str,

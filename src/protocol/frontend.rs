@@ -12,8 +12,11 @@ use super::WebSearchAction;
 /// A frontend command declared by a capability.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendCommand {
+    /// The name.
     pub name: String,
+    /// The arguments.
     pub arguments: String,
+    /// The description.
     pub description: String,
     /// Whether the frontend must wait for the current turn to finish before submitting this command.
     pub requires_idle: bool,
@@ -22,35 +25,48 @@ pub struct FrontendCommand {
 /// UI metadata exported by one capability.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendContribution {
+    /// The capability.
     pub capability: String,
     /// Whether the composed runtime installs session-bound file attachment endpoints.
     pub accepts_file_attachments: bool,
     /// Optional capability-owned item count for generic summaries.
     pub count: Option<usize>,
+    /// The commands.
     pub commands: Vec<FrontendCommand>,
+    /// The widgets.
     pub widgets: Vec<FrontendWidget>,
+    /// The references.
     pub references: Vec<FrontendReference>,
 }
 
 /// One middleware entry and its frontend-neutral configuration controls.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MiddlewareFeature {
+    /// The identifier.
     pub id: String,
+    /// The label.
     pub label: String,
+    /// The description.
     pub description: String,
+    /// The required.
     pub required: bool,
+    /// The settings.
     pub settings: Vec<FrontendSetting>,
 }
 
 /// One schema-advertised setting rendered by a thin frontend.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendSetting {
+    /// The identifier.
     pub id: String,
+    /// The label.
     pub label: String,
+    /// The description.
     pub description: String,
     /// Whether thin frontends should expose this setting beside the message composer.
     pub composer: bool,
     #[serde(flatten)]
+    /// The kind.
     pub kind: FrontendSettingKind,
 }
 
@@ -58,15 +74,22 @@ pub struct FrontendSetting {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum FrontendSettingKind {
+    /// Selects the integer case.
     Integer {
+        /// The min.
         min: i64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// The max.
         max: Option<i64>,
+        /// The step.
         step: i64,
     },
+    /// Selects the select case.
     Select {
+        /// The options.
         options: Vec<FrontendSettingOption>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// The unset label.
         unset_label: Option<String>,
     },
 }
@@ -74,10 +97,15 @@ pub enum FrontendSettingKind {
 /// One exact value in a schema-advertised select control.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendSettingOption {
+    /// The value.
     pub value: String,
+    /// The label.
     pub label: String,
+    /// The description.
     pub description: String,
+    /// The symbol.
     pub symbol: Option<FrontendSymbol>,
+    /// The tone.
     pub tone: FrontendTone,
     /// Optional capabilities excluded while this choice is active.
     pub disables: Vec<String>,
@@ -87,28 +115,41 @@ pub struct FrontendSettingOption {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FrontendSettingValue {
+    /// Selects the integer case.
     Integer(i64),
+    /// Selects the string case.
     String(String),
 }
 
 /// One chat reference supplied by a capability.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendReference {
+    /// The trigger.
     pub trigger: char,
+    /// The value.
     pub value: String,
+    /// The description.
     pub description: String,
 }
 
 /// One capability-rendered view mounted into a standard frontend slot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendWidget {
+    /// The identifier.
     pub id: String,
+    /// The slot.
     pub slot: FrontendSlot,
+    /// The text.
     pub text: String,
+    /// The tone.
     pub tone: FrontendTone,
+    /// The symbol.
     pub symbol: Option<FrontendSymbol>,
+    /// The icon only.
     pub icon_only: bool,
+    /// The progress.
     pub progress: Option<FrontendProgress>,
+    /// The content.
     pub content: Option<FrontendWidgetContent>,
     /// Optional operation invoked when a frontend activates this widget.
     pub action: Option<Op>,
@@ -117,7 +158,9 @@ pub struct FrontendWidget {
 /// Determinate progress rendered by a frontend widget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendProgress {
+    /// The completed.
     pub completed: usize,
+    /// The total.
     pub total: usize,
 }
 
@@ -125,16 +168,25 @@ pub struct FrontendProgress {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FrontendWidgetContent {
+    /// Selects the blocks case.
     Blocks {
+        /// The title.
         title: String,
+        /// The blocks.
         blocks: Vec<FrontendBlock>,
     },
+    /// Selects the picker case.
     Picker {
+        /// The title.
         title: String,
+        /// The options.
         options: Vec<FrontendPickerOption>,
     },
+    /// Selects the action list case.
     ActionList {
+        /// The title.
         title: String,
+        /// The items.
         items: Vec<FrontendActionListItem>,
         /// Actions on the whole list, such as adding an item.
         actions: Vec<FrontendAction>,
@@ -145,9 +197,13 @@ pub enum FrontendWidgetContent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrontendSlot {
+    /// Selects the header case.
     Header,
+    /// Selects the composer header case.
     ComposerHeader,
+    /// Selects the composer footer case.
     ComposerFooter,
+    /// Selects the message actions case.
     MessageActions,
     /// A transient capability-owned item after the live transcript.
     TranscriptTail,
@@ -160,28 +216,38 @@ pub enum FrontendSlot {
 /// Capability-rendered transcript content with frontend-neutral formatting and tone.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendBlock {
+    /// The identifier.
     pub id: Option<String>,
+    /// The group.
     pub group: Option<String>,
+    /// The update.
     pub update: FrontendBlockUpdate,
+    /// The state.
     pub state: FrontendBlockState,
+    /// The role.
     pub role: FrontendBlockRole,
     /// Compact, standalone row label. Frontends must not derive this from `text`.
     pub title: String,
     /// Expandable body or artifact content.
     pub text: String,
+    /// The symbol.
     pub symbol: Option<FrontendSymbol>,
     /// Downloadable files owned by the session rendering this block.
     pub files: Vec<SessionFileReference>,
     /// Ordered observations rendered after the block summary.
     pub content: super::ToolContent,
+    /// The format.
     pub format: FrontendBlockFormat,
+    /// The tone.
     pub tone: FrontendTone,
 }
 
 /// A block together with its explicit semantic owner.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RenderedBlock {
+    /// The capability.
     pub capability: String,
+    /// The block.
     pub block: FrontendBlock,
 }
 
@@ -189,6 +255,7 @@ pub struct RenderedBlock {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrontendBlockUpdate {
+    /// Selects the replace case.
     Replace,
     /// Append a block, separating nonempty text with a newline unless a boundary already has one.
     Append,
@@ -214,7 +281,9 @@ impl FrontendBlockUpdate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrontendBlockState {
+    /// Selects the pending case.
     Pending,
+    /// Selects the complete case.
     Complete,
 }
 
@@ -222,11 +291,17 @@ pub enum FrontendBlockState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrontendBlockRole {
+    /// Selects the activity case.
     Activity,
+    /// Selects the tool case.
     Tool,
+    /// Selects the web search case.
     WebSearch,
+    /// Selects the artifact case.
     Artifact,
+    /// Selects the approval case.
     Approval,
+    /// Selects the notice case.
     Notice,
 }
 
@@ -234,27 +309,39 @@ pub enum FrontendBlockRole {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrontendBlockFormat {
+    /// Selects the plain text case.
     PlainText,
+    /// Selects the unified diff case.
     UnifiedDiff,
 }
 
 /// One selectable action supplied by a capability.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendPickerOption {
+    /// The label.
     pub label: String,
+    /// The description.
     pub description: String,
+    /// The detail.
     pub detail: String,
+    /// The symbol.
     pub symbol: Option<FrontendSymbol>,
+    /// The shows detail.
     pub shows_detail: bool,
+    /// The op.
     pub op: Op,
 }
 
 /// One compact status row with optional trailing actions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendActionListItem {
+    /// The identifier.
     pub id: String,
+    /// The text.
     pub text: String,
+    /// The state.
     pub state: FrontendListItemState,
+    /// The actions.
     pub actions: Vec<FrontendAction>,
 }
 
@@ -262,19 +349,28 @@ pub struct FrontendActionListItem {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrontendListItemState {
+    /// Selects the plain case.
     Plain,
+    /// Selects the pending case.
     Pending,
+    /// Selects the in progress case.
     InProgress,
+    /// Selects the completed case.
     Completed,
 }
 
 /// One labeled, icon-forward action attached to a list item.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendAction {
+    /// The identifier.
     pub id: String,
+    /// The label.
     pub label: String,
+    /// The symbol.
     pub symbol: FrontendSymbol,
+    /// The tone.
     pub tone: FrontendTone,
+    /// The op.
     pub op: Op,
     /// Optional capability-owned copy for editing input before submitting the action.
     pub editor: Option<FrontendEditor>,
@@ -283,9 +379,13 @@ pub struct FrontendAction {
 /// Labels for a frontend-native single-text-input editor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendEditor {
+    /// The title.
     pub title: String,
+    /// The label.
     pub label: String,
+    /// The description.
     pub description: String,
+    /// The submit label.
     pub submit_label: String,
 }
 
@@ -294,7 +394,9 @@ pub struct FrontendEditor {
 pub struct FrontendPreviewEvent {
     /// Canonical message identity retained from the recorded event.
     pub submission_id: Option<String>,
+    /// The recorded at milliseconds.
     pub recorded_at_ms: i64,
+    /// The event.
     pub event: EventMsg,
 }
 
@@ -302,29 +404,49 @@ pub struct FrontendPreviewEvent {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "frontend_type", rename_all = "snake_case")]
 pub enum FrontendEvent {
+    /// Selects the render case.
     Render {
+        /// The capability.
         capability: String,
+        /// The block.
         block: FrontendBlock,
     },
+    /// Selects the widget case.
     Widget {
+        /// The capability.
         capability: String,
+        /// The item.
         item: FrontendWidget,
     },
+    /// Selects the remove widget case.
     RemoveWidget {
+        /// The capability.
         capability: String,
+        /// The identifier.
         id: String,
     },
+    /// Selects the picker case.
     Picker {
+        /// The title.
         title: String,
+        /// The options.
         options: Vec<FrontendPickerOption>,
     },
+    /// Selects the preview case.
     Preview {
+        /// The identifier.
         id: String,
+        /// The title.
         title: String,
+        /// The subtitle.
         subtitle: String,
+        /// The page identifier.
         page_id: String,
+        /// The update.
         update: FrontendPreviewUpdate,
+        /// The events.
         events: Vec<FrontendPreviewEvent>,
+        /// The next.
         next: Option<Op>,
     },
 }
@@ -333,7 +455,9 @@ pub enum FrontendEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrontendPreviewUpdate {
+    /// Selects the replace case.
     Replace,
+    /// Selects the prepend case.
     Prepend,
 }
 
@@ -341,9 +465,13 @@ pub enum FrontendPreviewUpdate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrontendTone {
+    /// Selects the neutral case.
     Neutral,
+    /// Selects the success case.
     Success,
+    /// Selects the warning case.
     Warning,
+    /// Selects the error case.
     Error,
 }
 
@@ -499,23 +627,41 @@ impl EventMsg {
 /// brand tokens so adding a provider does not expand this semantic enum.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FrontendSymbol {
+    /// Selects the agent case.
     Agent,
+    /// Selects the brain case.
     Brain,
+    /// Selects the branch case.
     Branch,
+    /// Selects the chat case.
     Chat,
+    /// Selects the delete case.
     Delete,
+    /// Selects the edit case.
     Edit,
+    /// Selects the progress case.
     Progress,
+    /// Selects the promote case.
     Promote,
+    /// Selects the route case.
     Route,
+    /// Selects the search case.
     Search,
+    /// Selects the shield case.
     Shield,
+    /// Selects the shield alert case.
     ShieldAlert,
+    /// Selects the shield check case.
     ShieldCheck,
+    /// Selects the shield off case.
     ShieldOff,
+    /// Selects the sparkle case.
     Sparkle,
+    /// Selects the storage case.
     Storage,
+    /// Selects the task case.
     Task,
+    /// Selects the custom case.
     Custom(String),
 }
 

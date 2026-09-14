@@ -13,6 +13,7 @@ use crate::protocol::{ContentPart, ImageDetail, ToolContent, ToolResponse};
 use crate::{BoxFuture, Error, Result};
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PathArgs {
     path: String,
 }
@@ -169,6 +170,7 @@ impl Tool for ViewImage {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WriteArgs {
     path: String,
     content: String,
@@ -300,7 +302,7 @@ impl Tool for ApplyPatch {
             let updated = apply_patch_document(&content, &document)?;
             if updated == content {
                 return Err(Error::Tool(
-                    "Patch rejected: patch applies but makes no changes.".into(),
+                    "patch rejected: patch applies but makes no changes".into(),
                 ));
             }
             let mut options = DiffOptions::new();
@@ -319,5 +321,28 @@ impl Tool for ApplyPatch {
             })
             .into())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_arguments_reject_unknown_fields() {
+        assert!(
+            serde_json::from_value::<PathArgs>(
+                serde_json::json!({"path": "README.md", "unexpected": true})
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<WriteArgs>(serde_json::json!({
+                "path": "README.md",
+                "content": "text",
+                "unexpected": true,
+            }))
+            .is_err()
+        );
     }
 }

@@ -121,6 +121,9 @@ impl Default for Messages {
 
 impl Messages {
     /// Creates message delivery with a bounded queue and active-turn default.
+    /// # Errors
+    ///
+    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new(max_pending: usize, delivery: ActiveMessageDelivery) -> Result<Self> {
         if max_pending == 0 || max_pending > MAX_PENDING_MESSAGES {
             return Err(Error::Config(format!(

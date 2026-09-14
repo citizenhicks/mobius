@@ -16,6 +16,9 @@ use super::terminal_text;
 use super::theme::{Role, current};
 
 /// Asks whether existing gateway state may be permanently replaced.
+/// # Errors
+///
+/// Returns an error if validation or an operation required by this function fails.
 pub async fn confirm(state_dir: &Path) -> Result<bool> {
     let mut guard = TerminalGuard::alternate()?;
     guard.set_mouse_capture(false)?;

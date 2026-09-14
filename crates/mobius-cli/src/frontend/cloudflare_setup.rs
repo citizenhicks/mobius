@@ -19,8 +19,15 @@ const MAX_HOSTNAME_BYTES: usize = 253;
 
 /// Validated values consumed by gateway initialization and never displayed again.
 pub enum CloudflareInit {
+    /// Selects the quick case.
     Quick,
-    Named { hostname: String, token: String },
+    /// A named tunnel authenticated by token.
+    Named {
+        /// The tunnel hostname.
+        hostname: String,
+        /// The Cloudflare tunnel token.
+        token: String,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -116,6 +123,9 @@ fn configuration_error(error: mobius_gateway::Error) -> Error {
 }
 
 /// Collects an existing tunnel hostname and connector token without echoing the token.
+/// # Errors
+///
+/// Returns an error if validation or an operation required to complete the request fails.
 pub async fn run() -> Result<Option<CloudflareInit>> {
     let mut guard = TerminalGuard::alternate()?;
     guard.set_mouse_capture(false)?;

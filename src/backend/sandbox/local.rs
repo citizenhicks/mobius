@@ -118,6 +118,9 @@ struct CommandIsolation {
 
 impl LocalSandbox {
     /// Creates a local sandbox rooted at an existing directory.
+    /// # Errors
+    ///
+    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new(root: impl AsRef<Path>) -> Result<Self> {
         #[cfg(not(unix))]
         {
@@ -163,6 +166,9 @@ impl LocalSandbox {
     }
 
     /// Creates an independent execution lifetime with the same filesystem policy.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn isolated_execution(&self) -> Result<Self> {
         self.validate_workspace_roots()?;
         let mut scoped = Self::new(&self.root)?;
@@ -189,6 +195,9 @@ impl LocalSandbox {
     }
 
     /// Shares temporary files between policy delegates belonging to one runtime.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn share_temporary_directory(mut self, owner: &Self) -> Result<Self> {
         self.temp = std::sync::Arc::clone(&owner.temp);
         self.temp_root = owner.temp_root.try_clone()?;
@@ -215,6 +224,9 @@ impl LocalSandbox {
     }
 
     /// Sets the hard timeout applied to each sandboxed command.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn command_timeout(mut self, timeout: Duration) -> Result<Self> {
         if timeout.is_zero() {
             return Err(Error::Config("command timeout must be positive".into()));
@@ -224,6 +236,9 @@ impl LocalSandbox {
     }
 
     /// Hides one canonical file or directory from sandboxed commands.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn deny_read(mut self, path: impl AsRef<Path>) -> Result<Self> {
         let path = std::fs::canonicalize(path)?;
         if paths_overlap(&self.root, &path) {
@@ -275,6 +290,9 @@ impl LocalSandbox {
     }
 
     /// Allows file tools and workspace-isolated commands to use one additional directory.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn allow_workspace_root(mut self, path: impl AsRef<Path>) -> Result<Self> {
         let path = std::fs::canonicalize(path)?;
         validate_public_root(&path)?;
@@ -303,6 +321,9 @@ impl LocalSandbox {
     }
 
     /// Allows file tools and workspace-isolated commands to read one additional directory.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn allow_read_root(mut self, path: impl AsRef<Path>) -> Result<Self> {
         let path = std::fs::canonicalize(path)?;
         validate_public_root(&path)?;
@@ -353,6 +374,9 @@ impl LocalSandbox {
     }
 
     /// Runs one argv command with a read-only workspace and no network access.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required to complete the request fails.
     pub async fn execute_read_only(
         &self,
         executable: &str,
@@ -364,6 +388,9 @@ impl LocalSandbox {
     }
 
     /// Runs one argv command without selected inherited environment variables.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required to complete the request fails.
     pub async fn execute_read_only_with_environment_removals(
         &self,
         executable: &str,
@@ -394,6 +421,9 @@ impl LocalSandbox {
     }
 
     /// Reads one bounded binary range through the sandbox's pinned workspace root.
+    /// # Errors
+    ///
+    /// Returns an error if the resource cannot be read, decoded, or validated.
     pub async fn read_range(
         &self,
         path: &str,
@@ -415,6 +445,9 @@ impl LocalSandbox {
     }
 
     /// Runs Git argv with a writable workspace and no network access.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required to complete the request fails.
     pub async fn execute_git_mutation(
         &self,
         arguments: &[&str],
@@ -425,6 +458,9 @@ impl LocalSandbox {
     }
 
     /// Runs Git argv without selected inherited environment variables.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required to complete the request fails.
     pub async fn execute_git_mutation_with_environment_removals(
         &self,
         arguments: &[&str],

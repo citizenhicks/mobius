@@ -39,6 +39,9 @@ pub struct Instructions {
 
 impl Instructions {
     /// Loads `AGENTS.override.md`, falling back to `AGENTS.md` when absent.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn discover(workspace: impl AsRef<Path>) -> Result<Self> {
         let workspace = Dir::open_ambient_dir(workspace, ambient_authority())?;
         for name in [OVERRIDE_FILE, INSTRUCTIONS_FILE] {

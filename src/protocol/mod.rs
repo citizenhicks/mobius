@@ -39,9 +39,13 @@ pub(crate) const TOOL_LOAD_MARKER: &str = "tool_load";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionFileReference {
+    /// The identifier.
     pub id: String,
+    /// The name.
     pub name: String,
+    /// The size.
     pub size: u64,
+    /// The media type.
     pub media_type: String,
 }
 
@@ -49,10 +53,15 @@ pub struct SessionFileReference {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionFileLimits {
+    /// The max attachment references.
     pub max_attachment_references: usize,
+    /// The max file bytes.
     pub max_file_bytes: u64,
+    /// The max session files.
     pub max_session_files: usize,
+    /// The max session bytes.
     pub max_session_bytes: u64,
+    /// The max upload chunk bytes.
     pub max_upload_chunk_bytes: usize,
 }
 
@@ -60,7 +69,9 @@ pub struct SessionFileLimits {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionFileOrigin {
+    /// Selects the user case.
     User,
+    /// Selects the agent case.
     Agent,
 }
 
@@ -68,7 +79,9 @@ pub enum SessionFileOrigin {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionFileRecord {
+    /// The origin.
     pub origin: SessionFileOrigin,
+    /// The file.
     pub file: SessionFileReference,
 }
 
@@ -112,6 +125,9 @@ pub struct SessionContext {
 
 impl SessionContext {
     /// Validates the framework-neutral session ownership boundary.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied value is invalid.
     pub fn validate(&self) -> crate::Result<()> {
         crate::validate_identifier(
             "session owner ID",
@@ -124,15 +140,20 @@ impl SessionContext {
 /// One model-requested function call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolCall {
+    /// The call identifier.
     pub call_id: String,
+    /// The name.
     pub name: String,
+    /// The arguments.
     pub arguments: serde_json::Value,
 }
 
 /// A durable control item recording tool schemas materialized at one context position.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolLoad {
+    /// The catalog revision.
     pub catalog_revision: String,
+    /// The tools.
     pub tools: Vec<String>,
 }
 
@@ -149,6 +170,9 @@ impl ToolLoad {
     }
 
     /// Decodes a tool-load control item while ignoring ordinary conversation input.
+    /// # Errors
+    ///
+    /// Returns an error if the input cannot be parsed or validated.
     pub fn from_input(input: &serde_json::Value) -> crate::Result<Option<Self>> {
         if input.get("type").and_then(serde_json::Value::as_str) != Some(TOOL_LOAD_MARKER) {
             return Ok(None);
@@ -175,7 +199,9 @@ impl ToolLoad {
 /// Human-readable model settings exposed to frontends.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelInfo {
+    /// The model.
     pub model: String,
+    /// The reasoning effort.
     pub reasoning_effort: Option<String>,
 }
 
@@ -193,13 +219,21 @@ pub enum ToolDiscoveryMode {
 /// One selectable runtime model route.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelChoice {
+    /// The route.
     pub route: String,
+    /// The group.
     pub group: String,
+    /// The model.
     pub model: String,
+    /// The reasoning effort.
     pub reasoning_effort: Option<String>,
+    /// The context window.
     pub context_window: Option<i64>,
+    /// The supports image input.
     pub supports_image_input: bool,
+    /// The supports realtime voice.
     pub supports_realtime_voice: bool,
+    /// The tool discovery.
     pub tool_discovery: ToolDiscoveryMode,
 }
 
@@ -207,10 +241,15 @@ pub struct ModelChoice {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MessageAuthor {
+    /// Selects the user case.
     User,
+    /// Selects the peer case.
     Peer {
+        /// The message identifier.
         message_id: String,
+        /// The session identifier.
         session_id: String,
+        /// The handle.
         handle: String,
         /// Optional semantic icon for the sending peer.
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -222,7 +261,9 @@ pub enum MessageAuthor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActiveMessageDelivery {
+    /// Selects the steer case.
     Steer,
+    /// Selects the queue case.
     Queue,
 }
 
@@ -230,19 +271,28 @@ pub enum ActiveMessageDelivery {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MessageSubmission {
+    /// The author.
     pub author: MessageAuthor,
+    /// The text.
     pub text: String,
+    /// The attachments.
     pub attachments: Vec<SessionFileReference>,
     #[serde(deserialize_with = "required_option")]
+    /// The reply.
     pub reply: Option<MessageReply>,
     #[serde(deserialize_with = "required_option")]
+    /// The requested delivery.
     pub requested_delivery: Option<ActiveMessageDelivery>,
     #[serde(deserialize_with = "required_option")]
+    /// The target turn identifier.
     pub target_turn_id: Option<String>,
 }
 
 impl MessageSubmission {
     /// Validates neutral message and file-reference invariants at the agent boundary.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied value is invalid.
     pub fn validate(&self, limits: SessionFileLimits) -> crate::Result<()> {
         if let Some(turn_id) = &self.target_turn_id {
             crate::validate_identifier("target turn ID", turn_id, crate::MAX_IDENTIFIER_BYTES)?;
@@ -359,18 +409,29 @@ fn validate_message_attachments(
 #[non_exhaustive]
 pub enum Op {
     /// Submit one conversation message for middleware-owned delivery.
-    Message { message: MessageSubmission },
+    Message {
+        /// The submitted message.
+        message: MessageSubmission,
+    },
     /// Abort one active turn.
-    Interrupt { turn_id: String },
+    Interrupt {
+        /// The active turn identifier.
+        turn_id: String,
+    },
     /// Resolve a paused tool batch.
     ExecApproval {
+        /// The identifier.
         id: String,
+        /// The decision.
         decision: ReviewDecision,
     },
     /// Invokes a command owned by one capability.
     CapabilityCommand {
+        /// The capability.
         capability: String,
+        /// The command.
         command: String,
+        /// The arguments.
         arguments: String,
         /// Optional caller-editable text kept separate from routing arguments.
         ///
@@ -378,19 +439,28 @@ pub enum Op {
         #[serde(deserialize_with = "required_option")]
         input: Option<String>,
         #[serde(deserialize_with = "required_option")]
+        /// The target.
         target: Option<MessageTarget>,
     },
     /// Selects one immutable registered model route.
-    SetModel { route: String },
+    SetModel {
+        /// The registered route name.
+        route: String,
+    },
     /// Requests that the frontend reopen an existing session.
-    ResumeSession { session_id: String },
+    ResumeSession {
+        /// The session identifier to reopen.
+        session_id: String,
+    },
 }
 
 /// Which participant produced text in an externally hosted conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConversationRole {
+    /// Selects the user case.
     User,
+    /// Selects the assistant case.
     Assistant,
 }
 
@@ -417,32 +487,57 @@ pub struct Event {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum EventMsg {
+    /// Selects the message delta case.
     MessageDelta(MessageDeltaEvent),
+    /// Selects the error case.
     Error(ErrorEvent),
+    /// Selects the warning case.
     Warning(WarningEvent),
+    /// Selects the submission rejected case.
     SubmissionRejected(SubmissionRejectedEvent),
+    /// Selects the session configured case.
     SessionConfigured(SessionConfiguredEvent),
     #[serde(rename = "turn_started")]
+    /// Selects the turn started case.
     TurnStarted(TurnStartedEvent),
     #[serde(rename = "turn_complete")]
+    /// Selects the turn complete case.
     TurnComplete(TurnCompleteEvent),
+    /// Selects the turn aborted case.
     TurnAborted(TurnAbortedEvent),
+    /// Selects the message case.
     Message(MessageEvent),
+    /// Selects the assistant message case.
     AssistantMessage(AssistantMessageEvent),
+    /// Selects the assistant content delta case.
     AssistantContentDelta(AssistantContentDeltaEvent),
+    /// Selects the model step started case.
     ModelStepStarted(ModelStepStartedEvent),
+    /// Selects the model step completed case.
     ModelStepCompleted(ModelStepCompletedEvent),
+    /// Selects the session history case.
     SessionHistory(SessionHistoryEvent),
+    /// Selects the model changed case.
     ModelChanged(ModelChangedEvent),
+    /// Selects the session resume requested case.
     SessionResumeRequested(SessionResumeRequestedEvent),
+    /// Selects the tool call begin case.
     ToolCallBegin(ToolCallBeginEvent),
+    /// Selects the tool call end case.
     ToolCallEnd(ToolCallEndEvent),
+    /// Selects the tool load case.
     ToolLoad(ToolLoadEvent),
+    /// Selects the exec approval request case.
     ExecApprovalRequest(ExecApprovalRequestEvent),
+    /// Selects the token count case.
     TokenCount(TokenCountEvent),
+    /// Selects the context compacted case.
     ContextCompacted,
+    /// Selects the web search begin case.
     WebSearchBegin(WebSearchBeginEvent),
+    /// Selects the web search end case.
     WebSearchEnd(WebSearchEndEvent),
+    /// Selects the frontend case.
     Frontend(FrontendEvent),
 }
 
@@ -467,8 +562,11 @@ impl EventMsg {
 /// Provider-neutral streaming output before submission correlation is attached.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelEvent {
+    /// Selects the text delta case.
     TextDelta(String),
+    /// Selects the commentary delta case.
     CommentaryDelta(String),
+    /// Selects the reasoning delta case.
     ReasoningDelta(String),
     /// One immutable, fully validated model call in final output order.
     ///
@@ -476,11 +574,16 @@ pub enum ModelEvent {
     /// agent may begin execution immediately; the final `ModelOutput` must contain
     /// the same call and order.
     ToolCallReady(ToolCall),
+    /// Selects the web search started case.
     WebSearchStarted {
+        /// The call identifier.
         call_id: String,
     },
+    /// Selects the web search completed case.
     WebSearchCompleted {
+        /// The call identifier.
         call_id: String,
+        /// The action.
         action: WebSearchAction,
     },
 }
@@ -528,17 +631,26 @@ impl ModelEventTracker {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WebSearchAction {
+    /// Selects the search case.
     Search {
+        /// The queries.
         queries: Vec<String>,
     },
+    /// Selects the open page case.
     OpenPage {
+        /// The URL.
         url: Option<String>,
     },
+    /// Selects the find in page case.
     FindInPage {
+        /// The URL.
         url: Option<String>,
+        /// The pattern.
         pattern: Option<String>,
     },
+    /// Selects the interrupted case.
     Interrupted,
+    /// Selects the other case.
     Other,
 }
 

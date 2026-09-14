@@ -24,6 +24,8 @@ use tokio_tungstenite::tungstenite::Message;
 use self::connection::Exchange;
 use self::connection::OpenAiWsConnection;
 #[cfg(test)]
+use self::connection::SOCKET_EVENT_CAPACITY;
+#[cfg(test)]
 use self::connection::STREAM_IDLE_TIMEOUT;
 #[cfg(test)]
 use self::connection::SocketEvent;
@@ -208,6 +210,9 @@ struct Continuation {
 
 impl OpenAiSocket {
     /// Creates the first-party Responses transport with HTTP fallback.
+    /// # Errors
+    ///
+    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Result<Self> {
         Self::with_client(api_key, model, super::transport::streaming_client()?)
     }
@@ -266,6 +271,9 @@ impl OpenAiSocket {
     }
 
     /// Selects a Responses reasoning effort.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn with_reasoning_effort(mut self, effort: impl Into<String>) -> Result<Self> {
         let effort = effort.into();
         let supported = manifest::MODELS

@@ -27,6 +27,9 @@ clear requests. Never invent words or a new task from unclear audio. Do not narr
 tool activity or repeat waiting messages. If interrupted, stop speaking and listen; your running work continues.";
 
 /// Seeds a new voice call with the Bot's current durable conversation, never the reverse.
+/// # Errors
+///
+/// Returns an error if validation or an operation required by this function fails.
 pub fn instructions(
     bot_instructions: &str,
     checkpoint: &crate::backend::checkpoint::Checkpoint,
@@ -123,6 +126,9 @@ fn parent_context(checkpoint: &crate::backend::checkpoint::Checkpoint) -> String
 }
 
 /// Gives the Bot the delegated request and recent voice context without another model call.
+/// # Errors
+///
+/// Returns an error if validation or an operation required by this function fails.
 pub fn delegated_task(utterance: Option<&str>, voice_context: &str) -> Result<String> {
     if utterance
         .is_some_and(|text| text.trim().is_empty() || text.len() > 16 * 1024 || text.contains('\0'))
@@ -228,6 +234,9 @@ impl VoiceConversation {
     }
 
     /// Sends only an explicit voice-agent task through normal peer-message delivery.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn handoff(&mut self, id: String, text: String) -> Result<Option<Submission>> {
         if self.seen.contains(&id) {
             return Ok(None);

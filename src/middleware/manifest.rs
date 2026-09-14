@@ -10,11 +10,17 @@ use crate::{Error, Result};
 /// Static metadata and configurable policy exported by one middleware module.
 #[derive(Debug, Clone, Copy)]
 pub struct MiddlewareManifest {
+    /// The identifier.
     pub id: &'static str,
+    /// The label.
     pub label: &'static str,
+    /// The description.
     pub description: &'static str,
+    /// The required.
     pub required: bool,
+    /// The default enabled.
     pub default_enabled: bool,
+    /// The settings.
     pub settings: &'static [MiddlewareSettingManifest],
 }
 
@@ -39,23 +45,40 @@ impl MiddlewareManifest {
 /// One validated setting declared by its owning middleware module.
 #[derive(Debug, Clone, Copy)]
 pub enum MiddlewareSettingManifest {
+    /// Selects the integer case.
     Integer {
+        /// The identifier.
         id: &'static str,
+        /// The label.
         label: &'static str,
+        /// The description.
         description: &'static str,
+        /// The min.
         min: i64,
+        /// The max.
         max: Option<i64>,
+        /// The step.
         step: i64,
+        /// The default.
         default: i64,
     },
+    /// Selects the select case.
     Select {
+        /// The identifier.
         id: &'static str,
+        /// The label.
         label: &'static str,
+        /// The description.
         description: &'static str,
+        /// The choices.
         choices: MiddlewareSettingChoices,
+        /// The unset label.
         unset_label: Option<&'static str>,
+        /// The default.
         default: Option<&'static str>,
+        /// The max bytes.
         max_bytes: usize,
+        /// The composer.
         composer: bool,
     },
 }
@@ -133,6 +156,9 @@ impl MiddlewareSettingManifest {
     }
 
     /// Validates one configured value against the owning module's declaration.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied value is invalid.
     pub fn validate(self, middleware: &str, value: Option<&FrontendSettingValue>) -> Result<()> {
         match (self, value) {
             (Self::Integer { min, max, .. }, Some(FrontendSettingValue::Integer(value)))
@@ -187,6 +213,9 @@ impl MiddlewareSettingManifest {
     }
 
     /// Validates a dynamic select value against the gateway's live model catalog.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied value is invalid.
     pub fn validate_choice(
         self,
         middleware: &str,
@@ -217,7 +246,9 @@ impl MiddlewareSettingManifest {
 /// How a select setting obtains its finite choices.
 #[derive(Debug, Clone, Copy)]
 pub enum MiddlewareSettingChoices {
+    /// Selects the static case.
     Static(&'static [MiddlewareSettingChoice]),
+    /// Selects the model routes case.
     ModelRoutes,
 }
 
@@ -263,10 +294,15 @@ impl MiddlewareSettingChoices {
 /// One static select choice declared by a middleware module.
 #[derive(Debug, Clone, Copy)]
 pub struct MiddlewareSettingChoice {
+    /// The value.
     pub value: &'static str,
+    /// The label.
     pub label: &'static str,
+    /// The description.
     pub description: &'static str,
+    /// The symbol.
     pub symbol: Option<&'static str>,
+    /// The tone.
     pub tone: FrontendTone,
     /// Optional middleware excluded by this policy choice.
     pub disables: &'static [&'static str],

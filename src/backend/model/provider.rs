@@ -29,30 +29,45 @@ pub use reqwest::Client as HttpClient;
 /// A reasoning choice advertised for one model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReasoningPreset {
+    /// The identifier.
     pub id: &'static str,
+    /// The label.
     pub label: &'static str,
+    /// The description.
     pub description: &'static str,
 }
 
 /// A model choice advertised by its backend provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModelPreset {
+    /// The identifier.
     pub id: &'static str,
+    /// The label.
     pub label: &'static str,
+    /// The description.
     pub description: &'static str,
+    /// The context window.
     pub context_window: i64,
+    /// The reasoning.
     pub reasoning: &'static [ReasoningPreset],
+    /// The default reasoning.
     pub default_reasoning: Option<&'static str>,
+    /// The tool discovery.
     pub tool_discovery: ToolDiscoveryMode,
 }
 
 /// One provider-reported account usage window.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UsageLimit {
+    /// The identifier.
     pub id: String,
+    /// The label.
     pub label: String,
+    /// The remaining fraction.
     pub remaining_fraction: f64,
+    /// The window seconds.
     pub window_seconds: u64,
+    /// The resets at.
     pub resets_at: Option<i64>,
 }
 
@@ -61,8 +76,11 @@ pub struct UsageLimit {
 #[serde(rename_all = "snake_case")]
 pub enum HostedWebSearch {
     #[default]
+    /// Selects the off case.
     Off,
+    /// Selects the cached case.
     Cached,
+    /// Selects the live case.
     Live,
 }
 
@@ -115,10 +133,15 @@ impl std::str::FromStr for HostedWebSearch {
 
 /// Fully resolved settings passed to one provider constructor.
 pub struct ProviderBuildConfig {
+    /// The credential.
     pub credential: ProviderCredential,
+    /// The model.
     pub model: String,
+    /// The base URL.
     pub base_url: Option<String>,
+    /// The reasoning effort.
     pub reasoning_effort: Option<String>,
+    /// The web search.
     pub web_search: HostedWebSearch,
     /// Shared HTTP client; one per assembly keeps provider clones on one pool.
     pub http: HttpClient,
@@ -126,8 +149,11 @@ pub struct ProviderBuildConfig {
 
 /// One provider-owned browser authentication flow.
 pub trait BrowserLogin: Send {
+    /// Returns the URL.
     fn url(&self) -> &str;
+    /// Opens browser.
     fn open_browser(&self);
+    /// Completes browser authentication and stores the credential.
     fn complete(self: Box<Self>, path: PathBuf) -> BoxFuture<'static, Result<()>>;
 }
 
@@ -135,8 +161,11 @@ type BrowserLoginStart = fn() -> BoxFuture<'static, Result<Box<dyn BrowserLogin>
 
 /// One provider-owned device-code authentication flow.
 pub trait DeviceLogin: Send {
+    /// Returns the verification URL.
     fn verification_url(&self) -> &str;
+    /// Returns the user code.
     fn user_code(&self) -> &str;
+    /// Completes device authentication and stores the credential.
     fn complete(self: Box<Self>, path: PathBuf) -> BoxFuture<'static, Result<()>>;
 }
 
@@ -154,6 +183,7 @@ pub struct BrowserAuth {
 }
 
 impl BrowserAuth {
+    /// Creates a new instance.
     pub const fn new(
         label: &'static str,
         configured: fn(&Path) -> Result<bool>,
@@ -185,18 +215,28 @@ impl BrowserAuth {
     }
 
     #[must_use]
+    /// Returns the provider label.
     pub const fn label(&self) -> &'static str {
         self.label
     }
 
+    /// Reports whether a stored provider credential is configured.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn configured(&self, path: &Path) -> Result<bool> {
         (self.configured)(path)
     }
 
+    /// Loads the stored provider credential.
+    /// # Errors
+    ///
+    /// Returns an error if the resource cannot be read, decoded, or validated.
     pub fn load(&self, path: &Path) -> Result<ProviderCredential> {
         (self.load)(path)
     }
 
+    /// Starts browser authentication.
     pub fn start(&self) -> BoxFuture<'static, Result<Box<dyn BrowserLogin>>> {
         (self.start)()
     }
@@ -228,15 +268,20 @@ impl BrowserAuth {
 /// Authentication required by a provider manifest.
 #[derive(Clone, Copy)]
 pub enum ProviderAuth {
+    /// Selects the API key case.
     ApiKey(&'static str),
+    /// Selects the browser case.
     Browser(&'static BrowserAuth),
 }
 
 /// Resolved credential passed to one provider constructor.
 #[derive(Clone)]
 pub enum ProviderCredential {
+    /// Selects the API key case.
     ApiKey(String),
+    /// Selects the browser case.
     Browser(Arc<dyn Any + Send + Sync>),
+    /// Selects the credentialless case.
     Credentialless,
 }
 
@@ -260,6 +305,10 @@ impl ProviderCredential {
         }
     }
 
+    /// Consumes this value and returns the browser.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn into_browser<T: Any + Send + Sync>(self, provider: &str) -> Result<Arc<T>> {
         match self {
             Self::Browser(credential) => Arc::downcast(credential)
@@ -381,31 +430,37 @@ impl ProviderDefinition {
     }
 
     #[must_use]
+    /// Returns the provider identifier.
     pub const fn id(&self) -> &'static str {
         self.id
     }
 
     #[must_use]
+    /// Returns the display label.
     pub const fn label(&self) -> &'static str {
         self.label
     }
 
     #[must_use]
+    /// Returns the frontend symbol.
     pub fn symbol(&self) -> FrontendSymbol {
         FrontendSymbol::from_wire(self.symbol)
     }
 
     #[must_use]
+    /// Returns the provider description.
     pub const fn description(&self) -> &'static str {
         self.description
     }
 
     #[must_use]
+    /// Returns the provider authentication method.
     pub const fn auth(&self) -> ProviderAuth {
         self.auth
     }
 
     #[must_use]
+    /// Returns the advertised model presets.
     pub const fn models(&self) -> &'static [ModelPreset] {
         self.models
     }
@@ -417,6 +472,7 @@ impl ProviderDefinition {
     }
 
     #[must_use]
+    /// Returns the web search.
     pub const fn web_search(&self) -> &'static [HostedWebSearch] {
         self.web_search
     }
@@ -466,11 +522,13 @@ impl ProviderDefinition {
     }
 
     #[must_use]
+    /// Returns the configurable base URL.
     pub const fn configurable_base_url(&self) -> bool {
         self.default_base_url.is_some()
     }
 
     #[must_use]
+    /// Returns the default base URL.
     pub const fn default_base_url(&self) -> Option<&'static str> {
         self.default_base_url
     }
@@ -494,6 +552,9 @@ impl ProviderDefinition {
     }
 
     /// Builds one runtime model after validating advertised capabilities.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn build(&self, mut config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
         if matches!(config.credential, ProviderCredential::Credentialless) {
             self.validate_credentialless_endpoint(config.base_url.as_deref())?;
@@ -522,6 +583,9 @@ impl ProviderDefinition {
     }
 
     /// Validates provider-specific settings without resolving credentials.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn build_config_is_valid(
         &self,
         model: &str,
@@ -563,6 +627,9 @@ impl ProviderDefinition {
     }
 
     /// Validates this provider's base-URL boundary.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied value is invalid.
     pub fn validate_base_url(&self, base_url: Option<&str>) -> Result<()> {
         match (self.default_base_url, base_url) {
             (None, Some(_)) => Err(Error::Config(format!(
@@ -579,6 +646,9 @@ impl ProviderDefinition {
     }
 
     /// Validates an explicitly credentialless provider endpoint.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied value is invalid.
     pub fn validate_credentialless_endpoint(&self, base_url: Option<&str>) -> Result<()> {
         if !self.supports_credentialless_endpoints() {
             return Err(Error::Config(format!(
@@ -667,6 +737,9 @@ pub fn default_provider() -> &'static ProviderDefinition {
 }
 
 /// Resolves a built-in provider by its stable manifest ID.
+/// # Errors
+///
+/// Returns an error if validation or an operation required by this function fails.
 pub fn provider(id: &str) -> Result<&'static ProviderDefinition> {
     PROVIDERS
         .iter()

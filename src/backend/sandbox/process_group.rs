@@ -30,6 +30,9 @@ pub struct ProcessGroupGuard {
 
 impl ProcessGroupGuard {
     /// Arms cleanup for the child's process group.
+    /// # Errors
+    ///
+    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new(child: &tokio::process::Child) -> Result<Self> {
         let id = child
             .id()

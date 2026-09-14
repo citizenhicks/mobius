@@ -23,6 +23,19 @@ async fn framed_json_round_trip_preserves_the_versioned_message() {
 }
 
 #[test]
+fn client_frames_reject_unknown_fields() {
+    let error = serde_json::from_value::<ClientFrame>(serde_json::json!({
+        "version": PROTOCOL_VERSION,
+        "type": "list_sessions",
+        "request_id": "request-a",
+        "unexpected": true,
+    }))
+    .expect_err("reject unknown client field");
+
+    assert!(error.to_string().contains("unknown field `unexpected`"));
+}
+
+#[test]
 fn client_request_ids_are_bounded_without_echoing_rejected_values() {
     for request_id in [
         Value::String(String::new()),

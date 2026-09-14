@@ -25,6 +25,10 @@ pub(in crate::frontend) use self::view::{centered_area, render_capability_overla
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Runs the gateway dashboard.
+/// # Errors
+///
+/// Returns an error if validation or an operation required to complete the request fails.
 pub async fn run(state_dir: PathBuf) -> Result<()> {
     let (sender, mut events, mut state) = connect(state_dir).await?;
     let _guard = TerminalGuard::alternate()?;
@@ -33,6 +37,10 @@ pub async fn run(state_dir: PathBuf) -> Result<()> {
     dashboard_loop(&mut terminal, sender, &mut events, &mut state).await
 }
 
+/// Runs provider setup from the gateway dashboard.
+/// # Errors
+///
+/// Returns an error if validation or an operation required to complete the request fails.
 pub async fn run_provider(state_dir: PathBuf) -> Result<()> {
     let (sender, mut events, mut state) = connect(state_dir).await?;
     let mut guard = TerminalGuard::alternate()?;

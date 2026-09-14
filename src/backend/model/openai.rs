@@ -110,6 +110,9 @@ pub struct OpenAi {
 
 impl OpenAi {
     /// Creates an OpenAI or Responses-compatible provider.
+    /// # Errors
+    ///
+    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new(
         api_key: impl Into<String>,
         base_url: impl Into<String>,
@@ -186,6 +189,9 @@ impl OpenAi {
     }
 
     /// Selects a Responses reasoning effort.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn with_reasoning_effort(mut self, effort: impl Into<String>) -> Result<Self> {
         let effort = effort.into();
         if effort.trim().is_empty() {
@@ -454,7 +460,7 @@ impl OpenAi {
                 .post(format!("{}/{endpoint}", self.base_url))
                 .json(body);
             let Some(auth) = &self.auth else {
-                return Self::send_request(endpoint, request).await;
+                return Ok(request.send().await?);
             };
             let authorization = auth.authorize_http(streaming, session_id).await?;
             let rejected_token = authorization.token.clone();
@@ -462,7 +468,7 @@ impl OpenAi {
             for (name, value) in authorization.headers {
                 request = request.header(name, value);
             }
-            let response = Self::send_request(endpoint, request).await?;
+            let response = request.send().await?;
             if response.status() != reqwest::StatusCode::UNAUTHORIZED || attempt == 1 {
                 return Ok(response);
             }
@@ -471,39 +477,6 @@ impl OpenAi {
             }
         }
         unreachable!("authorized request retry is bounded")
-    }
-
-    async fn send_request(
-        endpoint: &str,
-        request: reqwest::RequestBuilder,
-    ) -> Result<reqwest::Response> {
-        request
-            .send()
-            .await
-            .map_err(|error| Self::logged_http_error(endpoint, error))
-    }
-
-    fn logged_http_error(endpoint: &str, error: reqwest::Error) -> Error {
-        let host = error
-            .url()
-            .and_then(|url| url.host_str())
-            .unwrap_or("unknown");
-        let kind = if error.is_timeout() {
-            "timeout"
-        } else if error.is_connect() {
-            "connect"
-        } else if error.is_request() {
-            "request"
-        } else {
-            "transport"
-        };
-        eprintln!(
-            "model HTTP request failed: host={host} endpoint={endpoint} connect={} timeout={} request={} kind={kind}",
-            error.is_connect(),
-            error.is_timeout(),
-            error.is_request(),
-        );
-        Error::Http(error)
     }
 
     fn compact_body(&self, request: CompactRequest<'_>) -> Result<Value> {

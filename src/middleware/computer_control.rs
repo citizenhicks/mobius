@@ -41,6 +41,9 @@ pub struct ComputerControl {
 
 impl ComputerControl {
     /// Configures a trusted installed runtime. It is started lazily by an authorized tool call.
+    /// # Errors
+    ///
+    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new(
         files: SessionFileStore,
         worker: WorkerCommand,

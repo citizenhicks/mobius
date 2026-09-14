@@ -60,8 +60,11 @@ pub const TOOLS_SEARCH_NAME: &str = "tools_search";
 /// A function tool definition sent to a model provider.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolDefinition {
+    /// The name.
     pub name: String,
+    /// The description.
     pub description: String,
+    /// The parameters.
     pub parameters: Value,
 }
 
@@ -184,7 +187,9 @@ pub struct ModelRequest<'a> {
     pub session_id: &'a str,
     /// Optional provider-visible prompt-cache identity.
     pub prompt_cache: Option<PromptCacheIdentity<'a>>,
+    /// The instructions.
     pub instructions: &'a str,
+    /// The input.
     pub input: &'a [Value],
     /// Revision of the active tool catalog used to validate typed tool-load controls.
     pub catalog_revision: &'a str,
@@ -375,6 +380,9 @@ pub struct ModelOutput {
 
 impl ModelOutput {
     /// Validates normalized output and derives its visible text and tool calls.
+    /// # Errors
+    ///
+    /// Returns an error if the input cannot be parsed or validated.
     pub fn from_output(output: Vec<Value>, end_turn: bool, usage: TokenUsage) -> Result<Self> {
         let content = normalized_step_content(&output)?;
         Self::from_output_with_content(output, end_turn, usage, content)
@@ -720,6 +728,9 @@ pub struct CompactOutput {
 
 impl CompactOutput {
     /// Validates one provider-native compacted context.
+    /// # Errors
+    ///
+    /// Returns an error if the input cannot be parsed or validated.
     pub fn from_output(output: Vec<Value>, usage: TokenUsage) -> Result<Self> {
         validate_provider_output(&output)?;
         validate_usage(&usage)?;
@@ -1003,6 +1014,9 @@ pub fn user_message(text: &str) -> Value {
 }
 
 /// Creates a durable user message carrying opaque uploaded-file references.
+/// # Errors
+///
+/// Returns an error if validation or an operation required by this function fails.
 pub fn user_message_with_attachments(
     text: &str,
     attachments: &[SessionFileReference],

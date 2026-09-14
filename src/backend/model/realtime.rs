@@ -44,18 +44,24 @@ type Socket =
 
 /// Frontend SDP and gateway-owned instructions for one voice call.
 pub struct RealtimeVoiceRequest {
+    /// The session identifier.
     pub session_id: String,
     /// A provider-advertised voice, or `None` for its default.
     pub voice: Option<String>,
+    /// The offer sdp.
     pub offer_sdp: String,
+    /// The instructions.
     pub instructions: String,
 }
 
 /// A voice call whose provider credentials and call identity remain private.
 /// Retain the whole value while using its channels; dropping it hangs up the call.
 pub struct RealtimeVoiceCall {
+    /// The answer sdp.
     pub answer_sdp: String,
+    /// The commands.
     pub commands: mpsc::Sender<RealtimeVoiceCommand>,
+    /// The events.
     pub events: mpsc::Receiver<Result<RealtimeVoiceEvent>>,
     _cancel: oneshot::Sender<()>,
 }
@@ -86,6 +92,9 @@ impl RealtimeVoiceCall {
     /// Creates a provider call with validated audio SDP and bounded Tokio channels.
     /// The provider must stop and hang up when the cancellation receiver resolves,
     /// including when this value drops its sender without sending a message.
+    /// # Errors
+    ///
+    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new(
         answer_sdp: String,
         commands: mpsc::Sender<RealtimeVoiceCommand>,
@@ -106,12 +115,16 @@ impl RealtimeVoiceCall {
 pub enum RealtimeVoiceCommand {
     /// Close the provider session, draining its final events before disconnecting.
     Close,
+    /// Selects the reply case.
     Reply {
+        /// The handoff identifier.
         handoff_id: String,
+        /// The text.
         text: String,
     },
     /// Background agent context or progress; it must not initiate a voice response.
     Context {
+        /// The text.
         text: String,
     },
 }
@@ -121,12 +134,18 @@ pub enum RealtimeVoiceCommand {
 pub enum RealtimeVoiceEvent {
     /// Incremental speech text and complete snapshots of provider turns or caption groups.
     Transcript {
+        /// The identifier.
         id: String,
+        /// The role.
         role: crate::protocol::ConversationRole,
+        /// The text.
         text: String,
+        /// The complete.
         complete: bool,
     },
+    /// Selects the handoff case.
     Handoff {
+        /// The identifier.
         id: String,
         /// An optional provider utterance; use recent voice context to resolve the task.
         text: Option<String>,

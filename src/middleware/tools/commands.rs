@@ -10,6 +10,7 @@ use crate::backend::sandbox::BackgroundCommandPoll;
 use crate::{BoxFuture, Error, Result};
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct BashArgs {
     command: String,
 }
@@ -122,6 +123,7 @@ impl Tool for StartCommand {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CommandIdArgs {
     command_id: String,
 }
@@ -249,4 +251,26 @@ pub(super) fn background_output(output: BackgroundCommandPoll) -> String {
         "error": "background output exceeded its serialized limit"
     })
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_arguments_reject_unknown_fields() {
+        assert!(
+            serde_json::from_value::<BashArgs>(
+                serde_json::json!({"command": "true", "unexpected": true})
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<CommandIdArgs>(serde_json::json!({
+                "command_id": uuid::Uuid::nil().to_string(),
+                "unexpected": true,
+            }))
+            .is_err()
+        );
+    }
 }

@@ -112,6 +112,9 @@ impl Sessions {
     }
 
     /// Creates session middleware with a bounded catalog page size.
+    /// # Errors
+    ///
+    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new(page_size: usize) -> Result<Self> {
         if page_size == 0 || page_size > MAX_PAGE_SIZE {
             return Err(Error::Config(format!(

@@ -112,6 +112,9 @@ pub(super) fn loopback_endpoint(config: &GatewayConfig) -> Result<Endpoint> {
 }
 
 /// Initializes one gateway with an account-free Cloudflare Quick Tunnel.
+/// # Errors
+///
+/// Returns an error if configuration is invalid or a required resource cannot be initialized.
 pub fn initialize_quick_cloudflare(state_dir: PathBuf) -> Result<()> {
     initialize(InitOptions {
         state_dir,
@@ -122,6 +125,9 @@ pub fn initialize_quick_cloudflare(state_dir: PathBuf) -> Result<()> {
 }
 
 /// Initializes one gateway against a user-owned named Cloudflare Tunnel.
+/// # Errors
+///
+/// Returns an error if configuration is invalid or a required resource cannot be initialized.
 pub fn initialize_named_cloudflare(
     state_dir: PathBuf,
     hostname: String,

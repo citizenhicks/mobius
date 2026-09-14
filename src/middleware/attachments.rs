@@ -63,6 +63,7 @@ pub struct Attachments {
 
 impl Attachments {
     #[must_use]
+    /// Creates a new instance.
     pub fn new(store: SessionFileStore) -> Self {
         Self {
             store,
@@ -74,6 +75,9 @@ impl Attachments {
     /// Exposes uploads as workspace-local copies below the workspace's `.mobius` directory.
     ///
     /// Every session using that workspace can read those project-local files.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn with_workspace(mut self, workspace: impl AsRef<Path>) -> Result<Self> {
         let workspace = std::fs::canonicalize(workspace)?;
         if !workspace.is_dir() {

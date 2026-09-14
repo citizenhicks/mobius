@@ -84,6 +84,9 @@ pub struct GatewaySandbox {
 
 impl GatewaySandbox {
     /// Creates protected and full-access command delegates for a gateway host.
+    /// # Errors
+    ///
+    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new(
         workspace: &Path,
         state_dir: &Path,

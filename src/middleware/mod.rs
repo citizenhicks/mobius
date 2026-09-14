@@ -60,6 +60,7 @@ const ESTIMATED_BYTES_PER_TOKEN: usize = 4;
 
 /// Result of a middleware-owned frontend command.
 pub struct MiddlewareCommandOutput {
+    /// The events.
     pub events: Vec<FrontendEvent>,
 }
 
@@ -151,11 +152,17 @@ pub trait Middleware: Send + Sync {
     }
 
     /// Adds tools to the catalog while the agent is created.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     fn register(&self, _catalog: &mut Catalog, _runtime: &RuntimeContext) -> Result<()> {
         Ok(())
     }
 
     /// Contributes one immutable system-prompt section while the agent is created.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     fn prompt_section(&self, _runtime: &RuntimeContext) -> Result<Option<PromptSection>> {
         Ok(None)
     }
@@ -200,6 +207,9 @@ pub trait Middleware: Send + Sync {
     }
 
     /// Validates and prepares one conversation message for its lifecycle boundary.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     fn route_message(&self, _context: &mut MessageRouteContext<'_>) -> Result<SubmissionResult> {
         Err(Error::Config(format!(
             "middleware `{}` claimed messages but did not prepare them",
@@ -362,6 +372,9 @@ pub(crate) struct SessionStartResult {
 
 impl MiddlewareStack {
     /// Creates a stack and rejects duplicate or incompatible middleware.
+    /// # Errors
+    ///
+    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new(entries: Vec<Arc<dyn Middleware>>) -> Result<Self> {
         let mut names = BTreeSet::new();
         let mut message_handler = None;
@@ -400,6 +413,9 @@ impl MiddlewareStack {
     }
 
     /// Builds the immutable tool catalog once.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn catalog(&self, runtime: &RuntimeContext) -> Result<Catalog> {
         let mut catalog = Catalog::default();
         for entry in &self.entries {
@@ -450,6 +466,9 @@ impl MiddlewareStack {
     }
 
     /// Builds and validates the frontend-neutral capability catalog.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn frontend(&self) -> Result<Vec<FrontendContribution>> {
         let contributions = self.declared_frontend()?;
         validate_frontend(&contributions)?;

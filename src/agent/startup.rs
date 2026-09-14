@@ -53,6 +53,9 @@ async fn failed_start(config: &AgentConfig, runtime: &RuntimeContext, primary: E
 }
 
 /// Validates capabilities, restores a checkpoint, and starts the agent loop.
+/// # Errors
+///
+/// Returns an error if validation or an operation required by this function fails.
 pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     if config.context_window <= 0 {
         return Err(Error::Config("context window must be positive".into()));

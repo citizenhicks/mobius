@@ -1,4 +1,3 @@
-use mobius::Result;
 use mobius_gateway::wire::{ClientMessage, ProfileSnapshot, ProviderInstance, ServerMessage};
 use uuid::Uuid;
 
@@ -19,15 +18,13 @@ pub(super) enum ResponseSeverity {
     Fatal,
 }
 
-pub(super) fn prepare(action: GatewayAction) -> Result<PreparedAction> {
+pub(super) fn prepare(action: GatewayAction) -> PreparedAction {
     match action {
-        GatewayAction::Pair => Ok(send(|request_id| ClientMessage::CreatePairingCode {
-            request_id,
-        })),
-        GatewayAction::Profile => Ok(send(|request_id| ClientMessage::GetProfile {
+        GatewayAction::Pair => send(|request_id| ClientMessage::CreatePairingCode { request_id }),
+        GatewayAction::Profile => send(|request_id| ClientMessage::GetProfile {
             request_id,
             include_provider_usage: false,
-        })),
+        }),
     }
 }
 

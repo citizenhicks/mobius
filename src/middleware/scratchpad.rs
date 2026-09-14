@@ -183,6 +183,9 @@ impl ScratchpadStore {
     }
 
     /// Executes a human management action using the capability's command grammar.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn management_command(
         &self,
         operation: &crate::protocol::Op,
@@ -213,12 +216,18 @@ impl ScratchpadStore {
     }
 
     /// Returns the persisted gateway-wide scratchpad management surface.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn global_contribution(&self) -> Result<FrontendContribution> {
         let access = self.lock_access().await;
         self.global_contribution_locked(&access).await
     }
 
     /// Adds one user-confirmed gateway-wide note and returns its refreshed surface.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn add_global(&self, note: &str) -> Result<FrontendContribution> {
         let access = self.lock_access().await;
         self.write_locked(note, Basis::UserConfirmed, &access)
@@ -227,6 +236,9 @@ impl ScratchpadStore {
     }
 
     /// Edits one gateway-wide note and returns the refreshed management surface.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn edit_global(&self, id: &str, note: &str) -> Result<FrontendContribution> {
         validate_id(id).map_err(Error::Tool)?;
         let access = self.lock_access().await;
@@ -235,6 +247,9 @@ impl ScratchpadStore {
     }
 
     /// Forgets one gateway-wide note and returns the refreshed management surface.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn forget_global(&self, id: &str) -> Result<FrontendContribution> {
         validate_id(id).map_err(Error::Tool)?;
         let access = self.lock_access().await;

@@ -267,7 +267,10 @@ fn refresh_workspace_inventory(
             || reference_open && matches!(record.event.msg, EventMsg::ToolCallEnd(_))))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "terminal input dispatch keeps the active frontend state explicit"
+)]
 async fn handle_terminal_input(
     terminal: &mut TuiTerminal,
     sender: &GatewaySender,
@@ -756,13 +759,8 @@ async fn send_and_report(sender: &GatewaySender, session_id: &str, op: Op, state
 }
 
 async fn send_gateway_action(sender: &GatewaySender, action: GatewayAction, state: &mut TuiState) {
-    match prepare(action) {
-        Ok(message) => {
-            if let Err(error) = sender.send(*message).await {
-                state.push(error.to_string(), TranscriptTone::Error);
-            }
-        }
-        Err(error) => state.push(error.to_string(), TranscriptTone::Error),
+    if let Err(error) = sender.send(*prepare(action)).await {
+        state.push(error.to_string(), TranscriptTone::Error);
     }
 }
 

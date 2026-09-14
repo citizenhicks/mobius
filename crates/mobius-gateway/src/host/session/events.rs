@@ -26,7 +26,7 @@ impl HostState {
             EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_) => self.approval_active = false,
             _ => {}
         }
-        let routine_completion = self.observe_routine_event(&event)?;
+        let routine_completion = self.observe_routine_event(&event);
         if let Some((active, status, message)) = routine_completion {
             self.bots.finish_run(active.run, status, message)?;
         }
@@ -93,10 +93,8 @@ impl HostState {
     pub(super) fn observe_routine_event(
         &mut self,
         event: &Event,
-    ) -> Result<Option<(ActiveRoutine, RoutineRunStatus, Option<String>)>> {
-        let Some(active) = self.active_routine.as_mut() else {
-            return Ok(None);
-        };
+    ) -> Option<(ActiveRoutine, RoutineRunStatus, Option<String>)> {
+        let active = self.active_routine.as_mut()?;
         let completion = match &event.msg {
             EventMsg::TurnStarted(turn)
                 if event.submission_id.as_deref() == Some(active.submission_id.as_str()) =>
@@ -131,13 +129,10 @@ impl HostState {
             }
             _ => None,
         };
-        Ok(completion.map(|(status, message)| {
-            let active = self
-                .active_routine
-                .take()
-                .expect("completion requires an active routine run");
-            (active, status, message)
-        }))
+        let (status, message) = completion?;
+        self.active_routine
+            .take()
+            .map(|active| (active, status, message))
     }
 
     pub(super) async fn ready(&self) -> Result<SessionReadyPayload> {

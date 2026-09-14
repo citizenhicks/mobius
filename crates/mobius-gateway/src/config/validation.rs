@@ -1,6 +1,9 @@
 use super::*;
 
 /// Validates the complete frontend-writable agent composition.
+/// # Errors
+///
+/// Returns an error if the supplied value is invalid.
 pub fn validate_agent_composition(config: &AgentComposition) -> Result<()> {
     if config.max_model_steps == 0 {
         return Err(Error::Config("maximum model steps must be positive".into()));

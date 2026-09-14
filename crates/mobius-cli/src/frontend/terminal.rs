@@ -15,6 +15,7 @@ use ratatui::crossterm::terminal::{
 pub(super) const INPUT_POLL: Duration = Duration::from_millis(16);
 pub(super) const MAX_INPUT_BATCH: usize = 64;
 
+/// Returns the terminal text.
 pub fn terminal_text(value: &str) -> String {
     value
         .chars()

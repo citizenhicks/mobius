@@ -79,31 +79,46 @@ pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
 /// One validated package format understood by the extensions middleware.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExtensionPackageKind {
+    /// Selects the skill case.
     Skill,
+    /// Selects the plugin case.
     Plugin,
 }
 
 /// Frontend-safe metadata read from one extension package root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtensionPackage {
+    /// The kind.
     pub kind: ExtensionPackageKind,
+    /// The name.
     pub name: String,
+    /// The version.
     pub version: Option<String>,
+    /// The description.
     pub description: String,
+    /// The skills.
     pub skills: Vec<String>,
+    /// The hooks.
     pub hooks: Vec<ExtensionHook>,
 }
 
 /// One executable hook shown to an owner before trust is granted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtensionHook {
+    /// The event.
     pub event: String,
+    /// The matcher.
     pub matcher: Option<String>,
+    /// The command.
     pub command: String,
+    /// The timeout seconds.
     pub timeout_seconds: u64,
 }
 
 /// Validates and inspects one standalone Agent Skill or Agent Plugin package.
+/// # Errors
+///
+/// Returns an error if validation or an operation required by this function fails.
 pub fn inspect_package(root: impl AsRef<Path>) -> Result<ExtensionPackage> {
     let root = package::canonical_root(root.as_ref())?;
     Ok(package::load(root)?.metadata)
@@ -132,6 +147,9 @@ pub struct Extensions {
 
 impl Extensions {
     /// Discovers direct child `SKILL.md` files under each root.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn discover(roots: impl IntoIterator<Item = PathBuf>) -> Result<Self> {
         let mut skills = BTreeMap::new();
         discover_roots(roots, &mut skills, None, false)?;
@@ -145,6 +163,9 @@ impl Extensions {
     }
 
     /// Adds user-installed skills after the explicit roots.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn discover_installed(roots: impl IntoIterator<Item = PathBuf>) -> Result<Self> {
         let mut discovered = Self::discover(roots)?;
         discover_roots(installed_skill_roots(), &mut discovered.skills, None, true)?;
@@ -156,6 +177,9 @@ impl Extensions {
     /// The optional predicate authorizes command hooks for that snapshot and is checked
     /// immediately before every launch. Bundled skills remain available without it. Callers
     /// must pass immutable snapshots rather than paths discovered from a workspace.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn activate_plugins(
         mut self,
         roots: impl IntoIterator<Item = (PathBuf, Option<HookAuthorization>)>,
@@ -246,6 +270,9 @@ impl Extensions {
     }
 
     /// Overrides the instruction placed before discovered skill metadata.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn prompt(mut self, prompt: impl Into<String>) -> Result<Self> {
         let prompt = prompt.into();
         if prompt.trim().is_empty() {

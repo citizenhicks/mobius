@@ -22,24 +22,32 @@ struct TokenStoreRecord {
 }
 
 #[derive(Clone, Debug)]
+/// Data for gateway accounts.
 pub struct GatewayAccounts {
     path: PathBuf,
     record: TokenStoreRecord,
 }
 
 impl GatewayAccounts {
+    /// Loads the saved gateway accounts.
+    /// # Errors
+    ///
+    /// Returns an error if the resource cannot be read, decoded, or validated.
     pub fn load() -> Result<Self> {
         Self::load_from(token_path()?)
     }
 
+    /// Returns the saved gateway endpoints.
     pub fn endpoints(&self) -> impl ExactSizeIterator<Item = &str> {
         self.record.tokens.keys().map(String::as_str)
     }
 
+    /// Returns the selected gateway endpoint.
     pub fn selected(&self) -> Option<&str> {
         self.record.selected_endpoint.as_deref()
     }
 
+    /// Returns the token saved for an endpoint.
     pub fn token(&self, endpoint: &Endpoint) -> Option<&str> {
         self.record
             .tokens
@@ -47,6 +55,10 @@ impl GatewayAccounts {
             .map(String::as_str)
     }
 
+    /// Selects a saved gateway endpoint.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn select(&mut self, endpoint: &str) -> Result<()> {
         if !self.record.tokens.contains_key(endpoint) {
             return Err(Error::Config(format!(
@@ -57,6 +69,10 @@ impl GatewayAccounts {
         Ok(())
     }
 
+    /// Adds or replaces a gateway account.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn add(&mut self, endpoint: &Endpoint, token: String) -> Result<()> {
         validate_token(&token)?;
         let endpoint = endpoint.to_string();
@@ -70,6 +86,7 @@ impl GatewayAccounts {
         Ok(())
     }
 
+    /// Forgets a saved gateway endpoint.
     pub fn forget(&mut self, endpoint: &str) {
         self.record.tokens.remove(endpoint);
         if self.selected() == Some(endpoint) {
@@ -77,6 +94,10 @@ impl GatewayAccounts {
         }
     }
 
+    /// Prepares secure token storage.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn prepare(&self) -> Result<()> {
         let parent = parent(&self.path)?;
         std::fs::create_dir_all(parent)?;
@@ -85,6 +106,10 @@ impl GatewayAccounts {
         Ok(())
     }
 
+    /// Saves the gateway accounts atomically.
+    /// # Errors
+    ///
+    /// Returns an error if the value cannot be encoded or persisted.
     pub fn save(&self) -> Result<()> {
         validate_record(&self.record)?;
         let contents = serde_json::to_vec(&self.record)?;
@@ -137,6 +162,10 @@ impl GatewayAccounts {
     }
 }
 
+/// Returns the configured endpoint.
+/// # Errors
+///
+/// Returns an error if validation or an operation required by this function fails.
 pub fn configured_endpoint() -> Result<Endpoint> {
     if environment_override_message().is_some() {
         return Endpoint::from_env();
@@ -146,6 +175,10 @@ pub fn configured_endpoint() -> Result<Endpoint> {
         .map_or_else(Endpoint::from_env, str::parse)
 }
 
+/// Returns the configured token.
+/// # Errors
+///
+/// Returns an error if validation or an operation required by this function fails.
 pub fn configured_token(endpoint: &Endpoint) -> Result<Option<String>> {
     if env::var_os("MOBIUS_GATEWAY_TOKEN").is_some() {
         return token_from_env().map(Some);
@@ -153,6 +186,10 @@ pub fn configured_token(endpoint: &Endpoint) -> Result<Option<String>> {
     Ok(GatewayAccounts::load()?.token(endpoint).map(str::to_owned))
 }
 
+/// Returns the dashboard gateway endpoint.
+/// # Errors
+///
+/// Returns an error if validation or an operation required by this function fails.
 pub fn dashboard_gateway_endpoint(state_dir: &Path) -> Result<Endpoint> {
     let (_, config) = ConfigStore::open(state_dir.to_path_buf())?;
     if config.tls.is_some() {
@@ -167,6 +204,10 @@ pub fn dashboard_gateway_endpoint(state_dir: &Path) -> Result<Endpoint> {
     endpoint_from_config(&config)
 }
 
+/// Validates local gateway config.
+/// # Errors
+///
+/// Returns an error if the supplied value is invalid.
 pub fn validate_local_gateway_config(
     state_dir: &Path,
     endpoint: &Endpoint,
@@ -185,12 +226,14 @@ pub fn validate_local_gateway_config(
     Ok(())
 }
 
+/// Returns the missing local token.
 pub fn missing_local_token(endpoint: &Endpoint) -> Error {
     Error::Config(format!(
         "local gateway state exists but mobius-cli is not paired; stop the gateway, run `mobius-gateway connect` in another terminal, then run `mobius pair {endpoint} <one-time-code>`"
     ))
 }
 
+/// Returns the environment override message.
 pub fn environment_override_message() -> Option<&'static str> {
     match (
         env::var_os("MOBIUS_GATEWAY_ENDPOINT").is_some(),

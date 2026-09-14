@@ -119,6 +119,9 @@ pub(crate) async fn run_gateway(
 }
 
 /// Runs gateway-scoped provider setup before any chat exists.
+/// # Errors
+///
+/// Returns an error if validation or an operation required to complete the request fails.
 pub async fn run_gateway_login(
     sender: &GatewaySender,
     events: &mut GatewayEvents,

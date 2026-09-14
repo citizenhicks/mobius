@@ -33,6 +33,9 @@ where
 }
 
 /// Reads one length-prefixed JSON value, returning `None` only for a clean EOF.
+/// # Errors
+///
+/// Returns an error if the resource cannot be read, decoded, or validated.
 pub async fn read_frame<T>(reader: &mut FrameReader<impl AsyncRead + Unpin>) -> Result<Option<T>>
 where
     T: DeserializeOwned,
@@ -83,6 +86,9 @@ where
 }
 
 /// Writes one bounded length-prefixed JSON value.
+/// # Errors
+///
+/// Returns an error if the value cannot be encoded or persisted.
 pub async fn write_frame<T>(writer: &mut (impl AsyncWrite + Unpin), value: &T) -> Result<()>
 where
     T: Serialize,
@@ -195,6 +201,9 @@ pub(crate) fn websocket_error(error: WebSocketError) -> Error {
 }
 
 /// Rejects frames from incompatible clients before interpreting their message.
+/// # Errors
+///
+/// Returns an error if the supplied value is invalid.
 pub fn validate_version(version: u16) -> Result<()> {
     if version != PROTOCOL_VERSION {
         return Err(Error::Protocol(format!(

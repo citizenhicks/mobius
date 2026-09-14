@@ -10,8 +10,11 @@ use super::SessionFileReference;
 #[serde(rename_all = "snake_case")]
 pub enum ImageDetail {
     #[default]
+    /// Selects the auto case.
     Auto,
+    /// Selects the low case.
     Low,
+    /// Selects the high case.
     High,
 }
 
@@ -19,9 +22,13 @@ pub enum ImageDetail {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImageReference {
+    /// The file.
     pub file: SessionFileReference,
+    /// The width.
     pub width: u32,
+    /// The height.
     pub height: u32,
+    /// The detail.
     pub detail: ImageDetail,
 }
 
@@ -30,11 +37,23 @@ pub struct ImageReference {
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum ContentPart {
     #[serde(rename = "input_text")]
-    Text { text: String },
+    /// A text segment.
+    Text {
+        /// The text content.
+        text: String,
+    },
     #[serde(rename = "input_image")]
-    Image { image: ImageReference },
+    /// An image attachment.
+    Image {
+        /// The image reference.
+        image: ImageReference,
+    },
     #[serde(rename = "file")]
-    File { file: SessionFileReference },
+    /// A file attachment.
+    File {
+        /// The file reference.
+        file: SessionFileReference,
+    },
 }
 
 /// Authoritative ordered content; text previews are explicitly lossy.
@@ -93,7 +112,9 @@ impl From<&ToolContent> for ToolContent {
 /// A completed tool observation, including observations from failed actions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolResponse {
+    /// The content.
     pub content: ToolContent,
+    /// The is error.
     pub is_error: bool,
 }
 

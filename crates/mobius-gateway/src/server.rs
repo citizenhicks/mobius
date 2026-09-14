@@ -72,6 +72,9 @@ pub struct GatewayServer {
 
 impl GatewayServer {
     /// Opens protected state and the machine-wide chat registry.
+    /// # Errors
+    ///
+    /// Returns an error if the resource cannot be read, decoded, or validated.
     pub async fn open(state_dir: PathBuf) -> Result<Self> {
         let (store, config) = ConfigStore::open(state_dir)?;
         let listener = TcpListener::bind(config.listen).await?;
@@ -79,6 +82,9 @@ impl GatewayServer {
     }
 
     /// Binds and initializes a fresh local gateway before exposing its one-use pairing grant.
+    /// # Errors
+    ///
+    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub async fn bootstrap(
         state_dir: PathBuf,
         listen: std::net::SocketAddr,
@@ -127,6 +133,9 @@ impl GatewayServer {
     }
 
     /// Serves until a process shutdown signal or 72 hours of inactivity.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required to complete the request fails.
     pub async fn serve(self) -> Result<()> {
         let websocket_host = self.configured_websocket_host()?;
         self.serve_with_host(websocket_host).await
@@ -183,6 +192,9 @@ impl GatewayServer {
     /// Signal shutdown and await this future to close connections, finish routine
     /// dispatch, and stop resident sessions through their normal cleanup. Merely
     /// dropping the future does not perform graceful shutdown.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required to complete the request fails.
     pub async fn serve_until(self, shutdown: impl Future<Output = ()>) -> Result<()> {
         let websocket_host = self.configured_websocket_host()?;
         self.serve_until_inactive_with_host(shutdown, INACTIVITY_TIMEOUT, websocket_host)

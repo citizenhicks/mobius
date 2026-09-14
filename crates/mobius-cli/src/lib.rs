@@ -2,6 +2,7 @@
 
 pub mod command;
 pub mod frontend;
+/// Gateway accounts support.
 pub mod gateway_accounts;
 
 /// Converts a gateway transport/protocol failure without losing its diagnostic text.

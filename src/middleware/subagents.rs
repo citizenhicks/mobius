@@ -126,6 +126,9 @@ pub const DEFAULT_MAX_CONCURRENCY: usize = text::DEFAULTS_MAX_CONCURRENCY as usi
 pub const DEFAULT_MAX_AGENTS: usize = text::DEFAULTS_MAX_AGENTS as usize;
 
 /// Validates subagent tree limits shared by framework and host composition.
+/// # Errors
+///
+/// Returns an error if the supplied value is invalid.
 pub fn validate_limits(max_depth: u8, max_concurrency: usize, max_agents: usize) -> Result<()> {
     if max_depth == 0 || max_depth > MAX_CONFIGURED_DEPTH {
         return Err(Error::Config(format!(
@@ -203,10 +206,15 @@ pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
 /// Child-agent parameters owned by the subagent capability.
 #[derive(Clone)]
 pub struct SubagentLaunch {
+    /// The session identifier.
     pub session_id: String,
+    /// The model.
     pub model: String,
+    /// The reasoning effort.
     pub reasoning_effort: Option<String>,
+    /// The metadata.
     pub metadata: BTreeMap<String, Value>,
+    /// The role.
     pub role: AgentRole,
 }
 
@@ -421,6 +429,9 @@ impl Subagents {
     ///
     /// `max_concurrency` counts active agents and `max_agents` counts retained agents;
     /// both include the root.
+    /// # Errors
+    ///
+    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new(
         max_depth: u8,
         max_concurrency: usize,
@@ -440,6 +451,9 @@ impl Subagents {
     }
 
     /// Reports whether this root session has a pending or running child agent.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn has_active_children(&self, root_session_id: &str) -> Result<bool> {
         self.shared.has_active_children(root_session_id).await
     }
@@ -452,6 +466,9 @@ impl Subagents {
     }
 
     /// Selects a reasoning effort for children by default.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn default_reasoning(mut self, reasoning: impl Into<String>) -> Result<Self> {
         let reasoning = reasoning.into();
         if reasoning.trim().is_empty() {
@@ -464,6 +481,9 @@ impl Subagents {
     }
 
     /// Overrides the instruction given to child agents.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn prompt(mut self, prompt: impl Into<String>) -> Result<Self> {
         let prompt = prompt.into();
         if prompt.trim().is_empty() {

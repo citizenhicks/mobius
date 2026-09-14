@@ -145,7 +145,9 @@ pub const MACOS_SEATBELT_NETWORK_POLICY: &str = include_str!("seatbelt_network_p
 #[serde(rename_all = "snake_case")]
 pub enum NetworkAccess {
     #[default]
+    /// Selects the denied case.
     Denied,
+    /// Selects the allowed case.
     Allowed,
 }
 
@@ -154,31 +156,42 @@ pub enum NetworkAccess {
 #[serde(rename_all = "snake_case")]
 pub enum SandboxMode {
     #[default]
+    /// Selects the workspace write case.
     WorkspaceWrite,
+    /// Selects the danger full access case.
     DangerFullAccess,
 }
 
 /// Bounded output from a sandboxed command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandOutput {
+    /// The exit code.
     pub exit_code: i32,
+    /// The stdout.
     pub stdout: String,
+    /// The stdout truncated.
     pub stdout_truncated: bool,
+    /// The stderr.
     pub stderr: String,
+    /// The stderr truncated.
     pub stderr_truncated: bool,
 }
 
 /// One byte stream emitted by a sandboxed command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandStream {
+    /// Selects the stdout case.
     Stdout,
+    /// Selects the stderr case.
     Stderr,
 }
 
 /// Whether command execution has a foreground deadline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandMode {
+    /// Selects the foreground case.
     Foreground,
+    /// Selects the background case.
     Background,
 }
 
@@ -220,6 +233,9 @@ impl CommandOutputSink {
 /// owns approval and background-command tracking, not arbitrary backend cleanup.
 pub trait SandboxBackend: Send + Sync {
     /// Creates an independent temporary area and execution lifetime for a child agent.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     fn isolated_execution(&self) -> Result<Arc<dyn SandboxBackend>> {
         Err(Error::Sandbox(
             "backend does not support isolated child execution".into(),
@@ -232,6 +248,9 @@ pub trait SandboxBackend: Send + Sync {
     }
 
     /// Launches a persistent framed runtime inside this backend's execution boundary.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     fn start_worker(
         &self,
         _command: &WorkerCommand,
@@ -315,6 +334,9 @@ impl Sandbox {
     }
 
     /// Creates a child execution boundary with independent temporary files and workers.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn isolated_execution(&self) -> Result<Self> {
         let mut scoped = Self::new(self.backend.isolated_execution()?, self.approval_policy());
         scoped.workspace_prompt = self.workspace_prompt.clone();
@@ -413,6 +435,9 @@ impl Sandbox {
     }
 
     /// Evaluates one authorized request, preserving runtime state until explicit reset or loss.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub async fn evaluate_worker(
         &self,
         command: &WorkerCommand,
@@ -453,6 +478,9 @@ impl Sandbox {
     }
 
     /// Reports whether one session still owns a background command result.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn has_background_commands(&self, session_id: &str) -> Result<bool> {
         self.background.has_owner(session_id)
     }

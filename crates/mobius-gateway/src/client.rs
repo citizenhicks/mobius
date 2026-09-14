@@ -55,7 +55,9 @@ enum Security {
 /// Token returned while pairing a new client.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairedClient {
+    /// The client identifier.
     pub client_id: String,
+    /// The token.
     pub token: String,
 }
 
@@ -86,6 +88,9 @@ pub struct GatewayEventScope<'a> {
 
 impl Endpoint {
     /// Resolves `MOBIUS_GATEWAY_ENDPOINT`, defaulting to local plaintext.
+    /// # Errors
+    ///
+    /// Returns an error if the input cannot be parsed or validated.
     pub fn from_env() -> Result<Self> {
         env::var("MOBIUS_GATEWAY_ENDPOINT")
             .unwrap_or_else(|_| DEFAULT_ENDPOINT.into())
@@ -249,6 +254,9 @@ async fn bridge_websocket(
 
 impl GatewayClient {
     /// Authenticates an existing client and leaves the gateway Ready frame for `events`.
+    /// # Errors
+    ///
+    /// Returns an error if the transport fails or returns invalid data.
     pub async fn connect(
         endpoint: &Endpoint,
         token: impl Into<String>,
@@ -268,6 +276,9 @@ impl GatewayClient {
     }
 
     /// Consumes a pending pairing code and returns a connected independent client.
+    /// # Errors
+    ///
+    /// Returns an error if authentication fails or its stored state is invalid.
     pub async fn pair(
         endpoint: &Endpoint,
         code: impl Into<String>,
@@ -350,6 +361,9 @@ fn connection_error(code: &str, message: String) -> Error {
 
 impl GatewaySender {
     /// Sends one authenticated operation.
+    /// # Errors
+    ///
+    /// Returns an error if the transport fails or returns invalid data.
     pub async fn send(&self, message: ClientMessage) -> Result<()> {
         if matches!(
             message,
@@ -370,6 +384,9 @@ impl GatewaySender {
 
 impl GatewayEvents {
     /// Receives the next version-checked server frame.
+    /// # Errors
+    ///
+    /// Returns an error if the transport fails or returns invalid data.
     pub async fn next(&mut self) -> Result<Option<ServerFrame>> {
         if let Some(frame) = self.pending.pop_front() {
             return Ok(Some(frame));
@@ -392,6 +409,9 @@ impl GatewayEvents {
 
 impl GatewayEventScope<'_> {
     /// Receives the next frame from the shared ordered stream.
+    /// # Errors
+    ///
+    /// Returns an error if the transport fails or returns invalid data.
     pub async fn next(&mut self) -> Result<Option<ServerFrame>> {
         self.events.next().await
     }
@@ -402,6 +422,9 @@ impl GatewayEventScope<'_> {
     }
 
     /// Defers one unrelated frame for the scope's caller to consume later.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn defer(&mut self, frame: ServerFrame) -> Result<()> {
         validate_version(frame.version)?;
         if self
@@ -431,6 +454,9 @@ impl Drop for GatewayEventScope<'_> {
 }
 
 /// Resolves the bearer token expected by the reusable CLI client.
+/// # Errors
+///
+/// Returns an error if validation or an operation required by this function fails.
 pub fn token_from_env() -> Result<String> {
     env::var("MOBIUS_GATEWAY_TOKEN")
         .ok()

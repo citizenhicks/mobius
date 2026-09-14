@@ -152,6 +152,9 @@ pub struct Anthropic {
 
 impl Anthropic {
     /// Creates a provider for an Anthropic Messages API endpoint.
+    /// # Errors
+    ///
+    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new(
         api_key: impl Into<String>,
         base_url: impl Into<String>,
@@ -188,6 +191,9 @@ impl Anthropic {
     }
 
     /// Enables adaptive thinking at one supported Anthropic effort level.
+    /// # Errors
+    ///
+    /// Returns an error if validation or an operation required by this function fails.
     pub fn with_reasoning_effort(mut self, effort: impl Into<String>) -> Result<Self> {
         let effort = effort.into();
         let supported = manifest::MODELS

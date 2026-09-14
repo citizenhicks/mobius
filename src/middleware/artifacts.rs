@@ -46,6 +46,7 @@ pub struct Artifacts {
 
 impl Artifacts {
     #[must_use]
+    /// Creates a new instance.
     pub fn new(store: SessionFileStore) -> Self {
         Self { store }
     }

@@ -75,8 +75,10 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 
 [workspace.lints.rust]
+missing_docs = "warn"
 unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = "warn"
 cognitive_complexity = "warn"
+missing_errors_doc = "warn"
