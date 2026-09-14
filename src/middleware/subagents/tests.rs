@@ -78,7 +78,7 @@ fn prompt_section_identifies_child_with_default_instruction() {
 
     assert_eq!(
         section.body,
-        "You are `/root/reviewer`, a child agent.\nComplete the task and report concisely to your parent."
+        "You are `/root/reviewer`, a child agent.\nCollaborate continuously with your parent: use `send_message` at its canonical path for useful findings, blockers, and questions as they arise. Complete the task and report concisely when done."
     );
 }
 

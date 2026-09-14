@@ -61,7 +61,7 @@ mod text {
     pub const DEFAULTS_WAIT_MS: i64 = 30000;
     pub const MANIFEST_DESCRIPTION: &str = "Delegate independent work to durable child agents";
     pub const MANIFEST_LABEL: &str = "Subagents";
-    pub const PROMPT_DEFAULT: &str = "Complete the task and report concisely to your parent.";
+    pub const PROMPT_DEFAULT: &str = "Collaborate continuously with your parent: use `send_message` at its canonical path for useful findings, blockers, and questions as they arise. Complete the task and report concisely when done.";
     pub const PROMPT_ROOT: &str = "Delegate independent work to subagents when it can run in parallel. Spawn with fresh context by default; include recent turns only when the task requires them, and full history only when essential. They share your workspace; continue your own work while they run, and wait only when you need their results.";
     pub const RENDER_AGENT: &str = "Agent";
     pub const RENDER_AGENTS: &str = "Agents";
