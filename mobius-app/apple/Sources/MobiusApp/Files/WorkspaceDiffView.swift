@@ -310,7 +310,7 @@ private struct DiffRowView: View {
         .padding(.horizontal, MobiusSpace.m)
         .padding(.vertical, MobiusSpace.s)
         .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
-        .background(palette.accentSoft.opacity(0.45))
+        .background { palette.accentSoft.opacity(0.45) }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
             "\(hunk.title), \(hunk.added) additions, \(hunk.removed) removals"

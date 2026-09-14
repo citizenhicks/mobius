@@ -83,7 +83,7 @@ fn status_widget_owns_its_picker() {
                 && options[0].label == "reviewer"
                 && options[0].description == "running"
                 && options[0].detail == "openai::gpt-5::high"
-                && options[0].symbol == Some(FrontendSymbol::Agent)
+                && options[0].symbol == Some(FrontendSymbol::Progress)
                 && !options[0].shows_detail
                 && matches!(
                     &options[0].op,
@@ -91,6 +91,57 @@ fn status_widget_owns_its_picker() {
                         if arguments == "/root/team/reviewer"
                 )
     ));
+}
+
+#[test]
+fn picker_groups_active_done_and_errored_agents() {
+    let mut tree = Tree::default();
+    for (path, status) in [
+        ("/root/error", AgentStatus::Errored),
+        ("/root/interrupted", AgentStatus::Interrupted),
+        ("/root/complete", AgentStatus::Completed),
+        ("/root/running", AgentStatus::Running),
+        ("/root/pending", AgentStatus::PendingInit),
+    ] {
+        tree.agents.insert(
+            path.into(),
+            AgentRecord {
+                parent: "/root".into(),
+                session_id: path.into(),
+                depth: 1,
+                model: "test".into(),
+                spawn_context: String::new(),
+                active_turn_id: None,
+                status,
+                last_message: None,
+            },
+        );
+    }
+
+    let options = picker_options(&tree);
+    assert_eq!(
+        options
+            .iter()
+            .map(|option| option.description.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "pending_init",
+            "running",
+            "completed",
+            "interrupted",
+            "errored"
+        ]
+    );
+    assert!(
+        options[..2]
+            .iter()
+            .all(|option| option.symbol == Some(FrontendSymbol::Progress))
+    );
+    assert!(
+        options[2..]
+            .iter()
+            .all(|option| option.symbol == Some(FrontendSymbol::Agent))
+    );
 }
 
 #[test]

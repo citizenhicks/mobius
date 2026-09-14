@@ -115,6 +115,14 @@ impl AgentStatus {
     fn is_active(&self) -> bool {
         matches!(self, Self::PendingInit | Self::Running)
     }
+
+    fn presentation_order(&self) -> u8 {
+        match self {
+            Self::PendingInit | Self::Running => 0,
+            Self::Interrupted | Self::Completed => 1,
+            Self::Errored => 2,
+        }
+    }
 }
 
 impl Shared {
@@ -700,13 +708,19 @@ fn status_widget(tree: &Tree) -> FrontendWidget {
 }
 
 fn picker_options(tree: &Tree) -> Vec<FrontendPickerOption> {
-    tree.agents
-        .iter()
+    let mut agents = tree.agents.iter().collect::<Vec<_>>();
+    agents.sort_by_key(|(_, entry)| entry.status.presentation_order());
+    agents
+        .into_iter()
         .map(|(path, entry)| FrontendPickerOption {
             label: path.rsplit('/').next().unwrap_or(path).into(),
             description: entry.status.label().into(),
             detail: entry.model.clone(),
-            symbol: Some(FrontendSymbol::Agent),
+            symbol: Some(if entry.status.is_active() {
+                FrontendSymbol::Progress
+            } else {
+                FrontendSymbol::Agent
+            }),
             shows_detail: false,
             op: Op::CapabilityCommand {
                 capability: "subagents".into(),

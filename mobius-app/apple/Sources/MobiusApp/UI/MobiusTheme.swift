@@ -26,6 +26,7 @@ enum MobiusSymbol {
         "edit": .pencilSimple,
         "kimi": .kimiAi,
         "moon": .moon,
+        "progress": .arrowClockwise,
         "promote": .arrowCircleUp,
         "queue": .queue01,
         "route": .path,

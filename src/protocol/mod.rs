@@ -1095,6 +1095,7 @@ mod tests {
             FrontendSymbol::Chat,
             FrontendSymbol::Delete,
             FrontendSymbol::Edit,
+            FrontendSymbol::Progress,
             FrontendSymbol::Promote,
             FrontendSymbol::Route,
             FrontendSymbol::Search,

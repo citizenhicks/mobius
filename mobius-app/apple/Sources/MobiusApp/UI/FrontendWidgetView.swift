@@ -359,7 +359,9 @@ private struct FrontendPickerOptionLabel: View {
 
     var body: some View {
         HStack(spacing: MobiusSpace.s) {
-            if let symbol = option.symbol,
+            if option.symbol == "progress" {
+                MobiusSpinner(size: MobiusStyle.glyphInline, foreground: palette.accent)
+            } else if let symbol = option.symbol,
                 let glyph = MobiusSymbol.knownGlyph(for: symbol)
             {
                 MobiusIcon(glyph, size: MobiusStyle.glyphInline, foreground: palette.accent)
