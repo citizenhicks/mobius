@@ -413,6 +413,12 @@ fn separator_line(width: u16) -> Line<'static> {
 }
 
 pub(super) fn render_preview(frame: &mut Frame<'_>, state: &mut TuiState) {
+    if let Some(preview) = state.preview.as_mut()
+        && let PreviewContent::Diff(browser) = &mut preview.content
+    {
+        browser.render(frame, frame.area(), &preview.title);
+        return;
+    }
     let theme = current();
     let area = centered_area(frame.area(), 92, 88);
     if area.width < 3 || area.height < 3 {
@@ -674,13 +680,7 @@ fn push_unified_diff(lines: &mut Vec<Line<'static>>, text: &str, width: usize) -
     if !text.starts_with("diff --git ") && !text.contains("\ndiff --git ") {
         return push_diff_patch(lines, text, width);
     }
-    let mut start = 0;
-    for end in text
-        .match_indices("\ndiff --git ")
-        .map(|(index, _)| index + 1)
-        .chain(std::iter::once(text.len()))
-    {
-        let section = &text[start..end];
+    for section in diff_sections(text) {
         if !push_diff_patch(lines, section, width) {
             lines.extend(
                 section
@@ -688,12 +688,24 @@ fn push_unified_diff(lines: &mut Vec<Line<'static>>, text: &str, width: usize) -
                     .map(|line| Line::styled(line.to_owned(), current().style(Role::Text))),
             );
         }
-        start = end;
     }
     true
 }
 
-fn push_diff_patch(lines: &mut Vec<Line<'static>>, text: &str, width: usize) -> bool {
+pub(super) fn diff_sections(text: &str) -> impl Iterator<Item = &str> {
+    let mut start = 0;
+    text.match_indices("\ndiff --git ")
+        .map(|(index, _)| index + 1)
+        .chain(std::iter::once(text.len()))
+        .map(move |end| {
+            let section = &text[start..end];
+            start = end;
+            section
+        })
+        .filter(|section| !section.is_empty())
+}
+
+pub(super) fn push_diff_patch(lines: &mut Vec<Line<'static>>, text: &str, width: usize) -> bool {
     let Ok(patch) = Patch::from_str(text) else {
         return false;
     };
@@ -714,7 +726,7 @@ fn push_diff_patch(lines: &mut Vec<Line<'static>>, text: &str, width: usize) -> 
         .filter(|path| *path != "/dev/null")
         .or_else(|| patch.original())
         .unwrap_or("file");
-    let path = terminal_text(raw_path);
+    let path = terminal_text(raw_path).replace(['\n', '\t'], " ");
     let (added, removed, max_line_number) =
         patch
             .hunks()
@@ -738,7 +750,7 @@ fn push_diff_patch(lines: &mut Vec<Line<'static>>, text: &str, width: usize) -> 
                             old_line += 1;
                         }
                         DiffLine::Context(_) => {
-                            max = max.max(new_line);
+                            max = max.max(old_line).max(new_line);
                             old_line += 1;
                             new_line += 1;
                         }
@@ -761,13 +773,16 @@ fn push_diff_patch(lines: &mut Vec<Line<'static>>, text: &str, width: usize) -> 
     ]));
 
     let number_width = max_line_number.max(1).to_string().len();
-    for (hunk_index, hunk) in patch.hunks().iter().enumerate() {
-        if hunk_index > 0 {
-            lines.push(Line::styled(
-                format!("    {:>number_width$} ⋮", ""),
-                theme.style(Role::Muted),
-            ));
-        }
+    for hunk in patch.hunks() {
+        lines.push(Line::styled(
+            format!(
+                "@@ -{} +{} @@{}",
+                hunk.old_range(),
+                hunk.new_range(),
+                hunk.function_context().unwrap_or("")
+            ),
+            theme.style(Role::Info),
+        ));
         let mut old_line = hunk.old_range().start();
         let mut new_line = hunk.new_range().start();
         let hunk_text = hunk
@@ -782,12 +797,13 @@ fn push_diff_patch(lines: &mut Vec<Line<'static>>, text: &str, width: usize) -> 
         let syntax = highlight::lines(&hunk_text, raw_path)
             .filter(|syntax| syntax.len() == hunk.lines().len());
         for (index, line) in hunk.lines().iter().enumerate() {
-            let (number, sign, sign_role, background, content) = match line {
+            let (old_number, new_number, sign, sign_role, background, content) = match line {
                 DiffLine::Insert(content) => {
                     let number = new_line;
                     new_line += 1;
                     (
-                        number,
+                        String::new(),
+                        number.to_string(),
                         "+",
                         Role::Success,
                         Some(theme.diff_add_background()),
@@ -798,7 +814,8 @@ fn push_diff_patch(lines: &mut Vec<Line<'static>>, text: &str, width: usize) -> 
                     let number = old_line;
                     old_line += 1;
                     (
-                        number,
+                        number.to_string(),
+                        String::new(),
                         "-",
                         Role::Error,
                         Some(theme.diff_delete_background()),
@@ -806,15 +823,15 @@ fn push_diff_patch(lines: &mut Vec<Line<'static>>, text: &str, width: usize) -> 
                     )
                 }
                 DiffLine::Context(content) => {
-                    let number = new_line;
+                    let numbers = (old_line.to_string(), new_line.to_string());
                     old_line += 1;
                     new_line += 1;
-                    (number, " ", Role::Text, None, content)
+                    (numbers.0, numbers.1, " ", Role::Text, None, content)
                 }
             };
             let mut spans = vec![
                 Span::styled(
-                    format!("    {number:>number_width$} "),
+                    format!(" {old_number:>number_width$} {new_number:>number_width$} "),
                     theme.style(Role::Muted),
                 ),
                 Span::styled(sign, theme.style(sign_role)),

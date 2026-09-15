@@ -1,6 +1,7 @@
 //! Minimal state-driven möbius terminal frontend.
 
 mod clipboard;
+mod diff;
 mod events;
 mod highlight;
 mod input;
@@ -286,6 +287,7 @@ impl PreviewState {
 }
 
 enum PreviewContent {
+    Diff(Box<diff::DiffBrowser>),
     LiveTranscript,
     Snapshot(Box<SnapshotPreview>),
     Text {
@@ -792,6 +794,15 @@ impl TuiState {
             content: PreviewContent::Text { text, format, tone },
             viewport: Viewport::default(),
         });
+    }
+
+    fn open_diff_preview(&mut self, title: String, text: String) {
+        self.picker = None;
+        self.capability_overlay = None;
+        self.preview = Some(PreviewState::new(
+            title,
+            PreviewContent::Diff(Box::new(diff::DiffBrowser::new(text))),
+        ));
     }
 }
 

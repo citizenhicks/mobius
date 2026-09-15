@@ -242,7 +242,12 @@ pub(in crate::frontend) async fn run(
                 dirty = true;
             }
         }
-        guard.set_mouse_capture(state.preview.is_none())?;
+        guard.set_mouse_capture(
+            state
+                .preview
+                .as_ref()
+                .is_none_or(|preview| matches!(preview.content, super::PreviewContent::Diff(_))),
+        )?;
     }
     if let Some(preparation) = clipboard_preparation.take() {
         drop(preparation);
@@ -678,16 +683,7 @@ fn handle_server_message(
             ..
         } if actual == session_id => {
             let title = format!("{scope:?} diff").to_ascii_lowercase();
-            state.open_text_preview(
-                title,
-                if diff.is_empty() {
-                    "No changes.".into()
-                } else {
-                    diff
-                },
-                FrontendBlockFormat::UnifiedDiff,
-                TranscriptTone::Neutral,
-            );
+            state.open_diff_preview(title, diff);
         }
         ServerMessage::Rejected {
             request_id,
@@ -1768,10 +1764,7 @@ mod tests {
         assert_eq!(state.background_approval_count, 1);
         assert!(matches!(
             state.preview.as_ref().map(|preview| &preview.content),
-            Some(super::super::PreviewContent::Text {
-                format: FrontendBlockFormat::UnifiedDiff,
-                ..
-            })
+            Some(super::super::PreviewContent::Diff(_))
         ));
 
         handle_server_message(

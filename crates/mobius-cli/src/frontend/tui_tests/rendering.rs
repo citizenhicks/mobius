@@ -144,8 +144,10 @@ fn completed_diff_replaces_the_pending_block_with_a_styled_diff() {
     let lines = view::live_transcript_lines(&mut state, 0, 80);
     let text = rendered_text(&lines);
     assert!(text.contains("• Edited note.rs (+2 -2)"), "{text}");
-    assert!(text.contains("    1 -fn old_name() {}"), "{text}");
-    assert!(text.contains("    1 +fn new_name() {}"), "{text}");
+    assert!(text.contains(" 1   -fn old_name() {}"), "{text}");
+    assert!(text.contains("   1 +fn new_name() {}"), "{text}");
+    assert!(text.contains(" 2 2  keep_one();"), "{text}");
+    assert!(text.contains("@@ -1,5 +1,5 @@"), "{text}");
     assert!(!text.contains("• Edit note.rs"), "{text}");
 
     let changed_delete = lines

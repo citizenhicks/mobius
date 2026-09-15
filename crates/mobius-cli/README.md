@@ -151,6 +151,14 @@ scrolls with Arrow or Page Up/Page Down. Up/Down and Ctrl-P/Ctrl-N navigate comp
 `/files` downloads the selected chat file without overwriting an existing local file; Delete in the
 file picker removes it from the gateway after confirmation.
 
+`/diff [unstaged|staged|committed]` opens a full-screen diff browser. The left pane lists
+changed files; the right pane shows the selected file with syntax highlighting, old/new line
+numbers, and red/green changes. Tab switches panes, Up/Down or J/K navigate, Page Up/Page Down
+scroll a page, Left/Right scroll long lines without wrapping, and `[`/`]` jump between hunks.
+Click a file to select it, or use the mouse wheel over either pane. Narrow terminals show the
+focused pane only. Esc returns to the chat without changing the draft. Mouse capture stays on
+in this browser; use your terminal's selection modifier for native drag-to-copy.
+
 Sandboxing runs on the gateway host and fails closed when its platform sandbox is unavailable.
 
 ## License

@@ -6,6 +6,7 @@ use ratatui::crossterm::event::MouseEvent;
 use ratatui::crossterm::event::MouseEventKind;
 
 use super::PreviewContent;
+use super::PreviewState;
 use super::TranscriptTone;
 use super::TuiState;
 use super::references::ReferenceToken;
@@ -288,6 +289,10 @@ impl TuiState {
                 .map_or(UiAction::None, UiAction::Submit);
         }
         let preview = self.preview.as_mut().expect("preview checked");
+        if let PreviewContent::Diff(browser) = &mut preview.content {
+            browser.handle_key(key);
+            return UiAction::None;
+        }
         match key.code {
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 preview
@@ -323,6 +328,13 @@ impl TuiState {
     }
 
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent) -> bool {
+        if let Some(PreviewState {
+            content: PreviewContent::Diff(browser),
+            ..
+        }) = self.preview.as_mut()
+        {
+            return browser.handle_mouse(mouse);
+        }
         let viewport = self
             .preview
             .as_mut()

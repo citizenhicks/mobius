@@ -2,6 +2,28 @@ use super::support::*;
 use super::*;
 
 #[test]
+fn diff_browser_keys_do_not_edit_the_composer_and_escape_restores_the_chat() {
+    let mut state = state();
+    let catalog = default_catalog();
+    state.input = "draft stays here".into();
+    state.cursor = state.input.len();
+    state.open_diff_preview("unstaged diff".into(), String::new());
+    for code in [KeyCode::Tab, KeyCode::Down, KeyCode::Char(']')] {
+        assert_eq!(
+            state.handle_key(KeyEvent::new(code, KeyModifiers::NONE), &catalog),
+            UiAction::None
+        );
+    }
+    assert!(matches!(
+        state.preview.as_ref().map(|preview| &preview.content),
+        Some(PreviewContent::Diff(_))
+    ));
+    state.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &catalog);
+    assert!(state.preview.is_none());
+    assert_eq!(state.input, "draft stays here");
+}
+
+#[test]
 fn another_clients_preview_cannot_open_or_replace_the_requested_preview() {
     let mut state = state();
     state.preview_request_id = Some("preview-request".into());
