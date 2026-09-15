@@ -7,6 +7,109 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct DesktopRuntimeTests {
+    @Test(arguments: [true, false])
+    func permissionGrantsRegisterAndRevocationStopsWithoutReenabling(revokeAccessibility: Bool)
+        throws
+    {
+        var permissions = (accessibility: false, screenRecording: false)
+        let runtime = DesktopRuntime { permissions }
+        var messages: [GatewayRequest] = []
+        runtime.connected { messages.append($0) }
+        defer { runtime.disconnected() }
+        runtime.enabled = true
+        runtime.refreshPermissions()
+        #expect(runtime.enabled && messages.isEmpty)
+        permissions.accessibility = true
+        runtime.refreshPermissions()
+        #expect(runtime.hasAccessibility && !runtime.hasPermissions && messages.isEmpty)
+        permissions.accessibility = false
+        runtime.refreshPermissions()
+        #expect(!runtime.enabled && messages.isEmpty)
+        runtime.enabled = true
+        #expect(runtime.message == nil)
+        permissions.accessibility = true
+        permissions.screenRecording = true
+        runtime.refreshPermissions()
+        #expect(messages.count == 1 && !runtime.isRegistered)
+        #expect(messages.last?.body["enabled"] == .bool(true))
+        try runtime.receive(registrationReply("accepted", to: messages[0]))
+        #expect(runtime.isRegistered)
+        runtime.refreshPermissions()
+        #expect(messages.count == 1)
+        try runtime.receive(desktopRequest())
+        runtime.screenshots["screen"] = desktopScreenshot()
+        if revokeAccessibility {
+            permissions.accessibility = false
+        } else {
+            permissions.screenRecording = false
+        }
+        runtime.refreshPermissions()
+        #expect(!runtime.enabled && !runtime.isRegistered && !runtime.isActive)
+        #expect(runtime.screenshots.isEmpty)
+        #expect(messages.count == 2 && messages.last?.body["enabled"] == .bool(false))
+        permissions = (true, true)
+        runtime.refreshPermissions()
+        #expect(!runtime.enabled && messages.count == 2)
+        runtime.enabled = true
+        runtime.stop()
+        runtime.refreshPermissions()
+        #expect(!runtime.enabled && messages.count == 4)
+    }
+
+    @Test func registrationRejectAndStaleRepliesDoNotRepublishOrClaimReadiness() throws {
+        let runtime = DesktopRuntime { (true, true) }
+        var messages: [GatewayRequest] = []
+        runtime.refreshPermissions()
+        runtime.enabled = true
+        runtime.connected { messages.append($0) }
+        defer { runtime.disconnected() }
+        #expect(messages.count == 1)
+        try runtime.receive(registrationReply("rejected", to: messages[0]))
+        runtime.refreshPermissions()
+        #expect(!runtime.enabled && !runtime.isRegistered && messages.count == 1)
+        try runtime.receive(registrationReply("accepted", to: messages[0]))
+        #expect(!runtime.isRegistered)
+        runtime.enabled = true
+        runtime.stop()
+        try runtime.receive(registrationReply("accepted", to: messages[1]))
+        #expect(!runtime.isRegistered)
+        try runtime.receive(registrationReply("rejected", to: messages[2]))
+        runtime.refreshPermissions()
+        #expect(messages.count == 3)
+        runtime.disconnected()
+        runtime.connected { messages.append($0) }
+        runtime.enabled = true
+        #expect(messages.count == 4)
+    }
+
+    @Test func connectedRuntimeMonitorsPermissionsWithoutAnOpenMenu() async throws {
+        var granted = false
+        let runtime = DesktopRuntime { (granted, granted) }
+        var messages: [GatewayRequest] = []
+        runtime.connected { messages.append($0) }
+        defer { runtime.disconnected() }
+        runtime.enabled = true
+        granted = true
+        for _ in 0..<100 where messages.isEmpty {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(runtime.hasPermissions && messages.count == 1)
+        granted = false
+        for _ in 0..<100 where runtime.enabled {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(!runtime.hasPermissions && !runtime.enabled && messages.count == 2)
+    }
+
+    private func registrationReply(_ type: String, to request: GatewayRequest) throws
+        -> GatewayEnvelope
+    {
+        try GatewayRequest(
+            type,
+            ["requestId": try #require(request.body["requestId"]), "message": .string("Rejected")]
+        ).body.decode(GatewayEnvelope.self)
+    }
+
     @Test func textInputPreservesUnicodeAcrossEventLimitsAndEmptyInput() throws {
         #expect(try DesktopRuntime.textChunks("").isEmpty)
         #expect(throws: DesktopError.self) { try DesktopRuntime.textChunks("line\nbreak") }

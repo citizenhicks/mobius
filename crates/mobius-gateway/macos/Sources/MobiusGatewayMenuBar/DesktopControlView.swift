@@ -8,7 +8,7 @@ struct DesktopControlView: View {
     var body: some View {
         Menu("Mac control") {
             Toggle("Allow Mac control", isOn: $runtime.enabled)
-                .disabled(!isConnected || !runtime.hasPermissions)
+                .disabled(!isConnected)
             Divider()
             Button(action: runtime.requestAccessibility) {
                 Label(
@@ -24,7 +24,13 @@ struct DesktopControlView: View {
             .disabled(runtime.hasScreenRecording)
             if runtime.enabled {
                 Divider()
-                Text(runtime.isActive ? "Bot is controlling this Mac" : "Ready for Mac control")
+                if !runtime.hasPermissions {
+                    Text("Grant Accessibility and Screen Recording to allow control.")
+                } else if !runtime.isRegistered {
+                    Text("Registering Mac control…")
+                } else {
+                    Text(runtime.isActive ? "Bot is controlling this Mac" : "Ready for Mac control")
+                }
                 Button("Stop Mac control", role: .destructive, action: runtime.stop)
             }
             if let message = runtime.message {

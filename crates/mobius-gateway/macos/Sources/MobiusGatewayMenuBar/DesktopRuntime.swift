@@ -8,7 +8,9 @@ import ScreenCaptureKit
 final class DesktopRuntime {
     var enabled = false {
         didSet {
-            if !enabled {
+            if enabled {
+                message = nil
+            } else {
                 stopExecution()
                 clearObservations()
                 sessionID = nil
@@ -18,6 +20,7 @@ final class DesktopRuntime {
     }
     private(set) var hasAccessibility = false
     private(set) var hasScreenRecording = false
+    private(set) var isRegistered = false
     var hasPermissions: Bool { hasAccessibility && hasScreenRecording }
     var isActive: Bool { executionID != nil }
     var message: String?
@@ -27,6 +30,10 @@ final class DesktopRuntime {
     private var executionID: String?
     @ObservationIgnored private var sessionID: String?
     @ObservationIgnored private var registrationID: String?
+    @ObservationIgnored private var publishedAvailability = false
+    @ObservationIgnored private var permissionMonitor: Task<Void, Never>?
+    @ObservationIgnored private let readPermissions:
+        () -> (accessibility: Bool, screenRecording: Bool)
     @ObservationIgnored private var sessionObservers: [NSObjectProtocol] = []
     @ObservationIgnored var elements: [String: Element] = [:]
     @ObservationIgnored var screenshots: [String: Screenshot] = [:]
@@ -47,7 +54,12 @@ final class DesktopRuntime {
         let captured: ContinuousClock.Instant
     }
 
-    init() {
+    init(
+        readPermissions: @escaping () -> (accessibility: Bool, screenRecording: Bool) = {
+            (AXIsProcessTrusted(), CGPreflightScreenCaptureAccess())
+        }
+    ) {
+        self.readPermissions = readPermissions
         let center = NSWorkspace.shared.notificationCenter
         for name in [
             NSWorkspace.sessionDidResignActiveNotification, NSWorkspace.screensDidSleepNotification,
@@ -60,6 +72,7 @@ final class DesktopRuntime {
     }
 
     isolated deinit {
+        permissionMonitor?.cancel()
         for observer in sessionObservers {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
         }
@@ -68,12 +81,23 @@ final class DesktopRuntime {
     func connected(send: @escaping (GatewayRequest) -> Void) {
         self.send = send
         refreshPermissions()
+        permissionMonitor?.cancel()
+        permissionMonitor = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                self?.refreshPermissions()
+            }
+        }
     }
 
     func disconnected() {
+        permissionMonitor?.cancel()
+        permissionMonitor = nil
         send = nil
         enabled = false
         registrationID = nil
+        publishedAvailability = false
+        isRegistered = false
     }
 
     func requestAccessibility() {
@@ -88,9 +112,18 @@ final class DesktopRuntime {
     }
 
     func refreshPermissions() {
-        hasAccessibility = AXIsProcessTrusted()
-        hasScreenRecording = CGPreflightScreenCaptureAccess()
-        if !hasPermissions { enabled = false } else { publishAvailability() }
+        let permissions = readPermissions()
+        let revoked =
+            (hasAccessibility && !permissions.accessibility)
+            || (hasScreenRecording && !permissions.screenRecording)
+        hasAccessibility = permissions.accessibility
+        hasScreenRecording = permissions.screenRecording
+        if revoked {
+            enabled = false
+            message = "Mac control permission was revoked. Grant access and enable control again."
+        } else {
+            publishAvailability()
+        }
     }
 
     func stop() {
@@ -99,14 +132,18 @@ final class DesktopRuntime {
     }
 
     private func publishAvailability() {
-        guard enabled && hasPermissions || registrationID != nil else { return }
+        let available = enabled && hasPermissions
+        guard let send, available != publishedAvailability else { return }
         let requestID = UUID().uuidString
         registrationID = requestID
-        send?(
+        publishedAvailability = available
+        isRegistered = false
+        if available { message = nil }
+        send(
             GatewayRequest(
                 "set_desktop_runtime",
                 [
-                    "requestId": .string(requestID), "enabled": .bool(enabled && hasPermissions),
+                    "requestId": .string(requestID), "enabled": .bool(available),
                 ]))
     }
 
@@ -150,9 +187,13 @@ final class DesktopRuntime {
             }
         case "desktop_control_ended":
             if body["executionId"]?.stringValue == executionID { stopExecution() }
-        case "rejected":
-            if body["requestId"]?.stringValue == registrationID {
+        case "accepted", "rejected":
+            if let registrationID, body["requestId"]?.stringValue == registrationID {
+                self.registrationID = nil
+                isRegistered = envelope.type == "accepted" && publishedAvailability
+                guard envelope.type == "rejected" else { return }
                 message = body["message"]?.stringValue
+                publishedAvailability = false
                 enabled = false
             }
         default: break

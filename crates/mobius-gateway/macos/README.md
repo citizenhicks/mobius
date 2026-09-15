@@ -46,10 +46,14 @@ session. SSH/headless gateways work without the companion; set
 ## Native Mac control
 
 Enable **Computer control** on the Bot; the gateway downloads its pinned runtime
-on first enable. In the menu bar app, grant Accessibility and Screen Recording
-access and turn on **Allow Mac control**. Native control also requires the Bot's
-**Full access** sandbox policy. The switch resets when the app disconnects or the
-desktop session becomes inactive. **Stop** immediately cancels pending local work.
+on first enable. In the menu bar app, turn on **Allow Mac control** and grant
+Accessibility and Screen Recording access. The app checks permissions every second
+while connected, even with its menu closed, and registers when both are granted.
+**Ready for Mac control** appears only after the gateway accepts registration.
+Native control also requires the Bot's **Full access** sandbox policy. Revoking
+either permission, disconnecting, or making the desktop session inactive resets
+the switch and cancels local work. Granting access again does not undo **Stop** or
+revocation; turn the switch back on explicitly.
 
 Bots use the same persistent `computer_control` JavaScript tool for Playwright
 browser actions and the `desktop` API for Mac apps. The latter provides app and
