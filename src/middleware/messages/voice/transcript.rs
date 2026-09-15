@@ -2,7 +2,10 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use serde::{Deserialize, Serialize};
+use tokio::time::Instant;
 
 use crate::backend::checkpoint::{
     Checkpoint, CheckpointStore, EventPage, EventPageRequest, JournalEvent,
@@ -18,9 +21,24 @@ use crate::{Error, Result};
 
 pub(crate) const COMMAND: &str = "voice";
 const STATE_KEY: &str = "messages.voice_session";
+const CURSOR_KEY: &str = "messages.voice_handoff";
 const PAGE_SIZE: usize = 128;
 const MAX_RECORDINGS: usize = 4_096;
 const MAX_PREVIEW_BYTES: usize = 8 * 1024 * 1024;
+const PREVIEW_INTERVAL: Duration = Duration::from_millis(100);
+
+#[derive(Default, Deserialize, Serialize)]
+struct HandoffCursor {
+    sequence: u64,
+    drafts: BTreeMap<String, String>,
+}
+
+/// A frozen discussion snapshot, acknowledged only after its workspace message is committed.
+pub struct VoiceHandoff {
+    /// New speech since the last committed handoff, within the recent-discussion budget.
+    pub text: String,
+    cursor: HandoffCursor,
+}
 
 struct Recording {
     id: String,
@@ -36,6 +54,8 @@ pub struct VoiceTranscript {
     frontend: FrontendEventSink,
     recordings: BTreeMap<String, Recording>,
     visible: bool,
+    cursor: HandoffCursor,
+    preview_deadline: Option<Instant>,
 }
 
 impl VoiceTranscript {
@@ -72,12 +92,20 @@ impl VoiceTranscript {
                 child.session_id
             };
         let visible = has_events(checkpoints.as_ref(), &session_id).await?;
+        let cursor = checkpoints
+            .load_state(&session_id, CURSOR_KEY)
+            .await?
+            .map(serde_json::from_value)
+            .transpose()?
+            .unwrap_or_default();
         Ok(Self {
             checkpoints,
             session_id,
             frontend,
             recordings: BTreeMap::new(),
             visible,
+            cursor,
+            preview_deadline: None,
         })
     }
 
@@ -96,6 +124,98 @@ impl VoiceTranscript {
             .await?
             .into_chronological();
         Ok(super::task_context(&history))
+    }
+
+    /// Freezes only discussion not yet committed to the workspace, retaining draft corrections.
+    /// # Errors
+    ///
+    /// Returns an error if the transcript cannot be read.
+    pub async fn handoff_context(&self) -> Result<VoiceHandoff> {
+        let history = history_page(self.checkpoints.as_ref(), &self.session_id, None)
+            .await?
+            .into_chronological();
+        let mut cursor = HandoffCursor {
+            sequence: self.cursor.sequence,
+            ..HandoffCursor::default()
+        };
+        let mut discussion = Vec::new();
+        for message in super::task_messages(&history) {
+            if !message.complete
+                && let Some(id) = message.id
+            {
+                cursor.drafts.insert(id.into(), message.text.clone());
+            }
+            if message.sequence <= self.cursor.sequence {
+                continue;
+            }
+            cursor.sequence = cursor.sequence.max(message.sequence);
+            let previous = message.id.and_then(|id| self.cursor.drafts.get(id));
+            let text = match previous {
+                Some(previous) => match message.text.strip_prefix(previous) {
+                    Some("") => String::new(),
+                    Some(rest) => format!("{} (continued): {rest}", message.speaker),
+                    None => format!(
+                        "Correction to earlier voice speech:\n{}: {}",
+                        message.speaker,
+                        if message.text.is_empty() {
+                            "[speech discarded]"
+                        } else {
+                            &message.text
+                        }
+                    ),
+                },
+                None if message.text.is_empty() => String::new(),
+                None => format!("{}: {}", message.speaker, message.text),
+            };
+            if !text.is_empty() {
+                discussion.push(text);
+            }
+        }
+        Ok(VoiceHandoff {
+            text: super::tail(&discussion.join("\n\n"), 24 * 1024).into(),
+            cursor,
+        })
+    }
+
+    /// Advances the durable cursor after the workspace commits this snapshot's message.
+    /// # Errors
+    ///
+    /// Returns an error if the cursor cannot be saved.
+    pub async fn acknowledge(&mut self, handoff: VoiceHandoff) -> Result<()> {
+        if handoff.cursor.sequence <= self.cursor.sequence {
+            return Ok(());
+        }
+        // ponytail: a disconnect between message commit and cursor save may resend context.
+        // Store them atomically only if delivery must become exactly-once.
+        self.checkpoints
+            .save_state(
+                &self.session_id,
+                CURSOR_KEY,
+                &serde_json::to_value(&handoff.cursor)?,
+            )
+            .await?;
+        self.cursor = handoff.cursor;
+        Ok(())
+    }
+
+    /// Waits for a coalesced live preview; idle calls do not wake periodically.
+    pub async fn wait_for_preview(&self) {
+        match self.preview_deadline {
+            Some(deadline) => tokio::time::sleep_until(deadline).await,
+            None => std::future::pending().await,
+        }
+    }
+
+    /// Publishes all pending speech in one preview without changing transcript durability.
+    /// # Errors
+    ///
+    /// Returns an error if the preview cannot be read or delivered.
+    pub async fn flush_preview(&mut self) -> Result<()> {
+        if self.preview_deadline.is_some() {
+            (self.frontend)(preview(self.checkpoints.as_ref(), &self.session_id, None).await?)?;
+            self.preview_deadline = None;
+        }
+        Ok(())
     }
 
     /// Journals normalized speech with a fresh canonical identity for this provider call.
@@ -168,7 +288,12 @@ impl VoiceTranscript {
             (self.frontend)(widget())?;
             self.visible = true;
         }
-        (self.frontend)(preview(self.checkpoints.as_ref(), &self.session_id, None).await?)
+        self.preview_deadline
+            .get_or_insert_with(|| Instant::now() + PREVIEW_INTERVAL);
+        if complete {
+            self.flush_preview().await?;
+        }
+        Ok(())
     }
 
     /// Keeps speech already received when the call stops before its provider final event.
@@ -185,7 +310,7 @@ impl VoiceTranscript {
         for (input_id, role, text) in pending {
             self.record(&input_id, role, &text, true).await?;
         }
-        Ok(())
+        self.flush_preview().await
     }
 }
 

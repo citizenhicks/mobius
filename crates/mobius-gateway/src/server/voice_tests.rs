@@ -30,7 +30,7 @@ async fn startup_cancellation_wins_before_voice_result_is_reported() {
 }
 
 #[tokio::test]
-async fn voice_delegation_runs_one_bot_model_call_and_keeps_its_transcript() {
+async fn voice_delegation_consumes_committed_speech_without_echoing_or_replaying_it() {
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
@@ -67,13 +67,22 @@ async fn voice_delegation_runs_one_bot_model_call_and_keeps_its_transcript() {
                 bytes.extend_from_slice(&chunk[..n]);
             }
             let request: serde_json::Value = serde_json::from_slice(&bytes[header_end..]).unwrap();
-            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            assert!(
-                request["input"]
-                    .to_string()
-                    .contains("Use blue; preserve toolbar.")
-            );
-            assert!(request["input"].to_string().contains("Yes, do it."));
+            let index = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let input = request["input"].to_string();
+            assert_eq!(input.matches("Use blue; preserve toolbar.").count(), 1);
+            assert_eq!(input.matches("Yes, do it.").count(), 1);
+            if index == 1 {
+                assert_eq!(input.matches("Also add keyboard shortcuts.").count(), 1);
+                let latest = request["input"]
+                    .as_array()
+                    .unwrap()
+                    .last()
+                    .unwrap()
+                    .to_string();
+                assert!(latest.contains("Also add keyboard shortcuts."), "{latest}");
+                assert!(!latest.contains("Use blue; preserve toolbar."), "{latest}");
+                assert!(!latest.contains("Yes, do it."), "{latest}");
+            }
             let output = serde_json::json!({"id":"message-1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Done."}]});
             let body = [
                 serde_json::json!({"type":"response.output_item.done","output_index":0,"item":output}),
@@ -187,13 +196,54 @@ async fn voice_delegation_runs_one_bot_model_call_and_keeps_its_transcript() {
         .unwrap();
     }
     let (stop, stopped) = oneshot::channel();
-    let check_reply = async move {
+    let check_reply = async {
+        let mut replies = 0;
         loop {
-            if let Some(RealtimeVoiceCommand::Reply { handoff_id, text }) = received.recv().await {
-                assert_eq!(handoff_id, "h1");
-                assert!(text.contains("Done."), "{text}");
-                stop.send(()).unwrap();
-                break;
+            match received.recv().await.expect("voice command") {
+                RealtimeVoiceCommand::Context { text } => {
+                    assert!(!text.contains("Use blue; preserve toolbar."), "{text}");
+                    assert!(!text.contains("Yes, do it."), "{text}");
+                    assert!(!text.contains("Also add keyboard shortcuts."), "{text}");
+                    assert!(!text.contains("Recent voice discussion"), "{text}");
+                }
+                RealtimeVoiceCommand::Reply { handoff_id, text } => {
+                    replies += 1;
+                    assert_eq!(handoff_id, format!("h{replies}"));
+                    assert!(text.contains("Done."), "{text}");
+                    let persisted = VoiceTranscript::open(
+                        Arc::clone(&checkpoints),
+                        host.session_id(),
+                        Arc::clone(&model.frontend),
+                    )
+                    .await
+                    .unwrap();
+                    assert!(persisted.handoff_context().await.unwrap().text.is_empty());
+                    if replies == 2 {
+                        stop.send(()).unwrap();
+                        break;
+                    }
+                    send.send(Ok(RealtimeVoiceEvent::Handoff {
+                        id: "h1".into(),
+                        text: None,
+                    }))
+                    .await
+                    .unwrap();
+                    send.send(Ok(RealtimeVoiceEvent::Transcript {
+                        id: "follow-up".into(),
+                        role: ConversationRole::User,
+                        text: "Also add keyboard shortcuts.".into(),
+                        complete: true,
+                    }))
+                    .await
+                    .unwrap();
+                    send.send(Ok(RealtimeVoiceEvent::Handoff {
+                        id: "h2".into(),
+                        text: None,
+                    }))
+                    .await
+                    .unwrap();
+                }
+                RealtimeVoiceCommand::Close => panic!("closed before both handoffs completed"),
             }
         }
         assert!(matches!(
@@ -218,7 +268,8 @@ async fn voice_delegation_runs_one_bot_model_call_and_keeps_its_transcript() {
     })
     .await
     .unwrap();
-    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert!(transcript.handoff_context().await.unwrap().text.is_empty());
     let history = checkpoints
         .event_page(
             &voice_id,

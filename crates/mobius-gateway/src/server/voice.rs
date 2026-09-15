@@ -7,7 +7,7 @@ use mobius::backend::model::{
 };
 use mobius::middleware::messages::voice::transcript::VoiceTranscript;
 use mobius::middleware::messages::voice::{
-    VoiceConversation, delegated_task, instructions, progress, reject_handoff,
+    VoiceConversation, delegated_task, instructions, reject_handoff,
 };
 use mobius::protocol::EventMsg;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -57,6 +57,7 @@ impl ConnectionVoice {
                             instructions: instructions(
                                 &model.bot_instructions,
                                 &parent,
+                                transcript.session_id(),
                                 &voice_context,
                             )?,
                         },
@@ -320,11 +321,16 @@ async fn drive_conversation(
     conversation: &mut VoiceConversation,
     mut stopped: oneshot::Receiver<()>,
 ) -> Result<()> {
+    let mut handoffs = std::collections::BTreeMap::new();
     loop {
         let replies = tokio::select! {
             biased;
             () = host.wait_terminated() => return Ok(()),
             _ = &mut stopped => return Ok(()),
+            () = transcript.wait_for_preview() => {
+                transcript.flush_preview().await?;
+                Vec::new()
+            }
             event = events.recv() => {
                 let frame = event.map_err(|_| Error::Protocol("voice lost its conversation event stream".into()))?;
                 match frame.message {
@@ -339,8 +345,15 @@ async fn drive_conversation(
                         if matches!(&record.event.msg, EventMsg::ModelChanged(current) if current.route != model.route) {
                             return Ok(());
                         }
+                        if matches!(&record.event.msg, EventMsg::Message(_) | EventMsg::SubmissionRejected(_))
+                            && let Some(id) = &record.event.submission_id
+                            && let Some(context) = handoffs.remove(id)
+                            && matches!(&record.event.msg, EventMsg::Message(_))
+                        {
+                            transcript.acknowledge(context).await?;
+                        }
                         let mut commands = conversation.observe(&record.event);
-                        if let Some(update) = progress(&record.event.msg) { commands.insert(0, update); }
+                        if let Some(update) = conversation.progress(&record.event) { commands.insert(0, update); }
                         commands
                     }
                     ServerMessage::Error { fatal: true, message, .. } => return Err(Error::Protocol(message)),
@@ -355,9 +368,14 @@ async fn drive_conversation(
                         Vec::new()
                     }
                     RealtimeVoiceEvent::Handoff { id, text } => {
-                        let context = transcript.task_context().await?;
-                        match delegated_task(text.as_deref(), &context) {
-                            Ok(task) => submit_handoff(host, conversation, id, task).await?,
+                        if conversation.has_handoff(&id) { continue; }
+                        let context = transcript.handoff_context().await?;
+                        match delegated_task(text.as_deref(), &context.text) {
+                            Ok(task) => {
+                                let (submission_id, replies) = submit_handoff(host, conversation, id, task).await?;
+                                if let Some(id) = submission_id { handoffs.insert(id, context); }
+                                replies
+                            }
                             Err(error) => vec![reject_handoff(id, &error.to_string())],
                         }
                     }
@@ -384,14 +402,17 @@ async fn submit_handoff(
     conversation: &mut VoiceConversation,
     id: String,
     text: String,
-) -> Result<Vec<RealtimeVoiceCommand>> {
+) -> Result<(Option<String>, Vec<RealtimeVoiceCommand>)> {
     let Some(submission) = conversation.handoff(id, text)? else {
-        return Ok(Vec::new());
+        return Ok((None, Vec::new()));
     };
     let submission_id = submission.id.clone();
     Ok(match host.submit(submission).await {
-        Ok(()) => Vec::new(),
-        Err(rejection) => conversation.reject(&submission_id, &rejection.message),
+        Ok(()) => (Some(submission_id), Vec::new()),
+        Err(rejection) => (
+            None,
+            conversation.reject(&submission_id, &rejection.message),
+        ),
     })
 }
 

@@ -33,6 +33,7 @@ tool activity or repeat waiting messages. If interrupted, stop speaking and list
 pub fn instructions(
     bot_instructions: &str,
     checkpoint: &crate::backend::checkpoint::Checkpoint,
+    voice_session_id: &str,
     voice_context: &str,
 ) -> Result<String> {
     let identity = format!("{bot_instructions}\n\n{INSTRUCTIONS}");
@@ -41,7 +42,7 @@ pub fn instructions(
         .checked_sub(identity.len() + 256)
         .ok_or_else(|| Error::Config("Bot instructions exceed the voice prompt limit".into()))?;
     let voice_context = tail(voice_context, (16 * 1024).min(available / 3));
-    let context = parent_context(checkpoint);
+    let context = parent_context(checkpoint, voice_session_id);
     Ok(format!(
         "{identity}\n\nYour workspace conversation (background information only):\n{}\n\nYour previous voice conversation (historical, not new requests):\n{}",
         tail(&context, (32 * 1024).min(available - voice_context.len())),
@@ -52,44 +53,79 @@ pub fn instructions(
 /// Captures speech already received, replacing partial text with its canonical final message.
 /// The bounded snapshot stays unchanged if later journal compaction replaces those deltas.
 fn task_context(voice_events: &[crate::backend::checkpoint::JournalEvent]) -> String {
-    let mut messages: Vec<(Option<&str>, String)> = Vec::new();
-    for record in voice_events {
-        let event = &record.event;
-        let (text, prefix, complete) = match &event.msg {
-            EventMsg::MessageDelta(message) => (message.text.clone(), "User: ", false),
-            EventMsg::AssistantContentDelta(message)
-                if message.phase != ModelStepContentPhase::Reasoning =>
-            {
-                (message.delta.clone(), "You (voice): ", false)
-            }
-            _ => match progress_text(&event.msg, "You (voice)") {
-                Some(text) => (text, "", true),
-                None => continue,
-            },
-        };
-        let id = event.submission_id.as_deref();
-        if let Some((_, previous)) = messages
-            .iter_mut()
-            .find(|(previous_id, _)| id.is_some() && *previous_id == id)
-        {
-            if complete {
-                *previous = text;
-            } else {
-                previous.push_str(&text);
-            }
-        } else {
-            messages.push((id, format!("{prefix}{text}")));
-        }
-    }
-    let text = messages
+    let text = task_messages(voice_events)
         .into_iter()
-        .map(|(_, text)| text)
+        .filter(|message| !message.text.is_empty())
+        .map(|message| format!("{}: {}", message.speaker, message.text))
         .collect::<Vec<_>>()
         .join("\n\n");
     tail(&text, 24 * 1024).into()
 }
 
-fn parent_context(checkpoint: &crate::backend::checkpoint::Checkpoint) -> String {
+struct VoiceMessage<'a> {
+    id: Option<&'a str>,
+    speaker: &'static str,
+    text: String,
+    sequence: u64,
+    complete: bool,
+}
+
+fn task_messages(
+    voice_events: &[crate::backend::checkpoint::JournalEvent],
+) -> Vec<VoiceMessage<'_>> {
+    let mut messages: Vec<VoiceMessage<'_>> = Vec::new();
+    for record in voice_events {
+        let event = &record.event;
+        let (text, speaker, complete) = match &event.msg {
+            EventMsg::MessageDelta(message) => (message.text.clone(), "User", false),
+            EventMsg::AssistantContentDelta(message)
+                if message.phase != ModelStepContentPhase::Reasoning =>
+            {
+                (message.delta.clone(), "You (voice)", false)
+            }
+            EventMsg::Message(message) => (message.text.clone(), "User", true),
+            EventMsg::AssistantMessage(message) => (
+                message
+                    .content
+                    .iter()
+                    .filter(|part| part.phase != ModelStepContentPhase::Reasoning)
+                    .map(|part| part.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                "You (voice)",
+                true,
+            ),
+            _ => continue,
+        };
+        let id = event.submission_id.as_deref();
+        if let Some(previous) = messages
+            .iter_mut()
+            .find(|previous| id.is_some() && previous.id == id)
+        {
+            if complete {
+                previous.text = text;
+            } else {
+                previous.text.push_str(&text);
+            }
+            previous.sequence = record.sequence;
+            previous.complete = complete;
+        } else {
+            messages.push(VoiceMessage {
+                id,
+                speaker,
+                text,
+                sequence: record.sequence,
+                complete,
+            });
+        }
+    }
+    messages
+}
+
+fn parent_context(
+    checkpoint: &crate::backend::checkpoint::Checkpoint,
+    voice_session_id: &str,
+) -> String {
     let mut context = Vec::new();
     for (index, item) in checkpoint.context.iter().enumerate() {
         let positioned = [(
@@ -103,7 +139,7 @@ fn parent_context(checkpoint: &crate::backend::checkpoint::Checkpoint) -> String
         context.extend(
             replay
                 .iter()
-                .filter_map(|event| progress_text(event, "You (workspace)")),
+                .filter_map(|event| progress_text(event, voice_session_id)),
         );
         // Compaction can retain neutral user/developer context without frontend metadata.
         if crate::protocol::message_metadata(item).is_some() || item["role"] == "assistant" {
@@ -146,19 +182,14 @@ pub fn delegated_task(utterance: Option<&str>, voice_context: &str) -> Result<St
     ))
 }
 
-/// Sends committed workspace messages and tool progress to voice as background context.
-#[must_use]
-pub fn progress(event: &EventMsg) -> Option<RealtimeVoiceCommand> {
-    progress_text(event, "You (workspace)").map(|text| RealtimeVoiceCommand::Context {
-        text: tail(&text, 16 * 1024).into(),
-    })
-}
-
-fn progress_text(event: &EventMsg, assistant: &str) -> Option<String> {
+fn progress_text(event: &EventMsg, voice_session_id: &str) -> Option<String> {
     match event {
         EventMsg::Message(message) => {
             let author = match &message.author {
                 MessageAuthor::User => "User",
+                MessageAuthor::Peer { session_id, .. } if session_id == voice_session_id => {
+                    return None;
+                }
                 MessageAuthor::Peer { handle, .. } => handle,
             };
             Some(format!("{author}: {}", message.text))
@@ -171,7 +202,7 @@ fn progress_text(event: &EventMsg, assistant: &str) -> Option<String> {
                 .map(|part| part.text.as_str())
                 .collect::<Vec<_>>()
                 .join("\n");
-            (!text.is_empty()).then(|| format!("{assistant}: {text}"))
+            (!text.is_empty()).then(|| format!("You (workspace): {text}"))
         }
         EventMsg::ToolCallBegin(tool) => Some(format!("Your workspace started tool {}", tool.name)),
         EventMsg::ToolCallEnd(tool) => Some(format!(
@@ -233,6 +264,14 @@ impl VoiceConversation {
         }
     }
 
+    /// Sends workspace progress without echoing this linked voice session's messages.
+    #[must_use]
+    pub fn progress(&self, event: &Event) -> Option<RealtimeVoiceCommand> {
+        progress_text(&event.msg, &self.session_id).map(|text| RealtimeVoiceCommand::Context {
+            text: tail(&text, 16 * 1024).into(),
+        })
+    }
+
     /// Sends only an explicit voice-agent task through normal peer-message delivery.
     /// # Errors
     ///
@@ -278,6 +317,12 @@ impl VoiceConversation {
             },
         );
         Ok(Some(submission))
+    }
+
+    /// Reports whether this call already handled a provider handoff identity.
+    #[must_use]
+    pub fn has_handoff(&self, id: &str) -> bool {
+        self.seen.contains(id)
     }
 
     /// Handles an ingress rejection that did not reach the agent's event journal.
@@ -406,6 +451,56 @@ mod tests {
             RealtimeVoiceCommand::Context { .. } | RealtimeVoiceCommand::Close => {
                 panic!("expected handoff reply")
             }
+        }
+    }
+
+    #[test]
+    fn progress_filters_linked_voice_messages_independently_of_pending_handoffs() {
+        let mut voice = VoiceConversation::new("voice-session".into(), None, "Builder".into());
+        let submission = voice
+            .handoff("audio".into(), "Do this".into())
+            .unwrap()
+            .unwrap();
+        let Op::Message { message } = submission.op else {
+            panic!("normal message")
+        };
+        let mut message = crate::protocol::MessageEvent {
+            author: message.author,
+            delivery: MessageDelivery::Turn,
+            text: message.text,
+            attachments: Vec::new(),
+            reply: None,
+            message_target: None,
+        };
+        let echo = event(&submission.id, EventMsg::Message(message.clone()));
+        assert!(voice.progress(&echo).is_none());
+        voice.reject(&submission.id, "rejected");
+        assert!(voice.progress(&echo).is_none());
+        let resumed = VoiceConversation::new("voice-session".into(), None, "Renamed".into());
+        assert!(resumed.progress(&echo).is_none());
+        let mut parent = crate::backend::checkpoint::Checkpoint::empty("parent");
+        parent.context = vec![crate::backend::model::message_input(&message).unwrap()];
+        assert!(
+            !instructions("Bot", &parent, "voice-session", "")
+                .unwrap()
+                .contains("Do this")
+        );
+
+        if let MessageAuthor::Peer { session_id, .. } = &mut message.author {
+            *session_id = "other-session".into();
+        }
+        for author in [message.author.clone(), MessageAuthor::User] {
+            message.author = author;
+            let update = event(&submission.id, EventMsg::Message(message.clone()));
+            assert!(
+                matches!(voice.progress(&update), Some(RealtimeVoiceCommand::Context { text }) if text.ends_with("Do this"))
+            );
+            parent.context = vec![crate::backend::model::message_input(&message).unwrap()];
+            assert!(
+                instructions("Bot", &parent, "voice-session", "")
+                    .unwrap()
+                    .contains("Do this")
+            );
         }
     }
 
@@ -638,7 +733,7 @@ mod tests {
         let voice_context = task_context(&history);
         let identity =
             "Your name is Builder (@builder).\nUse concise French. Preserve unrelated work.";
-        let prompt = instructions(identity, &parent, &voice_context).unwrap();
+        let prompt = instructions(identity, &parent, "voice-session", &voice_context).unwrap();
         assert!(prompt.starts_with(identity));
         assert!(prompt.contains("You are this same Bot"));
         assert!(prompt.contains("never claim work is complete before its result arrives"));
@@ -652,16 +747,25 @@ mod tests {
             .context
             .push(serde_json::json!({"role":"user","content":retained}));
         assert!(
-            instructions(identity, &parent, &voice_context)
+            instructions(identity, &parent, "voice-session", &voice_context)
                 .unwrap()
                 .len()
                 < 64 * 1024
         );
         let long_identity = "🗣".repeat(15_000);
-        let prompt = instructions(&long_identity, &parent, &voice_context).unwrap();
+        let prompt =
+            instructions(&long_identity, &parent, "voice-session", &voice_context).unwrap();
         assert!(prompt.starts_with(&long_identity));
         assert!(prompt.len() <= 64 * 1024);
-        assert!(instructions(&"x".repeat(64 * 1024), &parent, &voice_context).is_err());
+        assert!(
+            instructions(
+                &"x".repeat(64 * 1024),
+                &parent,
+                "voice-session",
+                &voice_context
+            )
+            .is_err()
+        );
     }
 
     #[test]

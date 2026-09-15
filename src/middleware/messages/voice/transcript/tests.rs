@@ -7,6 +7,225 @@ use crate::middleware::messages::Messages;
 use crate::middleware::{ActiveCommandContext, MessageQueue, Middleware, SubmissionResult};
 
 #[tokio::test]
+async fn handoff_cursor_advances_only_on_acknowledgement_and_survives_reopen() {
+    let directory = tempfile::tempdir().unwrap();
+    let checkpoints: Arc<dyn CheckpointStore> =
+        Arc::new(SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3")).unwrap());
+    let mut parent = Checkpoint::empty("parent");
+    parent.session_context.owner_id = "bot".into();
+    checkpoints.save(&parent, &[], None).await.unwrap();
+    let sink: FrontendEventSink = Arc::new(|_| Ok(()));
+    let mut voice = VoiceTranscript::open(Arc::clone(&checkpoints), "parent", Arc::clone(&sink))
+        .await
+        .unwrap();
+    voice
+        .record(
+            "plan",
+            ConversationRole::Assistant,
+            "Use blue; preserve the toolbar.",
+            true,
+        )
+        .await
+        .unwrap();
+    voice
+        .record("request", ConversationRole::User, "Do that.", true)
+        .await
+        .unwrap();
+    let first = voice.handoff_context().await.unwrap();
+    assert!(first.text.contains("Use blue; preserve the toolbar."));
+    assert!(first.text.contains("Do that."));
+    // An unsubmitted or rejected snapshot must not consume any discussion.
+    let retry = voice.handoff_context().await.unwrap();
+    assert_eq!(retry.text, first.text);
+    voice
+        .record(
+            "later",
+            ConversationRole::User,
+            "Also use large text.",
+            true,
+        )
+        .await
+        .unwrap();
+    voice.acknowledge(first).await.unwrap();
+    let second = voice.handoff_context().await.unwrap();
+    assert_eq!(second.text, "User: Also use large text.");
+    voice.acknowledge(second).await.unwrap();
+    voice.acknowledge(retry).await.unwrap();
+    drop(voice);
+    let voice = VoiceTranscript::open(checkpoints, "parent", sink)
+        .await
+        .unwrap();
+    assert!(voice.handoff_context().await.unwrap().text.is_empty());
+    assert!(
+        voice
+            .task_context()
+            .await
+            .unwrap()
+            .contains("preserve the toolbar")
+    );
+}
+
+#[tokio::test]
+async fn handoff_cursor_sends_only_draft_continuations_and_preserves_final_corrections() {
+    let directory = tempfile::tempdir().unwrap();
+    let checkpoints: Arc<dyn CheckpointStore> =
+        Arc::new(SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3")).unwrap());
+    let mut parent = Checkpoint::empty("parent");
+    parent.session_context.owner_id = "bot".into();
+    checkpoints.save(&parent, &[], None).await.unwrap();
+    let mut voice = VoiceTranscript::open(checkpoints, "parent", Arc::new(|_| Ok(())))
+        .await
+        .unwrap();
+    voice
+        .record("user", ConversationRole::User, "Use blue 🗣", false)
+        .await
+        .unwrap();
+    voice
+        .record(
+            "assistant",
+            ConversationRole::Assistant,
+            "Keep the toolbar",
+            false,
+        )
+        .await
+        .unwrap();
+    let first = voice.handoff_context().await.unwrap();
+    voice.acknowledge(first).await.unwrap();
+    voice
+        .record("user", ConversationRole::User, " and white", false)
+        .await
+        .unwrap();
+    let second = voice.handoff_context().await.unwrap();
+    assert_eq!(second.text, "User (continued):  and white");
+    // Final snapshots replace journal deltas after the frozen handoff was prepared.
+    voice
+        .record("user", ConversationRole::User, "Use blue 🗣 and white", true)
+        .await
+        .unwrap();
+    voice
+        .record(
+            "assistant",
+            ConversationRole::Assistant,
+            "Keep the toolbar actions",
+            true,
+        )
+        .await
+        .unwrap();
+    voice.acknowledge(second).await.unwrap();
+    let third = voice.handoff_context().await.unwrap();
+    assert_eq!(third.text, "You (voice) (continued):  actions");
+    voice.acknowledge(third).await.unwrap();
+    assert!(voice.handoff_context().await.unwrap().text.is_empty());
+    voice
+        .record("correction", ConversationRole::User, "Use red", false)
+        .await
+        .unwrap();
+    let draft = voice.handoff_context().await.unwrap();
+    voice.acknowledge(draft).await.unwrap();
+    voice
+        .record("correction", ConversationRole::User, "Use green", true)
+        .await
+        .unwrap();
+    assert_eq!(
+        voice.handoff_context().await.unwrap().text,
+        "Correction to earlier voice speech:\nUser: Use green"
+    );
+    let corrected = voice.handoff_context().await.unwrap();
+    voice.acknowledge(corrected).await.unwrap();
+    for (id, role) in [
+        ("noise", ConversationRole::User),
+        ("echo", ConversationRole::Assistant),
+    ] {
+        voice
+            .record(id, role, "discard this draft", false)
+            .await
+            .unwrap();
+        let draft = voice.handoff_context().await.unwrap();
+        voice.acknowledge(draft).await.unwrap();
+        voice.record(id, role, "", true).await.unwrap();
+        let cleared = voice.handoff_context().await.unwrap();
+        assert!(cleared.text.contains("[speech discarded]"));
+        assert!(!cleared.text.contains("discard this draft"));
+        voice.acknowledge(cleared).await.unwrap();
+    }
+    assert!(voice.cursor.drafts.is_empty());
+}
+
+#[tokio::test]
+async fn live_previews_coalesce_and_flush_on_deadline_final_and_close() {
+    let directory = tempfile::tempdir().unwrap();
+    let checkpoints: Arc<dyn CheckpointStore> =
+        Arc::new(SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3")).unwrap());
+    let mut parent = Checkpoint::empty("parent");
+    parent.session_context.owner_id = "bot".into();
+    checkpoints.save(&parent, &[], None).await.unwrap();
+    let updates = Arc::new(Mutex::new(Vec::new()));
+    let received = Arc::clone(&updates);
+    let sink: FrontendEventSink = Arc::new(move |event| {
+        if matches!(event, FrontendEvent::Preview { .. }) {
+            received.lock().unwrap().push(event);
+        }
+        Ok(())
+    });
+    let mut voice = VoiceTranscript::open(checkpoints, "parent", sink)
+        .await
+        .unwrap();
+    voice
+        .record("user", ConversationRole::User, "one", false)
+        .await
+        .unwrap();
+    let deadline = voice.preview_deadline;
+    for _ in 0..20 {
+        voice
+            .record("user", ConversationRole::User, " word", false)
+            .await
+            .unwrap();
+    }
+    assert_eq!(voice.preview_deadline, deadline);
+    assert!(updates.lock().unwrap().is_empty());
+    // The trailing update must arrive even when speech stops without a final event.
+    voice.wait_for_preview().await;
+    voice.flush_preview().await.unwrap();
+    assert_eq!(updates.lock().unwrap().len(), 1);
+    assert!(voice.preview_deadline.is_none());
+    voice.flush_preview().await.unwrap();
+    assert_eq!(updates.lock().unwrap().len(), 1);
+    voice
+        .record(
+            "user",
+            ConversationRole::User,
+            "Final corrected words",
+            true,
+        )
+        .await
+        .unwrap();
+    assert_eq!(updates.lock().unwrap().len(), 2);
+    voice
+        .record(
+            "assistant",
+            ConversationRole::Assistant,
+            "Unfinished reply",
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(updates.lock().unwrap().len(), 2);
+    voice.finish().await.unwrap();
+    let updates = updates.lock().unwrap();
+    assert_eq!(updates.len(), 3);
+    let FrontendEvent::Preview { events, .. } = updates.last().unwrap() else {
+        panic!("preview")
+    };
+    assert_eq!(events.len(), 2);
+    assert!(
+        matches!(&events[0].event, EventMsg::Message(message) if message.text == "Final corrected words")
+    );
+    assert!(
+        matches!(&events[1].event, EventMsg::AssistantMessage(message) if message.content[0].text == "Unfinished reply")
+    );
+}
+
+#[tokio::test]
 async fn discarded_speech_stays_cleared_in_history_and_resumed_task_context() {
     let directory = tempfile::tempdir().unwrap();
     let checkpoints: Arc<dyn CheckpointStore> =
