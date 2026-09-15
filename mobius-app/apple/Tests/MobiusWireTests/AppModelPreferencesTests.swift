@@ -1028,6 +1028,30 @@ extension AppModelTests {
         XCTAssertEqual(model.language, .system)
     }
 
+    func testSimplifiedChatUITranslationsFollowSelectedLanguage() throws {
+        let app = try model()
+        for (language, title, hint) in [
+            (
+                AppLanguage.french,
+                "Interface de conversation simplifiée",
+                "Affiche uniquement les boutons Voix et Bot au-dessus du champ de saisie dans chaque conversation."
+            ),
+            (
+                AppLanguage.german,
+                "Vereinfachte Chatoberfläche",
+                "Zeigt in jedem Chat nur die Schaltflächen für Stimme und Bot über dem Eingabefeld an."
+            ),
+        ] {
+            app.language = language
+            XCTAssertEqual(app.localizedString("Simplified chat UI"), title)
+            XCTAssertEqual(
+                app.localizedString(
+                    "Shows only the Voice and Bot pills above the composer in every chat."),
+                hint
+            )
+        }
+    }
+
     func testLightsOutUsesBlackCanvasWithDarkPalette() {
         let dark = MobiusPalette(.dark)
         let lightsOut = MobiusPalette(.light, lightsOut: true)

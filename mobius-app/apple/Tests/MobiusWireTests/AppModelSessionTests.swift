@@ -4,6 +4,18 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testApprovalDecodingPreservesMissingAndGatewayProvidedReasons() throws {
+        let app = try model()
+        let missingReason = app.chat.decodeApproval(.object(["id": .string("approval-1")]))
+        XCTAssertNotNil(missingReason)
+        XCTAssertNil(missingReason?.reason)
+
+        let reason = "Gateway-provided explanation"
+        let providedReason = app.chat.decodeApproval(
+            .object(["id": .string("approval-2"), "reason": .string(reason)]))
+        XCTAssertEqual(providedReason?.reason, reason)
+    }
+
     func testReassigningChatUsesItsIDAndWaitsForConfirmedOwnership() async throws {
         let recorder = GatewayRequestRecorder()
         let app = try model { await recorder.record($0) }

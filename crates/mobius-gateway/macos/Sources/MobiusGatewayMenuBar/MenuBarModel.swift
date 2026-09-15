@@ -192,7 +192,7 @@ final class MenuBarModel {
         voice = RealtimeVoiceSession { [weak self] message in
             guard self?.voiceCall?.requestID == call.requestID else { return }
             self?.stopVoice()
-            self?.message = message
+            self?.message = String(localized: message)
         }
         let voice = voice
         voiceTask = Task { [weak self] in

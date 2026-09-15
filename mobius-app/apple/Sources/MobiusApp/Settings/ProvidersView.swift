@@ -50,7 +50,9 @@ struct ProvidersView: View {
         }
         .sheet(isPresented: $isAdding) { AddProviderSheet() }
         .alert(
-            removing.map { "Remove \($0.label)?" } ?? "Remove provider?",
+            Text(
+                removing.map { LocalizedStringResource("Remove \($0.label)?") }
+                    ?? "Remove provider?"),
             isPresented: Binding(
                 get: { removing != nil },
                 set: { if !$0 { removing = nil } }

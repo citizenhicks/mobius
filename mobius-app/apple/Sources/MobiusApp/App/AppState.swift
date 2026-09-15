@@ -697,7 +697,7 @@ struct ApprovalCall: Identifiable, Equatable {
 struct PendingApproval: Equatable {
     let id: String
     var turnID: String? = nil
-    let reason: String
+    let reason: String?
     let calls: [ApprovalCall]
 }
 

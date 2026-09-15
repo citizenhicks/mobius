@@ -56,14 +56,14 @@ final class RealtimeVoiceSession: NSObject {
     @ObservationIgnored var peer: RTCPeerConnection?
     @ObservationIgnored private var audioTrack: RTCAudioTrack?
     @ObservationIgnored private var dataChannel: RTCDataChannel?
-    @ObservationIgnored private var failure: ((String) -> Void)?
+    @ObservationIgnored private var failure: ((LocalizedStringResource) -> Void)?
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private var audioIsActive = false
     @ObservationIgnored private var meteringTask: Task<Void, Never>?
     @ObservationIgnored private var disconnectedRecoveryTask: Task<Void, Never>?
     @ObservationIgnored private var levelBaseline = 0.0
 
-    init(onFailure: ((String) -> Void)? = nil) {
+    init(onFailure: ((LocalizedStringResource) -> Void)? = nil) {
         failure = onFailure
         super.init()
     }
@@ -220,21 +220,23 @@ final class RealtimeVoiceSession: NSObject {
                 !self.isConnected
             else { return }
             self.disconnectedRecoveryTask = nil
-            self.failure?(String(localized: "The voice connection ended."))
+            self.failure?("The voice connection ended.")
         }
     }
 
-    private enum VoiceError: LocalizedError {
+    enum VoiceError: LocalizedError {
         case microphonePermission
         case connection
 
-        var errorDescription: String? {
+        var localizedDescriptionResource: LocalizedStringResource {
             switch self {
             case .microphonePermission:
-                String(localized: "Allow microphone access in Settings to use voice chat.")
-            case .connection: String(localized: "Voice could not connect. Try again.")
+                "Allow microphone access in Settings to use voice chat."
+            case .connection: "Voice could not connect. Try again."
             }
         }
+
+        var errorDescription: String? { String(localized: localizedDescriptionResource) }
     }
 }
 
@@ -254,7 +256,7 @@ extension RealtimeVoiceSession: RTCPeerConnectionDelegate {
             case .failed, .closed:
                 self.disconnectedRecoveryTask?.cancel()
                 self.disconnectedRecoveryTask = nil
-                self.failure?(String(localized: "The voice connection ended."))
+                self.failure?("The voice connection ended.")
             default:
                 break
             }
@@ -292,7 +294,7 @@ extension RealtimeVoiceSession: RTCPeerConnectionDelegate {
     extension RealtimeVoiceSession: RTCAudioSessionDelegate {
         nonisolated func audioSessionDidBeginInterruption(_ session: RTCAudioSession) {
             Task { @MainActor [weak self] in
-                self?.failure?(String(localized: "Voice was interrupted by another audio session."))
+                self?.failure?("Voice was interrupted by another audio session.")
             }
         }
     }

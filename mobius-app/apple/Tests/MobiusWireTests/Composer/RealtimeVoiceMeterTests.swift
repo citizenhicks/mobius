@@ -55,7 +55,11 @@ final class RealtimeVoiceMeterTests: XCTestCase {
     @MainActor
     func testDisconnectedPeerGetsGraceAndTerminalStatesFailImmediately() async throws {
         var failures = 0
-        let voice = Mobius.RealtimeVoiceSession { _ in failures += 1 }
+        var failureMessage: LocalizedStringResource?
+        let voice = Mobius.RealtimeVoiceSession {
+            failures += 1
+            failureMessage = $0
+        }
         XCTAssertTrue(RTCInitializeSSL())
         let factory = RTCPeerConnectionFactory(encoderFactory: nil, decoderFactory: nil)
         let configuration = RTCConfiguration()
@@ -77,12 +81,33 @@ final class RealtimeVoiceMeterTests: XCTestCase {
         voice.peerConnection(peer, didChange: RTCPeerConnectionState.failed)
         await Task.yield()
         XCTAssertEqual(failures, 1)
+        let message = try XCTUnwrap(failureMessage)
+        XCTAssertEqual(message.key, "The voice connection ended.")
+        for identifier in ["fr", "de"] {
+            XCTAssertNotEqual(message.resolved(locale: Locale(identifier: identifier)), message.key)
+        }
         voice.close()
     }
 }
 
 @MainActor
 extension AppModelTests {
+    func testVoiceErrorsFollowTheSelectedAppLanguage() throws {
+        let app = try model()
+        for language in [AppLanguage.french, .german] {
+            app.language = language
+            for error in [
+                RealtimeVoiceSession.VoiceError.microphonePermission,
+                .connection,
+            ] {
+                let resource = error.localizedDescriptionResource
+                let message = app.chat.localizedErrorDescription(error)
+                XCTAssertEqual(message, resource.resolved(locale: language.locale))
+                XCTAssertNotEqual(message, resource.key)
+            }
+        }
+    }
+
     func testVoiceSurfaceHidesComposerDuringStartupAndPreservesDraft() async throws {
         let model = try model(requestSender: { _ in })
         var config = composition()

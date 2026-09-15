@@ -462,6 +462,10 @@ final class ChatSessionModel {
     }
 
     func localizedErrorDescription(_ error: Error) -> String {
+        if let resource = (error as? RealtimeVoiceSession.VoiceError)?.localizedDescriptionResource
+        {
+            return resource.resolved(locale: locale)
+        }
         if let resource = (error as? GatewayWireError)?.localizedDescriptionResource {
             return resource.resolved(locale: locale)
         }
@@ -510,7 +514,7 @@ final class ChatSessionModel {
         return PendingApproval(
             id: id,
             turnID: value["turnId"]?.stringValue,
-            reason: value["reason"]?.stringValue ?? "möbius needs permission to continue.",
+            reason: value["reason"]?.stringValue,
             calls: calls
         )
     }

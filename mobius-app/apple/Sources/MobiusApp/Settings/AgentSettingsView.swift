@@ -576,7 +576,7 @@ struct AgentSettingsView: View {
                 middleware: feature.id
             )
         else { return nil }
-        return String(localized: "Unavailable while \(label) is selected.")
+        return model.localizedString("Unavailable while \(label) is selected.")
     }
 
     private func integerSetting(

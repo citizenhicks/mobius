@@ -188,9 +188,9 @@ struct NewBotForm: View {
                     .padding(MobiusSpace.m)
                     .background(palette.accentSoft, in: .rect(cornerRadius: 16))
                 VStack(alignment: .leading, spacing: MobiusSpace.xs) {
-                    Text(name.nonEmpty ?? String(localized: "Your Bot"))
+                    Text(name.nonEmpty ?? model.localizedString("Your Bot"))
                         .font(.headline)
-                    Text(description.nonEmpty ?? String(localized: "A purpose of its own"))
+                    Text(description.nonEmpty ?? model.localizedString("A purpose of its own"))
                         .font(MobiusStyle.captionFont)
                         .foregroundStyle(palette.muted)
                         .lineLimit(2)

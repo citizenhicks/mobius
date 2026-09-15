@@ -89,7 +89,7 @@ extension ChatSessionModel {
         let voice = RealtimeVoiceSession { [weak self] message in
             guard self?.realtimeVoiceCall?.requestID == requestID else { return }
             self?.stopRealtimeVoice()
-            self?.showToast(verbatim: message, tone: .error)
+            self?.showToast(message, tone: .error)
         }
         realtimeVoice = voice
         messageSpeaker.stop()

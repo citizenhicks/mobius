@@ -757,7 +757,7 @@ struct SessionCatalogRow: View {
     }
 
     private func accessibilityValue(isUnread: Bool, selection: Bool?) -> Text {
-        let state: String? =
+        let state: LocalizedStringResource? =
             switch session.activity.state {
             case .running: "In progress"
             case .awaitingApproval: "Awaiting approval"
@@ -769,7 +769,8 @@ struct SessionCatalogRow: View {
         return Text(
             verbatim: [
                 selectionState, ownershipDescription, supportingText,
-                session.pinned ? "Pinned" : nil, state,
+                session.pinned ? model.localizedString("Pinned") : nil,
+                state.map { model.localizedString($0) },
             ]
             .compactMap { $0 }
             .joined(separator: ", "))

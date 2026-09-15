@@ -694,6 +694,7 @@ private struct TranscriptRow: View {
 }
 
 private struct MessageMetadata: View {
+    @Environment(\.locale) private var locale
     @Environment(\.mobiusPalette) private var palette
     let delivery: MessageDelivery
 
@@ -735,8 +736,8 @@ private struct MessageMetadata: View {
     }
 
     private var accessibilityLabel: Text {
-        let author = String(localized: "you")
-        let delivery = deliveryLabel.map { String(localized: $0) }
+        let author = LocalizedStringResource("you").resolved(locale: locale)
+        let delivery = deliveryLabel.map { $0.resolved(locale: locale) }
         return Text(verbatim: [delivery, author].compactMap { $0 }.joined(separator: ", "))
     }
 }

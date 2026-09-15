@@ -579,7 +579,9 @@ struct ApprovalView: View {
             )
             .font(MobiusStyle.titleFont)
             .foregroundStyle(palette.warning)
-            Text(verbatim: approval.reason).font(MobiusStyle.bodyFont)
+            (approval.reason.map { Text(verbatim: $0) }
+                ?? Text("möbius needs permission to continue."))
+                .font(MobiusStyle.bodyFont)
             ScrollView([.horizontal, .vertical]) {
                 LazyVStack(alignment: .leading, spacing: MobiusSpace.s) {
                     ForEach(approval.calls) { call in
