@@ -25,7 +25,7 @@ pub(in crate::frontend) async fn run(
     gateway: &mut ReadyPayload,
     preferred_bot_id: Option<&str>,
     protected_bot_id: Option<&str>,
-) -> Result<()> {
+) -> Result<Option<String>> {
     terminal.clear()?;
     let mut state = BotsState::new(gateway, preferred_bot_id, protected_bot_id);
     request_routines(sender, &mut state).await?;
@@ -83,7 +83,10 @@ pub(in crate::frontend) async fn run(
                     };
                     match action {
                         Action::None => {}
-                        Action::Exit => break 'screen Ok(()),
+                        Action::Exit => break 'screen Ok(None),
+                        Action::OpenSession(session_id) => {
+                            break 'screen Ok(Some(session_id));
+                        }
                         Action::Setup { bot_id, mode } => {
                             if let Err(error) = setup::run_bot(
                                 terminal,

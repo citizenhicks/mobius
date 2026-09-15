@@ -161,6 +161,143 @@ fn generic_picker_submits_the_selected_operation() {
 }
 
 #[test]
+fn picker_filters_before_selecting() {
+    let mut state = state();
+    state.handle_agent_event(
+        EventMsg::Frontend(FrontendEvent::Picker {
+            title: "Resume chat".into(),
+            options: ["alpha", "beta"]
+                .into_iter()
+                .map(|session_id| mobius::protocol::FrontendPickerOption {
+                    label: session_id.into(),
+                    description: String::new(),
+                    detail: String::new(),
+                    symbol: None,
+                    shows_detail: false,
+                    op: Op::ResumeSession {
+                        session_id: session_id.into(),
+                    },
+                })
+                .collect(),
+        }),
+        Vec::new(),
+    );
+    let catalog = default_catalog();
+
+    for character in "bet".chars() {
+        state.handle_key(
+            KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE),
+            &catalog,
+        );
+    }
+
+    assert_eq!(
+        state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &catalog),
+        UiAction::Submit(Op::ResumeSession {
+            session_id: "beta".into(),
+        })
+    );
+}
+
+#[test]
+fn background_approval_picker_resumes_the_hidden_chat_directly() {
+    let mut state = state();
+    state.open_background_approvals(
+        &[mobius_gateway::wire::BackgroundApproval {
+            session_id: "hidden".into(),
+            bot_id: "bot-a".into(),
+            turn_id: "turn".into(),
+            request_id: "approval".into(),
+        }],
+        &[],
+    );
+
+    assert_eq!(
+        state.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &default_catalog(),
+        ),
+        UiAction::Resume("hidden".into())
+    );
+}
+
+#[test]
+fn queued_message_action_opens_the_existing_editor() {
+    let mut state = state();
+    state.handle_agent_event(
+        EventMsg::Frontend(FrontendEvent::Widget {
+            capability: "messages".into(),
+            item: FrontendWidget {
+                id: "queued-1".into(),
+                slot: FrontendSlot::TranscriptTail,
+                text: "follow up".into(),
+                tone: FrontendTone::Neutral,
+                symbol: None,
+                icon_only: false,
+                progress: None,
+                content: None,
+                action: Some(Op::CapabilityCommand {
+                    capability: "messages".into(),
+                    command: "edit".into(),
+                    arguments: "queued-1".into(),
+                    input: Some("follow up".into()),
+                    target: None,
+                }),
+            },
+        }),
+        Vec::new(),
+    );
+
+    state.open_queued_messages();
+    assert_eq!(
+        state.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &default_catalog(),
+        ),
+        UiAction::None
+    );
+    assert!(
+        state
+            .capability_overlay
+            .as_ref()
+            .is_some_and(crate::frontend::dashboard::CapabilityOverlay::is_editing)
+    );
+}
+
+#[test]
+fn file_picker_requires_confirmation_before_delete() {
+    let file = mobius::protocol::SessionFileReference {
+        id: "file-1".into(),
+        name: "report.txt".into(),
+        size: 5,
+        media_type: "text/plain".into(),
+    };
+    let mut state = state();
+    state.open_session_files(vec![mobius::protocol::SessionFileRecord {
+        origin: mobius::protocol::SessionFileOrigin::Agent,
+        file: file.clone(),
+    }]);
+
+    assert_eq!(
+        state.handle_key(
+            KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE),
+            &default_catalog(),
+        ),
+        UiAction::ConfirmDeleteFile(file.clone())
+    );
+    state.confirm_delete_file(file);
+    assert_eq!(
+        state.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &default_catalog(),
+        ),
+        UiAction::Gateway(crate::frontend::catalog::GatewayAction::DeleteSessionFile(
+            "file-1".into()
+        ))
+    );
+}
+
+#[test]
 fn bot_picker_creates_the_chat_for_the_selected_bot() {
     let bots = [
         mobius_gateway::wire::BotRecord {

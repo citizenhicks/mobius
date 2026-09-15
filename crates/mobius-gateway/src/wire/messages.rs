@@ -69,6 +69,17 @@ pub enum ClientMessage {
         /// The client kind.
         client_kind: ClientKind,
     },
+    /// Selects the repair pairing case.
+    RepairPairing {
+        /// The code.
+        code: String,
+        /// The digest of the client token being replaced.
+        replacing_token_digest: [u8; 32],
+        /// The client label.
+        client_label: String,
+        /// The client kind.
+        client_kind: ClientKind,
+    },
     /// Selects the authenticate case.
     Authenticate {
         /// The token.

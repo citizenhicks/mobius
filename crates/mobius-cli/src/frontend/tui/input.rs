@@ -35,7 +35,8 @@ use mobius::protocol::MessageAuthor;
 use mobius::protocol::MessageSubmission;
 use mobius::protocol::Op;
 use mobius::protocol::ReviewDecision;
-use mobius_gateway::wire::BotRecord;
+use mobius::protocol::{SessionFileOrigin, SessionFileRecord, SessionFileReference};
+use mobius_gateway::wire::{BackgroundApproval, BotRecord, GitStatus};
 use std::path::PathBuf;
 
 const COLLAPSED_PASTE_BYTES: usize = 200;
@@ -47,7 +48,9 @@ pub(super) enum UiAction {
     None,
     PasteClipboard,
     Submit(Op),
+    Resume(String),
     Gateway(GatewayAction),
+    Download(SessionFileReference),
     GatewaySettings,
     Extensions,
     Bots,
@@ -65,6 +68,13 @@ pub(super) enum UiAction {
         bot_id: String,
         clear: bool,
     },
+    Events,
+    ReassignBot,
+    Branches,
+    ConfirmDelete,
+    ConfirmDeleteFile(SessionFileReference),
+    Queued,
+    LoadEarlierHistory,
 }
 
 impl TuiState {
@@ -81,35 +91,11 @@ impl TuiState {
         if self.picker.is_some() {
             return self.handle_picker_key(key);
         }
-        match key.code {
-            KeyCode::PageUp => {
-                let rows = self.transcript_viewport.page_height();
-                self.transcript_viewport.scroll_up(rows);
-                return UiAction::None;
-            }
-            KeyCode::PageDown => {
-                let rows = self.transcript_viewport.page_height();
-                self.transcript_viewport.scroll_down(rows);
-                return UiAction::None;
-            }
-            _ => {}
+        if let Some(action) = self.handle_transcript_scroll_key(key.code) {
+            return action;
         }
-        if self.approval().is_some()
-            && key.kind == KeyEventKind::Press
-            && matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT)
-            && matches!(
-                key.code,
-                KeyCode::Char('y' | 'Y' | 'a' | 'A' | 'n' | 'N' | 'q' | 'Q')
-            )
-        {
-            let KeyCode::Char(choice) = key.code else {
-                unreachable!();
-            };
-            let id = self.take_approval().expect("approval checked");
-            return UiAction::Submit(Op::ExecApproval {
-                id,
-                decision: approval_decision(&choice.to_string()),
-            });
+        if let Some(action) = self.handle_approval_shortcut(key) {
+            return action;
         }
         if key.kind == KeyEventKind::Press
             && key
@@ -238,6 +224,46 @@ impl TuiState {
         }
     }
 
+    fn handle_approval_shortcut(&mut self, key: KeyEvent) -> Option<UiAction> {
+        let KeyCode::Char(choice) = key.code else {
+            return None;
+        };
+        if self.approval().is_none()
+            || key.kind != KeyEventKind::Press
+            || !matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT)
+            || !matches!(choice, 'y' | 'Y' | 'a' | 'A' | 'n' | 'N' | 'q' | 'Q')
+        {
+            return None;
+        }
+        Some(UiAction::Submit(Op::ExecApproval {
+            id: self.take_approval()?,
+            decision: approval_decision(&choice.to_string()),
+        }))
+    }
+
+    fn handle_transcript_scroll_key(&mut self, key: KeyCode) -> Option<UiAction> {
+        match key {
+            KeyCode::PageUp => {
+                let rows = self.transcript_viewport.page_height();
+                self.transcript_viewport.scroll_up(rows);
+                if self.transcript_viewport.effective_scroll() == 0
+                    && self.next_before_sequence.is_some()
+                    && self.history_request_id.is_none()
+                {
+                    Some(UiAction::LoadEarlierHistory)
+                } else {
+                    Some(UiAction::None)
+                }
+            }
+            KeyCode::PageDown => {
+                let rows = self.transcript_viewport.page_height();
+                self.transcript_viewport.scroll_down(rows);
+                Some(UiAction::None)
+            }
+            _ => None,
+        }
+    }
+
     fn handle_preview_key(&mut self, key: KeyEvent) -> UiAction {
         if matches!(key.code, KeyCode::Esc | KeyCode::Char('q'))
             || (key.modifiers.contains(KeyModifiers::CONTROL)
@@ -317,54 +343,70 @@ impl TuiState {
             return UiAction::None;
         };
         match key.code {
-            KeyCode::Esc => {
+            KeyCode::Esc if picker.query.is_empty() => {
                 self.picker = None;
                 UiAction::None
             }
+            KeyCode::Esc => {
+                picker.query.clear();
+                picker.selected = 0;
+                UiAction::None
+            }
             KeyCode::Up => {
-                if !picker.options.is_empty() {
-                    picker.selected =
-                        (picker.selected + picker.options.len() - 1) % picker.options.len();
+                let count = picker.match_count();
+                if count > 0 {
+                    picker.selected = (picker.selected + count - 1) % count;
                 }
                 UiAction::None
             }
             KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if !picker.options.is_empty() {
-                    picker.selected =
-                        (picker.selected + picker.options.len() - 1) % picker.options.len();
+                let count = picker.match_count();
+                if count > 0 {
+                    picker.selected = (picker.selected + count - 1) % count;
                 }
                 UiAction::None
             }
             KeyCode::Down => {
-                if !picker.options.is_empty() {
-                    picker.selected = (picker.selected + 1) % picker.options.len();
+                let count = picker.match_count();
+                if count > 0 {
+                    picker.selected = (picker.selected + 1) % count;
                 }
                 UiAction::None
             }
             KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if !picker.options.is_empty() {
-                    picker.selected = (picker.selected + 1) % picker.options.len();
+                let count = picker.match_count();
+                if count > 0 {
+                    picker.selected = (picker.selected + 1) % count;
                 }
                 UiAction::None
             }
             KeyCode::Enter => {
-                let action = picker
-                    .options
-                    .get(picker.selected)
-                    .map(|option| option.action.clone());
+                let Some(action) = picker.selected_option().map(|option| option.action.clone())
+                else {
+                    return UiAction::None;
+                };
                 self.picker = None;
-                action.map_or(UiAction::None, |action| match action {
-                    super::PickerAction::Submit(op) => UiAction::Submit(op),
-                    super::PickerAction::CreateSession {
-                        workspace,
-                        bot_id,
-                        clear,
-                    } => UiAction::CreateSession {
-                        workspace,
-                        bot_id,
-                        clear,
-                    },
-                })
+                picker_action(action)
+            }
+            KeyCode::Delete => {
+                let Some(action) = picker
+                    .selected_option()
+                    .and_then(|option| option.secondary.clone())
+                else {
+                    return UiAction::None;
+                };
+                self.picker = None;
+                picker_action(action)
+            }
+            KeyCode::Backspace => {
+                picker.query.pop();
+                picker.selected = 0;
+                UiAction::None
+            }
+            KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                picker.query.push(character);
+                picker.selected = 0;
+                UiAction::None
             }
             _ => UiAction::None,
         }
@@ -397,8 +439,182 @@ impl TuiState {
                         bot_id: bot.id.clone(),
                         clear,
                     },
+                    secondary: None,
                 })
                 .collect(),
+            query: String::new(),
+        });
+    }
+
+    pub(super) fn open_reassign_bot_picker(&mut self, bots: &[BotRecord], current_bot_id: &str) {
+        self.open_gateway_picker(
+            "Reassign Bot",
+            bots.iter().map(|bot| super::PickerOption {
+                label: format!("@{}", terminal_text(&bot.handle)),
+                description: terminal_text(&bot.name),
+                detail: terminal_text(&bot.config.config.provider.model),
+                shows_detail: true,
+                action: super::PickerAction::Gateway(GatewayAction::Reassign(bot.id.clone())),
+                secondary: None,
+            }),
+            bots.iter()
+                .position(|bot| bot.id == current_bot_id)
+                .unwrap_or_default(),
+        );
+    }
+
+    pub(super) fn open_background_approvals(
+        &mut self,
+        approvals: &[BackgroundApproval],
+        bots: &[BotRecord],
+    ) {
+        if approvals.is_empty() {
+            self.push("no background approvals", TranscriptTone::Neutral);
+            return;
+        }
+        self.open_gateway_picker(
+            "Background approvals",
+            approvals.iter().map(|approval| {
+                let handle = bots
+                    .iter()
+                    .find(|bot| bot.id == approval.bot_id)
+                    .map_or(approval.bot_id.as_str(), |bot| bot.handle.as_str());
+                super::PickerOption {
+                    label: format!("@{}", terminal_text(handle)),
+                    description: "approval required".into(),
+                    detail: terminal_text(&approval.request_id),
+                    shows_detail: true,
+                    action: super::PickerAction::Resume(approval.session_id.clone()),
+                    secondary: None,
+                }
+            }),
+            0,
+        );
+    }
+
+    pub(super) fn open_branch_picker(&mut self, git: Option<&GitStatus>) {
+        let Some(git) = git else {
+            self.push(
+                "this workspace is not a Git repository",
+                TranscriptTone::Warning,
+            );
+            return;
+        };
+        self.open_gateway_picker(
+            "Switch branch",
+            git.branches.iter().map(|branch| super::PickerOption {
+                label: terminal_text(branch),
+                description: if branch == &git.current_branch {
+                    "current".into()
+                } else {
+                    String::new()
+                },
+                detail: String::new(),
+                shows_detail: false,
+                action: super::PickerAction::Gateway(GatewayAction::SwitchBranch(branch.clone())),
+                secondary: None,
+            }),
+            git.branches
+                .iter()
+                .position(|branch| branch == &git.current_branch)
+                .unwrap_or_default(),
+        );
+    }
+
+    pub(super) fn open_session_files(&mut self, files: Vec<SessionFileRecord>) {
+        if files.is_empty() {
+            self.push("this chat has no files", TranscriptTone::Neutral);
+            return;
+        }
+        self.open_gateway_picker(
+            "Chat files",
+            files.into_iter().map(|record| {
+                let origin = match record.origin {
+                    SessionFileOrigin::User => "user",
+                    SessionFileOrigin::Agent => "agent",
+                };
+                let file = record.file;
+                super::PickerOption {
+                    label: terminal_text(&file.name),
+                    description: format!("{origin} · {} bytes", file.size),
+                    detail: terminal_text(&file.media_type),
+                    shows_detail: true,
+                    action: super::PickerAction::Download(file.clone()),
+                    secondary: Some(super::PickerAction::ConfirmDeleteFile(file)),
+                }
+            }),
+            0,
+        );
+    }
+
+    pub(super) fn confirm_delete_file(&mut self, file: SessionFileReference) {
+        self.open_gateway_picker(
+            &format!("Delete {}?", terminal_text(&file.name)),
+            [super::PickerOption {
+                label: "Delete permanently".into(),
+                description: "cannot be undone".into(),
+                detail: String::new(),
+                shows_detail: false,
+                action: super::PickerAction::Gateway(GatewayAction::DeleteSessionFile(file.id)),
+                secondary: None,
+            }],
+            0,
+        );
+    }
+
+    pub(super) fn confirm_delete_current_session(&mut self) {
+        self.open_gateway_picker(
+            "Delete this chat?",
+            [super::PickerOption {
+                label: "Delete permanently".into(),
+                description: "cannot be undone".into(),
+                detail: String::new(),
+                shows_detail: false,
+                action: super::PickerAction::Gateway(GatewayAction::DeleteCurrent),
+                secondary: None,
+            }],
+            0,
+        );
+    }
+
+    pub(super) fn open_queued_messages(&mut self) {
+        let widgets = self
+            .widgets
+            .iter()
+            .filter(|(_, widget)| {
+                widget.slot == FrontendSlot::TranscriptTail && widget.action.is_some()
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if widgets.is_empty() {
+            self.push(
+                "there are no editable queued messages",
+                TranscriptTone::Neutral,
+            );
+            return;
+        }
+        self.picker = None;
+        self.preview = None;
+        self.capability_overlay =
+            Some(crate::frontend::dashboard::CapabilityOverlay::from_widgets(
+                "Queued messages".into(),
+                widgets,
+            ));
+    }
+
+    fn open_gateway_picker(
+        &mut self,
+        title: &str,
+        options: impl IntoIterator<Item = super::PickerOption>,
+        selected: usize,
+    ) {
+        self.preview = None;
+        self.capability_overlay = None;
+        self.picker = Some(super::PickerState {
+            title: title.into(),
+            options: options.into_iter().collect(),
+            selected,
+            query: String::new(),
         });
     }
 
@@ -750,9 +966,13 @@ impl TuiState {
                     if let Some((capability, widgets, action)) = self.capability_popup_for(&op) {
                         self.picker = None;
                         self.preview = None;
+                        let keyed = widgets
+                            .into_iter()
+                            .map(|item| ((capability.clone(), item.id.clone()), item))
+                            .collect();
                         self.capability_overlay =
                             Some(crate::frontend::dashboard::CapabilityOverlay::from_widgets(
-                                capability, widgets,
+                                capability, keyed,
                             ));
                         return UiAction::Submit(action);
                     }
@@ -775,6 +995,11 @@ impl TuiState {
                 CommandAction::ChooseBot { workspace, clear } => {
                     UiAction::ChooseBot { workspace, clear }
                 }
+                CommandAction::Events => UiAction::Events,
+                CommandAction::ReassignBot => UiAction::ReassignBot,
+                CommandAction::Branches => UiAction::Branches,
+                CommandAction::ConfirmDelete => UiAction::ConfirmDelete,
+                CommandAction::Queued => UiAction::Queued,
             };
         }
         if let Some(id) = self.take_approval() {
@@ -869,6 +1094,25 @@ impl TuiState {
                 .map(|(token, paste)| paste.len().saturating_sub(token.len_utf8()))
                 .sum::<usize>(),
         )
+    }
+}
+
+fn picker_action(action: super::PickerAction) -> UiAction {
+    match action {
+        super::PickerAction::Submit(op) => UiAction::Submit(op),
+        super::PickerAction::Resume(session_id) => UiAction::Resume(session_id),
+        super::PickerAction::Gateway(action) => UiAction::Gateway(action),
+        super::PickerAction::Download(file) => UiAction::Download(file),
+        super::PickerAction::CreateSession {
+            workspace,
+            bot_id,
+            clear,
+        } => UiAction::CreateSession {
+            workspace,
+            bot_id,
+            clear,
+        },
+        super::PickerAction::ConfirmDeleteFile(file) => UiAction::ConfirmDeleteFile(file),
     }
 }
 

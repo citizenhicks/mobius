@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 @testable import Mobius
 import XCTest
 
@@ -55,6 +56,52 @@ extension AppModelTests {
         XCTAssertTrue(pairing)
         model.gateway.cancelPendingPairing()
         XCTAssertNil(model.gateway.pairingConnectionState)
+        await model.gateway.shutdown().value
+    }
+
+    func testRepairPairingReplacesTheSavedGatewayInPlace() async throws {
+        let suite = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = GatewayStore(defaults: defaults)
+        let oldEndpoint = try GatewayEndpoint("wss://old-tunnel.trycloudflare.com")
+        let account = GatewayAccount(endpoint: oldEndpoint, displayName: "My Mac")
+        try store.save(account, token: "old-token")
+        addTeardownBlock { try await store.remove(account) }
+        let recorder = GatewayRequestRecorder()
+        let model = AppModel(
+            store: store,
+            settingsDefaults: defaults,
+            requestSender: { await recorder.record($0) },
+            connectionOpener: { _ in AsyncThrowingStream { _ in } }
+        )
+
+        model.repairGateway(account)
+        model.applyPairingSetup(
+            try GatewayPairingSetup(
+                endpoint: "wss://new-tunnel.trycloudflare.com",
+                code: "new-code"
+            ))
+        model.pair()
+
+        let request = await recorder.firstRequest(after: 0) {
+            if case .repairPairing = $0 { return true }
+            return false
+        }
+        guard case .repairPairing(let code, let digest, _, _) = try XCTUnwrap(request) else {
+            return XCTFail("Expected a repair pairing request")
+        }
+        XCTAssertEqual(code, "new-code")
+        XCTAssertEqual(digest, Array(SHA256.hash(data: Data("old-token".utf8))))
+
+        model.gateway.handle(.paired(clientID: "same-client", token: "new-token"))
+
+        let saved = try XCTUnwrap(model.gateway.accounts.first)
+        XCTAssertEqual(model.gateway.accounts.count, 1)
+        XCTAssertEqual(saved.id, account.id)
+        XCTAssertEqual(saved.displayName, "My Mac")
+        XCTAssertEqual(saved.endpoint.rawValue, "wss://new-tunnel.trycloudflare.com")
+        XCTAssertEqual(try store.token(for: saved), "new-token")
         await model.gateway.shutdown().value
     }
 

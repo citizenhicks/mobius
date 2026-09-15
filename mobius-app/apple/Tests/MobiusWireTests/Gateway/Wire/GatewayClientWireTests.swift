@@ -22,4 +22,19 @@ extension GatewayWireTests {
         XCTAssertNil(authenticate["last_sequence"])
     }
 
+    func testRepairPairingSendsTheExistingTokenDigest() throws {
+        let digest = Array(0..<UInt8(32))
+        let request = try requestObject(
+            .repairPairing(
+                code: "one-time-code",
+                replacingTokenDigest: digest,
+                clientLabel: "Phone",
+                clientKind: .ios
+            ))
+
+        XCTAssertEqual(request["type"] as? String, "repair_pairing")
+        XCTAssertEqual(request["replacing_token_digest"] as? [UInt8], digest)
+        XCTAssertNil(request["token"])
+    }
+
 }

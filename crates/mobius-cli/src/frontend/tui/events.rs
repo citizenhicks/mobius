@@ -331,6 +331,7 @@ impl TuiState {
                     title: terminal_text(&title),
                     options: options.into_iter().map(Into::into).collect(),
                     selected: 0,
+                    query: String::new(),
                 });
             }
             // Preview transcripts arrive as gateway-rendered records.
@@ -509,11 +510,17 @@ fn apply_preview(state: &mut TuiState, preview: RenderedPreview, requested: bool
 }
 
 pub(super) fn handle_gateway_history(state: &mut TuiState, records: Vec<RecordedEvent>) {
+    let mut current = std::mem::take(&mut state.transcript);
+    let current_len = current.len();
     for record in records {
         handle_gateway_event(state, record, false);
     }
     state.commit_reasoning();
     state.commit_stream();
+    while state.transcript.len().saturating_add(current_len) > super::MAX_TRANSCRIPT_ENTRIES {
+        state.transcript.pop_front();
+    }
+    state.transcript.append(&mut current);
 }
 
 fn apply_rendered_event(state: &mut TuiState, rendered: RenderedEvent) {

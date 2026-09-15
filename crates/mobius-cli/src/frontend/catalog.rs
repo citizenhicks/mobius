@@ -7,6 +7,7 @@ use mobius::Result;
 use mobius::protocol::FrontendContribution;
 use mobius::protocol::FrontendWidget;
 use mobius::protocol::Op;
+use mobius_gateway::wire::GitDiffScope;
 
 use super::setup::SetupMode;
 
@@ -49,8 +50,19 @@ enum CommandHandler {
     Login,
     Pair,
     Profile,
+    Events,
     New,
     Clear,
+    Rename,
+    Pin,
+    Unpin,
+    Reassign,
+    Attach,
+    Delete,
+    Files,
+    Diff,
+    Branch,
+    Queued,
     Status,
     Interrupt,
     Exit,
@@ -88,12 +100,26 @@ pub(crate) enum CommandAction {
         workspace: PathBuf,
         clear: bool,
     },
+    Events,
+    ReassignBot,
+    Branches,
+    ConfirmDelete,
+    Queued,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum GatewayAction {
     Pair,
     Profile,
+    Rename(String),
+    SetPinned(bool),
+    Reassign(String),
+    AttachFolder(PathBuf),
+    DeleteCurrent,
+    ListSessionFiles,
+    DeleteSessionFile(String),
+    GitDiff(GitDiffScope),
+    SwitchBranch(String),
 }
 
 impl UiCatalog {
@@ -295,6 +321,8 @@ impl UiCatalog {
             CommandHandler::Login => CommandAction::Print("usage: /login [provider]".into()),
             CommandHandler::Pair => CommandAction::Gateway(GatewayAction::Pair),
             CommandHandler::Profile => CommandAction::Gateway(GatewayAction::Profile),
+            CommandHandler::Events if arguments.is_empty() => CommandAction::Events,
+            CommandHandler::Events => CommandAction::Print("usage: /events".into()),
             CommandHandler::New => CommandAction::ChooseBot {
                 workspace: self.workspace.clone(),
                 clear: false,
@@ -303,6 +331,48 @@ impl UiCatalog {
                 workspace: self.workspace.clone(),
                 clear: true,
             },
+            CommandHandler::Rename if arguments.is_empty() => {
+                CommandAction::Print("usage: /rename <title>".into())
+            }
+            CommandHandler::Rename => {
+                CommandAction::Gateway(GatewayAction::Rename(arguments.into()))
+            }
+            CommandHandler::Pin if arguments.is_empty() => {
+                CommandAction::Gateway(GatewayAction::SetPinned(true))
+            }
+            CommandHandler::Pin => CommandAction::Print("usage: /pin".into()),
+            CommandHandler::Unpin if arguments.is_empty() => {
+                CommandAction::Gateway(GatewayAction::SetPinned(false))
+            }
+            CommandHandler::Unpin => CommandAction::Print("usage: /unpin".into()),
+            CommandHandler::Reassign if arguments.is_empty() => CommandAction::ReassignBot,
+            CommandHandler::Reassign => CommandAction::Print("usage: /reassign".into()),
+            CommandHandler::Attach if arguments.is_empty() => {
+                CommandAction::Print("usage: /attach <gateway-path>".into())
+            }
+            CommandHandler::Attach => {
+                CommandAction::Gateway(GatewayAction::AttachFolder(PathBuf::from(arguments)))
+            }
+            CommandHandler::Delete if arguments.is_empty() => CommandAction::ConfirmDelete,
+            CommandHandler::Delete => CommandAction::Print("usage: /delete".into()),
+            CommandHandler::Files if arguments.is_empty() => {
+                CommandAction::Gateway(GatewayAction::ListSessionFiles)
+            }
+            CommandHandler::Files => CommandAction::Print("usage: /files".into()),
+            CommandHandler::Diff => match arguments {
+                "" | "unstaged" => {
+                    CommandAction::Gateway(GatewayAction::GitDiff(GitDiffScope::Unstaged))
+                }
+                "staged" => CommandAction::Gateway(GatewayAction::GitDiff(GitDiffScope::Staged)),
+                "committed" => {
+                    CommandAction::Gateway(GatewayAction::GitDiff(GitDiffScope::Committed))
+                }
+                _ => CommandAction::Print("usage: /diff [unstaged|staged|committed]".into()),
+            },
+            CommandHandler::Branch if arguments.is_empty() => CommandAction::Branches,
+            CommandHandler::Branch => CommandAction::Print("usage: /branch".into()),
+            CommandHandler::Queued if arguments.is_empty() => CommandAction::Queued,
+            CommandHandler::Queued => CommandAction::Print("usage: /queued".into()),
             CommandHandler::Status => CommandAction::Print(context.status.to_string()),
             CommandHandler::Interrupt => context.active_turn.map_or_else(
                 || CommandAction::Print("no active turn to interrupt".into()),
@@ -394,6 +464,12 @@ fn cli_commands() -> Vec<UiCommand> {
             CommandHandler::Profile,
         ),
         command(
+            "events",
+            "open background approvals",
+            false,
+            CommandHandler::Events,
+        ),
+        command(
             "pair",
             "create a one-time code for another client",
             false,
@@ -405,6 +481,49 @@ fn cli_commands() -> Vec<UiCommand> {
             "clear the terminal and start a new chat",
             true,
             CommandHandler::Clear,
+        ),
+        UiCommand {
+            name: "rename".into(),
+            arguments: "<title>".into(),
+            description: "rename this chat".into(),
+            requires_idle: true,
+            handler: CommandHandler::Rename,
+        },
+        command("pin", "pin this chat", true, CommandHandler::Pin),
+        command("unpin", "unpin this chat", true, CommandHandler::Unpin),
+        command(
+            "reassign",
+            "move this chat to another Bot",
+            true,
+            CommandHandler::Reassign,
+        ),
+        UiCommand {
+            name: "attach".into(),
+            arguments: "<gateway-path>".into(),
+            description: "attach a folder to this chat".into(),
+            requires_idle: true,
+            handler: CommandHandler::Attach,
+        },
+        command("delete", "delete this chat", true, CommandHandler::Delete),
+        command("files", "download chat files", false, CommandHandler::Files),
+        UiCommand {
+            name: "diff".into(),
+            arguments: "[unstaged|staged|committed]".into(),
+            description: "show workspace changes".into(),
+            requires_idle: false,
+            handler: CommandHandler::Diff,
+        },
+        command(
+            "branch",
+            "switch the workspace Git branch",
+            true,
+            CommandHandler::Branch,
+        ),
+        command(
+            "queued",
+            "inspect or edit queued messages",
+            false,
+            CommandHandler::Queued,
         ),
         command(
             "status",
@@ -587,6 +706,41 @@ mod tests {
                 },
             ),
             Some(CommandAction::GatewaySettings)
+        );
+    }
+
+    #[test]
+    fn session_commands_use_existing_gateway_operations() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let catalog = UiCatalog::build(&[], workspace.path()).expect("catalog");
+        let context = CommandContext {
+            active_turn: None,
+            status: "idle",
+        };
+
+        assert_eq!(
+            catalog.dispatch("/rename Release notes", context),
+            Some(CommandAction::Gateway(GatewayAction::Rename(
+                "Release notes".into()
+            )))
+        );
+        assert_eq!(
+            catalog.dispatch("/diff staged", context),
+            Some(CommandAction::Gateway(GatewayAction::GitDiff(
+                GitDiffScope::Staged
+            )))
+        );
+        assert_eq!(
+            catalog.dispatch("/attach /srv/shared", context),
+            Some(CommandAction::Gateway(GatewayAction::AttachFolder(
+                "/srv/shared".into()
+            )))
+        );
+        assert_eq!(
+            catalog.dispatch("/diff impossible", context),
+            Some(CommandAction::Print(
+                "usage: /diff [unstaged|staged|committed]".into()
+            ))
         );
     }
 

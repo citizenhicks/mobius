@@ -63,7 +63,7 @@ pub struct IssuedToken {
     pub token: String,
 }
 
-/// One pending code that may be consumed by exactly one new client.
+/// One pending code that may be consumed by exactly one client pairing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairingGrant {
     /// The code.
@@ -165,6 +165,48 @@ impl AuthStore {
         Ok(IssuedToken { client_id, token })
     }
 
+    /// Consumes the pending code and rotates one existing client token in place.
+    /// # Errors
+    ///
+    /// Returns an error if authentication fails or its stored state is invalid.
+    pub fn repair_pairing(
+        &self,
+        code: &str,
+        replacing_token_digest: &[u8; 32],
+        client_label: &str,
+    ) -> Result<IssuedToken> {
+        let now = unix_timestamp()?;
+        validate_client_label(client_label)?;
+        let mut state = self.lock_state()?;
+        let Some(pending) = &state.pending_pairing else {
+            return Err(Error::Unauthorized);
+        };
+        if pending.expires_at <= now || !credential_matches(code, &pending.digest) {
+            return Err(Error::Unauthorized);
+        }
+        let mut matched = None;
+        for (index, client) in state.clients.iter().enumerate() {
+            if bool::from(client.digest.ct_eq(replacing_token_digest)) {
+                matched = Some(index);
+            }
+        }
+        let Some(index) = matched else {
+            return Err(Error::Unauthorized);
+        };
+
+        let token = random_secret(2);
+        let mut next = state.clone();
+        next.pending_pairing = None;
+        let client = &mut next.clients[index];
+        client.label = client_label.into();
+        client.digest = digest(&token);
+        client.created_at = now;
+        let client_id = client.id.clone();
+        save_auth_state(&self.path, &next, false)?;
+        *state = next;
+        Ok(IssuedToken { client_id, token })
+    }
+
     pub(crate) fn provision_local_client(&self) -> Result<IssuedToken> {
         let token = random_secret(2);
         let now = unix_timestamp()?;
@@ -202,9 +244,6 @@ impl AuthStore {
     /// Returns an error if validation or an operation required by this function fails.
     pub fn create_pairing_code(&self) -> Result<PairingGrant> {
         let mut state = self.lock_state()?;
-        if state.clients.len() == MAX_CLIENTS {
-            return Err(Error::Config("paired client limit reached".into()));
-        }
         let grant = new_pairing_grant()?;
         let mut next = state.clone();
         next.pending_pairing = Some(PendingPairing {
@@ -645,23 +684,35 @@ mod tests {
     }
 
     #[test]
-    fn pairing_code_is_not_created_at_the_client_limit() {
+    fn repairing_at_the_client_limit_rotates_the_existing_client() {
         let directory = tempfile::tempdir().expect("state directory");
         let path = directory.path().join("auth.json");
         let (auth, mut grant) = AuthStore::initialize(path).expect("initialize auth");
+        let mut first = None;
         for index in 0..MAX_CLIENTS {
-            auth.pair(&grant.code, &format!("client {index}"))
+            let issued = auth
+                .pair(&grant.code, &format!("client {index}"))
                 .expect("pair client");
+            first.get_or_insert(issued);
             if index + 1 < MAX_CLIENTS {
                 grant = auth.create_pairing_code().expect("next code");
             }
         }
+        let first = first.expect("first client");
+        let replacement = auth.create_pairing_code().expect("repair code");
 
         let error = auth
-            .create_pairing_code()
-            .expect_err("client limit must reject a code");
+            .pair(&replacement.code, "new client")
+            .expect_err("client limit must reject a new client");
+        let repaired = auth
+            .repair_pairing(&replacement.code, &digest(&first.token), "repaired client")
+            .expect("repair existing client");
 
         assert!(error.to_string().contains("client limit"));
+        assert_eq!(repaired.client_id, first.client_id);
+        assert_eq!(auth.clients().expect("clients").len(), MAX_CLIENTS);
+        assert!(auth.authenticate(&first.token).is_err());
+        assert!(auth.authenticate(&repaired.token).is_ok());
     }
 
     #[cfg(unix)]

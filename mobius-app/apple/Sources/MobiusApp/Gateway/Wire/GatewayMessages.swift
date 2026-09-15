@@ -2,6 +2,12 @@ import Foundation
 
 enum GatewayRequest: Encodable, Sendable {
     case pair(code: String, clientLabel: String, clientKind: GatewayClientKind)
+    case repairPairing(
+        code: String,
+        replacingTokenDigest: [UInt8],
+        clientLabel: String,
+        clientKind: GatewayClientKind
+    )
     case authenticate(token: String, clientKind: GatewayClientKind)
     case listSessions(requestID: String)
     case listBotSessions(requestID: String, botID: String)
@@ -179,6 +185,17 @@ enum GatewayRequest: Encodable, Sendable {
         case .pair(let code, let clientLabel, let clientKind):
             try container.encode("pair", forKey: "type")
             try container.encode(code, forKey: "code")
+            try container.encode(clientLabel, forKey: "clientLabel")
+            try container.encode(clientKind, forKey: "clientKind")
+        case .repairPairing(
+            let code,
+            let replacingTokenDigest,
+            let clientLabel,
+            let clientKind
+        ):
+            try container.encode("repair_pairing", forKey: "type")
+            try container.encode(code, forKey: "code")
+            try container.encode(replacingTokenDigest, forKey: "replacingTokenDigest")
             try container.encode(clientLabel, forKey: "clientLabel")
             try container.encode(clientKind, forKey: "clientKind")
         case .authenticate(let token, let clientKind):

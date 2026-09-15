@@ -14,6 +14,7 @@ use uuid::Uuid;
 enum Action {
     None,
     Exit,
+    OpenSession(String),
     Setup {
         bot_id: String,
         mode: SetupMode,
@@ -189,6 +190,38 @@ mod tests {
         );
         assert_eq!(sessions_for_bot(&gateway, "bot-b")[0].session_id, "other");
         assert!(sessions_for_bot(&gateway, "unrelated").is_empty());
+    }
+
+    #[test]
+    fn bot_conversation_enter_opens_the_selected_chat() {
+        let mut gateway = gateway(vec![bot("bot-a")]);
+        gateway.sessions.push(mobius_gateway::wire::SessionRecord {
+            session_id: "chat-a".into(),
+            session_context: mobius::protocol::SessionContext {
+                owner_id: "bot-a".into(),
+                ..Default::default()
+            },
+            parent_session_id: None,
+            parent_sequence: None,
+            sequence: 0,
+            first_user_message: None,
+            execution_stats: Default::default(),
+            title: None,
+            pinned: false,
+            activity: Default::default(),
+            created_at: 1,
+            updated_at: 1,
+        });
+        let mut state = BotsState::new(&gateway, Some("bot-a"), None);
+        state.page = Page::Conversations("bot-a".into());
+
+        assert!(matches!(
+            state.handle_key(
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                &gateway
+            ),
+            Action::OpenSession(session_id) if session_id == "chat-a"
+        ));
     }
 
     #[test]

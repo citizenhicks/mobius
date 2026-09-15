@@ -21,7 +21,7 @@ use self::events::UsageStatus;
 use self::input::UiAction;
 use self::view::bounded_terminal_text;
 use self::view::initial_widgets;
-use super::catalog::{MenuItem, UiCatalog};
+use super::catalog::{GatewayAction, MenuItem, UiCatalog};
 use super::dashboard::CapabilityOverlay;
 use super::terminal::terminal_text;
 use mobius::protocol::ActiveMessageDelivery;
@@ -129,11 +129,15 @@ impl StreamedStepPhases {
 #[derive(Clone)]
 enum PickerAction {
     Submit(Op),
+    Resume(String),
+    Gateway(GatewayAction),
+    Download(SessionFileReference),
     CreateSession {
         workspace: PathBuf,
         bot_id: String,
         clear: bool,
     },
+    ConfirmDeleteFile(SessionFileReference),
 }
 
 struct PickerOption {
@@ -142,6 +146,7 @@ struct PickerOption {
     detail: String,
     shows_detail: bool,
     action: PickerAction,
+    secondary: Option<PickerAction>,
 }
 
 impl From<FrontendPickerOption> for PickerOption {
@@ -152,6 +157,7 @@ impl From<FrontendPickerOption> for PickerOption {
             detail: option.detail,
             shows_detail: option.shows_detail,
             action: PickerAction::Submit(option.op),
+            secondary: None,
         }
     }
 }
@@ -160,6 +166,27 @@ struct PickerState {
     title: String,
     options: Vec<PickerOption>,
     selected: usize,
+    query: String,
+}
+
+impl PickerState {
+    fn matching_options(&self) -> impl Iterator<Item = &PickerOption> {
+        let query = self.query.to_lowercase();
+        self.options.iter().filter(move |option| {
+            query.is_empty()
+                || option.label.to_lowercase().contains(&query)
+                || option.description.to_lowercase().contains(&query)
+                || option.detail.to_lowercase().contains(&query)
+        })
+    }
+
+    fn match_count(&self) -> usize {
+        self.matching_options().count()
+    }
+
+    fn selected_option(&self) -> Option<&PickerOption> {
+        self.matching_options().nth(self.selected)
+    }
 }
 
 struct Viewport {
@@ -261,6 +288,22 @@ impl PreviewState {
 enum PreviewContent {
     LiveTranscript,
     Snapshot(Box<SnapshotPreview>),
+    Text {
+        text: String,
+        format: FrontendBlockFormat,
+        tone: TranscriptTone,
+    },
+}
+
+struct PendingFileDownload {
+    request_id: String,
+    session_id: String,
+    file: SessionFileReference,
+    destination: PathBuf,
+    output: tokio::fs::File,
+    offset: u64,
+    preview: Vec<u8>,
+    preview_truncated: bool,
 }
 
 struct SnapshotPreview {
@@ -347,6 +390,11 @@ struct TuiState {
     preview_request_id: Option<String>,
     capability_overlay: Option<CapabilityOverlay>,
     requested_resume: Option<SessionResumeRequestedEvent>,
+    background_approval_count: usize,
+    next_before_sequence: Option<u64>,
+    history_request_id: Option<String>,
+    deletion_request_id: Option<String>,
+    file_download: Option<PendingFileDownload>,
 }
 
 impl TuiState {
@@ -398,6 +446,11 @@ impl TuiState {
             preview_request_id: None,
             capability_overlay: None,
             requested_resume: None,
+            background_approval_count: 0,
+            next_before_sequence: None,
+            history_request_id: None,
+            deletion_request_id: None,
+            file_download: None,
         }
     }
 
@@ -722,6 +775,23 @@ impl TuiState {
             "Transcript".into(),
             PreviewContent::LiveTranscript,
         ));
+    }
+
+    fn open_text_preview(
+        &mut self,
+        title: impl Into<String>,
+        text: String,
+        format: FrontendBlockFormat,
+        tone: TranscriptTone,
+    ) {
+        self.picker = None;
+        self.capability_overlay = None;
+        self.preview = Some(PreviewState {
+            title: bounded_title(&title.into()),
+            subtitle: String::new(),
+            content: PreviewContent::Text { text, format, tone },
+            viewport: Viewport::default(),
+        });
     }
 }
 

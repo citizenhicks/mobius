@@ -54,12 +54,15 @@ async fn run_interactive() -> Result<()> {
     let (mut sender, mut events, mut gateway, mut session, mut disposable_session, mut endpoint) =
         connect(None, None).await?;
     loop {
+        let choose_initial_bot =
+            disposable_session.as_deref() == Some(session.session.session_id.as_str());
         let (exit, next_sender, next_events) = frontend::run(
             sender,
             events,
             &mut gateway,
             &mut session,
             endpoint.to_string(),
+            choose_initial_bot,
         )
         .await?;
         sender = next_sender;
@@ -104,6 +107,16 @@ async fn run_interactive() -> Result<()> {
                     disposable_session,
                     endpoint,
                 ) = connect(selected, None).await?;
+            }
+            FrontendExit::Fresh => {
+                (
+                    sender,
+                    events,
+                    gateway,
+                    session,
+                    disposable_session,
+                    endpoint,
+                ) = connect(None, None).await?;
             }
         }
     }
@@ -212,18 +225,32 @@ async fn connect(
             ));
         }
         None => {
-            let session_id = gateway
+            if let Some(session_id) = gateway
                 .sessions
                 .first()
                 .map(|session| session.session_id.clone())
-                .ok_or_else(|| {
-                    Error::Stopped(
-                        "the remote gateway has no chats; create a workspace chat from a local frontend first"
-                            .into(),
-                    )
-                })?;
-            let session = open_session(&sender, &mut events, &mut gateway, session_id).await?;
-            (session, None)
+            {
+                let session = open_session(&sender, &mut events, &mut gateway, session_id).await?;
+                (session, None)
+            } else {
+                let bot_id = gateway
+                    .bots
+                    .iter()
+                    .find(|bot| bot.handle == "mobius")
+                    .or_else(|| gateway.bots.first())
+                    .map(|bot| bot.id.clone())
+                    .ok_or_else(|| Error::Config("create a Bot before starting a chat".into()))?;
+                let session = create_session(
+                    &sender,
+                    &mut events,
+                    &mut gateway,
+                    PathBuf::from("."),
+                    bot_id,
+                )
+                .await?;
+                let disposable_session = Some(session.session.session_id.clone());
+                (session, disposable_session)
+            }
         }
     };
     Ok((

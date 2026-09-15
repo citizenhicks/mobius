@@ -79,6 +79,12 @@ enum PreAuthClientMessage {
         client_label: String,
         client_kind: ClientKind,
     },
+    RepairPairing {
+        code: String,
+        replacing_token_digest: [u8; 32],
+        client_label: String,
+        client_kind: ClientKind,
+    },
     Authenticate {
         token: String,
         client_kind: ClientKind,
@@ -640,38 +646,30 @@ async fn authenticate_client(
     auth: &AuthStore,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<Option<(String, ClientKind)>> {
-    match message {
+    let (issued, client_kind) = match message {
         PreAuthClientMessage::Pair {
             code,
             client_label,
             client_kind,
-        } => match auth.pair(&code, &client_label) {
-            Ok(issued) => {
-                let client_id = issued.client_id.clone();
-                write_frame(
-                    writer,
-                    &ServerFrame::new(ServerMessage::Paired {
-                        client_id: issued.client_id,
-                        token: issued.token,
-                    }),
-                )
-                .await?;
-                Ok(Some((client_id, client_kind)))
-            }
-            Err(_) => {
-                write_server_error(writer, "unauthorized", "pairing failed", true).await?;
-                Ok(None)
-            }
-        },
+        } => (auth.pair(&code, &client_label), client_kind),
+        PreAuthClientMessage::RepairPairing {
+            code,
+            replacing_token_digest,
+            client_label,
+            client_kind,
+        } => (
+            auth.repair_pairing(&code, &replacing_token_digest, &client_label),
+            client_kind,
+        ),
         PreAuthClientMessage::Authenticate { token, client_kind } => {
-            match auth.authenticate(&token) {
+            return match auth.authenticate(&token) {
                 Ok(identity) => Ok(Some((identity.id, client_kind))),
                 Err(_) => {
                     write_server_error(writer, "unauthorized", "authentication failed", true)
                         .await?;
                     Ok(None)
                 }
-            }
+            };
         }
         PreAuthClientMessage::Unsupported => {
             write_server_error(
@@ -681,6 +679,24 @@ async fn authenticate_client(
                 true,
             )
             .await?;
+            return Ok(None);
+        }
+    };
+    match issued {
+        Ok(issued) => {
+            let client_id = issued.client_id.clone();
+            write_frame(
+                writer,
+                &ServerFrame::new(ServerMessage::Paired {
+                    client_id: issued.client_id,
+                    token: issued.token,
+                }),
+            )
+            .await?;
+            Ok(Some((client_id, client_kind)))
+        }
+        Err(_) => {
+            write_server_error(writer, "unauthorized", "pairing failed", true).await?;
             Ok(None)
         }
     }
@@ -881,6 +897,7 @@ fn pem_error(error: pem::Error) -> std::io::Error {
 mod tests {
     use super::*;
     use crate::wire::{FrameReader, RunStats};
+    use sha2::{Digest as _, Sha256};
     use tokio::sync::oneshot;
 
     fn profile() -> ProfileSnapshot {
@@ -891,6 +908,46 @@ mod tests {
             run_stats: RunStats::default(),
             recent_run_groups: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn repair_pairing_rotates_the_requested_client() {
+        let directory = tempfile::tempdir().expect("state directory");
+        let (auth, grant) =
+            AuthStore::initialize(directory.path().join("auth.json")).expect("initialize auth");
+        let original = auth.pair(&grant.code, "iPhone").expect("pair client");
+        let replacement = auth.create_pairing_code().expect("repair code");
+        let replacing_token_digest = Sha256::digest(original.token.as_bytes()).into();
+        let (mut writer, reader) = tokio::io::duplex(4096);
+        let mut reader = FrameReader::new(reader);
+
+        let identity = authenticate_client(
+            PreAuthClientMessage::RepairPairing {
+                code: replacement.code,
+                replacing_token_digest,
+                client_label: "iPhone".into(),
+                client_kind: ClientKind::Ios,
+            },
+            &auth,
+            &mut writer,
+        )
+        .await
+        .expect("repair pairing");
+        let frame = read_frame::<ServerFrame>(&mut reader)
+            .await
+            .expect("paired response")
+            .expect("paired frame");
+        let ServerMessage::Paired { client_id, token } = frame.message else {
+            panic!("expected paired response");
+        };
+
+        assert_eq!(
+            identity,
+            Some((original.client_id.clone(), ClientKind::Ios))
+        );
+        assert_eq!(client_id, original.client_id);
+        assert!(auth.authenticate(&original.token).is_err());
+        assert!(auth.authenticate(&token).is_ok());
     }
 
     #[tokio::test]

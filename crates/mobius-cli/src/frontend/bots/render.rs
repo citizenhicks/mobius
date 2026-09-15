@@ -552,7 +552,7 @@ fn footer_text(state: &BotsState) -> &'static str {
     match state.page {
         Page::Root => "↑↓ select · n new Bot · e edit · x delete · q close",
         Page::Bot(_) => "↑↓ select · enter open · e edit identity/prompt · esc back",
-        Page::Conversations(_) => "↑↓ inspect · esc back",
+        Page::Conversations(_) => "↑↓ select · enter open · esc back",
         Page::Routines(_) => {
             "↑↓ select · n new · enter open · e edit · space enable · r run · x delete"
         }

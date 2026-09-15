@@ -367,7 +367,9 @@ impl GatewaySender {
     pub async fn send(&self, message: ClientMessage) -> Result<()> {
         if matches!(
             message,
-            ClientMessage::Pair { .. } | ClientMessage::Authenticate { .. }
+            ClientMessage::Pair { .. }
+                | ClientMessage::RepairPairing { .. }
+                | ClientMessage::Authenticate { .. }
         ) {
             return Err(Error::Protocol(
                 "authentication messages are valid only during connection setup".into(),

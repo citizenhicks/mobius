@@ -29,6 +29,7 @@ final class GatewayConnectionModel {
     @ObservationIgnored private(set) var reconnectAttempt = 0
     @ObservationIgnored private(set) var automaticReconnectBlocked = false
     private var pendingPairingAccount: GatewayAccount?
+    private var pairingRepairAccount: GatewayAccount?
     @ObservationIgnored private(set) var reconnectsOnActivation = false
     @ObservationIgnored private var reconnectsUntilReady = false
     @ObservationIgnored private(set) var connectionGeneration = UUID()
@@ -141,15 +142,20 @@ final class GatewayConnectionModel {
             let setup = try GatewayPairingSetup(endpoint: pairingEndpoint, code: code)
             let endpoint = setup.endpoint
             let endpointName = endpoint.displayName(locale: locale)
-            let account =
-                accounts.first(where: { $0.endpoint == endpoint })
+            let repairAccount = pairingRepairAccount
+            let replacingTokenDigest = repairAccount.flatMap { try? store.tokenDigest(for: $0) }
+            var account =
+                repairAccount
+                ?? accounts.first(where: { $0.endpoint == endpoint })
                 ?? GatewayAccount(
                     endpoint: endpoint,
                     displayName: endpointName,
                     machineName: endpointName
                 )
+            account.endpoint = endpoint
             let sameGateway = account.id == selectedAccountID
             reset(preservingDrafts: sameGateway)
+            pairingRepairAccount = repairAccount
             onConnectionReplacement?(account, sameGateway)
             automaticReconnectBlocked = false
             reconnectAttempt = 0
@@ -160,12 +166,22 @@ final class GatewayConnectionModel {
             let generation = connectionGeneration
             beginConnection(to: endpoint, generation: generation) { [weak self] in
                 guard let self, self.connectionGeneration == generation else { return }
-                try await self.requestSender(
-                    .pair(
-                        code: setup.code,
-                        clientLabel: "möbius Apple",
-                        clientKind: .currentApplePlatform
-                    ))
+                let request =
+                    if let replacingTokenDigest {
+                        GatewayRequest.repairPairing(
+                            code: setup.code,
+                            replacingTokenDigest: replacingTokenDigest,
+                            clientLabel: "möbius Apple",
+                            clientKind: .currentApplePlatform
+                        )
+                    } else {
+                        GatewayRequest.pair(
+                            code: setup.code,
+                            clientLabel: "möbius Apple",
+                            clientKind: .currentApplePlatform
+                        )
+                    }
+                try await self.requestSender(request)
             }
         } catch {
             pairingError = localizedErrorDescription(error)
@@ -184,9 +200,18 @@ final class GatewayConnectionModel {
             pairingError = nil
             return
         }
+        repair(account)
+    }
+
+    func repair(_ account: GatewayAccount) {
+        pairingRepairAccount = account
         pairingEndpoint = account.endpoint.rawValue
         pairingCode = ""
         pairingError = localizedString("Enter a new one-time code to repair this pairing.")
+    }
+
+    func cancelPairingRepair() {
+        pairingRepairAccount = nil
     }
 
     func rename(_ account: GatewayAccount, to name: String) throws {
@@ -236,6 +261,7 @@ final class GatewayConnectionModel {
         pairingEndpoint = "wss://"
         pairingCode = ""
         pendingPairingAccount = nil
+        pairingRepairAccount = nil
         blockAutomaticReconnect()
     }
 
@@ -290,6 +316,7 @@ final class GatewayConnectionModel {
     func reset(preservingDrafts: Bool) -> UUID {
         resetTransport()
         pendingPairingAccount = nil
+        pairingRepairAccount = nil
         pairingError = preservingDrafts ? pairingError : nil
         if !preservingDrafts {
             pairingCode = ""
@@ -334,6 +361,7 @@ final class GatewayConnectionModel {
                 accountRecoveryRequired = false
                 selectedAccountID = account.id
                 pendingPairingAccount = nil
+                pairingRepairAccount = nil
                 pairingCode = ""
                 pairingError = nil
                 onEnvelope?(envelope)

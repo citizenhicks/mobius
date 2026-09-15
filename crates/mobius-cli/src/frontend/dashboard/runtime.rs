@@ -188,7 +188,7 @@ pub(super) async fn handle_key(
     }
     if state.focus == DashboardFocus::Bots && key.code == KeyCode::Enter {
         let selected = state.selected_bot_id.clone();
-        state.error = bots::run(
+        match bots::run(
             terminal,
             sender,
             events,
@@ -197,8 +197,14 @@ pub(super) async fn handle_key(
             None,
         )
         .await
-        .err()
-        .map(|error| error.to_string());
+        {
+            Ok(Some(session_id)) => {
+                state.selected_session_id = Some(session_id);
+                open_selected_session(sender, state).await?;
+            }
+            Ok(None) => state.error = None,
+            Err(error) => state.error = Some(error.to_string()),
+        }
         sync_bot_selection(state);
         sync_chat_selection(state);
         terminal.clear()?;

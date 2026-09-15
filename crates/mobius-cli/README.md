@@ -34,9 +34,9 @@ gateway with both a loopback listener and Cloudflare Quick Tunnel, provisions th
 credential, and starts `mobius-gateway` in the background. A later `mobius-gateway connect`
 advertises the local TCP and public WSS endpoints with one pairing code that works through either
 endpoint. On an empty gateway, plain `mobius` opens provider setup; the gateway then creates the
-default Mobius Bot. Each run creates a chat for that Bot in the current directory. `/new` and
-`/workspace <gateway-path>` open the Bot picker. Choose one Bot and press Enter to start. For a source
-checkout, build both commands from the CLI package:
+default Mobius Bot. A new local workspace opens the Bot picker; choose a Bot and press Enter to
+start. `/new` and `/workspace <gateway-path>` open the same picker later. For a source checkout,
+build both commands from the CLI package:
 
 ```sh
 cargo build -p mobius-cli
@@ -62,8 +62,8 @@ mobius
 ```
 
 `mobius pair` saves and selects the endpoint together with the token returned by the gateway; no
-environment variable is needed. A remote terminal opens an existing gateway chat, so create the
-first gateway-host workspace chat from an Apple or local frontend.
+environment variable is needed. A remote terminal opens an existing gateway chat or, on an empty
+gateway, starts one in the gateway's current directory after Bot selection.
 If the gateway is already running, create another code with `/pair` from an authenticated terminal
 or **Gateway → Pair another device** in an Apple client.
 
@@ -138,14 +138,18 @@ The TUI is a thin subscriber to the framework capability catalog:
   scan similarly named paths on the client machine.
 
 The CLI owns only shell lifecycle and presentation commands: `/help`, `/gateway`, `/extensions`,
-`/bot`, `/login`, `/pair`, `/profile`, `/new`, `/clear`, `/status`,
-`/interrupt`, and `/exit`. Capabilities contribute commands such as `/artifacts`, so
-the menu changes with the installed gateway capabilities. The gateway always contributes `/resume`
-as the single saved-chat picker; it lists chats across every workspace.
+`/bot`, `/login`, `/pair`, `/profile`, `/events`, `/new`, `/clear`, `/rename`, `/pin`, `/unpin`,
+`/reassign`, `/attach`, `/delete`, `/files`, `/diff`, `/branch`, `/queued`, `/status`, `/interrupt`,
+and `/exit`. Capabilities contribute commands such as `/artifacts`, so the menu changes with the
+installed gateway capabilities. The gateway always contributes `/resume` as the saved-chat picker;
+it lists chats across every workspace. Bot → Conversations opens the same chats grouped by Bot.
 
-The Nord-themed TUI uses the full terminal. The mouse wheel and Page Up/Page Down scroll the chat;
+The Nord-themed TUI uses the full terminal. Type in any picker to filter it. The mouse wheel and
+Page Up/Page Down scroll the chat; Page Up at the oldest loaded event fetches earlier history.
 Ctrl-T opens a full-screen transcript view, releases mouse capture for native drag-to-copy, and
 scrolls with Arrow or Page Up/Page Down. Up/Down and Ctrl-P/Ctrl-N navigate composer history.
+`/files` downloads the selected chat file without overwriting an existing local file; Delete in the
+file picker removes it from the gateway after confirmation.
 
 Sandboxing runs on the gateway host and fails closed when its platform sandbox is unavailable.
 

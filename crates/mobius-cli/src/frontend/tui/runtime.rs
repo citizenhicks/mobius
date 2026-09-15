@@ -1,4 +1,5 @@
 use std::io;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local, Utc};
@@ -9,6 +10,7 @@ use ratatui::crossterm::event::Event as TerminalEvent;
 use ratatui::crossterm::event::KeyEventKind;
 use ratatui::crossterm::execute;
 use ratatui::crossterm::style::Print;
+use tokio::io::AsyncWriteExt as _;
 use tokio::time::MissedTickBehavior;
 
 use super::TranscriptTone;
@@ -29,7 +31,9 @@ use crate::frontend::gateway_actions::{ResponseSeverity, prepare, render_respons
 use crate::frontend::setup;
 use crate::frontend::terminal::{INPUT_POLL, MAX_INPUT_BATCH, TerminalGuard, poll_event};
 use mobius::backend::checkpoint::ExecutionOutcome;
-use mobius::protocol::{EventMsg, FrontendEvent, ModelInfo, Op, Submission};
+use mobius::protocol::{
+    EventMsg, FrontendBlockFormat, FrontendEvent, ModelInfo, Op, SessionFileReference, Submission,
+};
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
@@ -40,6 +44,7 @@ use uuid::Uuid;
 
 const ELAPSED_INTERVAL: Duration = Duration::from_secs(1);
 const CLEAR_SCREEN_AND_SCROLLBACK: &str = "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H";
+const FILE_READ_CHUNK_BYTES: usize = 256 * 1024;
 
 type TuiTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 
@@ -86,6 +91,7 @@ pub(in crate::frontend) async fn run(
     session: &mut SessionReadyPayload,
     mut catalog: UiCatalog,
     gateway_endpoint: String,
+    choose_initial_bot: bool,
 ) -> Result<(FrontendExit, GatewaySender, GatewayEvents)> {
     let mut guard = TerminalGuard::alternate()?;
     let mut terminal = TuiTerminal::new(CrosstermBackend::new(io::stdout()))?;
@@ -99,6 +105,15 @@ pub(in crate::frontend) async fn run(
         String::new(),
     );
     sync_session(&mut state, session, gateway)?;
+    if choose_initial_bot {
+        choose_bot(
+            gateway,
+            session,
+            session.workspace.path.clone(),
+            false,
+            &mut state,
+        );
+    }
     let mut uploads = ClipboardUploads::default();
     let mut tick = tokio::time::interval(INPUT_POLL);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -232,6 +247,10 @@ pub(in crate::frontend) async fn run(
     if let Some(preparation) = clipboard_preparation.take() {
         drop(preparation);
     }
+    if let Some(download) = state.file_download.take() {
+        drop(download.output);
+        let _ = tokio::fs::remove_file(download.destination).await;
+    }
     drop(terminal);
     drop(guard);
     if clear_on_exit {
@@ -311,7 +330,26 @@ async fn handle_terminal_input(
                     create_session(sender, workspace, bot_id, clear, state).await;
             }
             UiAction::Submit(op) => send_and_report(sender, session_id, op, state).await,
-            UiAction::Gateway(action) => send_gateway_action(sender, action, state).await,
+            UiAction::Resume(session_id) => return Ok(Some(FrontendExit::Resume(session_id))),
+            UiAction::Gateway(action) => {
+                send_gateway_action(sender, session_id, action, state).await
+            }
+            UiAction::Download(file) => {
+                start_file_download(sender, session_id, file, state).await;
+            }
+            UiAction::Events => {
+                state.open_background_approvals(&gateway.background_approvals, &gateway.bots);
+            }
+            UiAction::ReassignBot => {
+                state.open_reassign_bot_picker(&gateway.bots, &session.session.context.owner_id);
+            }
+            UiAction::Branches => state.open_branch_picker(session.git.as_ref()),
+            UiAction::ConfirmDelete => state.confirm_delete_current_session(),
+            UiAction::ConfirmDeleteFile(file) => state.confirm_delete_file(file),
+            UiAction::Queued => state.open_queued_messages(),
+            UiAction::LoadEarlierHistory => {
+                request_earlier_history(sender, session_id, state).await;
+            }
             UiAction::GatewaySettings => {
                 if open_gateway_settings(terminal, gateway_endpoint, state).await {
                     return Ok(Some(FrontendExit::Reconnect));
@@ -323,12 +361,12 @@ async fn handle_terminal_input(
                 *dirty = true;
             }
             UiAction::Bots => {
-                if open_bots(
+                if let Some(exit) = open_bots(
                     terminal, sender, events, gateway, session, state, session_id,
                 )
                 .await
                 {
-                    return Ok(Some(FrontendExit::Reload));
+                    return Ok(Some(exit));
                 }
                 *dirty = true;
             }
@@ -371,6 +409,9 @@ async fn handle_incoming_message(
     pending_session_creation: &mut Option<PendingSessionCreation>,
 ) -> Option<(FrontendExit, bool)> {
     let session_id = session.session.session_id.clone();
+    if settle_session_deletion(&message, state) {
+        return Some((FrontendExit::Fresh, true));
+    }
     let session_opened = match &message {
         ServerMessage::SessionOpened { request_id, .. } => {
             matches_pending_session_creation(request_id, pending_session_creation)
@@ -378,7 +419,8 @@ async fn handle_incoming_message(
         _ => false,
     };
     let should_clear = settle_session_creation(&message, pending_session_creation);
-    if !handle_upload_message(&message, sender, gateway, state, uploads, &session_id).await
+    if !handle_file_download_message(&message, sender, state).await
+        && !handle_upload_message(&message, sender, gateway, state, uploads, &session_id).await
         && let Some(exit) = handle_server_message(
             message,
             gateway,
@@ -394,6 +436,25 @@ async fn handle_incoming_message(
         .requested_resume
         .take()
         .map(|request| (FrontendExit::Resume(request.session_id), true))
+}
+
+fn settle_session_deletion(message: &ServerMessage, state: &mut TuiState) -> bool {
+    let Some(request_id) = state.deletion_request_id.as_deref() else {
+        return false;
+    };
+    match message {
+        ServerMessage::Accepted { request_id: actual } if actual == request_id => {
+            state.deletion_request_id = None;
+            true
+        }
+        ServerMessage::Rejected {
+            request_id: actual, ..
+        } if actual == request_id => {
+            state.deletion_request_id = None;
+            false
+        }
+        _ => false,
+    }
 }
 
 fn matches_pending_session_creation(
@@ -552,10 +613,16 @@ fn handle_server_message(
             handle_gateway_event(state, record, live);
         }
         ServerMessage::SessionHistory {
+            request_id,
             session_id: actual,
             mut records,
-            ..
-        } if actual == session_id => {
+            next_before_sequence,
+        } if actual == session_id
+            && state.history_request_id.as_deref() == Some(request_id.as_str()) =>
+        {
+            state.history_request_id = None;
+            state.next_before_sequence = next_before_sequence;
+            session.next_before_sequence = next_before_sequence;
             for record in &mut records {
                 enrich_resume_picker(
                     &mut record.event.msg,
@@ -577,6 +644,10 @@ fn handle_server_message(
             }
         }
         ServerMessage::Sessions { sessions, .. } => gateway.sessions = sessions,
+        ServerMessage::BackgroundApprovals { approvals } => {
+            gateway.background_approvals = approvals;
+            state.background_approval_count = gateway.background_approvals.len();
+        }
         ServerMessage::Bots { bots, .. } => {
             gateway.bots = bots;
             if let Err(error) = sync_session_info(state, session, gateway) {
@@ -594,6 +665,37 @@ fn handle_server_message(
                 *session = payload;
                 return Some(FrontendExit::Resume(session_id.into()));
             }
+        }
+        ServerMessage::SessionFiles {
+            session_id: actual,
+            files,
+            ..
+        } if actual == session_id => state.open_session_files(files),
+        ServerMessage::GitDiff {
+            session_id: actual,
+            scope,
+            diff,
+            ..
+        } if actual == session_id => {
+            let title = format!("{scope:?} diff").to_ascii_lowercase();
+            state.open_text_preview(
+                title,
+                if diff.is_empty() {
+                    "No changes.".into()
+                } else {
+                    diff
+                },
+                FrontendBlockFormat::UnifiedDiff,
+                TranscriptTone::Neutral,
+            );
+        }
+        ServerMessage::Rejected {
+            request_id,
+            message,
+            ..
+        } if state.history_request_id.as_deref() == Some(request_id.as_str()) => {
+            state.history_request_id = None;
+            state.push(message, TranscriptTone::Error);
         }
         message => {
             if let Some(response) = render_response(&message, &gateway.provider_instances) {
@@ -758,10 +860,289 @@ async fn send_and_report(sender: &GatewaySender, session_id: &str, op: Op, state
     }
 }
 
-async fn send_gateway_action(sender: &GatewaySender, action: GatewayAction, state: &mut TuiState) {
-    if let Err(error) = sender.send(*prepare(action)).await {
-        state.push(error.to_string(), TranscriptTone::Error);
+async fn send_gateway_action(
+    sender: &GatewaySender,
+    session_id: &str,
+    action: GatewayAction,
+    state: &mut TuiState,
+) {
+    match action {
+        GatewayAction::DeleteCurrent => {
+            let request_id = Uuid::new_v4().to_string();
+            let result = sender
+                .send(ClientMessage::DeleteSessions {
+                    request_id: request_id.clone(),
+                    session_ids: vec![session_id.into()],
+                })
+                .await;
+            match result {
+                Ok(()) => state.deletion_request_id = Some(request_id),
+                Err(error) => state.push(error.to_string(), TranscriptTone::Error),
+            }
+        }
+        action => {
+            if let Err(error) = sender.send(*prepare(action, session_id)).await {
+                state.push(error.to_string(), TranscriptTone::Error);
+            }
+        }
     }
+}
+
+async fn request_earlier_history(sender: &GatewaySender, session_id: &str, state: &mut TuiState) {
+    let Some(before_sequence) = state.next_before_sequence else {
+        return;
+    };
+    let request_id = Uuid::new_v4().to_string();
+    match sender
+        .send(ClientMessage::GetSessionHistory {
+            request_id: request_id.clone(),
+            session_id: session_id.into(),
+            before_sequence: Some(before_sequence),
+        })
+        .await
+    {
+        Ok(()) => state.history_request_id = Some(request_id),
+        Err(error) => state.push(error.to_string(), TranscriptTone::Error),
+    }
+}
+
+async fn start_file_download(
+    sender: &GatewaySender,
+    session_id: &str,
+    file: SessionFileReference,
+    state: &mut TuiState,
+) {
+    if state.file_download.is_some() {
+        state.push(
+            "wait for the current file download to finish",
+            TranscriptTone::Warning,
+        );
+        return;
+    }
+    let directory = match std::env::current_dir() {
+        Ok(directory) => directory,
+        Err(error) => {
+            state.push(error.to_string(), TranscriptTone::Error);
+            return;
+        }
+    };
+    let (destination, output) = match create_download_file(&directory, &file.name).await {
+        Ok(download) => download,
+        Err(error) => {
+            state.push(error.to_string(), TranscriptTone::Error);
+            return;
+        }
+    };
+    let request_id = Uuid::new_v4().to_string();
+    let request = ClientMessage::ReadSessionFile {
+        request_id: request_id.clone(),
+        session_id: session_id.into(),
+        file_id: file.id.clone(),
+        offset: 0,
+        max_bytes: FILE_READ_CHUNK_BYTES,
+    };
+    if let Err(error) = sender.send(request).await {
+        drop(output);
+        let _ = tokio::fs::remove_file(destination).await;
+        state.push(error.to_string(), TranscriptTone::Error);
+        return;
+    }
+    state.file_download = Some(super::PendingFileDownload {
+        request_id,
+        session_id: session_id.into(),
+        file,
+        destination,
+        output,
+        offset: 0,
+        preview: Vec::new(),
+        preview_truncated: false,
+    });
+}
+
+async fn create_download_file(
+    directory: &Path,
+    requested_name: &str,
+) -> io::Result<(PathBuf, tokio::fs::File)> {
+    let requested = Path::new(requested_name)
+        .file_name()
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| std::ffi::OsStr::new("download"));
+    let path = Path::new(requested);
+    let stem = path.file_stem().unwrap_or(requested).to_string_lossy();
+    let extension = path.extension().map(|value| value.to_string_lossy());
+    for suffix in 0_u32..=u32::MAX {
+        let name = if suffix == 0 {
+            requested.to_os_string()
+        } else if let Some(extension) = &extension {
+            format!("{stem}-{suffix}.{extension}").into()
+        } else {
+            format!("{stem}-{suffix}").into()
+        };
+        let destination = directory.join(name);
+        match tokio::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&destination)
+            .await
+        {
+            Ok(file) => return Ok((destination, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "no available download filename",
+    ))
+}
+
+async fn handle_file_download_message(
+    message: &ServerMessage,
+    sender: &GatewaySender,
+    state: &mut TuiState,
+) -> bool {
+    let Some(download) = state.file_download.as_ref() else {
+        return false;
+    };
+    let matches_request = match message {
+        ServerMessage::SessionFileChunk {
+            request_id,
+            session_id,
+            file_id,
+            ..
+        } => {
+            request_id == &download.request_id
+                && session_id == &download.session_id
+                && file_id == &download.file.id
+        }
+        ServerMessage::Rejected { request_id, .. } => request_id == &download.request_id,
+        _ => false,
+    };
+    if !matches_request {
+        return false;
+    }
+    match message {
+        ServerMessage::Rejected { message, .. } => {
+            fail_file_download(state, message).await;
+        }
+        ServerMessage::SessionFileChunk {
+            offset,
+            data,
+            next_offset,
+            ..
+        } => {
+            if let Err(error) = write_file_chunk(state, *offset, data, *next_offset).await {
+                fail_file_download(state, &error.to_string()).await;
+                return true;
+            }
+            if let Some(offset) = next_offset {
+                let request_id = Uuid::new_v4().to_string();
+                let Some(download) = state.file_download.as_mut() else {
+                    return true;
+                };
+                download.request_id.clone_from(&request_id);
+                let request = ClientMessage::ReadSessionFile {
+                    request_id,
+                    session_id: download.session_id.clone(),
+                    file_id: download.file.id.clone(),
+                    offset: *offset,
+                    max_bytes: FILE_READ_CHUNK_BYTES,
+                };
+                if let Err(error) = sender.send(request).await {
+                    fail_file_download(state, &error.to_string()).await;
+                }
+            } else {
+                finish_file_download(state).await;
+            }
+        }
+        _ => unreachable!("matched file response"),
+    }
+    true
+}
+
+async fn write_file_chunk(
+    state: &mut TuiState,
+    offset: u64,
+    data: &[u8],
+    next_offset: Option<u64>,
+) -> io::Result<()> {
+    let download = state.file_download.as_mut().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "session file download is not active",
+        )
+    })?;
+    if offset != download.offset {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "session file chunk offset did not match the requested offset",
+        ));
+    }
+    let end = offset
+        .checked_add(u64::try_from(data.len()).map_err(io::Error::other)?)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "file offset overflow"))?;
+    if data.is_empty() && next_offset.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "session file chunk did not advance the download",
+        ));
+    }
+    if end > download.file.size || next_offset.is_some_and(|next| next != end) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "session file chunk exceeded the advertised file size",
+        ));
+    }
+    if next_offset.is_none() && end != download.file.size {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "session file download ended before the advertised file size",
+        ));
+    }
+    download.output.write_all(data).await?;
+    let available = super::MAX_ENTRY_BYTES.saturating_sub(download.preview.len());
+    download
+        .preview
+        .extend_from_slice(&data[..data.len().min(available)]);
+    download.preview_truncated |= data.len() > available;
+    download.offset = end;
+    Ok(())
+}
+
+async fn finish_file_download(state: &mut TuiState) {
+    let Some(mut download) = state.file_download.take() else {
+        return;
+    };
+    if let Err(error) = download.output.flush().await {
+        drop(download.output);
+        let _ = tokio::fs::remove_file(&download.destination).await;
+        state.push(error.to_string(), TranscriptTone::Error);
+        return;
+    }
+    drop(download.output);
+    state.push(
+        format!("saved {}", download.destination.display()),
+        TranscriptTone::Success,
+    );
+    if let Ok(mut text) = String::from_utf8(download.preview) {
+        if download.preview_truncated {
+            text.push_str("\n\n[preview truncated]");
+        }
+        state.open_text_preview(
+            download.file.name,
+            text,
+            FrontendBlockFormat::PlainText,
+            TranscriptTone::Neutral,
+        );
+    }
+}
+
+async fn fail_file_download(state: &mut TuiState, message: &str) {
+    if let Some(download) = state.file_download.take() {
+        drop(download.output);
+        let _ = tokio::fs::remove_file(download.destination).await;
+    }
+    state.push(message, TranscriptTone::Error);
 }
 
 async fn open_gateway_settings(
@@ -803,7 +1184,7 @@ async fn open_bots(
     session: &SessionReadyPayload,
     state: &mut TuiState,
     session_id: &str,
-) -> bool {
+) -> Option<FrontendExit> {
     let bot_id = session.session.context.owner_id.clone();
     let result = bots::run(
         terminal,
@@ -819,15 +1200,17 @@ async fn open_bots(
         .iter()
         .any(|candidate| candidate.session_id == session_id)
     {
-        return true;
+        return Some(FrontendExit::Fresh);
     }
     if let Err(error) = sync_session_info(state, session, gateway) {
         state.push(error.to_string(), TranscriptTone::Error);
     }
-    if let Err(error) = result {
-        state.push(error.to_string(), TranscriptTone::Error);
+    match result {
+        Ok(Some(session_id)) => return Some(FrontendExit::Resume(session_id)),
+        Ok(None) => {}
+        Err(error) => state.push(error.to_string(), TranscriptTone::Error),
     }
-    false
+    None
 }
 
 async fn run_setup(
@@ -894,6 +1277,8 @@ fn sync_session_info(
     state.active_message_delivery = Some(session.active_message_delivery);
     state.context_limit = session.context_limit_tokens;
     state.usage.apply_context_limit(state.context_limit);
+    state.background_approval_count = gateway.background_approvals.len();
+    state.next_before_sequence = session.next_before_sequence;
     Ok(())
 }
 
@@ -1074,11 +1459,12 @@ mod tests {
     use super::*;
     use mobius::protocol::{
         ActiveMessageDelivery, Event, EventMsg, FrontendPickerOption, ModelChangedEvent,
-        SessionConfiguredEvent, SessionContext, SessionFileLimits,
+        SessionConfiguredEvent, SessionContext, SessionFileLimits, SessionFileOrigin,
+        SessionFileRecord,
     };
     use mobius_gateway::wire::{
-        ReadyPayload, RecordedEvent, RoutineInteractionPolicy, RunStats, SessionActivity,
-        SessionReadyPayload, VersionedAgentConfig, WorkspaceInfo,
+        BackgroundApproval, GitDiffScope, ReadyPayload, RecordedEvent, RoutineInteractionPolicy,
+        RunStats, SessionActivity, SessionReadyPayload, VersionedAgentConfig, WorkspaceInfo,
     };
 
     fn replay_event(sequence: u64) -> ServerMessage {
@@ -1164,6 +1550,54 @@ mod tests {
         assert!(hydration.allows_draw());
     }
 
+    #[tokio::test]
+    async fn downloads_do_not_overwrite_and_reject_invalid_chunks() {
+        let directory = tempfile::tempdir().expect("download directory");
+        let (first_path, first) = create_download_file(directory.path(), "report.txt")
+            .await
+            .expect("first download");
+        drop(first);
+        let (second_path, second) = create_download_file(directory.path(), "report.txt")
+            .await
+            .expect("second download");
+        assert_ne!(first_path, second_path);
+
+        let mut state = TuiState {
+            file_download: Some(super::super::PendingFileDownload {
+                request_id: "request".into(),
+                session_id: "session".into(),
+                file: SessionFileReference {
+                    id: "file".into(),
+                    name: "report.txt".into(),
+                    size: 2,
+                    media_type: "text/plain".into(),
+                },
+                destination: second_path.clone(),
+                output: second,
+                offset: 0,
+                preview: Vec::new(),
+                preview_truncated: false,
+            }),
+            ..TuiState::default()
+        };
+
+        assert!(
+            write_file_chunk(&mut state, 0, b"too long", None)
+                .await
+                .is_err()
+        );
+        assert!(write_file_chunk(&mut state, 0, b"", Some(0)).await.is_err());
+        write_file_chunk(&mut state, 0, b"ok", None)
+            .await
+            .expect("valid chunk");
+        let download = state.file_download.take().expect("download state");
+        drop(download.output);
+        assert_eq!(
+            tokio::fs::read(second_path).await.expect("saved file"),
+            b"ok"
+        );
+    }
+
     #[test]
     fn rejected_session_creation_does_not_commit_clear() {
         let mut pending = Some(PendingSessionCreation {
@@ -1241,6 +1675,7 @@ mod tests {
             String::new(),
         );
         let mut session = session_payload("session-a");
+        session.next_before_sequence = Some(7);
         session.active_turn_ids = vec!["turn-a".into()];
         session.pending_approvals = vec![ExecApprovalRequestEvent {
             id: "approval-a".into(),
@@ -1248,8 +1683,17 @@ mod tests {
             calls: Vec::new(),
             reason: "approve work".into(),
         }];
-        sync_session(&mut state, &session, &ready_payload()).unwrap();
+        let mut gateway = ready_payload();
+        gateway.background_approvals.push(BackgroundApproval {
+            session_id: "background".into(),
+            bot_id: "bot-a".into(),
+            turn_id: "turn-b".into(),
+            request_id: "approval-b".into(),
+        });
+        sync_session(&mut state, &session, &gateway).unwrap();
         assert!(state.active_turn().is_some());
+        assert_eq!(state.next_before_sequence, Some(7));
+        assert_eq!(state.background_approval_count, 1);
         assert_eq!(
             state.approval().map(|request| request.id.as_str()),
             Some("approval-a")
@@ -1262,6 +1706,101 @@ mod tests {
         );
         assert!(state.active_turn().is_none());
         assert!(state.approval().is_none());
+    }
+
+    #[test]
+    fn history_and_phase_responses_update_the_current_chat() {
+        let mut state = TuiState {
+            history_request_id: Some("history".into()),
+            ..TuiState::default()
+        };
+        let mut session = session_payload("session-a");
+        let mut gateway = ready_payload();
+        let ServerMessage::AgentEvent { record, .. } = replay_event(1) else {
+            unreachable!()
+        };
+
+        handle_server_message(
+            ServerMessage::SessionHistory {
+                request_id: "history".into(),
+                session_id: "session-a".into(),
+                records: vec![record],
+                next_before_sequence: Some(4),
+            },
+            &mut gateway,
+            &mut session,
+            &mut state,
+            "session-a",
+            false,
+        );
+        handle_server_message(
+            ServerMessage::BackgroundApprovals {
+                approvals: vec![BackgroundApproval {
+                    session_id: "hidden".into(),
+                    bot_id: "bot-a".into(),
+                    turn_id: "turn".into(),
+                    request_id: "approval".into(),
+                }],
+            },
+            &mut gateway,
+            &mut session,
+            &mut state,
+            "session-a",
+            false,
+        );
+        handle_server_message(
+            ServerMessage::GitDiff {
+                request_id: "diff".into(),
+                session_id: "session-a".into(),
+                scope: GitDiffScope::Staged,
+                diff: "+added".into(),
+            },
+            &mut gateway,
+            &mut session,
+            &mut state,
+            "session-a",
+            false,
+        );
+
+        assert_eq!(state.history_request_id, None);
+        assert_eq!(state.next_before_sequence, Some(4));
+        assert_eq!(session.next_before_sequence, Some(4));
+        assert_eq!(state.background_approval_count, 1);
+        assert!(matches!(
+            state.preview.as_ref().map(|preview| &preview.content),
+            Some(super::super::PreviewContent::Text {
+                format: FrontendBlockFormat::UnifiedDiff,
+                ..
+            })
+        ));
+
+        handle_server_message(
+            ServerMessage::SessionFiles {
+                request_id: "files".into(),
+                session_id: "session-a".into(),
+                files: vec![SessionFileRecord {
+                    origin: SessionFileOrigin::Agent,
+                    file: SessionFileReference {
+                        id: "file".into(),
+                        name: "notes.txt".into(),
+                        size: 5,
+                        media_type: "text/plain".into(),
+                    },
+                }],
+            },
+            &mut gateway,
+            &mut session,
+            &mut state,
+            "session-a",
+            false,
+        );
+        assert_eq!(
+            state
+                .picker
+                .as_ref()
+                .map(super::super::PickerState::match_count),
+            Some(1)
+        );
     }
 
     #[test]

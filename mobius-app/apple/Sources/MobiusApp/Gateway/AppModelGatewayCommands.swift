@@ -147,11 +147,15 @@ extension AppModel {
     }
 
     func repairSelectedGateway() {
-        guard gateway.selectedAccount != nil else {
+        guard let account = gateway.selectedAccount else {
             showsPairing = true
             return
         }
-        gateway.repairSelectedGateway()
+        repairGateway(account)
+    }
+
+    func repairGateway(_ account: GatewayAccount) {
+        gateway.repair(account)
         showsPairing = true
     }
 

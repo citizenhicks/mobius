@@ -205,7 +205,17 @@ impl BotsState {
         match self.page.clone() {
             Page::Root => self.handle_root_key(key, gateway),
             Page::Bot(id) => self.handle_bot_key(key, gateway, id),
-            Page::Conversations(_) => Action::None,
+            Page::Conversations(id) => {
+                if key.code != KeyCode::Enter {
+                    Action::None
+                } else {
+                    sessions_for_bot(gateway, &id)
+                        .get(self.selected)
+                        .map_or(Action::None, |session| {
+                            Action::OpenSession(session.session_id.clone())
+                        })
+                }
+            }
             Page::Routines(id) => self.handle_routine_key(key, id),
             Page::Routine { bot_id, routine_id } => {
                 self.handle_routine_detail_key(key, bot_id, routine_id)

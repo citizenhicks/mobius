@@ -545,6 +545,37 @@ fn peer_messages_use_activity_rows_in_live_history_and_preview_transcripts() {
 }
 
 #[test]
+fn gateway_history_prepends_earlier_messages() {
+    let mut state = state();
+    state.push("newest", TranscriptTone::Assistant);
+
+    events::handle_gateway_history(
+        &mut state,
+        vec![recorded(
+            EventMsg::Message(MessageEvent {
+                author: MessageAuthor::User,
+                delivery: MessageDelivery::Turn,
+                text: "oldest".into(),
+                attachments: Vec::new(),
+                reply: None,
+                message_target: None,
+            }),
+            Vec::new(),
+            None,
+        )],
+    );
+
+    assert_eq!(
+        state
+            .transcript
+            .iter()
+            .map(|entry| entry.text.as_str())
+            .collect::<Vec<_>>(),
+        ["› oldest", "newest"]
+    );
+}
+
+#[test]
 fn transcript_text_strips_terminal_control_characters() {
     let mut state = state();
     state.push("unsafe \u{1b}[31mred\u{1b}[0m", TranscriptTone::Warning);

@@ -470,6 +470,7 @@ extension MobiusCloudModel {
                 let grant = try await cloudClient.createPairingGrant()
                 guard operationGeneration == generation else { throw CancellationError() }
                 cloudAction = .connecting
+                gateway.cancelPairingRepair()
                 gateway.applyPairingSetup(grant.setup)
                 gateway.pair()
                 callbacks.cloudPairingStarted?()

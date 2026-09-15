@@ -93,10 +93,20 @@ pub async fn run(
     gateway: &mut ReadyPayload,
     session: &mut SessionReadyPayload,
     gateway_endpoint: String,
+    choose_initial_bot: bool,
 ) -> Result<(FrontendExit, GatewaySender, GatewayEvents)> {
     let workspace = session.workspace.path.clone();
     let catalog = catalog::UiCatalog::build(&session.contributions, &workspace)?;
-    tui::runtime::run(sender, events, gateway, session, catalog, gateway_endpoint).await
+    tui::runtime::run(
+        sender,
+        events,
+        gateway,
+        session,
+        catalog,
+        gateway_endpoint,
+        choose_initial_bot,
+    )
+    .await
 }
 
 /// Why a frontend returned control to its launcher.
@@ -109,4 +119,6 @@ pub enum FrontendExit {
     Reload,
     /// Selects the reconnect case.
     Reconnect,
+    /// Selects the fresh-session case after deleting the open chat.
+    Fresh,
 }

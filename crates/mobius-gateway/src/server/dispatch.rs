@@ -60,7 +60,9 @@ pub(super) async fn handle_message(
         return Ok(());
     };
     match message {
-        ClientMessage::Pair { .. } | ClientMessage::Authenticate { .. } => {
+        ClientMessage::Pair { .. }
+        | ClientMessage::RepairPairing { .. }
+        | ClientMessage::Authenticate { .. } => {
             return write_server_error(
                 writer,
                 "already_authenticated",

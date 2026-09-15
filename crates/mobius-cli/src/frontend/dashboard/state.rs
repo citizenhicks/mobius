@@ -76,19 +76,18 @@ impl CapabilityOverlay {
     }
 
     pub(in crate::frontend) fn from_widgets(
-        capability: String,
-        items: Vec<FrontendWidget>,
+        fallback_title: String,
+        widgets: Vec<((String, String), FrontendWidget)>,
     ) -> Self {
-        let title = items
+        let title = widgets
             .first()
-            .map_or_else(|| capability.clone(), |item| item.text.clone());
-        let mut slots = items.iter().map(|item| item.slot).collect::<Vec<_>>();
+            .map_or_else(|| fallback_title, |(_, item)| item.text.clone());
+        let mut slots = widgets
+            .iter()
+            .map(|(_, item)| item.slot)
+            .collect::<Vec<_>>();
         slots.sort_unstable();
         slots.dedup();
-        let widgets = items
-            .into_iter()
-            .map(|item| ((capability.clone(), item.id.clone()), item))
-            .collect::<Vec<_>>();
         let open = (widgets.len() == 1).then(|| widgets[0].0.clone());
         let mut overlay = Self {
             title,

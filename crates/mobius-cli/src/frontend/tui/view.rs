@@ -123,7 +123,7 @@ pub(super) fn render(frame: &mut Frame<'_>, state: &mut TuiState, catalog: &UiCa
     );
     render_footer(frame, state, areas[4]);
     if let Some(picker) = state.picker.as_mut() {
-        picker.selected = picker.selected.min(picker.options.len().saturating_sub(1));
+        picker.selected = picker.selected.min(picker.match_count().saturating_sub(1));
         render_picker_popup(frame, picker);
     }
 }
@@ -235,6 +235,16 @@ fn append_live_tail(
             ])
         }));
         has_content = true;
+    }
+    if state
+        .widgets
+        .iter()
+        .any(|(_, item)| item.slot == FrontendSlot::TranscriptTail && item.action.is_some())
+    {
+        lines.push(Line::styled(
+            "┊ /queued to edit queued messages",
+            current().style(Role::Muted).add_modifier(Modifier::ITALIC),
+        ));
     }
     if let Some(request) = state.approval() {
         if has_content {
@@ -409,7 +419,7 @@ pub(super) fn render_preview(frame: &mut Frame<'_>, state: &mut TuiState) {
         return;
     }
     frame.render_widget(Clear, area);
-    let (title, live) = {
+    let (title, live, text) = {
         let Some(preview) = state.preview.as_ref() else {
             return;
         };
@@ -420,10 +430,9 @@ pub(super) fn render_preview(frame: &mut Frame<'_>, state: &mut TuiState) {
         } else {
             format!("{}{older_hint} · {}", preview.title, preview.subtitle)
         };
-        (
-            title,
-            matches!(&preview.content, PreviewContent::LiveTranscript),
-        )
+        let live = matches!(&preview.content, PreviewContent::LiveTranscript);
+        let text = matches!(&preview.content, PreviewContent::Text { .. });
+        (title, live, text)
     };
     let block = Block::bordered()
         .style(theme.style(Role::Canvas))
@@ -435,6 +444,8 @@ pub(super) fn render_preview(frame: &mut Frame<'_>, state: &mut TuiState) {
     let inner = block.inner(area);
     let (lines, scroll) = if live {
         live_preview_window(state, inner.width, inner.height)
+    } else if text {
+        text_preview_window(state, inner.width, inner.height)
     } else {
         snapshot_preview_window(state, inner.width, inner.height)
     };
@@ -444,6 +455,24 @@ pub(super) fn render_preview(frame: &mut Frame<'_>, state: &mut TuiState) {
         .scroll((scroll, 0));
 
     frame.render_widget(paragraph, area);
+}
+
+fn text_preview_window(state: &mut TuiState, width: u16, height: u16) -> (Vec<Line<'static>>, u16) {
+    let preview = state.preview.as_mut().expect("preview checked");
+    let PreviewContent::Text { text, format, tone } = &preview.content else {
+        return (Vec::new(), 0);
+    };
+    let mut lines = Vec::new();
+    push_lines(&mut lines, text, *tone, *format, width);
+    let content_height = lines
+        .iter()
+        .map(|line| wrapped_line_height(line, width))
+        .sum();
+    preview.viewport.update(content_height, usize::from(height));
+    (
+        lines,
+        u16::try_from(preview.viewport.effective_scroll()).unwrap_or(u16::MAX),
+    )
 }
 
 fn live_preview_window(state: &mut TuiState, width: u16, height: u16) -> (Vec<Line<'static>>, u16) {
@@ -1016,6 +1045,20 @@ fn status_line(state: &TuiState) -> Line<'static> {
             theme.style(Role::Warning),
         );
     }
+    if state.background_approval_count > 0 {
+        return Line::styled(
+            format!(
+                "{} background approval{} · /events",
+                state.background_approval_count,
+                if state.background_approval_count == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            ),
+            theme.style(Role::Warning),
+        );
+    }
     if state.is_working() && state.composer_target_turn().is_some() {
         return Line::styled(
             format!(
@@ -1069,14 +1112,21 @@ fn render_picker_menu(frame: &mut Frame<'_>, area: Rect, picker: &super::PickerS
     let areas = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(area);
     frame.render_widget(
         Paragraph::new(Line::styled(
-            format!("  {}", picker.title),
+            if picker.query.is_empty() {
+                format!("  {}", picker.title)
+            } else {
+                format!(
+                    "  {} · filter: {}",
+                    picker.title,
+                    terminal_text(&picker.query)
+                )
+            },
             current().style(Role::Accent).add_modifier(Modifier::BOLD),
         )),
         areas[0],
     );
     let items = picker
-        .options
-        .iter()
+        .matching_options()
         .map(|option| {
             let description = if !option.shows_detail || option.detail.is_empty() {
                 option.description.clone()
@@ -1100,11 +1150,19 @@ fn render_picker_popup(frame: &mut Frame<'_>, picker: &super::PickerState) {
     }
     let theme = current();
     frame.render_widget(Clear, area);
+    let delete_hint = if picker
+        .selected_option()
+        .is_some_and(|option| option.secondary.is_some())
+    {
+        " · Del delete"
+    } else {
+        ""
+    };
     let block = Block::bordered()
         .style(theme.style(Role::Canvas))
         .border_style(theme.style(Role::Info))
         .title(Line::styled(
-            " ↑↓ select · Enter open · Esc close ",
+            format!(" ↑↓ select · type to filter · Enter open{delete_hint} · Esc close "),
             theme.style(Role::Accent).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(area);

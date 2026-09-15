@@ -251,6 +251,12 @@ fn connection_handshakes_have_no_session_replay_cursor() {
             client_label: "client".into(),
             client_kind: ClientKind::Macos,
         },
+        ClientMessage::RepairPairing {
+            code: "pairing-code".into(),
+            replacing_token_digest: [7; 32],
+            client_label: "client".into(),
+            client_kind: ClientKind::Ios,
+        },
     ];
 
     let has_cursor = frames

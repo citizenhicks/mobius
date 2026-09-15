@@ -750,6 +750,10 @@ final class GatewayStore {
         return token
     }
 
+    func tokenDigest(for account: GatewayAccount) throws -> [UInt8] {
+        Array(SHA256.hash(data: Data(try token(for: account).utf8)))
+    }
+
     func remove(_ account: GatewayAccount) async throws {
         var errors: [Error] = []
         do {

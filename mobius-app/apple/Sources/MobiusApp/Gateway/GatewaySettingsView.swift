@@ -203,6 +203,13 @@ struct GatewayDetailView: View {
                             MobiusLabel(title: "Reconnect", glyph: .arrowClockwise)
                         }
                     }
+                    if account.cloudUserID == nil {
+                        Button {
+                            model.repairGateway(account)
+                        } label: {
+                            MobiusLabel(title: "Re-pair", glyph: .link)
+                        }
+                    }
                     Button {
                         renameDraft = account.displayName
                         showsRename = true
