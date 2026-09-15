@@ -35,6 +35,8 @@ use self::connection::exchange;
 use self::connection::failed_exchange;
 #[cfg(test)]
 use self::connection::read_exchange;
+#[cfg(test)]
+use self::connection::websocket_error_cause;
 use super::CompactOutput;
 use super::CompactRequest;
 use super::Model;

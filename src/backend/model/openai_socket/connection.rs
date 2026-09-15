@@ -119,7 +119,13 @@ impl OpenAiWsConnection {
         }
         match timeout(SOCKET_IO_TIMEOUT, response).await {
             Ok(Ok(result)) => result,
-            Ok(Err(_)) | Err(_) => {
+            Ok(Err(_)) => {
+                log_interruption("request", "socket pump stopped before send acknowledgement");
+                self.retire();
+                Err(())
+            }
+            Err(_) => {
+                log_interruption("request", "send acknowledgement timed out");
                 self.retire();
                 Err(())
             }
@@ -171,10 +177,7 @@ async fn socket_pump(
             command = commands.recv() => {
                 match command {
                     Some(SocketCommand::Send { message, result }) if !active => {
-                        let sent = matches!(
-                            timeout(SOCKET_IO_TIMEOUT, socket.send(message)).await,
-                            Ok(Ok(()))
-                        );
+                        let sent = send_socket_message(&mut socket, message, "request").await;
                         active = sent;
                         stream_bytes = 0;
                         stream_events = 0;
@@ -199,10 +202,9 @@ async fn socket_pump(
             message = socket.next() => {
                 match message {
                     Some(Ok(Message::Ping(payload))) => {
-                        if !matches!(
-                            timeout(SOCKET_IO_TIMEOUT, socket.send(Message::Pong(payload))).await,
-                            Ok(Ok(()))
-                        ) {
+                        let sent =
+                            send_socket_message(&mut socket, Message::Pong(payload), "pong").await;
+                        if !sent {
                             if active {
                                 let _ = messages.try_send(SocketEvent::Closed);
                             }
@@ -232,6 +234,7 @@ async fn socket_pump(
                             break;
                         }
                         if messages.try_send(SocketEvent::Message(message)).is_err() {
+                            log_interruption("response", "event queue unavailable");
                             break;
                         }
                     }
@@ -244,8 +247,23 @@ async fn socket_pump(
                         }
                         break;
                     }
-                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => {
+                    Some(Ok(Message::Close(_))) => {
                         if active {
+                            log_interruption("response", "peer sent a close frame");
+                            let _ = messages.try_send(SocketEvent::Closed);
+                        }
+                        break;
+                    }
+                    Some(Err(error)) => {
+                        if active {
+                            log_websocket_error("response", &error);
+                            let _ = messages.try_send(SocketEvent::Closed);
+                        }
+                        break;
+                    }
+                    None => {
+                        if active {
+                            log_interruption("response", "stream ended");
                             let _ = messages.try_send(SocketEvent::Closed);
                         }
                         break;
@@ -262,6 +280,20 @@ async fn socket_pump(
     }
 }
 
+async fn send_socket_message(socket: &mut RawSocket, message: Message, context: &str) -> bool {
+    match timeout(SOCKET_IO_TIMEOUT, socket.send(message)).await {
+        Ok(Ok(())) => true,
+        Ok(Err(error)) => {
+            log_websocket_error(context, &error);
+            false
+        }
+        Err(_) => {
+            log_interruption(context, "send timed out");
+            false
+        }
+    }
+}
+
 pub(super) async fn connect(
     auth: &dyn OpenAiAuthorization,
     socket_url: &str,
@@ -274,12 +306,18 @@ pub(super) async fn connect(
         let config = WebSocketConfig::default()
             .max_message_size(Some(MAX_SOCKET_MESSAGE_BYTES))
             .max_frame_size(Some(MAX_SOCKET_MESSAGE_BYTES));
-        let result = timeout(
+        let result = match timeout(
             CONNECT_TIMEOUT,
             connect_async_with_config(request, Some(config), false),
         )
         .await
-        .map_err(|_| Error::Provider(ProviderError::stream_interrupted(None)))?;
+        {
+            Ok(result) => result,
+            Err(_) => {
+                log_interruption("connect", "timed out");
+                return Err(Error::Provider(ProviderError::stream_interrupted(None)));
+            }
+        };
         match result {
             Ok((socket, _)) => return Ok(OpenAiWsConnection::new(socket)),
             Err(error) if attempt == 0 && unauthorized(&error) => {
@@ -291,7 +329,10 @@ pub(super) async fn connect(
             Err(error) if unauthorized(&error) => {
                 return Err(Error::Auth("WebSocket authorization was rejected".into()));
             }
-            Err(error) => return Err(websocket_connect_error(error)),
+            Err(error) => {
+                log_websocket_error("connect", &error);
+                return Err(websocket_connect_error(error));
+            }
         }
     }
     unreachable!("WebSocket authorization retry is bounded")
@@ -388,7 +429,11 @@ pub(super) async fn read_exchange(
             Ok(Some(SocketEvent::ProtocolError(message))) => {
                 return Err(Error::Provider(message.into()));
             }
-            Ok(Some(SocketEvent::Closed) | None) | Err(_) => return Ok(Exchange::Reconnect),
+            Ok(Some(SocketEvent::Closed) | None) => return Ok(Exchange::Reconnect),
+            Err(_) => {
+                log_interruption("response", "idle timeout");
+                return Ok(Exchange::Reconnect);
+            }
         };
         if message.len() > MAX_SOCKET_MESSAGE_BYTES {
             return Err(Error::Provider(
@@ -400,7 +445,10 @@ pub(super) async fn read_exchange(
             Message::Text(text) => serde_json::from_str(text.as_ref())?,
             Message::Binary(bytes) => serde_json::from_slice(&bytes)?,
             Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
-            Message::Close(_) => return Ok(Exchange::Reconnect),
+            Message::Close(_) => {
+                log_interruption("response", "peer sent a close frame");
+                return Ok(Exchange::Reconnect);
+            }
         };
         collect_stream_output(&event, &mut output)?;
         emit_ready_tool_calls(
@@ -440,9 +488,18 @@ pub(super) fn failed_exchange(event: &Value, output_delivered: bool) -> Result<E
     let message = response_error(event);
     let retry_after = response_retry_after(event);
     match code {
-        Some("previous_response_not_found") => Ok(Exchange::PreviousMissing { output_delivered }),
-        Some("websocket_connection_limit_reached") => Ok(Exchange::ConnectionLimit { retry_after }),
-        _ if retryable_response_error(code, &message) => Ok(Exchange::Retry { retry_after }),
+        Some("previous_response_not_found") => {
+            log_interruption("response", "previous response unavailable");
+            Ok(Exchange::PreviousMissing { output_delivered })
+        }
+        Some("websocket_connection_limit_reached") => {
+            log_interruption("response", "connection limit reached");
+            Ok(Exchange::ConnectionLimit { retry_after })
+        }
+        _ if retryable_response_error(code, &message) => {
+            log_interruption("response", "provider requested retry");
+            Ok(Exchange::Retry { retry_after })
+        }
         _ => Err(Error::Provider(message.into())),
     }
 }
@@ -488,7 +545,11 @@ fn retryable_response_error(code: Option<&str>, message: &str) -> bool {
 }
 
 fn socket_error(error: WebSocketError) -> Error {
-    let kind = match error {
+    Error::Provider(format!("WebSocket {} failure", websocket_error_kind(&error)).into())
+}
+
+fn websocket_error_kind(error: &WebSocketError) -> &'static str {
+    match error {
         WebSocketError::ConnectionClosed | WebSocketError::AlreadyClosed => "closed",
         WebSocketError::Io(_) => "I/O",
         WebSocketError::Tls(_) => "TLS",
@@ -500,6 +561,21 @@ fn socket_error(error: WebSocketError) -> Error {
         WebSocketError::Url(_) => "URL",
         WebSocketError::Http(_) => "HTTP handshake",
         WebSocketError::HttpFormat(_) => "HTTP format",
-    };
-    Error::Provider(format!("WebSocket {kind} failure").into())
+    }
+}
+
+fn log_websocket_error(context: &str, error: &WebSocketError) {
+    log_interruption(context, &websocket_error_cause(error));
+}
+
+pub(super) fn websocket_error_cause(error: &WebSocketError) -> String {
+    match error {
+        WebSocketError::Io(error) => format!("I/O:{:?}", error.kind()),
+        WebSocketError::Http(response) => format!("HTTP:{}", response.status()),
+        _ => websocket_error_kind(error).into(),
+    }
+}
+
+fn log_interruption(context: &str, cause: &str) {
+    eprintln!("OpenAI Responses WebSocket interrupted: context={context} cause={cause}");
 }

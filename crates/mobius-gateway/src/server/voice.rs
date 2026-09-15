@@ -176,10 +176,7 @@ pub(super) async fn handle_message(
             let result = require_selected(connection.selected, &session_id)
                 .cloned()
                 .and_then(|host| {
-                    if uuid::Uuid::parse_str(&request_id).is_err()
-                        || offer_sdp.is_empty()
-                        || offer_sdp.len() > 64 * 1024
-                    {
+                    if offer_sdp.is_empty() || offer_sdp.len() > 64 * 1024 {
                         return Err(Rejection {
                             code: "realtime_voice",
                             message: "invalid voice connection request".into(),

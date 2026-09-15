@@ -128,7 +128,6 @@ async fn signaling_requires_the_selected_session_is_ephemeral_and_keeps_chat_usa
     );
 
     for (request, offer) in [
-        ("invalid-uuid".to_string(), OFFER.to_string()),
         (Uuid::new_v4().to_string(), String::new()),
         (Uuid::new_v4().to_string(), "x".repeat(64 * 1024 + 1)),
     ] {
@@ -147,7 +146,7 @@ async fn signaling_requires_the_selected_session_is_ephemeral_and_keeps_chat_usa
         );
     }
 
-    let request = Uuid::new_v4().to_string();
+    let request = format!("voice-{}", Uuid::new_v4());
     sender
         .send(ClientMessage::StartRealtimeVoice {
             request_id: request.clone(),

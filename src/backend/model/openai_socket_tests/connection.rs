@@ -1,6 +1,14 @@
 use super::super::*;
 use super::support::model_request;
 use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Error as WebSocketError;
+
+#[test]
+fn websocket_error_cause_keeps_only_the_io_category() {
+    let error = WebSocketError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionReset));
+
+    assert_eq!(websocket_error_cause(&error), "I/O:ConnectionReset");
+}
 
 #[tokio::test]
 async fn idle_connection_pump_answers_ping() {
