@@ -306,6 +306,23 @@ extension TranscriptEntry {
 
 typealias TranscriptPresentationID = String
 
+/// Pending activity shares the transcript's event grouping without entering durable history.
+@MainActor
+func transcriptEventEntry(for widget: MountedWidget) -> TranscriptEntry {
+    TranscriptEntry(
+        id: "queued-widget:\(widget.id)",
+        text: widget.widget.text,
+        kind: .event,
+        capability: widget.capability,
+        role: .activity,
+        title: "Message",
+        symbol: widget.widget.symbol,
+        format: "plain_text",
+        tone: widget.widget.tone,
+        pending: true
+    )
+}
+
 enum TranscriptRowSizing: Equatable {
     case fixedSummary
     case intrinsic
@@ -396,11 +413,28 @@ struct TranscriptProjection {
 
     init(
         entries: [TranscriptEntry],
+        pendingActivities: [TranscriptEntry] = [],
         breakBefore boundaryID: TranscriptPresentationID? = nil,
         waitingPhrase: TranscriptWaitingPhrase? = nil,
         previous: TranscriptProjection? = nil
     ) {
-        let rows = Self.rows(from: entries, breakBefore: boundaryID, previous: previous)
+        var rows = Self.rows(from: entries, breakBefore: boundaryID, previous: previous)
+        // Pending widgets must not be folded into an already completed turn.
+        if let first = pendingActivities.first {
+            var tail: TranscriptPresentationRow?
+            if let last = rows.last, last.kind == .activityGroup,
+                !last.records.contains(where: \.turnTerminal)
+            {
+                tail = rows.removeLast()
+            }
+            rows.append(
+                TranscriptPresentationRow(
+                    id: tail?.id ?? first.presentationID,
+                    records: (tail?.records ?? []) + pendingActivities,
+                    sizing: .fixedSummary,
+                    kind: .activityGroup
+                ))
+        }
         let waiting = Self.waitingSlot(
             for: waitingPhrase,
             rows: rows

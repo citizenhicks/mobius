@@ -105,7 +105,9 @@ final class ChatSessionModel {
         didSet { contributionsRevision &+= 1 }
     }
     private(set) var contributionsRevision = 0
-    var mountedWidgets: [MountedWidget] = []
+    var mountedWidgets: [MountedWidget] = [] {
+        didSet { invalidateTranscriptProjection() }
+    }
     var pendingPicker: FrontendPickerPrompt?
     var previews: [TranscriptPreview] = []
     var presentedPreview: TranscriptPreview?
@@ -291,6 +293,7 @@ final class ChatSessionModel {
         waitingPhrase: TranscriptWaitingPhrase? = nil
     ) -> TranscriptProjection {
         let source = displayedTranscript
+        let pendingWidgets = transcriptTailWidgets.filter { !$0.widget.isEditableQueuedInput }
         let key = TranscriptProjectionKey(
             version: transcriptProjectionVersion,
             count: source.count,
@@ -302,6 +305,7 @@ final class ChatSessionModel {
         if let cached = transcriptProjectionCache, cached.key == key { return cached.projection }
         let projection = TranscriptProjection(
             entries: source,
+            pendingActivities: pendingWidgets.map { transcriptEventEntry(for: $0) },
             breakBefore: boundaryID,
             waitingPhrase: waitingPhrase,
             previous: transcriptProjectionCache?.projection
@@ -316,6 +320,9 @@ final class ChatSessionModel {
 
     var headerWidgets: [MountedWidget] { widgets(in: .header) }
     var transcriptTailWidgets: [MountedWidget] { widgets(in: .transcriptTail) }
+    var editableTranscriptTailWidgets: [MountedWidget] {
+        transcriptTailWidgets.filter { $0.widget.isEditableQueuedInput }
+    }
     var messageActionWidgets: [MountedWidget] {
         widgets(in: .messageActions).filter { $0.widget.action != nil }
     }

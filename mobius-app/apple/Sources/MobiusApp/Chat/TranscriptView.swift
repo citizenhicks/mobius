@@ -321,8 +321,8 @@ struct TranscriptView: View {
                     }
                 )
                 TranscriptTailView(slot: projection.waiting, topSpacing: rowSpacing)
-                ForEach(model.chat.transcriptTailWidgets) { widget in
-                    TranscriptTailWidgetView(widget: widget)
+                ForEach(model.chat.editableTranscriptTailWidgets) { widget in
+                    QueuedMessageView(widget: widget)
                         .geometryGroup()
                         .padding(.top, rowSpacing)
                 }

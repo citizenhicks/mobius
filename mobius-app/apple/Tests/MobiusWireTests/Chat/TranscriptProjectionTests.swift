@@ -216,6 +216,29 @@ final class TranscriptProjectionTests: XCTestCase {
         XCTAssertEqual(bot.messageMetadata?.author.peerFields?.handle, "researcher")
     }
 
+    func testPendingActivityStaysOutsideCompletedWorkAndTerminalRows() {
+        let input = entry("user", kind: .user, turnID: "turn-1", startsTurn: true)
+        let work = entry("work", turnID: "turn-1")
+        let pending = entry("pending-peer", pending: true)
+        for terminalKind: TranscriptEntry.Kind in [.assistant, .error] {
+            let terminal = entry(
+                "terminal", kind: terminalKind, turnID: "turn-1", turnTerminal: true)
+            let projection = TranscriptProjection(
+                entries: [input, work, terminal],
+                pendingActivities: [pending],
+                waitingPhrase: phrase
+            )
+
+            XCTAssertEqual(projection.rows.count, 4)
+            XCTAssertEqual(projection.rows[1].kind, .workedGroup)
+            XCTAssertEqual(projection.rows[1].records.map(\.id), ["work"])
+            XCTAssertEqual(projection.rows[2].records.map(\.id), ["terminal"])
+            XCTAssertEqual(projection.rows.last?.kind, .activityGroup)
+            XCTAssertEqual(projection.rows.last?.records.map(\.id), ["pending-peer"])
+            XCTAssertEqual(projection.waiting, .row("pending-peer", phrase))
+        }
+    }
+
     func testNewActivityRunBumpsStructuralRevisionOnce() {
         let firstEvent = entry("event:1")
         let user = entry("user:1", kind: .user)

@@ -1,5 +1,6 @@
 import Foundation
 @testable import Mobius
+import Observation
 import XCTest
 
 @MainActor
@@ -243,21 +244,24 @@ extension AppModelTests {
         XCTAssertTrue(model.chat.transcriptTailWidgets.isEmpty)
     }
 
-    func testPeerSteeringUsesEventsWhileUserSteeringKeepsItsBubble() throws {
-        let peer = MountedWidget(
-            capability: "messages",
-            widget: FrontendWidget(
-                id: "peer-steer",
-                slot: .transcriptTail,
-                text: "Review this",
-                tone: "neutral",
-                symbol: "steer",
-                iconOnly: false,
-                progress: nil,
-                content: nil,
-                action: nil
+    func testPeerSteeringUsesEventsWhileUserSteeringKeepsItsBubble() async throws {
+        func peerWidget(_ text: String) -> MountedWidget {
+            MountedWidget(
+                capability: "messages",
+                widget: FrontendWidget(
+                    id: "peer-steer",
+                    slot: .transcriptTail,
+                    text: text,
+                    tone: "neutral",
+                    symbol: "steer",
+                    iconOnly: false,
+                    progress: nil,
+                    content: nil,
+                    action: nil
+                )
             )
-        )
+        }
+        let peer = peerWidget("Review this")
         XCTAssertFalse(peer.widget.isEditableQueuedInput)
         XCTAssertTrue(editableWidget().widget.isEditableQueuedInput)
         let queuedPeerEntry = transcriptEventEntry(for: peer)
@@ -267,14 +271,48 @@ extension AppModelTests {
         XCTAssertEqual(queuedPeerEntry.text, peer.widget.text)
 
         let model = try model()
+        model.chat.activeTurnID = "turn-1"
+        model.chat.transcript = [
+            TranscriptEntry(
+                id: "tool", text: "Checking", kind: .event, format: "plain_text",
+                pending: false, turnID: "turn-1")
+        ]
+        let initial = model.chat.transcriptProjection(breakBefore: nil)
+        model.chat.upsertWidget(peer)
+        model.chat.upsertWidget(editableWidget())
+        let pending = model.chat.transcriptProjection(breakBefore: nil)
+        XCTAssertEqual(pending.rows.map(\.kind), [.activityGroup])
+        XCTAssertEqual(pending.rows.first?.records.map(\.text), ["Checking", "Review this"])
+        XCTAssertEqual(pending.rows.first?.id, initial.rows.first?.id)
+        XCTAssertEqual(model.chat.transcript.count, 1)
+        XCTAssertEqual(model.chat.editableTranscriptTailWidgets.map(\.id), [editableWidget().id])
+
+        let changed = expectation(description: "Cached projection observes widget updates")
+        withObservationTracking {
+            _ = model.chat.transcriptProjection(breakBefore: nil)
+        } onChange: {
+            changed.fulfill()
+        }
+        model.chat.upsertWidget(peerWidget("Updated advice"))
+        await fulfillment(of: [changed], timeout: 1)
+        let updated = model.chat.transcriptProjection(breakBefore: nil)
+        XCTAssertEqual(updated.rows.first?.records.map(\.text), ["Checking", "Updated advice"])
+        XCTAssertEqual(updated.structuralRevision, pending.structuralRevision)
+
+        model.chat.mountedWidgets.removeAll { $0.id == peer.id }
+        XCTAssertEqual(
+            model.chat.transcriptProjection(breakBefore: nil).rows.first?.records.map(\.text),
+            ["Checking"]
+        )
         model.chat.reduce(
             record: recordedPeerMessage(
                 1,
                 delivery: .steer,
                 text: "Review this"
             ))
-        let peerEntry = try XCTUnwrap(model.chat.transcript.first)
+        let peerEntry = try XCTUnwrap(model.chat.transcript.last)
         XCTAssertEqual(peerEntry.kind, .event)
+        XCTAssertEqual(peerEntry.turnID, "turn-1")
         XCTAssertEqual(peerEntry.messageMetadata?.delivery, .steer)
         XCTAssertEqual(
             TranscriptProjection(entries: model.chat.transcript).rows.map(\.kind),
