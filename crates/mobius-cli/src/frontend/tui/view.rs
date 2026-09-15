@@ -671,12 +671,47 @@ fn push_lines(
 }
 
 fn push_unified_diff(lines: &mut Vec<Line<'static>>, text: &str, width: usize) -> bool {
+    if !text.starts_with("diff --git ") && !text.contains("\ndiff --git ") {
+        return push_diff_patch(lines, text, width);
+    }
+    let mut start = 0;
+    for end in text
+        .match_indices("\ndiff --git ")
+        .map(|(index, _)| index + 1)
+        .chain(std::iter::once(text.len()))
+    {
+        let section = &text[start..end];
+        if !push_diff_patch(lines, section, width) {
+            lines.extend(
+                section
+                    .lines()
+                    .map(|line| Line::styled(line.to_owned(), current().style(Role::Text))),
+            );
+        }
+        start = end;
+    }
+    true
+}
+
+fn push_diff_patch(lines: &mut Vec<Line<'static>>, text: &str, width: usize) -> bool {
     let Ok(patch) = Patch::from_str(text) else {
         return false;
     };
+    if patch.hunks().is_empty() {
+        return false;
+    }
     let theme = current();
+    // diffy discards Git's mode, rename, and other preamble metadata.
+    lines.extend(
+        text.lines()
+            .take_while(|line| {
+                !line.starts_with("--- ") && !line.starts_with("+++ ") && !line.starts_with("@@ ")
+            })
+            .map(|line| Line::styled(line.to_owned(), theme.style(Role::Muted))),
+    );
     let raw_path = patch
         .modified()
+        .filter(|path| *path != "/dev/null")
         .or_else(|| patch.original())
         .unwrap_or("file");
     let path = terminal_text(raw_path);
@@ -804,6 +839,12 @@ fn push_unified_diff(lines: &mut Vec<Line<'static>>, text: &str, width: usize) -
                 line = line.style(Style::default().bg(background));
             }
             lines.push(line);
+            if !content.ends_with('\n') {
+                lines.push(Line::styled(
+                    "      \\ No newline at end of file",
+                    theme.style(Role::Muted),
+                ));
+            }
         }
     }
     true
@@ -1187,12 +1228,13 @@ fn render_menu(frame: &mut Frame<'_>, area: Rect, items: &[MenuItem], selected: 
         .map(|item| item.label.chars().count())
         .max()
         .unwrap_or_default();
-    let start = selected.saturating_add(1).saturating_sub(MAX_MENU_ROWS);
+    let visible_rows = usize::from(area.height);
+    let start = selected.saturating_add(1).saturating_sub(visible_rows);
     let lines = items
         .iter()
         .enumerate()
         .skip(start)
-        .take(MAX_MENU_ROWS)
+        .take(visible_rows)
         .map(|(index, item)| {
             let is_selected = index == selected;
             let style = if is_selected {

@@ -5,6 +5,91 @@ use super::support::*;
 use super::*;
 
 #[test]
+fn git_diff_styles_each_file_and_preserves_metadata_and_truncated_sections() {
+    let diff = concat!(
+        "diff --git a/one.rs b/one.rs\n",
+        "old mode 100644\nnew mode 100755\n",
+        "index 1111111..2222222\n",
+        "--- a/one.rs\n+++ b/one.rs\n@@ -1 +1 @@\n-fn old() {}\n+fn new() {}\n",
+        "diff --git a/two.rs b/two.rs\n",
+        "index 3333333..4444444 100644\n",
+        "--- a/two.rs\n+++ b/two.rs\n@@ -1 +1 @@\n-old\n+new\n",
+        "diff --git a/deleted.rs b/deleted.rs\n",
+        "deleted file mode 100644\n",
+        "--- a/deleted.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-fn removed() {}\n",
+        "\\ No newline at end of file\n",
+        "diff --git a/before b/after\n",
+        "similarity index 100%\nrename from before\nrename to after\n",
+        "diff --git a/image.png b/image.png\n",
+        "Binary files a/image.png and b/image.png differ\n",
+        "diff --git a/script b/script\nold mode 100644\nnew mode 100755\n",
+        "diff --git a/cut.rs b/cut.rs\n",
+        "--- a/cut.rs\n+++ b/cut.rs\n@@ -1,2 +1,2 @@\n-old\n[diff truncated]\n",
+    );
+    let mut state = state();
+    state.transcript.clear();
+    state.apply_block(rendered(FrontendBlock {
+        id: None,
+        group: None,
+        update: FrontendBlockUpdate::Replace,
+        state: FrontendBlockState::Complete,
+        role: FrontendBlockRole::Tool,
+        title: String::new(),
+        text: diff.into(),
+        symbol: None,
+        content: Default::default(),
+        format: FrontendBlockFormat::UnifiedDiff,
+        tone: FrontendTone::Neutral,
+        files: Vec::new(),
+    }));
+    let lines = view::live_transcript_lines(&mut state, 0, 80);
+    let text = rendered_text(&lines);
+    for expected in [
+        "Edited b/one.rs (+1 -1)",
+        "Edited b/two.rs (+1 -1)",
+        "Edited a/deleted.rs (+0 -1)",
+        "\\ No newline at end of file",
+        "old mode 100644\nnew mode 100755",
+        "similarity index 100%\nrename from before\nrename to after",
+        "Binary files a/image.png and b/image.png differ",
+        "diff --git a/script b/script\nold mode 100644\nnew mode 100755",
+        "--- a/cut.rs\n+++ b/cut.rs\n@@ -1,2 +1,2 @@\n-old\n[diff truncated]",
+    ] {
+        assert!(text.contains(expected), "missing {expected:?}: {text}");
+    }
+    assert_eq!(text.matches("Edited ").count(), 3, "{text}");
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.style.bg == Some(current().diff_add_background()))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn metadata_only_diff_remains_text_instead_of_an_empty_edit() {
+    let mut state = state();
+    state.transcript.clear();
+    state.apply_block(rendered(FrontendBlock {
+        id: None,
+        group: None,
+        update: FrontendBlockUpdate::Replace,
+        state: FrontendBlockState::Complete,
+        role: FrontendBlockRole::Tool,
+        title: String::new(),
+        text: "No changes.".into(),
+        symbol: None,
+        content: Default::default(),
+        format: FrontendBlockFormat::UnifiedDiff,
+        tone: FrontendTone::Neutral,
+        files: Vec::new(),
+    }));
+    let text = rendered_text(&view::live_transcript_lines(&mut state, 0, 80));
+    assert_eq!(text.trim(), "No changes.");
+}
+
+#[test]
 fn completed_diff_replaces_the_pending_block_with_a_styled_diff() {
     let mut state = state();
     state.transcript.clear();

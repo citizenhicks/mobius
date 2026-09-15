@@ -141,3 +141,52 @@ fn picker_uses_a_centered_popup() {
     assert!(lines.first().is_some_and(|line| !line.contains('┌')));
     assert!(lines.iter().skip(1).any(|line| line.contains('┌')));
 }
+
+#[test]
+fn session_picker_fills_its_available_rows_and_keeps_selection_visible() {
+    let catalog = default_catalog();
+    let mut state = state();
+    state.handle_agent_event(
+        EventMsg::Frontend(FrontendEvent::Picker {
+            title: "Resume chat".into(),
+            options: (0..50)
+                .map(|index| mobius::protocol::FrontendPickerOption {
+                    label: format!("Session {index:02}"),
+                    description: "idle".into(),
+                    detail: String::new(),
+                    symbol: None,
+                    shows_detail: false,
+                    op: Op::ResumeSession {
+                        session_id: format!("session-{index}"),
+                    },
+                })
+                .collect(),
+        }),
+        Vec::new(),
+    );
+    for height in [8, 20, 40] {
+        let area = crate::frontend::dashboard::centered_area(
+            ratatui::layout::Rect::new(0, 0, 80, height),
+            86,
+            70,
+        );
+        let visible_rows = usize::from(area.height.saturating_sub(3));
+        let mut terminal = Terminal::new(TestBackend::new(80, height)).expect("terminal");
+        for selected in [0, 49] {
+            state.picker.as_mut().expect("session picker").selected = selected;
+            terminal
+                .draw(|frame| view::render(frame, &mut state, &catalog))
+                .expect("draw");
+            let rendered = terminal.backend().to_string();
+            assert_eq!(
+                rendered.matches("Session ").count(),
+                visible_rows,
+                "{rendered}"
+            );
+            assert!(
+                rendered.contains(&format!("› Session {selected:02}")),
+                "{rendered}"
+            );
+        }
+    }
+}
