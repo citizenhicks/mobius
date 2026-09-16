@@ -337,6 +337,10 @@ extension AppModelTests {
     func testBackgroundAndForegroundKeepVoiceAndGatewayConnected() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try voiceModel(recorder: recorder)
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
+        model.startedAccountID = account.id
         model.chat.selectedSessionID = "chat-1"
         let call = RealtimeVoiceCall(requestID: "voice", sessionID: "chat-1")
         let startup = Task<Void, Never> { try? await Task.sleep(for: .seconds(3_600)) }
@@ -360,6 +364,19 @@ extension AppModelTests {
         }
         XCTAssertNil(ended)
         model.chat.stopRealtimeVoice()
+    }
+
+    func testForegroundRestartsGatewayWithoutVoiceCall() async throws {
+        let model = try voiceModel()
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
+        model.startedAccountID = account.id
+        let oldGeneration = model.gateway.connectionGeneration
+
+        await model.appDidBecomeActive()
+
+        XCTAssertNotEqual(model.gateway.connectionGeneration, oldGeneration)
     }
 
     func testSceneTeardownEndsVoiceBeforeDisconnect() async throws {

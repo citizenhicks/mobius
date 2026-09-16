@@ -251,6 +251,7 @@ extension AppModel {
 
     func appDidBecomeActive() async {
         guard !Task.isCancelled else { return }
+        let wasStarted = startedAccountID != nil
         refreshAppLockPreference()
         appIsInBackground = false
         gateway.setAppInBackground(false)
@@ -263,13 +264,14 @@ extension AppModel {
         if selectedGatewayIsMobiusCloud {
             await cloud.refreshCloudAccount()
             guard !Task.isCancelled, !appIsInBackground else { return }
-            if gateway.reconnectsOnActivation {
-                if selectedGatewayIsMobiusCloud,
-                    cloud.cloudIssue != .subscriptionExpired
-                {
-                    reconnect()
-                }
-            }
+        }
+        if chat.realtimeVoiceCall != nil {
+            gateway.setSceneActive(true, reconnectWhenActive: false)
+        } else if !gateway.automaticReconnectBlocked,
+            (!selectedGatewayIsMobiusCloud || cloud.cloudIssue != .subscriptionExpired),
+            wasStarted || gateway.reconnectsOnActivation
+        {
+            reconnect()
         } else {
             setSceneActive(true)
         }
