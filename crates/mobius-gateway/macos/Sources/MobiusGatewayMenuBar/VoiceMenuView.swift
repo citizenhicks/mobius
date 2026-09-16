@@ -277,7 +277,7 @@ private struct VoiceSelectionMenus: View {
                     )
                 ) {
                     Label {
-                        Text("New chat")
+                        Text("New conversation")
                     } icon: {
                         VoiceIcon.menuImage("plus", color: .primary, scheme: colorScheme)
                     }
@@ -296,12 +296,12 @@ private struct VoiceSelectionMenus: View {
             } label: {
                 HStack(spacing: MobiusSpace.xs) {
                     VoiceIcon.menuImage("chatCircle", color: palette.muted, scheme: colorScheme)
-                    Text(verbatim: model.selectedChat?.name ?? "New chat")
+                    Text(verbatim: model.selectedChat?.name ?? "New conversation")
                 }
             }
             .pillSurface(palette)
             .accessibilityLabel("Choose chat")
-            .accessibilityValue(model.selectedChat?.name ?? "New chat")
+            .accessibilityValue(model.selectedChat?.name ?? "New conversation")
             .help(model.selectedChat?.name ?? "Choose chat")
             .disabled(!model.canChooseChat)
             options

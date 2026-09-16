@@ -4,8 +4,8 @@ use diffy::Patch;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 
 use super::{Viewport, terminal_text, view};
 use crate::frontend::theme::{Role, current};
@@ -105,7 +105,6 @@ pub(super) struct DiffBrowser {
     files_focused: bool,
     list: ListState,
     viewport: Viewport,
-    horizontal: u16,
     cache: Option<(usize, u16)>,
     lines: Vec<Line<'static>>,
     hunks: Vec<usize>,
@@ -126,7 +125,6 @@ impl DiffBrowser {
                 scroll: 0,
                 ..Viewport::default()
             },
-            horizontal: 0,
             cache: None,
             lines: Vec::new(),
             hunks: Vec::new(),
@@ -141,7 +139,6 @@ impl DiffBrowser {
             self.selected = index;
             self.list.select(Some(index));
             self.viewport.top();
-            self.horizontal = 0;
             self.cache = None;
         }
     }
@@ -175,18 +172,11 @@ impl DiffBrowser {
             KeyCode::Up | KeyCode::Char('k') => self.move_vertical(false, 1),
             KeyCode::PageDown => self.move_vertical(true, page),
             KeyCode::PageUp => self.move_vertical(false, page),
-            KeyCode::Left | KeyCode::Char('h') if !self.files_focused => {
-                self.horizontal = self.horizontal.saturating_sub(4)
-            }
-            KeyCode::Right | KeyCode::Char('l') if !self.files_focused => {
-                self.horizontal = self.horizontal.saturating_add(4)
-            }
             KeyCode::Home => {
                 if self.files_focused {
                     self.select(0);
                 } else {
                     self.viewport.top();
-                    self.horizontal = 0;
                 }
             }
             KeyCode::End => {
@@ -231,12 +221,6 @@ impl DiffBrowser {
                 self.files_focused = files;
                 self.move_vertical(event.kind == MouseEventKind::ScrollDown, 3);
             }
-            MouseEventKind::ScrollLeft if !files => {
-                self.horizontal = self.horizontal.saturating_sub(4)
-            }
-            MouseEventKind::ScrollRight if !files => {
-                self.horizontal = self.horizontal.saturating_add(4)
-            }
             _ => return false,
         }
         true
@@ -271,15 +255,20 @@ impl DiffBrowser {
                 Line::styled(line.to_owned(), current().style(role))
             }));
         }
+        let mut row = 0;
         self.hunks = self
             .lines
             .iter()
-            .enumerate()
-            .filter_map(|(index, line)| {
-                line.spans
+            .filter_map(|line| {
+                let hunk = line
+                    .spans
                     .first()
                     .is_some_and(|span| span.content.starts_with("@@ "))
-                    .then_some(index)
+                    .then_some(row);
+                row += Paragraph::new(Text::from(line.clone()))
+                    .wrap(Wrap { trim: false })
+                    .line_count(width);
+                hunk
             })
             .collect();
         self.cache = Some((self.selected, width));
@@ -292,7 +281,7 @@ impl DiffBrowser {
             .style(theme.style(Role::Canvas))
             .borders(Borders::ALL)
             .title(terminal_text(title).replace('\t', "    "))
-            .title_bottom(" Tab panes · ↑↓/jk move · ←→ scroll · [] hunks · Esc close ")
+            .title_bottom(" Tab panes · ↑↓/jk move · [] hunks · Esc close ")
             .border_style(theme.style(Role::Border));
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -355,33 +344,29 @@ impl DiffBrowser {
             self.diff_area = block.inner(panes[1]);
             self.ensure_lines(self.diff_area.width);
             let scroll = self.viewport.scroll;
+            let content_height = self
+                .lines
+                .iter()
+                .map(|line| {
+                    Paragraph::new(Text::from(line.clone()))
+                        .wrap(Wrap { trim: false })
+                        .line_count(self.diff_area.width)
+                })
+                .sum();
             self.viewport
-                .update(self.lines.len(), usize::from(self.diff_area.height));
+                .update(content_height, usize::from(self.diff_area.height));
             // Unlike transcript tail-following, a diff remains at the top after resize.
             if scroll == 0 {
                 self.viewport.top();
             }
-            let max_horizontal = self
-                .lines
-                .iter()
-                .map(Line::width)
-                .max()
-                .unwrap_or(0)
-                .saturating_sub(usize::from(self.diff_area.width));
-            self.horizontal = self
-                .horizontal
-                .min(u16::try_from(max_horizontal).unwrap_or(u16::MAX));
-            let visible = self
-                .lines
-                .iter()
-                .skip(self.viewport.effective_scroll())
-                .take(usize::from(self.diff_area.height))
-                .cloned()
-                .collect::<Vec<_>>();
             frame.render_widget(
-                Paragraph::new(visible)
+                Paragraph::new(Text::from(self.lines.clone()))
+                    .wrap(Wrap { trim: false })
                     .block(block)
-                    .scroll((0, self.horizontal)),
+                    .scroll((
+                        u16::try_from(self.viewport.effective_scroll()).unwrap_or(u16::MAX),
+                        0,
+                    )),
                 panes[1],
             );
         }
@@ -481,25 +466,14 @@ mod tests {
         key(&mut browser, KeyCode::Tab);
         browser.viewport.update(100, 10);
         key(&mut browser, KeyCode::Down);
-        key(&mut browser, KeyCode::Right);
-        assert_eq!(
-            (browser.viewport.effective_scroll(), browser.horizontal),
-            (1, 4)
-        );
+        assert_eq!(browser.viewport.effective_scroll(), 1);
         key(&mut browser, KeyCode::Tab);
         key(&mut browser, KeyCode::Up);
-        assert_eq!(
-            (
-                browser.selected,
-                browser.viewport.scroll,
-                browser.horizontal
-            ),
-            (0, 0, 0)
-        );
+        assert_eq!((browser.selected, browser.viewport.scroll), (0, 0));
     }
 
     #[test]
-    fn hunk_navigation_ignores_code_and_horizontal_scroll_does_not_wrap() {
+    fn hunk_navigation_counts_wrapped_rows() {
         let text = format!("{PATCH}@@ -10 +10 @@\n-old\n+{} @@ fake\n", "x".repeat(160));
         let mut browser = DiffBrowser::new(text);
         let mut terminal = Terminal::new(TestBackend::new(100, 6)).unwrap();
@@ -508,14 +482,9 @@ mod tests {
             .unwrap();
         assert_eq!(browser.hunks.len(), 2);
         assert_eq!(browser.lines.len(), 6);
+        assert!(browser.viewport.content_height > browser.lines.len());
         key(&mut browser, KeyCode::Char(']'));
         assert_eq!(browser.viewport.scroll, browser.hunks[1]);
-        key(&mut browser, KeyCode::Right);
-        terminal
-            .draw(|frame| browser.render(frame, frame.area(), "Diff"))
-            .unwrap();
-        assert_eq!(browser.horizontal, 4);
-        assert_eq!(browser.lines.len(), 6);
         key(&mut browser, KeyCode::Char('['));
         assert_eq!(browser.viewport.scroll, browser.hunks[0]);
     }

@@ -320,16 +320,34 @@ async fn absolute_reads_and_writes_are_confined_to_workspace_roots() {
     let workspace = tempfile::tempdir().expect("workspace");
     let attached = tempfile::tempdir().expect("attached workspace");
     let outside = tempfile::tempdir().expect("outside");
+    let workspace_root = std::fs::canonicalize(workspace.path()).expect("canonical workspace root");
     let attached_root = std::fs::canonicalize(attached.path()).expect("canonical workspace root");
     let outside_root = std::fs::canonicalize(outside.path()).expect("canonical outside root");
+    let primary_source = workspace_root.join("source.txt");
+    let primary_target = workspace_root.join("target.txt");
     let source = attached_root.join("source.txt");
     let target = attached_root.join("target.txt");
     let blocked = outside_root.join("blocked.txt");
+    std::fs::write(&primary_source, "primary").expect("primary file");
     std::fs::write(&source, "attached").expect("attached file");
     let sandbox = local_sandbox(workspace.path())
         .allow_workspace_root(attached.path())
         .expect("workspace root");
 
+    assert_eq!(
+        sandbox
+            .read(primary_source.to_str().expect("UTF-8 primary path"))
+            .await
+            .expect("primary read"),
+        "primary"
+    );
+    sandbox
+        .write(
+            primary_target.to_str().expect("UTF-8 primary path"),
+            "written",
+        )
+        .await
+        .expect("primary write");
     assert_eq!(
         sandbox
             .read(source.to_str().expect("UTF-8 source path"))

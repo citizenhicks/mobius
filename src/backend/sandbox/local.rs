@@ -510,8 +510,13 @@ impl LocalSandbox {
             validate_root(&self.root, &self.root_dir)?;
             return Ok((self.root_dir.try_clone()?, self.relative(path)?));
         }
-        for root in self.workspace_roots.iter().chain(&self.read_roots) {
-            let Ok(relative) = requested.strip_prefix(&root.path) else {
+        for (path, directory) in std::iter::once((&self.root, &self.root_dir)).chain(
+            self.workspace_roots
+                .iter()
+                .chain(&self.read_roots)
+                .map(|root| (&root.path, &root.directory)),
+        ) {
+            let Ok(relative) = requested.strip_prefix(path) else {
                 continue;
             };
             if relative
@@ -520,8 +525,8 @@ impl LocalSandbox {
             {
                 break;
             }
-            validate_root(&root.path, &root.directory)?;
-            return Ok((root.directory.try_clone()?, relative.to_path_buf()));
+            validate_root(path, directory)?;
+            return Ok((directory.try_clone()?, relative.to_path_buf()));
         }
         Err(Error::Sandbox(path.into()))
     }
@@ -535,8 +540,12 @@ impl LocalSandbox {
             validate_root(&self.root, &self.root_dir)?;
             return Ok((self.root_dir.try_clone()?, self.relative(path)?));
         }
-        for root in &self.workspace_roots {
-            let Ok(relative) = requested.strip_prefix(&root.path) else {
+        for (path, directory) in std::iter::once((&self.root, &self.root_dir)).chain(
+            self.workspace_roots
+                .iter()
+                .map(|root| (&root.path, &root.directory)),
+        ) {
+            let Ok(relative) = requested.strip_prefix(path) else {
                 continue;
             };
             if relative
@@ -545,8 +554,8 @@ impl LocalSandbox {
             {
                 break;
             }
-            validate_root(&root.path, &root.directory)?;
-            return Ok((root.directory.try_clone()?, relative.to_path_buf()));
+            validate_root(path, directory)?;
+            return Ok((directory.try_clone()?, relative.to_path_buf()));
         }
         Err(Error::Sandbox(path.into()))
     }

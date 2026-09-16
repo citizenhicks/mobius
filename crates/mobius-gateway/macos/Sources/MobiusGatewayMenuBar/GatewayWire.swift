@@ -89,7 +89,7 @@ struct VoiceChat: Decodable, Identifiable, Equatable {
     let updatedAt: Int64
     let activity: Activity
 
-    var name: String { title ?? firstUserMessage.map { String($0.prefix(80)) } ?? "New chat" }
+    var name: String { title ?? firstUserMessage.map { String($0.prefix(80)) } ?? "New conversation" }
     var workspace: String { sessionContext.workspaceLabel ?? "." }
 
     struct Context: Decodable, Equatable {

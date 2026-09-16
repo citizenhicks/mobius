@@ -71,11 +71,10 @@ async fn run_interactive() -> Result<()> {
             FrontendExit::Exit => return Ok(()),
             FrontendExit::Resume(session_id) => {
                 if session_id != session.session.session_id {
-                    discard_pristine_bootstrap(
+                    discard_pristine_session(
                         &sender,
                         &mut events,
                         &mut gateway,
-                        disposable_session.as_deref(),
                         &session.session.session_id,
                     )
                     .await?;
@@ -87,14 +86,8 @@ async fn run_interactive() -> Result<()> {
                 if let Some(bootstrap) = disposable_session.take()
                     && bootstrap != session.session.session_id
                 {
-                    discard_pristine_bootstrap(
-                        &sender,
-                        &mut events,
-                        &mut gateway,
-                        Some(&bootstrap),
-                        &bootstrap,
-                    )
-                    .await?;
+                    discard_pristine_session(&sender, &mut events, &mut gateway, &bootstrap)
+                        .await?;
                 }
             }
             FrontendExit::Reconnect => {
@@ -670,18 +663,14 @@ async fn discard_session(
     }
 }
 
-async fn discard_pristine_bootstrap(
+async fn discard_pristine_session(
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     gateway: &mut ReadyPayload,
-    disposable_session: Option<&str>,
     session_id: &str,
 ) -> Result<()> {
-    if disposable_session != Some(session_id) {
-        return Ok(());
-    }
     refresh_sessions(sender, events, gateway).await?;
-    if pristine_bootstrap(gateway, session_id) {
+    if catalog_session_is_pristine(gateway, session_id) {
         discard_session(sender, events, gateway, session_id).await?;
     }
     Ok(())
@@ -726,7 +715,7 @@ async fn refresh_sessions(
     }
 }
 
-fn pristine_bootstrap(gateway: &ReadyPayload, session_id: &str) -> bool {
+fn catalog_session_is_pristine(gateway: &ReadyPayload, session_id: &str) -> bool {
     gateway
         .sessions
         .iter()

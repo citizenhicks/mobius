@@ -58,12 +58,11 @@ fn apply_patch_preserves_crlf_line_endings() {
 }
 
 #[tokio::test]
-async fn apply_patch_edits_an_absolute_path_in_an_attached_folder() {
+async fn apply_patch_edits_an_absolute_workspace_path() {
     let workspace = tempfile::tempdir().expect("workspace");
-    let attached = tempfile::tempdir().expect("attached folder");
-    let attached = std::fs::canonicalize(attached.path()).expect("canonical attached folder");
-    let path = attached.join("note.txt");
-    let patch_path = path.to_str().expect("UTF-8 attached path");
+    let workspace_root = std::fs::canonicalize(workspace.path()).expect("canonical workspace");
+    let path = workspace_root.join("note.txt");
+    let patch_path = path.to_str().expect("UTF-8 workspace path");
     std::fs::write(&path, "first\nold\nlast\n").expect("write fixture");
     let mut catalog = Catalog::default();
     catalog
@@ -72,9 +71,7 @@ async fn apply_patch_edits_an_absolute_path_in_an_attached_folder() {
     let sandbox = Arc::new(Sandbox::new(
         Arc::new(
             crate::backend::sandbox::local::LocalSandbox::new(workspace.path())
-                .expect("local sandbox")
-                .allow_workspace_root(&attached)
-                .expect("attached folder"),
+                .expect("local sandbox"),
         ),
         crate::backend::sandbox::ApprovalPolicy::Ask,
     ));
