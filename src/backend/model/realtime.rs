@@ -1,6 +1,6 @@
 //! Provider-owned WebRTC negotiation and authenticated voice sideband control.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -235,18 +235,47 @@ impl RealtimeTransport {
         }
         let (cleanup, answer_sdp) = self.negotiate(response, &request.session_id).await?;
         validate_sdp(&answer_sdp)?;
-        let mut socket = self.connect(&cleanup.call_id, &cleanup.session_id).await?;
         let (commands, command_rx) = mpsc::channel(COMMAND_CAPACITY);
         let (event_tx, events) = mpsc::channel(16);
         let (cancel, cancelled) = oneshot::channel();
         let api = self.api;
+        let transport = self.clone();
         tokio::spawn(async move {
+            let mut cancelled = cancelled;
+            let mut pending = VecDeque::new();
+            let call_id = cleanup.call_id.clone();
+            let session_id = cleanup.session_id.clone();
+            let connect = timeout(START_TIMEOUT, transport.connect(&call_id, &session_id));
+            tokio::pin!(connect);
+            let mut command_rx = command_rx;
+            let mut socket = loop {
+                tokio::select! {
+                    _ = &mut cancelled => return,
+                    result = &mut connect => break match result {
+                        Ok(Ok(socket)) => socket,
+                        Ok(Err(error)) => {
+                            let _ = event_tx.send(Err(error)).await;
+                            return;
+                        }
+                        Err(_) => {
+                            let _ = event_tx
+                                .send(Err(invalid("voice sideband negotiation timed out")))
+                                .await;
+                            return;
+                        }
+                    },
+                    command = command_rx.recv(), if pending.len() < COMMAND_CAPACITY => match command {
+                        Some(RealtimeVoiceCommand::Close) | None => return,
+                        Some(command) => pending.push_back(command),
+                    },
+                }
+            };
             let result = tokio::select! {
-                _ = cancelled => {
+                _ = &mut cancelled => {
                     let _ = send(&mut socket, json!({"type":"session.close"})).await;
                     Ok(())
                 },
-                result = timeout(CALL_TIMEOUT, drive(&mut socket, api, command_rx, &event_tx)) => {
+                result = timeout(CALL_TIMEOUT, drive(&mut socket, api, command_rx, pending, &event_tx)) => {
                     result.unwrap_or_else(|_| Err(invalid("voice call reached its time limit")))
                 }
             };
@@ -534,36 +563,23 @@ async fn drive(
     socket: &mut Socket,
     api: VoiceApi,
     mut commands: mpsc::Receiver<RealtimeVoiceCommand>,
+    mut pending: VecDeque<RealtimeVoiceCommand>,
     events: &mpsc::Sender<Result<RealtimeVoiceEvent>>,
 ) -> Result<()> {
     let mut turns = VoiceTurns::default();
     loop {
+        if let Some(command) = pending.pop_front() {
+            if apply_command(socket, api, &mut turns, events, command).await? {
+                return Ok(());
+            }
+            continue;
+        }
         tokio::select! {
             _ = events.closed() => return Ok(()),
             command = commands.recv() => {
                 let Some(command) = command else { return Ok(()); };
-                if matches!(command, RealtimeVoiceCommand::Close) {
-                    send(socket, json!({"type":"session.close"})).await?;
-                    if api == VoiceApi::Codex { return Ok(()); }
-                    return timeout(IO_TIMEOUT, drain_closed(socket, api, &mut turns, events))
-                        .await.map_err(|_| invalid("voice session finalization timed out"))?;
-                }
-                let (handoff_id, text) = match command {
-                    RealtimeVoiceCommand::Reply { handoff_id, text } => {
-                        if !turns.reply_pending.remove(&handoff_id) { return Err(invalid("voice reply has no pending handoff")); }
-                        (Some(handoff_id), text)
-                    }
-                    RealtimeVoiceCommand::Context { text } => (None, text),
-                    RealtimeVoiceCommand::Close => unreachable!("handled above"),
-                };
-                validate_text(&text, MAX_TEXT_BYTES, "voice context")?;
-                for chunk in context_chunks(&text) {
-                    let value = match (api, handoff_id.as_deref()) {
-                        (VoiceApi::Codex, Some(id)) => json!({"type":"delegation.context.append","delegation_item_id":id,"channel":"speakable","content":[{"type":"input_text","text":chunk}]}),
-                        (VoiceApi::Codex, None) => json!({"type":"session.context.append","channel":"commentary","content":[{"type":"input_text","text":chunk}]}),
-                        (VoiceApi::OpenAi, id) => json!({"type":if id.is_some() {"session.commentary.append"} else {"session.thinking.append"},"delegation_id":id,"content":chunk}),
-                    };
-                    send(socket, value).await?;
+                if apply_command(socket, api, &mut turns, events, command).await? {
+                    return Ok(());
                 }
             }
 
@@ -585,6 +601,50 @@ async fn drive(
             }
         }
     }
+}
+
+async fn apply_command(
+    socket: &mut Socket,
+    api: VoiceApi,
+    turns: &mut VoiceTurns,
+    events: &mpsc::Sender<Result<RealtimeVoiceEvent>>,
+    command: RealtimeVoiceCommand,
+) -> Result<bool> {
+    if matches!(command, RealtimeVoiceCommand::Close) {
+        send(socket, json!({"type":"session.close"})).await?;
+        if api == VoiceApi::OpenAi {
+            timeout(IO_TIMEOUT, drain_closed(socket, api, turns, events))
+                .await
+                .map_err(|_| invalid("voice session finalization timed out"))??;
+        }
+        return Ok(true);
+    }
+    let (handoff_id, text) = match command {
+        RealtimeVoiceCommand::Reply { handoff_id, text } => {
+            if !turns.reply_pending.remove(&handoff_id) {
+                return Err(invalid("voice reply has no pending handoff"));
+            }
+            (Some(handoff_id), text)
+        }
+        RealtimeVoiceCommand::Context { text } => (None, text),
+        RealtimeVoiceCommand::Close => unreachable!("handled above"),
+    };
+    validate_text(&text, MAX_TEXT_BYTES, "voice context")?;
+    for chunk in context_chunks(&text) {
+        let value = match (api, handoff_id.as_deref()) {
+            (VoiceApi::Codex, Some(id)) => {
+                json!({"type":"delegation.context.append","delegation_item_id":id,"channel":"speakable","content":[{"type":"input_text","text":chunk}]})
+            }
+            (VoiceApi::Codex, None) => {
+                json!({"type":"session.context.append","channel":"commentary","content":[{"type":"input_text","text":chunk}]})
+            }
+            (VoiceApi::OpenAi, id) => {
+                json!({"type":if id.is_some() {"session.commentary.append"} else {"session.thinking.append"},"delegation_id":id,"content":chunk})
+            }
+        };
+        send(socket, value).await?;
+    }
+    Ok(false)
 }
 
 async fn drain_closed(

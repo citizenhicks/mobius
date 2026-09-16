@@ -174,6 +174,91 @@ fn delegation(api: VoiceApi, id: &str) -> Value {
 }
 
 #[tokio::test]
+async fn start_returns_before_sideband_handshake_and_close_cancels_buffered_setup() {
+    let (transport, listener) = transport(VoiceApi::Codex).await;
+    let (sideband_ready, ready) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut http, _) = listener.accept().await.unwrap();
+        read_request(&mut http).await;
+        respond(
+            &mut http,
+            "201 Created",
+            "Location: /v1/realtime/calls/rtc_test\r\n",
+            SDP,
+        )
+        .await;
+        drop(http);
+
+        let (sideband, _) = listener.accept().await.unwrap();
+        sideband_ready.send(()).unwrap();
+        let (mut http, _) = listener.accept().await.unwrap();
+        let (headers, _) = read_request(&mut http).await;
+        assert!(headers.starts_with("post /v1/realtime/calls/rtc_test/hangup "));
+        respond(&mut http, "200 OK", "", "").await;
+        drop(sideband);
+    });
+
+    let mut call = timeout(Duration::from_secs(2), transport.start(request()))
+        .await
+        .expect("SDP answer must not wait for the sideband handshake")
+        .unwrap();
+    ready.await.unwrap();
+    call.commands
+        .send(RealtimeVoiceCommand::Context {
+            text: "Work already started.".into(),
+        })
+        .await
+        .unwrap();
+    call.commands
+        .send(RealtimeVoiceCommand::Close)
+        .await
+        .unwrap();
+    while call.events.recv().await.is_some() {}
+    timeout(Duration::from_secs(2), server)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn stalled_sideband_handshake_times_out_and_hangs_up() {
+    let (transport, listener) = transport(VoiceApi::OpenAi).await;
+    let (sideband_ready, ready) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut http, _) = listener.accept().await.unwrap();
+        read_request(&mut http).await;
+        respond(
+            &mut http,
+            "201 Created",
+            "Content-Type: application/json\r\n",
+            &live_answer("live_timeout", SDP),
+        )
+        .await;
+        drop(http);
+
+        let (sideband, _) = listener.accept().await.unwrap();
+        sideband_ready.send(()).unwrap();
+        let (mut hangup, _) = listener.accept().await.unwrap();
+        let (headers, _) = read_request(&mut hangup).await;
+        assert!(headers.starts_with("post /v1/live/sessions/live_timeout/hangup "));
+        respond(&mut hangup, "200 OK", "", "").await;
+        drop(sideband);
+    });
+
+    let mut call = transport.start(request()).await.unwrap();
+    ready.await.unwrap();
+    tokio::time::pause();
+    tokio::time::advance(START_TIMEOUT).await;
+    let event = call.events.recv().await;
+    tokio::time::resume();
+    let Some(Err(error)) = event else {
+        panic!("expected sideband timeout")
+    };
+    assert!(error.to_string().contains("sideband negotiation timed out"));
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn live_and_codex_wire_contracts_delegate_once_reply_and_close() {
     for api in [VoiceApi::OpenAi, VoiceApi::Codex] {
         let (transport, listener) = transport(api).await;
@@ -538,7 +623,7 @@ async fn unauthorized_refresh_is_reused_and_access_rejection_is_preserved() {
 }
 
 #[tokio::test]
-async fn cancelling_sideband_setup_hangs_up_allocated_call() {
+async fn dropping_call_during_sideband_setup_hangs_up_allocated_call() {
     let (transport, listener) = transport(VoiceApi::OpenAi).await;
     let (connecting, connected) = oneshot::channel();
     let server = tokio::spawn(async move {
@@ -560,13 +645,12 @@ async fn cancelling_sideband_setup_hangs_up_allocated_call() {
         respond(&mut hangup, "200 OK", "", "").await;
         drop(socket);
     });
-    let setup = tokio::spawn(async move { transport.start(request()).await });
+    let call = transport.start(request()).await.unwrap();
     timeout(Duration::from_secs(2), connected)
         .await
         .unwrap()
         .unwrap();
-    setup.abort();
-    assert!(matches!(setup.await, Err(error) if error.is_cancelled()));
+    drop(call);
     timeout(Duration::from_secs(2), server)
         .await
         .unwrap()
@@ -621,7 +705,11 @@ async fn sideband_access_rejection_hangs_up_the_allocated_call() {
         assert!(headers.starts_with("post /v1/live/sessions/live_denied/hangup "));
         respond(&mut socket, "200 OK", "", "").await;
     });
-    let Err(Error::Provider(error)) = transport.start(request()).await else {
+    let mut call = transport.start(request()).await.unwrap();
+    let Some(Err(Error::Provider(error))) = timeout(Duration::from_secs(2), call.events.recv())
+        .await
+        .unwrap()
+    else {
         panic!("expected sideband denial")
     };
     assert_eq!(error.status(), Some(403));
