@@ -729,7 +729,7 @@ fn pristine_session(session: &SessionRecord) -> bool {
         && session.execution_stats.run_count == 0
         && session.title.is_none()
         && !session.pinned
-        && session.session_context.origin_label.is_none()
+        && session.session_context.origin_label.as_deref() == Some("mobius-gateway")
         && session.activity.state == SessionActivityState::Idle
 }
 
@@ -943,7 +943,10 @@ mod tests {
     fn only_an_unused_startup_chat_is_pristine() {
         let mut session = SessionRecord {
             session_id: "startup".into(),
-            session_context: Default::default(),
+            session_context: mobius::protocol::SessionContext {
+                origin_label: Some("mobius-gateway".into()),
+                ..Default::default()
+            },
             parent_session_id: None,
             parent_sequence: None,
             sequence: 0,
@@ -957,6 +960,9 @@ mod tests {
         };
 
         assert!(pristine_session(&session));
+        session.session_context.origin_label = Some("routine".into());
+        assert!(!pristine_session(&session));
+        session.session_context.origin_label = Some("mobius-gateway".into());
         session.first_user_message = Some("keep this chat".into());
         assert!(!pristine_session(&session));
     }

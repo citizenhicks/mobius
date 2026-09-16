@@ -1,6 +1,6 @@
 [package]
 name = "mobius-cli"
-version = "0.15.31"
+version = "0.15.32"
 edition.workspace = true
 rust-version.workspace = true
 description = "The terminal client for a möbius gateway"
