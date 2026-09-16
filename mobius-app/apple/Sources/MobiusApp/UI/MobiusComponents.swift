@@ -95,7 +95,7 @@ struct MobiusBadge: View {
         .mobiusGlass(in: Capsule(), interactive: interactive)
     }
 
-    private var foreground: Color { palette.tone(tone) }
+    private var foreground: Color { tone == "neutral" ? .primary : palette.tone(tone) }
 }
 
 /// A menu's current value: the provider's mark, the value itself, and a muted qualifier.

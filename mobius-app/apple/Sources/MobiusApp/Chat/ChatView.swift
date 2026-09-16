@@ -284,15 +284,6 @@ private struct ChatOptionsMenu: View {
                     }
                     .disabled(widget.widget.content == nil && widget.widget.action == nil)
                 }
-                Button {
-                    model.openNewSession()
-                } label: {
-                    MobiusLabel(
-                        title: "New chat in another folder…",
-                        glyph: .folderPlus
-                    )
-                }
-                .disabled(!model.canCreateSession)
             }
             if let session = model.selectedSession {
                 Section("Manage") {
