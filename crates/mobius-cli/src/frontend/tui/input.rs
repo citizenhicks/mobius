@@ -1050,7 +1050,10 @@ impl TuiState {
         }
         let (_, menu) = self.widgets.iter().find(|((owner, _), widget)| {
             owner == capability
-                && widget.slot == FrontendSlot::ChatMenu
+                && matches!(
+                    widget.slot,
+                    FrontendSlot::ChatMenu | FrontendSlot::Navigation
+                )
                 && matches!(
                     widget.action.as_ref(),
                     Some(Op::CapabilityCommand {

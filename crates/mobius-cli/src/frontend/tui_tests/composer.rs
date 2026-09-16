@@ -345,6 +345,58 @@ fn bot_picker_creates_the_chat_for_the_selected_bot() {
 }
 
 #[test]
+fn navigation_only_capability_has_a_popup_surface() {
+    let refresh = Op::CapabilityCommand {
+        capability: "scratchpad".into(),
+        command: "scratchpad".into(),
+        arguments: "refresh".into(),
+        input: None,
+        target: None,
+    };
+    let widget = FrontendWidget {
+        id: "navigation".into(),
+        slot: FrontendSlot::Navigation,
+        text: "Scratchpad".into(),
+        tone: FrontendTone::Neutral,
+        symbol: Some(FrontendSymbol::Brain),
+        icon_only: false,
+        progress: None,
+        content: Some(FrontendWidgetContent::ActionList {
+            actions: Vec::new(),
+            title: "Global scratchpad".into(),
+            items: Vec::new(),
+        }),
+        action: Some(refresh.clone()),
+    };
+    let catalog = UiCatalog::build(
+        &[FrontendContribution {
+            capability: "scratchpad".into(),
+            accepts_file_attachments: false,
+            count: None,
+            commands: vec![FrontendCommand {
+                name: "scratchpad".into(),
+                arguments: String::new(),
+                description: "manage notes".into(),
+                requires_idle: false,
+            }],
+            widgets: vec![widget.clone()],
+            references: Vec::new(),
+        }],
+        std::path::Path::new("/missing-mobius-test-workspace"),
+    )
+    .expect("scratchpad catalog");
+    let mut state = state();
+    state
+        .widgets
+        .push((("scratchpad".into(), widget.id.clone()), widget));
+    state.input = "/scratchpad".into();
+    state.cursor = state.input.len();
+
+    assert_eq!(state.submit_input(&catalog), UiAction::Submit(refresh));
+    assert!(state.capability_overlay.is_some());
+}
+
+#[test]
 fn bare_capability_command_opens_all_of_its_popup_surfaces() {
     let refresh = Op::CapabilityCommand {
         capability: "scratchpad".into(),
