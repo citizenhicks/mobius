@@ -334,7 +334,7 @@ extension AppModelTests {
         XCTAssertNil(model.chat.realtimeVoiceCall)
     }
 
-    func testBackgroundKeepsVoiceAndGatewayConnected() async throws {
+    func testBackgroundAndForegroundKeepVoiceAndGatewayConnected() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try voiceModel(recorder: recorder)
         model.chat.selectedSessionID = "chat-1"
@@ -350,6 +350,10 @@ extension AppModelTests {
         XCTAssertNil(model.newVoiceChatIntent)
         XCTAssertFalse(startup.isCancelled)
         XCTAssertFalse(model.chat.realtimeVoice.isConnected)
+        XCTAssertEqual(model.gateway.connectionGeneration, oldGeneration)
+        await model.appDidBecomeActive()
+        XCTAssertEqual(model.chat.realtimeVoiceCall, call)
+        XCTAssertFalse(startup.isCancelled)
         XCTAssertEqual(model.gateway.connectionGeneration, oldGeneration)
         let ended = await recorder.firstRequest(after: 0) {
             if case .endRealtimeVoice("chat-1", call.requestID) = $0 { true } else { false }
@@ -435,27 +439,9 @@ extension AppModelTests {
 
 @MainActor
 extension AppModelTests {
-    func testOldAudioInterruptionCannotEndReplacementVoiceCall() async throws {
+    func testCallKitVoiceDoesNotSubscribeToGenericAudioInterruptions() throws {
         let model = try voiceModel()
-        model.chat.selectedSessionID = "chat-1"
-        model.startRealtimeVoice()
-        // No permission request or capture: exercise only ownership and delegate delivery.
-        model.chat.realtimeVoiceTask?.cancel()
-        let oldVoice = model.chat.realtimeVoice
-        oldVoice.audioSessionDidBeginInterruption(RTCAudioSession.sharedInstance())
-        model.chat.stopRealtimeVoice()
-        model.startRealtimeVoice()
-        model.chat.realtimeVoiceTask?.cancel()
-        let newVoice = model.chat.realtimeVoice
-        let currentRequestID = model.chat.realtimeVoiceCall?.requestID
-        XCTAssertFalse(oldVoice === newVoice)
-        await Task.yield()
-        XCTAssertEqual(model.chat.realtimeVoiceCall?.requestID, currentRequestID)
-        XCTAssertNil(model.toast)
-
-        newVoice.audioSessionDidBeginInterruption(RTCAudioSession.sharedInstance())
-        let currentInterruptionHandled = await eventually { model.chat.realtimeVoiceCall == nil }
-        XCTAssertTrue(currentInterruptionHandled)
+        XCTAssertNil((model.chat.realtimeVoice as Any) as? RTCAudioSessionDelegate)
     }
 
     func testReadAloudStopCancelsPendingSpeech() async {

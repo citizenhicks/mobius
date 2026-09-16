@@ -58,7 +58,6 @@ final class RealtimeVoiceSession: NSObject {
     @ObservationIgnored private var dataChannel: RTCDataChannel?
     @ObservationIgnored private var failure: ((LocalizedStringResource) -> Void)?
     @ObservationIgnored private var generation = UUID()
-    @ObservationIgnored private var audioIsActive = false
     @ObservationIgnored private var meteringTask: Task<Void, Never>?
     @ObservationIgnored private var disconnectedRecoveryTask: Task<Void, Never>?
     @ObservationIgnored private var levelBaseline = 0.0
@@ -86,11 +85,6 @@ final class RealtimeVoiceSession: NSObject {
         }
         try Task.checkCancellation()
         guard self.generation == generation else { throw CancellationError() }
-        #if os(iOS)
-            let audio = RTCAudioSession.sharedInstance()
-            audio.add(self)
-            audioIsActive = true
-        #endif
         let configuration = RTCConfiguration()
         configuration.sdpSemantics = .unifiedPlan
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
@@ -158,12 +152,6 @@ final class RealtimeVoiceSession: NSObject {
         peer = nil
         isConnected = false
         isMuted = false
-        #if os(iOS)
-            guard audioIsActive else { return }
-            let audio = RTCAudioSession.sharedInstance()
-            audio.remove(self)
-            audioIsActive = false
-        #endif
     }
 
     private func startMetering(_ peer: RTCPeerConnection) {
@@ -302,16 +290,6 @@ extension RealtimeVoiceSession: RTCPeerConnectionDelegate {
         _ peerConnection: RTCPeerConnection, didOpen dataChannel: RTCDataChannel
     ) {}
 }
-
-#if os(iOS)
-    extension RealtimeVoiceSession: RTCAudioSessionDelegate {
-        nonisolated func audioSessionDidBeginInterruption(_ session: RTCAudioSession) {
-            Task { @MainActor [weak self] in
-                self?.failure?("Voice was interrupted by another audio session.")
-            }
-        }
-    }
-#endif
 
 /// Shared by the iOS composer and the gateway's macOS menu bar.
 @Animatable
