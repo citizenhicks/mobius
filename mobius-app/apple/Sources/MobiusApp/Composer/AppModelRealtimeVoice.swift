@@ -1,3 +1,5 @@
+import AVFoundation
+@preconcurrency import CallKit
 import Foundation
 
 enum NewVoiceChatIntent: Equatable {
@@ -9,6 +11,7 @@ enum NewVoiceChatIntent: Equatable {
 struct RealtimeVoiceCall: Equatable {
     let requestID: String
     let sessionID: String
+    var systemID = UUID()
     var voiceID: String?
 }
 
@@ -63,7 +66,10 @@ extension AppModel {
     func completePendingVoiceChat(requestID: String?) {
         guard let requestID, newVoiceChatIntent == .openingSession(requestID) else { return }
         cancelVoiceChatIntent()
-        chat.startRealtimeVoice(eligible: selectedRouteSupportsRealtimeVoice)
+        chat.startRealtimeVoice(
+            eligible: selectedRouteSupportsRealtimeVoice,
+            label: selectedBot?.name ?? "möbius"
+        )
     }
 
     func startRealtimeVoice() {
@@ -73,22 +79,26 @@ extension AppModel {
             createPendingVoiceChat()
             return
         }
-        chat.startRealtimeVoice(eligible: selectedRouteSupportsRealtimeVoice)
+        chat.startRealtimeVoice(
+            eligible: selectedRouteSupportsRealtimeVoice,
+            label: selectedBot?.name ?? "möbius"
+        )
     }
 
 }
 
 extension ChatSessionModel {
-    func startRealtimeVoice(eligible: Bool) {
+    func startRealtimeVoice(eligible: Bool, label: String = "möbius") {
         guard gateway.connectionState.isReady, eligible, realtimeVoiceCall == nil else { return }
         guard let sessionID = selectedSessionID else { return }
         let requestID = gatewayRequestID("voice")
-        realtimeVoiceCall = RealtimeVoiceCall(
+        let call = RealtimeVoiceCall(
             requestID: requestID, sessionID: sessionID
         )
+        realtimeVoiceCall = call
         let voice = RealtimeVoiceSession { [weak self] message in
             guard self?.realtimeVoiceCall?.requestID == requestID else { return }
-            self?.stopRealtimeVoice()
+            self?.stopRealtimeVoice(systemReason: .failed)
             self?.showToast(message, tone: .error)
         }
         realtimeVoice = voice
@@ -96,6 +106,21 @@ extension ChatSessionModel {
         dismissComposerFocus()
         realtimeVoiceTask = Task { [weak self] in
             do {
+                guard self?.realtimeVoiceCall?.requestID == requestID else { return }
+                try await RealtimeCallProvider.shared.start(
+                    id: call.systemID,
+                    handle: label,
+                    end: { [weak self] in
+                        guard self?.realtimeVoiceCall?.systemID == call.systemID else { return }
+                        self?.stopRealtimeVoice(reportSystemCall: false)
+                    },
+                    mute: { [weak self] muted in
+                        guard self?.realtimeVoiceCall?.systemID == call.systemID,
+                            self?.realtimeVoice === voice
+                        else { return }
+                        voice.isMuted = muted
+                    }
+                )
                 guard self?.realtimeVoiceCall?.requestID == requestID else { return }
                 let offer = try await voice.offer()
                 guard self?.realtimeVoiceCall?.requestID == requestID else { return }
@@ -115,18 +140,25 @@ extension ChatSessionModel {
                 return
             } catch {
                 guard let self, self.realtimeVoiceCall?.requestID == requestID else { return }
-                self.stopRealtimeVoice()
+                self.stopRealtimeVoice(systemReason: .failed)
                 self.showToast(verbatim: self.localizedErrorDescription(error), tone: .error)
             }
         }
     }
 
-    func stopRealtimeVoice(notifyGateway: Bool = true) {
+    func stopRealtimeVoice(
+        notifyGateway: Bool = true,
+        systemReason: CXCallEndedReason = .remoteEnded,
+        reportSystemCall: Bool = true
+    ) {
         let call = realtimeVoiceCall
         realtimeVoiceCall = nil
         realtimeVoiceTask?.cancel()
         realtimeVoiceTask = nil
         realtimeVoice.close()
+        if reportSystemCall, let call {
+            RealtimeCallProvider.shared.end(id: call.systemID, reason: systemReason)
+        }
         if notifyGateway, let call {
             gateway.transmit(
                 .endRealtimeVoice(
@@ -147,6 +179,7 @@ extension ChatSessionModel {
                 return
             }
             realtimeVoiceCall?.voiceID = voiceID
+            RealtimeCallProvider.shared.connected(id: realtimeVoiceCall?.systemID)
             realtimeVoiceTask?.cancel()
             let voice = realtimeVoice
             realtimeVoiceTask = Task { [weak self] in
@@ -155,7 +188,7 @@ extension ChatSessionModel {
                     try await voice.accept(answer: answerSDP)
                 } catch {
                     guard let self, self.realtimeVoiceCall?.requestID == requestID else { return }
-                    self.stopRealtimeVoice()
+                    self.stopRealtimeVoice(systemReason: .failed)
                     self.showToast(verbatim: self.localizedErrorDescription(error), tone: .error)
                 }
             }
@@ -179,5 +212,125 @@ extension ChatSessionModel {
     func speakMessage(_ markdown: String) {
         stopRealtimeVoice()
         messageSpeaker.speak(markdown)
+    }
+
+    func setRealtimeVoiceMuted(_ muted: Bool) {
+        guard let call = realtimeVoiceCall else { return }
+        Task { [weak self] in
+            do {
+                try await RealtimeCallProvider.shared.setMuted(id: call.systemID, muted: muted)
+            } catch {
+                guard let self, self.realtimeVoiceCall?.systemID == call.systemID else { return }
+                self.showToast("Microphone control failed. Try again.", tone: .error)
+            }
+        }
+    }
+}
+
+@MainActor
+private final class RealtimeCallProvider: NSObject, @preconcurrency CXProviderDelegate {
+    static let shared = RealtimeCallProvider()
+
+    private struct ActiveCall {
+        let id: UUID
+        let end: @MainActor () -> Void
+        let mute: @MainActor (Bool) -> Void
+    }
+
+    private let provider: CXProvider
+    private let controller = CXCallController()
+    private var activeCall: ActiveCall?
+
+    private override init() {
+        let configuration = CXProviderConfiguration()
+        configuration.maximumCallGroups = 1
+        configuration.maximumCallsPerCallGroup = 1
+        configuration.includesCallsInRecents = false
+        configuration.supportedHandleTypes = [.generic]
+        provider = CXProvider(configuration: configuration)
+        super.init()
+        provider.setDelegate(self, queue: nil)
+    }
+
+    func start(
+        id: UUID,
+        handle: String,
+        end: @escaping @MainActor () -> Void,
+        mute: @escaping @MainActor (Bool) -> Void
+    ) async throws {
+        guard activeCall == nil else { throw RealtimeVoiceSession.VoiceError.connection }
+        try RealtimeVoiceSession.prepareSystemCallAudio()
+        activeCall = ActiveCall(id: id, end: end, mute: mute)
+        let action = CXStartCallAction(
+            call: id,
+            handle: CXHandle(type: .generic, value: handle)
+        )
+        do {
+            try await controller.request(CXTransaction(action: action))
+        } catch {
+            if activeCall?.id == id { activeCall = nil }
+            throw error
+        }
+    }
+
+    func connected(id: UUID?) {
+        guard let id, activeCall?.id == id else { return }
+        provider.reportOutgoingCall(with: id, connectedAt: nil)
+    }
+
+    func end(id: UUID, reason: CXCallEndedReason) {
+        guard activeCall?.id == id else { return }
+        activeCall = nil
+        provider.reportCall(with: id, endedAt: nil, reason: reason)
+    }
+
+    func setMuted(id: UUID, muted: Bool) async throws {
+        guard activeCall?.id == id else { throw RealtimeVoiceSession.VoiceError.connection }
+        try await controller.request(
+            CXTransaction(action: CXSetMutedCallAction(call: id, muted: muted))
+        )
+    }
+
+    func providerDidReset(_ provider: CXProvider) {
+        let call = activeCall
+        activeCall = nil
+        call?.end()
+    }
+
+    func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
+        guard activeCall?.id == action.callUUID else {
+            action.fail()
+            return
+        }
+        provider.reportOutgoingCall(with: action.callUUID, startedConnectingAt: nil)
+        action.fulfill()
+    }
+
+    func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
+        guard activeCall?.id == action.callUUID else {
+            action.fail()
+            return
+        }
+        let call = activeCall
+        activeCall = nil
+        action.fulfill()
+        call?.end()
+    }
+
+    func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
+        guard let call = activeCall, call.id == action.callUUID else {
+            action.fail()
+            return
+        }
+        call.mute(action.isMuted)
+        action.fulfill()
+    }
+
+    func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
+        RealtimeVoiceSession.systemCallAudioDidActivate(audioSession)
+    }
+
+    func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
+        RealtimeVoiceSession.systemCallAudioDidDeactivate(audioSession)
     }
 }

@@ -10,5 +10,9 @@
 	<string>Use the microphone for voice chats in möbius.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Use Face ID to unlock möbius.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
 </dict>
 </plist>

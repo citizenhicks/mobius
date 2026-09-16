@@ -86,7 +86,11 @@ final class RealtimeVoiceSession: NSObject {
         }
         try Task.checkCancellation()
         guard self.generation == generation else { throw CancellationError() }
-        try activateAudio()
+        #if os(iOS)
+            let audio = RTCAudioSession.sharedInstance()
+            audio.add(self)
+            audioIsActive = true
+        #endif
         let configuration = RTCConfiguration()
         configuration.sdpSemantics = .unifiedPlan
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
@@ -158,9 +162,6 @@ final class RealtimeVoiceSession: NSObject {
             guard audioIsActive else { return }
             let audio = RTCAudioSession.sharedInstance()
             audio.remove(self)
-            audio.lockForConfiguration()
-            defer { audio.unlockForConfiguration() }
-            try? audio.setActive(false)
             audioIsActive = false
         #endif
     }
@@ -194,20 +195,32 @@ final class RealtimeVoiceSession: NSObject {
         levelFlare = level == 0 ? 0 : max(min(1, abs(level - levelBaseline) * 3), levelFlare * 0.82)
     }
 
-    private func activateAudio() throws {
-        #if os(iOS)
+    #if os(iOS)
+        static func prepareSystemCallAudio() throws {
             let audio = RTCAudioSession.sharedInstance()
             let configuration = RTCAudioSessionConfiguration.webRTC()
             configuration.category = AVAudioSession.Category.playAndRecord.rawValue
             configuration.mode = AVAudioSession.Mode.voiceChat.rawValue
             configuration.categoryOptions = [.allowBluetoothHFP, .defaultToSpeaker]
+            audio.useManualAudio = true
+            audio.isAudioEnabled = false
             audio.lockForConfiguration()
             defer { audio.unlockForConfiguration() }
-            try audio.setConfiguration(configuration, active: true)
-            audioIsActive = true
-            audio.add(self)
-        #endif
-    }
+            try audio.setConfiguration(configuration)
+        }
+
+        static func systemCallAudioDidActivate(_ session: AVAudioSession) {
+            let audio = RTCAudioSession.sharedInstance()
+            audio.audioSessionDidActivate(session)
+            audio.isAudioEnabled = true
+        }
+
+        static func systemCallAudioDidDeactivate(_ session: AVAudioSession) {
+            let audio = RTCAudioSession.sharedInstance()
+            audio.isAudioEnabled = false
+            audio.audioSessionDidDeactivate(session)
+        }
+    #endif
 
     private func scheduleDisconnectedRecovery(for peer: RTCPeerConnection) {
         guard disconnectedRecoveryTask == nil else { return }
@@ -331,7 +344,8 @@ struct AudioLevelEqualizer: View {
     }
 
     private func particles(at time: Double) -> some View {
-        Canvas(rendersAsynchronously: true) { context, size in
+        let amplitude = min(1, self.amplitude * 1.5)
+        return Canvas(rendersAsynchronously: true) { context, size in
             // A shallow reflection under the line keeps the field from reading as floored.
             let reflection = 0.2
             let ceiling = (size.height - 8) / (1 + reflection)

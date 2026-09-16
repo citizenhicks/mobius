@@ -153,7 +153,7 @@ private struct RealtimeVoiceComposer: View {
 
             HStack {
                 Button {
-                    voice.isMuted.toggle()
+                    model.chat.setRealtimeVoiceMuted(!voice.isMuted)
                 } label: {
                     MobiusLabel(
                         title: voice.isMuted ? "Unmute" : "Mute",

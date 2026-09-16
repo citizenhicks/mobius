@@ -212,7 +212,7 @@ extension AppModel {
         settingsDefaults.set(true, forKey: appLockEnabledKey)
     }
 
-    func appDidEnterBackground() {
+    func appDidEnterBackground(preservingVoiceCall: Bool = true) {
         appIsInBackground = true
         refreshAppLockPreference()
         appLockAuthenticationGeneration = UUID()
@@ -225,20 +225,19 @@ extension AppModel {
         messageSpeaker.stop()
         cancelVoiceChatIntent()
         let voiceCall = chat.realtimeVoiceCall
-        chat.stopRealtimeVoice(notifyGateway: false)
+        if !preservingVoiceCall { chat.stopRealtimeVoice(notifyGateway: false) }
+        let keepsVoiceCall = preservingVoiceCall && voiceCall != nil
         gateway.setAppInBackground(true)
         gateway.setSceneActive(false)
         chat.flushStreamDeltas()
         chat.restorePendingDrafts()
-        let endVoiceRequest = voiceCall.map {
-            GatewayRequest.endRealtimeVoice(
-                sessionID: $0.sessionID,
-                voiceID: $0.voiceID ?? $0.requestID
-            )
-        }
-        if !gateway.hasPendingPairing {
+        if !gateway.hasPendingPairing, !keepsVoiceCall {
             gateway.shutdown(
-                endVoiceRequest: endVoiceRequest,
+                endVoiceRequest: voiceCall.map {
+                    .endRealtimeVoice(
+                        sessionID: $0.sessionID, voiceID: $0.voiceID ?? $0.requestID
+                    )
+                },
                 state: gateway.connectionState.isReady || gateway.connectionState.isLoading
                     ? .disconnected : nil
             )

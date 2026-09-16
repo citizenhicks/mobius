@@ -27,7 +27,7 @@ struct ComposerSurface<Context: View, Controls: View>: View {
             if !showsExpandedComposer {
                 context { showsExpandedComposer = false }
                 TextField(
-                    "You can just do things",
+                    "just say what you need",
                     text: $text,
                     selection: $selection,
                     axis: .vertical

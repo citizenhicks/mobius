@@ -60,7 +60,7 @@ private struct MobiusWindow: View {
             .environment(model)
             .onAppear { sceneRegistry.register(model) }
             .onDisappear {
-                model.appDidEnterBackground()
+                model.appDidEnterBackground(preservingVoiceCall: false)
                 sceneRegistry.unregister(model)
                 appDelegate.attach(sceneRegistry.activeModel?.cloud)
             }

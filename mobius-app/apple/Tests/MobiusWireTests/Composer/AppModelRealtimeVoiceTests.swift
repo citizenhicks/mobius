@@ -334,32 +334,52 @@ extension AppModelTests {
         XCTAssertNil(model.chat.realtimeVoiceCall)
     }
 
-    func testBackgroundCancelsPendingVoiceAndEndsBeforeDisconnect() async throws {
+    func testBackgroundKeepsVoiceAndGatewayConnected() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try voiceModel(recorder: recorder)
         model.chat.selectedSessionID = "chat-1"
-        model.startRealtimeVoice()
-        let call = try XCTUnwrap(model.chat.realtimeVoiceCall)
-        let startup = try XCTUnwrap(model.chat.realtimeVoiceTask)
+        let call = RealtimeVoiceCall(requestID: "voice", sessionID: "chat-1")
+        let startup = Task<Void, Never> { try? await Task.sleep(for: .seconds(3_600)) }
+        model.chat.realtimeVoiceCall = call
+        model.chat.realtimeVoiceTask = startup
         let oldGeneration = model.gateway.connectionGeneration
         model.newVoiceChatIntent = .openingSession("pending-session")
         model.appDidEnterBackground()
-        XCTAssertNil(model.chat.realtimeVoiceCall)
-        XCTAssertNil(model.chat.realtimeVoiceTask)
+        XCTAssertEqual(model.chat.realtimeVoiceCall, call)
+        XCTAssertNotNil(model.chat.realtimeVoiceTask)
         XCTAssertNil(model.newVoiceChatIntent)
-        XCTAssertTrue(startup.isCancelled)
+        XCTAssertFalse(startup.isCancelled)
         XCTAssertFalse(model.chat.realtimeVoice.isConnected)
-        XCTAssertNotEqual(model.gateway.connectionGeneration, oldGeneration)
+        XCTAssertEqual(model.gateway.connectionGeneration, oldGeneration)
         let ended = await recorder.firstRequest(after: 0) {
             if case .endRealtimeVoice("chat-1", call.requestID) = $0 { true } else { false }
         }
-        XCTAssertNotNil(ended)
-        let requests = await recorder.requests()
-        XCTAssertFalse(
-            requests.contains { if case .startRealtimeVoice = $0 { true } else { false } })
+        XCTAssertNil(ended)
+        model.chat.stopRealtimeVoice()
     }
 
-    func testVoiceClosesOnSessionRouteAndBackgroundChanges() throws {
+    func testSceneTeardownEndsVoiceBeforeDisconnect() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try voiceModel(recorder: recorder)
+        let call = RealtimeVoiceCall(requestID: "voice", sessionID: "chat-1")
+        let startup = Task<Void, Never> { try? await Task.sleep(for: .seconds(3_600)) }
+        model.chat.realtimeVoiceCall = call
+        model.chat.realtimeVoiceTask = startup
+        let oldGeneration = model.gateway.connectionGeneration
+
+        model.appDidEnterBackground(preservingVoiceCall: false)
+
+        XCTAssertNil(model.chat.realtimeVoiceCall)
+        XCTAssertNil(model.chat.realtimeVoiceTask)
+        XCTAssertTrue(startup.isCancelled)
+        XCTAssertNotEqual(model.gateway.connectionGeneration, oldGeneration)
+        let ended = await recorder.firstRequest(after: 0) {
+            if case .endRealtimeVoice("chat-1", "voice") = $0 { true } else { false }
+        }
+        XCTAssertNotNil(ended)
+    }
+
+    func testVoiceClosesOnSessionAndRouteChangesButNotBackground() throws {
         let model = try voiceModel()
         model.chat.selectedSessionID = "chat-1"
         let call = RealtimeVoiceCall(requestID: "voice", sessionID: "chat-1")
@@ -372,9 +392,10 @@ extension AppModelTests {
         model.chat.realtimeVoiceCall = call
         model.newVoiceChatIntent = .selectingWorkspace
         model.appDidEnterBackground()
-        XCTAssertNil(model.chat.realtimeVoiceCall)
+        XCTAssertEqual(model.chat.realtimeVoiceCall, call)
         XCTAssertNil(model.newVoiceChatIntent)
         XCTAssertFalse(model.chat.realtimeVoice.isConnected)
+        model.chat.stopRealtimeVoice()
     }
 }
 

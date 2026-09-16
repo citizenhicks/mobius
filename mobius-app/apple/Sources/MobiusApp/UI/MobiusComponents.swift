@@ -88,7 +88,7 @@ struct MobiusBadge: View {
         .padding(
             .horizontal,
             text.isEmpty && progress == nil && glyph != nil
-                ? (MobiusStyle.badgeHeight - MobiusStyle.glyphInline) / 2
+                ? (MobiusStyle.iconButtonSize - MobiusStyle.glyphInline) / 2
                 : MobiusSpace.m
         )
         .frame(height: MobiusStyle.badgeHeight)
