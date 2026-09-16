@@ -91,17 +91,15 @@ struct BotsView: View {
     }
 
     private var headerActions: some View {
-        HeaderActionGroup {
-            Button {
-                newBotFormID = UUID()
-            } label: {
-                MobiusIcon(.aiScan, gutter: false)
-            }
-            .disabled(!model.canMutateBots || newBotFormID != nil)
-            .groupedHeaderAction(prominent: true)
-            .accessibilityLabel("New Bot")
-            .help("New Bot")
+        Button {
+            newBotFormID = UUID()
+        } label: {
+            MobiusIcon(.aiScan, gutter: false)
         }
+        .tint(palette.accent)
+        .disabled(!model.canMutateBots || newBotFormID != nil)
+        .accessibilityLabel("New Bot")
+        .help("New Bot")
     }
 
     private func botRow(_ bot: BotRecord) -> some View {

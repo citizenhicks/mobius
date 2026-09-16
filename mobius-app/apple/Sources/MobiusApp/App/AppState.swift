@@ -215,6 +215,7 @@ enum AppNotificationTarget: Equatable {
     case session(String)
     case extensionPackage(String)
     case routineRun(String)
+    case profile
 }
 
 enum ComposerAttachmentState: Equatable {

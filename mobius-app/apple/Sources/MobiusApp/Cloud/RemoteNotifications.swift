@@ -481,6 +481,9 @@ extension AppModel {
                 navigationPath = [.bot(run.botId)]
                 if run.sessionId != nil { presentRoutineRun(run) }
             }
+        case .profile:
+            destination = .profile
+            navigationPath = []
         }
     }
 

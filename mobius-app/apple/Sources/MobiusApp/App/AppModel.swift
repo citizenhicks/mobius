@@ -792,7 +792,7 @@ final class AppModel {
         case .routineRun(let runID):
             routineRuns.first { $0.id == runID }
                 .flatMap { run in bots.first { $0.id == run.botId } }
-        case .extensionPackage, nil:
+        case .extensionPackage, .profile, nil:
             nil
         }
     }

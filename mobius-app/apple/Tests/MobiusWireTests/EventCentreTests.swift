@@ -51,6 +51,17 @@ extension AppModelTests {
         app.restoreSessionReadState(for: accountID)
         XCTAssertFalse(app.hasUnreadEvents)
 
+        app.cloud.cloudIssue = .subscriptionExpired
+        let subscriptionEvent = try XCTUnwrap(
+            app.eventCentreItems.first { $0.id == "subscription" })
+        XCTAssertTrue(subscriptionEvent.requiresAction)
+        XCTAssertEqual(subscriptionEvent.target, .profile)
+        app.openEvent(subscriptionEvent)
+        XCTAssertEqual(app.destination, .profile)
+        XCTAssertTrue(app.navigationPath.isEmpty)
+        app.cloud.cloudIssue = nil
+        XCTAssertFalse(app.eventCentreItems.contains { $0.id == "subscription" })
+
         let extensionEvent = try XCTUnwrap(
             app.eventCentreItems.first { $0.id.hasPrefix("extension:") })
         app.openEvent(extensionEvent)

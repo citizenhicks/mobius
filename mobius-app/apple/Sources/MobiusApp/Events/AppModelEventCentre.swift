@@ -2,7 +2,7 @@ import Foundation
 
 extension AppModel {
     var eventCentreItems: [EventCentreItem] {
-        (approvalEvents + extensionEvents + routineEvents).sorted {
+        (approvalEvents + extensionEvents + subscriptionEvents + routineEvents).sorted {
             if $0.requiresAction != $1.requiresAction { return $0.requiresAction }
             if $0.occurredAt != $1.occurredAt { return $0.occurredAt > $1.occurredAt }
             return $0.id < $1.id
@@ -83,6 +83,27 @@ extension AppModel {
                 tone: .warning, requiresAction: true, target: .extensionPackage(record.id)
             )
         }
+    }
+
+    private var subscriptionEvents: [EventCentreItem] {
+        guard let issue = cloud.cloudIssue else { return [] }
+        let (revision, detail): (String, LocalizedStringResource) =
+            switch issue {
+            case .subscriptionAccountConflict:
+                (
+                    "account-conflict",
+                    MobiusCloudError.subscriptionAccountConflict.localizedDescriptionResource
+                )
+            case .subscriptionExpired:
+                ("expired", "Renew or restore your subscription to reconnect to möbius Cloud.")
+            }
+        return [
+            EventCentreItem(
+                id: "subscription", revision: revision, title: cloudGatewayDisplayName,
+                detail: localizedString(detail), glyph: .sealCheck, tone: .warning,
+                requiresAction: true, target: .profile
+            )
+        ]
     }
 
     private var routineEvents: [EventCentreItem] {
