@@ -145,6 +145,37 @@ struct DesktopRuntimeTests {
         #expect(throws: DesktopError.self) { try runtime.observedPoint(request) }
     }
 
+    @Test func cursorOverlayIsClickThroughAndStopsCleanly() {
+        _ = NSApplication.shared
+        NSImage(size: NSSize(width: 16, height: 16)).setName("hi.mousePointer01")
+        let overlay = DesktopCursorOverlay()
+        overlay.prepare(tint: "red")
+        #expect(!overlay.isVisible && overlay.windowID != nil)
+        overlay.move(to: CGPoint(x: 100, y: 100))
+        #expect(overlay.isVisible)
+        let panel = overlay.windowID.flatMap { windowID in
+            NSApplication.shared.windows.first { $0.windowNumber == windowID }
+        }
+        #expect(panel?.ignoresMouseEvents == true)
+        #expect(panel?.styleMask.contains(.nonactivatingPanel) == true)
+        #expect(panel?.sharingType == NSWindow.SharingType.none)
+        #expect(panel?.frame.origin == CGPoint(x: 95, y: 69))
+        let frame = panel?.frame
+        overlay.prepare(tint: "red")
+        #expect(overlay.isVisible && panel?.frame == frame)
+        overlay.hide()
+        #expect(!overlay.isVisible)
+    }
+
+    @Test func cursorPointConvertsQuartzTopLeftToAppKitBottomLeft() {
+        #expect(
+            DesktopRuntime.appKitPoint(
+                CGPoint(x: 0, y: 40),
+                displayBounds: CGRect(x: -1600, y: 40, width: 1600, height: 900),
+                screenFrame: CGRect(x: -1600, y: 0, width: 1600, height: 900))
+                == CGPoint(x: 0, y: 900))
+    }
+
     @Test func disabledDesktopRequestRepliesWithoutPerformingInput() async throws {
         let runtime = DesktopRuntime()
         var messages: [GatewayRequest] = []
@@ -168,6 +199,8 @@ struct DesktopRuntimeTests {
     @Test func desktopStopAndDisconnectCancelPendingRequestsAndClearObservations()
         async throws
     {
+        _ = NSApplication.shared
+        NSImage(size: NSSize(width: 16, height: 16)).setName("hi.mousePointer01")
         let runtime = DesktopRuntime()
         var messages: [GatewayRequest] = []
         runtime.connected { messages.append($0) }
@@ -177,9 +210,13 @@ struct DesktopRuntimeTests {
             runtime.screenshots["screen"] = desktopScreenshot()
             runtime.elements["element"] = .init(
                 value: AXUIElementCreateSystemWide(), pid: 0, role: "AXButton", label: "Test")
+            runtime.showCursor(tint: "red")
+            runtime.moveCursor(to: CGDisplayBounds(CGMainDisplayID()).origin)
+            #expect(runtime.isCursorVisible)
             if disconnect { runtime.disconnected() } else { runtime.stop() }
             #expect(!runtime.enabled && !runtime.isActive)
             #expect(runtime.screenshots.isEmpty && runtime.elements.isEmpty)
+            #expect(!runtime.isCursorVisible)
             await Task.yield()
         }
         #expect(!messages.contains { $0.body["type"]?.stringValue == "desktop_control_reply" })

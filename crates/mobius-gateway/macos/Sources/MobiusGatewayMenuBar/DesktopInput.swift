@@ -177,6 +177,7 @@ extension DesktopRuntime {
         }
         event.setIntegerValueField(.mouseEventClickState, value: Int64(count))
         event.post(tap: .cghidEventTap)
+        moveCursor(to: point)
     }
 
     private func number(_ request: JSONValue, _ field: String) throws -> Double {

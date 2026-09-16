@@ -325,7 +325,7 @@ final class MenuBarModel {
 extension MenuBarModel {
     func receive(_ envelope: GatewayEnvelope) throws {
         let body = envelope.body
-        try desktop.receive(envelope)
+        try desktop.receive(envelope, botTint: body["sessionId"]?.stringValue.flatMap(botTint))
         switch envelope.type {
         case "ready":
             guard let payload = body["payload"] else {
@@ -398,6 +398,12 @@ extension MenuBarModel {
             self.approval = nil
             approvalSubmissionID = nil
         }
+    }
+
+    private func botTint(for sessionID: String) -> String? {
+        guard let ownerID = chats.first(where: { $0.id == sessionID })?.sessionContext.ownerId
+        else { return nil }
+        return bots.first(where: { $0.id == ownerID })?.tint
     }
 
     private func receiveSession(_ envelope: GatewayEnvelope) throws {

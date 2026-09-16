@@ -34,6 +34,7 @@ final class DesktopRuntime {
     @ObservationIgnored private var permissionMonitor: Task<Void, Never>?
     @ObservationIgnored private let readPermissions:
         () -> (accessibility: Bool, screenRecording: Bool)
+    @ObservationIgnored private var cursorOverlay: DesktopCursorOverlay?
     @ObservationIgnored private var sessionObservers: [NSObjectProtocol] = []
     @ObservationIgnored var elements: [String: Element] = [:]
     @ObservationIgnored var screenshots: [String: Screenshot] = [:]
@@ -73,6 +74,7 @@ final class DesktopRuntime {
 
     isolated deinit {
         permissionMonitor?.cancel()
+        cursorOverlay?.hide()
         for observer in sessionObservers {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
         }
@@ -147,7 +149,7 @@ final class DesktopRuntime {
                 ]))
     }
 
-    func receive(_ envelope: GatewayEnvelope) throws {
+    func receive(_ envelope: GatewayEnvelope, botTint: String? = nil) throws {
         let body = envelope.body
         switch envelope.type {
         case "desktop_control_requested":
@@ -177,6 +179,7 @@ final class DesktopRuntime {
                 let response: JSONValue
                 do {
                     try self.requireControl()
+                    self.showCursor(tint: botTint)
                     response = .object(["result": try await self.perform(request)])
                 } catch {
                     response = .object(["error": .string(error.localizedDescription)])
@@ -214,6 +217,41 @@ final class DesktopRuntime {
         task?.cancel()
         task = nil
         executionID = nil
+        cursorOverlay?.hide()
+    }
+
+    func showCursor(tint: String?) {
+        if cursorOverlay == nil { cursorOverlay = DesktopCursorOverlay() }
+        cursorOverlay?.prepare(tint: tint)
+    }
+
+    func moveCursor(to quartzPoint: CGPoint) {
+        guard
+            let screen = NSScreen.screens.first(where: { screen in
+                guard
+                    let displayID = screen.deviceDescription[
+                        NSDeviceDescriptionKey("NSScreenNumber")]
+                        as? CGDirectDisplayID
+                else { return false }
+                return CGDisplayBounds(displayID).contains(quartzPoint)
+            }),
+            let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")]
+                as? CGDirectDisplayID
+        else { return }
+        cursorOverlay?.move(
+            to: Self.appKitPoint(
+                quartzPoint, displayBounds: CGDisplayBounds(displayID), screenFrame: screen.frame))
+    }
+
+    var cursorWindowID: CGWindowID? { cursorOverlay?.windowID }
+    var isCursorVisible: Bool { cursorOverlay?.isVisible == true }
+
+    static func appKitPoint(
+        _ quartzPoint: CGPoint, displayBounds: CGRect, screenFrame: CGRect
+    ) -> CGPoint {
+        CGPoint(
+            x: screenFrame.minX + quartzPoint.x - displayBounds.minX,
+            y: screenFrame.maxY - quartzPoint.y + displayBounds.minY)
     }
 
     func clearObservations() {
@@ -353,7 +391,11 @@ final class DesktopRuntime {
         configuration.height = height
         configuration.showsCursor = true
         configuration.captureResolution = .nominal
-        let filter = SCContentFilter(display: display, excludingWindows: [])
+        let excludedWindows =
+            cursorWindowID.map { windowID in
+                content.windows.filter { $0.windowID == windowID }
+            } ?? []
+        let filter = SCContentFilter(display: display, excludingWindows: excludedWindows)
         let image = try await SCScreenshotManager.captureImage(
             contentFilter: filter, configuration: configuration)
         try requireControl()

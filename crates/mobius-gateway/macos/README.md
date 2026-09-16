@@ -64,6 +64,10 @@ server, token, plugin, or agent runs in the app. Native requests and replies use
 its existing authenticated local gateway connection; remote clients cannot host
 the desktop runtime. Linux and headless cloud hosts retain browser control only.
 
+Bot pointer actions show a small click-through Hugeicons `MousePointer01Icon` overlay in
+the controlling Bot's tint. It stays at the last action point until control ends, with a subtle
+wiggle that respects Reduce Motion. It is visual-only and does not alter native input behavior.
+
 ## Install and launch
 
 ```sh
