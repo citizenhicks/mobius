@@ -41,14 +41,20 @@ async fn runtime_resources_do_not_expose_private_gateway_state() {
             .expect("runtime read root");
     assert_eq!(
         sandbox
-            .read(runtime.join("computer-control.md").to_str().expect("path"))
+            .read(
+                runtime.join("computer-control.md").to_str().expect("path"),
+                mobius::backend::sandbox::SandboxMode::WorkspaceWrite,
+            )
             .await
             .expect("public runtime"),
         DOCUMENTATION
     );
     assert!(
         sandbox
-            .read(state.join("credentials.json").to_str().expect("path"))
+            .read(
+                state.join("credentials.json").to_str().expect("path"),
+                mobius::backend::sandbox::SandboxMode::WorkspaceWrite,
+            )
             .await
             .is_err()
     );
@@ -120,7 +126,7 @@ async fn downloaded_runtime_works() {
         .expect("sandboxed browser");
     assert_eq!(output.exit_code, 0, "{}", output.stderr);
     let bytes = sandbox
-        .read_bytes("ready.png", 50 * 1024 * 1024)
+        .read_bytes("ready.png", 50 * 1024 * 1024, SandboxMode::WorkspaceWrite)
         .await
         .expect("sandbox image access");
     assert!(bytes.starts_with(b"\x89PNG"));

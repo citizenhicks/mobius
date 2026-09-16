@@ -54,23 +54,26 @@ mod text {
     pub const RENDER_STOP_COMMAND: &str = "Stop";
     pub const RENDER_VIEW_IMAGE: &str = "View image";
     pub const RENDER_WRITE_FILE: &str = "Write";
-    pub const TOOL_APPLY_PATCH_DESCRIPTION: &str = "Apply a patch to one existing workspace file. Use an absolute path for an attached workspace.";
+    pub const TOOL_APPLY_PATCH_DESCRIPTION: &str =
+        "Apply a patch to one existing file under the active sandbox policy.";
     pub const TOOL_APPLY_PATCH_PARAMETER_PATCH_DESCRIPTION: &str = "One `apply_patch` envelope containing exactly one `*** Update File: path` operation and bare `@@` or `@@ context` changes.";
     pub const TOOL_BASH_DESCRIPTION: &str =
         "Run a command in the local sandbox under the active network policy.";
     pub const TOOL_POLL_COMMAND_DESCRIPTION: &str =
         "Read incremental background command output; completion consumes the ID.";
-    pub const TOOL_READ_FILE_DESCRIPTION: &str = "Read a UTF-8 text file. Use a workspace-relative path such as `src/main.rs`; use an absolute path for an attached workspace. Paths outside allowed roots are rejected.";
-    pub const TOOL_READ_FILE_PARAMETER_PATH_DESCRIPTION: &str = "Workspace-relative path such as `src/main.rs`, or an absolute path inside an attached workspace; do not use `..` or paths outside the sandbox.";
+    pub const TOOL_READ_FILE_DESCRIPTION: &str =
+        "Read a UTF-8 text file under the active sandbox policy.";
+    pub const TOOL_READ_FILE_PARAMETER_PATH_DESCRIPTION: &str = "Workspace-relative path such as `src/main.rs`, or an absolute path allowed by the active sandbox policy.";
     pub const TOOL_START_COMMAND_DESCRIPTION: &str =
         "Start a sandboxed command in the background and return an opaque ID.";
     pub const TOOL_STOP_COMMAND_DESCRIPTION: &str =
         "Stop an owned background command and consume its ID.";
     pub const TOOL_VIEW_IMAGE_DESCRIPTION: &str =
         "View a local PNG, JPEG, WebP, or GIF image when visual inspection is needed.";
-    pub const TOOL_VIEW_IMAGE_PARAMETER_PATH_DESCRIPTION: &str = "Workspace-relative image path, or an authorized absolute workspace, read-root, or private temporary path.";
+    pub const TOOL_VIEW_IMAGE_PARAMETER_PATH_DESCRIPTION: &str =
+        "Workspace-relative image path, or an absolute path allowed by the active sandbox policy.";
     pub const TOOL_WRITE_FILE_DESCRIPTION: &str =
-        "Write a UTF-8 workspace file. Use an absolute path for an attached workspace.";
+        "Write a UTF-8 file under the active sandbox policy.";
 }
 mod coding;
 mod commands;

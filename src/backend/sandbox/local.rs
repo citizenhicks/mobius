@@ -818,25 +818,54 @@ impl SandboxBackend for LocalSandbox {
         Some(LocalSandbox::temporary_directory(self).into())
     }
 
-    fn read<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<String>> {
+    fn read<'a>(
+        &'a self,
+        path: &'a str,
+        sandbox_mode: SandboxMode,
+    ) -> BoxFuture<'a, Result<String>> {
         Box::pin(async move {
-            let (root, relative) = self.read_target(path)?;
             let requested = path.to_string();
+            if sandbox_mode == SandboxMode::DangerFullAccess && Path::new(path).is_absolute() {
+                let denied_reads = self.denied_reads.clone();
+                return tokio::task::spawn_blocking(move || {
+                    let (root, relative) =
+                        full_access_target(Path::new(&requested), &denied_reads)?;
+                    read_file(root, &relative, &requested)
+                })
+                .await
+                .map_err(|error| Error::Sandbox(format!("file reader failed: {error}")))?;
+            }
+            let (root, relative) = self.read_target(path)?;
             tokio::task::spawn_blocking(move || read_file(root, &relative, &requested))
                 .await
                 .map_err(|error| Error::Sandbox(format!("file reader failed: {error}")))?
         })
     }
 
-    fn read_bytes<'a>(&'a self, path: &'a str, max_bytes: usize) -> BoxFuture<'a, Result<Vec<u8>>> {
+    fn read_bytes<'a>(
+        &'a self,
+        path: &'a str,
+        max_bytes: usize,
+        sandbox_mode: SandboxMode,
+    ) -> BoxFuture<'a, Result<Vec<u8>>> {
         Box::pin(async move {
             if max_bytes == 0 || max_bytes > MAX_BINARY_FILE_BYTES {
                 return Err(Error::Sandbox(format!(
                     "binary file read size must be 1–{MAX_BINARY_FILE_BYTES} bytes"
                 )));
             }
-            let (root, relative) = self.read_target(path)?;
             let requested = path.to_string();
+            if sandbox_mode == SandboxMode::DangerFullAccess && Path::new(path).is_absolute() {
+                let denied_reads = self.denied_reads.clone();
+                return tokio::task::spawn_blocking(move || {
+                    let (root, relative) =
+                        full_access_target(Path::new(&requested), &denied_reads)?;
+                    read_binary_file(root, &relative, &requested, max_bytes)
+                })
+                .await
+                .map_err(|error| Error::Sandbox(format!("file reader failed: {error}")))?;
+            }
+            let (root, relative) = self.read_target(path)?;
             tokio::task::spawn_blocking(move || {
                 read_binary_file(root, &relative, &requested, max_bytes)
             })
@@ -845,14 +874,29 @@ impl SandboxBackend for LocalSandbox {
         })
     }
 
-    fn write<'a>(&'a self, path: &'a str, content: &'a str) -> BoxFuture<'a, Result<()>> {
+    fn write<'a>(
+        &'a self,
+        path: &'a str,
+        content: &'a str,
+        sandbox_mode: SandboxMode,
+    ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             if content.len() > MAX_FILE_BYTES {
                 return Err(Error::Sandbox("file exceeds write limit".into()));
             }
-            let (root, relative) = self.write_target(path)?;
             let requested = path.to_string();
             let content = content.as_bytes().to_vec();
+            if sandbox_mode == SandboxMode::DangerFullAccess && Path::new(path).is_absolute() {
+                let denied_reads = self.denied_reads.clone();
+                return tokio::task::spawn_blocking(move || {
+                    let (root, relative) =
+                        full_access_target(Path::new(&requested), &denied_reads)?;
+                    atomic_write(root, &relative, &content, &requested)
+                })
+                .await
+                .map_err(|error| Error::Sandbox(format!("file writer failed: {error}")))?;
+            }
+            let (root, relative) = self.write_target(path)?;
             tokio::task::spawn_blocking(move || atomic_write(root, &relative, &content, &requested))
                 .await
                 .map_err(|error| Error::Sandbox(format!("file writer failed: {error}")))?
@@ -907,6 +951,26 @@ impl SandboxBackend for LocalSandbox {
             Some(authorization),
         ))
     }
+}
+
+fn full_access_target(requested: &Path, denied_reads: &[DeniedRead]) -> Result<(Dir, PathBuf)> {
+    let name = requested
+        .file_name()
+        .ok_or_else(|| Error::Sandbox(requested.display().to_string()))?;
+    let parent = std::fs::canonicalize(
+        requested
+            .parent()
+            .ok_or_else(|| Error::Sandbox(requested.display().to_string()))?,
+    )?;
+    let target = parent.join(name);
+    if denied_reads.iter().any(|denied| {
+        target == denied.path || (denied.directory && target.starts_with(&denied.path))
+    }) {
+        return Err(Error::Sandbox(requested.display().to_string()));
+    }
+    let directory = Dir::open_ambient_dir(&parent, ambient_authority())?;
+    validate_root(&parent, &directory)?;
+    Ok((directory, name.into()))
 }
 
 fn find_executable_in(

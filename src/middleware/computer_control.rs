@@ -216,7 +216,7 @@ impl Tool for Evaluate {
                         let image = async {
                             let bytes = context
                                 .sandbox
-                                .read_bytes(&path, MAX_BINARY_FILE_BYTES)
+                                .read_bytes(&path, MAX_BINARY_FILE_BYTES, &context.permissions)
                                 .await?;
                             self.files
                                 .ingest_image(

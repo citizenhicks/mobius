@@ -322,6 +322,7 @@ mod tests {
                 .read_bytes(
                     image["path"].as_str().expect("image path"),
                     50 * 1024 * 1024,
+                    &permissions,
                 )
                 .await
                 .expect("same sandbox file access");
@@ -402,13 +403,23 @@ mod tests {
             })
         }
 
-        fn read<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<String>> {
+        fn read<'a>(&'a self, _: &'a str, _: SandboxMode) -> BoxFuture<'a, Result<String>> {
             Box::pin(async { unreachable!() })
         }
-        fn read_bytes<'a>(&'a self, _: &'a str, _: usize) -> BoxFuture<'a, Result<Vec<u8>>> {
+        fn read_bytes<'a>(
+            &'a self,
+            _: &'a str,
+            _: usize,
+            _: SandboxMode,
+        ) -> BoxFuture<'a, Result<Vec<u8>>> {
             Box::pin(async { unreachable!() })
         }
-        fn write<'a>(&'a self, _: &'a str, _: &'a str) -> BoxFuture<'a, Result<()>> {
+        fn write<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a str,
+            _: SandboxMode,
+        ) -> BoxFuture<'a, Result<()>> {
             Box::pin(async { unreachable!() })
         }
         fn execute<'a>(

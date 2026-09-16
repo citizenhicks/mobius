@@ -161,10 +161,9 @@ you configure; changing clients preserves the agent's runtime and saved work.
 
 Protected execution uses **Seatbelt on macOS** and **Bubblewrap on Linux** and fails closed
 if the selected sandbox is unavailable. Approval policy belongs to the Bot. **Full access**
-allows shell commands to use everything available to the gateway account; file tools remain
-scoped to the workspace, attached folders, and the execution’s private temporary area.
-Commands receive that directory in `$TMPDIR`, shared across calls. Workspace isolation
-protects sibling temporary files; full-access commands use the host filesystem. The [gateway guide](https://github.com/citizenhicks/mobius/blob/main/crates/mobius-gateway/README.md)
+allows file tools and shell commands to use everything available to the gateway account.
+Commands receive the execution’s private temporary directory in `$TMPDIR`, shared across calls.
+Workspace isolation confines file tools and protects sibling temporary files. The [gateway guide](https://github.com/citizenhicks/mobius/blob/main/crates/mobius-gateway/README.md)
 explains these boundaries in detail.
 
 ## Build on möbius

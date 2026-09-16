@@ -47,11 +47,10 @@ mod text {
     pub const APPROVAL_POLICY_ASK_DESCRIPTION: &str =
         "Pause approval-required actions for a human decision";
     pub const APPROVAL_POLICY_ASK_LABEL: &str = "Ask";
-    pub const APPROVAL_POLICY_FULL_ACCESS_DESCRIPTION: &str =
-        "Run shell commands with host filesystem and network access without approval";
+    pub const APPROVAL_POLICY_FULL_ACCESS_DESCRIPTION: &str = "Run file operations and shell commands with host filesystem and network access without approval";
     pub const APPROVAL_POLICY_FULL_ACCESS_LABEL: &str = "Full access";
     pub const DEFAULTS_APPROVAL_POLICY: &str = "ask";
-    pub const MANIFEST_DESCRIPTION: &str = "Control mutation approval and command isolation";
+    pub const MANIFEST_DESCRIPTION: &str = "Control mutation approval and sandbox isolation";
     pub const MANIFEST_LABEL: &str = "Sandbox";
     pub const PROMPT_LINUX: &str = "möbius is running on Linux.";
     pub const PROMPT_MACOS: &str = "möbius is running on macOS.";
@@ -151,7 +150,7 @@ pub enum NetworkAccess {
     Allowed,
 }
 
-/// Whether a command uses workspace isolation or host-wide access.
+/// Whether an operation uses workspace isolation or host-wide access.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SandboxMode {
@@ -276,14 +275,28 @@ pub trait SandboxBackend: Send + Sync {
         })
     }
 
-    /// Reads a UTF-8 file.
-    fn read<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<String>>;
+    /// Reads a UTF-8 file under the requested isolation.
+    fn read<'a>(
+        &'a self,
+        path: &'a str,
+        sandbox_mode: SandboxMode,
+    ) -> BoxFuture<'a, Result<String>>;
 
-    /// Reads one binary file through a single bounded open handle.
-    fn read_bytes<'a>(&'a self, path: &'a str, max_bytes: usize) -> BoxFuture<'a, Result<Vec<u8>>>;
+    /// Reads one binary file through a single bounded open handle under the requested isolation.
+    fn read_bytes<'a>(
+        &'a self,
+        path: &'a str,
+        max_bytes: usize,
+        sandbox_mode: SandboxMode,
+    ) -> BoxFuture<'a, Result<Vec<u8>>>;
 
-    /// Writes a UTF-8 file.
-    fn write<'a>(&'a self, path: &'a str, content: &'a str) -> BoxFuture<'a, Result<()>>;
+    /// Writes a UTF-8 file under the requested isolation.
+    fn write<'a>(
+        &'a self,
+        path: &'a str,
+        content: &'a str,
+        sandbox_mode: SandboxMode,
+    ) -> BoxFuture<'a, Result<()>>;
 
     /// Runs a shell command and forwards drained output under the requested isolation.
     fn execute<'a>(
@@ -372,8 +385,12 @@ impl Sandbox {
     }
 
     /// Reads a UTF-8 file.
-    pub fn read<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<String>> {
-        self.backend.read(path)
+    pub fn read<'a>(
+        &'a self,
+        path: &'a str,
+        permissions: &'a ToolPermissions,
+    ) -> BoxFuture<'a, Result<String>> {
+        self.backend.read(path, permissions.sandbox_mode)
     }
 
     /// Reads one bounded binary file.
@@ -381,6 +398,7 @@ impl Sandbox {
         &'a self,
         path: &'a str,
         max_bytes: usize,
+        permissions: &'a ToolPermissions,
     ) -> BoxFuture<'a, Result<Vec<u8>>> {
         if max_bytes == 0 || max_bytes > MAX_BINARY_FILE_BYTES {
             return Box::pin(async {
@@ -389,7 +407,8 @@ impl Sandbox {
                 )))
             });
         }
-        self.backend.read_bytes(path, max_bytes)
+        self.backend
+            .read_bytes(path, max_bytes, permissions.sandbox_mode)
     }
 
     /// Writes a UTF-8 file when this call has mutation authority.
@@ -409,7 +428,7 @@ impl Sandbox {
         if content.len() > MAX_FILE_BYTES {
             return Box::pin(async { Err(Error::Sandbox("file exceeds write limit".into())) });
         }
-        self.backend.write(path, content)
+        self.backend.write(path, content, permissions.sandbox_mode)
     }
 
     /// Runs a command when this call has mutation authority.

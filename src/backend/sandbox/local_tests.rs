@@ -260,14 +260,20 @@ async fn absolute_reads_are_confined_to_explicit_read_roots() {
 
     assert_eq!(
         sandbox
-            .read(resource.to_str().expect("UTF-8 resource path"))
+            .read(
+                resource.to_str().expect("UTF-8 resource path"),
+                SandboxMode::WorkspaceWrite,
+            )
             .await
             .expect("allowed resource"),
         "resource"
     );
     assert!(
         sandbox
-            .read(secret.to_str().expect("UTF-8 secret path"))
+            .read(
+                secret.to_str().expect("UTF-8 secret path"),
+                SandboxMode::WorkspaceWrite,
+            )
             .await
             .is_err()
     );
@@ -310,7 +316,10 @@ async fn sandboxed_commands_can_execute_read_roots_inside_masked_temporary_stora
     assert_eq!(output.stdout, "runtime");
     assert!(!resources.join("blocked").exists());
     assert_eq!(
-        sandbox.read("allowed").await.expect("workspace write"),
+        sandbox
+            .read("allowed", SandboxMode::WorkspaceWrite)
+            .await
+            .expect("workspace write"),
         "written"
     );
 }
@@ -336,7 +345,10 @@ async fn absolute_reads_and_writes_are_confined_to_workspace_roots() {
 
     assert_eq!(
         sandbox
-            .read(primary_source.to_str().expect("UTF-8 primary path"))
+            .read(
+                primary_source.to_str().expect("UTF-8 primary path"),
+                SandboxMode::WorkspaceWrite,
+            )
             .await
             .expect("primary read"),
         "primary"
@@ -345,18 +357,26 @@ async fn absolute_reads_and_writes_are_confined_to_workspace_roots() {
         .write(
             primary_target.to_str().expect("UTF-8 primary path"),
             "written",
+            SandboxMode::WorkspaceWrite,
         )
         .await
         .expect("primary write");
     assert_eq!(
         sandbox
-            .read(source.to_str().expect("UTF-8 source path"))
+            .read(
+                source.to_str().expect("UTF-8 source path"),
+                SandboxMode::WorkspaceWrite,
+            )
             .await
             .expect("attached read"),
         "attached"
     );
     sandbox
-        .write(target.to_str().expect("UTF-8 target path"), "written")
+        .write(
+            target.to_str().expect("UTF-8 target path"),
+            "written",
+            SandboxMode::WorkspaceWrite,
+        )
         .await
         .expect("attached write");
     assert_eq!(
@@ -365,7 +385,11 @@ async fn absolute_reads_and_writes_are_confined_to_workspace_roots() {
     );
     assert!(
         sandbox
-            .write(blocked.to_str().expect("UTF-8 blocked path"), "blocked")
+            .write(
+                blocked.to_str().expect("UTF-8 blocked path"),
+                "blocked",
+                SandboxMode::WorkspaceWrite,
+            )
             .await
             .is_err()
     );
@@ -406,7 +430,10 @@ async fn absolute_read_roots_reject_symlink_escapes() {
 
     assert!(
         sandbox
-            .read(link.to_str().expect("UTF-8 link path"))
+            .read(
+                link.to_str().expect("UTF-8 link path"),
+                SandboxMode::WorkspaceWrite,
+            )
             .await
             .is_err()
     );
@@ -432,7 +459,10 @@ async fn absolute_read_roots_reject_replaced_roots() {
 
     assert!(
         sandbox
-            .read(requested.to_str().expect("UTF-8 resource path"))
+            .read(
+                requested.to_str().expect("UTF-8 resource path"),
+                SandboxMode::WorkspaceWrite,
+            )
             .await
             .is_err()
     );
@@ -470,13 +500,20 @@ async fn absolute_workspace_roots_reject_replaced_roots() {
 
     assert!(
         sandbox
-            .read(requested.to_str().expect("UTF-8 attached path"))
+            .read(
+                requested.to_str().expect("UTF-8 attached path"),
+                SandboxMode::WorkspaceWrite,
+            )
             .await
             .is_err()
     );
     assert!(
         sandbox
-            .write(requested.to_str().expect("UTF-8 attached path"), "escaped")
+            .write(
+                requested.to_str().expect("UTF-8 attached path"),
+                "escaped",
+                SandboxMode::WorkspaceWrite,
+            )
             .await
             .is_err()
     );
@@ -986,21 +1023,44 @@ async fn filesystem_handles_reject_symlink_escapes_and_aliases() {
     symlink(workspace.join(".git"), workspace.join("metadata-link")).expect("metadata link");
     let sandbox = local_sandbox(&workspace);
 
-    assert!(sandbox.read("outside-link").await.is_err());
-    assert!(sandbox.write("outside-link", "escaped").await.is_err());
     assert!(
         sandbox
-            .write("outside-directory/new", "escaped")
+            .read("outside-link", SandboxMode::WorkspaceWrite)
             .await
             .is_err()
     );
     assert!(
         sandbox
-            .write("metadata-link/config", "escaped")
+            .write("outside-link", "escaped", SandboxMode::WorkspaceWrite)
             .await
             .is_err()
     );
-    assert!(sandbox.write("metadata-link/new", "escaped").await.is_err());
+    assert!(
+        sandbox
+            .write(
+                "outside-directory/new",
+                "escaped",
+                SandboxMode::WorkspaceWrite,
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        sandbox
+            .write(
+                "metadata-link/config",
+                "escaped",
+                SandboxMode::WorkspaceWrite,
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        sandbox
+            .write("metadata-link/new", "escaped", SandboxMode::WorkspaceWrite,)
+            .await
+            .is_err()
+    );
     assert_eq!(
         std::fs::read_to_string(outside).expect("outside"),
         "outside"
@@ -1026,10 +1086,25 @@ async fn filesystem_handles_reject_a_replaced_workspace_root() {
     std::fs::create_dir(&workspace).expect("replacement workspace");
     std::fs::write(workspace.join("bait.txt"), "replacement").expect("replacement file");
 
-    assert!(sandbox.read("bait.txt").await.is_err());
-    assert!(child.read("bait.txt").await.is_err());
+    assert!(
+        sandbox
+            .read("bait.txt", SandboxMode::WorkspaceWrite)
+            .await
+            .is_err()
+    );
+    assert!(
+        child
+            .read("bait.txt", SandboxMode::WorkspaceWrite)
+            .await
+            .is_err()
+    );
     assert!(sandbox.isolated_execution().is_err());
-    assert!(sandbox.write("new.txt", "escaped").await.is_err());
+    assert!(
+        sandbox
+            .write("new.txt", "escaped", SandboxMode::WorkspaceWrite)
+            .await
+            .is_err()
+    );
     assert!(!workspace.join("new.txt").exists());
     assert!(!displaced.join("new.txt").exists());
 }
@@ -1046,7 +1121,11 @@ async fn writes_replace_files_without_partial_state_or_permission_drift() {
     let sandbox = local_sandbox(workspace.path());
 
     sandbox
-        .write("state.txt", "complete replacement")
+        .write(
+            "state.txt",
+            "complete replacement",
+            SandboxMode::WorkspaceWrite,
+        )
         .await
         .expect("atomic write");
 
@@ -1092,6 +1171,42 @@ fn bwrap_discovery_rejects_workspace_path_aliases() {
 }
 
 #[tokio::test]
+async fn full_access_file_operations_accept_absolute_parent_components() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let sandbox = LocalSandbox::new(workspace.path()).expect("sandbox");
+    let requested = sandbox
+        .temporary_directory()
+        .join(format!("../full-access-{}", uuid::Uuid::new_v4()));
+    let actual = requested
+        .parent()
+        .expect("temporary parent")
+        .canonicalize()
+        .expect("canonical temporary parent")
+        .join(requested.file_name().expect("target name"));
+    let requested = requested.to_str().expect("UTF-8 path");
+
+    assert!(
+        sandbox
+            .write(requested, "blocked", SandboxMode::WorkspaceWrite)
+            .await
+            .is_err()
+    );
+    sandbox
+        .write(requested, "written", SandboxMode::DangerFullAccess)
+        .await
+        .expect("full access write");
+    assert_eq!(
+        sandbox
+            .read(requested, SandboxMode::DangerFullAccess)
+            .await
+            .expect("full access read"),
+        "written"
+    );
+
+    std::fs::remove_file(actual).expect("remove target");
+}
+
+#[tokio::test]
 async fn temporary_files_survive_calls_and_are_isolated_from_child_execution() {
     let workspace = tempfile::tempdir().expect("workspace");
     let sandbox = LocalSandbox::new(workspace.path()).expect("sandbox");
@@ -1109,8 +1224,17 @@ async fn temporary_files_survive_calls_and_are_isolated_from_child_execution() {
         .await
         .expect("write");
     assert_eq!(output.exit_code, 0, "{}", output.stderr);
-    assert_eq!(sandbox.read(name).await.expect("read"), "before");
-    sandbox.write(name, "after").await.expect("replace");
+    assert_eq!(
+        sandbox
+            .read(name, SandboxMode::WorkspaceWrite)
+            .await
+            .expect("read"),
+        "before"
+    );
+    sandbox
+        .write(name, "after", SandboxMode::WorkspaceWrite)
+        .await
+        .expect("replace");
     for mode in [SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess] {
         let output = sandbox
             .execute(
@@ -1125,7 +1249,7 @@ async fn temporary_files_survive_calls_and_are_isolated_from_child_execution() {
         assert_eq!(output.exit_code, 0, "{}", output.stderr);
         assert_eq!(output.stdout, "after");
     }
-    assert!(child.read(name).await.is_err());
+    assert!(child.read(name, SandboxMode::WorkspaceWrite).await.is_err());
     let protected = tempfile::tempdir().expect("protected path");
     let guarded_child = sandbox
         .isolated_execution()
@@ -1160,7 +1284,11 @@ async fn temporary_files_survive_calls_and_are_isolated_from_child_execution() {
     let escape = sandbox.temporary_directory().join("../escape");
     assert!(
         sandbox
-            .write(escape.to_str().expect("path"), "no")
+            .write(
+                escape.to_str().expect("path"),
+                "no",
+                SandboxMode::WorkspaceWrite,
+            )
             .await
             .is_err()
     );
@@ -1176,7 +1304,8 @@ async fn temporary_files_survive_calls_and_are_isolated_from_child_execution() {
                         .join("escape/file")
                         .to_str()
                         .expect("path"),
-                    "no"
+                    "no",
+                    SandboxMode::WorkspaceWrite,
                 )
                 .await
                 .is_err()

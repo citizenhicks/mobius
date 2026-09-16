@@ -54,7 +54,11 @@ impl Tool for ReadFile {
     ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: PathArgs = serde_json::from_value(arguments)?;
-            context.sandbox.read(&arguments.path).await.map(Into::into)
+            context
+                .sandbox
+                .read(&arguments.path, &context.permissions)
+                .await
+                .map(Into::into)
         })
     }
 }
@@ -123,7 +127,11 @@ impl Tool for ViewImage {
                     (Some(path), None) => {
                         let bytes = context
                             .sandbox
-                            .read_bytes(&path, crate::backend::sandbox::MAX_BINARY_FILE_BYTES)
+                            .read_bytes(
+                                &path,
+                                crate::backend::sandbox::MAX_BINARY_FILE_BYTES,
+                                &context.permissions,
+                            )
                             .await?;
                         let name = std::path::Path::new(&path)
                             .file_name()
@@ -298,7 +306,10 @@ impl Tool for ApplyPatch {
                 )));
             }
             let document = parse_patch_document(&arguments.patch)?;
-            let content = context.sandbox.read(&document.path).await?;
+            let content = context
+                .sandbox
+                .read(&document.path, &context.permissions)
+                .await?;
             let updated = apply_patch_document(&content, &document)?;
             if updated == content {
                 return Err(Error::Tool(

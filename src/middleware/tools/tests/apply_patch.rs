@@ -143,6 +143,71 @@ async fn apply_patch_edits_an_absolute_workspace_path() {
 }
 
 #[tokio::test]
+async fn apply_patch_uses_the_active_sandbox_policy() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let outside = tempfile::tempdir().expect("outside");
+    let path = outside.path().join("note.txt");
+    let patch_path = path.to_str().expect("UTF-8 outside path");
+    std::fs::write(&path, "old\n").expect("write fixture");
+    let sandbox = Arc::new(Sandbox::new(
+        Arc::new(
+            crate::backend::sandbox::local::LocalSandbox::new(workspace.path())
+                .expect("local sandbox"),
+        ),
+        crate::backend::sandbox::ApprovalPolicy::Ask,
+    ));
+    let patch = serde_json::json!({
+        "patch": format!("*** Begin Patch\n*** Update File: {patch_path}\n@@\n-old\n+new\n*** End Patch\n")
+    });
+
+    let workspace_error = ApplyPatch
+        .call(
+            ToolContext::new(
+                Arc::clone(&sandbox),
+                SandboxPermissions::restore(
+                    "session",
+                    crate::backend::sandbox::SandboxMode::WorkspaceWrite,
+                    crate::backend::sandbox::NetworkAccess::Denied,
+                    ["patch".into()],
+                )
+                .for_call("patch"),
+                "turn",
+            ),
+            patch.clone(),
+        )
+        .await
+        .expect_err("workspace policy must reject outside path");
+    assert!(workspace_error.to_string().contains(patch_path));
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("unchanged file"),
+        "old\n"
+    );
+
+    ApplyPatch
+        .call(
+            ToolContext::new(
+                sandbox,
+                SandboxPermissions::restore(
+                    "session",
+                    crate::backend::sandbox::SandboxMode::DangerFullAccess,
+                    crate::backend::sandbox::NetworkAccess::Allowed,
+                    ["patch".into()],
+                )
+                .for_call("patch"),
+                "turn",
+            ),
+            patch,
+        )
+        .await
+        .expect("full access patch");
+
+    assert_eq!(
+        std::fs::read_to_string(path).expect("patched file"),
+        "new\n"
+    );
+}
+
+#[tokio::test]
 async fn apply_patch_reports_failed_context() {
     let context = "Project Prometheus is a cloud-hosted modeling workspace.";
     let content = format!("{}{context}\nactual next line\n", "padding\n".repeat(437));

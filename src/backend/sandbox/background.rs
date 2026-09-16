@@ -324,7 +324,11 @@ mod tests {
     }
 
     impl SandboxBackend for StreamingBackend {
-        fn read<'a>(&'a self, _path: &'a str) -> BoxFuture<'a, Result<String>> {
+        fn read<'a>(
+            &'a self,
+            _path: &'a str,
+            _sandbox_mode: SandboxMode,
+        ) -> BoxFuture<'a, Result<String>> {
             Box::pin(async { unreachable!() })
         }
 
@@ -332,11 +336,17 @@ mod tests {
             &'a self,
             _path: &'a str,
             _max_bytes: usize,
+            _sandbox_mode: SandboxMode,
         ) -> BoxFuture<'a, Result<Vec<u8>>> {
             Box::pin(async { unreachable!() })
         }
 
-        fn write<'a>(&'a self, _path: &'a str, _content: &'a str) -> BoxFuture<'a, Result<()>> {
+        fn write<'a>(
+            &'a self,
+            _path: &'a str,
+            _content: &'a str,
+            _sandbox_mode: SandboxMode,
+        ) -> BoxFuture<'a, Result<()>> {
             Box::pin(async { unreachable!() })
         }
 
@@ -422,7 +432,11 @@ mod tests {
     }
 
     impl SandboxBackend for PendingBackend {
-        fn read<'a>(&'a self, _path: &'a str) -> BoxFuture<'a, Result<String>> {
+        fn read<'a>(
+            &'a self,
+            _path: &'a str,
+            _sandbox_mode: SandboxMode,
+        ) -> BoxFuture<'a, Result<String>> {
             Box::pin(async { unreachable!() })
         }
 
@@ -430,11 +444,17 @@ mod tests {
             &'a self,
             _path: &'a str,
             _max_bytes: usize,
+            _sandbox_mode: SandboxMode,
         ) -> BoxFuture<'a, Result<Vec<u8>>> {
             Box::pin(async { unreachable!() })
         }
 
-        fn write<'a>(&'a self, _path: &'a str, _content: &'a str) -> BoxFuture<'a, Result<()>> {
+        fn write<'a>(
+            &'a self,
+            _path: &'a str,
+            _content: &'a str,
+            _sandbox_mode: SandboxMode,
+        ) -> BoxFuture<'a, Result<()>> {
             Box::pin(async { unreachable!() })
         }
 

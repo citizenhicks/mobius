@@ -28,7 +28,10 @@ async fn local_sandbox_rejects_parent_path_escape() {
     let workspace = TempDir::new().expect("create workspace");
     let sandbox = LocalSandbox::new(workspace.path()).expect("sandbox");
 
-    let error = sandbox.read("../outside").await.expect_err("reject escape");
+    let error = sandbox
+        .read("../outside", SandboxMode::WorkspaceWrite)
+        .await
+        .expect_err("reject escape");
 
     assert!(matches!(error, Error::Sandbox(_)));
 }

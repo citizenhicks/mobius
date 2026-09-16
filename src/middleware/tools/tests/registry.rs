@@ -39,7 +39,7 @@ fn tool_prompts_match_installed_capabilities() {
 fn read_file_definition_explains_path_scope() {
     let definition = ReadFile.definition();
 
-    assert!(definition.description.contains("workspace-relative"));
+    assert!(definition.description.contains("active sandbox policy"));
     assert_eq!(
         definition.parameters["properties"]["path"]["description"],
         text::TOOL_READ_FILE_PARAMETER_PATH_DESCRIPTION

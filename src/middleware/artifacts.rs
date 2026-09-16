@@ -159,7 +159,7 @@ impl Tool for SendArtifact {
                         .to_string();
                     let bytes = context
                         .sandbox
-                        .read_bytes(&path, MAX_BINARY_FILE_BYTES)
+                        .read_bytes(&path, MAX_BINARY_FILE_BYTES, &context.permissions)
                         .await?;
                     self.store
                         .publish_artifact(

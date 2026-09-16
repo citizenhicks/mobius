@@ -270,16 +270,32 @@ impl SandboxBackend for GatewaySandbox {
         Some(self.delegate.temporary_directory().into())
     }
 
-    fn read<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<String>> {
-        self.delegate.read(path)
+    fn read<'a>(
+        &'a self,
+        path: &'a str,
+        sandbox_mode: SandboxMode,
+    ) -> BoxFuture<'a, Result<String>> {
+        self.command_delegate(sandbox_mode).read(path, sandbox_mode)
     }
 
-    fn read_bytes<'a>(&'a self, path: &'a str, max_bytes: usize) -> BoxFuture<'a, Result<Vec<u8>>> {
-        self.delegate.read_bytes(path, max_bytes)
+    fn read_bytes<'a>(
+        &'a self,
+        path: &'a str,
+        max_bytes: usize,
+        sandbox_mode: SandboxMode,
+    ) -> BoxFuture<'a, Result<Vec<u8>>> {
+        self.command_delegate(sandbox_mode)
+            .read_bytes(path, max_bytes, sandbox_mode)
     }
 
-    fn write<'a>(&'a self, path: &'a str, content: &'a str) -> BoxFuture<'a, Result<()>> {
-        self.delegate.write(path, content)
+    fn write<'a>(
+        &'a self,
+        path: &'a str,
+        content: &'a str,
+        sandbox_mode: SandboxMode,
+    ) -> BoxFuture<'a, Result<()>> {
+        self.command_delegate(sandbox_mode)
+            .write(path, content, sandbox_mode)
     }
 
     fn execute<'a>(
@@ -482,7 +498,10 @@ mod tests {
                 .expect("read root");
 
         let content = sandbox
-            .read(resource.to_str().expect("UTF-8 resource path"))
+            .read(
+                resource.to_str().expect("UTF-8 resource path"),
+                SandboxMode::WorkspaceWrite,
+            )
             .await
             .expect("resource read");
 
@@ -599,6 +618,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn full_access_file_operations_use_the_host_wide_delegate() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let state = tempfile::tempdir().expect("state");
+        let outside = tempfile::tempdir().expect("outside");
+        let secret = state.path().join("sentinel");
+        let target = outside.path().join("written.txt");
+        std::fs::write(&secret, "gateway-secret").expect("state sentinel");
+        let sandbox =
+            GatewaySandbox::new(workspace.path(), state.path(), None, Duration::from_secs(5))
+                .expect("gateway sandbox");
+        let secret = secret.to_str().expect("UTF-8 secret path");
+        let target = target.to_str().expect("UTF-8 target path");
+
+        assert!(
+            sandbox
+                .read(secret, SandboxMode::WorkspaceWrite)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            sandbox
+                .read(secret, SandboxMode::DangerFullAccess)
+                .await
+                .expect("full access read"),
+            "gateway-secret"
+        );
+        assert!(
+            sandbox
+                .write(target, "blocked", SandboxMode::WorkspaceWrite)
+                .await
+                .is_err()
+        );
+        sandbox
+            .write(target, "written", SandboxMode::DangerFullAccess)
+            .await
+            .expect("full access write");
+        assert_eq!(
+            std::fs::read_to_string(target).expect("outside file"),
+            "written"
+        );
+    }
+
+    #[tokio::test]
     async fn binary_reads_preserve_workspace_file_bytes() {
         let workspace = tempfile::tempdir().expect("workspace");
         let state = tempfile::tempdir().expect("state");
@@ -609,7 +671,7 @@ mod tests {
                 .expect("gateway sandbox");
 
         let actual = sandbox
-            .read_bytes("report.bin", expected.len())
+            .read_bytes("report.bin", expected.len(), SandboxMode::WorkspaceWrite)
             .await
             .expect("read binary file");
 

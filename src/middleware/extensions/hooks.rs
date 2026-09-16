@@ -975,7 +975,11 @@ mod tests {
     }
 
     impl SandboxBackend for FakeSandbox {
-        fn read<'a>(&'a self, _path: &'a str) -> BoxFuture<'a, Result<String>> {
+        fn read<'a>(
+            &'a self,
+            _path: &'a str,
+            _sandbox_mode: SandboxMode,
+        ) -> BoxFuture<'a, Result<String>> {
             Box::pin(async { Err(Error::Sandbox("unexpected read".into())) })
         }
 
@@ -983,11 +987,17 @@ mod tests {
             &'a self,
             _path: &'a str,
             _max_bytes: usize,
+            _sandbox_mode: SandboxMode,
         ) -> BoxFuture<'a, Result<Vec<u8>>> {
             Box::pin(async { Err(Error::Sandbox("unexpected read".into())) })
         }
 
-        fn write<'a>(&'a self, _path: &'a str, _content: &'a str) -> BoxFuture<'a, Result<()>> {
+        fn write<'a>(
+            &'a self,
+            _path: &'a str,
+            _content: &'a str,
+            _sandbox_mode: SandboxMode,
+        ) -> BoxFuture<'a, Result<()>> {
             Box::pin(async { Err(Error::Sandbox("unexpected write".into())) })
         }
 

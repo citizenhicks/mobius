@@ -631,7 +631,10 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
     assert_eq!(
         built
             .gateway_sandbox
-            .read(skill.to_str().expect("UTF-8 skill path"))
+            .read(
+                skill.to_str().expect("UTF-8 skill path"),
+                mobius::backend::sandbox::SandboxMode::WorkspaceWrite,
+            )
             .await
             .expect("read skill"),
         "---\nname: fixture\ndescription: Fixture skill.\n---\n"

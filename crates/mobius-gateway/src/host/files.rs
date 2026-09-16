@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::path::{Component, Path};
 use std::time::{Duration, Instant};
 
-use mobius::backend::sandbox::SandboxBackend as _;
+use mobius::backend::sandbox::{SandboxBackend as _, SandboxMode};
 
 use crate::sandbox::GatewaySandbox;
 use crate::wire::{WorkspaceFileRecord, WorkspaceFileScope};
@@ -66,7 +66,10 @@ pub(super) async fn write(
             "workspace text files are limited to {MAX_WORKSPACE_WRITE_BYTES} bytes"
         )));
     }
-    sandbox.write(path, content).await.map_err(error_rejection)
+    sandbox
+        .write(path, content, SandboxMode::WorkspaceWrite)
+        .await
+        .map_err(error_rejection)
 }
 
 async fn list_inner(
