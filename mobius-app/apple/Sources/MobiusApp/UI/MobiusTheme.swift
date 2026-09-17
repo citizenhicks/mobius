@@ -59,6 +59,7 @@ struct MobiusTheme: ViewModifier {
             .tint(palette.accent)
             .font(MobiusStyle.bodyFont)
             .buttonStyle(.mobiusAutomatic)
+            .scrollEdgeEffectStyle(.soft, for: .vertical)
     }
 }
 

@@ -6,6 +6,41 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testThemeUsesSoftHeaderAndFooterEdgesAcrossScrollContainers() async throws {
+        let app = try model(requestSender: { _ in })
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+
+        for content in [
+            AnyView(ScrollView { Text("Content") }),
+            AnyView(List { Text("Content") }),
+            AnyView(Form { Text("Content") }),
+        ] {
+            let host = UIHostingController(
+                rootView: NavigationStack { content }
+                    .mobiusTheme()
+                    .environment(app)
+            )
+            window.rootViewController = host
+            window.makeKeyAndVisible()
+            let appeared = await eventually {
+                testAccessibilityElements(host.view).contains { $0 is UIScrollView }
+            }
+            XCTAssertTrue(appeared)
+            for scroll in testAccessibilityElements(host.view).compactMap({ $0 as? UIScrollView }) {
+                XCTAssertEqual(scroll.topEdgeEffect.style, .soft)
+                XCTAssertEqual(scroll.bottomEdgeEffect.style, .soft)
+            }
+        }
+    }
+
     func testCreationFormsReopenWithEmptyDrafts() async throws {
         let recorder = GatewayRequestRecorder()
         let app = try model { await recorder.record($0) }
