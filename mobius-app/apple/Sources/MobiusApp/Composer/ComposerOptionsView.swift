@@ -159,10 +159,6 @@ private struct ComposerSettingMenu: View {
 }
 
 struct ComposerOptionsView: View {
-    private enum AttachmentSource {
-        case photos, files
-    }
-
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -172,8 +168,6 @@ struct ComposerOptionsView: View {
     @State private var showsModelSettings = false
     @State private var opensModelSelection = false
     @State private var showsModelSelection = false
-    @State private var showsAttachmentMenu = false
-    @State private var attachmentSource: AttachmentSource?
     @State private var isFileImporterPresented = false
     @State private var isPhotoPickerPresented = false
     @State private var photoSelection: [PhotosPickerItem] = []
@@ -224,14 +218,17 @@ struct ComposerOptionsView: View {
     /// The photo library and the file browser are separate pickers, so the plus offers both
     /// rather than assuming every attachment lives in Files.
     private var addAttachmentControl: some View {
-        Button {
-            showsAttachmentMenu = true
+        Menu {
+            Button("Photos", glyph: .image01) {
+                isPhotoPickerPresented = true
+            }
+            Button("Files", glyph: .fileText) {
+                isFileImporterPresented = true
+            }
         } label: {
             MobiusLabel(
                 title: "Add attachment",
                 glyph: .plus,
-                // A plain button gets no disabled treatment, so mute the glyph whenever
-                // connection or composer state makes importing unavailable.
                 iconColor: model.canImportAttachments ? nil : palette.muted,
                 iconSize: MobiusStyle.glyphLead
             )
@@ -239,50 +236,11 @@ struct ComposerOptionsView: View {
             .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.mobiusPlain)
+        .buttonStyle(.plain)
+        .labelStyle(.titleAndIcon)
+        .menuIndicator(.hidden)
         .disabled(!model.canImportAttachments)
         .accessibilityLabel("Add attachment")
-        .popover(isPresented: $showsAttachmentMenu, arrowEdge: .bottom) {
-            // Own the row hit regions: iOS 27's native Menu can ignore taps beside the icons.
-            VStack(spacing: 0) {
-                Button {
-                    attachmentSource = .photos
-                    showsAttachmentMenu = false
-                } label: {
-                    MobiusLabel(title: "Photos", glyph: .image01)
-                        .frame(
-                            maxWidth: .infinity, minHeight: MobiusStyle.rowTouch,
-                            alignment: .leading
-                        )
-                        .contentShape(Rectangle())
-                }
-                Button {
-                    attachmentSource = .files
-                    showsAttachmentMenu = false
-                } label: {
-                    MobiusLabel(title: "Files", glyph: .fileText)
-                        .frame(
-                            maxWidth: .infinity, minHeight: MobiusStyle.rowTouch,
-                            alignment: .leading
-                        )
-                        .contentShape(Rectangle())
-                }
-            }
-            .buttonStyle(.mobiusPlain)
-            .labelStyle(.titleAndIcon)
-            .padding(MobiusSpace.m)
-            .frame(width: 250)
-            .presentationCompactAdaptation(.popover)
-            .onDisappear {
-                // Finish dismissing the popup before presenting either system picker.
-                switch attachmentSource {
-                case .photos: isPhotoPickerPresented = true
-                case .files: isFileImporterPresented = true
-                case nil: break
-                }
-                attachmentSource = nil
-            }
-        }
     }
 
     private var modelMenu: some View {

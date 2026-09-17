@@ -6,7 +6,7 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
-    func testAttachmentPopupHasFullWidthRowsAndOpensBothPickers() async throws {
+    func testAttachmentMenuHasNativeRowsAndOpensBothPickers() async throws {
         let app = try model(requestSender: { _ in })
         app.gateway.connectionState = .ready
         var config = composition()
@@ -36,27 +36,62 @@ extension AppModelTests {
             )
             window.rootViewController = host
             window.makeKeyAndVisible()
-            let opened = await eventually {
+            let appeared = await eventually {
                 testAccessibilityElements(host.view).contains {
-                    $0.accessibilityLabel == "Add attachment" && $0.accessibilityActivate()
+                    $0.accessibilityLabel == "Add attachment"
                 }
             }
-            XCTAssertTrue(opened)
-            let appeared = await eventually {
-                testAccessibilityElements(window).contains { $0.accessibilityLabel == title }
-            }
             XCTAssertTrue(appeared)
-            for label in ["Files", "Photos"] {
-                let row = try XCTUnwrap(
-                    testAccessibilityElements(window).first { $0.accessibilityLabel == label }
-                )
-                XCTAssertGreaterThanOrEqual(row.accessibilityFrame.width, 220)
-                XCTAssertGreaterThanOrEqual(row.accessibilityFrame.height, 44)
-            }
-            let row = try XCTUnwrap(
-                testAccessibilityElements(window).first { $0.accessibilityLabel == title }
+            let trigger = try XCTUnwrap(
+                testAccessibilityElements(host.view).first {
+                    $0.accessibilityLabel == "Add attachment"
+                }
             )
-            XCTAssertTrue(row.accessibilityActivate())
+            let center = CGPoint(
+                x: trigger.accessibilityFrame.midX, y: trigger.accessibilityFrame.midY)
+            let mounted = await eventually {
+                testAccessibilityElements(host.view).compactMap { $0 as? UIButton }.contains {
+                    $0.convert($0.bounds, to: nil).contains(center)
+                }
+            }
+            XCTAssertTrue(mounted)
+            let button = try XCTUnwrap(
+                testAccessibilityElements(host.view).compactMap { $0 as? UIButton }.first {
+                    $0.convert($0.bounds, to: nil).contains(center)
+                }
+            )
+            XCTAssertTrue(button.isEnabled)
+            XCTAssertNotNil(button.menu)
+            button.performPrimaryAction()
+            for label in ["Files", "Photos"] {
+                // Resolve the live row on each attempt: Menu replaces cells while opening.
+                let hittable = await eventually {
+                    guard
+                        let row = testAccessibilityElements(window)
+                            .compactMap({ $0 as? UIView })
+                            .first(where: { $0.accessibilityLabel == label && $0.window === window }
+                            )
+                    else { return false }
+                    var ancestor: UIView? = row
+                    while let view = ancestor, !(view is UICollectionViewCell) {
+                        ancestor = view.superview
+                    }
+                    guard let cell = ancestor as? UICollectionViewCell,
+                        cell.bounds.width > 200
+                    else { return false }
+                    // Check icon, text and trailing whitespace against the same native action row.
+                    return [CGFloat(16), cell.bounds.midX, cell.bounds.maxX - 16].allSatisfy { x in
+                        let point = cell.convert(CGPoint(x: x, y: cell.bounds.midY), to: window)
+                        return window.hitTest(point, with: nil)?.isDescendant(of: cell) == true
+                    }
+                }
+                XCTAssertTrue(hittable, "The entire \(label) row should receive touches")
+            }
+            let action = try XCTUnwrap(
+                button.menu?.children.compactMap { $0 as? UIAction }.first { $0.title == title }
+            )
+            button.contextMenuInteraction?.dismissMenu()
+            button.sendAction(action)
             let presented = await eventually(timeout: .seconds(5)) {
                 @MainActor func containsPicker(_ controller: UIViewController) -> Bool {
                     if title == "Files", controller is UIDocumentPickerViewController {
