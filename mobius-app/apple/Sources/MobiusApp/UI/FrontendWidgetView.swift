@@ -322,13 +322,18 @@ struct FrontendActionEditorSheet: View {
             .toolbarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: dismiss.callAsFunction)
+                    MobiusToolbarIconButton(
+                        glyph: .x, label: "Cancel", action: dismiss.callAsFunction)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(frontendPresentationText(editor.submitLabel)) {
+                    Button {
                         submit(action.op.replacingCapabilityInput(with: trimmedText))
                         dismiss()
+                    } label: {
+                        MobiusIcon(.check)
                     }
+                    .tint(.primary)
+                    .accessibilityLabel(Text(frontendPresentationText(editor.submitLabel)))
                     .disabled(trimmedText.isEmpty || !isEnabled)
                 }
             }
@@ -426,6 +431,11 @@ struct FrontendWidgetSheet: View {
                 Text(frontendPresentationText(currentWidget?.title ?? widget.title))
             )
             .toolbarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    MobiusToolbarIconButton(glyph: .check, label: "Done") { dismiss() }
+                }
+            }
         }
         .mobiusSheet()
     }

@@ -298,8 +298,10 @@ struct AgentSettingsView: View {
             .navigationTitle(Text(verbatim: feature.label))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { editingCapability = nil }
+                ToolbarItem(placement: .cancellationAction) {
+                    MobiusToolbarIconButton(glyph: .check, label: "Done") {
+                        editingCapability = nil
+                    }
                 }
             }
         }

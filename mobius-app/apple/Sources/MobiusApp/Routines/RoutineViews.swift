@@ -404,8 +404,8 @@ struct RoutineForm: View {
                     .foregroundStyle(palette.danger)
             }
             HStack(spacing: MobiusSpace.m) {
-                Button("Cancel", action: onClose)
-                    .buttonStyle(.mobiusGlass)
+                Button("Cancel", glyph: .x, action: onClose)
+                    .mobiusIconButton()
                     .disabled(isSaving)
                 Button(action: save) {
                     if isSaving {
@@ -676,14 +676,27 @@ struct RoutineForm: View {
 }
 
 struct RoutineRunTranscriptSheet: View {
+    @Environment(\.dismiss) private var dismiss
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
 
-    @ViewBuilder
     var body: some View {
+        NavigationStack {
+            content
+                .toolbarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        MobiusToolbarIconButton(glyph: .check, label: "Done") { dismiss() }
+                    }
+                    ToolbarItem(placement: .principal) { header }
+                }
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
         if let error = model.routineRunPreviewError {
             VStack(spacing: 0) {
-                header
                 StatusBanner(
                     tone: .error,
                     title: .localized("Run transcript unavailable"),
@@ -700,8 +713,7 @@ struct RoutineRunTranscriptSheet: View {
                 hasEarlier: model.routineRunPreviewNextBeforeSequence != nil,
                 isLoading: model.isLoadingRoutineRunPreview,
                 isRunning: model.presentedRoutineRun?.status == .running,
-                loadEarlier: model.loadEarlierRoutineRunPreviewAndWait,
-                header: { header }
+                loadEarlier: model.loadEarlierRoutineRunPreviewAndWait
             )
         } else {
             ProgressView()
@@ -724,8 +736,6 @@ struct RoutineRunTranscriptSheet: View {
             }
         }
         .frame(maxWidth: .infinity, minHeight: MobiusStyle.iconButtonSize, alignment: .leading)
-        .padding(.horizontal, MobiusSpace.l)
-        .padding(.vertical, MobiusSpace.s)
     }
 }
 

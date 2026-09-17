@@ -449,7 +449,11 @@ private struct GitCredentialSheet: View {
             .toolbarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    MobiusToolbarIconButton(
+                        glyph: model.gitCredentialAvailable == true ? .check : .x,
+                        label: model.gitCredentialAvailable == true ? "Done" : "Cancel",
+                        action: dismiss.callAsFunction
+                    )
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     actionButton
@@ -464,17 +468,13 @@ private struct GitCredentialSheet: View {
 
     @ViewBuilder
     private var actionButton: some View {
-        if model.gitCredentialAvailable == true {
-            Button("Done") { dismiss() }
-        } else {
-            Button {
+        if model.gitCredentialAvailable != true {
+            MobiusToolbarIconButton(glyph: .check, label: actionTitle) {
                 model.approveGitCredential(
                     target: githubCredentialTarget,
                     username: username,
                     token: token
                 )
-            } label: {
-                Text(actionTitle)
             }
             .disabled(
                 !model.gateway.connectionState.isReady
@@ -566,27 +566,27 @@ private struct SshCredentialSheet: View {
             .toolbarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: dismiss.callAsFunction)
+                    MobiusToolbarIconButton(
+                        glyph: model.sshIdentities?.isEmpty == false ? .check : .x,
+                        label: model.sshIdentities?.isEmpty == false ? "Done" : "Cancel",
+                        action: dismiss.callAsFunction
+                    )
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if model.sshIdentities == nil {
-                        Button {
-                            model.listSshIdentities()
-                        } label: {
-                            Text(checkActionTitle)
-                        }
+                        MobiusToolbarIconButton(
+                            glyph: .arrowClockwise, label: checkActionTitle,
+                            action: model.listSshIdentities
+                        )
                         .disabled(
                             !model.gateway.connectionState.isReady || model.isLoadingSshIdentities)
                     } else if model.sshIdentities?.isEmpty == true {
-                        Button {
-                            model.generateSshIdentity()
-                        } label: {
-                            Text(generateActionTitle)
-                        }
+                        MobiusToolbarIconButton(
+                            glyph: .plus, label: generateActionTitle,
+                            action: model.generateSshIdentity
+                        )
                         .disabled(
                             !model.gateway.connectionState.isReady || model.isGeneratingSshIdentity)
-                    } else {
-                        Button("Done", action: dismiss.callAsFunction)
                     }
                 }
             }

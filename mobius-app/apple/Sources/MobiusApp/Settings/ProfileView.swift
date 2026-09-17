@@ -556,7 +556,7 @@ private struct MobiusCloudAccountDeletionSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    MobiusToolbarIconButton(glyph: .x, label: "Cancel") { dismiss() }
                         .disabled(model.cloud.cloudAction == .deleting)
                 }
             }

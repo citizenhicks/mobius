@@ -203,8 +203,8 @@ struct ModelSelectionSheet: View {
             .navigationTitle("Configure")
             .toolbarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                ToolbarItem(placement: .cancellationAction) {
+                    MobiusToolbarIconButton(glyph: .check, label: "Done") { dismiss() }
                 }
             }
         }

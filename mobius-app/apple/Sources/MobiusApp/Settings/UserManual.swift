@@ -78,14 +78,15 @@ struct UserManualBrowser: View {
                 .navigationTitle("User manual")
                 .toolbarTitleDisplayMode(.inline)
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
+                    ToolbarItem(placement: .primaryAction) {
                         Button("Back", systemImage: "chevron.left") {
                             if let item = page.backForwardList.backList.last { page.load(item) }
                         }
+                        .labelStyle(.iconOnly)
                         .disabled(page.backForwardList.backList.isEmpty)
                     }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Done") { dismiss() }
+                    ToolbarItem(placement: .cancellationAction) {
+                        MobiusToolbarIconButton(glyph: .check, label: "Done") { dismiss() }
                     }
                 }
                 .task(id: attempt) {

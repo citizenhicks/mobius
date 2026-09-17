@@ -65,7 +65,9 @@ struct ChatsView: View {
         .toolbar {
             if selectedSessionIDs != nil {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { selectedSessionIDs = nil }
+                    MobiusToolbarIconButton(glyph: .x, label: "Cancel") {
+                        selectedSessionIDs = nil
+                    }
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button("Delete selected chats", glyph: .trash, role: .destructive) {

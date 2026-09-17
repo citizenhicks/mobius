@@ -6,6 +6,55 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testTranscriptSheetsHaveAnAccessibleLeadingDoneActionWhileLoadingOrFailed() async throws {
+        @Bindable var app = try model(requestSender: { _ in })
+        let preview = TranscriptPreview(
+            id: "sheet-preview", title: "voice agent", context: "", status: nil, model: nil,
+            entries: [], next: nil
+        )
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 402, height: 874)
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+        XCTAssertNotNil(MobiusGlyph.check.menuImage(.primary))
+        XCTAssertNotNil(MobiusGlyph.x.menuImage(.primary))
+
+        for (error, content) in [
+            (nil as String?, AnyView(PreviewTranscriptSheet(preview: preview))),
+            (nil, AnyView(RoutineRunTranscriptSheet())),
+            ("Transcript unavailable", AnyView(RoutineRunTranscriptSheet())),
+        ] {
+            app.routineRunPreviewError = error
+            app.showsInspector = true
+            let host = UIHostingController(
+                rootView: Color.clear.sheet(isPresented: $app.showsInspector) {
+                    content.mobiusTheme().environment(app)
+                }
+            )
+            window.rootViewController = host
+            window.makeKeyAndVisible()
+            let appeared = await eventually {
+                testAccessibilityElements(window).contains {
+                    $0.accessibilityLabel == "Done" && $0.accessibilityTraits.contains(.button)
+                }
+            }
+            XCTAssertTrue(appeared)
+            let done = try XCTUnwrap(
+                testAccessibilityElements(window).first {
+                    $0.accessibilityLabel == "Done" && $0.accessibilityTraits.contains(.button)
+                })
+            XCTAssertLessThan(done.accessibilityFrame.midX, window.frame.midX)
+            XCTAssertTrue(done.accessibilityActivate())
+            let dismissed = await eventually { !app.showsInspector }
+            XCTAssertTrue(dismissed)
+        }
+    }
+
     func testThemeUsesSoftHeaderAndFooterEdgesAcrossScrollContainers() async throws {
         let app = try model(requestSender: { _ in })
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)

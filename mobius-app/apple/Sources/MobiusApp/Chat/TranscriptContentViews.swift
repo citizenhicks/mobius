@@ -168,8 +168,10 @@ struct TurnDiffCard: View {
                 .navigationTitle("Turn changes")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Done") { showsDetails = false }
+                    ToolbarItem(placement: .cancellationAction) {
+                        MobiusToolbarIconButton(glyph: .check, label: "Done") {
+                            showsDetails = false
+                        }
                     }
                 }
             }

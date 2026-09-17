@@ -322,8 +322,8 @@ struct InstallExtensionForm: View {
             .font(MobiusStyle.captionFont)
             .foregroundStyle(palette.muted)
             HStack(spacing: MobiusSpace.m) {
-                Button("Cancel", action: onClose)
-                    .buttonStyle(.mobiusGlass)
+                Button("Cancel", glyph: .x, action: onClose)
+                    .mobiusIconButton()
                     .disabled(isSaving)
                 Button(action: install) {
                     if isSaving {

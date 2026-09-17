@@ -140,7 +140,9 @@ struct ChatView: View {
                 AgentSettingsView(scope: .bot(bot.id))
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {
-                            Button("Done") { presentedBotSettings = nil }
+                            MobiusToolbarIconButton(glyph: .x, label: "Cancel") {
+                                presentedBotSettings = nil
+                            }
                         }
                     }
             }
@@ -421,7 +423,7 @@ struct ReassignChatSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    MobiusToolbarIconButton(glyph: .x, label: "Cancel") { dismiss() }
                 }
             }
         }

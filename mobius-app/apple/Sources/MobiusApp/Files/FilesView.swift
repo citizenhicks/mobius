@@ -24,7 +24,7 @@ struct FilesView: View {
                     FilesNavigationTitle()
                 }
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") {
+                    MobiusToolbarIconButton(glyph: .check, label: "Done") {
                         model.discardFilePresentation()
                         model.showsInspector = false
                     }

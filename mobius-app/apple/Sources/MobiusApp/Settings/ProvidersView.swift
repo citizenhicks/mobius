@@ -232,14 +232,16 @@ private struct AddProviderSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    MobiusToolbarIconButton(glyph: .x, label: "Cancel") { dismiss() }
                 }
                 if provider != nil {
                     ToolbarItem(placement: .confirmationAction) {
-                        Button("Save", action: model.registerProvider)
-                            .disabled(
-                                model.isApplyingConfiguration
-                                    || !model.gateway.connectionState.isReady)
+                        MobiusToolbarIconButton(
+                            glyph: .check, label: "Save", action: model.registerProvider
+                        )
+                        .disabled(
+                            model.isApplyingConfiguration
+                                || !model.gateway.connectionState.isReady)
                     }
                 }
             }
@@ -301,7 +303,7 @@ struct ProviderDetailView: View {
                         Button {
                             model.registerProvider()
                         } label: {
-                            MobiusIcon(.floppyDisk, gutter: false)
+                            MobiusIcon(.check, gutter: false)
                         }
                         .groupedHeaderAction(prominent: true)
                         .disabled(

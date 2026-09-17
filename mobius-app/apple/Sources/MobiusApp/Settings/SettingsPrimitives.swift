@@ -159,7 +159,7 @@ struct SettingsStatusAccessory: View {
                     if isSaving {
                         MobiusSpinner(size: MobiusStyle.iconSize)
                     } else {
-                        MobiusIcon(.saveAll, size: MobiusStyle.iconSize)
+                        MobiusIcon(.check, size: MobiusStyle.iconSize)
                     }
                 }
             }

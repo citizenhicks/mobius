@@ -37,14 +37,17 @@ struct TextFilePreviewView: View {
             .navigationTitle(navigationTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: isWorkspaceFile ? .cancellationAction : .confirmationAction)
-                {
-                    Button(isWorkspaceFile ? "Cancel" : "Done", action: dismiss.callAsFunction)
-                        .disabled(model.isSavingWorkspaceFile)
+                ToolbarItem(placement: .cancellationAction) {
+                    MobiusToolbarIconButton(
+                        glyph: isWorkspaceFile ? .x : .check,
+                        label: isWorkspaceFile ? "Cancel" : "Done",
+                        action: dismiss.callAsFunction
+                    )
+                    .disabled(model.isSavingWorkspaceFile)
                 }
                 if isWorkspaceFile {
                     ToolbarItem(placement: .confirmationAction) {
-                        Button("Save", action: save)
+                        MobiusToolbarIconButton(glyph: .check, label: "Save", action: save)
                             .disabled(!canSave)
                     }
                 }
@@ -337,7 +340,7 @@ struct NumberedSourceText: View {
     }
 }
 
-struct ReadOnlyTranscriptSheet<Header: View>: View {
+struct ReadOnlyTranscriptSheet: View {
     @Environment(\.mobiusPalette) private var palette
     @State private var retainedEntryID: String?
     @State private var selectedDetent: PresentationDetent = .large
@@ -350,11 +353,9 @@ struct ReadOnlyTranscriptSheet<Header: View>: View {
     /// than the end of the transcript. Drives the same waiting line the chat shows.
     let isRunning: Bool
     let loadEarlier: () async -> Void
-    @ViewBuilder let header: Header
 
     var body: some View {
         VStack(spacing: 0) {
-            header
             ZStack {
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -442,20 +443,29 @@ struct ReadOnlyTranscriptSheet<Header: View>: View {
 }
 
 struct PreviewTranscriptSheet: View {
+    @Environment(\.dismiss) private var dismiss
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
     let preview: TranscriptPreview
 
     var body: some View {
-        ReadOnlyTranscriptSheet(
-            entries: currentPreview.entries,
-            fileSessionID: model.chat.selectedSessionID,
-            hasEarlier: currentPreview.next != nil,
-            isLoading: model.chat.isLoadingPreviewPage,
-            isRunning: currentPreview.status == "running",
-            loadEarlier: loadEarlierPage,
-            header: { header }
-        )
+        NavigationStack {
+            ReadOnlyTranscriptSheet(
+                entries: currentPreview.entries,
+                fileSessionID: model.chat.selectedSessionID,
+                hasEarlier: currentPreview.next != nil,
+                isLoading: model.chat.isLoadingPreviewPage,
+                isRunning: currentPreview.status == "running",
+                loadEarlier: loadEarlierPage
+            )
+            .toolbarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    MobiusToolbarIconButton(glyph: .check, label: "Done") { dismiss() }
+                }
+                ToolbarItem(placement: .principal) { header }
+            }
+        }
     }
 
     private var header: some View { headerRow }
@@ -497,9 +507,6 @@ struct PreviewTranscriptSheet: View {
             }
         }
         .frame(maxWidth: .infinity, minHeight: MobiusStyle.iconButtonSize, alignment: .leading)
-        .padding(.leading, MobiusSpace.l)
-        .padding(.trailing, MobiusStyle.iconRowPadding)
-        .padding(.vertical, MobiusSpace.s)
         .accessibilityElement(children: .contain)
     }
 

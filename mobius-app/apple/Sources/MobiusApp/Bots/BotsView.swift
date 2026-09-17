@@ -219,8 +219,8 @@ struct NewBotForm: View {
                 }
             }
             HStack(spacing: MobiusSpace.m) {
-                Button("Cancel", action: onClose)
-                    .buttonStyle(.mobiusGlass)
+                Button("Cancel", glyph: .x, action: onClose)
+                    .mobiusIconButton()
                     .disabled(isSaving)
                 Button(action: create) {
                     if isSaving {
@@ -373,7 +373,9 @@ struct BotDetailView: View {
                 AgentSettingsView(scope: .bot(botID))
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {
-                            Button("Done") { showsSettings = false }
+                            MobiusToolbarIconButton(glyph: .x, label: "Cancel") {
+                                showsSettings = false
+                            }
                         }
                     }
             }
