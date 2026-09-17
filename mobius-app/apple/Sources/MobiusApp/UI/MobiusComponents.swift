@@ -282,24 +282,6 @@ struct MobiusIconButtonStyle: ButtonStyle {
     }
 }
 
-struct MobiusToolbarIconButton: View {
-    let glyph: MobiusGlyph
-    let label: LocalizedStringResource
-    let action: () -> Void
-
-    var body: some View {
-        // Bare: the system's toolbar glass hugs the glyph into the same circle every other
-        // lone header action is. Drawing our own circle on top leaves two stacked surfaces
-        // — a lighter blob inside the system's wider pill.
-        Button(action: action) {
-            MobiusIcon(glyph, foreground: .primary)
-        }
-        .tint(.primary)
-        .accessibilityLabel(Text(label))
-        .help(Text(label))
-    }
-}
-
 struct MobiusSwipeAction: View {
     @Environment(\.mobiusPalette) private var palette
     private let title: MobiusText

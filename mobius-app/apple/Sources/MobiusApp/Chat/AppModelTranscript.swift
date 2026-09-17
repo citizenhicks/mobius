@@ -494,7 +494,10 @@ extension ChatSessionModel {
             status: selection?.description ?? existing?.status,
             model: selection?.detail ?? existing?.model,
             entries: visibleEntries,
-            next: retained.isEmpty ? preview.next : existing?.next
+            next: retained.isEmpty ? preview.next : existing?.next,
+            symbol: preview.symbol,
+            durationMs: preview.durationMs,
+            startedAtMs: preview.startedAtMs
         )
         if let index = previews.firstIndex(where: { $0.id == preview.id }) {
             previews[index] = record

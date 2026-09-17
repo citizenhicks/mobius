@@ -760,6 +760,9 @@ struct TranscriptPreview: Identifiable {
     let model: String?
     let entries: [TranscriptEntry]
     let next: AgentOperation?
+    var symbol: String?
+    var durationMs: UInt64?
+    var startedAtMs: Int64?
 }
 
 struct FrontendPickerPrompt: Sendable {

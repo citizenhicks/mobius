@@ -655,8 +655,82 @@ extension Button where Label == MobiusLabel {
     }
 }
 
-/// Draws the gateway's `FrontendSymbol` vocabulary in HugeIcons.
-///
-/// The protocol names what a glyph stands for and leaves the artwork to each frontend, so
-/// this table is the iOS client's half of that contract: semantic protocol tokens and any
-/// custom provider tokens for which the app ships artwork. Unknown names use `placeholder`.
+struct MobiusToolbarIconButton: View {
+    let glyph: MobiusGlyph
+    let label: LocalizedStringResource
+    let action: () -> Void
+
+    var body: some View {
+        // Bare: the system's toolbar glass hugs the glyph into the same circle every other
+        // lone header action is. Drawing our own circle on top leaves two stacked surfaces
+        // — a lighter blob inside the system's wider pill.
+        Button(action: action) {
+            MobiusIcon(glyph, foreground: .primary)
+        }
+        .tint(.primary)
+        .accessibilityLabel(Text(label))
+        .help(Text(label))
+    }
+}
+
+struct MobiusTranscriptToolbar<Detail: View>: ViewModifier {
+    let dismiss: () -> Void
+    @State private var showsInfo = false
+    let title: Text
+    let subtitle: Text
+    var infoGlyph: MobiusGlyph = .info
+    let infoLabel: LocalizedStringResource
+    @ViewBuilder let detail: Detail
+
+    func body(content: Content) -> some View {
+        content.toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                MobiusToolbarIconButton(glyph: .check, label: "Done") { dismiss() }
+            }
+            ToolbarItem(placement: .principal) {
+                VStack(spacing: MobiusSpace.xxs) {
+                    title.font(MobiusStyle.controlFont.weight(.semibold))
+                    subtitle.font(MobiusStyle.metadataFont).foregroundStyle(.secondary)
+                }
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .accessibilityElement(children: .combine)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                MobiusToolbarIconButton(glyph: infoGlyph, label: infoLabel) { showsInfo = true }
+                    .popover(isPresented: $showsInfo) {
+                        VStack(alignment: .leading, spacing: MobiusSpace.m) {
+                            Text(infoLabel).font(MobiusStyle.controlFont.weight(.semibold))
+                            ScrollView {
+                                detail
+                                    .font(MobiusStyle.bodyFont)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .frame(maxHeight: MobiusStyle.rowTouch * 8)
+                            .scrollBounceBehavior(.basedOnSize)
+                        }
+                        .padding(MobiusSpace.l)
+                        .frame(width: 300)
+                        .presentationCompactAdaptation(.popover)
+                    }
+            }
+        }
+    }
+}
+
+struct MobiusBadgeMenu<Content: View, Label: View>: View {
+    @ViewBuilder let content: Content
+    @ViewBuilder let label: Label
+
+    var body: some View {
+        Menu {
+            content
+        } label: {
+            label
+                .frame(minWidth: MobiusStyle.iconButtonSize, minHeight: MobiusStyle.iconButtonSize)
+                .contentShape(Rectangle())
+        }
+        .menuIndicator(.hidden)
+        .buttonStyle(.mobiusPlain)
+    }
+}

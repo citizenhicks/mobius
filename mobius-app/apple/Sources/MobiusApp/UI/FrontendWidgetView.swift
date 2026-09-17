@@ -4,25 +4,21 @@ import UIKit
 
 struct FrontendWidgetView: View {
     @Environment(AppModel.self) private var model
-    @State private var showsDetail = false
     let widget: MountedWidget
 
     var body: some View {
         if let content = widget.widget.content {
-            Button(action: openDetail) {
+            MobiusBadgeMenu {
+                Section {
+                    FrontendWidgetContentView(
+                        content: content, usesMenuLayout: true, select: select)
+                } header: {
+                    Text(frontendPresentationText(content.title))
+                }
+            } label: {
                 badge
-                    .frame(
-                        minWidth: MobiusStyle.iconButtonSize,
-                        minHeight: MobiusStyle.iconButtonSize
-                    )
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.mobiusPlain)
             .accessibilityLabel(accessibilityTitle)
-            .sensoryFeedback(.selection, trigger: showsDetail)
-            .popover(isPresented: $showsDetail, arrowEdge: .bottom) {
-                WidgetContentPopover(content: content, select: select)
-            }
         } else if widget.widget.action != nil {
             Button(action: submit) {
                 badge
@@ -63,24 +59,10 @@ struct FrontendWidgetView: View {
         )
     }
 
-    private func openDetail() { showsDetail = true }
     private func submit() { model.submitWidget(widget) }
 
     private func select(_ option: FrontendPickerOption) {
         model.submitPickerOption(option)
-        showsDetail = false
-    }
-}
-
-private struct WidgetContentPopover: View {
-    let content: FrontendWidgetContent
-    let select: (FrontendPickerOption) -> Void
-
-    var body: some View {
-        BadgePopover(localizedTitle: frontendPresentationText(content.title)) {
-            FrontendWidgetContentView(content: content, select: select)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -89,6 +71,7 @@ struct FrontendWidgetContentView: View {
     let content: FrontendWidgetContent
     var actionsEnabled = true
     var usesSwipeActions = false
+    var usesMenuLayout = false
     var submitOperation: ((AgentOperation) -> Void)?
     let select: (FrontendPickerOption) -> Void
 
@@ -96,17 +79,30 @@ struct FrontendWidgetContentView: View {
         switch content {
         case .blocks(_, let blocks):
             ForEach(blocks) { block in
-                PreviewBlockView(block: block.block)
-                    .padding(.vertical, MobiusSpace.s)
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
+                if usesMenuLayout {
+                    Text(verbatim: block.block.text)
+                } else {
+                    PreviewBlockView(block: block.block)
+                        .padding(.vertical, MobiusSpace.s)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                }
             }
         case .picker(_, let options):
             ForEach(options) { option in
                 Button {
                     select(option)
                 } label: {
-                    FrontendPickerOptionLabel(option: option)
+                    if usesMenuLayout {
+                        Label {
+                            Text(verbatim: option.label)
+                            Text(verbatim: option.showsDetail ? option.detail : option.description)
+                        } icon: {
+                            MobiusSymbol.glyph(for: option.symbol ?? "agent").menuImage(.primary)
+                        }
+                    } else {
+                        FrontendPickerOptionLabel(option: option)
+                    }
                 }
                 .buttonStyle(.mobiusPlain)
                 .accessibilityLabel(Text(verbatim: option.label))
@@ -131,12 +127,26 @@ struct FrontendWidgetContentView: View {
                     )
             } else {
                 ForEach(items) { item in
-                    FrontendActionListRow(
-                        item: item,
-                        actionsEnabled: actionsEnabled,
-                        usesSwipeActions: usesSwipeActions,
-                        submitOperation: submitOperation
-                    )
+                    if usesMenuLayout, item.actions.isEmpty {
+                        Label {
+                            Text(verbatim: item.text)
+                        } icon: {
+                            switch item.state {
+                            case .plain: EmptyView()
+                            case .pending: MobiusGlyph.clock.menuImage(.secondary)
+                            case .inProgress: MobiusGlyph.arrowClockwise.menuImage(.primary)
+                            case .completed: MobiusGlyph.check.menuImage(.primary)
+                            }
+                        }
+                    } else {
+                        FrontendActionListRow(
+                            item: item,
+                            actionsEnabled: actionsEnabled,
+                            usesSwipeActions: usesSwipeActions,
+                            usesMenuLayout: usesMenuLayout,
+                            submitOperation: submitOperation
+                        )
+                    }
                 }
             }
         }
@@ -151,46 +161,20 @@ private struct FrontendActionListRow: View {
     let item: FrontendActionListItem
     let actionsEnabled: Bool
     let usesSwipeActions: Bool
+    var usesMenuLayout = false
     let submitOperation: ((AgentOperation) -> Void)?
 
     var body: some View {
-        HStack(spacing: MobiusSpace.s) {
-            if let statusGlyph {
-                MobiusIcon(statusGlyph, size: MobiusStyle.glyphInline, foreground: statusColor)
-                    .frame(height: MobiusStyle.rowTouch)
-            }
-            Text(verbatim: item.text)
-                .font(MobiusStyle.bodyFont)
-                .foregroundStyle(item.state == .completed ? palette.muted : .primary)
-                .strikethrough(item.state == .completed, color: palette.muted)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-                .frame(
-                    maxWidth: .infinity, minHeight: MobiusStyle.iconButtonSize, alignment: .leading)
-            if !item.actions.isEmpty, !usesSwipeActions {
+        Group {
+            if usesMenuLayout {
                 Menu {
-                    ForEach(item.actions) { action in
-                        Button(role: action.tone == "error" ? .destructive : nil) {
-                            activate(action)
-                        } label: {
-                            MobiusLabel(
-                                title: frontendPresentationText(action.label),
-                                glyph: MobiusSymbol.glyph(for: action.symbol)
-                            )
-                        }
-                    }
+                    actionButtons
                 } label: {
-                    MobiusIcon(.dotsThree, foreground: palette.accent)
-                        .frame(
-                            width: MobiusStyle.iconButtonSize,
-                            height: MobiusStyle.iconButtonSize
-                        )
-                        .contentShape(Rectangle())
+                    Text(verbatim: item.text)
                 }
-                .accessibilityLabel("More actions")
-                .accessibilityHint("Shows available actions for this item")
-                .help("More actions")
                 .disabled(!actionsEnabled)
+            } else {
+                row
             }
         }
         .accessibilityElement(children: .contain)
@@ -241,6 +225,52 @@ private struct FrontendActionListRow: View {
         } message: { pending in
             if pending.kind == .destructive {
                 Text(verbatim: pending.itemText)
+            }
+        }
+    }
+
+    private var row: some View {
+        HStack(spacing: MobiusSpace.s) {
+            if let statusGlyph {
+                MobiusIcon(statusGlyph, size: MobiusStyle.glyphInline, foreground: statusColor)
+                    .frame(height: MobiusStyle.rowTouch)
+            }
+            Text(verbatim: item.text)
+                .font(MobiusStyle.bodyFont)
+                .foregroundStyle(item.state == .completed ? palette.muted : .primary)
+                .strikethrough(item.state == .completed, color: palette.muted)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+                .frame(
+                    maxWidth: .infinity, minHeight: MobiusStyle.iconButtonSize, alignment: .leading)
+            if !item.actions.isEmpty, !usesSwipeActions {
+                Menu {
+                    actionButtons
+                } label: {
+                    MobiusIcon(.dotsThree, foreground: palette.accent)
+                        .frame(
+                            width: MobiusStyle.iconButtonSize,
+                            height: MobiusStyle.iconButtonSize
+                        )
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("More actions")
+                .accessibilityHint("Shows available actions for this item")
+                .help("More actions")
+                .disabled(!actionsEnabled)
+            }
+        }
+    }
+
+    private var actionButtons: some View {
+        ForEach(item.actions) { action in
+            Button(role: action.tone == "error" ? .destructive : nil) {
+                activate(action)
+            } label: {
+                MobiusLabel(
+                    title: frontendPresentationText(action.label),
+                    glyph: MobiusSymbol.glyph(for: action.symbol)
+                )
             }
         }
     }

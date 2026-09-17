@@ -327,40 +327,17 @@ private struct BotActivityBadge: View {
     }
 }
 
-/// Context fill and elapsed execution time stay visible; deeper run totals live in the popover.
+/// Context fill and elapsed execution time stay visible; deeper run totals live in the menu.
 private struct SessionStatsBadge: View {
     @Environment(AppModel.self) private var model
     @Environment(\.locale) private var locale
-    @State private var showsDetail = false
 
     var body: some View {
         if model.chat.selectedSessionID != nil {
             TimelineView(.periodic(from: .now, by: 1)) { timeline in
                 let elapsed = model.sessionElapsed(at: timeline.date)
-                Button {
-                    showsDetail = true
-                } label: {
-                    MobiusBadge(
-                        text: .verbatim(
-                            "\(model.contextFillPercent)% · \(formatCompactDuration(elapsed, locale: locale))"
-                        ),
-                        progress: model.contextFillFraction,
-                        interactive: true
-                    )
-                    .frame(
-                        minWidth: MobiusStyle.iconButtonSize,
-                        minHeight: MobiusStyle.iconButtonSize
-                    )
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.mobiusPlain)
-                .accessibilityLabel("Session observability")
-                .accessibilityValue(
-                    "\(model.contextFillPercent) percent context used, \(formatCompactDuration(elapsed, locale: locale)) elapsed"
-                )
-                .sensoryFeedback(.selection, trigger: showsDetail)
-                .popover(isPresented: $showsDetail, arrowEdge: .bottom) {
-                    BadgePopover(localizedTitle: "Session") {
+                MobiusBadgeMenu {
+                    Section("Session") {
                         BadgeStat(
                             label: "Context",
                             value:
@@ -385,57 +362,30 @@ private struct SessionStatsBadge: View {
                         )
                         BadgeStat(label: "Cache hit", value: cacheHit(model.chat.lastUsage))
                     }
+                } label: {
+                    MobiusBadge(
+                        text: .verbatim(
+                            "\(model.contextFillPercent)% · \(formatCompactDuration(elapsed, locale: locale))"
+                        ),
+                        progress: model.contextFillFraction,
+                        interactive: true
+                    )
                 }
+                .accessibilityLabel("Session observability")
+                .accessibilityValue(
+                    "\(model.contextFillPercent) percent context used, \(formatCompactDuration(elapsed, locale: locale)) elapsed"
+                )
             }
         }
     }
 }
 
-struct BadgePopover<Content: View>: View {
-    let title: MobiusText
-    @ViewBuilder let content: Content
-
-    init(title: String, @ViewBuilder content: () -> Content) {
-        self.title = .verbatim(title)
-        self.content = content()
-    }
-
-    init(localizedTitle title: LocalizedStringResource, @ViewBuilder content: () -> Content) {
-        self.title = .localized(title)
-        self.content = content()
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: MobiusSpace.m) {
-            title.text
-                .font(MobiusStyle.controlFont.weight(.semibold))
-            // A full list (every subagent, every file) would otherwise grow the popover
-            // past the screen with no way to reach the bottom.
-            ScrollView { content }
-                .frame(maxHeight: MobiusStyle.rowTouch * 8)
-                .scrollBounceBehavior(.basedOnSize)
-        }
-        .padding(MobiusSpace.l)
-        .frame(minWidth: 220, alignment: .leading)
-        .presentationCompactAdaptation(.popover)
-    }
-}
-
 private struct BadgeStat: View {
-    @Environment(\.mobiusPalette) private var palette
     let label: LocalizedStringResource
     let value: String
 
     var body: some View {
-        HStack(spacing: MobiusSpace.m) {
-            Text(label)
-                .font(MobiusStyle.metadataFont)
-                .foregroundStyle(palette.muted)
-            Spacer(minLength: MobiusSpace.s)
-            Text(verbatim: value)
-                .font(MobiusStyle.bodyFont.monospacedDigit())
-        }
-        .accessibilityElement(children: .combine)
+        Text("\(Text(label)): \(Text(verbatim: value))")
     }
 }
 

@@ -426,6 +426,9 @@ struct RenderedPreview: Decodable, Sendable {
     let update: FrontendPreviewUpdate
     let events: [RenderedEventRecord]
     let next: AgentOperation?
+    var symbol: String?
+    var durationMs: UInt64?
+    var startedAtMs: Int64?
 }
 
 enum FrontendPreviewUpdate: String, Decodable, Sendable {

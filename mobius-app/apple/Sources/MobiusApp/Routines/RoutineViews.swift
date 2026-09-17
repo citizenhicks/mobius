@@ -684,12 +684,14 @@ struct RoutineRunTranscriptSheet: View {
         NavigationStack {
             content
                 .toolbarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        MobiusToolbarIconButton(glyph: .check, label: "Done") { dismiss() }
-                    }
-                    ToolbarItem(placement: .principal) { header }
-                }
+                .modifier(
+                    MobiusTranscriptToolbar(
+                        dismiss: dismiss.callAsFunction,
+                        title: routine.map { Text(verbatim: $0.instructions) } ?? Text("Routine"),
+                        subtitle: subtitle,
+                        infoLabel: "Routine info"
+                    ) { runInfo }
+                )
         }
     }
 
@@ -722,20 +724,51 @@ struct RoutineRunTranscriptSheet: View {
         }
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
-            if let routine = model.routineRunPreview?.routine {
-                Text(verbatim: routine.instructions)
-                    .font(MobiusStyle.controlFont.weight(.semibold))
-                    .lineLimit(1)
+    private var run: RoutineRun? { model.routineRunPreview?.run ?? model.presentedRoutineRun }
+
+    private var routine: Routine? {
+        model.routineRunPreview?.routine ?? model.routines.first { $0.id == run?.routineId }
+    }
+
+    private var subtitle: Text {
+        guard let run else { return Text("Loading…") }
+        let status = Text(routineRunStatusLabel(run.status))
+        guard let workspace = routine?.workspace else { return status }
+        let slug = URL(fileURLWithPath: workspace).lastPathComponent
+        return Text("\(status) • \(Text(verbatim: slug))")
+    }
+
+    private var runInfo: some View {
+        VStack(alignment: .leading, spacing: MobiusSpace.m) {
+            if let routine {
+                Text(verbatim: routine.instructions).textSelection(.enabled)
+                LabeledContent("Workspace") {
+                    Text(verbatim: routine.workspace).textSelection(.enabled)
+                }
             }
-            if let run = model.routineRunPreview?.run ?? model.presentedRoutineRun {
-                Text("Run · \(Text(routineRunStatusLabel(run.status)))")
-                    .font(MobiusStyle.metadataFont)
-                    .foregroundStyle(palette.muted)
+            if let run {
+                if let bot = model.bots.first(where: { $0.id == run.botId }) {
+                    LabeledContent("Bot", value: bot.name)
+                }
+                LabeledContent("Status") { Text(routineRunStatusLabel(run.status)) }
+                LabeledContent("Started") {
+                    Text(
+                        Date(timeIntervalSince1970: TimeInterval(run.startedAt)), format: .dateTime)
+                }
+                if run.finishedAt != nil || run.status == .running {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        let end =
+                            run.finishedAt.map { Date(timeIntervalSince1970: TimeInterval($0)) }
+                            ?? context.date
+                        LabeledContent(
+                            "Duration",
+                            value: formatDuration(
+                                end.timeIntervalSince1970 - TimeInterval(run.startedAt)))
+                    }
+                }
+                if let message = run.message { Text(verbatim: message).textSelection(.enabled) }
             }
         }
-        .frame(maxWidth: .infinity, minHeight: MobiusStyle.iconButtonSize, alignment: .leading)
     }
 }
 

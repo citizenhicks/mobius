@@ -44,15 +44,184 @@ extension AppModelTests {
                 }
             }
             XCTAssertTrue(appeared)
+            let settled = await eventually {
+                host.presentedViewController?.isBeingPresented == false
+                    && host.presentedViewController?.transitionCoordinator == nil
+            }
+            XCTAssertTrue(settled)
             let done = try XCTUnwrap(
                 testAccessibilityElements(window).first {
                     $0.accessibilityLabel == "Done" && $0.accessibilityTraits.contains(.button)
                 })
             XCTAssertLessThan(done.accessibilityFrame.midX, window.frame.midX)
             XCTAssertTrue(done.accessibilityActivate())
-            let dismissed = await eventually { !app.showsInspector }
-            XCTAssertTrue(dismissed)
+            let dismissed = await eventually(timeout: .seconds(3)) {
+                !app.showsInspector && host.presentedViewController == nil
+            }
+            XCTAssertTrue(dismissed, "Sheet dismissed: \(!app.showsInspector)")
         }
+    }
+
+    func testTranscriptHeadersSharePlacementAndExposeInfo() async throws {
+        let app = try model(requestSender: { _ in })
+        let wire = try JSONDecoder().decode(
+            RenderedPreview.self,
+            from: Data(
+                #"""
+                {"id":"voice","title":"Voice transcript","subtitle":"sol","pageId":"latest",
+                 "update":"replace","events":[],"next":null,"symbol":"voice",
+                 "durationMs":150000,"startedAtMs":null}
+                """#.utf8))
+        app.chat.apply(wire, selection: nil, present: true)
+        let voice = try XCTUnwrap(app.chat.presentedPreview)
+        XCTAssertEqual(voice.durationMs, 150_000)
+        let agent = TranscriptPreview(
+            id: "reviewer", title: "Reviewer", context: "full", status: "running",
+            model: "GPT-5.6 Sol", entries: [], next: nil
+        )
+        let routine = Routine(
+            id: "routine", botId: "bot", workspace: "/srv/mobius", instructions: "Review nightly",
+            schedule: .interval(seconds: 120), endsAt: nil, enabled: true, finished: false,
+            nextRunAt: nil
+        )
+        let run = RoutineRun(
+            id: "run", routineId: routine.id, botId: routine.botId, startedAt: 100,
+            finishedAt: 250, status: .succeeded, sessionId: "routine-session", message: nil
+        )
+        app.routineRunPreview = RoutineRunPreview(
+            requestID: "preview", routine: routine, run: run, records: [], nextBeforeSequence: nil
+        )
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 402, height: 874)
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+        for (content, infoLabel, title, subtitle) in [
+            (
+                AnyView(PreviewTranscriptSheet(preview: agent)), "Spawn context", "Reviewer",
+                "GPT-5.6 Sol"
+            ),
+            (
+                AnyView(PreviewTranscriptSheet(preview: voice)), "Voice info", "Voice transcript",
+                "Sol"
+            ),
+            (
+                AnyView(RoutineRunTranscriptSheet()), "Routine info", "Review nightly",
+                "Succeeded • mobius"
+            ),
+        ] {
+            let host = UIHostingController(rootView: content.mobiusTheme().environment(app))
+            window.rootViewController = host
+            window.makeKeyAndVisible()
+            let appeared = await eventually {
+                testAccessibilityElements(window).contains { $0.accessibilityLabel == infoLabel }
+            }
+            XCTAssertTrue(appeared)
+            try await Task.sleep(for: .milliseconds(350))
+            let elements = testAccessibilityElements(window)
+            let done = try XCTUnwrap(
+                elements.first {
+                    $0.accessibilityLabel == "Done" && $0.accessibilityTraits.contains(.button)
+                })
+            let info = try XCTUnwrap(
+                elements.first {
+                    $0.accessibilityLabel == infoLabel && $0.accessibilityTraits.contains(.button)
+                })
+            XCTAssertLessThan(done.accessibilityFrame.midX, window.frame.midX)
+            XCTAssertGreaterThan(info.accessibilityFrame.midX, window.frame.midX)
+            XCTAssertTrue(elements.contains { $0.accessibilityLabel?.contains(title) == true })
+            XCTAssertTrue(elements.contains { $0.accessibilityLabel?.contains(subtitle) == true })
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+            let attachment = XCTAttachment(image: image)
+            attachment.name = infoLabel
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            XCTAssertTrue(info.accessibilityActivate())
+            let opened = await eventually { host.presentedViewController != nil }
+            XCTAssertTrue(opened)
+            if infoLabel == "Voice info" {
+                let showsDuration = await eventually {
+                    testAccessibilityElements(window).contains {
+                        $0.accessibilityLabel?.contains("2:30") == true
+                    }
+                }
+                XCTAssertTrue(showsDuration)
+            }
+            host.dismiss(animated: false)
+            let closed = await eventually { host.presentedViewController == nil }
+            XCTAssertTrue(closed)
+        }
+    }
+
+    func testComposerPillsPresentNativeMenus() async throws {
+        let app = try model(requestSender: { _ in })
+        app.chat.selectedSessionID = "chat"
+        app.simplifiedChatUI = false
+        let widget = try JSONDecoder().decode(
+            FrontendWidget.self,
+            from: Data(
+                #"""
+                {"id":"agents","slot":"composer_footer","text":"1","tone":"neutral",
+                 "symbol":"agent","iconOnly":false,"progress":null,"action":null,
+                 "content":{"type":"picker","title":"Subagents","options":[
+                   {"label":"Reviewer","description":"running","detail":"Sol","symbol":"agent",
+                    "showsDetail":false,"op":{"type":"capability_command","capability":"subagents",
+                    "command":"subagents","arguments":"reviewer","input":null,"target":null}}
+                 ]}}
+                """#.utf8))
+        app.chat.mountedWidgets = [MountedWidget(capability: "subagents", widget: widget)]
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 402, height: 874)
+        let host = UIHostingController(
+            rootView: VStack {
+                Spacer(); ComposerView(showBotSettings: {})
+            }
+            .mobiusTheme().environment(app)
+        )
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+        let appeared = await eventually {
+            testAccessibilityElements(window).contains { $0.accessibilityLabel == "Subagents 1" }
+        }
+        XCTAssertTrue(appeared)
+        try await Task.sleep(for: .milliseconds(350))
+        let pill = try XCTUnwrap(
+            testAccessibilityElements(window).first {
+                $0.accessibilityLabel == "Subagents 1" && $0.accessibilityTraits.contains(.button)
+            })
+        XCTAssertTrue(pill.accessibilityActivate())
+        let opened = await eventually {
+            scene.windows.flatMap { testAccessibilityElements($0) }.contains {
+                $0.accessibilityLabel?.contains("Reviewer") == true
+            }
+        }
+        XCTAssertTrue(
+            opened,
+            scene.windows.flatMap { testAccessibilityElements($0) }.compactMap(\.accessibilityLabel)
+                .joined(separator: " | "))
+        XCTAssertNil(host.presentedViewController?.popoverPresentationController)
+        let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+            for surface in scene.windows where !surface.isHidden {
+                surface.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+        }
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "Subagent native menu"
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     func testThemeUsesSoftHeaderAndFooterEdgesAcrossScrollContainers() async throws {

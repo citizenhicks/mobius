@@ -445,7 +445,6 @@ struct ReadOnlyTranscriptSheet: View {
 struct PreviewTranscriptSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AppModel.self) private var model
-    @Environment(\.mobiusPalette) private var palette
     let preview: TranscriptPreview
 
     var body: some View {
@@ -459,62 +458,55 @@ struct PreviewTranscriptSheet: View {
                 loadEarlier: loadEarlierPage
             )
             .toolbarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    MobiusToolbarIconButton(glyph: .check, label: "Done") { dismiss() }
+            .modifier(
+                MobiusTranscriptToolbar(
+                    dismiss: dismiss.callAsFunction,
+                    title: headerTitle,
+                    subtitle: headerSubtitle,
+                    infoGlyph: isVoice ? .info : spawnContextGlyph,
+                    infoLabel: isVoice ? "Voice info" : "Spawn context"
+                ) {
+                    if isVoice {
+                        voiceInfo
+                    } else {
+                        Text(spawnContextDetail)
+                    }
                 }
-                ToolbarItem(placement: .principal) { header }
-            }
+            )
         }
     }
 
-    private var header: some View { headerRow }
+    private var isVoice: Bool { currentPreview.symbol == "voice" }
 
-    private var headerRow: some View {
-        HStack(spacing: MobiusSpace.s) {
-            Text(verbatim: agentName)
-                .font(MobiusStyle.controlFont.weight(.semibold))
-                .lineLimit(1)
-                .truncationMode(.middle)
-            if let status = currentPreview.status {
-                headerSeparator
-                Text(verbatim: status)
-                    .font(MobiusStyle.metadataFont)
-                    .foregroundStyle(status == "errored" ? palette.danger : palette.muted)
-                    .lineLimit(1)
-            }
-            if let choice = modelChoice {
-                headerSeparator
-                MobiusMenuLabel(
-                    verbatim: model.modelLabel(for: choice),
-                    glyph: model.providerSymbol(for: choice)
-                        .flatMap(MobiusSymbol.knownGlyph(for:)) ?? .aiScan,
-                    detail: choice.reasoningEffort?.capitalized,
-                    showsDisclosure: false
-                )
-                .layoutPriority(1)
-                .accessibilityLabel("Model and reasoning")
-                .accessibilityValue(modelSummary(choice))
-            }
-            Spacer(minLength: 0)
-            if !currentPreview.context.isEmpty {
-                SettingsInfoButton(
-                    title: .localized("Spawn context: \(currentPreview.context)"),
-                    detail: .localized(spawnContextDetail),
-                    glyph: spawnContextGlyph,
-                    accessibilityHint: .localized("Explains the inherited conversation context")
-                )
-            }
-        }
-        .frame(maxWidth: .infinity, minHeight: MobiusStyle.iconButtonSize, alignment: .leading)
-        .accessibilityElement(children: .contain)
+    private var headerTitle: Text {
+        if isVoice { return Text("Voice transcript") }
+        let name = Text(verbatim: currentPreview.title)
+        guard let status = currentPreview.status else { return name }
+        return Text("\(name) • \(Text(verbatim: status))")
     }
 
-    private var headerSeparator: some View {
-        Text("•")
-            .font(MobiusStyle.metadataFont)
-            .foregroundStyle(palette.muted)
-            .accessibilityHidden(true)
+    private var headerSubtitle: Text {
+        if isVoice {
+            return currentPreview.context.isEmpty
+                ? Text("Voice not recorded") : Text(verbatim: currentPreview.context.capitalized)
+        }
+        return Text(verbatim: modelChoice.map(modelSummary) ?? currentPreview.model ?? "")
+    }
+
+    @ViewBuilder
+    private var voiceInfo: some View {
+        if currentPreview.durationMs == nil {
+            LabeledContent("Total call time") { Text("Unavailable") }
+        } else {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let completed = Double(currentPreview.durationMs ?? 0) / 1_000
+                let active =
+                    currentPreview.startedAtMs.map {
+                        max(0, context.date.timeIntervalSince1970 - Double($0) / 1_000)
+                    } ?? 0
+                LabeledContent("Total call time", value: formatDuration(completed + active))
+            }
+        }
     }
 
     private func loadEarlierPage() async {
@@ -529,10 +521,6 @@ struct PreviewTranscriptSheet: View {
             return presented
         }
         return model.chat.previews.first(where: { $0.id == preview.id }) ?? preview
-    }
-
-    private var agentName: String {
-        currentPreview.title
     }
 
     private var modelChoice: ModelChoice? {
