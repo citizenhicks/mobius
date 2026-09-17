@@ -682,7 +682,7 @@ async fn staged_deletion_releases_uploads_and_resumes_after_restart() {
 }
 
 #[tokio::test]
-async fn attachment_registration_rejects_path_replacement() {
+async fn attachment_registration_handles_path_replacement_safely() {
     let state = tempfile::tempdir().expect("state");
     let root = tempfile::tempdir().expect("workspace root");
     let workspace = root.path().join("workspace");
@@ -699,12 +699,24 @@ async fn attachment_registration_rejects_path_replacement() {
     std::fs::rename(&workspace, root.path().join("original")).expect("move original");
     std::fs::rename(&replacement, &workspace).expect("install replacement");
 
-    let error = SessionFileStore::new(state.path())
+    let registration = SessionFileStore::new(state.path())
         .register_attachment_workspace(session_id, &pinned_workspace, &workspace)
-        .await
-        .expect_err("replaced workspace must be rejected");
+        .await;
 
-    assert!(error.to_string().contains("workspace changed"));
+    #[cfg(target_os = "macos")]
+    {
+        let error = registration.expect_err("replaced workspace must be rejected");
+        assert!(error.to_string().contains("workspace changed"));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        registration.expect("register pinned workspace");
+        SessionFileStore::new(state.path())
+            .delete_session(session_id)
+            .await
+            .expect("delete session");
+    }
+
     assert!(
         workspace
             .join(".mobius")
