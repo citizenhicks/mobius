@@ -1586,8 +1586,8 @@ mod tests {
         write_file_chunk(&mut state, 0, b"ok", None)
             .await
             .expect("valid chunk");
-        let download = state.file_download.take().expect("download state");
-        drop(download.output);
+        finish_file_download(&mut state).await;
+        assert!(state.file_download.is_none());
         assert_eq!(
             tokio::fs::read(second_path).await.expect("saved file"),
             b"ok"
