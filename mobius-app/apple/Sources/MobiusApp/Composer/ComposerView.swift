@@ -338,29 +338,31 @@ private struct SessionStatsBadge: View {
                 let elapsed = model.sessionElapsed(at: timeline.date)
                 MobiusBadgeMenu {
                     Section("Session") {
-                        BadgeStat(
+                        MobiusMenuValue(
                             label: "Context",
                             value:
-                                "\(model.contextFillPercent)% · \(model.chat.contextTokens.formatted()) / \(model.chat.contextLimitTokens?.formatted() ?? "—")"
+                                "\(model.contextFillPercent)% · \(model.chat.contextTokens.formatted(.number.notation(.compactName).precision(.fractionLength(0...1))))/\(model.chat.contextLimitTokens?.formatted(.number.notation(.compactName).precision(.fractionLength(0...1))) ?? "—")"
                         )
-                        BadgeStat(
+                        MobiusMenuValue(
                             label: "Compactions",
                             value: model.chat.sessionCompactionCount.formatted()
                         )
-                        BadgeStat(label: "Elapsed", value: formatDuration(elapsed))
-                        BadgeStat(label: "Runs", value: model.sessionRunCount.formatted())
-                        BadgeStat(label: "Model calls", value: model.sessionModelCalls.formatted())
-                        BadgeStat(label: "Tool calls", value: model.sessionToolCalls.formatted())
-                        BadgeStat(
+                        MobiusMenuValue(label: "Elapsed", value: formatDuration(elapsed))
+                        MobiusMenuValue(label: "Runs", value: model.sessionRunCount.formatted())
+                        MobiusMenuValue(
+                            label: "Model calls", value: model.sessionModelCalls.formatted())
+                        MobiusMenuValue(
+                            label: "Tool calls", value: model.sessionToolCalls.formatted())
+                        MobiusMenuValue(
                             label: "Tool failures",
                             value: model.sessionFailedToolCalls.formatted()
                         )
-                        BadgeStat(
+                        MobiusMenuValue(
                             label: "Run tokens",
                             value: (model.chat.runStats.usage.totalTokens
                                 + (model.chat.runStats.active?.usage.totalTokens ?? 0)).formatted()
                         )
-                        BadgeStat(label: "Cache hit", value: cacheHit(model.chat.lastUsage))
+                        MobiusMenuValue(label: "Cache hit", value: cacheHit(model.chat.lastUsage))
                     }
                 } label: {
                     MobiusBadge(
@@ -377,15 +379,6 @@ private struct SessionStatsBadge: View {
                 )
             }
         }
-    }
-}
-
-private struct BadgeStat: View {
-    let label: LocalizedStringResource
-    let value: String
-
-    var body: some View {
-        Text("\(Text(label)): \(Text(verbatim: value))")
     }
 }
 

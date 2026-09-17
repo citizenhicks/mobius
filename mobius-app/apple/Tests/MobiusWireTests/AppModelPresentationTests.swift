@@ -224,6 +224,57 @@ extension AppModelTests {
         add(attachment)
     }
 
+    func testSessionMenuValuesAreEnabledAndSingleLine() async throws {
+        let app = try model(requestSender: { _ in })
+        app.chat.selectedSessionID = "chat"
+        app.simplifiedChatUI = false
+        app.chat.contextTokens = 240_000
+        app.chat.contextLimitTokens = 1_000_000
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 375, height: 812)
+        let host = UIHostingController(
+            rootView: VStack {
+                Spacer(); ComposerView(showBotSettings: {})
+            }.environment(\.locale, Locale(identifier: "en_US")).mobiusTheme().environment(app)
+        )
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+        let appeared = await eventually {
+            testAccessibilityElements(window).contains {
+                $0.accessibilityLabel == "Session observability"
+            }
+        }
+        XCTAssertTrue(appeared)
+        try await Task.sleep(for: .milliseconds(350))
+        let pill = try XCTUnwrap(
+            testAccessibilityElements(window).first {
+                $0.accessibilityLabel == "Session observability"
+            })
+        XCTAssertTrue(pill.accessibilityActivate())
+        let opened = await eventually {
+            scene.windows.flatMap { testAccessibilityElements($0) }.contains {
+                $0.accessibilityLabel == "Context: 24% · 240K/1M"
+            }
+        }
+        XCTAssertTrue(opened)
+        let rows = scene.windows.flatMap { testAccessibilityElements($0) }.filter {
+            $0.accessibilityLabel?.contains(":") == true && $0.accessibilityTraits.contains(.button)
+        }
+        XCTAssertEqual(Set(rows.compactMap(\.accessibilityLabel)).count, 9)
+        for row in rows {
+            XCTAssertFalse(row.accessibilityTraits.contains(.notEnabled))
+            XCTAssertLessThanOrEqual(row.accessibilityFrame.height, 50)
+        }
+
+    }
+
     func testThemeUsesSoftHeaderAndFooterEdgesAcrossScrollContainers() async throws {
         let app = try model(requestSender: { _ in })
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)

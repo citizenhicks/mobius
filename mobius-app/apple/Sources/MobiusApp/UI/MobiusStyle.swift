@@ -734,3 +734,20 @@ struct MobiusBadgeMenu<Content: View, Label: View>: View {
         .buttonStyle(.mobiusPlain)
     }
 }
+
+/// Native menus dim passive text; values are enabled copy actions instead.
+struct MobiusMenuValue: View {
+    @Environment(\.locale) private var locale
+    let label: LocalizedStringResource
+    let value: String
+
+    var body: some View {
+        Button {
+            copyToPasteboard("\(label.resolved(locale: locale)): \(value)")
+        } label: {
+            Text("\(Text(label)): \(Text(verbatim: value))")
+                .lineLimit(1)
+        }
+        .accessibilityHint("Copy")
+    }
+}
