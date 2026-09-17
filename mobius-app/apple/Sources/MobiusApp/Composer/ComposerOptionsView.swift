@@ -224,24 +224,14 @@ struct ComposerOptionsView: View {
                 isPhotoPickerPresented = true
             } label: {
                 MobiusLabel(title: "Photos", glyph: .image01)
-                    .frame(
-                        maxWidth: .infinity,
-                        minHeight: MobiusStyle.iconButtonSize,
-                        alignment: .leading
-                    )
-                    .contentShape(Rectangle())
             }
+            .buttonStyle(.automatic)
             Button {
                 isFileImporterPresented = true
             } label: {
                 MobiusLabel(title: "Files", glyph: .fileText)
-                    .frame(
-                        maxWidth: .infinity,
-                        minHeight: MobiusStyle.iconButtonSize,
-                        alignment: .leading
-                    )
-                    .contentShape(Rectangle())
             }
+            .buttonStyle(.automatic)
         } label: {
             MobiusLabel(
                 title: "Add attachment",
