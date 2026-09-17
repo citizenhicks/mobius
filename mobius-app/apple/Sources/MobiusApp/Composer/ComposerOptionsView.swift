@@ -8,21 +8,28 @@ private struct ImportedMediaFile: Transferable {
     let url: URL
 
     static var transferRepresentation: some TransferRepresentation {
-        FileRepresentation(importedContentType: .item) { received in
-            let directory = URL.temporaryDirectory.appending(
-                path: UUID().uuidString,
-                directoryHint: .isDirectory
-            )
-            do {
-                try FileManager.default.createDirectory(
-                    at: directory, withIntermediateDirectories: true)
-                let url = directory.appending(path: received.file.lastPathComponent)
-                try FileManager.default.copyItem(at: received.file, to: url)
-                return Self(url: url)
-            } catch {
-                try? FileManager.default.removeItem(at: directory)
-                throw error
-            }
+        FileRepresentation(importedContentType: .image) { received in
+            try copy(received.file)
+        }
+        FileRepresentation(importedContentType: .movie) { received in
+            try copy(received.file)
+        }
+    }
+
+    private static func copy(_ source: URL) throws -> Self {
+        let directory = URL.temporaryDirectory.appending(
+            path: UUID().uuidString,
+            directoryHint: .isDirectory
+        )
+        do {
+            try FileManager.default.createDirectory(
+                at: directory, withIntermediateDirectories: true)
+            let url = directory.appending(path: source.lastPathComponent)
+            try FileManager.default.copyItem(at: source, to: url)
+            return Self(url: url)
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            throw error
         }
     }
 }
@@ -166,8 +173,7 @@ struct ComposerOptionsView: View {
     @State private var photoSelection: [PhotosPickerItem] = []
 
     var body: some View {
-        // ponytail: overlap 44pt targets by 4pt; split groups if boundary taps misfire.
-        HStack(spacing: -MobiusSpace.xs) {
+        HStack(spacing: 0) {
             if model.attachmentsEnabled { addAttachmentControl }
             if !isCompact {
                 ForEach(composerSettings) { item in
@@ -218,11 +224,23 @@ struct ComposerOptionsView: View {
                 isPhotoPickerPresented = true
             } label: {
                 MobiusLabel(title: "Photos", glyph: .image01)
+                    .frame(
+                        maxWidth: .infinity,
+                        minHeight: MobiusStyle.iconButtonSize,
+                        alignment: .leading
+                    )
+                    .contentShape(Rectangle())
             }
             Button {
                 isFileImporterPresented = true
             } label: {
                 MobiusLabel(title: "Files", glyph: .fileText)
+                    .frame(
+                        maxWidth: .infinity,
+                        minHeight: MobiusStyle.iconButtonSize,
+                        alignment: .leading
+                    )
+                    .contentShape(Rectangle())
             }
         } label: {
             MobiusLabel(
