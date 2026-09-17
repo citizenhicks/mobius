@@ -593,6 +593,29 @@ async fn attachment_cleanup_removes_staged_files_for_the_registered_workspace() 
     assert!(!staged.exists());
 }
 
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn attachment_workspace_persists_the_volume_uuid_instead_of_the_mount_device() {
+    let state = tempfile::tempdir().expect("state");
+    let workspace = tempfile::tempdir().expect("workspace");
+    let directory =
+        Dir::open_ambient_dir(workspace.path(), ambient_authority()).expect("workspace");
+    let store = SessionFileStore::new(state.path());
+
+    store
+        .register_attachment_workspace("session", &directory, workspace.path())
+        .await
+        .expect("register workspace");
+
+    let marker =
+        tokio::fs::read_to_string(store.session_dir("session").join(ATTACHMENT_WORKSPACE_FILE))
+            .await
+            .expect("workspace marker");
+    let marker: serde_json::Value = serde_json::from_str(&marker).expect("valid marker");
+    assert!(marker["identity"]["volume_uuid"].is_string());
+    assert!(marker["identity"].get("device").is_none());
+}
+
 #[tokio::test]
 async fn empty_deletion_does_not_initialize_or_scan_file_storage() {
     let state = tempfile::tempdir().expect("state");
@@ -659,7 +682,7 @@ async fn staged_deletion_releases_uploads_and_resumes_after_restart() {
 }
 
 #[tokio::test]
-async fn attachment_registration_keeps_pinned_identity_after_path_replacement() {
+async fn attachment_registration_rejects_path_replacement() {
     let state = tempfile::tempdir().expect("state");
     let root = tempfile::tempdir().expect("workspace root");
     let workspace = root.path().join("workspace");
@@ -676,15 +699,12 @@ async fn attachment_registration_keeps_pinned_identity_after_path_replacement() 
     std::fs::rename(&workspace, root.path().join("original")).expect("move original");
     std::fs::rename(&replacement, &workspace).expect("install replacement");
 
-    SessionFileStore::new(state.path())
+    let error = SessionFileStore::new(state.path())
         .register_attachment_workspace(session_id, &pinned_workspace, &workspace)
         .await
-        .expect("register workspace");
-    SessionFileStore::new(state.path())
-        .delete_session(session_id)
-        .await
-        .expect("delete session");
+        .expect_err("replaced workspace must be rejected");
 
+    assert!(error.to_string().contains("workspace changed"));
     assert!(
         workspace
             .join(".mobius")

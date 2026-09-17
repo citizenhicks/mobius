@@ -135,18 +135,50 @@ struct StoredAttachmentWorkspace {
     identity: AttachmentWorkspaceIdentity,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AttachmentWorkspaceIdentity {
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "macos")))]
     device: u64,
+    #[cfg(target_os = "macos")]
+    volume_uuid: String,
     #[cfg(unix)]
     inode: u64,
 }
 
 impl AttachmentWorkspaceIdentity {
-    fn from_metadata(metadata: &cap_std::fs::Metadata) -> Result<Self> {
-        #[cfg(unix)]
+    fn from_workspace(workspace: &Dir, path: &Path) -> Result<Self> {
+        let metadata = workspace.dir_metadata()?;
+        #[cfg(target_os = "macos")]
+        {
+            let location = whichdisk::resolve(path)?;
+            let volume_uuid = match location
+                .volume_identity()
+                .filter(whichdisk::IdentityReading::is_vouched)
+                .map(|reading| reading.identity())
+            {
+                Some(whichdisk::VolumeIdentity::FsUuid(bytes)) => {
+                    uuid::Uuid::from_bytes(bytes).to_string()
+                }
+                _ => {
+                    return Err(Error::Config(
+                        "attachment workspace volume has no persistent UUID".into(),
+                    ));
+                }
+            };
+            let path_metadata = std::fs::metadata(path)?;
+            use std::os::unix::fs::MetadataExt as _;
+            if metadata.dev() != path_metadata.dev() || metadata.ino() != path_metadata.ino() {
+                return Err(Error::Config(
+                    "attachment workspace changed while resolving its identity".into(),
+                ));
+            }
+            Ok(Self {
+                volume_uuid,
+                inode: metadata.ino(),
+            })
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
         {
             Ok(Self {
                 device: metadata.dev(),
@@ -162,8 +194,8 @@ impl AttachmentWorkspaceIdentity {
         }
     }
 
-    fn matches(&self, metadata: &cap_std::fs::Metadata) -> Result<bool> {
-        Ok(*self == Self::from_metadata(metadata)?)
+    fn matches(&self, workspace: &Dir, path: &Path) -> Result<bool> {
+        Ok(self == &Self::from_workspace(workspace, path)?)
     }
 }
 
@@ -272,7 +304,7 @@ impl SessionFileStore {
         workspace_path: &Path,
     ) -> Result<()> {
         validate_session_id(session_id)?;
-        let identity = AttachmentWorkspaceIdentity::from_metadata(&workspace.dir_metadata()?)?;
+        let identity = AttachmentWorkspaceIdentity::from_workspace(workspace, workspace_path)?;
         self.ensure_initialized().await?;
         let _commit = self.commits.lock().await;
         let directory = self.session_dir(session_id);

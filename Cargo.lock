@@ -209,6 +209,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "block2"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdeb9d870516001442e364c5220d3574d2da8dc765554b4a617230d33fa58ef5"
+dependencies = [
+ "objc2",
+]
+
+[[package]]
 name = "bm25"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1668,7 +1677,7 @@ dependencies = [
 
 [[package]]
 name = "mobius"
-version = "0.15.32"
+version = "0.15.33"
 dependencies = [
  "base64",
  "bm25",
@@ -1687,11 +1696,12 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "uuid",
+ "whichdisk",
 ]
 
 [[package]]
 name = "mobius-cli"
-version = "0.15.33"
+version = "0.15.34"
 dependencies = [
  "arboard",
  "chrono",
@@ -1714,7 +1724,7 @@ dependencies = [
 
 [[package]]
 name = "mobius-gateway"
-version = "0.15.32"
+version = "0.15.33"
 dependencies = [
  "base64",
  "chrono",
@@ -1891,6 +1901,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272"
 dependencies = [
  "bitflags 2.13.1",
+ "block2",
+ "libc",
  "objc2",
  "objc2-core-foundation",
 ]
@@ -3866,6 +3878,20 @@ dependencies = [
  "lazy_static",
  "serde",
  "wezterm-dynamic",
+]
+
+[[package]]
+name = "whichdisk"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ca926ef48e097434358a2081de46b0913a915e939b382afac637118422bf873"
+dependencies = [
+ "bytes",
+ "libc",
+ "memchr",
+ "objc2-foundation",
+ "rustix",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

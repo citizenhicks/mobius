@@ -244,7 +244,7 @@ pub(super) async fn remove_staged_attachments(
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(Error::from(error)),
         };
-        if !workspace.identity.matches(&directory.dir_metadata()?)? {
+        if !workspace.identity.matches(&directory, &workspace.path)? {
             return Ok(());
         }
         match directory.remove_dir_all(staged) {
