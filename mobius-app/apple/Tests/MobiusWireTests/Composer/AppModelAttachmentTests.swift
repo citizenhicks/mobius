@@ -1,9 +1,80 @@
 import Foundation
+import PhotosUI
+import SwiftUI
 @testable import Mobius
 import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testAttachmentPopupHasFullWidthRowsAndOpensBothPickers() async throws {
+        let app = try model(requestSender: { _ in })
+        app.gateway.connectionState = .ready
+        var config = composition()
+        config.middleware.enabled.insert("attachments")
+        app.bots = [bot(config: VersionedAgentConfig(revision: 1, config: config))]
+        app.chat.pendingNewChatBotID = "bot-1"
+        app.chat.pendingNewChatWorkspace = "."
+        XCTAssertTrue(app.canImportAttachments)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previous = scene.keyWindow
+        previous?.isHidden = true
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.isHidden = false
+            previous?.makeKeyAndVisible()
+        }
+
+        for title in ["Files", "Photos"] {
+            let host = UIHostingController(
+                rootView: ComposerView(showBotSettings: {})
+                    .frame(maxHeight: .infinity, alignment: .bottom)
+                    .modifier(MobiusTheme())
+                    .environment(app)
+            )
+            window.rootViewController = host
+            window.makeKeyAndVisible()
+            let opened = await eventually {
+                testAccessibilityElements(host.view).contains {
+                    $0.accessibilityLabel == "Add attachment" && $0.accessibilityActivate()
+                }
+            }
+            XCTAssertTrue(opened)
+            let appeared = await eventually {
+                testAccessibilityElements(window).contains { $0.accessibilityLabel == title }
+            }
+            XCTAssertTrue(appeared)
+            for label in ["Files", "Photos"] {
+                let row = try XCTUnwrap(
+                    testAccessibilityElements(window).first { $0.accessibilityLabel == label }
+                )
+                XCTAssertGreaterThanOrEqual(row.accessibilityFrame.width, 220)
+                XCTAssertGreaterThanOrEqual(row.accessibilityFrame.height, 44)
+            }
+            let row = try XCTUnwrap(
+                testAccessibilityElements(window).first { $0.accessibilityLabel == title }
+            )
+            XCTAssertTrue(row.accessibilityActivate())
+            let presented = await eventually(timeout: .seconds(5)) {
+                @MainActor func containsPicker(_ controller: UIViewController) -> Bool {
+                    if title == "Files", controller is UIDocumentPickerViewController {
+                        return true
+                    }
+                    if title == "Photos", controller is PHPickerViewController { return true }
+                    return controller.children.contains(where: containsPicker)
+                        || controller.presentedViewController.map(containsPicker) == true
+                }
+                return containsPicker(host)
+            }
+            XCTAssertTrue(
+                presented, "Selecting \(title) should dismiss the popup and open its picker")
+            host.dismiss(animated: false)
+            window.rootViewController = nil
+        }
+    }
+
     func testIdleChatAttachmentControlUsesUpdatedBotWithoutReopeningChat() throws {
         let model = try model()
         model.gateway.connectionState = .ready
