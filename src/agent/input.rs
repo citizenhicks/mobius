@@ -689,6 +689,9 @@ mod tests {
                 if context.command == "preview" {
                     context.events.push(EventMsg::Frontend(
                         crate::protocol::FrontendEvent::Preview {
+                            symbol: None,
+                            duration_ms: None,
+                            started_at_ms: None,
                             id: "preview".into(),
                             title: "preview".into(),
                             subtitle: String::new(),

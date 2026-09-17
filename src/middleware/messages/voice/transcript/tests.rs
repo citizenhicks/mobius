@@ -530,3 +530,49 @@ async fn voice_history_stops_before_expanding_an_oversized_unfinished_prefix() {
         .expect_err("bounded history");
     assert!(error.to_string().contains("exceeds its size limit"));
 }
+
+#[tokio::test(start_paused = true)]
+async fn total_call_duration_and_latest_voice_survive_reopen_and_pagination() {
+    let directory = tempfile::tempdir().unwrap();
+    let checkpoints: Arc<dyn CheckpointStore> =
+        Arc::new(SqliteCheckpoint::new(directory.path().join("calls.sqlite3")).unwrap());
+    let mut parent = Checkpoint::empty("parent");
+    parent.session_context.owner_id = "bot".into();
+    checkpoints.save(&parent, &[], None).await.unwrap();
+    let mut total = 0;
+    for (voice, seconds) in [("sol", 60), ("cove", 90)] {
+        let mut transcript =
+            VoiceTranscript::open(Arc::clone(&checkpoints), "parent", Arc::new(|_| Ok(())))
+                .await
+                .unwrap();
+        transcript.start_call(voice).await.unwrap();
+        let summary = call_summary(checkpoints.as_ref(), transcript.session_id())
+            .await
+            .unwrap();
+        assert_eq!(summary.duration_ms, total);
+        assert!(summary.started_at_ms.is_some());
+        tokio::time::advance(Duration::from_secs(seconds)).await;
+        transcript.finish().await.unwrap();
+        // Finishing twice must not count a call twice.
+        transcript.finish().await.unwrap();
+        total += seconds * 1_000;
+        for before in [None, Some(1)] {
+            let FrontendEvent::Preview {
+                symbol,
+                subtitle,
+                duration_ms,
+                started_at_ms,
+                ..
+            } = preview(checkpoints.as_ref(), transcript.session_id(), before)
+                .await
+                .unwrap()
+            else {
+                panic!("expected transcript preview")
+            };
+            assert_eq!(symbol, Some(FrontendSymbol::Custom("voice".into())));
+            assert_eq!(subtitle, voice);
+            assert_eq!(duration_ms, Some(total));
+            assert_eq!(started_at_ms, None);
+        }
+    }
+}

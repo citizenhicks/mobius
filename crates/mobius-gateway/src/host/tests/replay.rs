@@ -88,6 +88,9 @@ fn transient_controls_are_broadcast_without_entering_replay() {
             context: Default::default(),
         }),
         EventMsg::Frontend(FrontendEvent::Preview {
+            symbol: None,
+            duration_ms: None,
+            started_at_ms: None,
             id: "preview".into(),
             title: "Preview".into(),
             subtitle: String::new(),

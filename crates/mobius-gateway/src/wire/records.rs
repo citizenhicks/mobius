@@ -641,6 +641,12 @@ impl MiddlewareConfig {
 /// Capability-rendered preview whose inner events remain provider-neutral.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RenderedPreview {
+    /// The semantic preview symbol.
+    pub symbol: Option<FrontendSymbol>,
+    /// Accumulated completed duration in milliseconds.
+    pub duration_ms: Option<u64>,
+    /// Start of the current activity, when still running.
+    pub started_at_ms: Option<i64>,
     /// The identifier.
     pub id: String,
     /// The title.

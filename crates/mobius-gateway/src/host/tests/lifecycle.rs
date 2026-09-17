@@ -540,6 +540,9 @@ async fn durable_event_journal_restores_complete_turn_pages() {
             &Event {
                 submission_id: None,
                 msg: EventMsg::Frontend(FrontendEvent::Preview {
+                    symbol: None,
+                    duration_ms: None,
+                    started_at_ms: None,
                     id: "transient".into(),
                     title: "Transient".into(),
                     subtitle: String::new(),

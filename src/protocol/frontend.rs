@@ -434,6 +434,12 @@ pub enum FrontendEvent {
     },
     /// Selects the preview case.
     Preview {
+        /// The semantic preview symbol.
+        symbol: Option<FrontendSymbol>,
+        /// Accumulated duration of completed activity, in milliseconds.
+        duration_ms: Option<u64>,
+        /// Start of the current activity, when still running.
+        started_at_ms: Option<i64>,
         /// The identifier.
         id: String,
         /// The title.

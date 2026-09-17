@@ -165,6 +165,7 @@ async fn voice_delegation_consumes_committed_speech_without_echoing_or_replaying
     let (cancel, _cancelled) = oneshot::channel();
     let mut call = RealtimeVoiceCall::new(
         "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n".into(),
+        "sol".into(),
         commands,
         voice_events,
         cancel,

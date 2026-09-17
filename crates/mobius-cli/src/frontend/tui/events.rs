@@ -432,6 +432,7 @@ fn apply_preview(state: &mut TuiState, preview: RenderedPreview, requested: bool
         update,
         events,
         next,
+        ..
     } = preview;
     let steps = events
         .iter()

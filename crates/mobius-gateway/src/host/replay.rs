@@ -102,6 +102,9 @@ pub(super) fn render_preview(
     event: &EventMsg,
 ) -> Option<RenderedPreview> {
     let EventMsg::Frontend(FrontendEvent::Preview {
+        symbol,
+        duration_ms,
+        started_at_ms,
         id,
         title,
         subtitle,
@@ -114,6 +117,9 @@ pub(super) fn render_preview(
         return None;
     };
     Some(RenderedPreview {
+        symbol: symbol.clone(),
+        duration_ms: *duration_ms,
+        started_at_ms: *started_at_ms,
         id: id.clone(),
         title: title.clone(),
         subtitle: subtitle.clone(),

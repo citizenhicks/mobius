@@ -592,6 +592,9 @@ impl Subagents {
             .transpose()?;
         Ok(MiddlewareCommandOutput::events(vec![
             FrontendEvent::Preview {
+                symbol: None,
+                duration_ms: None,
+                started_at_ms: None,
                 id: path.into(),
                 title: path.rsplit('/').next().unwrap_or(path).into(),
                 subtitle: page.subtitle,

@@ -226,6 +226,9 @@ fn live_voice_preview_updates_only_its_open_surface_and_preserves_message_identi
             EventMsg::ContextCompacted,
             Vec::new(),
             Some(RenderedPreview {
+                symbol: None,
+                duration_ms: None,
+                started_at_ms: None,
                 id: "voice-child".into(),
                 title: "Voice".into(),
                 subtitle: String::new(),
@@ -333,6 +336,9 @@ fn snapshot_preview_scrolls_with_the_mouse_wheel() {
             EventMsg::ContextCompacted,
             Vec::new(),
             Some(RenderedPreview {
+                symbol: None,
+                duration_ms: None,
+                started_at_ms: None,
                 id: "/root/subagent".into(),
                 title: "subagent".into(),
                 subtitle: String::new(),

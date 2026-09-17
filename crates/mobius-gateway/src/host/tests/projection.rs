@@ -14,6 +14,9 @@ fn gateway_rejects_nested_session_history() {
 #[test]
 fn projected_preview_drops_the_raw_nested_event_duplicate() {
     let mut event = EventMsg::Frontend(FrontendEvent::Preview {
+        symbol: None,
+        duration_ms: None,
+        started_at_ms: None,
         id: "/root/reviewer".into(),
         title: "reviewer".into(),
         subtitle: "Full context".into(),

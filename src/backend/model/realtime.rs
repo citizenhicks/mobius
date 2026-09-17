@@ -57,6 +57,8 @@ pub struct RealtimeVoiceRequest {
 /// A voice call whose provider credentials and call identity remain private.
 /// Retain the whole value while using its channels; dropping it hangs up the call.
 pub struct RealtimeVoiceCall {
+    /// The provider-selected voice, including default selection.
+    pub voice: String,
     /// The answer sdp.
     pub answer_sdp: String,
     /// The commands.
@@ -97,12 +99,15 @@ impl RealtimeVoiceCall {
     /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new(
         answer_sdp: String,
+        voice: String,
         commands: mpsc::Sender<RealtimeVoiceCommand>,
         events: mpsc::Receiver<Result<RealtimeVoiceEvent>>,
         cancellation: oneshot::Sender<()>,
     ) -> Result<Self> {
         validate_sdp(&answer_sdp)?;
+        validate_text(&voice, 256, "voice name")?;
         Ok(Self {
+            voice,
             answer_sdp,
             commands,
             events,
@@ -212,6 +217,10 @@ impl RealtimeTransport {
                 "the selected voice is not supported by this provider",
             ));
         }
+        let voice = request
+            .voice
+            .clone()
+            .unwrap_or_else(|| self.voices()[0].into());
         let session = self.session(&request);
         let body = serde_json::to_vec(&match self.api {
             VoiceApi::Codex => json!({"sdp":request.offer_sdp,"session":session}),
@@ -235,6 +244,7 @@ impl RealtimeTransport {
         }
         let (cleanup, answer_sdp) = self.negotiate(response, &request.session_id).await?;
         validate_sdp(&answer_sdp)?;
+        validate_text(&voice, 256, "voice name")?;
         let (commands, command_rx) = mpsc::channel(COMMAND_CAPACITY);
         let (event_tx, events) = mpsc::channel(16);
         let (cancel, cancelled) = oneshot::channel();
@@ -285,7 +295,7 @@ impl RealtimeTransport {
             let _ = timeout(IO_TIMEOUT, socket.close(None)).await;
             drop(cleanup);
         });
-        RealtimeVoiceCall::new(answer_sdp, commands, events, cancel)
+        RealtimeVoiceCall::new(answer_sdp, voice, commands, events, cancel)
     }
 
     fn voices(&self) -> &'static [&'static str] {

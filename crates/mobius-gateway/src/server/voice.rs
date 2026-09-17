@@ -265,6 +265,7 @@ async fn drive(
     events: &mut broadcast::Receiver<ServerFrame>,
     stopped: oneshot::Receiver<()>,
 ) -> Result<()> {
+    transcript.start_call(&call.voice).await?;
     let mut conversation = VoiceConversation::new(
         transcript.session_id().into(),
         model.active_turn_id.clone(),

@@ -273,6 +273,7 @@ async fn active_command_emits_a_subagent_transcript_preview() {
             update: FrontendPreviewUpdate::Replace,
             events,
             next: None,
+            ..
         })]
             if id == "/root/reviewer"
                 && title == "reviewer"

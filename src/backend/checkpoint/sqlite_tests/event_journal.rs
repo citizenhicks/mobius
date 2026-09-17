@@ -212,6 +212,9 @@ async fn transient_controls_advance_sequence_without_entering_history() {
             options: Vec::new(),
         }),
         EventMsg::Frontend(FrontendEvent::Preview {
+            symbol: None,
+            duration_ms: None,
+            started_at_ms: None,
             id: "preview".into(),
             title: "Preview".into(),
             subtitle: String::new(),

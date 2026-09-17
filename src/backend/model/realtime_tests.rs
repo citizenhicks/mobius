@@ -246,6 +246,7 @@ async fn stalled_sideband_handshake_times_out_and_hangs_up() {
     });
 
     let mut call = transport.start(request()).await.unwrap();
+    assert_eq!(call.voice, "marin");
     ready.await.unwrap();
     tokio::time::pause();
     tokio::time::advance(START_TIMEOUT).await;
@@ -791,7 +792,8 @@ async fn credential_deadline_hangs_up_a_retained_voice_call() {
     let (commands, _commands) = tokio::sync::mpsc::channel(1);
     let (_events, events) = tokio::sync::mpsc::channel(1);
     let (cancel, cancelled) = tokio::sync::oneshot::channel();
-    let mut call = RealtimeVoiceCall::new(SDP.into(), commands, events, cancel).unwrap();
+    let mut call =
+        RealtimeVoiceCall::new(SDP.into(), "sol".into(), commands, events, cancel).unwrap();
     call.limit_credential(crate::backend::model::ModelCredentialLifetime {
         expires_at: Some(std::time::SystemTime::now() + Duration::from_secs(60)),
         ..Default::default()
@@ -806,7 +808,8 @@ async fn credential_revocation_hangs_up_a_retained_voice_call() {
     let (_events, events) = tokio::sync::mpsc::channel(1);
     let (cancel, cancelled) = tokio::sync::oneshot::channel();
     let (owner, revoked) = tokio::sync::watch::channel(());
-    let mut call = RealtimeVoiceCall::new(SDP.into(), commands, events, cancel).unwrap();
+    let mut call =
+        RealtimeVoiceCall::new(SDP.into(), "sol".into(), commands, events, cancel).unwrap();
     call.limit_credential(crate::backend::model::ModelCredentialLifetime {
         expires_at: None,
         revoked: Some(revoked),

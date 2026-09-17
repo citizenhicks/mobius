@@ -21,11 +21,19 @@ use crate::{Error, Result};
 
 pub(crate) const COMMAND: &str = "voice";
 const STATE_KEY: &str = "messages.voice_session";
+const CALL_KEY: &str = "messages.voice_calls";
 const CURSOR_KEY: &str = "messages.voice_handoff";
 const PAGE_SIZE: usize = 128;
 const MAX_RECORDINGS: usize = 4_096;
 const MAX_PREVIEW_BYTES: usize = 8 * 1024 * 1024;
 const PREVIEW_INTERVAL: Duration = Duration::from_millis(100);
+
+#[derive(Default, Deserialize, Serialize)]
+struct CallSummary {
+    voice: String,
+    duration_ms: u64,
+    started_at_ms: Option<i64>,
+}
 
 #[derive(Default, Deserialize, Serialize)]
 struct HandoffCursor {
@@ -56,6 +64,7 @@ pub struct VoiceTranscript {
     visible: bool,
     cursor: HandoffCursor,
     preview_deadline: Option<Instant>,
+    call_started: Option<Instant>,
 }
 
 impl VoiceTranscript {
@@ -106,7 +115,24 @@ impl VoiceTranscript {
             visible,
             cursor,
             preview_deadline: None,
+            call_started: None,
         })
+    }
+
+    /// Records the selected voice and starts timing this call.
+    /// # Errors
+    ///
+    /// Returns an error if call metadata cannot be read or saved.
+    pub async fn start_call(&mut self, voice: &str) -> Result<()> {
+        let mut summary = call_summary(self.checkpoints.as_ref(), &self.session_id).await?;
+        summary.voice = voice.into();
+        summary.started_at_ms = Some(timestamp_ms()?);
+        self.checkpoints
+            .save_state(&self.session_id, CALL_KEY, &serde_json::to_value(summary)?)
+            .await?;
+        self.call_started = Some(Instant::now());
+        self.preview_deadline = Some(Instant::now());
+        self.flush_preview().await
     }
 
     /// The linked session used for read-only previews and voice context on a later call.
@@ -268,13 +294,7 @@ impl VoiceTranscript {
             ));
         }
         let event = speech_event(&self.session_id, &recording.id, role, text, complete);
-        let recorded_at_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .ok()
-            .and_then(|duration| i64::try_from(duration.as_millis()).ok())
-            .ok_or_else(|| {
-                Error::Checkpoint("voice event timestamp is outside the supported range".into())
-            })?;
+        let recorded_at_ms = timestamp_ms()?;
         self.checkpoints
             .append_event(&self.session_id, recorded_at_ms, &event)
             .await?;
@@ -301,6 +321,18 @@ impl VoiceTranscript {
     ///
     /// Returns an error if validation or an operation required by this function fails.
     pub async fn finish(&mut self) -> Result<()> {
+        if let Some(started) = self.call_started {
+            let mut summary = call_summary(self.checkpoints.as_ref(), &self.session_id).await?;
+            summary.duration_ms = summary
+                .duration_ms
+                .saturating_add(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+            summary.started_at_ms = None;
+            self.checkpoints
+                .save_state(&self.session_id, CALL_KEY, &serde_json::to_value(summary)?)
+                .await?;
+            self.call_started = None;
+            self.preview_deadline = Some(Instant::now());
+        }
         let pending = self
             .recordings
             .iter()
@@ -312,6 +344,23 @@ impl VoiceTranscript {
         }
         self.flush_preview().await
     }
+}
+
+fn timestamp_ms() -> Result<i64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+        .ok_or_else(|| Error::Checkpoint("voice timestamp is outside the supported range".into()))
+}
+
+async fn call_summary(checkpoints: &dyn CheckpointStore, session_id: &str) -> Result<CallSummary> {
+    Ok(checkpoints
+        .load_state(session_id, CALL_KEY)
+        .await?
+        .map(serde_json::from_value)
+        .transpose()?
+        .unwrap_or_default())
 }
 
 fn speech_event(
@@ -516,10 +565,14 @@ async fn preview(
     if serde_json::to_vec(&events)?.len() > MAX_PREVIEW_BYTES {
         return Err(Error::Tool("voice preview exceeds its size limit".into()));
     }
+    let summary = call_summary(checkpoints, session_id).await?;
     Ok(FrontendEvent::Preview {
+        symbol: Some(FrontendSymbol::Custom("voice".into())),
+        duration_ms: (!summary.voice.is_empty()).then_some(summary.duration_ms),
+        started_at_ms: summary.started_at_ms,
         id: session_id.into(),
-        title: "Voice".into(),
-        subtitle: String::new(),
+        title: "Voice transcript".into(),
+        subtitle: summary.voice,
         page_id: format!(
             "{session_id}:{}",
             before.map_or_else(|| "latest".into(), |before| before.to_string())

@@ -383,6 +383,9 @@ fn client_frame_round_trip_preserves_a_unified_message() {
 #[test]
 fn rendered_preview_round_trip_preserves_page_metadata_and_continuation() {
     let expected = RenderedPreview {
+        symbol: None,
+        duration_ms: None,
+        started_at_ms: None,
         id: "/root/reviewer".into(),
         title: "reviewer".into(),
         subtitle: "Last 1 turn".into(),

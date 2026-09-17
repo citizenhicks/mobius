@@ -36,6 +36,9 @@ pub(super) fn preview_record(
         EventMsg::ContextCompacted,
         Vec::new(),
         Some(RenderedPreview {
+            symbol: None,
+            duration_ms: None,
+            started_at_ms: None,
             id: id.into(),
             title: "agent".into(),
             subtitle: "complete · kimi/high · Full context".into(),
