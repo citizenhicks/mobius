@@ -82,12 +82,13 @@ struct ComposerSurface<Context: View, Controls: View>: View {
                     .padding(.bottom, isCompact ? 0 : MobiusStyle.iconRowPadding)
             }
         }
+        // Interactive container glass intercepts Menu row taps while the keyboard is open.
+        // The controls provide their own interaction; this glass is only the backdrop.
         .mobiusGlass(
             in: RoundedRectangle(
                 cornerRadius: isCompact ? MobiusStyle.iconButtonSize : MobiusStyle.cardRadius,
                 style: .continuous
-            ),
-            interactive: true
+            )
         )
         .animation(reduceMotion ? nil : .smooth(duration: 0.2), value: isCompact)
         .shadow(color: palette.shadow.opacity(0.18), radius: 12, y: 6)

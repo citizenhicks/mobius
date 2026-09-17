@@ -149,6 +149,13 @@ Wire records and their existing tests live in the respective `Gateway/Wire/`
 folders. Update the owning Swift record and its focused tests together when a
 wire change is needed.
 
+For attachment-menu touch regressions, test Photos and Files with the keyboard
+both open and closed. Tap each row's icon, text, and blank area; every tap must
+open its picker. Use actual simulator/device touches: calling `UIAction` directly
+or checking UIKit hit-test bounds does not exercise the native menu's touch routing.
+Keep the composer backdrop's glass noninteractive; interactive container glass
+can intercept menu taps while the keyboard is open.
+
 Reuse the model/record/request helpers in `AppModelTestSupport.swift` where their
 dependencies fit the test. Its basic model helper does not isolate every service
 or cache directory. Destructive fixtures must explicitly inject unique
