@@ -147,11 +147,11 @@ struct AttachmentWorkspaceIdentity {
 }
 
 impl AttachmentWorkspaceIdentity {
-    fn from_workspace(workspace: &Dir, path: &Path) -> Result<Self> {
+    fn from_workspace(workspace: &Dir, _path: &Path) -> Result<Self> {
         let metadata = workspace.dir_metadata()?;
         #[cfg(target_os = "macos")]
         {
-            let location = whichdisk::resolve(path)?;
+            let location = whichdisk::resolve(_path)?;
             let volume_uuid = match location
                 .volume_identity()
                 .filter(whichdisk::IdentityReading::is_vouched)
@@ -166,7 +166,7 @@ impl AttachmentWorkspaceIdentity {
                     ));
                 }
             };
-            let path_metadata = std::fs::metadata(path)?;
+            let path_metadata = std::fs::metadata(_path)?;
             use std::os::unix::fs::MetadataExt as _;
             if metadata.dev() != path_metadata.dev() || metadata.ino() != path_metadata.ino() {
                 return Err(Error::Config(
