@@ -338,29 +338,41 @@ private struct SessionStatsBadge: View {
                 let elapsed = model.sessionElapsed(at: timeline.date)
                 MobiusBadgeMenu {
                     Section("Session") {
+                        MobiusMenuValue(label: "Context", value: "\(model.contextFillPercent)%")
                         MobiusMenuValue(
-                            label: "Context",
+                            label: "Tokens",
                             value:
-                                "\(model.contextFillPercent)% · \(model.chat.contextTokens.formatted(.number.notation(.compactName).precision(.fractionLength(0...1))))/\(model.chat.contextLimitTokens?.formatted(.number.notation(.compactName).precision(.fractionLength(0...1))) ?? "—")"
+                                "\(model.chat.contextTokens.formatted(.number.notation(.compactName).precision(.fractionLength(0...1))))/\(model.chat.contextLimitTokens?.formatted(.number.notation(.compactName).precision(.fractionLength(0...1))) ?? "—")"
                         )
                         MobiusMenuValue(
                             label: "Compactions",
-                            value: model.chat.sessionCompactionCount.formatted()
+                            value: model.chat.sessionCompactionCount.formatted(
+                                .number.notation(.compactName).precision(.fractionLength(0...1)))
                         )
                         MobiusMenuValue(label: "Elapsed", value: formatDuration(elapsed))
-                        MobiusMenuValue(label: "Runs", value: model.sessionRunCount.formatted())
                         MobiusMenuValue(
-                            label: "Model calls", value: model.sessionModelCalls.formatted())
+                            label: "Runs",
+                            value: model.sessionRunCount.formatted(
+                                .number.notation(.compactName).precision(.fractionLength(0...1))))
                         MobiusMenuValue(
-                            label: "Tool calls", value: model.sessionToolCalls.formatted())
+                            label: "Model calls",
+                            value: model.sessionModelCalls.formatted(
+                                .number.notation(.compactName).precision(.fractionLength(0...1))))
+                        MobiusMenuValue(
+                            label: "Tool calls",
+                            value: model.sessionToolCalls.formatted(
+                                .number.notation(.compactName).precision(.fractionLength(0...1))))
                         MobiusMenuValue(
                             label: "Tool failures",
-                            value: model.sessionFailedToolCalls.formatted()
+                            value: model.sessionFailedToolCalls.formatted(
+                                .number.notation(.compactName).precision(.fractionLength(0...1)))
                         )
                         MobiusMenuValue(
                             label: "Run tokens",
                             value: (model.chat.runStats.usage.totalTokens
-                                + (model.chat.runStats.active?.usage.totalTokens ?? 0)).formatted()
+                                + (model.chat.runStats.active?.usage.totalTokens ?? 0)).formatted(
+                                    .number.notation(.compactName).precision(.fractionLength(0...1))
+                                )
                         )
                         MobiusMenuValue(label: "Cache hit", value: cacheHit(model.chat.lastUsage))
                     }

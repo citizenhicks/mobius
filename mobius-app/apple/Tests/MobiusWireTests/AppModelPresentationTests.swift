@@ -228,7 +228,7 @@ extension AppModelTests {
         let app = try model(requestSender: { _ in })
         app.chat.selectedSessionID = "chat"
         app.simplifiedChatUI = false
-        app.chat.contextTokens = 240_000
+        app.chat.contextTokens = 999_900
         app.chat.contextLimitTokens = 1_000_000
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
         let previous = scene.keyWindow
@@ -260,14 +260,14 @@ extension AppModelTests {
         XCTAssertTrue(pill.accessibilityActivate())
         let opened = await eventually {
             scene.windows.flatMap { testAccessibilityElements($0) }.contains {
-                $0.accessibilityLabel == "Context: 24% · 240K/1M"
+                $0.accessibilityLabel == "Tokens: 999.9K/1M"
             }
         }
         XCTAssertTrue(opened)
         let rows = scene.windows.flatMap { testAccessibilityElements($0) }.filter {
             $0.accessibilityLabel?.contains(":") == true && $0.accessibilityTraits.contains(.button)
         }
-        XCTAssertEqual(Set(rows.compactMap(\.accessibilityLabel)).count, 9)
+        XCTAssertEqual(Set(rows.compactMap(\.accessibilityLabel)).count, 10)
         for row in rows {
             XCTAssertFalse(row.accessibilityTraits.contains(.notEnabled))
             XCTAssertLessThanOrEqual(row.accessibilityFrame.height, 50)
