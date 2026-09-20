@@ -296,11 +296,12 @@ impl HostState {
                 let result = self.attach_folder(folder).await;
                 let _ = reply.send(result);
             }
-            HostCommand::GitDiff { scope, reply } => {
-                let _ = reply.send(
-                    workspace_git_diff(&self.running.gateway_sandbox, &self.spec.workspace, scope)
-                        .await,
-                );
+            HostCommand::GitWorkspace { reply } => {
+                // Snapshot the workspace; the caller runs Git without blocking the agent inbox.
+                let _ = reply.send((
+                    Arc::clone(&self.running.gateway_sandbox),
+                    self.spec.workspace.clone(),
+                ));
             }
             HostCommand::WorkspaceFiles { scope, reply } => {
                 let _ = reply.send(

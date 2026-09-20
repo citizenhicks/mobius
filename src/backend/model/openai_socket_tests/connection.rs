@@ -64,7 +64,7 @@ async fn active_connection_pump_forwards_bursts_without_blocking_ping() {
         .await
         .expect("WebSocket listener");
     let address = listener.local_addr().expect("WebSocket address");
-    let message_count = 96;
+    let message_count = 2048;
     let (pong_sender, pong_received) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.expect("WebSocket connection");
@@ -111,7 +111,6 @@ async fn active_connection_pump_forwards_bursts_without_blocking_ping() {
         .start(Message::text("request"))
         .await
         .expect("start exchange");
-    tokio::time::sleep(Duration::from_millis(25)).await;
     let pong = timeout(Duration::from_secs(1), pong_received)
         .await
         .expect("active pong timed out")
@@ -131,54 +130,6 @@ async fn active_connection_pump_forwards_bursts_without_blocking_ping() {
     assert_eq!(pong.as_ref(), [1, 2, 3]);
 
     connection.finish();
-    connection.close().await;
-    server.await.expect("WebSocket server");
-}
-
-#[tokio::test]
-async fn active_connection_retires_when_the_event_queue_is_full() {
-    use futures_util::SinkExt as _;
-    use futures_util::StreamExt as _;
-
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .expect("WebSocket listener");
-    let address = listener.local_addr().expect("WebSocket address");
-    let server = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.expect("WebSocket connection");
-        let mut socket = tokio_tungstenite::accept_async(stream)
-            .await
-            .expect("WebSocket handshake");
-        socket
-            .next()
-            .await
-            .expect("response request")
-            .expect("valid response request");
-        for index in 0..=SOCKET_EVENT_CAPACITY {
-            socket
-                .send(Message::text(index.to_string()))
-                .await
-                .expect("stream message");
-        }
-    });
-    let (socket, _) = connect_async(format!("ws://{address}"))
-        .await
-        .expect("client connection");
-    let mut connection = OpenAiWsConnection::new(socket);
-    connection
-        .start(Message::text("request"))
-        .await
-        .expect("start exchange");
-
-    timeout(Duration::from_secs(1), async {
-        while connection.is_usable() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("full event queue retires the connection");
-
-    assert_eq!(connection.messages.len(), SOCKET_EVENT_CAPACITY);
     connection.close().await;
     server.await.expect("WebSocket server");
 }
@@ -322,4 +273,47 @@ async fn connection_limit_closes_other_idle_connections() {
     let idle = Arc::clone(sessions.get("idle-session").expect("idle session retained"));
     drop(sessions);
     assert!(idle.lock().await.connection.is_none());
+}
+
+#[tokio::test]
+async fn pump_still_limits_total_buffered_events() {
+    use super::super::connection::MAX_STREAM_EVENTS;
+    use futures_util::{SinkExt as _, StreamExt as _};
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        socket.next().await.unwrap().unwrap();
+        for _ in 0..=MAX_STREAM_EVENTS {
+            socket.send(Message::text("x")).await.unwrap();
+        }
+    });
+    let (socket, _) = connect_async(format!("ws://{address}")).await.unwrap();
+    let mut connection = OpenAiWsConnection::new(socket);
+    connection.start(Message::text("request")).await.unwrap();
+    timeout(Duration::from_secs(10), async {
+        // Leave the consumer paused until the pump has enforced its total response cap.
+        while !connection.closed.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+        for _ in 0..MAX_STREAM_EVENTS {
+            assert!(matches!(
+                connection.messages.recv().await,
+                Some(SocketEvent::Message(_))
+            ));
+        }
+        assert!(matches!(
+            connection.messages.recv().await,
+            Some(SocketEvent::ProtocolError(
+                "WebSocket response exceeded size limit"
+            ))
+        ));
+    })
+    .await
+    .expect("response cap enforced");
+    server.await.unwrap();
 }

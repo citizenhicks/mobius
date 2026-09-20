@@ -1,5 +1,134 @@
 use super::*;
 
+#[cfg(unix)]
+#[tokio::test]
+async fn slow_git_diff_does_not_block_chat_history() {
+    use crate::wire::GitDiffScope;
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let root = tempfile::tempdir().expect("root");
+    let workspace = root.path().join("workspace");
+    fs::create_dir(&workspace).expect("workspace");
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&workspace)
+            .output()
+            .expect("git");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init"]);
+    fs::write(workspace.join("tracked.txt"), "before\n").expect("tracked file");
+    fs::write(
+        workspace.join(".gitattributes"),
+        "tracked.txt filter=gate\n",
+    )
+    .expect("attributes");
+    git(&["add", "."]);
+    let gate = workspace.join(".git/gate");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&gate)
+            .status()
+            .expect("fifo")
+            .success()
+    );
+    git(&[
+        "config",
+        "filter.gate.clean",
+        "cat .git/gate >/dev/null; cat",
+    ]);
+    fs::write(workspace.join("tracked.txt"), "after\n").expect("changed file");
+
+    let (server, grant) = configured_test_server(root.path().join("state")).await;
+    let endpoint = format!("tcp://{}", server.config.listen)
+        .parse::<Endpoint>()
+        .expect("endpoint");
+    let (shutdown, signal) = tokio::sync::oneshot::channel();
+    let serving = tokio::spawn(server.serve_until(async move {
+        let _ = signal.await;
+    }));
+    let (connection, _) = GatewayClient::pair(&endpoint, grant.code, "Git test", ClientKind::Cli)
+        .await
+        .expect("pair");
+    let (sender, mut events) = connection.into_parts();
+    wait_gateway_ready(&mut events).await;
+    let session_id = create_chat(&sender, &mut events, &workspace).await;
+    sender
+        .send(ClientMessage::GetGitDiff {
+            request_id: "diff".into(),
+            session_id: session_id.clone(),
+            scope: GitDiffScope::Unstaged,
+        })
+        .await
+        .expect("request diff");
+
+    // Opening the writer proves Git reached the filter; holding it open prevents completion.
+    let release = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(nix::libc::O_NONBLOCK)
+                .open(&gate)
+            {
+                Ok(file) => break file,
+                Err(error) if error.raw_os_error() == Some(nix::libc::ENXIO) => {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(error) => panic!("open Git gate: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("Git must reach the filter");
+    sender
+        .send(ClientMessage::GetSessionHistory {
+            request_id: "history".into(),
+            session_id: session_id.clone(),
+            before_sequence: None,
+        })
+        .await
+        .expect("request history");
+    loop {
+        match next_gateway_message(&mut events).await {
+            ServerMessage::SessionHistory { request_id, .. } if request_id == "history" => break,
+            ServerMessage::GitDiff { .. } => panic!("Git should still be blocked"),
+            ServerMessage::Rejected {
+                request_id,
+                message,
+                ..
+            } if request_id == "history" || request_id == "diff" => panic!("{message}"),
+            _ => {}
+        }
+    }
+    // Git may run the clean filter again, so release later opens as well as this reader.
+    let released = gate.with_extension("released");
+    fs::write(&released, "").expect("released gate");
+    fs::rename(released, &gate).expect("replace Git gate");
+    drop(release);
+    loop {
+        if let ServerMessage::GitDiff {
+            request_id,
+            session_id: actual,
+            scope,
+            diff,
+        } = next_gateway_message(&mut events).await
+        {
+            assert_eq!(request_id, "diff");
+            assert_eq!(actual, session_id);
+            assert_eq!(scope, GitDiffScope::Unstaged);
+            assert!(diff.contains("+after"));
+            break;
+        }
+    }
+    shutdown.send(()).expect("shutdown");
+    serving.await.expect("server task").expect("server");
+}
+
 async fn expect_accepted(events: &mut GatewayEvents, expected_request_id: &str) {
     loop {
         match next_gateway_message(events).await {

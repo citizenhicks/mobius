@@ -553,3 +553,126 @@ async fn interrupted_model_request_emits_one_terminal_step() {
     assert_eq!(terminal[0].model_step_id, started.model_step_id);
     assert_eq!(terminal[0].outcome, ModelStepOutcome::Interrupted);
 }
+
+#[tokio::test(start_paused = true)]
+async fn stream_exhaustion_switches_transport_once_and_resets_the_retry_budget() {
+    struct FallbackModel {
+        calls: AtomicUsize,
+        fallback: AtomicBool,
+        recover: bool,
+    }
+    impl Model for FallbackModel {
+        fn respond<'a>(
+            &'a self,
+            _request: ModelRequest,
+            _events: ModelEventSink,
+        ) -> BoxFuture<'a, Result<ModelOutput>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                if self.recover && self.fallback.load(Ordering::SeqCst) {
+                    Ok(scripted_message("Recovered over fallback."))
+                } else {
+                    Err(Error::Provider(crate::ProviderError::stream_interrupted(
+                        None,
+                    )))
+                }
+            })
+        }
+
+        fn fallback_transport<'a>(&'a self, _session_id: &'a str) -> BoxFuture<'a, Result<bool>> {
+            Box::pin(async move { Ok(!self.fallback.swap(true, Ordering::SeqCst)) })
+        }
+    }
+
+    for recover in [true, false] {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let checkpoints = Arc::new(
+            SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+                .expect("checkpoint store"),
+        );
+        let model = Arc::new(FallbackModel {
+            calls: AtomicUsize::new(0),
+            fallback: AtomicBool::new(false),
+            recover,
+        });
+        let mut agent = create_agent(config_with_model(
+            workspace.path(),
+            checkpoints,
+            "fallback",
+            "test",
+            model.clone(),
+        ))
+        .await
+        .expect("agent");
+        agent.sender().submit(user_op("hello")).expect("input");
+        let completed = loop {
+            match agent.next_event().await.expect("terminal event").msg {
+                EventMsg::TurnComplete(_) => break true,
+                EventMsg::TurnAborted(_) => break false,
+                _ => {}
+            }
+        };
+        assert_eq!(completed, recover);
+        assert!(model.fallback.load(Ordering::SeqCst));
+        assert_eq!(
+            model.calls.load(Ordering::SeqCst),
+            if recover {
+                STREAM_RETRY_LIMIT + 2
+            } else {
+                2 * (STREAM_RETRY_LIMIT + 1)
+            },
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn fallback_error_closes_the_failed_model_step() {
+    struct BrokenFallback;
+    impl Model for BrokenFallback {
+        fn respond<'a>(
+            &'a self,
+            _: ModelRequest<'a>,
+            _: ModelEventSink,
+        ) -> BoxFuture<'a, Result<ModelOutput>> {
+            Box::pin(async {
+                Err(Error::Provider(crate::ProviderError::stream_interrupted(
+                    None,
+                )))
+            })
+        }
+        fn fallback_transport<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<bool>> {
+            Box::pin(async { Err(Error::Provider("fallback unavailable".into())) })
+        }
+    }
+    let workspace = tempfile::tempdir().expect("workspace");
+    let checkpoints = Arc::new(
+        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3")).expect("checkpoints"),
+    );
+    let mut agent = create_agent(config_with_model(
+        workspace.path(),
+        checkpoints,
+        "failed-fallback",
+        "test",
+        Arc::new(BrokenFallback),
+    ))
+    .await
+    .expect("create agent");
+    agent.sender().submit(user_op("hello")).expect("input");
+    let mut started = 0;
+    let mut outcomes = Vec::new();
+    while let Some(event) = agent.next_event().await {
+        match event.msg {
+            EventMsg::ModelStepStarted(_) => started += 1,
+            EventMsg::ModelStepCompleted(event) => outcomes.push(event.outcome),
+            EventMsg::TurnAborted(_) => break,
+            _ => {}
+        }
+    }
+    assert_eq!(started, STREAM_RETRY_LIMIT + 1);
+    assert_eq!(outcomes.last(), Some(&ModelStepOutcome::Failed));
+    assert_eq!(
+        started,
+        outcomes.len(),
+        "every started model step must have a terminal event"
+    );
+}

@@ -1008,3 +1008,28 @@ fn markdown_is_rendered_in_chat_and_the_ctrl_t_transcript() {
         assert!(!text.contains("**done**") && !text.contains("```"));
     }
 }
+
+#[test]
+fn composer_shows_reasoning_with_git_counts_in_the_footer() {
+    let catalog = default_catalog();
+    let mut state = state();
+    state.start_turn("turn".into());
+    state.append_reasoning("**Checking the workspace**");
+    state.git_diff = [Some("1f +2 -1".into()), Some("2f +4 -3".into())];
+    let mut terminal = Terminal::new(TestBackend::new(150, 15)).unwrap();
+    terminal
+        .draw(|frame| view::render(frame, &mut state, &catalog))
+        .unwrap();
+    let rendered = terminal.backend().to_string();
+    assert!(
+        rendered.contains("mobius · Checking the workspace"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("staged 1f +2 -1"), "{rendered}");
+    assert!(rendered.contains("unstaged 2f +4 -3"), "{rendered}");
+    state.reasoning_title = None;
+    terminal
+        .draw(|frame| view::render(frame, &mut state, &catalog))
+        .unwrap();
+    assert!(terminal.backend().to_string().contains("mobius · working"));
+}

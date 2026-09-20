@@ -502,29 +502,8 @@ where
     let mut revocations = client_revocations.subscribe();
     let (reader, mut writer) = tokio::io::split(stream);
     let mut reader = FrameReader::new(reader);
-    let first = tokio::time::timeout_at(
-        auth_deadline,
-        read_frame_with_limit::<PreAuthClientFrame>(&mut reader, MAX_PRE_AUTH_FRAME_BYTES),
-    )
-    .await
-    .map_err(|_| Error::Unauthorized)??
-    .ok_or(Error::Unauthorized)?;
-    if let Err(error) = validate_version(first.version) {
-        write_server_error(&mut writer, "protocol_version", error.to_string(), true).await?;
-        return Ok(());
-    }
-    let Some(_authenticated_admission) = admission.promote() else {
-        write_server_error(
-            &mut writer,
-            "server_busy",
-            "the gateway has reached its authenticated connection limit",
-            true,
-        )
-        .await?;
-        return Ok(());
-    };
-    let Some((client_id, client_kind)) =
-        authenticate_client(first.message, &auth, &mut writer).await?
+    let Some((client_id, client_kind, _authenticated_admission)) =
+        authenticate_connection(&mut reader, &mut writer, &auth, admission, auth_deadline).await?
     else {
         return Ok(());
     };
@@ -548,6 +527,7 @@ where
     let mut desktop = None;
     let session_files = host.session_file_store().await;
     let mut uploads: BTreeMap<(String, String), PendingSessionFileWrite> = BTreeMap::new();
+    let mut pending_git = JoinSet::new();
     let mut pending_profile = None;
     let mut queued_profile_request = None;
 
@@ -578,6 +558,11 @@ where
                     &mut writer,
                 )
                 .await?;
+                None
+            }
+            Some(message) = pending_git.join_next() => {
+                let message = message.map_err(|error| Error::Protocol(format!("Git diff task failed: {error}")))?;
+                write_frame(&mut writer, &ServerFrame::new(message)).await?;
                 None
             }
             outgoing = gateway_broadcasts.recv() => {
@@ -629,6 +614,7 @@ where
             &client,
             ConnectionSessionState {
                 selected: &mut selected,
+                git_diffs: &mut pending_git,
                 session_files: &session_files,
                 bots: &bots,
                 uploads: &mut uploads,
@@ -639,6 +625,42 @@ where
         )
         .await?;
     }
+}
+
+async fn authenticate_connection(
+    reader: &mut FrameReader<impl AsyncRead + Unpin>,
+    writer: &mut (impl AsyncWrite + Unpin),
+    auth: &AuthStore,
+    admission: PreAuthConnectionAdmission,
+    auth_deadline: Instant,
+) -> Result<Option<(String, ClientKind, OwnedSemaphorePermit)>> {
+    let first = tokio::time::timeout_at(
+        auth_deadline,
+        read_frame_with_limit::<PreAuthClientFrame>(reader, MAX_PRE_AUTH_FRAME_BYTES),
+    )
+    .await
+    .map_err(|_| Error::Unauthorized)??
+    .ok_or(Error::Unauthorized)?;
+    if let Err(error) = validate_version(first.version) {
+        write_server_error(writer, "protocol_version", error.to_string(), true).await?;
+        return Ok(None);
+    }
+    let Some(_authenticated_admission) = admission.promote() else {
+        write_server_error(
+            writer,
+            "server_busy",
+            "the gateway has reached its authenticated connection limit",
+            true,
+        )
+        .await?;
+        return Ok(None);
+    };
+    let Some((client_id, client_kind)) = authenticate_client(first.message, auth, writer).await?
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some((client_id, client_kind, _authenticated_admission)))
 }
 
 async fn authenticate_client(

@@ -360,6 +360,10 @@ struct TuiState {
     streaming: String,
     streaming_phase: Option<ModelStepContentPhase>,
     reasoning: String,
+    reasoning_title: Option<String>,
+    git_diff: [Option<String>; 2],
+    git_diff_requests: BTreeMap<String, usize>,
+    git_diff_refresh: bool,
     streamed_step_phases: BTreeMap<String, StreamedStepPhases>,
     input: String,
     cursor: usize,
@@ -416,6 +420,10 @@ impl TuiState {
             streaming: String::new(),
             streaming_phase: None,
             reasoning: String::new(),
+            reasoning_title: None,
+            git_diff: [None, None],
+            git_diff_requests: BTreeMap::new(),
+            git_diff_refresh: false,
             streamed_step_phases: BTreeMap::new(),
             input: String::new(),
             cursor: 0,
@@ -698,6 +706,9 @@ impl TuiState {
         let truncated = delta.len() > available;
         truncate_bytes(&mut delta, available);
         self.reasoning.push_str(&delta);
+        if let Some(title) = latest_summary_line(&self.reasoning) {
+            self.reasoning_title = Some(title);
+        }
         if truncated {
             self.reasoning.push_str("\n[reasoning truncated]");
         }
@@ -766,6 +777,7 @@ impl TuiState {
         if self.active_turns.is_empty() {
             self.streamed_step_phases.clear();
             self.turn_started_at = None;
+            self.reasoning_title = None;
         }
         self.restore_draft();
     }
@@ -804,6 +816,23 @@ impl TuiState {
             PreviewContent::Diff(Box::new(diff::DiffBrowser::new(text))),
         ));
     }
+}
+
+fn latest_summary_line(text: &str) -> Option<String> {
+    text.lines().rev().find_map(|line| {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("<!--") {
+            return None;
+        }
+        let line = line.trim_start_matches('#').trim();
+        let title = if let Some(bold) = line.strip_prefix("**") {
+            let (title, suffix) = bold.split_once("**")?;
+            format!("{title}{suffix}")
+        } else {
+            line.to_owned()
+        };
+        (!title.is_empty()).then(|| title.chars().take(160).collect())
+    })
 }
 
 fn compact_tool_detail(value: &str) -> String {

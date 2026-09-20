@@ -99,6 +99,21 @@ impl FileDiff {
     }
 }
 
+pub(super) fn summary(text: &str) -> String {
+    let (mut files, mut added, mut removed) = (0, 0, 0);
+    for file in view::diff_sections(text).map(FileDiff::new) {
+        files += 1;
+        added += file.added;
+        removed += file.removed;
+    }
+    let partial = if text.lines().any(|line| line == "[diff truncated]") {
+        " (partial)"
+    } else {
+        ""
+    };
+    format!("{files}f +{added} -{removed}{partial}")
+}
+
 pub(super) struct DiffBrowser {
     files: Vec<FileDiff>,
     selected: usize,
@@ -384,6 +399,18 @@ mod tests {
 
     fn key(browser: &mut DiffBrowser, code: KeyCode) {
         browser.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn summary_counts_hunks_and_keeps_binary_files_and_truncation_visible() {
+        assert_eq!(summary(""), "0f +0 -0");
+        assert_eq!(summary(PATCH), "1f +1 -1");
+        assert_eq!(
+            summary(&format!(
+                "{PATCH}diff --git a/image b/image\nBinary files differ\n[diff truncated]\n"
+            )),
+            "2f +1 -1 (partial)"
+        );
     }
 
     #[test]

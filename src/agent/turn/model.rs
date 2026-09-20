@@ -616,14 +616,28 @@ impl Runner {
                 Ok(Wait::Ready {
                     value: Err(Error::Provider(error)),
                     input_changed,
-                }) if error.is_stream_interrupted()
-                    && stream_retries < STREAM_RETRY_LIMIT
-                    && streamed.originals.is_empty() =>
-                {
-                    let delay = stream_retry_delay(&error, stream_retries, &started.model_step_id);
+                }) if error.is_stream_interrupted() && streamed.originals.is_empty() => {
+                    let delay = if stream_retries < STREAM_RETRY_LIMIT {
+                        let delay =
+                            stream_retry_delay(&error, stream_retries, &started.model_step_id);
+                        stream_retries += 1;
+                        delay
+                    } else {
+                        match model.fallback_transport(&provider, &model_session_id).await {
+                            Ok(true) => {
+                                stream_retries = 0;
+                                Duration::ZERO
+                            }
+                            outcome => {
+                                let error = outcome.err().unwrap_or(Error::Provider(error));
+                                self.fail_model_step(submission_id, &started, &model_events, error)
+                                    .await?;
+                                return Ok(ModelStepRequest::Finished);
+                            }
+                        }
+                    };
                     self.retry_model_step(submission_id, &started, &model_events)
                         .await?;
-                    stream_retries += 1;
                     if input_changed {
                         return Ok(ModelStepRequest::Restart);
                     }

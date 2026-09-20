@@ -37,7 +37,7 @@ use mobius::protocol::{
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
-    BotRecord, ClientMessage, ReadyPayload, ServerMessage, SessionActivityState,
+    BotRecord, ClientMessage, GitDiffScope, ReadyPayload, ServerMessage, SessionActivityState,
     SessionReadyPayload, SessionRecord, WorkspaceFileScope,
 };
 use uuid::Uuid;
@@ -128,6 +128,8 @@ pub(in crate::frontend) async fn run(
     let mut clipboard_preparation = None;
     let mut workspace_reference_open = false;
     request_workspace_inventory(&sender, &session_id, &mut state).await;
+    state.git_diff_refresh = session.git.is_some();
+    request_git_summary(&sender, &session_id, &mut state).await;
 
     'ui: loop {
         draw_if_dirty(
@@ -142,21 +144,14 @@ pub(in crate::frontend) async fn run(
                 match event {
                     Ok(Some(frame)) => {
                         replay_hydration.observe(&frame.message, &session_id);
-                        let message = match frame.message {
-                            ServerMessage::WorkspaceFiles { session_id: actual, files, .. }
-                                if actual == session_id => {
-                                catalog.set_workspace_paths(files.into_iter().map(|file| file.path));
-                                state.reference_cache = None;
-                                dirty = true;
-                                continue 'ui;
-                            }
-                            message => message,
-                        };
-                        if replay_hydration.allows_draw()
-                            && refresh_workspace_inventory(&message, &session_id, workspace_reference_open)
-                        {
-                            request_workspace_inventory(&sender, &session_id, &mut state).await;
+                        if refresh_workspace(
+                            &sender, &frame.message, session, &mut catalog, &mut state,
+                            replay_hydration.allows_draw(), workspace_reference_open,
+                        ).await {
+                            dirty = true;
+                            continue 'ui;
                         }
+                        let message = frame.message;
                         if let Some((next_exit, should_clear)) = handle_incoming_message(
                             message,
                             &sender,
@@ -172,6 +167,7 @@ pub(in crate::frontend) async fn run(
                             exit = next_exit;
                             break 'ui;
                         }
+                        request_git_summary(&sender, &session_id, &mut state).await;
                     }
                     Ok(None) => {
                         disconnect(
@@ -262,6 +258,64 @@ pub(in crate::frontend) async fn run(
         execute!(io::stdout(), Print(CLEAR_SCREEN_AND_SCROLLBACK))?;
     }
     Ok((exit, sender, events))
+}
+
+async fn refresh_workspace(
+    sender: &GatewaySender,
+    message: &ServerMessage,
+    session: &SessionReadyPayload,
+    catalog: &mut UiCatalog,
+    state: &mut TuiState,
+    live: bool,
+    reference_open: bool,
+) -> bool {
+    let session_id = &session.session.session_id;
+    if let ServerMessage::WorkspaceFiles {
+        session_id: actual,
+        files,
+        ..
+    } = message
+        && actual == session_id
+    {
+        catalog.set_workspace_paths(files.iter().map(|file| file.path.clone()));
+        state.reference_cache = None;
+        return true;
+    }
+    if live && refresh_workspace_inventory(message, session_id, reference_open) {
+        request_workspace_inventory(sender, session_id, state).await;
+    }
+    state.git_diff_refresh |= live
+        && session.git.is_some()
+        && (refresh_workspace_inventory(message, session_id, false)
+            || matches!(message, ServerMessage::SessionChanged { payload }
+                if &payload.session.session_id == session_id));
+    false
+}
+
+async fn request_git_summary(sender: &GatewaySender, session_id: &str, state: &mut TuiState) {
+    if !state.git_diff_refresh || !state.git_diff_requests.is_empty() {
+        return;
+    }
+    state.git_diff_refresh = false;
+    for (index, scope) in [GitDiffScope::Staged, GitDiffScope::Unstaged]
+        .into_iter()
+        .enumerate()
+    {
+        let request_id = Uuid::new_v4().to_string();
+        if sender
+            .send(ClientMessage::GetGitDiff {
+                request_id: request_id.clone(),
+                session_id: session_id.into(),
+                scope,
+            })
+            .await
+            .is_ok()
+        {
+            state.git_diff_requests.insert(request_id, index);
+        } else {
+            state.git_diff[index] = None;
+        }
+    }
 }
 
 async fn request_workspace_inventory(
@@ -677,13 +731,25 @@ fn handle_server_message(
             ..
         } if actual == session_id => state.open_session_files(files),
         ServerMessage::GitDiff {
+            request_id,
             session_id: actual,
             scope,
             diff,
             ..
         } if actual == session_id => {
-            let title = format!("{scope:?} diff").to_ascii_lowercase();
-            state.open_diff_preview(title, diff);
+            if let Some(index) = state.git_diff_requests.remove(&request_id) {
+                state.git_diff[index] = Some(super::diff::summary(&diff));
+            } else {
+                let title = format!("{scope:?} diff").to_ascii_lowercase();
+                state.open_diff_preview(title, diff);
+            }
+        }
+        ServerMessage::Rejected { request_id, .. }
+            if state.git_diff_requests.contains_key(&request_id) =>
+        {
+            if let Some(index) = state.git_diff_requests.remove(&request_id) {
+                state.git_diff[index] = None;
+            }
         }
         ServerMessage::Rejected {
             request_id,
@@ -1702,6 +1768,47 @@ mod tests {
         );
         assert!(state.active_turn().is_none());
         assert!(state.approval().is_none());
+    }
+
+    #[test]
+    fn background_git_diffs_update_footer_without_opening_a_preview() {
+        let mut state = TuiState::default();
+        state.git_diff_requests.insert("footer".into(), 0);
+        let mut session = session_payload("session-a");
+        let mut gateway = ready_payload();
+        handle_server_message(
+            ServerMessage::GitDiff {
+                request_id: "footer".into(),
+                session_id: "session-a".into(),
+                scope: GitDiffScope::Staged,
+                diff: "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-old\n+new\n".into(),
+            },
+            &mut gateway,
+            &mut session,
+            &mut state,
+            "session-a",
+            false,
+        );
+        assert!(state.preview.is_none());
+        assert!(state.git_diff_requests.is_empty());
+        assert_eq!(state.git_diff[0].as_deref(), Some("1f +1 -1"));
+        state.git_diff_requests.insert("failed".into(), 0);
+        handle_server_message(
+            ServerMessage::Rejected {
+                request_id: "failed".into(),
+                fatal: false,
+                code: "git".into(),
+                message: "timed out".into(),
+            },
+            &mut gateway,
+            &mut session,
+            &mut state,
+            "session-a",
+            false,
+        );
+        assert!(state.git_diff[0].is_none());
+        assert!(state.git_diff_requests.is_empty());
+        assert!(state.transcript.is_empty());
     }
 
     #[test]

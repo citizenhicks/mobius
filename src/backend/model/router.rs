@@ -216,6 +216,16 @@ impl ModelRouter {
         .await
     }
 
+    /// Activates a session's fallback transport after safe retries are exhausted.
+    /// # Errors
+    ///
+    /// Returns an error if the route is unknown or the provider cannot switch transports.
+    pub async fn fallback_transport(&self, provider: &str, session_id: &str) -> Result<bool> {
+        self.provider(provider)?
+            .fallback_transport(session_id)
+            .await
+    }
+
     /// Validates media before an active-context rewrite is committed.
     /// # Errors
     ///

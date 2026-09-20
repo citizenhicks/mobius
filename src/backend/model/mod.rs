@@ -819,6 +819,14 @@ pub trait Model: Send + Sync {
         events: ModelEventSink,
     ) -> BoxFuture<'a, Result<ModelOutput>>;
 
+    /// Switches a session to its fallback transport once, without sending a request.
+    ///
+    /// Called after retry exhaustion only when replaying the model request is safe.
+    /// Returns whether a new transport was activated; providers without one return false.
+    fn fallback_transport<'a>(&'a self, _session_id: &'a str) -> BoxFuture<'a, Result<bool>> {
+        Box::pin(async { Ok(false) })
+    }
+
     /// Reports whether this provider exposes a native compaction endpoint.
     fn compaction_endpoint(&self) -> bool {
         false

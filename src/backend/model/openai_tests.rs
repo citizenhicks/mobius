@@ -1346,3 +1346,16 @@ async fn credentialless_http_omits_authorization() {
     let request = server.await.expect("HTTP server");
     assert!(!request.to_ascii_lowercase().contains("authorization:"));
 }
+
+#[tokio::test]
+async fn eof_without_response_completed_is_a_retryable_interruption() {
+    let (address, server) = capture_http_request().await;
+    let provider =
+        OpenAi::new("test-key", format!("http://{address}"), "test-model").expect("provider");
+    let error = provider
+        .send_response(model_request(), Arc::new(|_| Box::pin(async { Ok(()) })))
+        .await
+        .expect_err("missing completion");
+    assert!(matches!(error, Error::Provider(error) if error.is_stream_interrupted()));
+    server.await.expect("HTTP server");
+}

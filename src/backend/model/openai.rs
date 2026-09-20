@@ -40,6 +40,7 @@ use super::usage_i64;
 use super::{RealtimeVoiceCall, RealtimeVoiceRequest};
 use crate::BoxFuture;
 use crate::Error;
+use crate::ProviderError;
 use crate::Result;
 use crate::protocol::ModelEvent;
 use crate::protocol::ModelInfo;
@@ -317,9 +318,7 @@ impl OpenAi {
                 }
             }
         }
-        Err(Error::Provider(
-            "stream ended before response.completed".into(),
-        ))
+        Err(Error::Provider(ProviderError::stream_interrupted(None)))
     }
 
     fn finish_stream_event(

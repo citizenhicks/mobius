@@ -1,13 +1,11 @@
 use super::super::*;
 use crate::protocol::ModelEvent;
 
-const TEST_EVENT_CAPACITY: usize = 4096;
-
 #[tokio::test]
 async fn metadata_only_event_does_not_count_as_sink_delivery() {
-    let (sender, mut messages) = mpsc::channel(TEST_EVENT_CAPACITY);
+    let (sender, mut messages) = mpsc::unbounded_channel();
     sender
-        .try_send(SocketEvent::Message(Message::text(
+        .send(SocketEvent::Message(Message::text(
             serde_json::json!({
                 "type": "response.output_item.added",
                 "item": {
@@ -37,9 +35,9 @@ async fn metadata_only_event_does_not_count_as_sink_delivery() {
 
 #[tokio::test]
 async fn visible_delta_before_eof_is_still_a_retryable_stream_failure() {
-    let (sender, mut messages) = mpsc::channel(TEST_EVENT_CAPACITY);
+    let (sender, mut messages) = mpsc::unbounded_channel();
     sender
-        .try_send(SocketEvent::Message(Message::text(
+        .send(SocketEvent::Message(Message::text(
             serde_json::json!({
                 "type": "response.output_text.delta",
                 "delta": "partial"
@@ -65,8 +63,8 @@ async fn visible_delta_before_eof_is_still_a_retryable_stream_failure() {
 
 #[tokio::test]
 async fn server_close_before_completion_is_retryable() {
-    let (sender, mut messages) = mpsc::channel(TEST_EVENT_CAPACITY);
-    sender.try_send(SocketEvent::Closed).expect("server close");
+    let (sender, mut messages) = mpsc::unbounded_channel();
+    sender.send(SocketEvent::Closed).expect("server close");
     let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
 
     let exchange = read_exchange(&mut messages, &events)
@@ -78,9 +76,9 @@ async fn server_close_before_completion_is_retryable() {
 
 #[tokio::test]
 async fn tool_call_readiness_does_not_complete_a_disconnected_exchange() {
-    let (sender, mut messages) = mpsc::channel(TEST_EVENT_CAPACITY);
+    let (sender, mut messages) = mpsc::unbounded_channel();
     sender
-        .try_send(SocketEvent::Message(Message::text(
+        .send(SocketEvent::Message(Message::text(
             serde_json::json!({
                 "type": "response.output_item.done",
                 "output_index": 0,
@@ -114,9 +112,9 @@ async fn tool_call_readiness_does_not_complete_a_disconnected_exchange() {
 
 #[tokio::test]
 async fn completed_tool_call_is_emitted_before_websocket_completion() {
-    let (sender, mut messages) = mpsc::channel(TEST_EVENT_CAPACITY);
+    let (sender, mut messages) = mpsc::unbounded_channel();
     sender
-        .try_send(SocketEvent::Message(Message::text(
+        .send(SocketEvent::Message(Message::text(
             serde_json::json!({
                 "type": "response.output_item.done",
                 "output_index": 0,
@@ -132,7 +130,7 @@ async fn completed_tool_call_is_emitted_before_websocket_completion() {
         )))
         .expect("tool call item");
     sender
-        .try_send(SocketEvent::Message(Message::text(
+        .send(SocketEvent::Message(Message::text(
             serde_json::json!({
                 "type": "response.completed",
                 "response": {"id": "response-1", "output": []}
@@ -165,7 +163,7 @@ async fn completed_tool_call_is_emitted_before_websocket_completion() {
 
 #[tokio::test(start_paused = true)]
 async fn stream_idle_timeout_is_retryable() {
-    let (_sender, mut messages) = mpsc::channel(TEST_EVENT_CAPACITY);
+    let (_sender, mut messages) = mpsc::unbounded_channel();
     let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
     let exchange = tokio::spawn(async move { read_exchange(&mut messages, &events).await });
     tokio::task::yield_now().await;
@@ -182,10 +180,10 @@ async fn stream_idle_timeout_is_retryable() {
 #[tokio::test]
 async fn websocket_burst_waits_for_the_event_sink_in_order() {
     const DELTAS: usize = 2048;
-    let (sender, mut messages) = mpsc::channel(TEST_EVENT_CAPACITY);
+    let (sender, mut messages) = mpsc::unbounded_channel();
     for index in 0..DELTAS {
         sender
-            .try_send(SocketEvent::Message(Message::text(
+            .send(SocketEvent::Message(Message::text(
                 serde_json::json!({
                     "type": "response.output_text.delta",
                     "delta": index.to_string(),
@@ -195,7 +193,7 @@ async fn websocket_burst_waits_for_the_event_sink_in_order() {
             .expect("text delta");
     }
     sender
-        .try_send(SocketEvent::Message(Message::text(
+        .send(SocketEvent::Message(Message::text(
             serde_json::json!({
                 "type": "response.completed",
                 "response": {"id": "response-burst", "output": []},

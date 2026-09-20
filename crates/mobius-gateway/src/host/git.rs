@@ -15,7 +15,7 @@ use super::Rejection;
 // JSON can expand control bytes sixfold; one eighth leaves room for frame metadata.
 const MAX_GIT_DIFF_BYTES: usize = MAX_FRAME_BYTES / 8;
 const TRUNCATION_NOTE: &[u8] = b"[diff truncated]\n";
-const GIT_TIMEOUT: Duration = Duration::from_secs(5);
+const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CREDENTIAL_TARGET_BYTES: usize = 2 * 1024;
 const MAX_CREDENTIAL_USERNAME_BYTES: usize = 512;
 const MAX_CREDENTIAL_TOKEN_BYTES: usize = 16 * 1024;
@@ -597,7 +597,7 @@ fn failure(prefix: &str, stderr: &str) -> Rejection {
 fn timeout() -> Rejection {
     Rejection {
         code: "git_timeout",
-        message: "Git operation exceeded 5 seconds".into(),
+        message: format!("Git operation exceeded {} seconds", GIT_TIMEOUT.as_secs()),
         fatal: false,
     }
 }

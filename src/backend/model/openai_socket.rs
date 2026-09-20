@@ -24,8 +24,6 @@ use tokio_tungstenite::tungstenite::Message;
 use self::connection::Exchange;
 use self::connection::OpenAiWsConnection;
 #[cfg(test)]
-use self::connection::SOCKET_EVENT_CAPACITY;
-#[cfg(test)]
 use self::connection::STREAM_IDLE_TIMEOUT;
 #[cfg(test)]
 use self::connection::SocketEvent;
@@ -449,7 +447,7 @@ impl OpenAiSocket {
             .respond(request, events)
             .await
             .map_err(|error| match error {
-                Error::Http(_) => Error::Provider("HTTPS fallback transport failed".into()),
+                Error::Http(_) => Error::Provider(ProviderError::stream_interrupted(None)),
                 error => error,
             })
     }
@@ -476,10 +474,18 @@ impl OpenAiSocket {
             {
                 Ok(output) => break output,
                 Err(Error::Provider(error))
-                    if error.is_stream_interrupted() && retries < COMPACTION_STREAM_RETRY_LIMIT =>
+                    if error.is_stream_interrupted()
+                        && (retries < COMPACTION_STREAM_RETRY_LIMIT
+                            || self.fallback_transport(request.session_id).await?) =>
                 {
-                    let delay = compaction_retry_delay(&error, retries);
-                    retries += 1;
+                    let delay = if retries < COMPACTION_STREAM_RETRY_LIMIT {
+                        let delay = compaction_retry_delay(&error, retries);
+                        retries += 1;
+                        delay
+                    } else {
+                        retries = 0;
+                        Duration::ZERO
+                    };
                     tokio::time::sleep(delay).await;
                 }
                 Err(error) => return Err(error),
@@ -646,6 +652,20 @@ impl Model for OpenAiSocket {
         events: ModelEventSink,
     ) -> BoxFuture<'a, Result<ModelOutput>> {
         Box::pin(self.send_response(request, events))
+    }
+
+    fn fallback_transport<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<bool>> {
+        Box::pin(async move {
+            let session = self.session(session_id).await?;
+            let mut state = session.lock().await;
+            if state.use_http {
+                return Ok(false);
+            }
+            state.use_http = true;
+            state.continuation = None;
+            state.connection = None;
+            Ok(true)
+        })
     }
 
     fn compaction_endpoint(&self) -> bool {

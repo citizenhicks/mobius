@@ -250,7 +250,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
             Arc::clone(&events),
         )
         .await
-        .expect_err("HTTPS failure should be terminal after fallback")
+        .expect_err("HTTPS failure should remain retryable after fallback")
     else {
         panic!("expected provider error");
     };
@@ -271,8 +271,11 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
         })]
     );
     assert_eq!(http_error.status(), None);
-    assert!(!http_error.is_stream_interrupted());
-    assert_eq!(http_error.to_string(), "HTTPS fallback transport failed");
+    assert!(http_error.is_stream_interrupted());
+    assert_eq!(
+        http_error.to_string(),
+        "model response stream was interrupted"
+    );
     for request in [first_http, second_http, failed_http] {
         assert!(request.get("previous_response_id").is_none());
         assert_eq!(
@@ -297,4 +300,67 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
         compact_input.last(),
         Some(&serde_json::json!({"type": "compaction_trigger"}))
     );
+}
+
+#[tokio::test]
+async fn explicit_fallback_is_sticky_and_isolated_to_the_session() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("listener");
+    let address = listener.local_addr().expect("address");
+    let server = tokio::spawn(async move {
+        for attempt in 0..2 {
+            let (mut stream, _) = listener.accept().await.expect("HTTP connection");
+            let request = read_http_json(&mut stream).await;
+            assert!(request.get("previous_response_id").is_none());
+            assert_eq!(request["input"][0]["content"], "complete history");
+            write_http_stream(&mut stream, "Recovered.", &format!("http-{attempt}")).await;
+        }
+    });
+    let provider = OpenAiSocket::with_authorization(
+        Arc::new(ApiKeyAuthorization::new("test-key".into())),
+        &format!("http://{address}"),
+        "ws://127.0.0.1:1",
+        "test-model",
+        reqwest::Client::new(),
+    )
+    .expect("provider");
+    assert!(
+        provider
+            .fallback_transport("fallback")
+            .await
+            .expect("switch")
+    );
+    assert!(
+        !provider
+            .fallback_transport("fallback")
+            .await
+            .expect("already switched")
+    );
+    assert!(
+        !provider
+            .session("other")
+            .await
+            .expect("other session")
+            .lock()
+            .await
+            .use_http
+    );
+    let input = [serde_json::json!({"role": "user", "content": "complete history"})];
+    for _ in 0..2 {
+        let output = provider
+            .send_response(
+                ModelRequest {
+                    session_id: "fallback",
+                    input: &input,
+                    allow_continuation: true,
+                    ..super::support::model_request()
+                },
+                Arc::new(|_| Box::pin(async { Ok(()) })),
+            )
+            .await
+            .expect("HTTP response");
+        assert_eq!(output.text(), "Recovered.");
+    }
+    server.await.expect("server");
 }

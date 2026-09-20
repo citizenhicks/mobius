@@ -981,7 +981,7 @@ fn footer_line(state: &TuiState, width: u16) -> Line<'static> {
         .rsplit(['/', '\\'])
         .find(|part| !part.is_empty())
         .unwrap_or(&state.cwd);
-    let values = [
+    let mut values = vec![
         (format!("cache {cache}"), Role::Neutral),
         (format!("context {context}"), Role::Code),
         (
@@ -994,6 +994,11 @@ fn footer_line(state: &TuiState, width: u16) -> Line<'static> {
         ),
         (display_value(folder), Role::Info),
     ];
+    for (label, summary) in ["staged", "unstaged"].into_iter().zip(&state.git_diff) {
+        if let Some(summary) = summary {
+            values.push((format!("{label} {summary}"), Role::Success));
+        }
+    }
     let mut widget_spans = widget_line(&state.widgets, FrontendSlot::Header).spans;
     let footer_widgets = widget_line(&state.widgets, FrontendSlot::ComposerFooter);
     if !footer_widgets.spans.is_empty() {
@@ -1011,7 +1016,10 @@ fn footer_line(state: &TuiState, width: u16) -> Line<'static> {
     }
 
     let mut spans = widget_spans;
-    for (value, role) in [&values[2], &values[1], &values[3]] {
+    for (value, role) in [2, 4, 5, 1, 3]
+        .into_iter()
+        .filter_map(|index| values.get(index))
+    {
         let mut candidate = spans.clone();
         separator(&mut candidate);
         candidate.push(Span::styled(value.clone(), theme.style(*role)));
@@ -1065,13 +1073,16 @@ fn separator(spans: &mut Vec<Span<'static>>) {
 fn composer_title(state: &TuiState) -> Line<'static> {
     let theme = current();
     let (status, role) = if state.approval().is_some() {
-        ("approval".to_string(), Role::Warning)
+        ("approval", Role::Warning)
     } else if state.disconnected {
-        ("disconnected".to_string(), Role::Error)
+        ("disconnected", Role::Error)
     } else if state.is_working() {
-        ("working".to_string(), Role::Accent)
+        (
+            state.reasoning_title.as_deref().unwrap_or("working"),
+            Role::Accent,
+        )
     } else {
-        ("ready".to_string(), Role::Accent)
+        ("ready", Role::Accent)
     };
     let elapsed = state
         .turn_started_at

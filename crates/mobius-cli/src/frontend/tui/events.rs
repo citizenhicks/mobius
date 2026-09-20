@@ -43,7 +43,9 @@ impl TuiState {
         }
         match event {
             EventMsg::TurnStarted(turn) => {
+                self.commit_reasoning();
                 self.commit_stream();
+                self.reasoning_title = None;
                 if live {
                     self.start_turn(turn.turn_id);
                 }
@@ -284,6 +286,13 @@ impl TuiState {
         if buffered_reasoning {
             self.reasoning.clear();
         }
+        for item in &message.content {
+            if item.phase == ModelStepContentPhase::Reasoning
+                && let Some(title) = super::latest_summary_line(&terminal_text(&item.text))
+            {
+                self.reasoning_title = Some(title);
+            }
+        }
         if was_rendered {
             return;
         }
@@ -511,6 +520,7 @@ fn apply_preview(state: &mut TuiState, preview: RenderedPreview, requested: bool
 }
 
 pub(super) fn handle_gateway_history(state: &mut TuiState, records: Vec<RecordedEvent>) {
+    let reasoning_title = state.reasoning_title.take();
     let mut current = std::mem::take(&mut state.transcript);
     let current_len = current.len();
     for record in records {
@@ -522,6 +532,7 @@ pub(super) fn handle_gateway_history(state: &mut TuiState, records: Vec<Recorded
         state.transcript.pop_front();
     }
     state.transcript.append(&mut current);
+    state.reasoning_title = reasoning_title;
 }
 
 fn apply_rendered_event(state: &mut TuiState, rendered: RenderedEvent) {

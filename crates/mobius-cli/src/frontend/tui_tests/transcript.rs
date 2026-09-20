@@ -416,3 +416,46 @@ fn completed_model_step_does_not_duplicate_live_streams() {
         Some("Everything is ready")
     );
 }
+
+#[test]
+fn reasoning_status_retains_usable_summaries_until_the_next_turn() {
+    let mut state = state();
+    state.start_turn("turn".into());
+    state.append_reasoning("## **Checking the workspace");
+    assert!(state.reasoning_title.is_none());
+    state.append_reasoning("** now\n\n<!-- internal -->");
+    assert_eq!(
+        state.reasoning_title.as_deref(),
+        Some("Checking the workspace now")
+    );
+    state.push("tool finished", TranscriptTone::Neutral);
+    state.append_reasoning("**unfinished");
+    assert_eq!(
+        state.reasoning_title.as_deref(),
+        Some("Checking the workspace now")
+    );
+    state.commit_reasoning();
+    state.append_reasoning("A plain summary");
+    assert_eq!(state.reasoning_title.as_deref(), Some("A plain summary"));
+    events::handle_gateway_history(
+        &mut state,
+        vec![recorded(
+            EventMsg::TurnStarted(mobius::protocol::TurnStartedEvent {
+                turn_id: "old".into(),
+                model_context_window: None,
+            }),
+            Vec::new(),
+            None,
+        )],
+    );
+    assert_eq!(state.reasoning_title.as_deref(), Some("A plain summary"));
+    state.handle_agent_event(
+        EventMsg::TurnStarted(mobius::protocol::TurnStartedEvent {
+            turn_id: "next".into(),
+            model_context_window: None,
+        }),
+        Vec::new(),
+    );
+    assert!(state.reasoning_title.is_none());
+    assert!(latest_summary_line("\n<!-- comment -->\n**unfinished").is_none());
+}

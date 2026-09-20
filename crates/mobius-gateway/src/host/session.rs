@@ -143,9 +143,8 @@ pub(super) enum HostCommand {
         folder: PathBuf,
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
     },
-    GitDiff {
-        scope: GitDiffScope,
-        reply: oneshot::Sender<std::result::Result<String, Rejection>>,
+    GitWorkspace {
+        reply: oneshot::Sender<(Arc<GatewaySandbox>, PathBuf)>,
     },
     WorkspaceFiles {
         scope: WorkspaceFileScope,
@@ -430,8 +429,9 @@ impl HostHandle {
         scope: GitDiffScope,
     ) -> std::result::Result<String, Rejection> {
         let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::GitDiff { scope, reply }).await?;
-        receiver.await.map_err(|_| stopped())?
+        self.send(HostCommand::GitWorkspace { reply }).await?;
+        let (sandbox, workspace) = receiver.await.map_err(|_| stopped())?;
+        workspace_git_diff(&sandbox, &workspace, scope).await
     }
 
     pub(crate) async fn workspace_files(

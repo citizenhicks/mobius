@@ -18,8 +18,11 @@ pub(super) struct AuthenticatedClient<'a> {
     pub(super) revocations: &'a broadcast::Sender<String>,
 }
 
+const MAX_PENDING_GIT_DIFFS: usize = 4;
+
 pub(super) struct ConnectionSessionState<'a> {
     pub(super) selected: &'a mut Option<SelectedChat>,
+    pub(super) git_diffs: &'a mut JoinSet<ServerMessage>,
     pub(super) session_files: &'a SessionFileStore,
     pub(super) bots: &'a BotStore,
     pub(super) uploads: &'a mut BTreeMap<(String, String), PendingSessionFileWrite>,
@@ -406,7 +409,7 @@ pub(super) async fn handle_message(
             request_id,
             session_id,
             scope,
-        } => return get_git_diff(writer, &connection, request_id, session_id, scope).await,
+        } => return get_git_diff(writer, &mut connection, request_id, session_id, scope).await,
         ClientMessage::SwitchGitBranch {
             request_id,
             session_id,
@@ -1370,30 +1373,45 @@ async fn generate_ssh_identity(
 
 async fn get_git_diff(
     writer: &mut (impl AsyncWrite + Unpin),
-    connection: &ConnectionSessionState<'_>,
+    connection: &mut ConnectionSessionState<'_>,
     request_id: String,
     session_id: String,
     scope: GitDiffScope,
 ) -> Result<()> {
     let host = match require_selected(&*connection.selected, &session_id) {
-        Ok(host) => host,
+        Ok(host) => host.clone(),
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
-    match host.git_diff(scope).await {
-        Ok(diff) => {
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::GitDiff {
-                    request_id,
-                    session_id,
-                    scope,
-                    diff,
-                }),
-            )
-            .await
-        }
-        Err(rejection) => write_rejection(writer, request_id, rejection).await,
+    if connection.git_diffs.len() >= MAX_PENDING_GIT_DIFFS {
+        return write_rejection(
+            writer,
+            request_id,
+            Rejection {
+                code: "git_busy",
+                message: "Git diff requests are already in progress; try again shortly".into(),
+                fatal: false,
+            },
+        )
+        .await;
     }
+    // Owned by the connection: disconnecting aborts its outstanding Git reads.
+    connection.git_diffs.spawn(async move {
+        match host.git_diff(scope).await {
+            Ok(diff) => ServerMessage::GitDiff {
+                request_id,
+                session_id,
+                scope,
+                diff,
+            },
+            Err(rejection) => ServerMessage::Rejected {
+                request_id,
+                code: rejection.code.into(),
+                message: rejection.message,
+                fatal: rejection.fatal,
+            },
+        }
+    });
+    Ok(())
 }
 
 async fn switch_git_branch(

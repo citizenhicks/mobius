@@ -39,9 +39,8 @@ use crate::ProviderError;
 use crate::Result;
 
 const MAX_SOCKET_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
-const MAX_STREAM_EVENTS: usize = 65_536;
+pub(super) const MAX_STREAM_EVENTS: usize = 65_536;
 const SOCKET_COMMAND_CAPACITY: usize = 8;
-pub(super) const SOCKET_EVENT_CAPACITY: usize = 128;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const SOCKET_IO_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -58,7 +57,7 @@ pub(super) enum Exchange {
 
 pub(super) struct OpenAiWsConnection {
     commands: mpsc::Sender<SocketCommand>,
-    pub(super) messages: mpsc::Receiver<SocketEvent>,
+    pub(super) messages: mpsc::UnboundedReceiver<SocketEvent>,
     pub(super) closed: Arc<AtomicBool>,
     pump: tokio::task::AbortHandle,
 }
@@ -83,7 +82,9 @@ pub(super) enum SocketEvent {
 impl OpenAiWsConnection {
     pub(super) fn new(socket: RawSocket) -> Self {
         let (commands, command_receiver) = mpsc::channel(SOCKET_COMMAND_CAPACITY);
-        let (message_sender, messages) = mpsc::channel(SOCKET_EVENT_CAPACITY);
+        // Keep reading and answering pings while the consumer persists events.
+        // The pump bounds each response by bytes and event count before enqueueing.
+        let (message_sender, messages) = mpsc::unbounded_channel();
         let closed = Arc::new(AtomicBool::new(false));
         let task = tokio::spawn(socket_pump(
             socket,
@@ -165,7 +166,7 @@ impl Drop for OpenAiWsConnection {
 async fn socket_pump(
     mut socket: RawSocket,
     mut commands: mpsc::Receiver<SocketCommand>,
-    messages: mpsc::Sender<SocketEvent>,
+    messages: mpsc::UnboundedSender<SocketEvent>,
     closed: Arc<AtomicBool>,
 ) {
     let mut active = false;
@@ -206,7 +207,7 @@ async fn socket_pump(
                             send_socket_message(&mut socket, Message::Pong(payload), "pong").await;
                         if !sent {
                             if active {
-                                let _ = messages.try_send(SocketEvent::Closed);
+                                let _ = messages.send(SocketEvent::Closed);
                             }
                             break;
                         }
@@ -214,7 +215,7 @@ async fn socket_pump(
                     Some(Ok(Message::Pong(_) | Message::Frame(_))) => {}
                     Some(Ok(message @ (Message::Text(_) | Message::Binary(_)))) if active => {
                         if message.len() > MAX_SOCKET_MESSAGE_BYTES {
-                            let _ = messages.try_send(SocketEvent::ProtocolError(
+                            let _ = messages.send(SocketEvent::ProtocolError(
                                 "WebSocket message exceeded size limit",
                             ));
                             break;
@@ -228,20 +229,20 @@ async fn socket_pump(
                             )
                             .is_err()
                         {
-                            let _ = messages.try_send(SocketEvent::ProtocolError(
+                            let _ = messages.send(SocketEvent::ProtocolError(
                                 "WebSocket response exceeded size limit",
                             ));
                             break;
                         }
-                        if messages.try_send(SocketEvent::Message(message)).is_err() {
-                            log_interruption("response", "event queue unavailable");
+                        if messages.send(SocketEvent::Message(message)).is_err() {
+                            log_interruption("response", "event consumer closed");
                             break;
                         }
                     }
                     Some(Ok(Message::Text(_) | Message::Binary(_))) => {}
                     Some(Err(WebSocketError::Capacity(_))) => {
                         if active {
-                            let _ = messages.try_send(SocketEvent::ProtocolError(
+                            let _ = messages.send(SocketEvent::ProtocolError(
                                 "WebSocket message exceeded size limit",
                             ));
                         }
@@ -250,21 +251,21 @@ async fn socket_pump(
                     Some(Ok(Message::Close(_))) => {
                         if active {
                             log_interruption("response", "peer sent a close frame");
-                            let _ = messages.try_send(SocketEvent::Closed);
+                            let _ = messages.send(SocketEvent::Closed);
                         }
                         break;
                     }
                     Some(Err(error)) => {
                         if active {
                             log_websocket_error("response", &error);
-                            let _ = messages.try_send(SocketEvent::Closed);
+                            let _ = messages.send(SocketEvent::Closed);
                         }
                         break;
                     }
                     None => {
                         if active {
                             log_interruption("response", "stream ended");
-                            let _ = messages.try_send(SocketEvent::Closed);
+                            let _ = messages.send(SocketEvent::Closed);
                         }
                         break;
                     }
@@ -401,7 +402,7 @@ pub(super) async fn exchange(
 }
 
 pub(super) async fn read_exchange(
-    messages: &mut mpsc::Receiver<SocketEvent>,
+    messages: &mut mpsc::UnboundedReceiver<SocketEvent>,
     events: &ModelEventSink,
 ) -> Result<Exchange> {
     let mut web_searches = BTreeSet::new();
