@@ -209,8 +209,10 @@ private struct ReasoningLine: View {
                 MobiusIcon(.setup01, size: MobiusStyle.glyphInline, foreground: palette.muted)
                 Group {
                     if isExpanded {
-                        MobiusMarkdownText(entry.text, streaming: entry.pending)
-                            .equatable()
+                        MobiusMarkdownText(
+                            entry.text, streaming: entry.pending, annotations: entry.annotations
+                        )
+                        .equatable()
                     } else {
                         Text(summary)
                     }

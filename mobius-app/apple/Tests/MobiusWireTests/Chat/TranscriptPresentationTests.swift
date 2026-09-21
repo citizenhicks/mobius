@@ -1,11 +1,95 @@
 import Foundation
+import Markdown
 import SwiftUI
 import UIKit
 @testable import Mobius
 import XCTest
 
+private func citationAnnotation(
+    in text: String, marker: String, url: String = "https://example.org/careers"
+) throws -> JSONValue {
+    let range = try XCTUnwrap(text.range(of: marker))
+    return .object([
+        "type": .string("url_citation"), "url": .string(url), "title": .string("Example Careers"),
+        "startIndex": .integer(
+            Int64(text.unicodeScalars.distance(from: text.startIndex, to: range.lowerBound))),
+        "endIndex": .integer(
+            Int64(text.unicodeScalars.distance(from: text.startIndex, to: range.upperBound))),
+    ])
+}
+
+private func markdownLinks(in markup: Markup) -> [Markdown.Link] {
+    if let link = markup as? Markdown.Link { return [link] }
+    return markup.children.flatMap { markdownLinks(in: $0) }
+}
+
 @MainActor
 extension AppModelTests {
+    func testMarkdownRendersBareWebLinksAsInteractiveText() async throws {
+        let app = try model(requestSender: { _ in })
+        let url = try XCTUnwrap(URL(string: "https://example.org/careers"))
+        let scene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive })
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
+        let marker = "citeturn0search0"
+        let content = "- \(url.absoluteString)\n\n- [Apply via Example Careers] \(marker)"
+        let host = UIHostingController(
+            rootView: MobiusMarkdownText(content, streaming: false)
+                .equatable()
+                .mobiusTheme().environment(app))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+        func linkedTextView(in view: UIView, at index: Int = 0) -> UITextView? {
+            if let text = view as? UITextView, let attributed = text.attributedText,
+                attributed.length > index,
+                attributed.attribute(.link, at: index, effectiveRange: nil) as? URL == url
+            {
+                return text
+            }
+            return view.subviews.lazy.compactMap { linkedTextView(in: $0, at: index) }.first
+        }
+        let appeared = await eventually { linkedTextView(in: host.view)?.window != nil }
+        XCTAssertTrue(appeared)
+        let text = try XCTUnwrap(linkedTextView(in: host.view))
+        XCTAssertFalse(text.isEditable)
+        XCTAssertTrue(text.isSelectable)
+        XCTAssertTrue(text.isUserInteractionEnabled)
+        XCTAssertNotNil(text.delegate)
+        XCTAssertEqual(text.attributedText.string, url.absoluteString)
+        let citationOffset = ("[Apply via Example Careers] " as NSString).length
+        XCTAssertNil(linkedTextView(in: host.view, at: citationOffset))
+        host.rootView = MobiusMarkdownText(
+            content, streaming: false,
+            annotations: [
+                try citationAnnotation(in: content, marker: marker, url: url.absoluteString)
+            ]
+        ).equatable().mobiusTheme().environment(app)
+        let citationAppeared = await eventually {
+            linkedTextView(in: host.view, at: citationOffset)?.window != nil
+        }
+        XCTAssertTrue(citationAppeared, "An annotation-only update must render the citation")
+        let citedText = try XCTUnwrap(linkedTextView(in: host.view, at: citationOffset))
+        XCTAssertEqual(citedText.attributedText.string, "[Apply via Example Careers] example.org")
+        XCTAssertTrue(citedText.isSelectable)
+        XCTAssertTrue(citedText.isUserInteractionEnabled)
+        XCTAssertNotNil(citedText.delegate)
+        let screenshot = XCTAttachment(
+            image: UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
+                host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+            })
+        screenshot.name = "Transcript web link and annotated citation"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+    }
+
     func testChatNavigationKeepsHeaderCanvasDuringTransition() async throws {
         let app = try model(requestSender: { _ in })
         app.showsWelcome = false
@@ -116,6 +200,121 @@ extension AppModelTests {
 }
 
 final class TranscriptMarkdownSelectionTests: XCTestCase {
+    func testCitationsUseOnlyTheirAnnotatedRangeAndPreserveDistinctSources() throws {
+        let marker = "citeturn0search0turn0search1"
+        let text = "🙂 e\u{301} \\dots **Jobs**\n\n- [Apply] \(marker)\n\nUnannotated: \(marker)"
+        let first = try citationAnnotation(in: text, marker: marker)
+        let second = try citationAnnotation(
+            in: text, marker: marker, url: "https://second.example/jobs?q=(engineering)&lang=en")
+        let rendered = markdownWithCitations(text, annotations: [first, second, first])
+        XCTAssertEqual(
+            rendered,
+            "🙂 e\u{301} \\dots **Jobs**\n\n- [Apply] [example.org](<https://example.org/careers>) "
+                + "[second.example](<https://second.example/jobs?q=(engineering)&lang=en>)"
+                + "\n\nUnannotated: \(marker)")
+        let document = Markdown.Document(parsing: rendered)
+        XCTAssertEqual(
+            markdownLinks(in: document).compactMap(\.destination),
+            ["https://example.org/careers", "https://second.example/jobs?q=(engineering)&lang=en"])
+        XCTAssertEqual(markdownWithCitations(text, annotations: []), text)
+    }
+
+    func testCitationRenderingPreservesCodeImagesAndExistingLinks() throws {
+        let marker = "citeturn0search0"
+        for text in [
+            "`\(marker)`", "```\n\(marker)\n```",
+            "[\(marker)](https://existing.example)",
+            "![\(marker)](https://existing.example/image.png)",
+        ] {
+            XCTAssertEqual(
+                markdownWithCitations(
+                    text, annotations: [try citationAnnotation(in: text, marker: marker)]),
+                text)
+        }
+    }
+
+    func testCitationRangesUseCommonMarkLineEndings() throws {
+        let marker = "citeturn0search0"
+        for prefix in ["", "Intro\n", "Intro\r\n", "Intro\r", "Intro\r\nSecond\r"] {
+            let text = prefix + marker
+            XCTAssertEqual(
+                markdownWithCitations(
+                    text, annotations: [try citationAnnotation(in: text, marker: marker)]),
+                prefix + "[example.org](<https://example.org/careers>)")
+        }
+    }
+
+    func testCitationRenderingRejectsInvalidRangesAndUnsafeURLs() throws {
+        let marker = "citeturn0search0"
+        let text = "🙂 e\u{301} \(marker) real prose \(marker)"
+        var fields = try XCTUnwrap(citationAnnotation(in: text, marker: marker).objectValue)
+        let invalidFields: [[String: JSONValue]] = [
+            ["startIndex": .integer(-1)],
+            ["startIndex": .integer(6)],  // UTF-16 offset, not the scalar offset of 5.
+            ["endIndex": .integer(Int64.max)],
+            ["endIndex": .integer(Int64(text.unicodeScalars.count))],  // Spans two markers.
+            ["url": .string("javascript:alert(1)")],
+            ["url": .string("file:///tmp/source")],
+            ["url": .string("https:/missing-host")],
+        ]
+        for overrides in invalidFields {
+            let annotation = JSONValue.object(fields.merging(overrides) { _, new in new })
+            XCTAssertEqual(markdownWithCitations(text, annotations: [annotation]), text)
+        }
+        fields["url"] = .string("https://example.org/evil>)![x](file:///tmp/secret)")
+        let links = markdownLinks(
+            in: Markdown.Document(
+                parsing: markdownWithCitations(text, annotations: [.object(fields)])))
+        XCTAssertEqual(links.count, 1)
+        XCTAssertEqual(
+            links.first?.destination,
+            URL(string: try XCTUnwrap(fields["url"]?.stringValue))?.absoluteString)
+    }
+
+    func testDetectsWebLinksInProseWithoutChangingExplicitLinksOrCode() throws {
+        let document = markdownWithDetectedLinks(
+            Markdown.Document(
+                parsing: """
+                    Résumé 🌍 (https://example.org/café).
+
+                    - http://example.org/jobs
+
+                    | Role | Apply |
+                    | --- | --- |
+                    | Engineer | https://example.org/table |
+
+                    [https://example.org/label](https://example.org/target "Existing title")
+
+                    <https://example.org/autolink>
+
+                    `https://example.org/inline-code`
+
+                    ```text
+                    https://example.org/fenced-code
+                    ```
+
+                    ![https://example.org/image-label](https://example.org/image.png)
+
+                    javascript:alert(1) mailto:hello@example.org file:///tmp/report.txt
+                    """))
+        let detected = markdownLinks(in: document)
+        XCTAssertEqual(
+            detected.compactMap(\.destination),
+            [
+                try XCTUnwrap(URL(string: "https://example.org/café")).absoluteString,
+                "http://example.org/jobs",
+                "https://example.org/table",
+                "https://example.org/target",
+                "https://example.org/autolink",
+            ])
+        XCTAssertEqual(detected.first?.plainText, "https://example.org/café")
+        let explicit = try XCTUnwrap(detected.first { $0.title == "Existing title" })
+        XCTAssertEqual(explicit.plainText, "https://example.org/label")
+        XCTAssertEqual(explicit.childCount, 1)
+        let paragraph = try XCTUnwrap(document.child(at: 0) as? Paragraph)
+        XCTAssertEqual(paragraph.plainText, "Résumé 🌍 (https://example.org/café).")
+    }
+
     func testFlattensEveryBlockKindIntoOneSelectableValue() {
         let markerColor = UIColor.systemPurple
         let quoteColor = UIColor.systemGray

@@ -306,17 +306,22 @@ private struct DuoVoiceOrb: View {
 
 @MainActor
 @Observable
-private final class ComposerDictation {
+final class ComposerDictation {
     private(set) var isRecording = false
     private(set) var isStarting = false
     var isActive: Bool { isRecording || isStarting }
-    @ObservationIgnored private let engine = AVAudioEngine()
+    @ObservationIgnored private let makeEngine: () -> AVAudioEngine
+    @ObservationIgnored private var engine: AVAudioEngine?
     @ObservationIgnored private var request: SFSpeechAudioBufferRecognitionRequest?
     @ObservationIgnored private var task: SFSpeechRecognitionTask?
     @ObservationIgnored private var hasInputTap = false
     @ObservationIgnored private var ownsAudioSession = false
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private var draft: DictationDraft?
+
+    init(engine: @autoclosure @escaping () -> AVAudioEngine = AVAudioEngine()) {
+        makeEngine = engine
+    }
 
     func toggle(
         locale: Locale,
@@ -365,6 +370,8 @@ private final class ComposerDictation {
             try session.setCategory(.record, mode: .measurement, options: .duckOthers)
             try session.setActive(true, options: .notifyOthersOnDeactivation)
             ownsAudioSession = true
+            let engine = makeEngine()
+            self.engine = engine
             let input = engine.inputNode
             let format = input.outputFormat(forBus: 0)
             guard format.sampleRate > 0, format.channelCount > 0 else {
@@ -418,11 +425,12 @@ private final class ComposerDictation {
         generation = UUID()
         draft = nil
         isStarting = false
-        if engine.isRunning { engine.stop() }
+        if let engine, engine.isRunning { engine.stop() }
         if hasInputTap {
-            engine.inputNode.removeTap(onBus: 0)
+            engine?.inputNode.removeTap(onBus: 0)
             hasInputTap = false
         }
+        engine = nil
         request?.endAudio()
         task?.cancel()
         request = nil

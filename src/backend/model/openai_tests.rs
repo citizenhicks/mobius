@@ -539,6 +539,68 @@ fn responses_decode_preserves_reasoning_content_for_replay() {
 }
 
 #[test]
+fn stream_completion_preserves_final_annotations_and_completion_only_items() {
+    let streamed = serde_json::json!({
+        "id": "message-1",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": "Source.", "annotations": []}]
+    });
+    let annotation = serde_json::json!({
+        "type": "url_citation",
+        "url": "https://example.com/source",
+        "title": "Source",
+        "start_index": 0,
+        "end_index": 6
+    });
+    let mut completed = streamed.clone();
+    completed["content"][0]["annotations"] = serde_json::json!([annotation]);
+    let response = serde_json::json!({
+        "id": "response-1",
+        "output": [completed, {
+            "id": "search-1",
+            "type": "web_search_call",
+            "status": "completed",
+            "action": {"type": "search", "query": "source"}
+        }]
+    });
+
+    let attached = attach_stream_output(response.clone(), &BTreeMap::from([(0, streamed)]));
+
+    assert_eq!(attached, response);
+    let decoded = decode_response(attached).expect("completed output");
+    assert_eq!(
+        serde_json::to_value(&decoded.content()[0].annotations).expect("annotations"),
+        serde_json::json!([annotation])
+    );
+}
+
+#[test]
+fn stream_completion_falls_back_only_for_missing_or_empty_output() {
+    let item = serde_json::json!({
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": "Done."}]
+    });
+    let streamed = BTreeMap::from([(0, item.clone())]);
+    for response in [serde_json::json!({}), serde_json::json!({"output": []})] {
+        let attached = attach_stream_output(response, &streamed);
+        assert_eq!(attached["output"], serde_json::json!([item]));
+    }
+    for response in [
+        Value::Null,
+        serde_json::json!([]),
+        serde_json::json!({"output": null}),
+        serde_json::json!({"output": {}}),
+        serde_json::json!({"output": "invalid"}),
+    ] {
+        let attached = attach_stream_output(response.clone(), &streamed);
+        assert_eq!(attached, response);
+        assert!(decode_response(attached).is_err());
+    }
+}
+
+#[test]
 fn responses_decode_preserves_text_part_boundaries_and_annotations() {
     let decoded = decode_response(serde_json::json!({
         "output": [{

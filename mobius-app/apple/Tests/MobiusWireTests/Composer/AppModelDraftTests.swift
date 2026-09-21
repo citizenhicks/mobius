@@ -1,9 +1,25 @@
 import Foundation
 @testable import Mobius
+@preconcurrency import AVFoundation
 import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testIdleDictationDoesNotCreateAnAudioEngine() {
+        var engineCreations = 0
+        func makeEngine() -> AVAudioEngine {
+            engineCreations += 1
+            return AVAudioEngine()
+        }
+        let dictation = ComposerDictation(engine: makeEngine())
+        XCTAssertEqual(engineCreations, 0)
+        dictation.stop()
+        dictation.stopIfDraftChanged("Typed without dictation")
+        dictation.stop()
+        XCTAssertEqual(engineCreations, 0)
+        XCTAssertFalse(dictation.isActive)
+    }
+
     func testDictationPreservesTheDraftBoundary() {
         for original in ["Hello", "Hello ", ""] {
             var draft = DictationDraft(text: original)

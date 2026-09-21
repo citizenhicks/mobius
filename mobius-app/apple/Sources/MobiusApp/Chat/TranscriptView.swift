@@ -537,8 +537,10 @@ private struct TranscriptRow: View {
             VStack(alignment: .leading, spacing: MobiusSpace.s) {
                 TranscriptFileCards(files: files, sessionID: fileSessionID)
                 if !entry.text.isEmpty {
-                    MobiusMarkdownText(entry.text, streaming: entry.pending)
-                        .equatable()
+                    MobiusMarkdownText(
+                        entry.text, streaming: entry.pending, annotations: entry.annotations
+                    )
+                    .equatable()
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

@@ -1,5 +1,6 @@
 import CoreText
 import Foundation
+import Markdown
 import SwiftStreamingMarkdown
 import SwiftUI
 import UIKit
@@ -7,32 +8,132 @@ import UniformTypeIdentifiers
 
 /// Equatable so an unchanged message is skipped entirely.
 ///
-/// Text and streaming are the view's whole input, so comparing them is complete rather than
-/// a guess. Without this, every row's body re-runs whenever anything in the transcript
+/// Comparing text, annotations, and streaming covers the view's whole input. Without this,
+/// every row's body re-runs whenever anything in the transcript
 /// changes: each one rescans its own text for `\dots` and rebuilds the markdown subtree,
 /// which during streaming is a few hundred messages of work per frame to redraw one.
 struct MobiusMarkdownText: View, Equatable {
     let text: String
     let streaming: Bool
+    let annotations: [JSONValue]
 
-    init(_ text: String, streaming: Bool) {
+    init(_ text: String, streaming: Bool, annotations: [JSONValue] = []) {
         self.text = text
         self.streaming = streaming
+        self.annotations = annotations
     }
 
     var body: some View {
-        MobiusMarkdownDocument(text: normalizedText, streaming: streaming)
+        MobiusMarkdownDocument(text: text, streaming: streaming, annotations: annotations)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
+}
 
-    private var normalizedText: String {
-        guard text.contains(#"\dots"#) else { return text }
-        return text.replacingOccurrences(
-            of: #"\\dots\b"#,
-            with: #"\\ldots"#,
-            options: .regularExpression
-        )
+/// Display exact annotated citation spans as links without changing the stored transcript.
+func markdownWithCitations(_ text: String, annotations: [JSONValue]) -> String {
+    guard !annotations.isEmpty else { return text }
+    // Citation character offsets count Unicode scalars, not Swift graphemes or UTF-16 units.
+    let indices = Array(text.unicodeScalars.indices) + [text.endIndex]
+    let prose = markdownProseRanges(in: Markdown.Document(parsing: text))
+    var citations: [Range<String.Index>: [URL]] = [:]
+    for annotation in annotations {
+        guard annotation["type"]?.stringValue == "url_citation",
+            let start = annotation["startIndex"]?.intValue,
+            let end = annotation["endIndex"]?.intValue,
+            start >= 0, end > start, end < indices.count,
+            let destination = annotation["url"]?.stringValue,
+            let url = URL(string: destination),
+            ["http", "https"].contains(url.scheme?.lowercased()),
+            url.host?.isEmpty == false
+        else { continue }
+        let range = indices[start]..<indices[end]
+        let marker = text[range]
+        guard marker.wholeMatch(of: /cite[^\r\n]+/) != nil else { continue }
+        let prefix = text[..<range.lowerBound]
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .split(separator: "\n", omittingEmptySubsequences: false)
+        let startLocation = SourceLocation(
+            line: prefix.count, column: (prefix.last?.utf8.count ?? 0) + 1, source: nil)
+        let endLocation = SourceLocation(
+            line: startLocation.line, column: startLocation.column + marker.utf8.count, source: nil)
+        guard
+            prose.contains(where: { $0.lowerBound <= startLocation && endLocation <= $0.upperBound }
+            ),
+            !citations[range, default: []].contains(url)
+        else { continue }
+        citations[range, default: []].append(url)
     }
+    var rendered = ""
+    var offset = text.startIndex
+    for (range, urls) in citations.sorted(by: { $0.key.lowerBound < $1.key.lowerBound }) {
+        rendered += text[offset..<range.lowerBound]
+        rendered += urls.map { url in
+            let label = (url.host ?? url.absoluteString)
+                .replacingOccurrences(of: "[", with: #"\["#)
+                .replacingOccurrences(of: "]", with: #"\]"#)
+            return "[\(label)](<\(url.absoluteString)>)"
+        }.joined(separator: " ")
+        offset = range.upperBound
+    }
+    return rendered + text[offset...]
+}
+
+private func markdownProseRanges(in markup: Markup) -> [SourceRange] {
+    guard !(markup is Markdown.Link), !(markup is Markdown.Image),
+        !(markup is CodeBlock), !(markup is InlineCode)
+    else { return [] }
+    if markup is Markdown.Text { return markup.range.map { [$0] } ?? [] }
+    return markup.children.flatMap { markdownProseRanges(in: $0) }
+}
+
+/// Add web links only to prose nodes; Markdown owns explicit links, images, and code.
+func markdownWithDetectedLinks(_ document: Markdown.Document) -> Markdown.Document {
+    guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+    else { return document }
+    return detectingMarkdownLinks(in: document, using: detector) as? Markdown.Document ?? document
+}
+
+private func detectingMarkdownLinks(in markup: Markup, using detector: NSDataDetector) -> Markup {
+    guard !markup.isEmpty, !(markup is Markdown.Link), !(markup is Markdown.Image),
+        !(markup is CodeBlock), !(markup is InlineCode)
+    else { return markup }
+    return markup.withUncheckedChildren(
+        markup.children.flatMap { child -> [Markup] in
+            if let text = child as? Markdown.Text {
+                return detectedMarkdownLinks(in: text, using: detector)
+            }
+            return [detectingMarkdownLinks(in: child, using: detector)]
+        })
+}
+
+private func detectedMarkdownLinks(in text: Markdown.Text, using detector: NSDataDetector)
+    -> [Markup]
+{
+    let source = text.string as NSString
+    var result: [Markup] = []
+    var offset = 0
+    for match in detector.matches(
+        in: text.string, range: NSRange(location: 0, length: source.length))
+    {
+        guard let url = match.url, ["http", "https"].contains(url.scheme?.lowercased()),
+            url.host?.isEmpty == false
+        else { continue }
+        if match.range.location > offset {
+            result.append(
+                Markdown.Text(
+                    source.substring(
+                        with: NSRange(location: offset, length: match.range.location - offset))))
+        }
+        result.append(
+            Markdown.Link(
+                destination: url.absoluteString,
+                Markdown.Text(source.substring(with: match.range))))
+        offset = NSMaxRange(match.range)
+    }
+    guard offset > 0 else { return [text] }
+    if offset < source.length { result.append(Markdown.Text(source.substring(from: offset))) }
+    return result
 }
 
 /// Carries the renderer's selection and table actions into the app.
@@ -85,10 +186,12 @@ private struct MobiusMarkdownDocument: View {
     @State private var selection = MarkdownSelectionRequest()
     let text: String
     let streaming: Bool
+    let annotations: [JSONValue]
 
     var body: some View {
         let request = MobiusMarkdownRenderRequest(
             text: text,
+            annotations: annotations,
             config: config,
             colorScheme: colorScheme,
             dynamicTypeSize: dynamicTypeSize
@@ -104,12 +207,18 @@ private struct MobiusMarkdownDocument: View {
                 }
             )
             .task(id: request) {
+                let cited = markdownWithCitations(request.text, annotations: request.annotations)
                 let parsed = await MarkdownParserImpl().parse(
-                    text: request.text,
-                    config: request.config
+                    text: cited.replacingOccurrences(
+                        of: #"\\dots\b"#, with: #"\\ldots"#, options: .regularExpression),
+                    option: .init(
+                        speculativeRewrite: false,
+                        imageSupport: request.config.imageConfig.enabled)
                 )
+                let rendered = await RenderableDocument(
+                    document: markdownWithDetectedLinks(parsed.document), config: request.config)
                 guard !Task.isCancelled else { return }
-                document = parsed
+                document = rendered
             }
             .sheet(isPresented: $selection.isPresented) {
                 SelectableText(
@@ -195,8 +304,9 @@ private struct MobiusMarkdownDocument: View {
     }
 }
 
-private struct MobiusMarkdownRenderRequest: Hashable {
+private struct MobiusMarkdownRenderRequest: Equatable {
     let text: String
+    let annotations: [JSONValue]
     let config: MarkdownRenderConfig
     let colorScheme: ColorScheme
     let dynamicTypeSize: DynamicTypeSize

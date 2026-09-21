@@ -24,6 +24,7 @@
 		20000000000000000000000D /* GatewayWireTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000000C /* GatewayWireTestSupport.swift */; };
 		200000000000000000000011 /* SwiftStreamingMarkdown in Frameworks */ = {isa = PBXBuildFile; productRef = 800000000000000000000001 /* SwiftStreamingMarkdown */; };
 		200000000000000000000012 /* HighlightSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 800000000000000000000002 /* HighlightSwift */; };
+		200000000000000000000013 /* Markdown in Frameworks */ = {isa = PBXBuildFile; productRef = 800000000000000000000004 /* Markdown */; };
 		200000000000000000000014 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000010 /* PrivacyInfo.xcprivacy */; };
 		200000000000000000000015 /* AppModelTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000011 /* AppModelTestSupport.swift */; };
 		20000000000000000000001A /* ComposerOptionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000014 /* ComposerOptionsView.swift */; };
@@ -140,6 +141,7 @@
 		F20000000000000000000003 /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = 800000000000000000000003 /* WebRTC */; };
 		F20000000000000000000004 /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = 800000000000000000000003 /* WebRTC */; };
 		F20000000000000000000005 /* SwiftStreamingMarkdown in Frameworks */ = {isa = PBXBuildFile; productRef = 800000000000000000000001 /* SwiftStreamingMarkdown */; };
+		F20000000000000000000007 /* Markdown in Frameworks */ = {isa = PBXBuildFile; productRef = 800000000000000000000004 /* Markdown */; };
 		F20000000000000000000006 /* WebRTC-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000006 /* WebRTC-LICENSE.txt */; };
 		F20000000000000000000101 /* AppModelRealtimeVoice.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000101 /* AppModelRealtimeVoice.swift */; };
 		F20000000000000000000102 /* RealtimeVoiceSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000102 /* RealtimeVoiceSession.swift */; };
@@ -308,6 +310,7 @@
 			files = (
 				200000000000000000000011 /* SwiftStreamingMarkdown in Frameworks */,
 				200000000000000000000012 /* HighlightSwift in Frameworks */,
+				200000000000000000000013 /* Markdown in Frameworks */,
 				F20000000000000000000003 /* WebRTC in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -317,6 +320,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				F20000000000000000000005 /* SwiftStreamingMarkdown in Frameworks */,
+				F20000000000000000000007 /* Markdown in Frameworks */,
 				F20000000000000000000004 /* WebRTC in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -688,6 +692,7 @@
 			packageProductDependencies = (
 				800000000000000000000001 /* SwiftStreamingMarkdown */,
 				800000000000000000000002 /* HighlightSwift */,
+				800000000000000000000004 /* Markdown */,
 				800000000000000000000003 /* WebRTC */,
 			);
 			productName = Mobius;
@@ -711,6 +716,7 @@
 			packageProductDependencies = (
 				800000000000000000000003 /* WebRTC */,
 				800000000000000000000001 /* SwiftStreamingMarkdown */,
+				800000000000000000000004 /* Markdown */,
 			);
 			productName = MobiusWireTests;
 			productReference = 10000000000000000000000E /* MobiusWireTests.xctest */;
@@ -754,6 +760,7 @@
 				700000000000000000000001 /* XCRemoteSwiftPackageReference "SwiftStreamingMarkdown" */,
 				700000000000000000000002 /* XCRemoteSwiftPackageReference "HighlightSwift" */,
 				700000000000000000000003 /* XCRemoteSwiftPackageReference "WebRTC" */,
+				700000000000000000000004 /* XCRemoteSwiftPackageReference "swift-markdown" */,
 			);
 			productRefGroup = 000000000000000000000003 /* Products */;
 			projectDirPath = "";
@@ -1056,7 +1063,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Sources/MobiusApp/MobiusApp.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 368;
+				CURRENT_PROJECT_VERSION = 369;
 				DEAD_CODE_STRIPPING = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1095,7 +1102,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Sources/MobiusApp/MobiusApp.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 368;
+				CURRENT_PROJECT_VERSION = 369;
 				DEAD_CODE_STRIPPING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/MobiusApp/Info.plist;
@@ -1224,6 +1231,14 @@
 				version = 152.0.0;
 			};
 		};
+		700000000000000000000004 /* XCRemoteSwiftPackageReference "swift-markdown" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/swiftlang/swift-markdown.git";
+			requirement = {
+				kind = exactVersion;
+				version = 0.7.3;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -1241,6 +1256,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 700000000000000000000003 /* XCRemoteSwiftPackageReference "WebRTC" */;
 			productName = WebRTC;
+		};
+		800000000000000000000004 /* Markdown */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 700000000000000000000004 /* XCRemoteSwiftPackageReference "swift-markdown" */;
+			productName = Markdown;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

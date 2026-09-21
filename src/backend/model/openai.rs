@@ -719,7 +719,12 @@ pub(super) async fn emit_ready_tool_calls(
 }
 
 pub(super) fn attach_stream_output(mut response: Value, output: &BTreeMap<u64, Value>) -> Value {
-    if !output.is_empty() {
+    // Completed output owns its final annotations; item snapshots only fill omitted output.
+    let needs_stream_output = response.is_object()
+        && response
+            .get("output")
+            .is_none_or(|value| matches!(value, Value::Array(items) if items.is_empty()));
+    if needs_stream_output && !output.is_empty() {
         response["output"] = Value::Array(output.values().cloned().collect());
     }
     response
