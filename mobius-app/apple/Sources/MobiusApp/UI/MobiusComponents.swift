@@ -452,7 +452,6 @@ private struct MobiusSheetModifier: ViewModifier {
                 content.presentationDetents(detents)
             }
         }
-        .environment(\.mobiusUsesCustomNavigationHeading, false)
         .presentationDragIndicator(.visible)
         .scrollEdgeEffectStyle(.soft, for: .vertical)
         if #available(iOS 27.0, *) {

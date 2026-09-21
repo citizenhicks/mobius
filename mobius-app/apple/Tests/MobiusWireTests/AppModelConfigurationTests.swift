@@ -130,192 +130,106 @@ extension AppModelTests {
         XCTAssertEqual(model.chat.selectedModelRoute, "medium")
     }
 
-    func testNavigationHeadingUsesAvailableTitleArea() async throws {
-        let model = try model()
+    func testNativeNavigationTitlesAndActionsSurvivePushAndPop() async throws {
+        let app = try model(requestSender: { _ in })
+        app.showsWelcome = false
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        app.gateway.accounts = [account]
+        app.gateway.selectedAccountID = account.id
+        app.showsPairing = false
+        app.gateway.connectionState = .ready
+        app.destination = .providers
+        var selection = composition().provider
+        selection.instance = "fixture"
+        let provider = ProviderInstance(
+            label: "Fixture provider", tint: .purple, configured: true,
+            selection: selection, modelIds: [], reasoningEfforts: [])
+        app.providerInstances = [provider]
+        app.providerStatuses = [providerStatus(for: selection)]
+        app.editProviderInstance(provider)
         let scene = try XCTUnwrap(
             UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
                 .first { $0.activationState == .foregroundActive })
         let previous = scene.keyWindow
         let window = UIWindow(windowScene: scene)
         window.frame = scene.effectiveGeometry.coordinateSpace.bounds
+        let host = UIHostingController(rootView: AppShell().mobiusTheme().environment(app))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
         defer {
             window.isHidden = true
             window.rootViewController = nil
             previous?.makeKeyAndVisible()
         }
-        struct Page: View {
-            @Bindable var app: AppModel
-            let title: String
-            let plainTitle: Bool
-            let subtitle: MobiusText?
-            @State private var headingWidth: CGFloat?
-
-            var body: some View {
-                NavigationStack(path: $app.navigationPath) {
-                    screen()
-                        .navigationDestination(for: AppRoute.self) { route in
-                            screen(role: .editor)
-                                .mobiusCustomNavigationHeading(
-                                    width: $headingWidth,
-                                    isActive: !plainTitle && app.navigationPath.last == route
-                                )
-                        }
-                        .mobiusCustomNavigationHeading(
-                            width: $headingWidth,
-                            isActive: !plainTitle && app.navigationPath.isEmpty
-                        )
-                }
-            }
-
-            private func screen(role: ToolbarRole = .automatic) -> some View {
-                Form {
-                    Text("Page content").frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .toolbarRole(role)
-                .mobiusNavigationTitle(.verbatim(title), subtitle: subtitle)
-                .environment(\.mobiusUsesCustomNavigationHeading, !plainTitle)
-                .toolbar {
-                    if !plainTitle {
-                        MobiusNavigationHeadingItem {
-                            MobiusNavigationHeading(title: .verbatim(title)) {
-                                Text("gateway.local")
-                            }
-                            .id(title)
-                        }
-                    }
-                    MobiusToolbarItem(placement: .cancellationAction) {
-                        MobiusToolbarIconButton(glyph: .menu, label: "Show sidebar") {}
-                    }
-                    MobiusToolbarItem(placement: .primaryAction) {
-                        MobiusToolbarIconButton(glyph: .notePencil, label: "New chat") {}
-                    }
-                    MobiusToolbarItem(placement: .primaryAction) {
-                        MobiusToolbarIconButton(glyph: .dotsThree, label: "Options") {}
-                    }
-                }
-            }
-        }
         func navigation(in controller: UIViewController) -> UINavigationController? {
-            if let navigation = controller as? UINavigationController {
+            if let navigation = controller as? UINavigationController,
+                navigation.viewControllers.contains(where: {
+                    $0.navigationItem.title == "Providers"
+                })
+            {
                 return navigation
             }
             return controller.children.lazy.compactMap { navigation(in: $0) }.first
         }
-        func heading(in controller: UIViewController) -> UIView? {
-            navigation(in: controller)?.topViewController?.navigationItem.titleView
+        func hasPresentedController(_ controller: UIViewController) -> Bool {
+            controller.presentedViewController != nil
+                || controller.children.contains(where: hasPresentedController)
         }
-        func controls(in view: UIView, excluding title: UIView) -> [UIControl] {
-            guard !view.isHidden, view.alpha > 0 else { return [] }
-            if let control = view as? UIControl {
-                guard title !== control, !title.isDescendant(of: control),
-                    !control.isDescendant(of: title)
-                else { return [] }
-                let frame = control.convert(control.bounds, to: window)
-                guard !frame.isEmpty, window.bounds.contains(frame) else { return [] }
-                return [control]
-            }
-            return view.subviews.flatMap { controls(in: $0, excluding: title) }
+        let loaded = await eventually { navigation(in: host) != nil }
+        XCTAssertTrue(loaded)
+        if let close = testAccessibilityElements(window).first(where: {
+            $0.accessibilityLabel == "Close sidebar" && $0.accessibilityTraits.contains(.button)
+        }) {
+            XCTAssertTrue(close.accessibilityActivate())
         }
-        let configurations: [(Bool, MobiusText?)] = [
-            (false, nil), (true, nil), (true, .verbatim("@fixture")),
-        ]
-        for (plainTitle, subtitle) in configurations {
-            func page(_ title: String, width: CGFloat? = nil) -> some View {
-                Page(app: model, title: title, plainTitle: plainTitle, subtitle: subtitle)
-                    .frame(width: width)
-                    .mobiusTheme()
-                    .environment(model)
-            }
-            model.navigationPath = [.bot("header-fixture")]
-            let host = UIHostingController(
-                rootView: page(
-                    "Review gateway pairing and chat navigation across every connected workspace"))
-            window.rootViewController = host
-            window.makeKeyAndVisible()
-            func capture(_ name: String) {
-                let attachment = XCTAttachment(
-                    image: UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
-                        host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
-                    })
-                attachment.name = "\(plainTitle ? "Plain" : "Custom") heading \(name)"
-                attachment.lifetime = .keepAlways
-                add(attachment)
-            }
-            func assertLayout() throws -> CGRect {
-                let title = try XCTUnwrap(heading(in: host))
-                let titleFrame = title.convert(title.bounds, to: window)
-                XCTAssertGreaterThan(titleFrame.width, 0)
-                XCTAssertFalse(title.isHidden)
-                XCTAssertTrue(window.bounds.contains(titleFrame))
-                let buttons = controls(in: window, excluding: title)
-                XCTAssertEqual(buttons.count, model.navigationPath.isEmpty ? 3 : 4)
-                for button in buttons {
-                    let frame = button.convert(button.bounds, to: window)
-                    XCTAssertFalse(frame.isEmpty)
-                    XCTAssertTrue(window.bounds.contains(frame))
-                    XCTAssertFalse(titleFrame.intersects(frame))
-                    let hit = window.hitTest(CGPoint(x: frame.midX, y: frame.midY), with: nil)
-                    XCTAssertTrue(
-                        hit === button || hit?.isDescendant(of: button) == true,
-                        "The title must not cover a native action")
+        func assertPage(_ title: String, subtitle: String, action: String, depth: Int) async throws
+        {
+            let appeared = await eventually {
+                window.layoutIfNeeded()
+                guard !hasPresentedController(host), let navigation = navigation(in: host),
+                    navigation.transitionCoordinator == nil,
+                    navigation.viewControllers.count == depth,
+                    navigation.topViewController?.navigationItem.title == title,
+                    (navigation.topViewController?.navigationItem.subtitle ?? "") == subtitle
+                else { return false }
+                return testAccessibilityElements(window).contains {
+                    $0.accessibilityLabel == action && $0.accessibilityTraits.contains(.button)
                 }
-                return titleFrame
             }
-            func settledLayout(matching expected: CGRect? = nil) async throws -> CGRect {
-                let clock = ContinuousClock()
-                var previousFrames: [CGRect] = []
-                var unchangedSince = clock.now
-                let settled = await eventually(timeout: .seconds(3)) {
-                    window.setNeedsLayout()
-                    window.layoutIfNeeded()
-                    guard navigation(in: host)?.transitionCoordinator == nil,
-                        let title = heading(in: host)
-                    else { return false }
-                    let frame = title.convert(title.bounds, to: window)
-                    let buttons = controls(in: window, excluding: title)
-                    guard !frame.isEmpty, window.bounds.contains(frame),
-                        buttons.count == (model.navigationPath.isEmpty ? 3 : 4)
-                    else { return false }
-                    if let expected,
-                        abs(frame.width - expected.width) >= 1
-                            || abs(frame.maxX - expected.maxX) >= 1
-                    {
-                        return false
-                    }
-                    let frames = [frame] + buttons.map { $0.convert($0.bounds, to: window) }
-                    guard frames == previousFrames else {
-                        previousFrames = frames
-                        unchangedSince = clock.now
-                        return false
-                    }
-                    return clock.now - unchangedSince >= .milliseconds(100)
-                }
-                XCTAssertTrue(settled, "The active native navigation layout must settle")
-                return try assertLayout()
+            XCTAssertTrue(appeared, "Expected native navigation heading: \(title) / \(subtitle)")
+            XCTAssertFalse(hasPresentedController(host), "The navigation header must be unobscured")
+            if depth == 2 {
+                let name = try XCTUnwrap(
+                    testAccessibilityElements(window).compactMap { $0 as? UITextField }
+                        .first { $0.text == provider.label })
+                let frame = name.convert(name.bounds, to: window)
+                XCTAssertFalse(frame.isEmpty)
+                XCTAssertTrue(window.bounds.contains(frame))
             }
-            _ = try await settledLayout()
-            capture("cold pushed")
-            model.navigationPath = []
-            let longFrame = try await settledLayout()
-            capture("root long title")
-
-            host.rootView = page("Chats")
-            let shortFrame = try await settledLayout(matching: longFrame)
-            XCTAssertEqual(shortFrame.width, longFrame.width, accuracy: 1)
-            XCTAssertEqual(shortFrame.maxX, longFrame.maxX, accuracy: 1)
-            capture("root short title")
-
-            model.navigationPath = [.bot("header-fixture")]
-            let pushedFrame = try await settledLayout(matching: shortFrame)
-            XCTAssertEqual(pushedFrame.maxX, shortFrame.maxX, accuracy: 1)
-            host.rootView = page("Chats", width: window.bounds.width * 0.75)
-            _ = try await settledLayout()
-            model.navigationPath = []
-            host.rootView = page("Chats")
-            _ = try await settledLayout(matching: shortFrame)
-            capture("restored after resize")
-            window.rootViewController = nil
+            let item = try XCTUnwrap(navigation(in: host)?.topViewController?.navigationItem)
+            XCTAssertEqual(item.titleMenuProvider != nil, depth == 1)
+            let button = try XCTUnwrap(
+                testAccessibilityElements(window).first {
+                    $0.accessibilityLabel == action && $0.accessibilityTraits.contains(.button)
+                })
+            XCTAssertFalse(button.accessibilityTraits.contains(.notEnabled))
+            let frame = window.convert(button.accessibilityFrame, from: nil)
+            XCTAssertFalse(frame.isEmpty)
+            XCTAssertTrue(window.bounds.contains(frame))
+            let attachment = XCTAttachment(
+                image: UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                    window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+                })
+            attachment.name = "Native AppShell \(title)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
         }
+        let gatewayName = app.cloud.gatewayName(account)
+        try await assertPage("Providers", subtitle: gatewayName, action: "Add provider", depth: 1)
+        app.navigationPath = [.settings(.provider("fixture"))]
+        try await assertPage("Fixture provider", subtitle: "", action: "Save to gateway", depth: 2)
+        app.navigationPath = []
+        try await assertPage("Providers", subtitle: gatewayName, action: "Add provider", depth: 1)
     }
 
     func testWindowStateRoundTripsNavigation() throws {

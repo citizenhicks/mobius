@@ -69,8 +69,6 @@ extension EnvironmentValues {
     @Entry var mobiusHasVerticalToolbar = false
     @Entry var mobiusActionIconSize: CGFloat? = nil
     @Entry var mobiusBottomRailGeometry: MobiusBottomRailGeometry? = nil
-    @Entry var mobiusNavigationHeadingWidth: Binding<CGFloat?> = .constant(nil)
-    @Entry var mobiusUsesCustomNavigationHeading = false
 }
 
 /// One window's native bottom action supplies the baseline for adjacent content.
@@ -738,102 +736,15 @@ extension Button where Label == MobiusLabel {
     }
 }
 
-/// The title stays horizontal while native action items adapt onto the side rail.
-struct MobiusNavigationHeading<Subtitle: View>: View {
-    @Environment(\.mobiusNavigationHeadingWidth) private var headingWidth
-    let title: MobiusText
-    @ViewBuilder let subtitle: Subtitle
-
-    var body: some View {
-        let width = headingWidth.wrappedValue
-        VStack(alignment: .trailing, spacing: MobiusSpace.xxs) {
-            MobiusTitleText(title: title)
-                .font(MobiusStyle.titleFont)
-            subtitle
-                .font(MobiusStyle.captionFont)
-                .foregroundStyle(.secondary)
-        }
-        .lineLimit(1)
-        .truncationMode(.middle)
-        .frame(minWidth: 0, idealWidth: width, maxWidth: width, alignment: .trailing)
-    }
-}
-
-struct MobiusNavigationHeadingItem<Content: View>: ToolbarContent {
-    @ViewBuilder let content: Content
-
-    @ToolbarContentBuilder
-    var body: some ToolbarContent {
-        if #available(iOS 27.1, *) {
-            ToolbarItem(placement: .title) {
-                content
-            }
-            .sharedBackgroundVisibility(.hidden)
-            .axisBehavior(.horizontalOnly)
-        } else {
-            ToolbarItem(placement: .title) {
-                content
-            }
-            .sharedBackgroundVisibility(.hidden)
-        }
-    }
-
-}
-
-private struct MobiusCustomNavigationHeading: ViewModifier {
-    @Binding var width: CGFloat?
-    let isActive: Bool
-
-    func body(content: Content) -> some View {
-        content
-            .environment(\.mobiusNavigationHeadingWidth, $width)
-            .onGeometryChange(for: CGFloat?.self) { geometry in
-                isActive ? geometry.size.width : nil
-            } action: { measuredWidth in
-                if let measuredWidth { width = measuredWidth }
-            }
-    }
-}
-
-private struct MobiusNavigationTitle: ViewModifier {
-    @Environment(\.mobiusUsesCustomNavigationHeading) private var usesCustomHeading
-    @State private var width: CGFloat?
-    let title: MobiusText
-    let subtitle: MobiusText?
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        let page =
-            content
-            .navigationTitle(title.text)
-            .toolbarTitleDisplayMode(.inline)
-        if usesCustomHeading {
-            page
-        } else {
-            page
-                .toolbarRole(.editor)
-                .toolbar {
-                    MobiusNavigationHeadingItem {
-                        MobiusNavigationHeading(title: title) { subtitle?.text }
-                            .environment(\.mobiusNavigationHeadingWidth, .constant(width))
-                    }
-                }
-                .mobiusCustomNavigationHeading(width: $width, isActive: true)
-        }
-    }
-}
-
 extension View {
     func mobiusNavigationTitle(_ title: LocalizedStringResource) -> some View {
         mobiusNavigationTitle(.localized(title))
     }
 
     func mobiusNavigationTitle(_ title: MobiusText, subtitle: MobiusText? = nil) -> some View {
-        modifier(MobiusNavigationTitle(title: title, subtitle: subtitle))
-    }
-
-    func mobiusCustomNavigationHeading(width: Binding<CGFloat?>, isActive: Bool) -> some View {
-        modifier(MobiusCustomNavigationHeading(width: width, isActive: isActive))
+        navigationTitle(title.text)
+            .navigationSubtitle(subtitle?.text ?? Text(""))
+            .toolbarTitleDisplayMode(.inline)
     }
 }
 
@@ -907,7 +818,6 @@ struct MobiusToolbarItem<Content: View>: ToolbarContent {
 struct MobiusTranscriptToolbar<Detail: View>: ViewModifier {
     let dismiss: () -> Void
     @State private var showsInfo = false
-    @State private var headingWidth: CGFloat?
     let title: MobiusText
     let subtitle: Text
     var infoGlyph: MobiusGlyph = .info
@@ -918,13 +828,6 @@ struct MobiusTranscriptToolbar<Detail: View>: ViewModifier {
         content.toolbar {
             MobiusToolbarItem(placement: .confirmationAction) {
                 MobiusToolbarIconButton(glyph: .check, label: "Done") { dismiss() }
-            }
-            MobiusNavigationHeadingItem {
-                MobiusNavigationHeading(title: title) {
-                    subtitle
-                }
-                .environment(\.mobiusNavigationHeadingWidth, .constant(headingWidth))
-                .accessibilityElement(children: .combine)
             }
             MobiusToolbarItem(placement: .primaryAction) {
                 MobiusToolbarIconButton(glyph: infoGlyph, label: infoLabel) { showsInfo = true }
@@ -946,8 +849,8 @@ struct MobiusTranscriptToolbar<Detail: View>: ViewModifier {
             }
         }
         .navigationTitle(title.text)
+        .navigationSubtitle(subtitle)
         .toolbarTitleDisplayMode(.inline)
-        .mobiusCustomNavigationHeading(width: $headingWidth, isActive: true)
     }
 }
 

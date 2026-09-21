@@ -22,7 +22,6 @@ struct AppShell: View {
         debugStartsOnDetail ? NavigationSplitViewColumn.detail : .sidebar
     @State private var sidebarIsOpen = !debugStartsOnDetail
     @State private var hasVerticalToolbar = false
-    @State private var navigationHeadingWidth: CGFloat?
     @State private var filesColumnWidth: CGFloat = 320
     @State private var bottomRailGeometry = MobiusBottomRailGeometry()
     @State private var chatWindowToken = UUID()
@@ -307,18 +306,24 @@ struct AppShell: View {
         @Bindable var model = model
         return NavigationStack(path: $model.navigationPath) {
             destination
-                .environment(\.mobiusUsesCustomNavigationHeading, true)
+                .navigationTitle(rootPageTitle.text)
+                .navigationSubtitle(
+                    Text(verbatim: model.gateway.selectedAccount.map(model.cloud.gatewayName) ?? "")
+                )
+                .toolbarTitleMenu {
+                    Section {
+                        gatewayPicker
+                    } header: {
+                        Text(model.gateway.connectionState.label)
+                    }
+                }
+                .sensoryFeedback(.selection, trigger: model.gateway.selectedAccountID)
                 .background { verticalToolbarObserver }
                 .navigationDestination(for: AppRoute.self) { route in
                     routeDestination(route)
-                        .environment(\.mobiusUsesCustomNavigationHeading, false)
                         .toolbar { navigationToolbar }
                 }
                 .toolbar { navigationToolbar }
-                .mobiusCustomNavigationHeading(
-                    width: $navigationHeadingWidth,
-                    isActive: model.navigationPath.isEmpty
-                )
         }
         .id(model.destination)
 
@@ -327,12 +332,7 @@ struct AppShell: View {
     @ViewBuilder
     private func routeDestination(_ route: AppRoute) -> some View {
         switch route {
-        case .chat:
-            ChatView()
-                .mobiusCustomNavigationHeading(
-                    width: $navigationHeadingWidth,
-                    isActive: model.navigationPath.last == route
-                )
+        case .chat: ChatView()
         case .bot(let id): BotDetailView(botID: id)
         case .settings(.gateway(let id)): GatewayDetailView(id: id)
         case .settings(.provider(let instance)): ProviderDetailView(instance: instance)
@@ -342,15 +342,6 @@ struct AppShell: View {
 
     @ToolbarContentBuilder
     private var navigationToolbar: some ToolbarContent {
-        if model.navigationPath.isEmpty {
-            MobiusNavigationHeadingItem {
-                MobiusNavigationHeading(title: rootPageTitle) {
-                    if let account = model.gateway.selectedAccount {
-                        gatewayPicker(account)
-                    }
-                }
-            }
-        }
         if model.navigationPath.isEmpty || horizontalSizeClass != .compact {
             MobiusToolbarItem(placement: .topBarLeading) { sidebarButton }
         }
@@ -379,43 +370,19 @@ struct AppShell: View {
         }
     }
 
-    private func gatewayPicker(_ account: GatewayAccount) -> some View {
-        Menu {
-            Picker(
-                "Gateway",
-                selection: Binding(
-                    get: { model.gateway.selectedAccountID },
-                    set: { model.selectAccount($0) }
-                )
-            ) {
-                ForEach(model.gateway.accounts) { account in
-                    Text(verbatim: model.cloud.gatewayName(account))
-                        .tag(Optional(account.id))
-                }
-            }
-            .labelsHidden()
-        } label: {
-            HStack(spacing: MobiusSpace.xs) {
-                MobiusStatusIndicator(
-                    color: model.gateway.connectionState.tone.color(in: palette),
-                    isLoading: model.gateway.connectionState.isLoading
-                )
+    private var gatewayPicker: some View {
+        Picker(
+            "Gateway",
+            selection: Binding(
+                get: { model.gateway.selectedAccountID },
+                set: { model.selectAccount($0) }
+            )
+        ) {
+            ForEach(model.gateway.accounts) { account in
                 Text(verbatim: model.cloud.gatewayName(account))
-                MobiusIcon(
-                    .caretUpDown, size: MobiusStyle.glyphMark,
-                    foreground: palette.muted, gutter: false
-                )
+                    .tag(Optional(account.id))
             }
-            .foregroundStyle(palette.muted)
         }
-        .menuIndicator(.hidden)
-        .buttonStyle(.mobiusPlain)
-        .sensoryFeedback(.selection, trigger: model.gateway.selectedAccountID)
-        .accessibilityLabel("Gateway")
-        .accessibilityValue(
-            Text("\(model.cloud.gatewayName(account)), \(model.gateway.connectionState.label)")
-        )
-        .help("Switch gateway")
     }
 
     private var sidebarButton: some View {

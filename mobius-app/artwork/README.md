@@ -24,12 +24,21 @@ xcrun swiftc -parse-as-library -swift-version 6 -warnings-as-errors \
 The encoder requires a new output path. Inspect the loop before replacing the
 bundled movie.
 
-`MobiusLogo.imageset` contains frame 1 at 1024 × 1024. `AppIcon.icon` uses four
-separate transparent renders of whole beads, grouped by camera depth, over the
-Nord background, with subtle native shadows. The frontmost 96 beads form their
-own foreground layer. Preserve the complete hidden portions of each group so Apple's
-layered icon effects can reveal them. The default/dark icon and logo use the same
-camera and lighting as the animation.
+`AppIcon.icon` uses four separate transparent renders of whole beads from frame 1,
+grouped by camera depth, over the Nord background, with subtle native shadows.
+The frontmost 96 beads form their own foreground layer. Preserve the complete
+hidden portions of each group so Apple's layered icon effects can reveal them.
+The default/dark icon and logo use the same camera and lighting as the animation.
+
+`MobiusLogo.imageset` is the transparent 1024 × 1024 composition of the icon's
+default/dark artwork, ordered Rear → Body → Front → Foreground. Core Graphics
+preserves the layers' alignment and colors; the icon's background and native depth
+effects remain system-rendered. Rebuild the shared static logo from this directory:
+
+```sh
+xcrun swift ExportLogo.swift ../apple/Sources/MobiusApp/AppIcon.icon \
+  ../apple/Sources/MobiusApp/Assets.xcassets/MobiusLogo.imageset/MobiusLogo.png
+```
 
 Clear and tinted icons use the `-Mono.png` variants. These add two icon-only Nord
 area lights (30 W each, 2 × 6 m rectangles at X ±5, Y −0.5, Z 0, aimed at the

@@ -138,16 +138,12 @@ struct SettingsStatusAccessory: ToolbarContent {
 
     private var saveButton: some View {
         Button(action: save) {
-            Label {
-                saveLabel.text
-            } icon: {
-                Group {
-                    if isSaving {
-                        MobiusSpinner(size: MobiusStyle.iconSize)
-                    } else {
-                        MobiusIcon(.check, size: MobiusStyle.iconSize)
-                    }
-                }
+            if isSaving {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: MobiusStyle.glyphLead, height: MobiusStyle.glyphLead)
+            } else {
+                MobiusIcon(.check, size: MobiusStyle.glyphLead)
             }
         }
         .mobiusProminentToolbarButton()
@@ -173,14 +169,13 @@ struct SettingsStatusButton: View {
         Button {
             showsStatus = true
         } label: {
-            Label {
-                statusAccessibilityLabel
-            } icon: {
-                if isLoading {
-                    MobiusSpinner(size: MobiusStyle.glyphLead, foreground: statusColor)
-                } else {
-                    MobiusIcon(.circleDot, foreground: statusColor, gutter: false)
-                }
+            if isLoading {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(statusColor)
+                    .frame(width: MobiusStyle.glyphLead, height: MobiusStyle.glyphLead)
+            } else {
+                MobiusIcon(.circleDot, foreground: statusColor, gutter: false)
             }
         }
         .mobiusToolbarIcon()

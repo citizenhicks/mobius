@@ -178,7 +178,6 @@ struct SidebarView: View {
                         .resizable()
                         .scaledToFit()
                         .frame(width: 28, height: 28)
-                        .clipShape(.rect(cornerRadius: 6))
                         .accessibilityHidden(true)
                     Group {
                         if model.selectedGatewayIsMobiusCloud {

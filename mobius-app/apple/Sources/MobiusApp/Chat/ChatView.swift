@@ -128,27 +128,10 @@ struct ChatView: View {
         .onChange(of: model.chat.composerBlurRequest) { dictation.stop() }
         .onDisappear { dictation.stop() }
         .navigationTitle(chatTitle)
+        .navigationSubtitle(navigationSubtitle)
         .toolbarTitleDisplayMode(.inline)
         .toolbarRole(.editor)
         .toolbar {
-            MobiusNavigationHeadingItem {
-                MobiusNavigationHeading(title: .verbatim(chatTitle)) {
-                    HStack(spacing: MobiusSpace.xs) {
-                        if !chatSubtitle.isEmpty {
-                            Text(verbatim: chatSubtitle)
-                        }
-                        if let folders = model.chat.attachedFolders, !folders.isEmpty {
-                            HStack(spacing: MobiusSpace.xxs) {
-                                MobiusIcon(.folderPlus, size: 12)
-                                Text(folders.count, format: .number)
-                            }
-                            .fixedSize()
-                            .accessibilityElement(children: .ignore)
-                            .accessibilityLabel(Text("Folders: \(folders.count)"))
-                        }
-                    }
-                }
-            }
             if model.chat.selectedSessionID != nil, !model.selectedSessionIsHidden {
                 MobiusToolbarItem(placement: .primaryAction) {
                     ChatOptionsMenu(
@@ -277,6 +260,13 @@ struct ChatView: View {
         guard let path = model.workspace?.path else { return "" }
         let name = URL(fileURLWithPath: path).lastPathComponent
         return name.isEmpty ? path : name
+    }
+
+    private var navigationSubtitle: Text {
+        let subtitle = Text(verbatim: chatSubtitle)
+        guard let folders = model.chat.attachedFolders, !folders.isEmpty else { return subtitle }
+        let folderCount = Text("Folders: \(folders.count)")
+        return chatSubtitle.isEmpty ? folderCount : Text("\(subtitle) · \(folderCount)")
     }
 
     private var chatSubtitle: String {

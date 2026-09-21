@@ -6,6 +6,78 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testExtensionsStatusHeaderStaysIconOnlyWhileLoadingAndSettled() async throws {
+        let app = try model(requestSender: { _ in })
+        app.gateway.connectionState = .connecting
+        let scene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive })
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
+        let host = UIHostingController(
+            rootView: NavigationStack { ExtensionsView() }.mobiusTheme().environment(app))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+        let label = "Extensions status"
+        for (state, status) in [
+            (ConnectionState.connecting, "Connecting"), (.ready, "Catalog up to date"),
+        ] {
+            app.gateway.connectionState = state
+            let appeared = await eventually {
+                testAccessibilityElements(window).contains {
+                    $0.accessibilityLabel == label && $0.accessibilityValue == status
+                        && $0.accessibilityTraits.contains(.button)
+                        && !$0.accessibilityFrame.isEmpty
+                }
+            }
+            XCTAssertTrue(appeared, status)
+            let button = try XCTUnwrap(
+                testAccessibilityElements(window).first {
+                    $0.accessibilityLabel == label && $0.accessibilityTraits.contains(.button)
+                        && !$0.accessibilityFrame.isEmpty
+                })
+            XCTAssertFalse(button.accessibilityTraits.contains(.notEnabled))
+            let frame = button.accessibilityFrame
+            XCTAssertFalse(frame.isEmpty)
+            XCTAssertLessThanOrEqual(frame.width, MobiusStyle.rowTouch + 8)
+            XCTAssertTrue(window.convert(window.bounds, to: nil).contains(frame))
+            XCTAssertFalse(
+                testAccessibilityElements(window).compactMap { $0 as? UILabel }.contains {
+                    $0.text == label && !$0.isHidden && $0.alpha > 0
+                }, "The accessibility label must not become visible toolbar text")
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+            let attachment = XCTAttachment(image: image)
+            attachment.name = "Extensions status: \(status)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            if presentationToolbarButton(label, in: host)?.action != nil {
+                try activatePresentationToolbarButton(label, in: host)
+            } else {
+                XCTAssertTrue(button.accessibilityActivate())
+            }
+            let opened = await eventually {
+                guard let popover = host.presentedViewController,
+                    popover.popoverPresentationController != nil
+                else { return false }
+                return testAccessibilityElements(popover.view).contains {
+                    $0.accessibilityLabel == status && $0.accessibilityTraits.contains(.staticText)
+                }
+            }
+            XCTAssertTrue(opened, status)
+            host.dismiss(animated: false)
+            let dismissed = await eventually { host.presentedViewController == nil }
+            XCTAssertTrue(dismissed)
+        }
+    }
+
     func testFilesInspectorPrefersFortyFivePercentWithFlexibleWidth() async throws {
         let app = try model(requestSender: { _ in })
         app.showsWelcome = false
