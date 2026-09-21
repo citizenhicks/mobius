@@ -108,23 +108,10 @@ struct TranscriptFileCards: View {
                 HStack(alignment: .top, spacing: MobiusSpace.s) {
                     ForEach(files[start..<min(start + columnCount, files.count)]) { file in
                         SessionFileCard(file: file, sessionID: sessionID)
-                            .frame(
-                                width: 136,
-                                alignment: alignsTrailing ? .trailing : .leading
-                            )
                     }
                 }
             }
         }
-        .frame(
-            width: gridWidth(columnCount: columnCount),
-            alignment: alignsTrailing ? .trailing : .leading
-        )
-    }
-
-    private func gridWidth(columnCount: Int) -> CGFloat {
-        let columns = CGFloat(min(files.count, columnCount))
-        return columns * 136 + (columns - 1) * MobiusSpace.s
     }
 }
 

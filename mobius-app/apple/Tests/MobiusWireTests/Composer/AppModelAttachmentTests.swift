@@ -110,6 +110,88 @@ extension AppModelTests {
         }
     }
 
+    func testTranscriptAttachmentCardsPackAtContentWidthsAndWrap() async throws {
+        let app = try model(requestSender: { _ in })
+        let files = ["tall-1.png", "tall-2.png", "notes.pdf"].map { name in
+            SessionFileReference(
+                id: name, name: name, size: 1,
+                mediaType: name.hasSuffix(".png") ? "image/png" : "application/pdf")
+        }
+        let thumbnail = try XCTUnwrap(
+            ImageRenderer(content: Color.blue.frame(width: 56, height: 112)).cgImage)
+        for file in files.prefix(2) {
+            app.chat.cacheFileThumbnail(
+                thumbnail, for: .session(sessionID: "chat-1", fileID: file.id))
+        }
+        let scene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive })
+        let previous = scene.keyWindow
+        previous?.isHidden = true
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.isHidden = false
+            previous?.makeKeyAndVisible()
+        }
+        func content(width: CGFloat, trailing: Bool) -> some View {
+            TranscriptFileCards(files: files, sessionID: "chat-1", alignsTrailing: trailing)
+                .frame(width: width, alignment: trailing ? .trailing : .leading)
+                .mobiusTheme()
+                .environment(app)
+        }
+        let host = UIHostingController(rootView: content(width: 320, trailing: false))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        func frames() -> [CGRect] {
+            let elements = testAccessibilityElements(window)
+            return files.compactMap { file in
+                elements.first { $0.accessibilityLabel == "Open file \(file.name)" }
+                    .map(\.accessibilityFrame)
+            }
+        }
+        for (width, trailing) in [(CGFloat(320), false), (150, false), (150, true)] {
+            host.rootView = content(width: width, trailing: trailing)
+            let settled = await eventually {
+                window.layoutIfNeeded()
+                host.view.layoutIfNeeded()
+                let cards = frames()
+                guard cards.count == 3, cards.allSatisfy({ !$0.isEmpty }) else { return false }
+                let wrapped = cards[2].minY > cards[0].maxY
+                return wrapped == (width == 150)
+                    && (!trailing || abs(cards[1].maxX - cards[2].maxX) < 0.5)
+            }
+            XCTAssertTrue(settled)
+            let cards = frames()
+            guard cards.count == 3 else { return XCTFail("Expected all three attachment cards") }
+            for (index, card) in cards.enumerated() {
+                XCTAssertEqual(card.width, index == 2 ? 136 : 56, accuracy: 0.5)
+                XCTAssertEqual(card.height, 112, accuracy: 0.5)
+            }
+            XCTAssertEqual(cards[0].minY, cards[1].minY, accuracy: 0.5)
+            XCTAssertEqual(cards[1].minX - cards[0].maxX, MobiusSpace.s, accuracy: 0.5)
+            if width == 320 {
+                XCTAssertEqual(cards[2].minY, cards[0].minY, accuracy: 0.5)
+                XCTAssertEqual(cards[2].minX - cards[1].maxX, MobiusSpace.s, accuracy: 0.5)
+            } else {
+                XCTAssertEqual(cards[2].minY - cards[0].maxY, MobiusSpace.s, accuracy: 0.5)
+                XCTAssertEqual(
+                    trailing ? cards[2].maxX : cards[2].minX,
+                    trailing ? cards[1].maxX : cards[0].minX, accuracy: 0.5)
+            }
+            let attachment = XCTAttachment(
+                image: UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                    window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+                })
+            attachment.name = "Attachments \(Int(width))pt \(trailing ? "trailing" : "leading")"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+    }
+
     func testIdleChatAttachmentControlUsesUpdatedBotWithoutReopeningChat() throws {
         let model = try model()
         model.gateway.connectionState = .ready
