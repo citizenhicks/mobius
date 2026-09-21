@@ -182,32 +182,56 @@ extension AppModelTests {
         }) {
             XCTAssertTrue(close.accessibilityActivate())
         }
-        func assertPage(_ title: String, subtitle: String, action: String, depth: Int) async throws
-        {
+        func assertPage(_ title: String, action: String, depth: Int) async throws {
             let appeared = await eventually {
                 window.layoutIfNeeded()
                 guard !hasPresentedController(host), let navigation = navigation(in: host),
                     navigation.transitionCoordinator == nil,
                     navigation.viewControllers.count == depth,
-                    navigation.topViewController?.navigationItem.title == title,
-                    (navigation.topViewController?.navigationItem.subtitle ?? "") == subtitle
+                    let page = navigation.topViewController,
+                    page.navigationItem.title == title
                 else { return false }
+                let elements = testAccessibilityElements(page.view)
+                if depth == 2,
+                    !elements.compactMap({ $0 as? UITextField }).contains(where: {
+                        $0.text == provider.label
+                    })
+                {
+                    return false
+                }
                 return testAccessibilityElements(window).contains {
                     $0.accessibilityLabel == action && $0.accessibilityTraits.contains(.button)
                 }
             }
-            XCTAssertTrue(appeared, "Expected native navigation heading: \(title) / \(subtitle)")
+            XCTAssertTrue(appeared, "Expected native navigation heading: \(title)")
             XCTAssertFalse(hasPresentedController(host), "The navigation header must be unobscured")
             if depth == 2 {
+                let detail = try XCTUnwrap(navigation(in: host)?.topViewController?.view)
                 let name = try XCTUnwrap(
-                    testAccessibilityElements(window).compactMap { $0 as? UITextField }
+                    testAccessibilityElements(detail).compactMap { $0 as? UITextField }
                         .first { $0.text == provider.label })
                 let frame = name.convert(name.bounds, to: window)
                 XCTAssertFalse(frame.isEmpty)
                 XCTAssertTrue(window.bounds.contains(frame))
             }
-            let item = try XCTUnwrap(navigation(in: host)?.topViewController?.navigationItem)
-            XCTAssertEqual(item.titleMenuProvider != nil, depth == 1)
+            let currentNavigation = try XCTUnwrap(navigation(in: host))
+            let item = try XCTUnwrap(currentNavigation.topViewController?.navigationItem)
+            XCTAssertNil(item.titleMenuProvider)
+            let gateway = testAccessibilityElements(currentNavigation.navigationBar).first {
+                $0.accessibilityLabel == "Gateway" && $0.accessibilityTraits.contains(.button)
+            }
+            if depth == 1 {
+                let picker = try XCTUnwrap(gateway)
+                XCTAssertEqual(
+                    picker.accessibilityValue,
+                    "\(app.cloud.gatewayName(account)), Ready"
+                )
+                let frame = window.convert(picker.accessibilityFrame, from: nil)
+                XCTAssertFalse(frame.isEmpty)
+                XCTAssertTrue(window.bounds.contains(frame))
+            } else {
+                XCTAssertNil(gateway)
+            }
             let button = try XCTUnwrap(
                 testAccessibilityElements(window).first {
                     $0.accessibilityLabel == action && $0.accessibilityTraits.contains(.button)
@@ -224,12 +248,11 @@ extension AppModelTests {
             attachment.lifetime = .keepAlways
             add(attachment)
         }
-        let gatewayName = app.cloud.gatewayName(account)
-        try await assertPage("Providers", subtitle: gatewayName, action: "Add provider", depth: 1)
+        try await assertPage("Providers", action: "Add provider", depth: 1)
         app.navigationPath = [.settings(.provider("fixture"))]
-        try await assertPage("Fixture provider", subtitle: "", action: "Save to gateway", depth: 2)
+        try await assertPage("Fixture provider", action: "Save to gateway", depth: 2)
         app.navigationPath = []
-        try await assertPage("Providers", subtitle: gatewayName, action: "Add provider", depth: 1)
+        try await assertPage("Providers", action: "Add provider", depth: 1)
     }
 
     func testWindowStateRoundTripsNavigation() throws {

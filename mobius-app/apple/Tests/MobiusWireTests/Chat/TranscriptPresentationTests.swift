@@ -1,7 +1,119 @@
 import Foundation
+import SwiftUI
 import UIKit
 @testable import Mobius
 import XCTest
+
+@MainActor
+extension AppModelTests {
+    func testChatNavigationKeepsHeaderCanvasDuringTransition() async throws {
+        let app = try model(requestSender: { _ in })
+        app.showsWelcome = false
+        app.theme = .dark
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        app.gateway.accounts = [account]
+        app.gateway.selectedAccountID = account.id
+        app.showsPairing = false
+        app.gateway.connectionState = .ready
+        app.destination = .chats
+        app.chat.sessions = [session(state: .idle, title: "Transition fixture")]
+        app.chat.selectedSessionID = "chat-1"
+        let scene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive })
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
+        let host = UIHostingController(rootView: AppShell().mobiusTheme().environment(app))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+        func navigation(in controller: UIViewController) -> UINavigationController? {
+            if let navigation = controller as? UINavigationController,
+                navigation.viewControllers.contains(where: { $0.navigationItem.title == "Chats" })
+            {
+                return navigation
+            }
+            return controller.children.lazy.compactMap { navigation(in: $0) }.first
+        }
+        let loaded = await eventually { navigation(in: host) != nil }
+        XCTAssertTrue(loaded)
+        if let close = testAccessibilityElements(window).first(where: {
+            $0.accessibilityLabel == "Close sidebar" && $0.accessibilityTraits.contains(.button)
+        }) {
+            XCTAssertTrue(close.accessibilityActivate())
+        }
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertNil(host.presentedViewController)
+        let navigation = try XCTUnwrap(navigation(in: host))
+        let bar = navigation.navigationBar.convert(navigation.navigationBar.bounds, to: window)
+        // Sample clear canvas at the bottom of the header, below title and button glyphs.
+        let strip = CGRect(x: bar.minX + 20, y: bar.maxY - 3, width: bar.width - 40, height: 2)
+            .integral
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(bounds: window.bounds, format: format)
+        func frame() -> UIImage {
+            renderer.image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: false)
+            }
+        }
+        func brightness(_ image: UIImage) throws -> Double {
+            let crop = try XCTUnwrap(image.cgImage?.cropping(to: strip))
+            var pixels = [UInt8](repeating: 0, count: crop.width * crop.height * 4)
+            try pixels.withUnsafeMutableBytes { buffer in
+                let context = try XCTUnwrap(
+                    CGContext(
+                        data: buffer.baseAddress, width: crop.width, height: crop.height,
+                        bitsPerComponent: 8, bytesPerRow: crop.width * 4,
+                        space: CGColorSpaceCreateDeviceRGB(),
+                        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+                context.draw(crop, in: CGRect(x: 0, y: 0, width: crop.width, height: crop.height))
+            }
+            let total = stride(from: 0, to: pixels.count, by: 4).reduce(0) {
+                $0 + Int(pixels[$1]) + Int(pixels[$1 + 1]) + Int(pixels[$1 + 2])
+            }
+            return Double(total) / Double(crop.width * crop.height * 3)
+        }
+        let baseline = try brightness(frame())
+        XCTAssertGreaterThan(baseline, 20, "The fixture must sample the dark canvas, not black")
+        for isPushed in [true, false] {
+            withAnimation {
+                app.navigationPath = isPushed ? [.chat(.session("chat-1"))] : []
+            }
+            var samples: [Double] = []
+            var darkest = frame()
+            var minimum = Double.infinity
+            for _ in 0..<20 {
+                let image = frame()
+                let value = try brightness(image)
+                samples.append(value)
+                if value < minimum {
+                    minimum = value
+                    darkest = image
+                }
+                try await Task.sleep(for: .milliseconds(16))
+            }
+            let direction = isPushed ? "push" : "pop"
+            let attachment = XCTAttachment(image: darkest)
+            attachment.name = "Chat header darkest \(direction) frame"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            let measurements = XCTAttachment(
+                string: "baseline=\(baseline), \(direction)=\(samples)")
+            measurements.lifetime = .keepAlways
+            add(measurements)
+            XCTAssertGreaterThan(minimum, baseline * 0.65, "Black header during \(direction)")
+            XCTAssertEqual(navigation.viewControllers.count, isPushed ? 2 : 1)
+            XCTAssertEqual(
+                navigation.topViewController?.navigationItem.title,
+                isPushed ? "Transition fixture" : "Chats")
+        }
+    }
+}
 
 final class TranscriptMarkdownSelectionTests: XCTestCase {
     func testFlattensEveryBlockKindIntoOneSelectableValue() {

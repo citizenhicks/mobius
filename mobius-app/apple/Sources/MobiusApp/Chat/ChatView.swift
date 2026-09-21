@@ -14,7 +14,6 @@ extension MountedWidget {
 }
 struct ChatView: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.mobiusHasVerticalToolbar) private var hasVerticalToolbar
     @Environment(\.mobiusPalette) private var palette
     @Environment(\.locale) private var locale
@@ -24,7 +23,6 @@ struct ChatView: View {
     @State private var presentedWidget: MountedWidget?
     @State private var presentedBotSettings: BotRecord?
     @State private var showsFolderAttachmentBrowser = false
-    @State private var hasEntered = false
     @State private var transcriptPresentationID = UUID()
     @State private var dictation = ComposerDictation()
     @State private var voiceOrbOffset = CGSize.zero
@@ -108,13 +106,8 @@ struct ChatView: View {
                 .zIndex(3)
             }
         }
-        .scaleEffect(hasEntered || reduceMotion ? 1 : 0.985)
-        .opacity(hasEntered ? 1 : 0)
         .onAppear {
             resetTranscriptPresentation()
-            withAnimation(reduceMotion ? .easeOut(duration: 0.12) : .smooth(duration: 0.28)) {
-                hasEntered = true
-            }
         }
         .onChange(of: model.chat.chatPresentationRevision) {
             // SwiftUI can retain a popped navigation destination, so `onAppear` is not a

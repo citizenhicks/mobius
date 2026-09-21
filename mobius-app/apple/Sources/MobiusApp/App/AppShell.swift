@@ -307,23 +307,22 @@ struct AppShell: View {
         return NavigationStack(path: $model.navigationPath) {
             destination
                 .navigationTitle(rootPageTitle.text)
-                .navigationSubtitle(
-                    Text(verbatim: model.gateway.selectedAccount.map(model.cloud.gatewayName) ?? "")
-                )
-                .toolbarTitleMenu {
-                    Section {
-                        gatewayPicker
-                    } header: {
-                        Text(model.gateway.connectionState.label)
-                    }
-                }
-                .sensoryFeedback(.selection, trigger: model.gateway.selectedAccountID)
+                .toolbarTitleDisplayMode(.inline)
                 .background { verticalToolbarObserver }
                 .navigationDestination(for: AppRoute.self) { route in
                     routeDestination(route)
                         .toolbar { navigationToolbar }
                 }
-                .toolbar { navigationToolbar }
+                .toolbar {
+                    if let account = model.gateway.selectedAccount {
+                        ToolbarItem(placement: .subtitle) {
+                            gatewayPicker(account)
+                                .font(MobiusStyle.captionFont)
+                                .lineLimit(1)
+                        }
+                    }
+                    navigationToolbar
+                }
         }
         .id(model.destination)
 
@@ -370,19 +369,43 @@ struct AppShell: View {
         }
     }
 
-    private var gatewayPicker: some View {
-        Picker(
-            "Gateway",
-            selection: Binding(
-                get: { model.gateway.selectedAccountID },
-                set: { model.selectAccount($0) }
-            )
-        ) {
-            ForEach(model.gateway.accounts) { account in
-                Text(verbatim: model.cloud.gatewayName(account))
-                    .tag(Optional(account.id))
+    private func gatewayPicker(_ account: GatewayAccount) -> some View {
+        Menu {
+            Picker(
+                "Gateway",
+                selection: Binding(
+                    get: { model.gateway.selectedAccountID },
+                    set: { model.selectAccount($0) }
+                )
+            ) {
+                ForEach(model.gateway.accounts) { account in
+                    Text(verbatim: model.cloud.gatewayName(account))
+                        .tag(Optional(account.id))
+                }
             }
+            .labelsHidden()
+        } label: {
+            HStack(spacing: MobiusSpace.xs) {
+                MobiusStatusIndicator(
+                    color: model.gateway.connectionState.tone.color(in: palette),
+                    isLoading: model.gateway.connectionState.isLoading
+                )
+                Text(verbatim: model.cloud.gatewayName(account))
+                MobiusIcon(
+                    .caretUpDown, size: MobiusStyle.glyphMark,
+                    foreground: palette.muted, gutter: false
+                )
+            }
+            .foregroundStyle(palette.muted)
         }
+        .menuIndicator(.hidden)
+        .buttonStyle(.mobiusPlain)
+        .sensoryFeedback(.selection, trigger: model.gateway.selectedAccountID)
+        .accessibilityLabel("Gateway")
+        .accessibilityValue(
+            Text("\(model.cloud.gatewayName(account)), \(model.gateway.connectionState.label)")
+        )
+        .help("Switch gateway")
     }
 
     private var sidebarButton: some View {
