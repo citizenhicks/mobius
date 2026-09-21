@@ -351,7 +351,9 @@ struct AppShell: View {
                 }
             }
         }
-        MobiusToolbarItem(placement: .topBarLeading) { sidebarButton }
+        if model.navigationPath.isEmpty || horizontalSizeClass != .compact {
+            MobiusToolbarItem(placement: .topBarLeading) { sidebarButton }
+        }
     }
 
     private var rootPageTitle: MobiusText {
