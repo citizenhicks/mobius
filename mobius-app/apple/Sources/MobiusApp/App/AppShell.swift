@@ -16,10 +16,15 @@ struct AppShell: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.openURL) private var openURL
-    @State private var columnVisibility = NavigationSplitViewVisibility.all
+    @State private var columnVisibility: NavigationSplitViewVisibility =
+        debugStartsOnDetail ? .detailOnly : .all
     @State private var compactColumn =
         debugStartsOnDetail ? NavigationSplitViewColumn.detail : .sidebar
     @State private var sidebarIsOpen = !debugStartsOnDetail
+    @State private var hasVerticalToolbar = false
+    @State private var navigationHeadingWidth: CGFloat?
+    @State private var filesColumnWidth: CGFloat = 320
+    @State private var bottomRailGeometry = MobiusBottomRailGeometry()
     @State private var chatWindowToken = UUID()
 
     var body: some View {
@@ -31,18 +36,9 @@ struct AppShell: View {
                 WelcomeView()
             } else if model.gateway.accounts.isEmpty {
                 PairingView(canCancel: false)
-                    .frame(maxWidth: 620)
-                    .padding(MobiusSpace.xl)
             } else {
                 shell
-                    .inspector(isPresented: $model.showsInspector) {
-                        FilesView()
-                            .inspectorColumnWidth(min: 320, ideal: 480, max: 720)
-                            .frame(idealHeight: 720)
-                            .overlay(alignment: .top) {
-                                compactInspectorToastOverlay
-                            }
-                    }
+                    .environment(\.mobiusHasVerticalToolbar, hasVerticalToolbar)
                     .sheet(isPresented: $model.showsPairing) {
                         pairingSheet
                     }
@@ -52,6 +48,24 @@ struct AppShell: View {
             }
             AppToastOverlay().zIndex(10)
         }
+        .inspector(isPresented: $model.isPresentingFilesInspector) {
+            FilesView()
+                .environment(\.mobiusHasVerticalToolbar, hasVerticalToolbar)
+                .inspectorColumnWidth(min: 240, ideal: filesColumnWidth, max: 720)
+                .frame(idealHeight: 720)
+                .overlay(alignment: .top) {
+                    compactInspectorToastOverlay
+                }
+        }
+        .onGeometryChange(for: CGFloat.self) { geometry in
+            // The inspector width excludes the trailing system rail; its screen share does not.
+            let insets = geometry.safeAreaInsets
+            let windowWidth = geometry.size.width + insets.leading + insets.trailing
+            return max(0, windowWidth * 0.45 - insets.trailing)
+        } action: { width in
+            filesColumnWidth = width
+        }
+        .environment(\.mobiusBottomRailGeometry, bottomRailGeometry)
         // Reconnecting to this gateway preserves local forms; changing gateways discards them.
         .id(model.gateway.selectedAccountID)
         .background {
@@ -133,8 +147,6 @@ struct AppShell: View {
         .quickLookPreview($model.previewURL)
         .sheet(isPresented: $model.showsCloudOffer) {
             PairingView(canCancel: true, initialSetup: .cloud)
-                .frame(maxWidth: 560)
-                .padding(MobiusSpace.xl)
                 .mobiusSheet(detents: [.large])
         }
         .sheet(
@@ -165,6 +177,15 @@ struct AppShell: View {
             guard isPresentingChat, horizontalSizeClass == .compact else { return }
             withAnimation(SidebarDrawerMetrics.animation) { sidebarIsOpen = false }
         }
+        .onChange(of: model.isPresentingFilesInspector) { _, isPresented in
+            guard isPresented else { return }
+            model.chat.dismissComposerFocus()
+            withAnimation(SidebarDrawerMetrics.animation) {
+                sidebarIsOpen = false
+                columnVisibility = .detailOnly
+                compactColumn = .detail
+            }
+        }
         .onChange(of: model.toast?.id) { _, _ in
             guard let toast = model.toast, !filePresentationsAreSuppressed else { return }
             announce(toast)
@@ -192,8 +213,6 @@ struct AppShell: View {
 
     private var pairingSheet: some View {
         PairingView(canCancel: true)
-            .frame(maxWidth: 560)
-            .padding(MobiusSpace.xl)
             .overlay(alignment: .top) { AppToastOverlay() }
             .mobiusSheet(detents: [.large])
     }
@@ -235,12 +254,22 @@ struct AppShell: View {
 
     private var presentedTextFilePreview: Binding<TextFilePreview?> {
         Binding(
-            get: { filePresentationsAreSuppressed ? nil : model.textFilePreview },
+            get: {
+                guard !filePresentationsAreSuppressed, !workspaceDraftIsOutsideChat else {
+                    return nil
+                }
+                return model.textFilePreview
+            },
             set: { preview in
-                guard !filePresentationsAreSuppressed else { return }
+                guard !filePresentationsAreSuppressed, !workspaceDraftIsOutsideChat else { return }
                 model.textFilePreview = preview
             }
         )
+    }
+
+    private var workspaceDraftIsOutsideChat: Bool {
+        guard let owner = model.textFilePreview?.workspaceSessionID else { return false }
+        return !model.isPresentingChat || owner != model.presentedChatSessionID
     }
 
     /// Compact iOS reveals the sidebar under the detail; everything else keeps the split view,
@@ -248,8 +277,10 @@ struct AppShell: View {
     @ViewBuilder
     private var shell: some View {
         if horizontalSizeClass == .compact {
-            SidebarDrawer(isOpen: $sidebarIsOpen) {
-                SidebarView(showDetail: showDetail)
+            SidebarDrawer(
+                isOpen: $sidebarIsOpen
+            ) {
+                SidebarView(sharesBottomRail: false, showDetail: showDetail)
             } detail: {
                 detailNavigation
             }
@@ -263,8 +294,8 @@ struct AppShell: View {
             columnVisibility: $columnVisibility,
             preferredCompactColumn: $compactColumn
         ) {
-            SidebarView(showDetail: showDetail)
-                .navigationSplitViewColumnWidth(min: 230, ideal: 272, max: 340)
+            SidebarView(sharesBottomRail: sidebarIsPresented, showDetail: showDetail)
+                .navigationSplitViewColumnWidth(min: 200, ideal: 232, max: 280)
                 .toolbar(removing: .sidebarToggle)
         } detail: {
             detailNavigation
@@ -276,57 +307,124 @@ struct AppShell: View {
         @Bindable var model = model
         return NavigationStack(path: $model.navigationPath) {
             destination
+                .environment(\.mobiusUsesCustomNavigationHeading, true)
+                .background { verticalToolbarObserver }
                 .navigationDestination(for: AppRoute.self) { route in
-                    switch route {
-                    case .chat: ChatView()
-                    case .bot(let id): BotDetailView(botID: id)
-                    case .settings(.gateway(let id)): GatewayDetailView(id: id)
-                    case .settings(.provider(let instance)): ProviderDetailView(instance: instance)
-                    case .settings(.extensionPackage(let id)): ExtensionDetailView(id: id)
-                    }
+                    routeDestination(route)
+                        .environment(\.mobiusUsesCustomNavigationHeading, false)
+                        .toolbar { navigationToolbar }
                 }
-                .toolbar {
-                    if model.navigationPath.isEmpty {
-                        ToolbarItem(placement: .principal) {
-                            rootNavigationTitle
-                        }
-                    }
-                    if usesIPadLayout {
-                        ToolbarItem(placement: .topBarLeading) {
-                            iPadSidebarButton
-                        }
-                    }
-                    if !usesIPadLayout,
-                        horizontalSizeClass == .compact,
-                        model.navigationPath.isEmpty
-                    {
-                        ToolbarItem(placement: .topBarLeading) {
-                            MobiusToolbarIconButton(
-                                glyph: .menu,
-                                label: sidebarIsOpen ? "Hide sidebar" : "Show sidebar"
-                            ) {
-                                // The keyboard belongs to the page being slid away; left
-                                // up, it animates against a screen the reader just left.
-                                model.chat.dismissComposerFocus()
-                                withAnimation(SidebarDrawerMetrics.animation) {
-                                    sidebarIsOpen.toggle()
-                                }
-                            }
-                        }
-                    }
-                }
+                .toolbar { navigationToolbar }
+                .mobiusCustomNavigationHeading(
+                    width: $navigationHeadingWidth,
+                    isActive: model.navigationPath.isEmpty
+                )
         }
         .id(model.destination)
+
     }
 
-    private var iPadSidebarButton: some View {
-        MobiusToolbarIconButton(glyph: .menu, label: iPadSidebarButtonTitle) {
+    @ViewBuilder
+    private func routeDestination(_ route: AppRoute) -> some View {
+        switch route {
+        case .chat:
+            ChatView()
+                .mobiusCustomNavigationHeading(
+                    width: $navigationHeadingWidth,
+                    isActive: model.navigationPath.last == route
+                )
+        case .bot(let id): BotDetailView(botID: id)
+        case .settings(.gateway(let id)): GatewayDetailView(id: id)
+        case .settings(.provider(let instance)): ProviderDetailView(instance: instance)
+        case .settings(.extensionPackage(let id)): ExtensionDetailView(id: id)
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var navigationToolbar: some ToolbarContent {
+        if model.navigationPath.isEmpty {
+            MobiusNavigationHeadingItem {
+                MobiusNavigationHeading(title: rootPageTitle) {
+                    if let account = model.gateway.selectedAccount {
+                        gatewayPicker(account)
+                    }
+                }
+            }
+        }
+        MobiusToolbarItem(placement: .topBarLeading) { sidebarButton }
+    }
+
+    private var rootPageTitle: MobiusText {
+        switch model.destination ?? .chats {
+        case .chats: .localized("Chats")
+        case .gateway: .localized("Gateway")
+        case .botDefaults: .localized("Bot defaults")
+        case .providers: .localized("Providers")
+        case .extensions: .localized("Extensions")
+        case .bots: .localized("Bots")
+        case .profile: .localized("Settings")
+        case .eventCentre: .localized("Event Centre")
+        case .globalContributions:
+            .localized(
+                frontendPresentationText(
+                    model.gatewayNavigationWidgets.first?.title ?? "Scratchpad"))
+        case .contribution(let id):
+            .localized(
+                frontendPresentationText(
+                    model.chat.navigationWidgets.first(where: { $0.id == id })?.title
+                        ?? "Capability unavailable"
+                ))
+        }
+    }
+
+    private func gatewayPicker(_ account: GatewayAccount) -> some View {
+        Menu {
+            Picker(
+                "Gateway",
+                selection: Binding(
+                    get: { model.gateway.selectedAccountID },
+                    set: { model.selectAccount($0) }
+                )
+            ) {
+                ForEach(model.gateway.accounts) { account in
+                    Text(verbatim: model.cloud.gatewayName(account))
+                        .tag(Optional(account.id))
+                }
+            }
+            .labelsHidden()
+        } label: {
+            HStack(spacing: MobiusSpace.xs) {
+                MobiusStatusIndicator(
+                    color: model.gateway.connectionState.tone.color(in: palette),
+                    isLoading: model.gateway.connectionState.isLoading
+                )
+                Text(verbatim: model.cloud.gatewayName(account))
+                MobiusIcon(
+                    .caretUpDown, size: MobiusStyle.glyphMark,
+                    foreground: palette.muted, gutter: false
+                )
+            }
+            .foregroundStyle(palette.muted)
+        }
+        .menuIndicator(.hidden)
+        .buttonStyle(.mobiusPlain)
+        .sensoryFeedback(.selection, trigger: model.gateway.selectedAccountID)
+        .accessibilityLabel("Gateway")
+        .accessibilityValue(
+            Text("\(model.cloud.gatewayName(account)), \(model.gateway.connectionState.label)")
+        )
+        .help("Switch gateway")
+    }
+
+    private var sidebarButton: some View {
+        MobiusToolbarIconButton(glyph: .menu, label: sidebarButtonTitle) {
             model.chat.dismissComposerFocus()
             withAnimation(SidebarDrawerMetrics.animation) {
+                if !sidebarIsPresented { model.showsInspector = false }
                 if horizontalSizeClass == .compact {
                     sidebarIsOpen.toggle()
                 } else {
-                    columnVisibility = MobiusLayout.toggledSplitSidebarVisibility(
+                    (columnVisibility, compactColumn) = MobiusLayout.toggledSplitSidebar(
                         from: columnVisibility
                     )
                 }
@@ -334,11 +432,21 @@ struct AppShell: View {
         }
     }
 
-    private var iPadSidebarButtonTitle: LocalizedStringResource {
-        if horizontalSizeClass == .compact {
-            return sidebarIsOpen ? "Hide sidebar" : "Show sidebar"
+    private var sidebarButtonTitle: LocalizedStringResource {
+        sidebarIsPresented ? "Hide sidebar" : "Show sidebar"
+    }
+
+    private var sidebarIsPresented: Bool {
+        horizontalSizeClass == .compact
+            ? sidebarIsOpen
+            : columnVisibility != .detailOnly
+    }
+
+    @ViewBuilder
+    private var verticalToolbarObserver: some View {
+        if #available(iOS 27.1, *) {
+            VerticalToolbarObserver(isPresent: $hasVerticalToolbar)
         }
-        return columnVisibility == .detailOnly ? "Show sidebar" : "Hide sidebar"
     }
 
     @ViewBuilder
@@ -366,98 +474,6 @@ struct AppShell: View {
         }
     }
 
-    private var rootNavigationTitle: some View {
-        VStack(spacing: MobiusSpace.xxs) {
-            rootPageTitle
-                .font(MobiusStyle.titleFont)
-            if let account = model.gateway.selectedAccount {
-                gatewayPicker(account)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var rootPageTitle: some View {
-        switch model.destination ?? .chats {
-        case .chats:
-            MobiusTitleText(title: "Chats")
-        case .gateway:
-            MobiusTitleText(title: "Gateway")
-        case .botDefaults:
-            MobiusTitleText(title: "Bot defaults")
-        case .providers:
-            MobiusTitleText(title: "Providers")
-        case .extensions:
-            MobiusTitleText(title: "Extensions")
-        case .bots:
-            MobiusTitleText(title: "Bots")
-        case .globalContributions:
-            if let widget = model.gatewayNavigationWidgets.first {
-                MobiusTitleText(title: frontendPresentationText(widget.title))
-            } else {
-                MobiusTitleText(title: "Scratchpad")
-            }
-        case .profile:
-            MobiusTitleText(title: "Settings")
-        case .eventCentre:
-            MobiusTitleText(title: "Event Centre")
-        case .contribution(let id):
-            if let widget = model.chat.navigationWidgets.first(where: { $0.id == id }) {
-                MobiusTitleText(title: frontendPresentationText(widget.title))
-            } else {
-                MobiusTitleText(title: "Capability unavailable")
-            }
-        }
-    }
-
-    private func gatewayPicker(_ account: GatewayAccount) -> some View {
-        Menu {
-            Picker(
-                "Gateway",
-                selection: Binding(
-                    get: { model.gateway.selectedAccountID },
-                    set: { model.selectAccount($0) }
-                )
-            ) {
-                ForEach(model.gateway.accounts) { account in
-                    Text(verbatim: model.cloud.gatewayName(account))
-                        .tag(Optional(account.id))
-                }
-            }
-            .labelsHidden()
-        } label: {
-            HStack(spacing: MobiusSpace.xs) {
-                MobiusStatusIndicator(
-                    color: model.gateway.connectionState.tone.color(in: palette),
-                    isLoading: model.gateway.connectionState.isLoading
-                )
-                Text(verbatim: model.cloud.gatewayName(account))
-                    .font(MobiusStyle.captionFont)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                MobiusIcon(
-                    .caretUpDown,
-                    size: MobiusStyle.glyphMark,
-                    foreground: palette.muted,
-                    gutter: false
-                )
-            }
-            .foregroundStyle(palette.muted)
-        }
-        .menuIndicator(.hidden)
-        .buttonStyle(.mobiusPlain)
-        .sensoryFeedback(.selection, trigger: model.gateway.selectedAccountID)
-        .accessibilityLabel("Gateway")
-        .accessibilityValue(
-            Text("\(model.cloud.gatewayName(account)), \(model.gateway.connectionState.label)")
-        )
-        .help("Switch gateway")
-    }
-
-    private var usesIPadLayout: Bool {
-        MobiusLayout.usesIPadLayout(platform: GatewayClientKind.currentApplePlatform)
-    }
-
     private var preferredColorScheme: ColorScheme? {
         switch model.theme {
         case .system: nil
@@ -481,6 +497,7 @@ struct AppShell: View {
             }
             return
         }
+        model.showsInspector = false
         model.navigationPath = []
         model.destination = destination
         compactColumn = .detail
@@ -500,5 +517,19 @@ struct AppShell: View {
         // compact: `compactColumn` no longer moves there, so reading it would report the chat
         // permanently hidden and stop delivering it as visible.
         return horizontalSizeClass != .compact || (!sidebarIsOpen && !model.showsInspector)
+    }
+}
+
+@available(iOS 27.1, *)
+private struct VerticalToolbarObserver: View {
+    @Environment(\.toolbarVerticalEdge) private var edge
+    @Binding var isPresent: Bool
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onAppear { isPresent = edge != nil }
+            .onChange(of: edge) { _, edge in isPresent = edge != nil }
+            .accessibilityHidden(true)
     }
 }

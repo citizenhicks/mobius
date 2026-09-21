@@ -11,18 +11,8 @@ struct GatewayView: View {
             title: "Gateway",
             detail: "Machines paired with this device. Chats run on the selected one.",
             manualSection: "gateway",
-            sharesHeaderBackground: true,
-            headerAccessory: {
-                HeaderActionGroup {
-                    Button {
-                        model.showsPairing = true
-                    } label: {
-                        MobiusIcon(.plus, gutter: false)
-                    }
-                    .groupedHeaderAction(prominent: true)
-                    .accessibilityLabel("Pair gateway")
-                    .accessibilityHint("Opens pairing with a self-hosted gateway")
-                    .help("Pair gateway")
+            toolbar: {
+                MobiusToolbarItem(placement: .primaryAction) {
                     SettingsStatusButton(
                         subject: .localized("Gateway"),
                         statusLabel: status.label,
@@ -30,7 +20,11 @@ struct GatewayView: View {
                         statusColor: status.color,
                         isLoading: model.gateway.connectionState.isLoading
                     )
-                    .groupedHeaderAction()
+                    MobiusToolbarIconButton(glyph: .plus, label: "Pair gateway") {
+                        model.showsPairing = true
+                    }
+                    .mobiusProminentToolbarButton()
+                    .accessibilityHint("Opens pairing with a self-hosted gateway")
                 }
             }
         ) {
@@ -184,7 +178,7 @@ struct GatewayDetailView: View {
                 glyph: AppDestination.gateway.glyph,
                 detail: "It is no longer paired on this device."
             )
-            .navigationTitle("Gateway")
+            .mobiusNavigationTitle("Gateway")
             .toolbarRole(.editor)
             .background(MobiusBackdrop())
         }
@@ -195,31 +189,41 @@ struct GatewayDetailView: View {
         return PageScaffold(
             title: .verbatim(model.cloud.gatewayName(account)),
             detail: .verbatim(""),
-            sharesHeaderBackground: true,
-            headerAccessory: {
-                HeaderOptionsMenu(label: "Gateway actions") {
+            toolbar: {
+                ToolbarSpacer(.flexible, placement: .bottomBar)
+                MobiusToolbarItem(placement: .bottomBar) {
                     if isActive {
-                        Button(action: model.reconnect) {
-                            MobiusLabel(title: "Reconnect", glyph: .arrowClockwise)
-                        }
+                        MobiusToolbarIconButton(
+                            glyph: .arrowClockwise, label: "Reconnect", action: model.reconnect)
                     }
                     if account.cloudUserID == nil {
-                        Button {
+                        MobiusToolbarIconButton(glyph: .link, label: "Re-pair") {
                             model.repairGateway(account)
-                        } label: {
-                            MobiusLabel(title: "Re-pair", glyph: .link)
                         }
                     }
-                    Button {
+                    MobiusToolbarIconButton(glyph: .pencilSimple, label: "Rename gateway") {
                         renameDraft = account.displayName
                         showsRename = true
-                    } label: {
-                        MobiusLabel(title: "Rename gateway", glyph: .pencilSimple)
                     }
-                    Button(role: .destructive) {
+                    MobiusToolbarIconButton(
+                        glyph: .trash, label: "Forget gateway", role: .destructive
+                    ) {
                         confirmsForget = true
-                    } label: {
-                        MobiusLabel(title: "Forget gateway", glyph: .trash)
+                    }
+                    if isActive {
+                        if let pairing = model.pairingCodeInfo {
+                            ShareLink(item: pairing.code) {
+                                MobiusLabel(title: "Copy or share", glyph: .copy)
+                            }
+                            .mobiusToolbarIcon()
+                        } else {
+                            MobiusToolbarIconButton(
+                                glyph: .key,
+                                label: "Create one-time code",
+                                action: model.createPairingCode
+                            )
+                            .mobiusProminentToolbarButton()
+                        }
                     }
                 }
             }
@@ -270,21 +274,6 @@ struct GatewayDetailView: View {
                         .foregroundStyle(palette.muted)
                     }
                 }
-
-                MobiusActionRow {
-                    if let pairing = model.pairingCodeInfo {
-                        ShareLink("Copy or share", item: pairing.code)
-                    } else {
-                        Button(
-                            "Create one-time code",
-                            glyph: .key,
-                            action: model.createPairingCode
-                        )
-                        .mobiusProminentButton()
-                    }
-                }
-                .settingsStandaloneRow()
-
                 Section("Host credentials") {
                     Button {
                         hostCredentialSheet = .git
@@ -445,18 +434,19 @@ private struct GitCredentialSheet: View {
                 }
             }
             .scrollContentBackground(.hidden)
-            .navigationTitle("GitHub credentials")
-            .toolbarTitleDisplayMode(.inline)
+            .mobiusNavigationTitle("GitHub credentials")
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    MobiusToolbarIconButton(
-                        glyph: model.gitCredentialAvailable == true ? .check : .x,
-                        label: model.gitCredentialAvailable == true ? "Done" : "Cancel",
-                        action: dismiss.callAsFunction
-                    )
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    actionButton
+                if model.gitCredentialAvailable == true {
+                    MobiusToolbarItem(placement: .confirmationAction) {
+                        MobiusToolbarIconButton(
+                            glyph: .check, label: "Done", action: dismiss.callAsFunction)
+                    }
+                } else {
+                    MobiusToolbarItem(placement: .cancellationAction) {
+                        MobiusToolbarIconButton(
+                            glyph: .x, label: "Cancel", action: dismiss.callAsFunction)
+                    }
+                    MobiusToolbarItem(placement: .confirmationAction) { actionButton }
                 }
             }
         }
@@ -476,6 +466,7 @@ private struct GitCredentialSheet: View {
                     token: token
                 )
             }
+            .mobiusProminentToolbarButton()
             .disabled(
                 !model.gateway.connectionState.isReady
                     || model.isCheckingGitCredential
@@ -562,31 +553,36 @@ private struct SshCredentialSheet: View {
                 }
             }
             .scrollContentBackground(.hidden)
-            .navigationTitle("SSH credentials")
-            .toolbarTitleDisplayMode(.inline)
+            .mobiusNavigationTitle("SSH credentials")
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    MobiusToolbarIconButton(
-                        glyph: model.sshIdentities?.isEmpty == false ? .check : .x,
-                        label: model.sshIdentities?.isEmpty == false ? "Done" : "Cancel",
-                        action: dismiss.callAsFunction
-                    )
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    if model.sshIdentities == nil {
+                if model.sshIdentities?.isEmpty == false {
+                    MobiusToolbarItem(placement: .confirmationAction) {
                         MobiusToolbarIconButton(
-                            glyph: .arrowClockwise, label: checkActionTitle,
-                            action: model.listSshIdentities
-                        )
-                        .disabled(
-                            !model.gateway.connectionState.isReady || model.isLoadingSshIdentities)
-                    } else if model.sshIdentities?.isEmpty == true {
+                            glyph: .check, label: "Done", action: dismiss.callAsFunction)
+                    }
+                } else {
+                    MobiusToolbarItem(placement: .cancellationAction) {
                         MobiusToolbarIconButton(
-                            glyph: .plus, label: generateActionTitle,
-                            action: model.generateSshIdentity
-                        )
-                        .disabled(
-                            !model.gateway.connectionState.isReady || model.isGeneratingSshIdentity)
+                            glyph: .x, label: "Cancel", action: dismiss.callAsFunction)
+                    }
+                    MobiusToolbarItem(placement: .confirmationAction) {
+                        if model.sshIdentities == nil {
+                            MobiusToolbarIconButton(
+                                glyph: .arrowClockwise, label: checkActionTitle,
+                                action: model.listSshIdentities
+                            )
+                            .disabled(
+                                !model.gateway.connectionState.isReady
+                                    || model.isLoadingSshIdentities)
+                        } else if model.sshIdentities?.isEmpty == true {
+                            MobiusToolbarIconButton(
+                                glyph: .plus, label: generateActionTitle,
+                                action: model.generateSshIdentity
+                            )
+                            .disabled(
+                                !model.gateway.connectionState.isReady
+                                    || model.isGeneratingSshIdentity)
+                        }
                     }
                 }
             }

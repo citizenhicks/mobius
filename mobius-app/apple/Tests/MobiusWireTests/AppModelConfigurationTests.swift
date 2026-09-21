@@ -1,9 +1,323 @@
 import Foundation
+import SwiftUI
 @testable import Mobius
 import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testReasoningSliderSnapsPreviewsCommitsAndSupportsAccessibility() async throws {
+        let model = try model()
+        let choices = ["low", "medium", "high"].map { effort in
+            ModelChoice(
+                route: effort, group: "Test", model: "test-model", reasoningEffort: effort,
+                contextWindow: nil, supportsImageInput: false, toolDiscovery: .native)
+        }
+        model.modelChoices = choices
+        model.modelProviders = Dictionary(uniqueKeysWithValues: choices.map { ($0.route, "test") })
+        model.chat.selectedModelRoute = "low"
+        let scene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive })
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+        func picker(isEnabled: Bool) -> some View {
+            ModelRoutePicker(
+                label: "Model", detail: "Choose a model", choices: choices, isEnabled: isEnabled,
+                route: Binding(
+                    get: { model.chat.selectedModelRoute },
+                    set: { if let route = $0 { model.chat.selectedModelRoute = route } })
+            )
+            .mobiusTheme()
+            .environment(model)
+        }
+        let host = UIHostingController(rootView: picker(isEnabled: true))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        let appeared = await eventually {
+            window.layoutIfNeeded()
+            return testAccessibilityElements(window).compactMap { $0 as? UISlider }
+                .contains { $0.bounds.width > MobiusStyle.iconButtonSize }
+        }
+        XCTAssertTrue(appeared)
+        let slider = try XCTUnwrap(
+            testAccessibilityElements(window).compactMap { $0 as? UISlider }.first)
+        XCTAssertEqual(slider.accessibilityLabel, model.localizedString("Reasoning effort"))
+        XCTAssertEqual(slider.accessibilityValue, "low")
+        XCTAssertTrue(slider.accessibilityTraits.contains(.adjustable))
+        XCTAssertEqual(slider.trackConfiguration?.ticks.count, 3)
+        let track = slider.trackRect(forBounds: slider.bounds)
+        XCTAssertEqual(track.height * 1.1, MobiusStyle.iconButtonSize, accuracy: 0.001)
+        XCTAssertEqual(slider.minimumTrackTintColor, .clear)
+        XCTAssertEqual(slider.maximumTrackTintColor, .clear)
+        XCTAssertNil(slider.thumbImage(for: .normal))
+        XCTAssertNil(slider.minimumTrackImage(for: .normal))
+        XCTAssertNil(slider.maximumTrackImage(for: .normal))
+        let gradient = try XCTUnwrap(
+            slider.layer.sublayers?.flatMap { $0.sublayers ?? [] }
+                .compactMap { $0 as? CAGradientLayer }.first)
+        for value in [Float(0), 1, 2] {
+            let thumb = slider.thumbRect(forBounds: slider.bounds, trackRect: track, value: value)
+            XCTAssertEqual(thumb.width, thumb.height)
+            XCTAssertEqual(thumb.height, MobiusStyle.iconButtonSize * 1.02, accuracy: 0.001)
+            XCTAssertEqual(track.midY, thumb.midY, accuracy: 0.001)
+            slider.value = value
+            slider.setNeedsLayout()
+            slider.layoutIfNeeded()
+            XCTAssertEqual(
+                try XCTUnwrap(gradient.mask).frame.width,
+                track.width * CGFloat(value / 2), accuracy: 0.001)
+            XCTAssertEqual(try XCTUnwrap(gradient.mask).cornerRadius, track.height / 2)
+        }
+        slider.maximumValue = 4
+        slider.trackConfiguration = .init(enabledRange: 0...4, numberOfTicks: 5)
+        for direction: UISemanticContentAttribute in [.forceLeftToRight, .forceRightToLeft] {
+            slider.semanticContentAttribute = direction
+            slider.value = 1
+            slider.setNeedsLayout()
+            slider.layoutIfNeeded()
+            let thumb = slider.thumbRect(forBounds: slider.bounds, trackRect: track, value: 1)
+            let start = slider.thumbRect(forBounds: slider.bounds, trackRect: track, value: 0)
+            let end = slider.thumbRect(forBounds: slider.bounds, trackRect: track, value: 4)
+            let reversed = start.midX > end.midX
+            let fill = try XCTUnwrap(gradient.mask).frame
+            XCTAssertEqual(
+                reversed ? fill.minX : fill.maxX, thumb.midX - track.minX, accuracy: 0.001)
+            XCTAssertEqual(gradient.startPoint.x, reversed ? 1 : 0)
+            XCTAssertEqual(gradient.endPoint.x, reversed ? 0 : 1)
+        }
+        slider.semanticContentAttribute = .unspecified
+        slider.maximumValue = 2
+        slider.trackConfiguration = .init(enabledRange: 0...2, numberOfTicks: 3)
+        slider.value = 0
+        let minimumThumb = slider.thumbRect(forBounds: slider.bounds, trackRect: track, value: 0)
+        let maximumThumb = slider.thumbRect(forBounds: slider.bounds, trackRect: track, value: 2)
+        XCTAssertEqual(minimumThumb.minX, track.minX, accuracy: 0.001)
+        XCTAssertEqual(maximumThumb.maxX, track.maxX, accuracy: 0.001)
+
+        slider.sendActions(for: .touchDown)
+        slider.value = 1.4
+        slider.sendActions(for: .valueChanged)
+        let previewed = await eventually { slider.accessibilityValue == "medium" }
+        XCTAssertTrue(previewed)
+        XCTAssertEqual(model.chat.selectedModelRoute, "low")
+        XCTAssertEqual(slider.value, 1)
+        let attachment = XCTAttachment(
+            image: UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
+                host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+            })
+        attachment.name = "Reasoning slider native track preview"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        slider.sendActions(for: .touchUpInside)
+        XCTAssertEqual(model.chat.selectedModelRoute, "medium")
+        slider.accessibilityIncrement()
+        XCTAssertEqual(model.chat.selectedModelRoute, "high")
+        slider.accessibilityIncrement()
+        XCTAssertEqual(model.chat.selectedModelRoute, "high")
+        slider.accessibilityDecrement()
+        XCTAssertEqual(model.chat.selectedModelRoute, "medium")
+
+        host.rootView = picker(isEnabled: false)
+        let disabled = await eventually { !slider.isEnabled }
+        XCTAssertTrue(disabled)
+        slider.accessibilityIncrement()
+        XCTAssertEqual(model.chat.selectedModelRoute, "medium")
+    }
+
+    func testNavigationHeadingUsesAvailableTitleArea() async throws {
+        let model = try model()
+        let scene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive })
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+        struct Page: View {
+            @Bindable var app: AppModel
+            let title: String
+            let plainTitle: Bool
+            let subtitle: MobiusText?
+            @State private var headingWidth: CGFloat?
+
+            var body: some View {
+                NavigationStack(path: $app.navigationPath) {
+                    screen()
+                        .navigationDestination(for: AppRoute.self) { route in
+                            screen(role: .editor)
+                                .mobiusCustomNavigationHeading(
+                                    width: $headingWidth,
+                                    isActive: !plainTitle && app.navigationPath.last == route
+                                )
+                        }
+                        .mobiusCustomNavigationHeading(
+                            width: $headingWidth,
+                            isActive: !plainTitle && app.navigationPath.isEmpty
+                        )
+                }
+            }
+
+            private func screen(role: ToolbarRole = .automatic) -> some View {
+                Form {
+                    Text("Page content").frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .toolbarRole(role)
+                .mobiusNavigationTitle(.verbatim(title), subtitle: subtitle)
+                .environment(\.mobiusUsesCustomNavigationHeading, !plainTitle)
+                .toolbar {
+                    if !plainTitle {
+                        MobiusNavigationHeadingItem {
+                            MobiusNavigationHeading(title: .verbatim(title)) {
+                                Text("gateway.local")
+                            }
+                            .id(title)
+                        }
+                    }
+                    MobiusToolbarItem(placement: .cancellationAction) {
+                        MobiusToolbarIconButton(glyph: .menu, label: "Show sidebar") {}
+                    }
+                    MobiusToolbarItem(placement: .primaryAction) {
+                        MobiusToolbarIconButton(glyph: .notePencil, label: "New chat") {}
+                    }
+                    MobiusToolbarItem(placement: .primaryAction) {
+                        MobiusToolbarIconButton(glyph: .dotsThree, label: "Options") {}
+                    }
+                }
+            }
+        }
+        func navigation(in controller: UIViewController) -> UINavigationController? {
+            if let navigation = controller as? UINavigationController {
+                return navigation
+            }
+            return controller.children.lazy.compactMap { navigation(in: $0) }.first
+        }
+        func heading(in controller: UIViewController) -> UIView? {
+            navigation(in: controller)?.topViewController?.navigationItem.titleView
+        }
+        func controls(in view: UIView, excluding title: UIView) -> [UIControl] {
+            guard !view.isHidden, view.alpha > 0 else { return [] }
+            if let control = view as? UIControl {
+                guard title !== control, !title.isDescendant(of: control),
+                    !control.isDescendant(of: title)
+                else { return [] }
+                let frame = control.convert(control.bounds, to: window)
+                guard !frame.isEmpty, window.bounds.contains(frame) else { return [] }
+                return [control]
+            }
+            return view.subviews.flatMap { controls(in: $0, excluding: title) }
+        }
+        let configurations: [(Bool, MobiusText?)] = [
+            (false, nil), (true, nil), (true, .verbatim("@fixture")),
+        ]
+        for (plainTitle, subtitle) in configurations {
+            func page(_ title: String, width: CGFloat? = nil) -> some View {
+                Page(app: model, title: title, plainTitle: plainTitle, subtitle: subtitle)
+                    .frame(width: width)
+                    .mobiusTheme()
+                    .environment(model)
+            }
+            model.navigationPath = [.bot("header-fixture")]
+            let host = UIHostingController(
+                rootView: page(
+                    "Review gateway pairing and chat navigation across every connected workspace"))
+            window.rootViewController = host
+            window.makeKeyAndVisible()
+            func capture(_ name: String) {
+                let attachment = XCTAttachment(
+                    image: UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
+                        host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+                    })
+                attachment.name = "\(plainTitle ? "Plain" : "Custom") heading \(name)"
+                attachment.lifetime = .keepAlways
+                add(attachment)
+            }
+            func assertLayout() throws -> CGRect {
+                let title = try XCTUnwrap(heading(in: host))
+                let titleFrame = title.convert(title.bounds, to: window)
+                XCTAssertGreaterThan(titleFrame.width, 0)
+                XCTAssertFalse(title.isHidden)
+                XCTAssertTrue(window.bounds.contains(titleFrame))
+                let buttons = controls(in: window, excluding: title)
+                XCTAssertEqual(buttons.count, model.navigationPath.isEmpty ? 3 : 4)
+                for button in buttons {
+                    let frame = button.convert(button.bounds, to: window)
+                    XCTAssertFalse(frame.isEmpty)
+                    XCTAssertTrue(window.bounds.contains(frame))
+                    XCTAssertFalse(titleFrame.intersects(frame))
+                    let hit = window.hitTest(CGPoint(x: frame.midX, y: frame.midY), with: nil)
+                    XCTAssertTrue(
+                        hit === button || hit?.isDescendant(of: button) == true,
+                        "The title must not cover a native action")
+                }
+                return titleFrame
+            }
+            func settledLayout(matching expected: CGRect? = nil) async throws -> CGRect {
+                let clock = ContinuousClock()
+                var previousFrames: [CGRect] = []
+                var unchangedSince = clock.now
+                let settled = await eventually(timeout: .seconds(3)) {
+                    window.setNeedsLayout()
+                    window.layoutIfNeeded()
+                    guard navigation(in: host)?.transitionCoordinator == nil,
+                        let title = heading(in: host)
+                    else { return false }
+                    let frame = title.convert(title.bounds, to: window)
+                    let buttons = controls(in: window, excluding: title)
+                    guard !frame.isEmpty, window.bounds.contains(frame),
+                        buttons.count == (model.navigationPath.isEmpty ? 3 : 4)
+                    else { return false }
+                    if let expected,
+                        abs(frame.width - expected.width) >= 1
+                            || abs(frame.maxX - expected.maxX) >= 1
+                    {
+                        return false
+                    }
+                    let frames = [frame] + buttons.map { $0.convert($0.bounds, to: window) }
+                    guard frames == previousFrames else {
+                        previousFrames = frames
+                        unchangedSince = clock.now
+                        return false
+                    }
+                    return clock.now - unchangedSince >= .milliseconds(100)
+                }
+                XCTAssertTrue(settled, "The active native navigation layout must settle")
+                return try assertLayout()
+            }
+            _ = try await settledLayout()
+            capture("cold pushed")
+            model.navigationPath = []
+            let longFrame = try await settledLayout()
+            capture("root long title")
+
+            host.rootView = page("Chats")
+            let shortFrame = try await settledLayout(matching: longFrame)
+            XCTAssertEqual(shortFrame.width, longFrame.width, accuracy: 1)
+            XCTAssertEqual(shortFrame.maxX, longFrame.maxX, accuracy: 1)
+            capture("root short title")
+
+            model.navigationPath = [.bot("header-fixture")]
+            let pushedFrame = try await settledLayout(matching: shortFrame)
+            XCTAssertEqual(pushedFrame.maxX, shortFrame.maxX, accuracy: 1)
+            host.rootView = page("Chats", width: window.bounds.width * 0.75)
+            _ = try await settledLayout()
+            model.navigationPath = []
+            host.rootView = page("Chats")
+            _ = try await settledLayout(matching: shortFrame)
+            capture("restored after resize")
+            window.rootViewController = nil
+        }
+    }
+
     func testWindowStateRoundTripsNavigation() throws {
         let state = AppWindowState(
             destination: .providers,

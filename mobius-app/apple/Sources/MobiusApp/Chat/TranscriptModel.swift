@@ -367,6 +367,7 @@ struct TranscriptPresentationRow: Identifiable {
 struct TranscriptWaitingPhrase: Equatable {
     let startedAt: Date
     let order: [LocalizedStringResource]
+    var reasoningTitle: String? = nil
 }
 
 /// Where the waiting phrase is drawn, if anywhere.
@@ -435,6 +436,8 @@ struct TranscriptProjection {
                     kind: .activityGroup
                 ))
         }
+        var waitingPhrase = waitingPhrase
+        waitingPhrase?.reasoningTitle = TranscriptWaitingNote.reasoningTitle(in: entries)
         let waiting = Self.waitingSlot(
             for: waitingPhrase,
             rows: rows

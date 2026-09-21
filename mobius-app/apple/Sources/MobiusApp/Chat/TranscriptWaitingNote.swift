@@ -81,6 +81,35 @@ enum TranscriptWaitingNote {
             && !hasPendingPicker
     }
 
+    /// Use the newest usable summary in this turn, including one from before a tool ran.
+    @MainActor
+    static func reasoningTitle(in entries: [TranscriptEntry]) -> String? {
+        for entry in entries.reversed() {
+            if entry.turnTerminal { break }
+            if entry.kind == .reasoning, let title = summaryLine(entry.text) {
+                return title
+            }
+            if entry.startsTurn { break }
+        }
+        return nil
+    }
+
+    static func summaryLine(_ text: String) -> String? {
+        for line in text.split(separator: "\n").reversed() {
+            var title = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if title.isEmpty || title.hasPrefix("<!--") { continue }
+            title = String(title.drop(while: { $0 == "#" }))
+                .trimmingCharacters(in: .whitespaces)
+            if title.hasPrefix("**") {
+                title.removeFirst(2)
+                guard let end = title.range(of: "**") else { continue }
+                title.removeSubrange(end)
+            }
+            if !title.isEmpty { return String(title.prefix(160)) }
+        }
+        return nil
+    }
+
     static func message(
         in order: [LocalizedStringResource],
         elapsed: TimeInterval

@@ -122,19 +122,42 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Use the microphone for voice chats in möbius."
+            "value" : "Use the microphone to dictate messages and join voice chats in möbius."
           }
         },
         "fr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Utilisez le microphone pour les conversations vocales dans möbius."
+            "value" : "Utilisez le microphone pour dicter des messages et participer à des conversations vocales dans möbius."
           }
         },
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Verwenden Sie das Mikrofon für Sprachchats in möbius."
+            "value" : "Verwenden Sie das Mikrofon, um Nachrichten zu diktieren und an Sprachchats in möbius teilzunehmen."
+          }
+        }
+      }
+    },
+    "NSSpeechRecognitionUsageDescription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Turn speech into a message without opening the keyboard."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Transformez la parole en message sans ouvrir le clavier."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wandeln Sie Sprache in eine Nachricht um, ohne die Tastatur zu öffnen."
           }
         }
       }

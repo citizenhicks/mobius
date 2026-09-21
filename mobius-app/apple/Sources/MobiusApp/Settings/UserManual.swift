@@ -75,17 +75,16 @@ struct UserManualBrowser: View {
                 .overlay(alignment: .top) {
                     if page.isLoading { ProgressView(value: page.estimatedProgress) }
                 }
-                .navigationTitle("User manual")
-                .toolbarTitleDisplayMode(.inline)
+                .mobiusNavigationTitle("User manual")
                 .toolbar {
-                    ToolbarItem(placement: .primaryAction) {
+                    MobiusToolbarItem(placement: .navigation) {
                         Button("Back", systemImage: "chevron.left") {
                             if let item = page.backForwardList.backList.last { page.load(item) }
                         }
-                        .labelStyle(.iconOnly)
+                        .mobiusToolbarIcon()
                         .disabled(page.backForwardList.backList.isEmpty)
                     }
-                    ToolbarItem(placement: .cancellationAction) {
+                    MobiusToolbarItem(placement: .confirmationAction) {
                         MobiusToolbarIconButton(glyph: .check, label: "Done") { dismiss() }
                     }
                 }
@@ -99,5 +98,6 @@ struct UserManualBrowser: View {
                     }
                 }
         }
+        .mobiusSheet(detents: [.large])
     }
 }

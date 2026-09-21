@@ -165,10 +165,9 @@ struct TurnDiffCard: View {
                         title: "changes from this turn"
                     )
                 }
-                .navigationTitle("Turn changes")
-                .navigationBarTitleDisplayMode(.inline)
+                .mobiusNavigationTitle("Turn changes")
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
+                    MobiusToolbarItem(placement: .confirmationAction) {
                         MobiusToolbarIconButton(glyph: .check, label: "Done") {
                             showsDetails = false
                         }

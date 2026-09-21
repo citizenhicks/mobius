@@ -1,23 +1,14 @@
 import SwiftUI
 
 enum SidebarDrawerMetrics {
-    static let width: CGFloat = 300
+    static let width: CGFloat = 272
     /// How far in from the leading edge a closed drawer answers to a drag. The detail is full
     /// of scroll views that own horizontal drags of their own, so a closed drawer only takes
     /// the ones that start at the edge, the way the system back gesture does.
     static let edgeCatch: CGFloat = 24
     static let animation: Animation = .snappy(duration: 0.28)
-    /// The display's corner radius, so the page reads as the phone rather than as a card.
-    ///
-    /// Concentric corners are the sanctioned way to ask for this, but they resolve against a
-    /// container shape and nothing supplies one inside a mask — they come back square there.
-    /// UIScreen knows the number and answers only to a private key, so this is the measured
-    /// value for current iPhones instead; older, tighter displays round a touch generously.
-    static let displayCornerRadius: CGFloat = 62
     /// How strongly the page is tinted once the drawer is fully open.
     static let scrimOpacity: Double = 0.45
-    /// How far behind the page the sidebar starts before it comes forward.
-    static let sidebarDepth: CGFloat = 0.08
 }
 
 /// Compact navigation that reveals the sidebar underneath instead of pushing a page over it.
@@ -41,14 +32,7 @@ struct SidebarDrawer<Sidebar: View, Detail: View>: View {
             // reveal the app canvas — the same value the page carries, and the cut vanishes.
             palette.recessed.ignoresSafeArea()
             sidebar
-                .frame(width: SidebarDrawerMetrics.width)
-                // The sidebar comes forward from behind the page rather than waiting in place
-                // for it to move. Depth is what says the page is on top, and a transform
-                // costs nothing to animate.
-                .scaleEffect(
-                    1 - SidebarDrawerMetrics.sidebarDepth * (1 - progress),
-                    anchor: .leading
-                )
+                .frame(width: drawerWidth)
                 .opacity(0.4 + 0.6 * progress)
                 .accessibilityHidden(!isOpen)
             detail
@@ -58,7 +42,7 @@ struct SidebarDrawer<Sidebar: View, Detail: View>: View {
                 // own opaque backdrop and the toolbar its own scroll edge effect, both square,
                 // so cutting the corners has to happen after all of it, on the way out.
                 .overlay { scrim }
-                .mask { pageShape.ignoresSafeArea() }
+                .mask { pageMask }
                 .offset(x: offset)
                 .scrollDisabled(drag != 0)
             if !isOpen, model.navigationPath.isEmpty {
@@ -69,10 +53,8 @@ struct SidebarDrawer<Sidebar: View, Detail: View>: View {
         .sensoryFeedback(.impact(weight: .light), trigger: drawerFeedback)
     }
 
-    /// The display's shape, drawn in the display's own curve family rather than a plain rounded
-    /// rectangle, so the page's corners sit on the bezel's.
-    private var pageShape: ConcentricRectangle {
-        ConcentricRectangle(corners: .fixed(SidebarDrawerMetrics.displayCornerRadius))
+    private var pageMask: some View {
+        ConcentricRectangle().ignoresSafeArea()
     }
 
     /// The page is tinted as it slides, which separates it from the sidebar behind, and
@@ -108,10 +90,12 @@ struct SidebarDrawer<Sidebar: View, Detail: View>: View {
     }
 
     private var offset: CGFloat {
-        min(max((isOpen ? SidebarDrawerMetrics.width : 0) + drag, 0), SidebarDrawerMetrics.width)
+        min(max((isOpen ? drawerWidth : 0) + drag, 0), drawerWidth)
     }
 
-    private var progress: Double { Double(offset / SidebarDrawerMetrics.width) }
+    private var progress: Double { Double(offset / drawerWidth) }
+
+    private var drawerWidth: CGFloat { SidebarDrawerMetrics.width }
 
     /// The drag is plain state, not `@GestureState`, and is cleared inside the same animated
     /// transaction that settles the drawer.
@@ -134,9 +118,9 @@ struct SidebarDrawer<Sidebar: View, Detail: View>: View {
                     return
                 }
                 let projected =
-                    (isOpen ? SidebarDrawerMetrics.width : 0)
+                    (isOpen ? drawerWidth : 0)
                     + value.predictedEndTranslation.width
-                let open = projected > SidebarDrawerMetrics.width / 2
+                let open = projected > drawerWidth / 2
                 if open != isOpen { drawerFeedback.toggle() }
                 withAnimation(SidebarDrawerMetrics.animation) {
                     drag = 0
@@ -165,12 +149,28 @@ struct SidebarDrawer<Sidebar: View, Detail: View>: View {
 struct SidebarView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
+    @Environment(\.mobiusHasVerticalToolbar) private var hasVerticalToolbar
     @Environment(\.openWindow) private var openWindow
     @Environment(\.supportsMultipleWindows) private var supportsMultipleWindows
+    let sharesBottomRail: Bool
     let showDetail: (AppDestination) -> Void
-    @State private var showsConnectionDetails = false
 
     var body: some View {
+        NavigationStack {
+            content.toolbar {
+                if #available(iOS 27.0, *) {
+                    footerToolbar
+                        .sharedBackgroundVisibility(.hidden)
+                        .contentMarginsRemoved()
+                        .visibilityPriority(.high)
+                } else {
+                    footerToolbar.sharedBackgroundVisibility(.hidden)
+                }
+            }
+        }
+    }
+
+    private var content: some View {
         ScrollView {
             VStack(spacing: 0) {
                 HStack(spacing: MobiusSpace.m) {
@@ -193,23 +193,6 @@ struct SidebarView: View {
                     .foregroundStyle(palette.accent)
                     .tracking(1.4)
                     Spacer()
-                    Button {
-                        showsConnectionDetails = true
-                    } label: {
-                        MobiusStatusIndicator(
-                            color: model.gateway.connectionState.tone.color(in: palette),
-                            isLoading: model.gateway.connectionState.isLoading
-                        )
-                        .frame(
-                            width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize
-                        )
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.mobiusPlain)
-                    .accessibilityLabel("Gateway connection")
-                    .accessibilityValue(Text(model.gateway.connectionState.label))
-                    .help(Text("Gateway: \(model.gateway.connectionState.label)"))
-                    .popover(isPresented: $showsConnectionDetails) { connectionDetails }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, MobiusSpace.l)
@@ -252,86 +235,53 @@ struct SidebarView: View {
         // The split view paints its own system background over the app backdrop, and in compact
         // the page slides over this, so it sits a step under the canvas rather than matching it.
         .background { palette.recessed.ignoresSafeArea() }
-        .safeAreaInset(edge: .bottom) {
-            HStack {
-                settingsButton
-                Spacer()
-                if supportsMultipleWindows {
-                    Button("New window", systemImage: "plus.rectangle.on.rectangle") {
-                        openWindow(value: AppWindowState())
-                    }
-                    .mobiusIconButton()
-                    .help("New window")
-                }
-                Button("Event Centre", glyph: model.hasUnreadEvents ? .bellDot : .bell) {
-                    showDetail(.eventCentre)
-                }
-                .mobiusIconButton()
-                .accessibilityValue(
-                    model.hasUnreadEvents ? Text("Unread events") : Text("All read")
-                )
-                .help("Event Centre")
-            }
-            .padding(.horizontal, MobiusSpace.m)
-            .padding(.vertical, MobiusSpace.s)
-        }
         .toolbarVisibility(.hidden, for: .navigationBar)
+    }
+
+    @ToolbarContentBuilder
+    private var footerToolbar: some ToolbarContent {
+        MobiusToolbarItem(placement: .bottomBar, allowsVerticalLayout: false) {
+            settingsButton
+                .buttonStyle(.glass)
+                .mobiusBottomRailAligned(isActive: hasVerticalToolbar)
+        }
+        ToolbarSpacer(.flexible, placement: .bottomBar)
+        if supportsMultipleWindows {
+            MobiusToolbarItem(placement: .bottomBar, allowsVerticalLayout: false) {
+                Button("New window", systemImage: "plus.rectangle.on.rectangle") {
+                    openWindow(value: AppWindowState())
+                }
+                .mobiusToolbarIcon()
+                .buttonStyle(.glass)
+                .help("New window")
+                .mobiusBottomRailAligned(isActive: hasVerticalToolbar)
+            }
+        }
+        MobiusToolbarItem(placement: .bottomBar, allowsVerticalLayout: false) {
+            Button("Event Centre", glyph: model.hasUnreadEvents ? .bellDot : .bell) {
+                showDetail(.eventCentre)
+            }
+            .mobiusToolbarIcon()
+            .buttonStyle(.glass)
+            .tint(model.destination == .eventCentre ? palette.accent : .primary)
+            .accessibilityAddTraits(model.destination == .eventCentre ? .isSelected : [])
+            .accessibilityValue(model.hasUnreadEvents ? Text("Unread events") : Text("All read"))
+            .help("Event Centre")
+            .mobiusBottomRailAligned(isActive: hasVerticalToolbar)
+            .mobiusBottomRailSource(
+                isActive: sharesBottomRail && model.isPresentingChat && !hasVerticalToolbar
+            )
+        }
     }
 
     private var settingsButton: some View {
         Button("Settings", glyph: AppDestination.profile.glyph) {
             showDetail(.profile)
         }
-        .mobiusIconButton()
+        .mobiusToolbarIcon()
+        .tint(model.destination == .profile ? palette.accent : .primary)
+        .accessibilityAddTraits(model.destination == .profile ? .isSelected : [])
         .help("Settings")
-    }
-
-    private var connectionDetails: some View {
-        VStack(spacing: MobiusSpace.m) {
-            Text(model.gateway.connectionState.label)
-                .font(MobiusStyle.controlFont.weight(.semibold))
-                .foregroundStyle(model.gateway.connectionState.tone.color(in: palette))
-
-            if let account = model.gateway.selectedAccount {
-                Text(account.displayName)
-                Text(account.endpoint.rawValue)
-                    .font(MobiusStyle.metadataFont)
-                    .foregroundStyle(palette.muted)
-            } else {
-                Text("No gateway selected")
-                    .foregroundStyle(palette.muted)
-            }
-
-            if case .failed(let message) = model.gateway.connectionState {
-                Text(message)
-                    .font(MobiusStyle.bodyFont)
-                    .foregroundStyle(palette.danger)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: .infinity, alignment: .center)
-            }
-
-            if !model.gateway.connectionState.isReady {
-                Divider()
-                Button {
-                    showsConnectionDetails = false
-                    model.reconnect()
-                } label: {
-                    MobiusLabel(title: "Retry connection", glyph: .arrowClockwise)
-                }
-                .disabled(model.gateway.selectedAccount == nil)
-                Button {
-                    showsConnectionDetails = false
-                    model.repairSelectedGateway()
-                } label: {
-                    MobiusLabel(title: "Repair pairing", glyph: .link)
-                }
-                .disabled(model.gateway.selectedAccount == nil)
-            }
-        }
-        .multilineTextAlignment(.center)
-        .padding(MobiusSpace.l)
-        .frame(width: 280)
-        .presentationCompactAdaptation(.popover)
     }
 
     private func navigationButton(
@@ -354,6 +304,11 @@ struct SidebarView: View {
         .buttonStyle(.mobiusPlain)
         .padding(.horizontal, MobiusSpace.xs)
         .frame(minHeight: MobiusStyle.iconButtonSize)
+        .background(
+            model.destination == destination ? palette.accentSoft : .clear,
+            in: MobiusStyle.controlShape
+        )
+        .accessibilityAddTraits(model.destination == destination ? .isSelected : [])
     }
 
     private func contributionNavigationButton(
@@ -383,6 +338,11 @@ struct SidebarView: View {
         .buttonStyle(.mobiusPlain)
         .padding(.horizontal, MobiusSpace.xs)
         .frame(minHeight: MobiusStyle.iconButtonSize)
+        .background(
+            model.destination == destination ? palette.accentSoft : .clear,
+            in: MobiusStyle.controlShape
+        )
+        .accessibilityAddTraits(model.destination == destination ? .isSelected : [])
     }
 
 }

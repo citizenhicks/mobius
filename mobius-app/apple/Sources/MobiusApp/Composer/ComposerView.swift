@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ComposerView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.mobiusHasVerticalToolbar) private var hasVerticalToolbar
     let showBotSettings: () -> Void
 
     var body: some View {
@@ -20,18 +21,22 @@ struct ComposerView: View {
         }
         .frame(maxWidth: MobiusStyle.transcriptWidth)
         .frame(maxWidth: .infinity)
+        .mobiusBottomRailAligned(isActive: model.isPresentingChat)
         .padding(.horizontal, MobiusSpace.l)
-        .padding(.bottom, MobiusSpace.m)
+        .padding(.bottom, hasVerticalToolbar ? 0 : MobiusSpace.m)
     }
 }
 
 private struct ComposerStack: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.mobiusHasVerticalToolbar) private var hasVerticalToolbar
     let showBotSettings: () -> Void
 
     var body: some View {
         VStack(spacing: MobiusSpace.xs) {
-            if model.chat.selectedSessionID == nil, let path = model.chat.pendingNewChatWorkspace {
+            if model.chat.selectedSessionID == nil,
+                let path = model.chat.pendingNewChatWorkspace
+            {
                 VStack(alignment: .leading, spacing: 0) {
                     NewChatFolderPicker(path: path)
                     NewChatBotPicker()
@@ -43,13 +48,14 @@ private struct ComposerStack: View {
             } else {
                 ComposerActivityView(showBotSettings: showBotSettings)
             }
-            if model.chat.realtimeVoiceCall != nil {
+            if model.chat.realtimeVoiceCall != nil && !hasVerticalToolbar {
                 RealtimeVoiceComposer()
             } else {
                 SessionComposerSurface()
             }
         }
     }
+
 }
 
 private struct NewChatFolderPicker: View {
@@ -184,6 +190,7 @@ private struct RealtimeVoiceComposer: View {
 
 private struct SessionComposerSurface: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.mobiusHasVerticalToolbar) private var hasVerticalToolbar
 
     var body: some View {
         @Bindable var chat = model.chat
@@ -192,10 +199,12 @@ private struct SessionComposerSurface: View {
             hasContext: chat.hasComposerContext,
             compactLeadingInset: model.attachmentsEnabled
                 ? MobiusStyle.iconRowPadding + MobiusStyle.iconButtonSize : MobiusSpace.l,
-            compactTrailingInset: MobiusStyle.iconRowPadding
-                + (model.selectedRouteSupportsRealtimeVoice && !model.composerUsesPrimaryVoice
-                    ? 2 : 1)
-                    * MobiusStyle.iconButtonSize,
+            compactTrailingInset: hasVerticalToolbar
+                ? MobiusSpace.l
+                : MobiusStyle.iconRowPadding
+                    + (model.selectedRouteSupportsRealtimeVoice && !model.composerUsesPrimaryVoice
+                        ? 2 : 1)
+                        * MobiusStyle.iconButtonSize,
             focusRequest: chat.composerFocusRequest,
             blurRequest: chat.composerBlurRequest,
             referenceRevision: chat.contributionsRevision + model.workspaceFilesRevision,
@@ -283,7 +292,6 @@ private struct ComposerActivityView: View {
                     )
                     .accessibilityHint("Opens modified files")
                 }
-
                 if let bot = model.selectedBot {
                     BotActivityBadge(bot: bot, action: showBotSettings)
                 }

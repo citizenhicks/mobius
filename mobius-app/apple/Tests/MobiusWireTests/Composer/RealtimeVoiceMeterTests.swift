@@ -120,7 +120,8 @@ extension AppModelTests {
         let previous = scene.keyWindow
         previous?.isHidden = true
         let window = UIWindow(windowScene: scene)
-        window.frame = CGRect(x: 0, y: 0, width: 390, height: 260)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
+        var fixtureHeight: CGFloat = 260
         defer { window.isHidden = true; previous?.isHidden = false; previous?.makeKeyAndVisible() }
 
         func show(_ scheme: ColorScheme, preview: Mobius.TranscriptPreview? = nil) async -> UIView {
@@ -143,6 +144,7 @@ extension AppModelTests {
                 }
             }
             .frame(maxHeight: .infinity, alignment: .bottom)
+            .frame(width: 390, height: fixtureHeight)
             .background(Mobius.MobiusPalette(scheme).canvas)
             .modifier(Mobius.MobiusTheme())
             .environment(model)
@@ -247,7 +249,7 @@ extension AppModelTests {
         capture(await show(.dark), name: "voice-dark-microphone")
         settle(Mobius.RealtimeAudioLevels(microphone: 0.36, playback: 0.81))
         capture(await show(.dark), name: "voice-dark-both")
-        window.frame.size.height = 500
+        fixtureHeight = 500
         model.chat.transcript = [
             Mobius.TranscriptEntry(
                 id: "voice-handoff",

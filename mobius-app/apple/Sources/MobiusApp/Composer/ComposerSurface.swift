@@ -15,6 +15,7 @@ struct ComposerSurface<Context: View, Controls: View>: View {
     @ViewBuilder let controls: (Bool, @escaping () -> Void) -> Controls
     @Environment(\.mobiusPalette) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.mobiusBottomRailGeometry) private var rail
     @State private var selection: TextSelection?
     @FocusState private var isComposerFocused: Bool
     @State private var referenceSuggestions: ReferenceSuggestions?
@@ -45,7 +46,12 @@ struct ComposerSurface<Context: View, Controls: View>: View {
                 } action: { height in
                     composerHeight = height
                 }
-                .frame(minHeight: isCompact ? MobiusStyle.iconButtonSize : nil)
+                .frame(
+                    minHeight: isCompact
+                        ? rail?.frame.map { max(0, $0.height - 2 * MobiusStyle.iconRowPadding) }
+                            ?? MobiusStyle.iconButtonSize
+                        : nil
+                )
                 .padding(.leading, isCompact ? compactLeadingInset : MobiusSpace.l)
                 .padding(
                     .trailing,
@@ -145,6 +151,7 @@ struct ComposerSurface<Context: View, Controls: View>: View {
                 .padding(.horizontal, MobiusSpace.s)
             }
             controls(false, didSend)
+                .environment(\.mobiusHasVerticalToolbar, false)
                 .padding(.horizontal, MobiusStyle.iconRowPadding)
                 .padding(.bottom, MobiusStyle.iconRowPadding)
         }

@@ -683,11 +683,10 @@ struct RoutineRunTranscriptSheet: View {
     var body: some View {
         NavigationStack {
             content
-                .toolbarTitleDisplayMode(.inline)
                 .modifier(
                     MobiusTranscriptToolbar(
                         dismiss: dismiss.callAsFunction,
-                        title: routine.map { Text(verbatim: $0.instructions) } ?? Text("Routine"),
+                        title: routine.map { .verbatim($0.instructions) } ?? .localized("Routine"),
                         subtitle: subtitle,
                         infoLabel: "Routine info"
                     ) { runInfo }

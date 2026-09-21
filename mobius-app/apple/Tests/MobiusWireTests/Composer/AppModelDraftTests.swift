@@ -4,6 +4,76 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testDictationPreservesTheDraftBoundary() {
+        for original in ["Hello", "Hello ", ""] {
+            var draft = DictationDraft(text: original)
+            let prefix = original.isEmpty ? "" : "Hello "
+            XCTAssertEqual(draft.update("wor", currentText: original), prefix + "wor")
+            XCTAssertEqual(draft.update("world", currentText: prefix + "wor"), prefix + "world")
+            XCTAssertNil(draft.update("world again", currentText: "Manually edited"))
+            XCTAssertNil(draft.update("world again", currentText: ""))
+            XCTAssertEqual(draft.text, prefix + "world")
+        }
+    }
+
+    func testDictationAuthorizationAcceptsBackgroundCallbacks() async {
+        let authorization = await dictationAuthorization { completion in
+            DispatchQueue.global().async {
+                dispatchPrecondition(condition: .notOnQueue(.main))
+                completion(.denied)
+            }
+        }
+        MainActor.assertIsolated()
+        XCTAssertEqual(authorization, .denied)
+    }
+
+    func testActiveTurnPrimaryActionStopsUntilAQueuedMessageCanSubmit() throws {
+        let model = try model(requestSender: { _ in })
+        model.gateway.connectionState = .ready
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.activeTurnID = "turn-1"
+
+        XCTAssertTrue(model.composerShowsInterruptAction)
+
+        model.chat.composer = "Continue with this"
+        XCTAssertFalse(model.composerShowsInterruptAction)
+        XCTAssertEqual(model.localizedString(model.composerSendLabel), "Send as Steer")
+        XCTAssertEqual(model.composerSendGlyph, .arrowUpRight01)
+        XCTAssertEqual(model.composerAlternateDelivery, .queue)
+    }
+
+    func testRailVoiceSlotBecomesTheSharedSendActionWithoutReplacingAnActiveCall() throws {
+        let model = try model(requestSender: { _ in })
+        model.gateway.connectionState = .ready
+        model.chat.selectedSessionID = "chat-1"
+        XCTAssertFalse(model.composerRailShowsSendAction)
+
+        model.chat.composer = "Continue with this"
+        XCTAssertTrue(model.composerRailShowsSendAction)
+        XCTAssertEqual(model.composerSendGlyph, .arrowUp02)
+
+        model.chat.composer = ""
+        model.chat.activeTurnID = "turn-1"
+        XCTAssertTrue(model.composerRailShowsSendAction)
+        XCTAssertTrue(model.composerShowsInterruptAction)
+
+        model.chat.realtimeVoiceCall = RealtimeVoiceCall(requestID: "voice", sessionID: "chat-1")
+        XCTAssertFalse(model.composerRailShowsSendAction)
+
+        model.chat.realtimeVoiceCall = nil
+        model.chat.activeTurnID = nil
+        model.chat.composer = "Draft"
+        for state in [ConnectionState.connecting, .authenticating, .loading] {
+            model.gateway.connectionState = state
+            XCTAssertTrue(model.composerRailShowsSendAction)
+            XCTAssertTrue(model.gateway.connectionState.isLoading)
+            XCTAssertFalse(model.canSubmitComposer)
+        }
+        model.gateway.connectionState = .ready
+        XCTAssertFalse(model.gateway.connectionState.isLoading)
+        XCTAssertTrue(model.canSubmitComposer)
+    }
+
     func testSwitchingSessionsFlushesAndRestoresTextDrafts() async throws {
         let suiteName = UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

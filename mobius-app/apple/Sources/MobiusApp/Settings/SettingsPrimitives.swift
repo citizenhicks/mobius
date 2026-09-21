@@ -103,8 +103,7 @@ struct SettingsInfoButton: View {
     private var aboutTitle: Text { Text("About \(title.text)") }
 }
 
-struct SettingsStatusAccessory: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+struct SettingsStatusAccessory: ToolbarContent {
     let subject: MobiusText
     let hasChanges: Bool
     let isSaving: Bool
@@ -117,17 +116,12 @@ struct SettingsStatusAccessory: View {
     var secondaryAction: (() -> Void)?
     let save: () -> Void
 
-    var body: some View {
-        HeaderActionGroup {
-            if hasChanges {
-                saveButton
-            }
+    @ToolbarContentBuilder
+    var body: some ToolbarContent {
+        MobiusToolbarItem(placement: .primaryAction) {
             statusButton
+            saveButton
         }
-        .animation(
-            reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.78),
-            value: hasChanges
-        )
     }
 
     private var statusButton: some View {
@@ -140,14 +134,6 @@ struct SettingsStatusAccessory: View {
             secondaryActionLabel: secondaryActionLabel,
             secondaryAction: secondaryAction
         )
-        .tint(.primary)
-        // Only half a shared surface has to draw the full target; alone, letting the
-        // system's glass hug the dot is what keeps it a circle rather than a pill.
-        .frame(
-            width: hasChanges ? MobiusStyle.iconButtonSize : nil,
-            height: hasChanges ? MobiusStyle.iconButtonSize : nil
-        )
-        .contentShape(Rectangle())
     }
 
     private var saveButton: some View {
@@ -164,9 +150,8 @@ struct SettingsStatusAccessory: View {
                 }
             }
         }
-        .labelStyle(.iconOnly)
-        .groupedHeaderAction(prominent: true)
-        .disabled(saveDisabled)
+        .mobiusProminentToolbarButton()
+        .disabled(saveDisabled || !hasChanges)
         .accessibilityLabel(saveLabel.text)
         .help(saveLabel.text)
         .sensoryFeedback(.success, trigger: hasChanges) { was, now in was && !now }
@@ -188,8 +173,17 @@ struct SettingsStatusButton: View {
         Button {
             showsStatus = true
         } label: {
-            MobiusStatusIndicator(color: statusColor, isLoading: isLoading)
+            Label {
+                statusAccessibilityLabel
+            } icon: {
+                if isLoading {
+                    MobiusSpinner(size: MobiusStyle.glyphLead, foreground: statusColor)
+                } else {
+                    MobiusIcon(.circleDot, foreground: statusColor, gutter: false)
+                }
+            }
         }
+        .mobiusToolbarIcon()
         .accessibilityLabel(statusAccessibilityLabel)
         .accessibilityValue(statusLabel.text)
         .help(statusHelp)
@@ -223,31 +217,29 @@ struct SettingsStatusButton: View {
     private var statusHelp: Text { Text("\(subject.text): \(statusLabel.text)") }
 }
 
-struct PageScaffold<HeaderAccessory: View, Content: View>: View {
+struct PageScaffold<Toolbar: ToolbarContent, Content: View>: View {
     let title: MobiusText
     let detail: MobiusText
+    let subtitle: MobiusText?
     let manualSection: String?
-    let sharesHeaderBackground: Bool
     let showsBackdrop: Bool
-    let headerAccessory: HeaderAccessory
+    let toolbar: Toolbar
     let content: Content
 
     init(
         title: LocalizedStringResource,
         detail: LocalizedStringResource,
         manualSection: String? = nil,
-        sharesHeaderBackground: Bool = false,
         showsBackdrop: Bool = true,
-        @ViewBuilder headerAccessory: () -> HeaderAccessory,
+        @ToolbarContentBuilder toolbar: () -> Toolbar,
         @ViewBuilder content: () -> Content
     ) {
         self.init(
             title: .localized(title),
             detail: .localized(detail),
             manualSection: manualSection,
-            sharesHeaderBackground: sharesHeaderBackground,
             showsBackdrop: showsBackdrop,
-            headerAccessory: headerAccessory,
+            toolbar: toolbar,
             content: content
         )
     }
@@ -255,18 +247,18 @@ struct PageScaffold<HeaderAccessory: View, Content: View>: View {
     init(
         title: MobiusText,
         detail: MobiusText,
+        subtitle: MobiusText? = nil,
         manualSection: String? = nil,
-        sharesHeaderBackground: Bool = false,
         showsBackdrop: Bool = true,
-        @ViewBuilder headerAccessory: () -> HeaderAccessory,
+        @ToolbarContentBuilder toolbar: () -> Toolbar,
         @ViewBuilder content: () -> Content
     ) {
         self.title = title
         self.detail = detail
+        self.subtitle = subtitle
         self.manualSection = manualSection
-        self.sharesHeaderBackground = sharesHeaderBackground
         self.showsBackdrop = showsBackdrop
-        self.headerAccessory = headerAccessory()
+        self.toolbar = toolbar()
         self.content = content()
     }
 
@@ -293,19 +285,21 @@ struct PageScaffold<HeaderAccessory: View, Content: View>: View {
             .scrollContentBackground(.hidden)
             .scrollDismissesKeyboard(.interactively)
         }
-        .navigationTitle(title.text)
-        .toolbarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) { headerAccessory }
-                .sharedBackgroundVisibility(sharesHeaderBackground ? .automatic : .hidden)
-        }
+        .mobiusNavigationTitle(title, subtitle: subtitle)
+        .toolbar { toolbar }
         .background {
             if showsBackdrop { MobiusBackdrop() }
         }
     }
 }
 
-extension PageScaffold where HeaderAccessory == EmptyView {
+struct EmptyPageToolbar: ToolbarContent {
+    var body: some ToolbarContent {
+        ToolbarItem(placement: .automatic) { EmptyView() }
+    }
+}
+
+extension PageScaffold where Toolbar == EmptyPageToolbar {
     init(
         title: LocalizedStringResource,
         detail: LocalizedStringResource,
@@ -315,9 +309,8 @@ extension PageScaffold where HeaderAccessory == EmptyView {
         self.init(
             title: .localized(title),
             detail: .localized(detail),
-            sharesHeaderBackground: false,
             showsBackdrop: showsBackdrop,
-            headerAccessory: EmptyView.init,
+            toolbar: EmptyPageToolbar.init,
             content: content
         )
     }
@@ -331,9 +324,8 @@ extension PageScaffold where HeaderAccessory == EmptyView {
         self.init(
             title: title,
             detail: detail,
-            sharesHeaderBackground: false,
             showsBackdrop: showsBackdrop,
-            headerAccessory: EmptyView.init,
+            toolbar: EmptyPageToolbar.init,
             content: content
         )
     }

@@ -266,7 +266,10 @@ private struct TranscriptWaitingPhraseText: View {
         TimelineView(.periodic(from: phrase.startedAt, by: TranscriptWaitingNote.rotation)) {
             context in
             let elapsed = reduceMotion ? 0 : context.date.timeIntervalSince(phrase.startedAt)
-            Text(TranscriptWaitingNote.message(in: phrase.order, elapsed: elapsed))
+            let text =
+                phrase.reasoningTitle.map { Text(verbatim: $0) }
+                ?? Text(TranscriptWaitingNote.message(in: phrase.order, elapsed: elapsed))
+            text
                 .font(MobiusStyle.bodyFont)
                 .foregroundStyle(palette.muted)
                 .lineLimit(1)
@@ -278,7 +281,8 @@ private struct TranscriptWaitingPhraseText: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         // One stable label: rotating the joke past VoiceOver every few seconds is noise.
         .accessibilityElement()
-        .accessibilityLabel("Waiting for the model")
+        .accessibilityLabel(
+            phrase.reasoningTitle.map { Text(verbatim: $0) } ?? Text("Waiting for the model"))
     }
 }
 
@@ -317,7 +321,9 @@ struct TranscriptTailView: View {
                     reduceMotion ? .opacity : .opacity.combined(with: .offset(y: 8))
                 )
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Waiting for the model")
+                .accessibilityLabel(
+                    phrase.reasoningTitle.map { Text(verbatim: $0) }
+                        ?? Text("Waiting for the model"))
             }
         }
     }

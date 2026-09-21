@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Shared model sheet and reasoning slider for composer and configuration drafts.
 struct ModelRoutePicker: View {
@@ -76,30 +77,20 @@ struct ModelRoutePicker: View {
             }
             .frame(maxWidth: .infinity, alignment: .center)
             if reasoningChoices.count > 1 {
-                Slider(
+                ReasoningSlider(
                     value: Binding(
                         get: { Double(previewReasoningIndex) },
                         set: { reasoningPreview = $0 }
                     ),
-                    in: 0...Double(reasoningChoices.count - 1),
-                    step: 1
+                    count: reasoningChoices.count,
+                    valueLabel: previewEffortLabel
                 ) {
-                    Text("Reasoning effort")
-                } onEditingChanged: { editing in
-                    if !editing, reasoningPreview != nil {
+                    if reasoningPreview != nil {
                         route = reasoningChoices[previewReasoningIndex].route
                         self.reasoningPreview = nil
                     }
                 }
-                .labelsHidden()
-                .accessibilityValue(Text(verbatim: previewEffortLabel))
-                .accessibilityAdjustableAction { direction in
-                    let delta = direction == .increment ? 1 : -1
-                    let index = min(
-                        max(selectedReasoningIndex + delta, 0), reasoningChoices.count - 1)
-                    route = reasoningChoices[index].route
-                }
-                .tint(palette.accent)
+                .frame(height: MobiusStyle.rowTouch)
             }
         }
         .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
@@ -153,6 +144,148 @@ struct ModelRoutePicker: View {
 
 }
 
+private struct ReasoningSlider: UIViewRepresentable {
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.locale) private var locale
+    @Environment(\.mobiusPalette) private var palette
+    @Binding var value: Double
+    let count: Int
+    let valueLabel: String
+    let commit: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeUIView(context: Context) -> ThumbHeightSlider {
+        let slider = ThumbHeightSlider()
+        // Keep UIKit's live Liquid Glass thumb; custom thumb/track images opt out.
+        slider.minimumTrackTintColor = .clear
+        slider.maximumTrackTintColor = .clear
+        slider.isAccessibilityElement = true
+        slider.accessibilityTraits.insert(.adjustable)
+        slider.addTarget(context.coordinator, action: #selector(Coordinator.began), for: .touchDown)
+        slider.addTarget(
+            context.coordinator, action: #selector(Coordinator.changed), for: .valueChanged)
+        slider.addTarget(
+            context.coordinator, action: #selector(Coordinator.ended),
+            for: [.touchUpInside, .touchUpOutside, .touchCancel])
+        return slider
+    }
+
+    func updateUIView(_ slider: ThumbHeightSlider, context: Context) {
+        context.coordinator.owner = self
+        slider.maximumValue = Float(count - 1)
+        slider.trackConfiguration = .init(
+            enabledRange: 0...slider.maximumValue, numberOfTicks: count)
+        slider.value = Float(value)
+        slider.isEnabled = isEnabled
+        slider.tintColor = UIColor(palette.accent)
+        slider.gradient.colors = [
+            UIColor(palette.accentSoft).cgColor, UIColor(palette.accent).cgColor,
+        ]
+        slider.setNeedsLayout()
+        slider.accessibilityLabel = String(localized: "Reasoning effort", locale: locale)
+        slider.accessibilityValue = valueLabel
+    }
+
+    @MainActor final class Coordinator: NSObject {
+        var owner: ReasoningSlider
+        private var isEditing = false
+
+        init(_ owner: ReasoningSlider) { self.owner = owner }
+
+        @objc func began() { isEditing = true }
+
+        @objc func changed(_ slider: UISlider) {
+            owner.value = Double(slider.value.rounded())
+            if !isEditing { owner.commit() }
+        }
+
+        @objc func ended() {
+            isEditing = false
+            owner.commit()
+        }
+    }
+
+    final class ThumbHeightSlider: UISlider {
+        private let thumbDiameter = MobiusStyle.iconButtonSize * 1.02
+        let gradient = CAGradientLayer()
+        private let trackBackground = CALayer()
+        private let fillMask = CALayer()
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            trackBackground.masksToBounds = true
+            layer.insertSublayer(trackBackground, at: 0)
+            gradient.startPoint = CGPoint(x: 0, y: 0.5)
+            gradient.endPoint = CGPoint(x: 1, y: 0.5)
+            fillMask.backgroundColor = UIColor.black.cgColor
+            gradient.mask = fillMask
+            trackBackground.addSublayer(gradient)
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            let track = trackRect(forBounds: bounds)
+            let thumb = thumbRect(forBounds: bounds, trackRect: track, value: value)
+            let minimumThumb = thumbRect(forBounds: bounds, trackRect: track, value: minimumValue)
+            let maximumThumb = thumbRect(forBounds: bounds, trackRect: track, value: maximumValue)
+            let isReversed = minimumThumb.midX > maximumThumb.midX
+            let edge = min(track.width, max(0, thumb.midX - track.minX))
+            var fill = CGRect(
+                x: isReversed ? edge : 0, y: 0,
+                width: isReversed ? track.width - edge : edge, height: track.height)
+            if value <= minimumValue { fill.size.width = 0 }
+            if value >= maximumValue { fill = CGRect(origin: .zero, size: track.size) }
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            trackBackground.frame = track
+            trackBackground.cornerRadius = track.height / 2
+            trackBackground.backgroundColor = UIColor.tertiarySystemFill.cgColor
+            trackBackground.opacity = isEnabled ? 1 : 0.4
+            gradient.frame = trackBackground.bounds
+            gradient.startPoint.x = isReversed ? 1 : 0
+            gradient.endPoint.x = isReversed ? 0 : 1
+            fillMask.frame = fill
+            fillMask.cornerRadius = track.height / 2
+            CATransaction.commit()
+        }
+
+        override func trackRect(forBounds bounds: CGRect) -> CGRect {
+            let track = super.trackRect(forBounds: bounds)
+            let height = MobiusStyle.iconButtonSize / 1.1
+            return CGRect(
+                x: track.minX, y: bounds.midY - height / 2, width: track.width, height: height)
+        }
+
+        override func thumbRect(forBounds bounds: CGRect, trackRect rect: CGRect, value: Float)
+            -> CGRect
+        {
+            let minimum = super.thumbRect(forBounds: bounds, trackRect: rect, value: minimumValue)
+            let maximum = super.thumbRect(forBounds: bounds, trackRect: rect, value: maximumValue)
+            // Retain UIKit's direction and value mapping, but align the circular thumb's
+            // edges with the rounded track instead of retaining the capsule thumb's inset.
+            let range = maximumValue - minimumValue
+            let fraction = range > 0 ? CGFloat((value - minimumValue) / range) : 0
+            let progress = minimum.midX > maximum.midX ? 1 - fraction : fraction
+            return CGRect(
+                x: rect.minX + progress * (rect.width - thumbDiameter),
+                y: rect.midY - thumbDiameter / 2,
+                width: thumbDiameter, height: thumbDiameter)
+        }
+
+        override func accessibilityIncrement() { adjust(by: 1) }
+        override func accessibilityDecrement() { adjust(by: -1) }
+
+        private func adjust(by amount: Float) {
+            guard isEnabled else { return }
+            value = min(maximumValue, max(minimumValue, value + amount))
+            sendActions(for: .valueChanged)
+        }
+    }
+}
+
 struct ModelSelectionSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -200,10 +333,9 @@ struct ModelSelectionSheet: View {
                 }
             }
             .disabled(!isEnabled)
-            .navigationTitle("Configure")
-            .toolbarTitleDisplayMode(.inline)
+            .mobiusNavigationTitle("Configure")
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
+                MobiusToolbarItem(placement: .confirmationAction) {
                     MobiusToolbarIconButton(glyph: .check, label: "Done") { dismiss() }
                 }
             }

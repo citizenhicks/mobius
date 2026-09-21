@@ -12,19 +12,8 @@ struct ProvidersView: View {
             title: "Providers",
             detail: pageDetail,
             manualSection: "providers",
-            sharesHeaderBackground: true,
-            headerAccessory: {
-                HeaderActionGroup {
-                    Button {
-                        isAdding = true
-                    } label: {
-                        MobiusIcon(.plus, gutter: false)
-                    }
-                    .groupedHeaderAction(prominent: true)
-                    .disabled(!model.gateway.connectionState.isReady)
-                    .accessibilityLabel("Add provider")
-                    .accessibilityHint("Opens the provider setup")
-                    .help("Add provider")
+            toolbar: {
+                MobiusToolbarItem(placement: .primaryAction) {
                     SettingsStatusButton(
                         subject: .localized("Providers"),
                         statusLabel: status.label,
@@ -32,7 +21,12 @@ struct ProvidersView: View {
                         statusColor: status.color,
                         isLoading: model.gateway.connectionState.isLoading
                     )
-                    .groupedHeaderAction()
+                    MobiusToolbarIconButton(glyph: .plus, label: "Add provider") {
+                        isAdding = true
+                    }
+                    .mobiusProminentToolbarButton()
+                    .disabled(!model.gateway.connectionState.isReady)
+                    .accessibilityHint("Opens the provider setup")
                 }
             }
         ) {
@@ -228,17 +222,17 @@ private struct AddProviderSheet: View {
             }
             .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: provider)
             .scrollDismissesKeyboard(.interactively)
-            .navigationTitle("Add provider")
-            .navigationBarTitleDisplayMode(.inline)
+            .mobiusNavigationTitle("Add provider")
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
+                MobiusToolbarItem(placement: .cancellationAction) {
                     MobiusToolbarIconButton(glyph: .x, label: "Cancel") { dismiss() }
                 }
                 if provider != nil {
-                    ToolbarItem(placement: .confirmationAction) {
+                    MobiusToolbarItem(placement: .confirmationAction) {
                         MobiusToolbarIconButton(
                             glyph: .check, label: "Save", action: model.registerProvider
                         )
+                        .mobiusProminentToolbarButton()
                         .disabled(
                             model.isApplyingConfiguration
                                 || !model.gateway.connectionState.isReady)
@@ -289,6 +283,7 @@ private struct AddProviderSheet: View {
 
 struct ProviderDetailView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.mobiusPalette) private var palette
     @State private var confirmsRemoval = false
     let instance: String
 
@@ -297,31 +292,37 @@ struct ProviderDetailView: View {
             PageScaffold(
                 title: .verbatim(record.label),
                 detail: .verbatim(""),
-                sharesHeaderBackground: true,
-                headerAccessory: {
-                    HeaderActionGroup {
-                        Button {
-                            model.registerProvider()
-                        } label: {
-                            MobiusIcon(.check, gutter: false)
-                        }
-                        .groupedHeaderAction(prominent: true)
-                        .disabled(
-                            model.isApplyingConfiguration || !model.gateway.connectionState.isReady
-                        )
-                        .accessibilityLabel("Save to gateway")
-                        .help("Save to gateway")
-                        Button {
+                toolbar: {
+                    ToolbarSpacer(.flexible, placement: .bottomBar)
+                    MobiusToolbarItem(placement: .bottomBar) {
+                        MobiusToolbarIconButton(
+                            glyph: .trash,
+                            label: "Remove provider",
+                            role: .destructive
+                        ) {
                             confirmsRemoval = true
-                        } label: {
-                            MobiusIcon(.trash, gutter: false)
                         }
-                        .groupedHeaderAction()
+                        .tint(palette.danger)
                         .disabled(
                             model.isApplyingConfiguration || !model.gateway.connectionState.isReady
                         )
-                        .accessibilityLabel("Remove provider")
-                        .help("Remove provider")
+                    }
+                    if let status = model.providerStatuses.first(where: {
+                        $0.provider == record.provider
+                    }) {
+                        MobiusToolbarItem(placement: .bottomBar) {
+                            ProviderCredentialButton(auth: status.auth)
+                                .mobiusProminentToolbarButton()
+                        }
+                    }
+                    MobiusToolbarItem(placement: .bottomBar) {
+                        MobiusToolbarIconButton(glyph: .check, label: "Save to gateway") {
+                            model.registerProvider()
+                        }
+                        .mobiusProminentToolbarButton()
+                        .disabled(
+                            model.isApplyingConfiguration || !model.gateway.connectionState.isReady
+                        )
                     }
                 }
             ) {
@@ -348,7 +349,7 @@ struct ProviderDetailView: View {
                 glyph: AppDestination.providers.glyph,
                 detail: "It is no longer configured on this gateway."
             )
-            .navigationTitle("Provider")
+            .mobiusNavigationTitle("Provider")
             .toolbarRole(.editor)
             .background(MobiusBackdrop())
         }
@@ -481,7 +482,13 @@ private struct ProviderFormSections: View {
             }
 
             providerActionStatus
-            credentialAction(status)
+            if isNew {
+                MobiusActionRow {
+                    ProviderCredentialButton(auth: status.auth)
+                        .mobiusProminentButton()
+                }
+                .settingsStandaloneRow()
+            }
         }
     }
 
@@ -546,35 +553,6 @@ private struct ProviderFormSections: View {
                     .textContentType(.password)
                     .privacySensitive()
             }
-        }
-    }
-
-    /// The credential action stands under the form rather than inside the Credential
-    /// card, so the page ends on one full-width accent button.
-    @ViewBuilder
-    private func credentialAction(_ status: ProviderStatus) -> some View {
-        if status.auth == .apiKey {
-            MobiusActionRow {
-                Button("Send key to gateway", glyph: .key) {
-                    model.saveProviderCredential()
-                }
-                .mobiusProminentButton()
-                .disabled(
-                    model.providerAPIKey.isEmpty || !model.gateway.connectionState.isReady
-                        || model.pendingProviderCredential != nil
-                )
-            }
-            .settingsStandaloneRow()
-        } else if status.auth == .deviceCode {
-            MobiusActionRow {
-                Button("Start device sign-in", glyph: .signIn) {
-                    model.startProviderLogin()
-                }
-                .mobiusProminentButton()
-                .disabled(
-                    model.pendingProviderLogin != nil || !model.gateway.connectionState.isReady)
-            }
-            .settingsStandaloneRow()
         }
     }
 
@@ -659,6 +637,29 @@ private struct ProviderFormSections: View {
             get: { model.providerDraft?.webSearch ?? .off },
             set: { model.providerDraft?.webSearch = $0 }
         )
+    }
+}
+
+private struct ProviderCredentialButton: View {
+    @Environment(AppModel.self) private var model
+    let auth: ProviderAuthKind
+
+    var body: some View {
+        switch auth {
+        case .apiKey:
+            Button("Send key to gateway", glyph: .key, action: model.saveProviderCredential)
+                .disabled(
+                    model.providerAPIKey.isEmpty || !model.gateway.connectionState.isReady
+                        || model.pendingProviderCredential != nil
+                )
+                .help("Send key to gateway")
+        case .deviceCode:
+            Button("Start device sign-in", glyph: .signIn, action: model.startProviderLogin)
+                .disabled(
+                    model.pendingProviderLogin != nil || !model.gateway.connectionState.isReady
+                )
+                .help("Start device sign-in")
+        }
     }
 }
 

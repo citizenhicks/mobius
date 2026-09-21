@@ -8,10 +8,13 @@ struct EventCentreView: View {
         let events = model.eventCentreItems
         PageScaffold(
             title: "Event Centre", detail: "Approvals and results.",
-            headerAccessory: {
-                Button("Mark all read", glyph: .checkCircle) { model.markEventsRead(events) }
-                    .mobiusIconButton()
+            toolbar: {
+                MobiusToolbarItem(placement: .primaryAction) {
+                    MobiusToolbarIconButton(glyph: .checkCircle, label: "Mark all read") {
+                        model.markEventsRead(events)
+                    }
                     .disabled(!events.contains(where: model.isEventUnread))
+                }
             }
         ) {
             Section {

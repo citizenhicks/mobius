@@ -18,9 +18,8 @@ struct AgentSettingsView: View {
             title: pageTitle,
             detail: pageDetail,
             manualSection: scope == .botDefaults ? "bot-defaults" : "bots",
-            sharesHeaderBackground: true,
             showsBackdrop: scope == .botDefaults,
-            headerAccessory: { configurationStatusAccessory }
+            toolbar: { configurationStatusAccessory }
         ) {
             if draft != nil {
                 if case .bot = scope {
@@ -139,7 +138,7 @@ struct AgentSettingsView: View {
         }
     }
 
-    private var configurationStatusAccessory: some View {
+    private var configurationStatusAccessory: some ToolbarContent {
         SettingsStatusAccessory(
             subject: .localized(scope == .botDefaults ? "Bot defaults" : "Bot"),
             hasChanges: hasChanges,
@@ -295,10 +294,9 @@ struct AgentSettingsView: View {
                     }
                 }
             }
-            .navigationTitle(Text(verbatim: feature.label))
-            .navigationBarTitleDisplayMode(.inline)
+            .mobiusNavigationTitle(.verbatim(feature.label))
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
+                MobiusToolbarItem(placement: .confirmationAction) {
                     MobiusToolbarIconButton(glyph: .check, label: "Done") {
                         editingCapability = nil
                     }

@@ -238,17 +238,13 @@ extension AppModelTests {
         XCTAssertNotNil(refreshedFilesRequest)
     }
 
-    func testIPadLayoutAndSidebarTogglePolicies() {
-        XCTAssertTrue(MobiusLayout.usesIPadLayout(platform: .ipados))
-        XCTAssertFalse(MobiusLayout.usesIPadLayout(platform: .ios))
-        XCTAssertEqual(
-            MobiusLayout.toggledSplitSidebarVisibility(from: .all),
-            .detailOnly
-        )
-        XCTAssertEqual(
-            MobiusLayout.toggledSplitSidebarVisibility(from: .detailOnly),
-            .all
-        )
+    func testSplitSidebarTogglePolicies() {
+        let hidden = MobiusLayout.toggledSplitSidebar(from: .all)
+        XCTAssertEqual(hidden.visibility, .detailOnly)
+        XCTAssertEqual(hidden.compactColumn, .detail)
+        let shown = MobiusLayout.toggledSplitSidebar(from: hidden.visibility)
+        XCTAssertEqual(shown.visibility, .all)
+        XCTAssertEqual(shown.compactColumn, .sidebar)
     }
 
     func testWorkspaceCatalogRetainsPartialResultsWhenTruncated() async throws {

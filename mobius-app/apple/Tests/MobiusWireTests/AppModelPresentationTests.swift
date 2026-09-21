@@ -6,16 +6,368 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
-    func testTranscriptSheetsHaveAnAccessibleLeadingDoneActionWhileLoadingOrFailed() async throws {
+    func testFilesInspectorPrefersFortyFivePercentWithFlexibleWidth() async throws {
+        let app = try model(requestSender: { _ in })
+        app.showsWelcome = false
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        app.gateway.accounts = [account]
+        app.gateway.selectedAccountID = account.id
+        app.destination = .chats
+        app.chat.selectedSessionID = "layout-chat"
+        app.navigationPath = [.chat(.session("layout-chat"))]
+        let scene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive })
+        try XCTSkipUnless(scene.traitCollection.horizontalSizeClass == .regular)
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
+        let host = UIHostingController(rootView: AppShell().mobiusTheme().environment(app))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+        func inspectorSplit(in controller: UIViewController) -> UISplitViewController? {
+            if let split = controller as? UISplitViewController,
+                split.viewController(for: .inspector) != nil
+            {
+                return split
+            }
+            return controller.children.lazy.compactMap { inspectorSplit(in: $0) }.first
+        }
+        app.showsInspector = true
+        let appeared = await eventually {
+            inspectorSplit(in: host)?.viewController(for: .inspector)?.viewIfLoaded?.window != nil
+        }
+        XCTAssertTrue(appeared)
+        let split = try XCTUnwrap(inspectorSplit(in: host))
+        let column = try XCTUnwrap(split.viewController(for: .inspector)?.viewIfLoaded)
+        XCTAssertLessThan(split.minimumInspectorColumnWidth, split.maximumInspectorColumnWidth)
+        let settled = await eventually {
+            abs(column.bounds.width - window.bounds.width * 0.45) < 1
+        }
+        XCTAssertTrue(settled)
+        XCTAssertEqual(column.bounds.width, window.bounds.width * 0.45, accuracy: 1)
+    }
+
+    func testSidebarFooterDoesNotDependOnDestinationRailMeasurements() async throws {
+        let app = try model(requestSender: { _ in })
+        let rail = MobiusBottomRailGeometry()
+        let owner = UUID()
+        let scene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive })
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
+        func drawer(isOpen: Bool, hasVerticalToolbar: Bool = false) -> some View {
+            SidebarDrawer(isOpen: .constant(isOpen)) {
+                SidebarView(sharesBottomRail: isOpen, showDetail: { app.destination = $0 })
+            } detail: {
+                Color.clear
+            }
+            .mobiusTheme()
+            .environment(app)
+            .environment(\.horizontalSizeClass, .compact)
+            .environment(\.mobiusHasVerticalToolbar, hasVerticalToolbar)
+            .environment(\.mobiusBottomRailGeometry, rail)
+        }
+        let host = UIHostingController(rootView: drawer(isOpen: true))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+        func button(_ title: String, in controller: UIViewController) -> UIBarButtonItem? {
+            controller.toolbarItems?.first { $0.title == title }
+                ?? controller.children.lazy.compactMap { button(title, in: $0) }.first
+        }
+        func button(_ title: String) -> UIBarButtonItem? {
+            button(title, in: host)
+        }
+        func frame(_ title: String) throws -> CGRect {
+            let view = try XCTUnwrap(button(title)?.customView)
+            return view.convert(view.bounds, to: window)
+        }
+        let appeared = await eventually {
+            button("Settings")?.customView?.window != nil
+                && button("Event Centre")?.customView?.window != nil
+        }
+        XCTAssertTrue(appeared)
+        let baseline = try frame("Settings").midY
+        for title in ["Settings", "New window", "Event Centre"] {
+            if title == "New window", button(title) == nil { continue }
+            let item = try XCTUnwrap(button(title))
+            let view = try XCTUnwrap(item.customView)
+            let bounds = try frame(title)
+            XCTAssertEqual(bounds.width, bounds.height)
+            XCTAssertGreaterThanOrEqual(bounds.width, MobiusStyle.rowTouch)
+            XCTAssertGreaterThanOrEqual(bounds.minX, 0)
+            XCTAssertLessThanOrEqual(bounds.maxX, SidebarDrawerMetrics.width)
+            let hit = window.hitTest(CGPoint(x: bounds.midX, y: bounds.midY), with: nil)
+            XCTAssertTrue(hit === view || hit?.isDescendant(of: view) == true, title)
+        }
+
+        for isOpen in [false, true, false, true] {
+            host.rootView = drawer(isOpen: isOpen)
+            try await Task.sleep(for: .milliseconds(100))
+            XCTAssertEqual(try frame("Settings").midY, baseline)
+            XCTAssertEqual(try frame("Event Centre").midY, baseline)
+        }
+
+        for destination: AppDestination in [
+            .chats, .bots, .providers, .extensions, .gateway, .botDefaults, .profile, .eventCentre,
+            .globalContributions,
+        ] {
+            app.destination = destination
+            rail.update(frame: CGRect(x: 0, y: 20, width: 48, height: 48), owner: owner)
+            try await Task.sleep(for: .milliseconds(100))
+            XCTAssertEqual(try frame("Settings").midY, baseline)
+            XCTAssertEqual(try frame("Event Centre").midY, baseline)
+            rail.remove(owner: owner)
+        }
+        app.destination = .chats
+        app.navigationPath = [.chat(.session("chat-1"))]
+        let published = await eventually { rail.frame != nil }
+        XCTAssertTrue(published, "A narrow split sidebar still supplies its horizontal baseline")
+        let sourceFrame = try XCTUnwrap(rail.frame)
+        XCTAssertGreaterThan(sourceFrame.minY, window.bounds.midY)
+        XCTAssertEqual(sourceFrame.maxY, try frame("Event Centre").maxY, accuracy: 1)
+        host.rootView = drawer(isOpen: false)
+        let hiddenSourceCleared = await eventually { rail.frame == nil }
+        XCTAssertTrue(hiddenSourceCleared, "A hidden sidebar cannot supply the chat baseline")
+        host.rootView = drawer(isOpen: true)
+        let reopenedSourcePublished = await eventually { rail.frame == sourceFrame }
+        XCTAssertTrue(reopenedSourcePublished)
+        XCTAssertEqual(try XCTUnwrap(rail.frame).maxY, try frame("Event Centre").maxY, accuracy: 1)
+        app.navigationPath = []
+        let cleared = await eventually { rail.frame == nil }
+        XCTAssertTrue(cleared)
+        host.rootView = drawer(isOpen: true, hasVerticalToolbar: true)
+        let sidebarSourceCleared = await eventually { rail.frame == nil }
+        XCTAssertTrue(sidebarSourceCleared)
+        let peerFrame = sourceFrame.offsetBy(dx: 0, dy: -MobiusSpace.xs)
+        rail.update(frame: peerFrame, owner: owner)
+        for title in ["Settings", "New window", "Event Centre"] {
+            if title == "New window", button(title) == nil { continue }
+            let view = try XCTUnwrap(button(title)?.customView)
+            func renderedFrame(in child: UIView) -> CGRect? {
+                if let frame = child.subviews.lazy.compactMap({ renderedFrame(in: $0) }).last {
+                    return frame
+                }
+                guard child.bounds.size == view.bounds.size else { return nil }
+                return child.convert(child.bounds, to: window)
+            }
+            let aligned = await eventually {
+                renderedFrame(in: view).map { abs($0.maxY - peerFrame.maxY) < 1 } == true
+            }
+            XCTAssertTrue(aligned, title)
+            let bounds = try XCTUnwrap(renderedFrame(in: view))
+            let hit = window.hitTest(CGPoint(x: bounds.midX, y: bounds.midY), with: nil)
+            XCTAssertTrue(hit === view || hit?.isDescendant(of: view) == true, title)
+            XCTAssertEqual(try frame(title).midY, baseline, "Measure the unshifted toolbar host")
+        }
+        for (title, destination) in [
+            ("Settings", AppDestination.profile), ("Event Centre", .eventCentre),
+        ] {
+            let item = try XCTUnwrap(button(title))
+            let action = try XCTUnwrap(item.action)
+            XCTAssertTrue(item.isEnabled)
+            XCTAssertTrue(
+                UIApplication.shared.sendAction(action, to: item.target, from: item, for: nil))
+            XCTAssertEqual(app.destination, destination)
+        }
+    }
+
+    func testBottomRailGeometryKeepsNewestSourceWhenPreviousDisappears() {
+        let rail = MobiusBottomRailGeometry()
+        let previous = UUID()
+        let current = UUID()
+        let firstFrame = CGRect(x: 400, y: 600, width: 48, height: 48)
+        let currentFrame = CGRect(x: 400, y: 700, width: 48, height: 48)
+        rail.update(frame: firstFrame, owner: previous)
+        rail.update(frame: currentFrame, owner: current)
+
+        rail.remove(owner: previous)
+        XCTAssertEqual(rail.frame, currentFrame)
+
+        rail.remove(owner: current)
+        XCTAssertNil(rail.frame)
+
+        rail.update(frame: .zero, owner: previous)
+        XCTAssertNil(rail.frame)
+    }
+
+    func testComposerKeepsDefaultSizeAndTracksHorizontalActionBaseline() async throws {
+        let app = try model(requestSender: { _ in })
+        let rail = MobiusBottomRailGeometry()
+        let owner = UUID()
+        var actionFrame = CGRect.zero
+        var sendFrame = CGRect.zero
+        var alignedFrame = CGRect.zero
+        let scene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive })
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
+        let host = UIHostingController(
+            rootView: HStack(alignment: .bottom) {
+                Button("Settings", glyph: AppDestination.profile.glyph) {}
+                    .mobiusToolbarIcon()
+                    .buttonStyle(.glass)
+                    .onGeometryChange(for: CGRect.self) {
+                        $0.frame(in: .global)
+                    } action: {
+                        actionFrame = $0
+                    }
+                    .padding(.bottom, 32)
+                ComposerSurface(
+                    text: .constant(""), send: { true }, context: { _ in EmptyView() },
+                    controls: { _, _ in
+                        HStack {
+                            Spacer()
+                            ComposerSendButton(send: { _ in })
+                                .mobiusProminentIconButton(surfaceSize: 32)
+                                .onGeometryChange(for: CGRect.self) {
+                                    $0.frame(in: .global)
+                                } action: {
+                                    sendFrame = $0
+                                }
+                        }
+                    }
+                )
+                .frame(width: 180)
+                .onGeometryChange(for: CGRect.self) { geometry in
+                    geometry.frame(in: .global)
+                } action: { frame in
+                    alignedFrame = frame
+                }
+                .mobiusBottomRailAligned()
+                .padding(.bottom, 12)
+            }
+            .frame(width: 300, height: 200, alignment: .bottom)
+            .mobiusTheme()
+            .environment(app)
+            .environment(\.mobiusHasVerticalToolbar, false)
+            .environment(\.mobiusBottomRailGeometry, rail)
+        )
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+
+        let defaultHeight = MobiusStyle.iconButtonSize + 2 * MobiusStyle.iconRowPadding
+        let appeared = await eventually {
+            abs(alignedFrame.height - defaultHeight) < 0.5 && !actionFrame.isEmpty
+        }
+        XCTAssertTrue(appeared)
+        XCTAssertEqual(sendFrame.width, MobiusStyle.rowTouch, accuracy: 0.5)
+        XCTAssertEqual(sendFrame.height, MobiusStyle.rowTouch, accuracy: 0.5)
+
+        rail.update(frame: actionFrame, owner: owner)
+        let aligned = await eventually {
+            guard let source = rail.frame, !alignedFrame.isEmpty else { return false }
+            return abs(alignedFrame.maxY - source.maxY) < 0.5
+                && abs(alignedFrame.height - source.height) < 0.5
+        }
+        XCTAssertTrue(aligned)
+        XCTAssertEqual(alignedFrame.maxY, try XCTUnwrap(rail.frame).maxY, accuracy: 0.5)
+        rail.remove(owner: owner)
+        let restored = await eventually { abs(alignedFrame.height - defaultHeight) < 0.5 }
+        XCTAssertTrue(restored)
+    }
+
+    func testLeavingChatDismissesFilesWithoutDiscardingWorkspaceDraft() throws {
+        let app = try model(requestSender: { _ in })
+        app.chat.selectedSessionID = "chat-1"
+        app.navigationPath = [.chat(.session("chat-1"))]
+        let draftID = UUID()
+        app.textFilePreview = TextFilePreview(
+            id: draftID, name: "note.txt", contents: "saved",
+            workspaceSessionID: "chat-1", workspacePath: "note.txt"
+        )
+        app.updateWorkspaceFileDraft(id: draftID, contents: "unsaved")
+        app.showsInspector = true
+        XCTAssertTrue(app.isPresentingFilesInspector)
+        app.returnsToFilesAfterFilePresentation = true
+        app.isLoadingFilePresentation = true
+        let generation = app.filePresentationGeneration
+
+        app.navigationPath = []
+
+        XCTAssertFalse(app.showsInspector)
+        XCTAssertFalse(app.returnsToFilesAfterFilePresentation)
+        XCTAssertFalse(app.isLoadingFilePresentation)
+        XCTAssertNotEqual(app.filePresentationGeneration, generation)
+        XCTAssertEqual(app.textFilePreview?.id, draftID)
+        XCTAssertEqual(app.textFilePreview?.contents, "unsaved")
+        XCTAssertEqual(app.chat.selectedSessionID, "chat-1")
+
+        // A delayed native presentation update during folding cannot reopen chat Files
+        // after the owning chat has been left.
+        app.isPresentingFilesInspector = true
+        XCTAssertFalse(app.showsInspector)
+        XCTAssertFalse(app.isPresentingFilesInspector)
+    }
+
+    func testChangingRouteOrDestinationDismissesFileOverlays() throws {
+        let app = try model(requestSender: { _ in })
+        app.navigationPath = [.chat(.session("chat-1"))]
+        app.showsInspector = true
+        let generation = app.filePresentationGeneration
+
+        app.navigationPath = [.chat(.session("chat-1"))]
+        app.destination = .chats
+
+        XCTAssertTrue(app.showsInspector)
+        XCTAssertEqual(app.filePresentationGeneration, generation)
+
+        let fileURL = URL(fileURLWithPath: "/tmp/mobius-preview.txt")
+        app.previewURL = fileURL
+        app.sessionFileShareItem = SessionFileShareItem(
+            id: UUID(), name: "preview.txt", url: fileURL)
+        app.textFilePreview = TextFilePreview(
+            id: UUID(), name: "preview.txt", contents: "read only")
+        app.returnsToFilesAfterFilePresentation = true
+        app.navigationPath = [.chat(.session("chat-2"))]
+
+        XCTAssertFalse(app.showsInspector)
+        XCTAssertFalse(app.returnsToFilesAfterFilePresentation)
+        XCTAssertNil(app.previewURL)
+        XCTAssertNil(app.sessionFileShareItem)
+        XCTAssertNil(app.textFilePreview)
+
+        app.showsInspector = true
+        app.destination = .bots
+
+        XCTAssertFalse(app.showsInspector)
+        app.showsInspector = true
+        XCTAssertFalse(app.isPresentingFilesInspector)
+        app.isPresentingFilesInspector = true
+        XCTAssertFalse(app.showsInspector)
+    }
+
+    func testTranscriptSheetsHaveAnAccessibleDoneActionWhileLoadingOrFailed() async throws {
         @Bindable var app = try model(requestSender: { _ in })
         let preview = TranscriptPreview(
             id: "sheet-preview", title: "voice agent", context: "", status: nil, model: nil,
             entries: [], next: nil
         )
-        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let scene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive })
         let previous = scene.keyWindow
         let window = UIWindow(windowScene: scene)
-        window.frame = CGRect(x: 0, y: 0, width: 402, height: 874)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
         defer {
             window.isHidden = true
             window.rootViewController = nil
@@ -53,8 +405,8 @@ extension AppModelTests {
                 testAccessibilityElements(window).first {
                     $0.accessibilityLabel == "Done" && $0.accessibilityTraits.contains(.button)
                 })
-            XCTAssertLessThan(done.accessibilityFrame.midX, window.frame.midX)
-            XCTAssertTrue(done.accessibilityActivate())
+            XCTAssertFalse(done.accessibilityTraits.contains(.notEnabled))
+            try activatePresentationToolbarButton("Done", in: host)
             let dismissed = await eventually(timeout: .seconds(3)) {
                 !app.showsInspector && host.presentedViewController == nil
             }
@@ -62,7 +414,7 @@ extension AppModelTests {
         }
     }
 
-    func testTranscriptHeadersSharePlacementAndExposeInfo() async throws {
+    func testTranscriptHeadersExposeTitlesAndAccessibleInfoActions() async throws {
         let app = try model(requestSender: { _ in })
         let wire = try JSONDecoder().decode(
             RenderedPreview.self,
@@ -91,10 +443,12 @@ extension AppModelTests {
         app.routineRunPreview = RoutineRunPreview(
             requestID: "preview", routine: routine, run: run, records: [], nextBeforeSequence: nil
         )
-        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let scene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive })
         let previous = scene.keyWindow
         let window = UIWindow(windowScene: scene)
-        window.frame = CGRect(x: 0, y: 0, width: 402, height: 874)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
         defer {
             window.isHidden = true
             window.rootViewController = nil
@@ -131,8 +485,8 @@ extension AppModelTests {
                 elements.first {
                     $0.accessibilityLabel == infoLabel && $0.accessibilityTraits.contains(.button)
                 })
-            XCTAssertLessThan(done.accessibilityFrame.midX, window.frame.midX)
-            XCTAssertGreaterThan(info.accessibilityFrame.midX, window.frame.midX)
+            XCTAssertFalse(done.accessibilityTraits.contains(.notEnabled))
+            XCTAssertFalse(info.accessibilityTraits.contains(.notEnabled))
             XCTAssertTrue(elements.contains { $0.accessibilityLabel?.contains(title) == true })
             XCTAssertTrue(elements.contains { $0.accessibilityLabel?.contains(subtitle) == true })
             let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
@@ -142,7 +496,7 @@ extension AppModelTests {
             attachment.name = infoLabel
             attachment.lifetime = .keepAlways
             add(attachment)
-            XCTAssertTrue(info.accessibilityActivate())
+            try activatePresentationToolbarButton(infoLabel, in: host)
             let opened = await eventually { host.presentedViewController != nil }
             XCTAssertTrue(opened)
             if infoLabel == "Voice info" {
@@ -310,14 +664,65 @@ extension AppModelTests {
         }
     }
 
+    func testPresentedSheetUsesSoftHeaderAndFooterEdges() async throws {
+        @Bindable var app = try model(requestSender: { _ in })
+        let scene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive })
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
+        let host = UIHostingController(
+            rootView: Color.clear.sheet(isPresented: $app.showsInspector) {
+                NavigationStack {
+                    Form { Text("Sheet content") }
+                        .navigationTitle("Sheet")
+                        .toolbarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("Done") { app.showsInspector = false }
+                            }
+                        }
+                }
+                .mobiusSheet()
+            }
+            .scrollEdgeEffectStyle(.hard, for: .vertical)
+        )
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer {
+            app.showsInspector = false
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+        app.showsInspector = true
+        let appeared = await eventually(timeout: .seconds(3)) {
+            guard let sheet = host.presentedViewController, !sheet.isBeingPresented,
+                let view = sheet.viewIfLoaded
+            else { return false }
+            return testAccessibilityElements(view).contains { $0 is UIScrollView }
+        }
+        XCTAssertTrue(appeared)
+        let sheet = try XCTUnwrap(host.presentedViewController)
+        for scroll in testAccessibilityElements(sheet.view).compactMap({ $0 as? UIScrollView }) {
+            XCTAssertEqual(scroll.topEdgeEffect.style, .soft)
+            XCTAssertEqual(scroll.bottomEdgeEffect.style, .soft)
+        }
+    }
+
     func testCreationFormsReopenWithEmptyDrafts() async throws {
         let recorder = GatewayRequestRecorder()
         let app = try model { await recorder.record($0) }
         app.gateway.connectionState = .ready
-        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let scene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive }
+        )
         let previous = scene.keyWindow
         let window = UIWindow(windowScene: scene)
-        window.frame = CGRect(x: 0, y: 0, width: 402, height: 874)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
         defer {
             window.isHidden = true
             window.rootViewController = nil
@@ -329,16 +734,28 @@ extension AppModelTests {
         window.makeKeyAndVisible()
 
         func activate(_ label: String) async throws {
-            let activated = await eventually {
-                testAccessibilityElements(host.view).contains {
-                    $0.accessibilityLabel == label && $0.accessibilityActivate()
+            let appeared = await eventually {
+                window.layoutIfNeeded()
+                host.view.layoutIfNeeded()
+                return testAccessibilityElements(window).contains {
+                    $0.accessibilityLabel == label && $0.accessibilityTraits.contains(.button)
                 }
             }
-            XCTAssertTrue(activated, "Missing action: \(label)")
+            XCTAssertTrue(appeared, "Missing action: \(label)")
+            if presentationToolbarButton(label, in: host) != nil {
+                try activatePresentationToolbarButton(label, in: host)
+            } else {
+                let button = try XCTUnwrap(
+                    testAccessibilityElements(window).first {
+                        $0.accessibilityLabel == label && $0.accessibilityTraits.contains(.button)
+                    })
+                XCTAssertFalse(button.accessibilityTraits.contains(.notEnabled))
+                XCTAssertTrue(button.accessibilityActivate())
+            }
             try await Task.sleep(for: .milliseconds(350))
         }
         func fields() -> [UIView] {
-            testAccessibilityElements(host.view).compactMap { $0 as? UIView }.filter {
+            testAccessibilityElements(window).compactMap { $0 as? UIView }.filter {
                 guard $0 is UITextField || $0 is UITextView else { return false }
                 let center = CGPoint(x: $0.bounds.midX, y: $0.bounds.midY)
                 return window.hitTest($0.convert(center, to: window), with: nil)?.isDescendant(
@@ -1780,6 +2197,42 @@ extension AppModelTests {
         await fulfillment(of: [changed], timeout: 0.05)
     }
 
+}
+
+@MainActor
+private func presentationToolbarButton(_ title: String, in controller: UIViewController)
+    -> UIBarButtonItem?
+{
+    if let presented = controller.presentedViewController,
+        let item = presentationToolbarButton(title, in: presented)
+    {
+        return item
+    }
+    let navigation = controller.navigationItem
+    let groups =
+        navigation.leadingItemGroups + navigation.centerItemGroups
+        + navigation.trailingItemGroups + [navigation.pinnedTrailingGroup].compactMap { $0 }
+    let items =
+        (controller.toolbarItems ?? []) + (navigation.leftBarButtonItems ?? [])
+        + (navigation.rightBarButtonItems ?? []) + groups.flatMap(\.barButtonItems)
+    return items.first { $0.title == title || $0.accessibilityLabel == title }
+        ?? controller.children.lazy.compactMap { presentationToolbarButton(title, in: $0) }.first
+}
+
+@MainActor
+private func activatePresentationToolbarButton(
+    _ title: String, in controller: UIViewController,
+    file: StaticString = #filePath, line: UInt = #line
+) throws {
+    let item = try XCTUnwrap(
+        presentationToolbarButton(title, in: controller), "Missing toolbar action: \(title)",
+        file: file, line: line)
+    let action = try XCTUnwrap(
+        item.action, "Missing target/action: \(title)", file: file, line: line)
+    XCTAssertTrue(item.isEnabled, title, file: file, line: line)
+    XCTAssertTrue(
+        UIApplication.shared.sendAction(action, to: item.target, from: item, for: nil),
+        title, file: file, line: line)
 }
 
 @MainActor

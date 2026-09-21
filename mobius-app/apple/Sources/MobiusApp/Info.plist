@@ -7,7 +7,9 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Voice chat uses only your microphone; möbius does not request camera access.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Use the microphone for voice chats in möbius.</string>
+	<string>Use the microphone to dictate messages and join voice chats in möbius.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Turn speech into a message without opening the keyboard.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Use Face ID to unlock möbius.</string>
 	<key>UIBackgroundModes</key>

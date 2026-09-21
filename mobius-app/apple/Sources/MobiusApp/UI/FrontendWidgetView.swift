@@ -98,7 +98,15 @@ struct FrontendWidgetContentView: View {
                             Text(verbatim: option.label)
                             Text(verbatim: option.showsDetail ? option.detail : option.description)
                         } icon: {
-                            MobiusSymbol.glyph(for: option.symbol ?? "agent").menuImage(.primary)
+                            if option.symbol == "progress" {
+                                MobiusSpinner(
+                                    size: MobiusStyle.glyphInline,
+                                    foreground: palette.accent
+                                )
+                            } else {
+                                MobiusSymbol.glyph(for: option.symbol ?? "agent")
+                                    .menuImage(.primary)
+                            }
                         }
                     } else {
                         FrontendPickerOptionLabel(option: option)
@@ -348,22 +356,23 @@ struct FrontendActionEditorSheet: View {
                 }
             }
             .scrollContentBackground(.hidden)
-            .navigationTitle(frontendPresentationText(editor.title))
-            .toolbarTitleDisplayMode(.inline)
+            .mobiusNavigationTitle(frontendPresentationText(editor.title))
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
+                MobiusToolbarItem(placement: .cancellationAction) {
                     MobiusToolbarIconButton(
                         glyph: .x, label: "Cancel", action: dismiss.callAsFunction)
                 }
-                ToolbarItem(placement: .confirmationAction) {
+                MobiusToolbarItem(placement: .confirmationAction) {
                     Button {
                         submit(action.op.replacingCapabilityInput(with: trimmedText))
                         dismiss()
                     } label: {
-                        MobiusIcon(.check)
+                        MobiusLabel(
+                            title: frontendPresentationText(editor.submitLabel),
+                            glyph: .check
+                        )
                     }
-                    .tint(.primary)
-                    .accessibilityLabel(Text(frontendPresentationText(editor.submitLabel)))
+                    .mobiusProminentToolbarButton()
                     .disabled(trimmedText.isEmpty || !isEnabled)
                 }
             }
@@ -457,12 +466,9 @@ struct FrontendWidgetSheet: View {
                 }
             }
             .scrollContentBackground(.hidden)
-            .navigationTitle(
-                Text(frontendPresentationText(currentWidget?.title ?? widget.title))
-            )
-            .toolbarTitleDisplayMode(.inline)
+            .mobiusNavigationTitle(frontendPresentationText(currentWidget?.title ?? widget.title))
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
+                MobiusToolbarItem(placement: .confirmationAction) {
                     MobiusToolbarIconButton(glyph: .check, label: "Done") { dismiss() }
                 }
             }

@@ -2,6 +2,9 @@
 
 One SwiftUI client target builds for iOS and iPadOS 26+. Both device families use the same `AppModel`, `GatewayClient`, pairing flow, and versioned möbius gateway protocol. The marketing version and build number live in the Xcode project settings.
 
+Building requires Xcode 27.1 beta (27A9269) for the native Duo toolbar APIs.
+Those APIs are runtime-gated; the minimum supported OS remains iOS 26.
+
 Open `MobiusApp.xcodeproj` and run the shared `MobiusApp` scheme on an iPhone or iPad destination. Command-line builds use:
 
 ```sh
@@ -69,6 +72,10 @@ Run these commands from `mobius-app/apple`. The separate
 signed simulator tests above, and builds an unsigned device Release. It selects
 Xcode 26.6 and iOS Simulator 26.5; missing toolchain/runtime versions fail the job
 rather than silently selecting another destination. The app minimum remains iOS 26.
+The hosted workflow needs a 27.1 runner before it can compile the current Duo APIs;
+GitHub's hosted images currently provide 27.0 only. Until that upgrade, run the
+same quality checks locally with Xcode 27.1, including signed Duo simulator tests
+and a device Release archive.
 First-party app and test targets use Swift 6, complete strict concurrency, and
 warnings-as-errors. Dependency versions remain in `Package.resolved`.
 

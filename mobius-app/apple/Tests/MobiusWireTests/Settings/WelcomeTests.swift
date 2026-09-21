@@ -119,7 +119,12 @@ final class WelcomeTests: XCTestCase {
             XCTAssertEqual(model.cloud.gatewayName(selfHosted), "My Mac", name)
             var pages: [(String, AnyView)] = [
                 ("Settings", AnyView(NavigationStack { ProfileView(expandedSection: .account) })),
-                ("Sidebar", AnyView(SidebarView { _ in }.frame(width: SidebarDrawerMetrics.width))),
+                (
+                    "Sidebar",
+                    AnyView(
+                        SidebarView(sharesBottomRail: false) { _ in }
+                            .frame(width: SidebarDrawerMetrics.width))
+                ),
             ]
             if name == "Cloud Plus" {
                 for section: ProfileView.SettingsSection? in [nil, .appearance, .data, .usage] {
@@ -192,7 +197,6 @@ final class WelcomeTests: XCTestCase {
                 .environment(\.mobiusPalette, MobiusPalette(.light))
                 .environment(\.scenePhase, .inactive)
                 .transaction { $0.disablesAnimations = true }
-                .padding(24)
         )
         window.rootViewController = host
         window.makeKeyAndVisible()
@@ -227,8 +231,10 @@ final class WelcomeTests: XCTestCase {
             "The one-time code has expired. Request a new code from your gateway and try again."
         try await Task.sleep(for: .milliseconds(50))
         host.view.layoutIfNeeded()
-        XCTAssertEqual(
-            scroll.contentSize, formSize, "Header messages must not push the form controls")
+        XCTAssertGreaterThan(
+            scroll.contentSize.height, formSize.height,
+            "A pairing error should use space only while it is present")
+        XCTAssertEqual(scroll.contentSize.width, formSize.width)
         let attachment = XCTAttachment(
             image: UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
                 host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
@@ -236,6 +242,11 @@ final class WelcomeTests: XCTestCase {
         attachment.name = "Gateway pairing with status above the form"
         attachment.lifetime = .keepAlways
         add(attachment)
+        model.gateway.pairingError = nil
+        try await Task.sleep(for: .milliseconds(50))
+        host.view.layoutIfNeeded()
+        XCTAssertEqual(
+            scroll.contentSize, formSize, "Cleared status must not leave an empty header")
     }
 
     func testCloudOfferKeepsNativeAppleAuthorizationInBothAppearances() async throws {
@@ -271,7 +282,6 @@ final class WelcomeTests: XCTestCase {
                 rootView: ZStack {
                     MobiusBackdrop()
                     PairingView(canCancel: true, initialSetup: .cloud)
-                        .padding(MobiusSpace.xl)
                 }
                 .environment(model)
                 .environment(\.mobiusPalette, MobiusPalette(dark ? .dark : .light))

@@ -84,14 +84,14 @@ struct WorkspaceBrowserView: View {
                 if model.isLoadingDirectories { ProgressView() }
             }
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
+                MobiusToolbarItem(placement: .cancellationAction) {
                     MobiusToolbarIconButton(glyph: .x, label: "Cancel") {
                         if onChoose == nil { model.showsWorkspaceBrowser = false }
                         dismiss()
                     }
                     .disabled(chosenPath != nil)
                 }
-                ToolbarItem(placement: .confirmationAction) {
+                MobiusToolbarItem(placement: .confirmationAction) {
                     MobiusToolbarIconButton(glyph: .check, label: "Choose", action: choose)
                         .disabled(
                             model.directoryListing?.parent == nil

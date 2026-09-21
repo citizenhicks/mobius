@@ -15,8 +15,9 @@ struct BotsView: View {
             title: "Bots",
             detail: "Durable agents and their routines.",
             manualSection: "bots",
-            sharesHeaderBackground: true,
-            headerAccessory: { headerActions }
+            toolbar: {
+                MobiusToolbarItem(placement: .primaryAction) { headerActions }
+            }
         ) {
             if let newBotFormID {
                 Section {
@@ -96,7 +97,7 @@ struct BotsView: View {
         } label: {
             MobiusIcon(.aiScan, gutter: false)
         }
-        .tint(palette.accent)
+        .mobiusProminentToolbarButton()
         .disabled(!model.canMutateBots || newBotFormID != nil)
         .accessibilityLabel("New Bot")
         .help("New Bot")
@@ -219,8 +220,8 @@ struct NewBotForm: View {
                 }
             }
             HStack(spacing: MobiusSpace.m) {
-                Button("Cancel", glyph: .x, action: onClose)
-                    .mobiusIconButton()
+                Button("Cancel", role: .cancel, action: onClose)
+                    .buttonStyle(.mobiusGlass)
                     .disabled(isSaving)
                 Button(action: create) {
                     if isSaving {
@@ -279,30 +280,24 @@ struct BotDetailView: View {
                 PageScaffold(
                     title: .verbatim(bot.name),
                     detail: .verbatim(""),
-                    sharesHeaderBackground: true,
-                    headerAccessory: {
-                        HeaderActionGroup {
-                            Button {
-                                newRoutineFormID = UUID()
-                            } label: {
-                                MobiusIcon(.plus, gutter: false)
+                    subtitle: .verbatim("@\(bot.handle)"),
+                    toolbar: {
+                        ToolbarSpacer(.flexible, placement: .bottomBar)
+                        MobiusToolbarItem(placement: .bottomBar) {
+                            MobiusToolbarIconButton(glyph: .slidersHorizontal, label: "Edit Bot") {
+                                model.beginEditingBot(bot)
+                                showsSettings = true
                             }
+                        }
+                        MobiusToolbarItem(placement: .bottomBar) {
+                            MobiusToolbarIconButton(glyph: .plus, label: "New routine") {
+                                newRoutineFormID = UUID()
+                            }
+                            .mobiusProminentToolbarButton()
                             .disabled(
                                 newRoutineFormID != nil || workspaces.isEmpty
                                     || !model.gateway.connectionState.isReady
                             )
-                            .groupedHeaderAction(prominent: true)
-                            .accessibilityLabel("New routine")
-                            .help("New routine")
-                            Button {
-                                model.beginEditingBot(bot)
-                                showsSettings = true
-                            } label: {
-                                MobiusIcon(.slidersHorizontal, gutter: false)
-                            }
-                            .groupedHeaderAction()
-                            .accessibilityLabel("Edit Bot")
-                            .help("Edit Bot")
                         }
                     }
                 ) {
@@ -356,7 +351,6 @@ struct BotDetailView: View {
                         }
                     }
                 }
-                .navigationSubtitle("@\(bot.handle)")
             } else {
                 MobiusUnavailable(
                     title: "Bot unavailable",
@@ -372,7 +366,7 @@ struct BotDetailView: View {
             NavigationStack {
                 AgentSettingsView(scope: .bot(botID))
                     .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
+                        MobiusToolbarItem(placement: .cancellationAction) {
                             MobiusToolbarIconButton(glyph: .x, label: "Cancel") {
                                 showsSettings = false
                             }

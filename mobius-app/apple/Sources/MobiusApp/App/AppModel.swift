@@ -5,8 +5,16 @@ import Observation
 @MainActor
 @Observable
 final class AppModel {
-    var destination: AppDestination? = .chats
-    var navigationPath: [AppRoute] = []
+    var destination: AppDestination? = .chats {
+        didSet {
+            if destination != oldValue { dismissRouteFilePresentation() }
+        }
+    }
+    var navigationPath: [AppRoute] = [] {
+        didSet {
+            if navigationPath.last != oldValue.last { dismissRouteFilePresentation() }
+        }
+    }
     var workspace: WorkspaceInfo?
     var gitStatus: GitStatus?
     var gitCredentialAvailable: Bool?
@@ -255,12 +263,14 @@ final class AppModel {
                 gateway.pairingCode = code
             }
             if environment["MOBIUS_PAGE"] != nil { navigationPath = [] }
-            switch ProcessInfo.processInfo.environment["MOBIUS_PAGE"] {
+            switch environment["MOBIUS_PAGE"] {
+            case "chats": destination = .chats
             case "gateway": destination = .gateway
             case "providers": destination = .providers
             case "bot-defaults": destination = .botDefaults
             case "extensions": destination = .extensions
             case "bots": destination = .bots
+            case "global-contributions": destination = .globalContributions
             case "profile": destination = .profile
             case "event-centre": destination = .eventCentre
             default: break
@@ -369,6 +379,17 @@ final class AppModel {
         navigationPath.last.map {
             if case .chat = $0 { true } else { false }
         } == true
+    }
+
+    var isPresentingFilesInspector: Bool {
+        get { destination == .chats && isPresentingChat && showsInspector }
+        set { showsInspector = destination == .chats && isPresentingChat && newValue }
+    }
+
+    private func dismissRouteFilePresentation() {
+        showsInspector = false
+        discardFilePresentation(preservingWorkspaceTextDraft: true)
+        returnsToFilesAfterFilePresentation = false
     }
 
     private var canChangeSession: Bool {
@@ -509,6 +530,11 @@ final class AppModel {
         let hasText = !chat.composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         guard chat.composerAttachments.isEmpty || canSubmitAttachments else { return false }
         return hasText || !chat.composerAttachments.isEmpty
+    }
+
+    var canSubmitComposer: Bool {
+        canSendComposer
+            && (chat.composerTargetTurnID == nil || chat.composerAttachments.isEmpty)
     }
 
     var uploadedComposerAttachments: [SessionFileReference] {

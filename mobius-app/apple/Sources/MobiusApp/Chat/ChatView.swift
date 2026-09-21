@@ -3,6 +3,7 @@ import SwiftUI
 import SwiftStreamingMarkdown
 import CoreText
 @preconcurrency import AVFoundation
+@preconcurrency import Speech
 import UIKit
 
 extension MountedWidget {
@@ -14,6 +15,9 @@ extension MountedWidget {
 struct ChatView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.mobiusHasVerticalToolbar) private var hasVerticalToolbar
+    @Environment(\.mobiusPalette) private var palette
+    @Environment(\.locale) private var locale
     @State private var composerHeight: CGFloat = 0
     @State private var isAtBottom = true
     @State private var scrollToBottomRequest = 0
@@ -22,6 +26,9 @@ struct ChatView: View {
     @State private var showsFolderAttachmentBrowser = false
     @State private var hasEntered = false
     @State private var transcriptPresentationID = UUID()
+    @State private var dictation = ComposerDictation()
+    @State private var voiceOrbOffset = CGSize.zero
+    @GestureState private var voiceOrbDrag = CGSize.zero
 
     var body: some View {
         @Bindable var model = model
@@ -63,6 +70,43 @@ struct ChatView: View {
                 .help("Scroll to latest")
                 .zIndex(2)
             }
+            if hasVerticalToolbar, model.chat.realtimeVoiceCall != nil {
+                GeometryReader { geometry in
+                    let proposed = CGSize(
+                        width: voiceOrbOffset.width + voiceOrbDrag.width,
+                        height: voiceOrbOffset.height + voiceOrbDrag.height
+                    )
+                    DuoVoiceOrb()
+                        .offset(clampedVoiceOrbOffset(proposed, in: geometry.size))
+                        .simultaneousGesture(
+                            DragGesture()
+                                .updating($voiceOrbDrag) { value, drag, _ in
+                                    drag = value.translation
+                                }
+                                .onEnded { value in
+                                    voiceOrbOffset = clampedVoiceOrbOffset(
+                                        CGSize(
+                                            width: voiceOrbOffset.width + value.translation.width,
+                                            height: voiceOrbOffset.height + value.translation.height
+                                        ),
+                                        in: geometry.size
+                                    )
+                                }
+                        )
+                        .frame(
+                            maxWidth: .infinity,
+                            maxHeight: .infinity,
+                            alignment: .bottomTrailing
+                        )
+                        .padding(.trailing, MobiusSpace.l)
+                        .padding(.bottom, bottomInset + MobiusSpace.m)
+                        .onChange(of: geometry.size) { _, size in
+                            voiceOrbOffset = clampedVoiceOrbOffset(voiceOrbOffset, in: size)
+                        }
+                }
+                .transition(.scale.combined(with: .opacity))
+                .zIndex(3)
+            }
         }
         .scaleEffect(hasEntered || reduceMotion ? 1 : 0.985)
         .opacity(hasEntered ? 1 : 0)
@@ -80,21 +124,18 @@ struct ChatView: View {
         .onChange(of: model.chat.selectedSessionID) {
             resetTranscriptPresentation()
         }
+        .onChange(of: model.chat.composer) { dictation.stopIfDraftChanged(model.chat.composer) }
+        .onChange(of: model.chat.composerBlurRequest) { dictation.stop() }
+        .onDisappear { dictation.stop() }
         .navigationTitle(chatTitle)
         .toolbarTitleDisplayMode(.inline)
         .toolbarRole(.editor)
         .toolbar {
-            // Title changes animate glyphs, so the principal title must be a view the app
-            // owns rather than the system's opaque navigation title.
-            ToolbarItem(placement: .principal) {
-                VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
-                    MobiusTitleText(verbatim: chatTitle)
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
+            MobiusNavigationHeadingItem {
+                MobiusNavigationHeading(title: .verbatim(chatTitle)) {
                     HStack(spacing: MobiusSpace.xs) {
                         if !chatSubtitle.isEmpty {
                             Text(verbatim: chatSubtitle)
-                                .lineLimit(1)
                         }
                         if let folders = model.chat.attachedFolders, !folders.isEmpty {
                             HStack(spacing: MobiusSpace.xxs) {
@@ -106,24 +147,40 @@ struct ChatView: View {
                             .accessibilityLabel(Text("Folders: \(folders.count)"))
                         }
                     }
-                    .font(MobiusStyle.captionFont)
-                    .foregroundStyle(.secondary)
                 }
-                .accessibilityElement(children: .combine)
             }
-            // One item holding both, so the spacing is this stack's rather than the bar's
-            // between two items. The 44pt targets still touch; only the slack goes.
-            ToolbarItem(placement: .primaryAction) {
-                if model.chat.selectedSessionID != nil, !model.selectedSessionIsHidden {
-                    HeaderActionGroup {
-                        newChatButton
-                        ChatOptionsMenu(
-                            presentedWidget: $presentedWidget,
-                            presentedBotSettings: $presentedBotSettings,
-                            showsFolderAttachmentBrowser: $showsFolderAttachmentBrowser
-                        )
-                    }
+            if model.chat.selectedSessionID != nil, !model.selectedSessionIsHidden {
+                MobiusToolbarItem(placement: .primaryAction) {
+                    ChatOptionsMenu(
+                        presentedWidget: $presentedWidget,
+                        presentedBotSettings: $presentedBotSettings,
+                        showsFolderAttachmentBrowser: $showsFolderAttachmentBrowser
+                    )
                 }
+            }
+            if hasVerticalToolbar,
+                !model.selectedSessionIsHidden,
+                model.chat.pendingApproval == nil
+            {
+                ToolbarSpacer(.flexible, placement: .bottomBar)
+                MobiusToolbarItem(placement: .bottomBar) {
+                    MobiusToolbarIconButton(
+                        glyph: dictation.isActive ? .micOff01 : .mic01,
+                        label: dictation.isActive ? "Stop dictation" : "Dictate",
+                        action: toggleDictation
+                    )
+                    .tint(dictation.isActive ? palette.danger : .primary)
+                    .buttonStyle(.glass)
+                    .disabled(model.chat.realtimeVoiceCall != nil)
+                    .onDisappear { dictation.stop() }
+                }
+                .sharedBackgroundVisibility(.hidden)
+                MobiusToolbarItem(placement: .bottomBar) {
+                    railPrimaryAction
+                        .buttonStyle(.glass)
+                        .mobiusBottomRailSource(isActive: model.isPresentingChat)
+                }
+                .sharedBackgroundVisibility(.hidden)
             }
         }
         .sheet(item: $chat.presentedPreview, content: PreviewTranscriptSheet.init)
@@ -139,7 +196,7 @@ struct ChatView: View {
             NavigationStack {
                 AgentSettingsView(scope: .bot(bot.id))
                     .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
+                        MobiusToolbarItem(placement: .cancellationAction) {
                             MobiusToolbarIconButton(glyph: .x, label: "Cancel") {
                                 presentedBotSettings = nil
                             }
@@ -151,20 +208,61 @@ struct ChatView: View {
     }
 
     private func resetTranscriptPresentation() {
+        dictation.stop()
         transcriptPresentationID = UUID()
         isAtBottom = true
     }
 
-    /// Starting a chat in the folder you are already in belongs with the other page-level
-    /// actions, not in the composer beside the controls that shape the message being written.
-    private var newChatButton: some View {
-        Button(action: model.openNewSessionInCurrentWorkspace) {
-            MobiusIcon(.notePencil, foreground: .primary)
+    private func toggleDictation() {
+        Task {
+            await dictation.toggle(
+                locale: locale,
+                currentText: { model.chat.composer },
+                update: { model.chat.composer = $0 },
+                fail: { model.showToast($0, tone: .error) }
+            )
         }
-        .groupedHeaderAction()
-        .disabled(model.workspace == nil || !model.canCreateSession)
-        .accessibilityLabel("New chat in this folder")
-        .help("New chat in this folder")
+    }
+
+    @ViewBuilder
+    private var railPrimaryAction: some View {
+        if model.composerRailShowsSendAction {
+            ComposerSendButton(send: sendFromRail)
+                .mobiusToolbarIcon()
+                .buttonStyle(.glass(.regular.tint(palette.accentFill)))
+                .tint(palette.accentFill)
+                .foregroundStyle(palette.onAccent)
+        } else {
+            MobiusToolbarIconButton(
+                glyph: model.chat.realtimeVoiceCall == nil ? .audioWave01 : .stopFill,
+                label: model.chat.realtimeVoiceCall == nil ? "Start voice chat" : "End voice chat"
+            ) {
+                dictation.stop()
+                if model.chat.realtimeVoiceCall == nil {
+                    model.startRealtimeVoice()
+                } else {
+                    model.chat.stopRealtimeVoice()
+                }
+            }
+            .tint(model.chat.realtimeVoiceCall == nil ? .primary : palette.danger)
+            .disabled(model.chat.realtimeVoiceCall == nil && !model.canStartRealtimeVoice)
+        }
+    }
+
+    private func sendFromRail(_ delivery: ActiveMessageDelivery?) {
+        dictation.stop()
+        _ = model.sendMessage(delivery: delivery)
+    }
+
+    private func clampedVoiceOrbOffset(_ offset: CGSize, in size: CGSize) -> CGSize {
+        let diameter = 56 + MobiusSpace.m * 2
+        return CGSize(
+            width: min(0, max(diameter + MobiusSpace.l * 2 - size.width, offset.width)),
+            height: min(
+                0,
+                max(diameter + bottomInset + MobiusSpace.m * 2 - size.height, offset.height)
+            )
+        )
     }
 
     private var chatTitle: String {
@@ -194,6 +292,196 @@ struct ChatView: View {
         presentedBotSettings = bot
     }
 
+}
+
+private struct DuoVoiceOrb: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.mobiusPalette) private var palette
+
+    var body: some View {
+        let voice = model.chat.realtimeVoice
+        Button {
+            model.chat.setRealtimeVoiceMuted(!voice.isMuted)
+        } label: {
+            AudioLevelEqualizer(
+                amplitude: sqrt(voice.audioLevels.displayLevel),
+                flare: voice.levelFlare,
+                playbackColor: voice.audioLevels.isPlaybackActive
+                    ? model.selectedBot?.tint.color ?? palette.accent : nil
+            )
+            .frame(width: 56, height: 56)
+            .padding(MobiusSpace.m)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .tint(voice.isMuted ? palette.danger : palette.accent)
+        .accessibilityLabel(voice.isMuted ? "Unmute voice chat" : "Mute voice chat")
+        .accessibilityValue(voice.isMuted ? "Microphone muted" : "Microphone on")
+        .help(voice.isMuted ? "Unmute voice chat" : "Mute voice chat")
+    }
+}
+
+@MainActor
+@Observable
+private final class ComposerDictation {
+    private(set) var isRecording = false
+    private(set) var isStarting = false
+    var isActive: Bool { isRecording || isStarting }
+    @ObservationIgnored private let engine = AVAudioEngine()
+    @ObservationIgnored private var request: SFSpeechAudioBufferRecognitionRequest?
+    @ObservationIgnored private var task: SFSpeechRecognitionTask?
+    @ObservationIgnored private var hasInputTap = false
+    @ObservationIgnored private var ownsAudioSession = false
+    @ObservationIgnored private var generation = UUID()
+    @ObservationIgnored private var draft: DictationDraft?
+
+    func toggle(
+        locale: Locale,
+        currentText: @escaping @MainActor @Sendable () -> String,
+        update: @escaping @MainActor @Sendable (String) -> Void,
+        fail: @escaping @MainActor @Sendable (LocalizedStringResource) -> Void
+    ) async {
+        if isActive {
+            stop()
+            return
+        }
+        let generation = UUID()
+        self.generation = generation
+        draft = DictationDraft(text: currentText())
+        isStarting = true
+        defer {
+            if self.generation == generation { isStarting = false }
+        }
+        let authorization = await dictationAuthorization()
+        guard self.generation == generation else { return }
+        guard authorization == .authorized else {
+            fail("Allow Speech Recognition in Settings to use dictation.")
+            return
+        }
+        let canRecord = await AVAudioApplication.requestRecordPermission()
+        guard self.generation == generation else { return }
+        guard canRecord else {
+            fail("Allow microphone access in Settings to use dictation.")
+            return
+        }
+        guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else {
+            fail("Dictation is unavailable for this language.")
+            return
+        }
+
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        request.addsPunctuation = true
+        request.taskHint = .dictation
+        if recognizer.supportsOnDeviceRecognition {
+            request.requiresOnDeviceRecognition = true
+        }
+
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.record, mode: .measurement, options: .duckOthers)
+            try session.setActive(true, options: .notifyOthersOnDeactivation)
+            ownsAudioSession = true
+            let input = engine.inputNode
+            let format = input.outputFormat(forBus: 0)
+            guard format.sampleRate > 0, format.channelCount > 0 else {
+                throw NSError(
+                    domain: NSOSStatusErrorDomain, code: Int(kAudioFormatUnsupportedDataFormatError)
+                )
+            }
+            input.installTap(onBus: 0, bufferSize: 1_024, format: format) {
+                @Sendable [weak request] buffer, _ in
+                request?.append(buffer)
+            }
+            hasInputTap = true
+            engine.prepare()
+            try engine.start()
+            self.request = request
+            isRecording = true
+            task = recognizer.recognitionTask(with: request) {
+                @Sendable [weak self] result, error in
+                let spoken = result?.bestTranscription.formattedString
+                let isFinal = result?.isFinal == true
+                let failed = error != nil
+                Task { @MainActor [weak self] in
+                    guard let self, self.generation == generation else { return }
+                    if let spoken {
+                        guard let text = draft?.update(spoken, currentText: currentText()) else {
+                            stop()
+                            return
+                        }
+                        update(text)
+                    }
+                    if isFinal || failed {
+                        stop()
+                        if spoken == nil, failed {
+                            fail("Dictation stopped unexpectedly. Try again.")
+                        }
+                    }
+                }
+            }
+        } catch {
+            guard self.generation == generation else { return }
+            stop()
+            fail("Dictation could not start. Try again.")
+        }
+    }
+
+    func stopIfDraftChanged(_ text: String) {
+        if let draft, draft.text != text { stop() }
+    }
+
+    func stop() {
+        generation = UUID()
+        draft = nil
+        isStarting = false
+        if engine.isRunning { engine.stop() }
+        if hasInputTap {
+            engine.inputNode.removeTap(onBus: 0)
+            hasInputTap = false
+        }
+        request?.endAudio()
+        task?.cancel()
+        request = nil
+        task = nil
+        isRecording = false
+        if ownsAudioSession {
+            ownsAudioSession = false
+            try? AVAudioSession.sharedInstance().setActive(
+                false,
+                options: .notifyOthersOnDeactivation
+            )
+        }
+    }
+}
+
+nonisolated func dictationAuthorization(
+    request:
+        @Sendable (@escaping @Sendable (SFSpeechRecognizerAuthorizationStatus) -> Void) -> Void =
+        SFSpeechRecognizer.requestAuthorization
+) async -> SFSpeechRecognizerAuthorizationStatus {
+    await withCheckedContinuation { continuation in
+        request { @Sendable status in continuation.resume(returning: status) }
+    }
+}
+
+struct DictationDraft {
+    private let original: String
+    private(set) var text: String
+
+    init(text: String) {
+        original = text
+        self.text = text
+    }
+
+    mutating func update(_ spoken: String, currentText: String) -> String? {
+        guard currentText == text else { return nil }
+        let separator =
+            original.isEmpty || spoken.isEmpty || original.last?.isWhitespace == true
+            ? "" : " "
+        text = original + separator + spoken
+        return text
+    }
 }
 
 private struct ChatOptionsMenu: View {
@@ -313,7 +601,6 @@ private struct ChatOptionsMenu: View {
                 }
             }
         }
-        .groupedHeaderAction()
         .popover(isPresented: $showsChatInfo) {
             ChatInfoView()
                 .presentationCompactAdaptation(.popover)
@@ -419,10 +706,9 @@ struct ReassignChatSheet: View {
                 }
                 .disabled(bot.id == currentBotID || !model.canReassignSession(session))
             }
-            .navigationTitle("Reassign Bot")
-            .navigationBarTitleDisplayMode(.inline)
+            .mobiusNavigationTitle("Reassign Bot")
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
+                MobiusToolbarItem(placement: .cancellationAction) {
                     MobiusToolbarIconButton(glyph: .x, label: "Cancel") { dismiss() }
                 }
             }

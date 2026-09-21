@@ -63,12 +63,18 @@ extension AppModelTests {
                 reasoningEffort: nil, contextWindow: nil,
                 supportsImageInput: true, toolDiscovery: .native
             ))
-        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let scene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive }
+        )
         let previous = scene.keyWindow
+        previous?.isHidden = true
         let window = UIWindow(windowScene: scene)
-        window.frame = CGRect(x: 0, y: 0, width: 402, height: 874)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
         let host = UIHostingController(
             rootView: ComposerView(showBotSettings: {})
+                .frame(width: 402)
                 .background { MobiusBackdrop() }
                 .modifier(MobiusTheme())
                 .environment(model))
@@ -77,22 +83,32 @@ extension AppModelTests {
         defer {
             window.isHidden = true
             window.rootViewController = nil
+            previous?.isHidden = false
             previous?.makeKeyAndVisible()
         }
 
         func checkActions(voice: Bool, send: Bool, name: String) async throws {
             let updated = await eventually {
-                let labels = testAccessibilityElements(host.view).compactMap(\.accessibilityLabel)
+                window.layoutIfNeeded()
+                host.view.layoutIfNeeded()
+                let labels = testAccessibilityElements(window).compactMap(\.accessibilityLabel)
                 return labels.contains("Send") == send
                     && labels.contains("Start voice chat") == voice
             }
             XCTAssertTrue(
                 updated,
-                "\(name): \(testAccessibilityElements(host.view).compactMap(\.accessibilityLabel))")
+                "\(name): \(testAccessibilityElements(window).compactMap(\.accessibilityLabel))")
             XCTAssertFalse(
-                testAccessibilityElements(host.view).contains {
+                testAccessibilityElements(window).contains {
                     $0.accessibilityLabel == "Start dictation"
                 })
+            for element in testAccessibilityElements(window)
+            where element.accessibilityLabel == "Send"
+                || element.accessibilityLabel == "Start voice chat"
+            {
+                XCTAssertGreaterThanOrEqual(element.accessibilityFrame.width, MobiusStyle.rowTouch)
+                XCTAssertGreaterThanOrEqual(element.accessibilityFrame.height, MobiusStyle.rowTouch)
+            }
             try await Task.sleep(for: .milliseconds(350))
             let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
                 window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
@@ -119,7 +135,7 @@ extension AppModelTests {
         model.chat.composerReply = nil
         try await checkActions(voice: true, send: false, name: "New voice chat")
         let voice = try XCTUnwrap(
-            testAccessibilityElements(host.view).first {
+            testAccessibilityElements(window).first {
                 $0.accessibilityLabel == "Start voice chat"
             })
         XCTAssertTrue(voice.accessibilityActivate())

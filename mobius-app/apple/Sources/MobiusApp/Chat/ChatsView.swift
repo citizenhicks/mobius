@@ -32,7 +32,6 @@ struct ChatsView: View {
     private static let sessionPageSize = 10
 
     @Environment(AppModel.self) private var model
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.mobiusPalette) private var palette
     @Environment(\.locale) private var locale
     @State private var collapsedWorkspaces: Set<String> = []
@@ -63,51 +62,35 @@ struct ChatsView: View {
         .navigationTitle("Chats")
         .toolbarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarSpacer(.flexible, placement: .bottomBar)
+            DefaultToolbarItem(kind: .search, placement: .bottomBar)
             if selectedSessionIDs != nil {
-                ToolbarItem(placement: .cancellationAction) {
+                MobiusToolbarItem(placement: .cancellationAction) {
                     MobiusToolbarIconButton(glyph: .x, label: "Cancel") {
                         selectedSessionIDs = nil
                     }
                 }
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Delete selected chats", glyph: .trash, role: .destructive) {
+                MobiusToolbarItem(placement: .bottomBar) {
+                    MobiusToolbarIconButton(
+                        glyph: .trash, label: "Delete selected chats", role: .destructive
+                    ) {
                         deleteSelectedSessions()
                     }
-                    .labelStyle(.iconOnly)
+                    .tint(palette.danger)
                     .disabled(selectedSessions.isEmpty || !model.canRenameSession)
                     .accessibilityValue(Text("\(selectedSessions.count) selected"))
-                    .help("Delete selected chats")
                 }
             } else {
-                if usesWideToolbar {
-                    ToolbarItem(placement: .primaryAction) {
-                        organizationMenu
-                    }
-                    ToolbarItem(placement: .primaryAction) {
-                        newChatButton
-                    }
-                    .sharedBackgroundVisibility(.hidden)
-                } else {
-                    ToolbarItem(placement: .primaryAction) {
-                        organizationMenu
-                    }
+                MobiusToolbarItem(placement: .primaryAction) {
+                    organizationMenu
                 }
-                DefaultToolbarItem(kind: .search, placement: .bottomBar)
-                if !usesWideToolbar {
-                    ToolbarSpacer(.fixed, placement: .bottomBar)
-                    ToolbarItem(placement: .bottomBar) {
-                        newChatButton
-                    }
-                    .sharedBackgroundVisibility(.hidden)
+                MobiusToolbarItem(placement: .bottomBar) {
+                    newChatButton
                 }
             }
         }
-        .searchable(
-            text: $searchText,
-            prompt: "Search chats"
-        )
-        .searchToolbarBehavior(.automatic)
-        .searchPresentationToolbarBehavior(.avoidHidingContent)
+        .searchable(text: $searchText, prompt: "Search chats")
+        .searchToolbarBehavior(.minimize)
         .onChange(of: model.chat.sessions.map(\.sessionId)) { _, sessionIDs in
             guard let selection = selectedSessionIDs, !selection.isEmpty else { return }
             let remaining = selection.intersection(sessionIDs)
@@ -120,8 +103,6 @@ struct ChatsView: View {
             await model.refreshProfileWhileVisible()
         }
     }
-
-    private var usesWideToolbar: Bool { horizontalSizeClass == .regular }
 
     private var catalogHeading: some View {
         HStack(spacing: MobiusSpace.s) {
@@ -283,13 +264,12 @@ struct ChatsView: View {
     }
 
     private var newChatButton: some View {
-        Button("New chat", glyph: .notePencil) {
+        MobiusToolbarIconButton(glyph: .notePencil, label: "New chat") {
             model.openNewSession()
         }
-        .mobiusProminentIconButton()
+        .mobiusProminentToolbarButton()
         .disabled(!model.canCreateSession)
         .accessibilityHint("Start a new chat")
-        .help("New chat")
     }
 
     private var showsLoadingCatalog: Bool {

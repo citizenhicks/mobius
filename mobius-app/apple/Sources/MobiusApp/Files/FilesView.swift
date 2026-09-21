@@ -4,9 +4,12 @@ import HighlightSwift
 
 struct FilesView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.mobiusPalette) private var palette
+    // Translate the whole native action group; stacked buttons must keep their spacing.
+    @State private var actionsBottom: CGFloat?
 
-    // A NavigationStack for the title and, more to the point, for `.searchable`: the search
-    // field only renders inside a navigation container.
+    // Isolate the inspector's actions from the chat navigation stack.
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
@@ -23,24 +26,44 @@ struct FilesView: View {
                 ToolbarItem(placement: .principal) {
                     FilesNavigationTitle()
                 }
-                ToolbarItem(placement: .cancellationAction) {
+                ToolbarSpacer(.flexible, placement: .bottomBar)
+                MobiusToolbarItem(placement: .bottomBar) {
                     MobiusToolbarIconButton(glyph: .check, label: "Done") {
                         model.discardFilePresentation()
                         model.showsInspector = false
+                        dismiss()
+                    }
+                    .buttonStyle(.glass)
+                    .mobiusBottomRailAligned(referenceBottom: actionsBottom)
+                    .onGeometryChange(for: CGFloat.self) { geometry in
+                        geometry.frame(in: .global).maxY
+                    } action: { bottom in
+                        if model.filesInspectorTab != .allFiles { actionsBottom = bottom }
                     }
                 }
+                .sharedBackgroundVisibility(.hidden)
                 if model.filesInspectorTab == .allFiles {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button(action: model.createWorkspaceFile) {
-                            MobiusIcon(.plus, gutter: false)
-                        }
+                    MobiusToolbarItem(placement: .bottomBar) {
+                        MobiusToolbarIconButton(
+                            glyph: .plus,
+                            label: "Create file",
+                            action: model.createWorkspaceFile
+                        )
+                        .mobiusProminentToolbarButton()
+                        .buttonStyle(.glass)
                         .disabled(!model.canOpenSession)
-                        .accessibilityLabel("Create file")
-                        .help("Create a workspace text file")
+                        .mobiusBottomRailAligned(referenceBottom: actionsBottom)
+                        .onGeometryChange(for: CGFloat.self) { geometry in
+                            geometry.frame(in: .global).maxY
+                        } action: { bottom in
+                            actionsBottom = bottom
+                        }
                     }
+                    .sharedBackgroundVisibility(.hidden)
                 }
             }
         }
+        .background { palette.panel.ignoresSafeArea() }
         .mobiusSheet()
         .interactiveDismissDisabled(model.isLoadingFilePresentation)
     }
@@ -119,12 +142,13 @@ private struct ModifiedFilesScopePicker: View {
                 }
             }
         } label: {
-            HStack(spacing: MobiusSpace.xs) {
-                Text(model.modifiedFilesScope.title)
-                    .font(MobiusStyle.titleFont)
-                MobiusIcon(.caretDown, size: MobiusStyle.glyphMark, foreground: .secondary)
-            }
-            .contentShape(Rectangle())
+            Text(model.modifiedFilesScope.title)
+                .font(MobiusStyle.titleFont)
+                .padding(.horizontal, MobiusStyle.glyphGutter + MobiusSpace.xs)
+                .overlay(alignment: .trailing) {
+                    MobiusIcon(.caretDown, size: MobiusStyle.glyphMark, foreground: .secondary)
+                }
+                .contentShape(Rectangle())
         }
         .buttonStyle(.mobiusPlain)
         .menuIndicator(.hidden)
@@ -245,9 +269,6 @@ private struct WorkspaceFileList: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
     @State private var tree: [FileTreeNode] = []
-    @State private var query = ""
-    @State private var matches: [WorkspaceFileRecord] = []
-    @State private var matchedQuery = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -272,31 +293,12 @@ private struct WorkspaceFileList: View {
             }
             content
         }
-        .searchable(text: $query, placement: .toolbar, prompt: "Search files")
         .task(id: model.workspaceFilesRevision) {
             let files = model.workspaceFiles
             async let builtTree = FileTreeNode.tree(from: files)
             let result = await builtTree
             guard !Task.isCancelled else { return }
             tree = result
-        }
-        .task(id: searchRequest) {
-            guard !query.isEmpty else {
-                matches = []
-                matchedQuery = ""
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(120))
-            guard !Task.isCancelled else { return }
-            let files = model.workspaceFiles
-            let query = query
-            let searchTask = Task.detached(priority: .userInitiated) {
-                files.filter { $0.path.localizedStandardContains(query) }
-            }
-            let result = await searchTask.value
-            guard !Task.isCancelled else { return }
-            matches = result
-            matchedQuery = query
         }
     }
 
@@ -306,8 +308,6 @@ private struct WorkspaceFileList: View {
             WorkspaceFileLoadingList()
         } else if model.workspaceFiles.isEmpty {
             MobiusUnavailable(title: "No workspace files", glyph: .fileMagnifyingGlass)
-        } else if !query.isEmpty {
-            searchResults
         } else {
             List {
                 OutlineGroup(tree, children: \.children) { node in
@@ -325,35 +325,6 @@ private struct WorkspaceFileList: View {
         }
     }
 
-    /// A tree hides matches inside collapsed folders, so searching switches to the flat list
-    /// of hits with their full path.
-    @ViewBuilder
-    private var searchResults: some View {
-        if matchedQuery != query {
-            InspectorLoadingView(title: "Searching files")
-        } else if matches.isEmpty {
-            MobiusUnavailable(title: "No matching files", glyph: .magnifyingGlass)
-        } else {
-            List(matches) { file in
-                fileButton(
-                    path: file.path,
-                    label: InspectorFileRow(
-                        name: URL(fileURLWithPath: file.path).lastPathComponent,
-                        detail: file.path,
-                        size: Int64(clamping: file.size)
-                    )
-                )
-                .inspectorFileListRow()
-            }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
-        }
-    }
-
-    private var searchRequest: WorkspaceFileSearchRequest {
-        WorkspaceFileSearchRequest(query: query, catalogRevision: model.workspaceFilesRevision)
-    }
-
     private func fileButton(path: String, label: some View) -> some View {
         Button {
             guard let file = model.workspaceFiles.first(where: { $0.path == path }) else { return }
@@ -365,11 +336,6 @@ private struct WorkspaceFileList: View {
         .disabled(model.isLoadingFilePresentation)
         .accessibilityLabel("Open workspace file \(path)")
     }
-}
-
-private struct WorkspaceFileSearchRequest: Equatable {
-    let query: String
-    let catalogRevision: Int
 }
 
 private struct WorkspaceFileLoadingList: View {

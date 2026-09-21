@@ -27,7 +27,11 @@ struct ProfileView: View {
         PageScaffold(
             title: .localized("Settings"),
             detail: .verbatim(""),
-            headerAccessory: SettingsInformationButton.init
+            toolbar: {
+                MobiusToolbarItem(placement: .primaryAction) {
+                    SettingsInformationButton()
+                }
+            }
         ) {
             settingsSection(.account, title: "Account", glyph: .userFocus) {
                 HStack(spacing: MobiusSpace.xs) {
@@ -189,15 +193,10 @@ private struct SettingsInformationButton: View {
     @State private var showsInformation = false
 
     var body: some View {
-        Button {
+        MobiusToolbarIconButton(glyph: .info, label: "About möbius") {
             showsInformation = true
-        } label: {
-            MobiusIcon(.info, size: MobiusStyle.glyphInline)
         }
-        .mobiusIconButton()
-        .accessibilityLabel("About möbius")
         .accessibilityHint("Shows version, legal, and support information")
-        .help("About möbius")
         .popover(
             isPresented: $showsInformation,
             attachmentAnchor: .rect(.bounds),
@@ -552,10 +551,9 @@ private struct MobiusCloudAccountDeletionSheet: View {
                 }
                 .scrollIndicators(.hidden)
             }
-            .navigationTitle("Delete account")
-            .navigationBarTitleDisplayMode(.inline)
+            .mobiusNavigationTitle("Delete account")
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
+                MobiusToolbarItem(placement: .cancellationAction) {
                     MobiusToolbarIconButton(glyph: .x, label: "Cancel") { dismiss() }
                         .disabled(model.cloud.cloudAction == .deleting)
                 }

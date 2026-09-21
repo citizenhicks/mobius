@@ -34,21 +34,24 @@ struct TextFilePreviewView: View {
                     )
                 }
             }
-            .navigationTitle(navigationTitle)
-            .navigationBarTitleDisplayMode(.inline)
+            .mobiusNavigationTitle(.verbatim(navigationTitle))
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    MobiusToolbarIconButton(
-                        glyph: isWorkspaceFile ? .x : .check,
-                        label: isWorkspaceFile ? "Cancel" : "Done",
-                        action: dismiss.callAsFunction
-                    )
-                    .disabled(model.isSavingWorkspaceFile)
-                }
                 if isWorkspaceFile {
-                    ToolbarItem(placement: .confirmationAction) {
+                    MobiusToolbarItem(placement: .cancellationAction) {
+                        MobiusToolbarIconButton(
+                            glyph: .x, label: "Cancel", action: dismiss.callAsFunction
+                        )
+                        .disabled(model.isSavingWorkspaceFile)
+                    }
+                    MobiusToolbarItem(placement: .confirmationAction) {
                         MobiusToolbarIconButton(glyph: .check, label: "Save", action: save)
+                            .mobiusProminentToolbarButton()
                             .disabled(!canSave)
+                    }
+                } else {
+                    MobiusToolbarItem(placement: .confirmationAction) {
+                        MobiusToolbarIconButton(
+                            glyph: .check, label: "Done", action: dismiss.callAsFunction)
                     }
                 }
             }
@@ -457,7 +460,6 @@ struct PreviewTranscriptSheet: View {
                 isRunning: currentPreview.status == "running",
                 loadEarlier: loadEarlierPage
             )
-            .toolbarTitleDisplayMode(.inline)
             .modifier(
                 MobiusTranscriptToolbar(
                     dismiss: dismiss.callAsFunction,
@@ -478,11 +480,10 @@ struct PreviewTranscriptSheet: View {
 
     private var isVoice: Bool { currentPreview.symbol == "voice" }
 
-    private var headerTitle: Text {
-        if isVoice { return Text("Voice transcript") }
-        let name = Text(verbatim: currentPreview.title)
-        guard let status = currentPreview.status else { return name }
-        return Text("\(name) • \(Text(verbatim: status))")
+    private var headerTitle: MobiusText {
+        if isVoice { return .localized("Voice transcript") }
+        guard let status = currentPreview.status else { return .verbatim(currentPreview.title) }
+        return .verbatim("\(currentPreview.title) • \(status)")
     }
 
     private var headerSubtitle: Text {

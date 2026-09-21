@@ -14,17 +14,8 @@ struct ExtensionsView: View {
             title: "Extensions",
             detail: pageDetail,
             manualSection: "extensions",
-            sharesHeaderBackground: true,
-            headerAccessory: {
-                HeaderActionGroup {
-                    Button(action: openInstaller) {
-                        MobiusIcon(.plus, gutter: false)
-                    }
-                    .groupedHeaderAction(prominent: true)
-                    .disabled(!model.canMutateExtensions || isInstalling)
-                    .accessibilityLabel("Install extension")
-                    .accessibilityHint("Opens the extension installer")
-                    .help("Install extension")
+            toolbar: {
+                MobiusToolbarItem(placement: .primaryAction) {
                     SettingsStatusButton(
                         subject: .localized("Extensions"),
                         statusLabel: status.label,
@@ -33,7 +24,14 @@ struct ExtensionsView: View {
                         isLoading: model.gateway.connectionState.isLoading
                             || model.extensionAction != nil
                     )
-                    .groupedHeaderAction()
+                    MobiusToolbarIconButton(
+                        glyph: .plus,
+                        label: "Install extension",
+                        action: openInstaller
+                    )
+                    .mobiusProminentToolbarButton()
+                    .disabled(!model.canMutateExtensions || isInstalling)
+                    .accessibilityHint("Opens the extension installer")
                 }
             }
         ) {
@@ -322,8 +320,8 @@ struct InstallExtensionForm: View {
             .font(MobiusStyle.captionFont)
             .foregroundStyle(palette.muted)
             HStack(spacing: MobiusSpace.m) {
-                Button("Cancel", glyph: .x, action: onClose)
-                    .mobiusIconButton()
+                Button("Cancel", role: .cancel, action: onClose)
+                    .buttonStyle(.mobiusGlass)
                     .disabled(isSaving)
                 Button(action: install) {
                     if isSaving {
@@ -381,7 +379,7 @@ struct ExtensionDetailView: View {
                 glyph: .squaresFour,
                 detail: "It is no longer installed on this gateway."
             )
-            .navigationTitle("Extension")
+            .mobiusNavigationTitle("Extension")
             .toolbarRole(.editor)
             .background(MobiusBackdrop())
         }
@@ -391,36 +389,30 @@ struct ExtensionDetailView: View {
         PageScaffold(
             title: .verbatim(record.name),
             detail: .verbatim(""),
-            sharesHeaderBackground: true,
-            headerAccessory: {
-                HeaderOptionsMenu(label: "Extension actions") {
+            toolbar: {
+                ToolbarSpacer(.flexible, placement: .bottomBar)
+                MobiusToolbarItem(placement: .bottomBar) {
                     if !record.hooks.isEmpty {
                         if record.needsHookTrust {
-                            Button {
+                            MobiusToolbarIconButton(glyph: .shieldCheck, label: "Trust hooks") {
                                 model.trustHooks(for: record)
-                            } label: {
-                                MobiusLabel(title: "Trust hooks", glyph: .shieldCheck)
                             }
                             .disabled(!model.canMutateExtensions)
                         } else {
-                            Button {
+                            MobiusToolbarIconButton(glyph: .shieldOff, label: "Untrust hooks") {
                                 model.untrustHooks(for: record)
-                            } label: {
-                                MobiusLabel(title: "Untrust hooks", glyph: .shieldOff)
                             }
                             .disabled(!model.canMutateExtensions)
                         }
                     }
-                    Button {
+                    MobiusToolbarIconButton(glyph: .arrowClockwise, label: "Update extension") {
                         model.updateExtension(record)
-                    } label: {
-                        MobiusLabel(title: "Update extension", glyph: .arrowClockwise)
                     }
                     .disabled(!model.canMutateExtensions)
-                    Button(role: .destructive) {
+                    MobiusToolbarIconButton(
+                        glyph: .trash, label: "Uninstall extension", role: .destructive
+                    ) {
                         confirmsUninstall = true
-                    } label: {
-                        MobiusLabel(title: "Uninstall extension", glyph: .trash)
                     }
                     .disabled(!model.canMutateExtensions)
                 }

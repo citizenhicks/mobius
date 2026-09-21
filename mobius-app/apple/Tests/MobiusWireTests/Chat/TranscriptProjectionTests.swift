@@ -35,6 +35,31 @@ final class TranscriptProjectionTests: XCTestCase {
         TranscriptWaitingPhrase(startedAt: Date(timeIntervalSince1970: 0), order: ["thinking"])
     }
 
+    func testReasoningTitleSurvivesToolsAndIncompleteSummariesButNotANewTurn() {
+        let start = entry("start", startsTurn: true)
+        let reasoning = entry("reasoning", kind: .reasoning)
+        reasoning.text = "## **Checking the workspace** now\n\n<!-- internal -->"
+        let tool = entry("tool")
+        let unfinished = entry("unfinished", kind: .reasoning)
+        unfinished.text = "**Checking"
+        let entries = [start, reasoning, tool, unfinished]
+        let projection = TranscriptProjection(entries: entries, waitingPhrase: phrase)
+        var expected = phrase
+        expected.reasoningTitle = "Checking the workspace now"
+        XCTAssertEqual(projection.waiting, .row("start", expected))
+
+        reasoning.text = "A plain summary"
+        let updated = TranscriptProjection(
+            entries: entries, waitingPhrase: phrase, previous: projection)
+        XCTAssertEqual(updated.structuralRevision, projection.structuralRevision)
+        XCTAssertEqual(TranscriptWaitingNote.reasoningTitle(in: entries), "A plain summary")
+        XCTAssertNil(
+            TranscriptWaitingNote.reasoningTitle(in: entries + [entry("new", startsTurn: true)]))
+        XCTAssertNil(
+            TranscriptWaitingNote.reasoningTitle(in: entries + [entry("done", turnTerminal: true)]))
+        XCTAssertNil(TranscriptWaitingNote.summaryLine("\n <!-- comment -->\n**unfinished"))
+    }
+
     /// A run at the tail shows the phrase in its own summary line; with no run to hold it the
     /// phrase takes a line of its own.
     func testWaitingPhraseGoesToTheTailRunWhenThereIsOne() {

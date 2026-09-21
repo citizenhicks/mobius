@@ -316,56 +316,22 @@ struct MobiusSwipeAction: View {
     }
 }
 
-/// Keeps adjacent toolbar actions inside the system's single shared glass surface.
-struct HeaderActionGroup<Content: View>: View {
-    @ViewBuilder let content: Content
-
-    var body: some View {
-        HStack(spacing: 0) { content }
-            .fixedSize()
-    }
-}
-
 struct HeaderOptionsMenu<Content: View>: View {
     let label: LocalizedStringResource
     @ViewBuilder let content: Content
 
     var body: some View {
-        // No target padded out here: the system's glass hugs the label, and a 44pt square
-        // draws as a wide pill rather than the circle a lone action should be. Inside a
-        // `HeaderActionGroup` the call site adds `groupedHeaderAction()` for the target it
-        // needs to fill its half of the shared surface.
         Menu {
             content
         } label: {
-            MobiusIcon(.dotsThree, foreground: .primary)
+            MobiusLabel(title: label, glyph: .dotsThree)
         }
-        .labelStyle(.titleAndIcon)
+        .menuStyle(.button)
+        .mobiusCircularIconControl()
+        .buttonStyle(.automatic)
         .menuIndicator(.hidden)
-        .accessibilityLabel(Text(label))
         .tint(.primary)
         .help(Text(label))
-    }
-}
-
-extension View {
-    func groupedHeaderAction(prominent: Bool = false) -> some View {
-        modifier(GroupedHeaderAction(prominent: prominent))
-    }
-}
-
-private struct GroupedHeaderAction: ViewModifier {
-    @Environment(\.mobiusPalette) private var palette
-    let prominent: Bool
-
-    func body(content: Content) -> some View {
-        content
-            .tint(prominent ? palette.accent : .primary)
-            .frame(
-                width: MobiusStyle.iconButtonSize,
-                height: MobiusStyle.iconButtonSize
-            )
-            .contentShape(Rectangle())
     }
 }
 
@@ -383,8 +349,28 @@ private struct MobiusProminentButton: ViewModifier {
     }
 }
 
+private struct MobiusCircularIconLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Label(configuration)
+            .labelStyle(.iconOnly)
+            .font(.system(size: MobiusStyle.glyphLead))
+            .frame(width: MobiusStyle.glyphLead, height: MobiusStyle.glyphLead)
+    }
+}
+
 extension View {
     func mobiusProminentButton() -> some View { modifier(MobiusProminentButton()) }
+
+    /// The one shape contract for a navigation action. Context-specific helpers add only
+    /// their native button style and tint, so toolbars never receive a second glass layer.
+    func mobiusCircularIconControl() -> some View {
+        // Native large glass adds 30pt to the 18pt label, matching the 48pt toolbar circle.
+        labelStyle(MobiusCircularIconLabelStyle())
+            .environment(\.mobiusActionIconSize, MobiusStyle.glyphLead)
+            .buttonBorderShape(.circle)
+            .buttonSizing(.fitted)
+            .controlSize(.large)
+    }
 
     func mobiusIconButton() -> some View {
         labelStyle(.iconOnly)
@@ -457,15 +443,23 @@ private struct MobiusSheetModifier: ViewModifier {
     let detents: Set<PresentationDetent>
     let selection: Binding<PresentationDetent>?
 
+    @ViewBuilder
     func body(content: Content) -> some View {
-        Group {
+        let sheet = Group {
             if let selection {
                 content.presentationDetents(detents, selection: selection)
             } else {
                 content.presentationDetents(detents)
             }
         }
+        .environment(\.mobiusUsesCustomNavigationHeading, false)
         .presentationDragIndicator(.visible)
+        .scrollEdgeEffectStyle(.soft, for: .vertical)
+        if #available(iOS 27.0, *) {
+            sheet.presentationPlacement(.trailing)
+        } else {
+            sheet
+        }
     }
 }
 

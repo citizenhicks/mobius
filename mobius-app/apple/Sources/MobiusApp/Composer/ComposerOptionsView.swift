@@ -162,6 +162,7 @@ struct ComposerOptionsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.mobiusHasVerticalToolbar) private var hasVerticalToolbar
     @Namespace private var actionTransition
     let send: (ActiveMessageDelivery?) -> Void
     var isCompact = false
@@ -182,7 +183,7 @@ struct ComposerOptionsView: View {
             }
             Spacer(minLength: MobiusSpace.s)
             if !isCompact { modelMenu }
-            actionButtons
+            if !hasVerticalToolbar { actionButtons }
         }
         .sheet(isPresented: $showsModelSelection) {
             ModelSelectionSheet(
@@ -361,40 +362,8 @@ struct ComposerOptionsView: View {
     private var primaryAction: some View {
         if model.composerUsesPrimaryVoice {
             voiceButton
-        } else if model.chat.activeTurnID != nil && !canSend {
-            Button {
-                model.interrupt()
-            } label: {
-                MobiusLabel(
-                    title: "Stop", glyph: .stopFill, iconSize: MobiusStyle.glyphLead)
-            }
-            .help("Stop")
         } else {
-            Button(action: { send(nil) }) {
-                Label {
-                    Text(sendLabel)
-                } icon: {
-                    if isWaitingForGateway {
-                        MobiusSpinner(
-                            size: MobiusStyle.glyphLead,
-                            foreground: palette.onAccent
-                        )
-                    } else {
-                        MobiusIcon(sendGlyph, size: MobiusStyle.glyphLead)
-                    }
-                }
-            }
-            .disabled(!canSend)
-            .help(Text(sendLabel))
-            .accessibilityLabel(Text(sendLabel))
-            .accessibilityHint(Text(sendHint))
-            .contextMenu {
-                if model.chat.composerTargetTurnID != nil {
-                    Button(alternateSendLabel, glyph: alternateSendGlyph) {
-                        send(alternateDelivery)
-                    }
-                }
-            }
+            ComposerSendButton(send: send)
         }
     }
 
@@ -495,44 +464,94 @@ struct ComposerOptionsView: View {
             .flatMap { MobiusSymbol.knownGlyph(for: $0) }
     }
 
-    private var canSend: Bool {
-        model.gateway.connectionState.isReady && model.canSendComposer
-            && (model.chat.composerTargetTurnID == nil || model.chat.composerAttachments.isEmpty)
-    }
+}
 
-    private var isWaitingForGateway: Bool {
-        switch model.gateway.connectionState {
-        case .connecting, .authenticating, .loading: true
-        case .disconnected, .ready, .failed: false
+/// The inline composer and the system rail share the complete send/interrupt interaction.
+struct ComposerSendButton: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.mobiusPalette) private var palette
+    let send: (ActiveMessageDelivery?) -> Void
+
+    var body: some View {
+        if model.composerShowsInterruptAction {
+            Button {
+                model.interrupt()
+            } label: {
+                MobiusLabel(
+                    title: "Stop", glyph: .stopFill, iconSize: MobiusStyle.glyphLead)
+            }
+            .help("Stop")
+        } else {
+            Button(action: { send(nil) }) {
+                Label {
+                    Text(model.composerSendLabel)
+                } icon: {
+                    if model.gateway.connectionState.isLoading {
+                        MobiusSpinner(
+                            size: MobiusStyle.glyphLead,
+                            foreground: palette.onAccent
+                        )
+                    } else {
+                        MobiusIcon(model.composerSendGlyph, size: MobiusStyle.glyphLead)
+                    }
+                }
+            }
+            .disabled(!model.canSubmitComposer)
+            .help(Text(model.composerSendLabel))
+            .accessibilityLabel(Text(model.composerSendLabel))
+            .accessibilityHint(Text(model.composerSendHint))
+            .contextMenu {
+                if model.chat.composerTargetTurnID != nil {
+                    Button(
+                        model.composerAlternateSendLabel,
+                        glyph: model.composerAlternateSendGlyph
+                    ) {
+                        send(model.composerAlternateDelivery)
+                    }
+                }
+            }
         }
     }
+}
 
-    private var sendLabel: LocalizedStringResource {
-        guard model.chat.composerTargetTurnID != nil else { return "Send" }
-        return model.activeMessageDelivery == .steer ? "Send as Steer" : "Send as Queue"
+extension AppModel {
+    var composerRailShowsSendAction: Bool {
+        chat.realtimeVoiceCall == nil
+            && (composerShowsInterruptAction
+                || !chat.composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !chat.composerAttachments.isEmpty)
     }
 
-    private var sendHint: LocalizedStringResource {
-        guard model.chat.composerTargetTurnID != nil else { return "Starts a new turn" }
-        return model.activeMessageDelivery == .steer
+    var composerShowsInterruptAction: Bool {
+        chat.activeTurnID != nil && !canSubmitComposer
+    }
+
+    var composerSendLabel: LocalizedStringResource {
+        guard chat.composerTargetTurnID != nil else { return "Send" }
+        return activeMessageDelivery == .steer ? "Send as Steer" : "Send as Queue"
+    }
+
+    var composerSendHint: LocalizedStringResource {
+        guard chat.composerTargetTurnID != nil else { return "Starts a new turn" }
+        return activeMessageDelivery == .steer
             ? "Long press to send after this turn"
             : "Long press to steer the active turn"
     }
 
-    private var sendGlyph: MobiusGlyph {
-        guard model.chat.composerTargetTurnID != nil else { return .arrowUp02 }
-        return model.activeMessageDelivery == .steer ? .arrowUpRight01 : .queue01
+    var composerSendGlyph: MobiusGlyph {
+        guard chat.composerTargetTurnID != nil else { return .arrowUp02 }
+        return activeMessageDelivery == .steer ? .arrowUpRight01 : .queue01
     }
 
-    private var alternateDelivery: ActiveMessageDelivery {
-        model.activeMessageDelivery == .steer ? .queue : .steer
+    var composerAlternateDelivery: ActiveMessageDelivery {
+        activeMessageDelivery == .steer ? .queue : .steer
     }
 
-    private var alternateSendLabel: LocalizedStringResource {
-        alternateDelivery == .steer ? "Send as Steer" : "Send as Queue"
+    var composerAlternateSendLabel: LocalizedStringResource {
+        composerAlternateDelivery == .steer ? "Send as Steer" : "Send as Queue"
     }
 
-    private var alternateSendGlyph: MobiusGlyph {
-        alternateDelivery == .steer ? .arrowUpRight01 : .queue01
+    var composerAlternateSendGlyph: MobiusGlyph {
+        composerAlternateDelivery == .steer ? .arrowUpRight01 : .queue01
     }
 }
