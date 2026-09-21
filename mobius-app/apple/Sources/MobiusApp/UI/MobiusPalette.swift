@@ -126,11 +126,6 @@ struct MobiusPalette: Sendable {
         default: muted
         }
     }
-
-    static func composingOrbInk(white: Double, scheme: ColorScheme) -> Color {
-        let white = min(1, max(0, white))
-        return Color(white: scheme == .dark ? 1 - white : white)
-    }
 }
 
 private extension Color {

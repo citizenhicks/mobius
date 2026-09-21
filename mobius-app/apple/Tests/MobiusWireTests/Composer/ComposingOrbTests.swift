@@ -1,18 +1,19 @@
+import AVFoundation
 @testable import Mobius
 import XCTest
 
 final class ComposingOrbTests: XCTestCase {
-    func testComposingOrbMatchesThinkingOrbsReferenceFrame() throws {
-        let dots = MobiusComposingOrbRenderer.dots(at: 0.95)
-        let first = try XCTUnwrap(dots.first)
-        let last = try XCTUnwrap(dots.last)
+    func testBundledBlenderLoopIsPlayableAndRetainsTransparency() async throws {
+        let url = try XCTUnwrap(Bundle.main.url(forResource: "ComposingOrb", withExtension: "mov"))
+        let asset = AVURLAsset(url: url)
+        let playable = try await asset.load(.isPlayable)
+        let duration = try await asset.load(.duration)
+        let alphaTracks = try await asset.loadTracks(withMediaCharacteristic: .containsAlphaChannel)
+        let track = try XCTUnwrap(alphaTracks.first)
+        let size = try await track.load(.naturalSize)
 
-        XCTAssertEqual(dots.count, 566)
-        XCTAssertEqual(first.x, 37.322, accuracy: 0.001)
-        XCTAssertEqual(first.y, 30.656, accuracy: 0.001)
-        XCTAssertEqual(first.radius, 0.317, accuracy: 0.001)
-        XCTAssertEqual(last.x, 38.864, accuracy: 0.001)
-        XCTAssertEqual(last.y, 29.054, accuracy: 0.001)
-        XCTAssertNotEqual(dots, MobiusComposingOrbRenderer.dots(at: 1.05))
+        XCTAssertTrue(playable)
+        XCTAssertEqual(CMTimeGetSeconds(duration), 149.0 / 24.0, accuracy: 0.001)
+        XCTAssertEqual(size, CGSize(width: 512, height: 512))
     }
 }

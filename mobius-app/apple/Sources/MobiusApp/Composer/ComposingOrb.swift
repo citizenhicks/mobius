@@ -1,157 +1,80 @@
-import Foundation
+import AVFoundation
 import SwiftUI
+import UIKit
 
-/// The native 64-point Composing preset from thinking-orbs 0.2.0.
-///
-/// möbius only needs this branded state, so the React/canvas package is not embedded. The
-/// geometry and timing stay here with the Apple drawing primitive; the MIT notice is in NOTICE.
 struct MobiusComposingOrb: View {
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        TimelineView(
-            .animation(
-                minimumInterval: 1.0 / 30.0,
-                paused: reduceMotion || scenePhase != .active
-            )
-        ) { _ in
-            let seconds = ProcessInfo.processInfo.systemUptime
-            let time =
-                reduceMotion || scenePhase != .active
-                ? 0.6
-                : seconds * MobiusComposingOrbRenderer.speed
-            Canvas(rendersAsynchronously: true) { [colorScheme, time] context, size in
-                let sourceSize = CGFloat(MobiusComposingOrbRenderer.size)
-                let scale = min(size.width, size.height) / sourceSize
-                context.translateBy(
-                    x: (size.width - sourceSize * scale) / 2,
-                    y: (size.height - sourceSize * scale) / 2
-                )
-                context.scaleBy(x: scale, y: scale)
-
-                for dot in MobiusComposingOrbRenderer.dots(at: time) {
-                    let radius = max(0.3, dot.radius)
-                    let rect = CGRect(
-                        x: dot.x - radius,
-                        y: dot.y - radius,
-                        width: radius * 2,
-                        height: radius * 2
-                    )
-                    context.fill(
-                        Path(ellipseIn: rect),
-                        with: .color(
-                            MobiusPalette.composingOrbInk(white: dot.white, scheme: colorScheme)
-                                .opacity(dot.opacity)
-                        )
-                    )
-                }
+        Group {
+            if !reduceMotion,
+                let url = Bundle.main.url(forResource: "ComposingOrb", withExtension: "mov")
+            {
+                ComposingOrbVideo(url: url, isPlaying: scenePhase == .active)
+            } else {
+                Image("MobiusLogo")
+                    .resizable()
+                    .scaledToFit()
             }
         }
+        .allowsHitTesting(false)
     }
 }
 
-enum MobiusComposingOrbRenderer {
-    struct Dot: Equatable {
-        let x: Double
-        let y: Double
-        let z: Double
-        let radius: Double
-        let white: Double
-        let opacity: Double
+/// Plays the Blender render with its original material, soft lighting, and transparent background.
+private struct ComposingOrbVideo: UIViewRepresentable {
+    let url: URL
+    let isPlaying: Bool
+
+    func makeUIView(context: Context) -> OrbPlayerView {
+        OrbPlayerView(url: url)
     }
 
-    static let size = 64.0
-    static let speed = 2.34
-
-    static func dots(at time: Double) -> [Dot] {
-        let center = size / 2
-        let sphereRadius = size / 2 * 0.78
-        let radiusScale = pow(size / 300, 0.6)
-        var dots: [Dot] = []
-        dots.reserveCapacity(566)
-
-        let ghostCount = 38
-        let goldenAngle = Double.pi * (3 - sqrt(5))
-        for index in 0..<ghostCount {
-            let y = 1 - 2 * (Double(index) + 0.5) / Double(ghostCount)
-            let radial = sqrt(1 - y * y)
-            let angle = Double(index) * goldenAngle
-            let projected = project(
-                x: radial * cos(angle) * sphereRadius,
-                y: y * sphereRadius,
-                z: radial * sin(angle) * sphereRadius,
-                center: center
-            )
-            let depth = (projected.z / sphereRadius + 1) / 2
-            dots.append(
-                Dot(
-                    x: projected.x,
-                    y: projected.y,
-                    z: projected.z,
-                    radius: 0.8 * radiusScale,
-                    white: 0.78,
-                    opacity: 0.1 + 0.22 * depth
-                ))
+    func updateUIView(_ view: OrbPlayerView, context: Context) {
+        if isPlaying {
+            view.player.play()
+        } else {
+            view.player.pause()
         }
+    }
 
-        let tilt = 0.55
-        let sinTilt = sin(tilt)
-        let cosTilt = cos(tilt)
-        let laneCount = 12
-        let segmentCount = 44
-        for lane in 0..<laneCount {
-            let laneOffset = (Double(lane) - Double(laneCount - 1) / 2) * 0.075
-            let edge =
-                abs(Double(lane) - Double(laneCount - 1) / 2)
-                / max(1, Double(laneCount - 1) / 2)
+    static func dismantleUIView(_ view: OrbPlayerView, coordinator: ()) {
+        view.player.pause()
+        view.looper.disableLooping()
+    }
+}
 
-            for segment in 0..<segmentCount {
-                let angle = Double(segment) / Double(segmentCount) * 2 * .pi
-                let wobble =
-                    0.16 * sin(angle * 3 - time * 1.7 + Double(lane) * 0.22)
-                    + 0.07 * sin(angle * 5 + time * 1.1)
-                let offset = laneOffset + wobble
-                let x = cos(angle)
-                let y = cosTilt * sin(angle) - sinTilt * offset
-                let z = sinTilt * sin(angle) + cosTilt * offset
-                let length = sqrt(x * x + y * y + z * z)
-                let projected = project(
-                    x: x / length * sphereRadius,
-                    y: y / length * sphereRadius,
-                    z: z / length * sphereRadius,
-                    center: center
-                )
-                let depth = (projected.z / sphereRadius + 1) / 2
-                dots.append(
-                    Dot(
-                        x: projected.x,
-                        y: projected.y,
-                        z: projected.z,
-                        radius: (0.935 + 1.445 * depth) * (1 - 0.25 * edge) * radiusScale,
-                        white: 0.52 - 0.44 * depth + 0.18 * edge,
-                        opacity: 0.4 + 0.6 * depth
-                    ))
+private final class OrbPlayerView: UIView {
+    override class var layerClass: AnyClass { AVPlayerLayer.self }
+    let player = AVQueuePlayer()
+    let looper: AVPlayerLooper
+    private let poster = UIImageView(image: UIImage(named: "MobiusLogo"))
+    private var readyObservation: NSKeyValueObservation?
+
+    init(url: URL) {
+        looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(url: url))
+        super.init(frame: .zero)
+        isOpaque = false
+        backgroundColor = .clear
+        player.isMuted = true
+        player.preventsDisplaySleepDuringVideoPlayback = false
+        let playerLayer = layer as! AVPlayerLayer
+        playerLayer.player = player
+        playerLayer.videoGravity = .resizeAspect
+        playerLayer.isOpaque = false
+        poster.contentMode = .scaleAspectFit
+        poster.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        addSubview(poster)
+        readyObservation = playerLayer.observe(\.isReadyForDisplay, options: [.initial, .new]) {
+            [weak self] _, _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                poster.isHidden = (layer as! AVPlayerLayer).isReadyForDisplay
             }
         }
-
-        return dots.sorted { $0.z < $1.z }
     }
 
-    private static func project(
-        x: Double,
-        y: Double,
-        z: Double,
-        center: Double
-    ) -> (x: Double, y: Double, z: Double) {
-        let sinTilt = sin(0.3)
-        let cosTilt = cos(0.3)
-        let projectedY = y * cosTilt - z * sinTilt
-        return (
-            center + x,
-            center - projectedY,
-            y * sinTilt + z * cosTilt
-        )
-    }
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 }

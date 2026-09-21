@@ -1,95 +1,98 @@
 {
-  "fill" : {
-    "linear-gradient" : [
+  "fill": {
+    "linear-gradient": [
       "srgb:0.23137,0.25882,0.32157,1.00000",
       "srgb:0.18039,0.20392,0.25098,1.00000"
     ],
-    "orientation" : {
-      "start" : {
-        "x" : 0.5,
-        "y" : 0
+    "orientation": {
+      "start": {
+        "x": 0.5,
+        "y": 0
       },
-      "stop" : {
-        "x" : 0.5,
-        "y" : 0.7
+      "stop": {
+        "x": 0.5,
+        "y": 0.7
       }
     }
   },
-  "groups" : [
+  "groups": [
     {
-      "hidden" : false,
-      "layers" : [
+      "layers": [
         {
-          "image-name" : "04-Front-Ice.svg",
-          "name" : "04-Front-Ice"
+          "image-name": "Foreground.png",
+          "name": "Foreground",
+          "glass": false
         }
       ],
-      "lighting" : "combined",
-      "shadow" : {
-        "kind" : "neutral",
-        "opacity" : 0.5
+      "lighting": "combined",
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.18
       },
-      "translucency" : {
-        "enabled" : true,
-        "value" : 0.5
+      "translucency": {
+        "enabled": false,
+        "value": 0
       }
     },
     {
-      "layers" : [
+      "layers": [
         {
-          "image-name" : "03-Frost-Body.svg",
-          "name" : "03-Frost-Body"
+          "image-name": "Front.png",
+          "name": "Front",
+          "glass": false
         }
       ],
-      "lighting" : "combined",
-      "shadow" : {
-        "kind" : "neutral",
-        "opacity" : 0.5
+      "lighting": "combined",
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.18
       },
-      "translucency" : {
-        "enabled" : true,
-        "value" : 0.5
+      "translucency": {
+        "enabled": false,
+        "value": 0
       }
     },
     {
-      "layers" : [
+      "layers": [
         {
-          "image-name" : "02-Deep-Frost.svg",
-          "name" : "02-Deep-Frost"
+          "image-name": "Body.png",
+          "name": "Body",
+          "glass": false
         }
       ],
-      "lighting" : "combined",
-      "shadow" : {
-        "kind" : "neutral",
-        "opacity" : 0.5
+      "lighting": "combined",
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.18
       },
-      "translucency" : {
-        "enabled" : true,
-        "value" : 0.5
+      "translucency": {
+        "enabled": false,
+        "value": 0
       }
     },
     {
-      "layers" : [
+      "layers": [
         {
-          "image-name" : "01-Rear-Depth-Corrected.svg",
-          "name" : "01-Rear-Depth-Corrected"
+          "image-name": "Rear.png",
+          "name": "Rear",
+          "glass": false
         }
       ],
-      "lighting" : "combined",
-      "shadow" : {
-        "kind" : "neutral",
-        "opacity" : 0.5
+      "lighting": "combined",
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.18
       },
-      "translucency" : {
-        "enabled" : true,
-        "value" : 0.5
+      "translucency": {
+        "enabled": false,
+        "value": 0
       }
     }
   ],
-  "supported-platforms" : {
-    "circles" : [
+  "supported-platforms": {
+    "circles": [
       "watchOS"
     ],
-    "squares" : "shared"
+    "squares": "shared"
   }
 }

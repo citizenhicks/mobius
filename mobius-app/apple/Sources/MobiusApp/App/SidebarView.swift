@@ -175,11 +175,9 @@ struct SidebarView: View {
             VStack(spacing: 0) {
                 HStack(spacing: MobiusSpace.m) {
                     Image("MobiusLogo")
-                        .renderingMode(.template)
                         .resizable()
                         .scaledToFit()
                         .frame(width: 28, height: 28)
-                        .foregroundStyle(palette.accent)
                         .clipShape(.rect(cornerRadius: 6))
                         .accessibilityHidden(true)
                     Group {
