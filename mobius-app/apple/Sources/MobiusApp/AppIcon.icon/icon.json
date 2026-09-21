@@ -19,9 +19,17 @@
     {
       "layers": [
         {
-          "image-name": "Foreground.png",
           "name": "Foreground",
-          "glass": false
+          "glass": false,
+          "image-name-specializations": [
+            {
+              "value": "Foreground.png"
+            },
+            {
+              "appearance": "tinted",
+              "value": "Foreground-Mono.png"
+            }
+          ]
         }
       ],
       "lighting": "combined",
@@ -37,9 +45,17 @@
     {
       "layers": [
         {
-          "image-name": "Front.png",
           "name": "Front",
-          "glass": false
+          "glass": false,
+          "image-name-specializations": [
+            {
+              "value": "Front.png"
+            },
+            {
+              "appearance": "tinted",
+              "value": "Front-Mono.png"
+            }
+          ]
         }
       ],
       "lighting": "combined",
@@ -55,9 +71,17 @@
     {
       "layers": [
         {
-          "image-name": "Body.png",
           "name": "Body",
-          "glass": false
+          "glass": false,
+          "image-name-specializations": [
+            {
+              "value": "Body.png"
+            },
+            {
+              "appearance": "tinted",
+              "value": "Body-Mono.png"
+            }
+          ]
         }
       ],
       "lighting": "combined",
@@ -73,9 +97,17 @@
     {
       "layers": [
         {
-          "image-name": "Rear.png",
           "name": "Rear",
-          "glass": false
+          "glass": false,
+          "image-name-specializations": [
+            {
+              "value": "Rear.png"
+            },
+            {
+              "appearance": "tinted",
+              "value": "Rear-Mono.png"
+            }
+          ]
         }
       ],
       "lighting": "combined",

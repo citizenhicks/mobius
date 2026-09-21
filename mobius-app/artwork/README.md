@@ -28,5 +28,11 @@ bundled movie.
 separate transparent renders of whole beads, grouped by camera depth, over the
 Nord background, with subtle native shadows. The frontmost 96 beads form their
 own foreground layer. Preserve the complete hidden portions of each group so Apple's
-layered icon effects can reveal them. Both assets use the same camera and lighting
-as the animation.
+layered icon effects can reveal them. The default/dark icon and logo use the same
+camera and lighting as the animation.
+
+Clear and tinted icons use the `-Mono.png` variants. These add two icon-only Nord
+area lights (30 W each, 2 × 6 m rectangles at X ±5, Y −0.5, Z 0, aimed at the
+origin) so the side beads remain distinct from dark clear backgrounds. Keep these
+variants under the native `tinted` image specialization; the base images remain
+unchanged.
