@@ -163,6 +163,8 @@ impl Extensions {
     }
 
     /// Adds user-installed skills after the explicit roots.
+    /// Installed skill directory symlinks resolve to their canonical resource roots;
+    /// files within each skill remain confined to that directory.
     /// # Errors
     ///
     /// Returns an error if validation or an operation required by this function fails.
@@ -455,7 +457,7 @@ fn discover_roots(
     roots: impl IntoIterator<Item = PathBuf>,
     skills: &mut BTreeMap<String, Skill>,
     namespace: Option<&str>,
-    keep_existing: bool,
+    installed: bool,
 ) -> Result<()> {
     for root in roots {
         let root_path = match std::fs::canonicalize(&root) {
@@ -474,8 +476,18 @@ fn discover_roots(
             .collect::<std::io::Result<Vec<_>>>()?;
         directories.sort();
         for directory_path in directories {
-            let directory = match root.open_dir(&directory_path) {
-                Ok(directory) => directory,
+            // User-installed aliases select a skill root, not permission to escape it.
+            let opened = if installed {
+                std::fs::canonicalize(root_path.join(&directory_path)).and_then(|path| {
+                    Dir::open_ambient_dir(&path, ambient_authority())
+                        .map(|directory| (path, directory))
+                })
+            } else {
+                root.open_dir(&directory_path)
+                    .map(|directory| (root_path.join(&directory_path), directory))
+            };
+            let (skill_root, directory) = match opened {
+                Ok(opened) => opened,
                 Err(error)
                     if matches!(
                         error.kind(),
@@ -502,11 +514,11 @@ fn discover_roots(
                 continue;
             }
             let content = read_skill_resource(&directory, Path::new(SKILL_FILE))?;
-            let skill_path = root_path.join(&directory_path).join(SKILL_FILE);
+            let skill_path = skill_root.join(SKILL_FILE);
             let (name, description) = skill_metadata(&skill_path, &content);
             let name = namespace.map_or(name.clone(), |namespace| format!("{namespace}:{name}"));
             if skills.contains_key(&name) {
-                if keep_existing {
+                if installed {
                     continue;
                 }
                 return Err(Error::Duplicate(format!("skill `{name}`")));
@@ -1244,6 +1256,57 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![("global", "installed"), ("shared", "explicit")]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installed_skill_aliases_use_canonical_locations() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempfile::tempdir().expect("temporary skills");
+        let source = temporary.path().join("source");
+        let installed = temporary.path().join("installed");
+        write_skill(&source, "shared", "shared", "installed");
+        std::fs::create_dir(&installed).expect("installed root");
+        symlink(source.join("shared"), installed.join("absolute")).expect("absolute alias");
+        symlink("../source/shared", installed.join("relative")).expect("relative alias");
+        symlink("../missing", installed.join("broken")).expect("broken alias");
+        std::fs::write(installed.join("marker"), "").expect("marker");
+        symlink("marker", installed.join("file")).expect("file alias");
+        let canonical = std::fs::canonicalize(source.join("shared")).expect("canonical skill");
+        let mut discovered = Extensions::discover([]).expect("empty skills");
+
+        discover_roots([installed.clone()], &mut discovered.skills, None, true)
+            .expect("installed aliases");
+
+        assert_eq!(discovered.skills.len(), 1);
+        assert_eq!(
+            discovered.skills["shared"].location,
+            canonical.join(SKILL_FILE)
+        );
+        assert_eq!(discovered.resource_roots(), vec![canonical.clone()]);
+
+        std::fs::remove_file(installed.join("absolute")).expect("remove alias");
+        symlink(temporary.path(), installed.join("absolute")).expect("retarget alias");
+        assert_eq!(discovered.resource_roots(), vec![canonical]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installed_skill_aliases_keep_skill_files_confined() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempfile::tempdir().expect("temporary skills");
+        let installed = temporary.path().join("installed");
+        let skill = temporary.path().join("skill");
+        std::fs::create_dir(&installed).expect("installed root");
+        std::fs::create_dir(&skill).expect("skill root");
+        let outside = temporary.path().join("outside.md");
+        std::fs::write(&outside, "outside").expect("outside resource");
+        symlink(&outside, skill.join(SKILL_FILE)).expect("escaping skill file");
+        symlink(&skill, installed.join("alias")).expect("skill alias");
+
+        assert!(discover_roots([installed], &mut BTreeMap::new(), None, true).is_err());
     }
 
     #[test]
