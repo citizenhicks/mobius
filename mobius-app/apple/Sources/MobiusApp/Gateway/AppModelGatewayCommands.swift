@@ -178,6 +178,7 @@ extension AppModel {
             createPendingVoiceChat()
             return
         }
+        let bot = selectedBot ?? (bots.count == 1 ? bots[0] : nil)
         chat.changeComposerDraftOwner(to: nil)
         chat.discardComposerAttachments()
         let retainedWorkspaceFiles = workspace?.path == path ? workspaceFiles : []
@@ -196,7 +197,7 @@ extension AppModel {
         navigationPath = [.chat(.new)]
         showsWorkspaceBrowser = false
         cacheChatCatalog(lastSessionID: nil)
-        if bots.count == 1 { selectBotForNewChat(bots[0]) }
+        if let bot { selectBotForNewChat(bot) }
     }
 
     /// Removing a gateway only tears down the connection when it is the active one.

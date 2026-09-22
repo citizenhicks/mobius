@@ -440,11 +440,14 @@ extension AppModelTests {
 extension AppModelTests {
     func testNewVoiceChatOpensMicrophoneOnlyAfterCreatedSessionReplay() throws {
         let model = try voiceModel()
+        model.bots = [bot(id: "bot-2"), bot()]
+        model.chat.sessions = [session(sessionID: "previous-chat", state: .idle)]
+        model.chat.selectedSessionID = "previous-chat"
         model.openNewVoiceChat()
         model.chooseWorkspace("/srv/mobius")
         guard case .openingSession(let requestID) = model.newVoiceChatIntent else {
             return XCTFail(
-                "Expected session creation after workspace and the only Bot were selected")
+                "Expected session creation using the selected workspace and last Bot")
         }
         model.gateway.handle(
             .sessionOpened(

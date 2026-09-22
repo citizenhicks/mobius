@@ -200,9 +200,9 @@ extension AppModelTests {
     func testNewChatOpensImmediatelyAndListsDistinctProjectFolders() throws {
         let model = try model { _ in }
         model.gateway.connectionState = .ready
-        model.bots = [bot()]
+        model.bots = [bot(id: "bot-2"), bot()]
         model.workspace = WorkspaceInfo(id: "current", path: "/srv/current")
-        model.chat.selectedSessionID = "chat-1"
+        model.chat.selectedSessionID = "two"
         model.chat.sessions = [
             session(sessionID: "one", state: .idle, workspaceLabel: "/srv/project"),
             session(sessionID: "two", state: .idle, workspaceLabel: "/srv/project"),
@@ -217,6 +217,14 @@ extension AppModelTests {
         XCTAssertEqual(model.chat.pendingNewChatWorkspace, "/srv/current")
         XCTAssertEqual(model.chat.pendingNewChatBotID, "bot-1")
         XCTAssertEqual(model.newChatWorkspacePaths, ["/srv/current", "/srv/other", "/srv/project"])
+
+        model.selectBotForNewChat(model.bots[0])
+        model.openNewSession()
+        XCTAssertEqual(model.chat.pendingNewChatBotID, "bot-2")
+
+        model.bots = [bot(), bot(id: "bot-3")]
+        model.openNewSession()
+        XCTAssertNil(model.chat.pendingNewChatBotID)
     }
 
     func testNewChatResolvesGatewayDefaultFolderWithoutOpeningBrowser() throws {
