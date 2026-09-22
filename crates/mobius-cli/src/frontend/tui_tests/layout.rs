@@ -70,6 +70,31 @@ fn bordered_composer_grows_to_show_wrapped_input() {
 }
 
 #[test]
+fn escape_hides_slash_suggestions_without_erasing_the_command() {
+    let catalog = default_catalog();
+    let mut state = state();
+    state.input = "/inter".into();
+    state.cursor = state.input.len();
+    let mut terminal = Terminal::new(TestBackend::new(80, 20)).expect("terminal");
+
+    terminal
+        .draw(|frame| view::render(frame, &mut state, &catalog))
+        .expect("draw suggestions");
+    assert!(terminal.backend().to_string().contains("/interrupt"));
+
+    assert_eq!(
+        state.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &catalog),
+        UiAction::None
+    );
+    terminal
+        .draw(|frame| view::render(frame, &mut state, &catalog))
+        .expect("draw dismissed suggestions");
+    let rendered = terminal.backend().to_string();
+    assert!(rendered.contains("/inter"), "{rendered}");
+    assert!(!rendered.contains("/interrupt"), "{rendered}");
+}
+
+#[test]
 fn capped_composer_keeps_a_wide_wrapped_cursor_visible() {
     let catalog = default_catalog();
     let mut state = state();

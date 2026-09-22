@@ -60,7 +60,7 @@ pub(super) fn render(frame: &mut Frame<'_>, state: &mut TuiState, catalog: &UiCa
         })
         .flatten();
     let slash_suggestions = (state.picker.is_none() && reference_suggestions.is_none())
-        .then(|| catalog.command_suggestions(&state.input, state.cursor))
+        .then(|| state.slash_suggestions(catalog))
         .flatten();
     let menu_height = reference_suggestions
         .as_ref()
@@ -105,7 +105,10 @@ pub(super) fn render(frame: &mut Frame<'_>, state: &mut TuiState, catalog: &UiCa
             .min(suggestions.len().saturating_sub(1));
         render_menu(frame, areas[1], &suggestions, state.slash_selection);
     }
-    frame.render_widget(Paragraph::new(composer_header_line(state)), areas[2]);
+    frame.render_widget(
+        Paragraph::new(composer_header_line(state, catalog)),
+        areas[2],
+    );
     frame.render_widget(
         Paragraph::new(input)
             .style(theme.style(Role::Text))
@@ -1052,8 +1055,8 @@ fn widget_line(
     Line::from(spans)
 }
 
-fn composer_header_line(state: &TuiState) -> Line<'static> {
-    let mut line = status_line(state);
+fn composer_header_line(state: &TuiState, catalog: &UiCatalog) -> Line<'static> {
+    let mut line = status_line(state, catalog);
     let widgets = widget_line(&state.widgets, FrontendSlot::ComposerHeader);
     if line.width() > 0 && widgets.width() > 0 {
         line.push_span(Span::styled(" · ", current().style(Role::Muted)));
@@ -1100,11 +1103,11 @@ fn composer_title(state: &TuiState) -> Line<'static> {
     }
 }
 
-fn status_line(state: &TuiState) -> Line<'static> {
+fn status_line(state: &TuiState, catalog: &UiCatalog) -> Line<'static> {
     let theme = current();
     if state.approval().is_some() {
         return Line::styled(
-            "approval · y once · a session · n deny · q abort",
+            "approval · type y once / a session / n deny / q abort, then Enter · Esc abort",
             theme.style(Role::Warning),
         );
     }
@@ -1131,14 +1134,14 @@ fn status_line(state: &TuiState) -> Line<'static> {
     if state.is_working() && state.composer_target_turn().is_some() {
         return Line::styled(
             format!(
-                "enter {} · alt+enter {}",
+                "Enter {} · Alt+Enter {} · Esc/Ctrl-C stop · Ctrl-J newline",
                 delivery_label(state.message_delivery()),
                 delivery_label(state.alternate_message_delivery())
             ),
             theme.style(Role::Muted),
         );
     }
-    Line::default()
+    Line::styled(catalog.composer_hint(), theme.style(Role::Muted))
 }
 
 const fn delivery_label(delivery: ActiveMessageDelivery) -> &'static str {
@@ -1231,7 +1234,14 @@ fn render_picker_popup(frame: &mut Frame<'_>, picker: &super::PickerState) {
         .style(theme.style(Role::Canvas))
         .border_style(theme.style(Role::Info))
         .title(Line::styled(
-            format!(" ↑↓ select · type to filter · Enter open{delete_hint} · Esc close "),
+            format!(
+                " ↑↓ select · type to filter · Enter open{delete_hint} · {} ",
+                if picker.query.is_empty() {
+                    "Esc close"
+                } else {
+                    "Esc clear, again to close"
+                }
+            ),
             theme.style(Role::Accent).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(area);

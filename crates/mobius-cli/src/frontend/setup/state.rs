@@ -1,8 +1,9 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mobius::backend::model::provider::HostedWebSearch;
 use mobius::protocol::{
     FrontendSettingKind, FrontendSettingOption, FrontendSettingValue, MiddlewareFeature,
+    ModelChoice,
 };
 use mobius::{Error, Result};
 use mobius_gateway::wire::{
@@ -80,6 +81,7 @@ pub(super) struct SetupState {
     pub(super) auth_field: AuthField,
     pub(super) authenticated: Option<(String, Option<String>)>,
     pub(super) model: usize,
+    pub(super) bot_model_routes: Vec<(ModelChoice, usize)>,
     pub(super) custom_model: String,
     pub(super) reasoning: usize,
     pub(super) web_search: usize,
@@ -90,6 +92,7 @@ pub(super) struct SetupState {
     pub(super) middleware: MiddlewareConfig,
     pub(super) target: ApplyTarget,
     pub(super) default_only: bool,
+    pub(super) start_chat: bool,
     pub(super) row: usize,
     pub(super) error: Option<String>,
     pub(super) progress: Option<Progress>,
@@ -114,6 +117,9 @@ impl SetupState {
         )?;
         if let Some(provider) = preferred_provider {
             state.select_provider(provider)?;
+        }
+        if mode == SetupMode::BotModel {
+            state.set_bot_model_routes(&gateway.models, &gateway.model_providers)?;
         }
         Ok(state)
     }
@@ -193,6 +199,7 @@ impl SetupState {
             auth_field: AuthField::Label,
             authenticated: None,
             model: 0,
+            bot_model_routes: Vec::new(),
             custom_model: String::new(),
             reasoning: 0,
             web_search: 0,
@@ -207,6 +214,7 @@ impl SetupState {
                 ApplyTarget::Bot
             },
             default_only,
+            start_chat: false,
             row: 0,
             error: None,
             progress: None,
@@ -295,15 +303,94 @@ impl SetupState {
         Ok(())
     }
 
+    pub(super) fn set_bot_model_routes(
+        &mut self,
+        choices: &[ModelChoice],
+        model_providers: &BTreeMap<String, String>,
+    ) -> Result<()> {
+        let routes = choices
+            .iter()
+            .map(|choice| {
+                let instance = model_providers.get(&choice.route).ok_or_else(|| {
+                    Error::Config(format!("model route `{}` has no provider", choice.route))
+                })?;
+                let provider = self
+                    .providers
+                    .iter()
+                    .position(|entry| {
+                        entry.instance.as_ref().is_some_and(|configured| {
+                            configured.configured && configured.selection.instance == *instance
+                        })
+                    })
+                    .ok_or_else(|| {
+                        Error::Config(format!("model route `{}` has no setup", choice.route))
+                    })?;
+                Ok((choice.clone(), provider))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if routes.is_empty() {
+            return Err(Error::Config(
+                "no available models; configure a provider first".into(),
+            ));
+        }
+        let current = &self.original.provider;
+        let same_model = |(choice, provider): &(ModelChoice, usize)| {
+            choice.model == current.model
+                && self.providers[*provider]
+                    .instance
+                    .as_ref()
+                    .is_some_and(|instance| instance.selection.instance == current.instance)
+        };
+        let selected = routes.iter().position(|route| {
+            same_model(route) && route.0.reasoning_effort == current.reasoning_effort
+        });
+        let focus = selected
+            .or_else(|| routes.iter().position(same_model))
+            .unwrap_or(0);
+        self.bot_model_routes = routes;
+        if let Some(selected) = selected {
+            self.select_bot_route(selected);
+        } else {
+            self.model = self.bot_model_routes.len();
+        }
+        self.row = focus;
+        Ok(())
+    }
+
+    fn select_bot_route(&mut self, index: usize) {
+        let provider = self.bot_model_routes[index].1;
+        if self.provider != provider {
+            self.provider = provider;
+            let search = self
+                .instance()
+                .map(|instance| instance.selection.web_search);
+            self.web_search = self
+                .definition()
+                .web_search
+                .iter()
+                .position(|option| search.is_some_and(|search| option.value == search.id()))
+                .unwrap_or(0);
+        }
+        self.model = index;
+    }
+
     pub(super) fn model_choice_count(&self) -> usize {
-        self.definition().models.len().max(1)
+        if self.mode == SetupMode::BotModel {
+            self.bot_model_routes.len()
+        } else {
+            self.definition().models.len().max(1)
+        }
     }
 
     pub(super) fn reasoning_choice_count(&self) -> usize {
-        self.definition()
-            .models
-            .get(self.model)
-            .map_or(1, |model| model.reasoning.len() + 1)
+        if self.mode == SetupMode::BotModel {
+            0
+        } else {
+            self.definition()
+                .models
+                .get(self.model)
+                .map_or(1, |model| model.reasoning.len() + 1)
+        }
     }
 
     pub(super) fn search_choice_count(&self) -> usize {
@@ -470,7 +557,13 @@ impl SetupState {
                 self.label = self
                     .instance()
                     .map_or_else(String::new, |instance| instance.label.clone());
-                self.auth_field = AuthField::Label;
+                self.auth_field = if self.definition().auth == ProviderAuthKind::ApiKey
+                    && !self.has_matching_credential()
+                {
+                    AuthField::Credential
+                } else {
+                    AuthField::Label
+                };
                 self.page = Page::Authentication;
                 self.error = None;
             }
@@ -519,7 +612,9 @@ impl SetupState {
     }
 
     pub(super) fn handle_models_key(&mut self, key: KeyEvent) -> Flow {
-        let custom_row = self.definition().model_ids_configurable.then_some(0);
+        let custom_row = (self.mode != SetupMode::BotModel
+            && self.definition().model_ids_configurable)
+            .then_some(0);
         match key.code {
             KeyCode::Esc => {
                 if self.mode == SetupMode::BotModel {
@@ -658,7 +753,9 @@ impl SetupState {
     pub(super) fn select_model_row(&mut self) {
         let models = self.model_choice_count();
         if self.row < models {
-            if self.model != self.row {
+            if self.mode == SetupMode::BotModel {
+                self.select_bot_route(self.row);
+            } else if self.model != self.row {
                 self.model = self.row;
                 self.reasoning = 0;
             }
@@ -778,6 +875,7 @@ impl SetupState {
         if self.page == Page::Authentication && self.authentication_is_editable() {
             self.push_text(text.trim());
         } else if self.page == Page::Models
+            && self.mode != SetupMode::BotModel
             && self.definition().model_ids_configurable
             && self.row == 0
         {
@@ -913,9 +1011,32 @@ impl SetupState {
 
     pub(super) fn authentication_succeeded(&mut self) {
         self.authenticated = Some(self.authentication_target());
+        self.credential.clear();
+        self.error = None;
         self.progress = None;
         self.page = Page::Models;
         self.row = self.model;
+    }
+
+    pub(super) fn authentication_finished(&mut self, result: Result<bool>) -> Result<bool> {
+        self.progress = None;
+        match result {
+            Ok(true) => self.authentication_succeeded(),
+            Ok(false) => return Ok(false),
+            Err(error) => self.recover_error(error)?,
+        }
+        Ok(true)
+    }
+
+    pub(super) fn recover_error(&mut self, error: Error) -> Result<()> {
+        match error {
+            Error::Auth(message) | Error::Config(message) => {
+                self.progress = None;
+                self.error = Some(message);
+                Ok(())
+            }
+            error => Err(error),
+        }
     }
 
     pub(super) fn has_matching_credential(&self) -> bool {
@@ -950,14 +1071,14 @@ impl SetupState {
         Ok(())
     }
 
-    pub(super) fn take_authentication(&mut self) -> Result<Authentication> {
+    pub(super) fn authentication(&mut self) -> Result<Authentication> {
         self.authentication_ready()?;
         if self.mode != SetupMode::Login {
             return Ok(Authentication::Reuse);
         }
         match self.definition().auth {
             ProviderAuthKind::ApiKey => {
-                let credential = take_trimmed(&mut self.credential);
+                let credential = self.credential.trim().to_owned();
                 if !credential.is_empty() {
                     self.api_key_entered = true;
                     Ok(Authentication::ApiKey(credential))
@@ -977,6 +1098,38 @@ impl SetupState {
         if self.mode == SetupMode::Bot {
             config.middleware = self.middleware.clone();
             config.extensions = self.selected_extensions.clone();
+            return Ok(config);
+        }
+        if self.mode == SetupMode::BotModel {
+            let (choice, provider) = self
+                .bot_model_routes
+                .get(self.model)
+                .ok_or_else(|| Error::Config("select an available model".into()))?;
+            let instance = self.providers[*provider]
+                .instance
+                .as_ref()
+                .ok_or_else(|| Error::Config("selected model setup is missing".into()))?;
+            let mut selection = instance.selection.clone();
+            selection.model.clone_from(&choice.model);
+            selection
+                .reasoning_effort
+                .clone_from(&choice.reasoning_effort);
+            selection.web_search = self
+                .definition()
+                .web_search
+                .get(self.web_search)
+                .ok_or_else(|| Error::Config("hosted web-search selection is invalid".into()))?
+                .value
+                .parse::<HostedWebSearch>()?;
+            config.provider = selection;
+            if config.realtime_voice.as_ref().is_some_and(|voice| {
+                !self
+                    .definition()
+                    .realtime_voices(config.provider.base_url.as_deref())
+                    .contains(voice)
+            }) {
+                config.realtime_voice = None;
+            }
             return Ok(config);
         }
         let definition = self.definition();
@@ -1031,10 +1184,6 @@ impl SetupState {
                 .contains(voice)
         }) {
             config.realtime_voice = None;
-        }
-        if self.mode == SetupMode::BotModel {
-            config.middleware = current.middleware.clone();
-            config.extensions = current.extensions.clone();
         }
         Ok(config)
     }
@@ -1197,12 +1346,4 @@ fn valid_web_search_options(options: &[FrontendSettingOption]) -> bool {
                 && option.value.parse::<HostedWebSearch>().is_ok()
                 && values.insert(option.value.as_str())
         })
-}
-
-pub(super) fn take_trimmed(value: &mut String) -> String {
-    let mut value = std::mem::take(value);
-    value.truncate(value.trim_end().len());
-    let start = value.len() - value.trim_start().len();
-    value.drain(..start);
-    value
 }

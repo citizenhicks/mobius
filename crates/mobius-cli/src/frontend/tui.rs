@@ -374,6 +374,8 @@ struct TuiState {
     composer_history: VecDeque<String>,
     composer_history_index: Option<usize>,
     composer_history_draft: Option<InputDraft>,
+    pending_message_drafts: BTreeMap<String, InputDraft>,
+    failed_message_drafts: VecDeque<InputDraft>,
     approvals: VecDeque<ExecApprovalRequestEvent>,
     approval_draft: Option<InputDraft>,
     active_turns: Vec<String>,
@@ -434,6 +436,8 @@ impl TuiState {
             composer_history: VecDeque::new(),
             composer_history_index: None,
             composer_history_draft: None,
+            pending_message_drafts: BTreeMap::new(),
+            failed_message_drafts: VecDeque::new(),
             approvals: VecDeque::new(),
             approval_draft: None,
             active_turns: Vec::new(),
@@ -518,6 +522,12 @@ impl TuiState {
 
     fn take_approval(&mut self) -> Option<String> {
         let request = self.approvals.pop_front()?;
+        self.input.clear();
+        self.pastes.clear();
+        self.cursor = 0;
+        self.input_limit_reached = false;
+        self.slash_menu_dismissed = false;
+        self.reference_menu_dismissed = false;
         self.restore_draft();
         Some(request.id)
     }
@@ -541,6 +551,53 @@ impl TuiState {
         draft
     }
 
+    fn snapshot_input_draft(&self) -> InputDraft {
+        InputDraft {
+            text: self.input.clone(),
+            cursor: self.cursor,
+            pastes: self.pastes.clone(),
+            attachments: self.attachments.clone(),
+        }
+    }
+
+    fn restore_failed_message(&mut self, draft: InputDraft) {
+        if self.stash_message_draft(draft) {
+            self.push(
+                "message not sent · Ctrl-R to recover it",
+                TranscriptTone::Warning,
+            );
+        }
+    }
+
+    fn recover_unconfirmed_messages(&mut self) {
+        let pending = std::mem::take(&mut self.pending_message_drafts);
+        if pending.is_empty() {
+            return;
+        }
+        let mut queued = false;
+        for (_, draft) in pending {
+            queued |= self.stash_message_draft(draft);
+        }
+        self.push(
+            if queued {
+                "message delivery unconfirmed · check chat before resending · Ctrl-R recovers saved drafts"
+            } else {
+                "message delivery unconfirmed · check chat before resending"
+            },
+            TranscriptTone::Warning,
+        );
+    }
+
+    fn stash_message_draft(&mut self, draft: InputDraft) -> bool {
+        if self.input.is_empty() && self.attachments.is_empty() && self.approval().is_none() {
+            self.replace_input_draft(draft);
+            false
+        } else {
+            self.failed_message_drafts.push_back(draft);
+            true
+        }
+    }
+
     fn restore_input_draft(&mut self, mut draft: InputDraft) {
         for attachment in std::mem::take(&mut self.attachments) {
             if !draft
@@ -555,6 +612,16 @@ impl TuiState {
         self.cursor = draft.cursor.min(self.input.len());
         self.pastes = draft.pastes;
         self.attachments = draft.attachments;
+    }
+
+    fn replace_input_draft(&mut self, draft: InputDraft) {
+        self.input = draft.text;
+        self.cursor = draft.cursor.min(self.input.len());
+        self.pastes = draft.pastes;
+        self.attachments = draft.attachments;
+        self.input_limit_reached = false;
+        self.slash_menu_dismissed = false;
+        self.reference_menu_dismissed = false;
     }
 
     fn remember_composer_input(&mut self, input: String) {
@@ -583,6 +650,19 @@ impl TuiState {
             }
         };
         self.recall_composer_input(index);
+    }
+
+    fn recover_saved_message(&mut self) {
+        let Some(saved) = self.failed_message_drafts.pop_front() else {
+            return;
+        };
+        if !self.input.is_empty() || !self.attachments.is_empty() {
+            let current = self.take_input_draft();
+            self.failed_message_drafts.push_back(current);
+        }
+        self.replace_input_draft(saved);
+        self.composer_history_index = None;
+        self.composer_history_draft = None;
     }
 
     fn composer_history_down(&mut self) {

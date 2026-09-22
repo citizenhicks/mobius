@@ -156,9 +156,13 @@ pub(super) fn page_prompt(state: &SetupState) -> (&'static str, String) {
             "Set up provider access",
             "Credentials are write-only and sent securely to the gateway.".into(),
         ),
+        Page::Models if state.mode == SetupMode::BotModel => (
+            "Models & reasoning",
+            "Choose from all models available on this gateway.".into(),
+        ),
         Page::Models => (
             "Models & reasoning",
-            "Review the manifest, select defaults, or enter a custom model ID.".into(),
+            "Choose a model and reasoning level, or enter a custom model ID.".into(),
         ),
         Page::Agent => (
             "Bot settings",
@@ -205,7 +209,7 @@ fn render_authentication_page(lines: &mut Vec<Line<'static>>, state: &SetupState
     let focused = state.auth_field == AuthField::Label;
     lines.push(Line::styled(
         format!(
-            "{} Name  {}▏",
+            "{} Name (optional)  {}▏",
             if focused { "›" } else { " " },
             terminal_text(&state.label)
         ),
@@ -282,64 +286,81 @@ fn render_authentication_page(lines: &mut Vec<Line<'static>>, state: &SetupState
 fn render_models_page(lines: &mut Vec<Line<'static>>, state: &SetupState) {
     let theme = current();
     lines.push(Line::styled(
-        if state.definition().model_ids_configurable {
+        if state.mode == SetupMode::BotModel {
+            "  Available models"
+        } else if state.definition().model_ids_configurable {
             "  Model IDs"
         } else {
             "  Model"
         },
         theme.style(Role::Muted),
     ));
-    for (index, model) in state.definition().models.iter().enumerate() {
+    if state.mode == SetupMode::BotModel {
+        for (index, (route, _)) in state.bot_model_routes.iter().enumerate() {
+            choice(
+                lines,
+                &route.group,
+                route
+                    .reasoning_effort
+                    .as_deref()
+                    .unwrap_or("Default reasoning"),
+                state.row == index,
+                if state.model == index { "●" } else { "○" },
+            );
+        }
+    } else {
+        for (index, model) in state.definition().models.iter().enumerate() {
+            choice(
+                lines,
+                &model.label,
+                &model.description,
+                state.row == index,
+                if state.model == index { "●" } else { "○" },
+            );
+        }
+        if state.definition().model_ids_configurable {
+            choice(
+                lines,
+                "Model IDs",
+                if state.custom_model.is_empty() {
+                    "Comma-separated; the first model is selected"
+                } else {
+                    &state.custom_model
+                },
+                state.row == 0,
+                "●",
+            );
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::styled("  Reasoning", theme.style(Role::Muted)));
+        let reasoning_start = state.model_choice_count();
         choice(
             lines,
-            &model.label,
-            &model.description,
-            state.row == index,
-            if state.model == index { "●" } else { "○" },
+            "Provider default",
+            "Use the selected model's default reasoning",
+            state.row == reasoning_start,
+            if state.reasoning == 0 { "●" } else { "○" },
         );
-    }
-    if state.definition().model_ids_configurable {
-        choice(
-            lines,
-            "Model IDs",
-            if state.custom_model.is_empty() {
-                "Comma-separated; the first model is selected"
-            } else {
-                &state.custom_model
-            },
-            state.row == 0,
-            "●",
-        );
-    }
-    lines.push(Line::from(""));
-    lines.push(Line::styled("  Reasoning", theme.style(Role::Muted)));
-    let reasoning_start = state.model_choice_count();
-    choice(
-        lines,
-        "Provider default",
-        "Use the selected model's default reasoning",
-        state.row == reasoning_start,
-        if state.reasoning == 0 { "●" } else { "○" },
-    );
-    for (index, preset) in state
-        .definition()
-        .models
-        .get(state.model)
-        .into_iter()
-        .flat_map(|model| &model.reasoning)
-        .enumerate()
-    {
-        choice(
-            lines,
-            &preset.label,
-            &preset.description,
-            state.row == reasoning_start + index + 1,
-            if state.reasoning == index + 1 {
-                "●"
-            } else {
-                "○"
-            },
-        );
+        for (index, preset) in state
+            .definition()
+            .models
+            .get(state.model)
+            .into_iter()
+            .flat_map(|model| &model.reasoning)
+            .enumerate()
+        {
+            choice(
+                lines,
+                &preset.label,
+                &preset.description,
+                state.row == reasoning_start + index + 1,
+                if state.reasoning == index + 1 {
+                    "●"
+                } else {
+                    "○"
+                },
+            );
+        }
     }
     lines.push(Line::from(""));
     lines.push(Line::styled(
@@ -730,8 +751,16 @@ pub(super) fn render_apply_actions(
     if state.default_only {
         apply_choice(
             lines,
-            SAVE_DEFAULT_LABEL,
-            SAVE_DEFAULT_DESCRIPTION,
+            if state.start_chat {
+                "Save and start chatting"
+            } else {
+                SAVE_DEFAULT_LABEL
+            },
+            if state.start_chat {
+                "Use these settings for your first chat"
+            } else {
+                SAVE_DEFAULT_DESCRIPTION
+            },
             state.row == start,
             layout,
         );
@@ -812,6 +841,9 @@ pub(super) fn footer(state: &SetupState) -> &'static str {
         }
         Page::Provider => "  ↑↓ select · enter add · esc cancel",
         Page::Authentication => "  type/paste · tab switch field · enter continue · esc back",
+        Page::Models if state.mode == SetupMode::BotModel => {
+            "  ↑↓ move · space select · enter activate · esc cancel"
+        }
         Page::Models => "  ↑↓ move · space select · enter activate · esc back",
         Page::Agent => {
             "  ↑↓ move · space change · ←→ close/open/adjust · enter open/apply · esc cancel"
@@ -843,7 +875,7 @@ pub(super) fn render_progress(lines: &mut Vec<Line<'static>>, progress: &Progres
     lines.push(Line::from(""));
     lines.push(Line::styled(
         if progress.verification.is_some() {
-            "  waiting for the gateway… · esc return to möbius"
+            "  waiting for the gateway… · esc leave setup; code may remain active"
         } else {
             "  waiting for the gateway…"
         },

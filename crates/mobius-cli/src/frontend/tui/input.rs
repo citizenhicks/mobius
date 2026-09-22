@@ -86,16 +86,16 @@ impl TuiState {
         if let Some(action) = self.handle_open_surface_key(key) {
             return action;
         }
+        if self.approval().is_some() && key.kind == KeyEventKind::Repeat {
+            return UiAction::None;
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            return UiAction::Exit;
+            return self.handle_ctrl_c(key.kind);
         }
         if self.picker.is_some() {
             return self.handle_picker_key(key);
         }
         if let Some(action) = self.handle_transcript_scroll_key(key.code) {
-            return action;
-        }
-        if let Some(action) = self.handle_approval_shortcut(key) {
             return action;
         }
         if key.kind == KeyEventKind::Press
@@ -106,29 +106,22 @@ impl TuiState {
         {
             return UiAction::PasteClipboard;
         }
+        if key.code == KeyCode::Enter
+            && key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+            && !key.modifiers.contains(KeyModifiers::ALT)
+        {
+            self.insert_text("\n");
+            return UiAction::None;
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
-            return match key.code {
-                KeyCode::Char('d') if self.input.is_empty() => UiAction::Exit,
-                KeyCode::Char('t') => {
-                    self.open_transcript_preview();
-                    UiAction::None
-                }
-                KeyCode::Char('p') => {
-                    if !self.move_menu_up(catalog) && self.approval().is_none() {
-                        self.composer_history_up();
-                    }
-                    UiAction::None
-                }
-                KeyCode::Char('n') => {
-                    if !self.move_menu_down(catalog) && self.approval().is_none() {
-                        self.composer_history_down();
-                    }
-                    UiAction::None
-                }
-                _ => UiAction::None,
-            };
+            return self.handle_control_key(key.code, catalog);
         }
         match key.code {
+            KeyCode::Enter if self.approval().is_some() => {
+                self.submit_input_with_delivery(catalog, None)
+            }
             KeyCode::Enter if self.complete_reference(catalog) => UiAction::None,
             KeyCode::Enter => {
                 let delivery = (self.composer_target_turn().is_some()
@@ -164,7 +157,7 @@ impl TuiState {
                 self.slash_menu_dismissed = true;
                 UiAction::None
             }
-            KeyCode::Esc if self.input.is_empty() && self.is_working() => self
+            KeyCode::Esc if key.kind == KeyEventKind::Press && self.is_working() => self
                 .active_turn()
                 .map(str::to_owned)
                 .map_or(UiAction::None, |turn_id| {
@@ -225,21 +218,80 @@ impl TuiState {
         }
     }
 
-    fn handle_approval_shortcut(&mut self, key: KeyEvent) -> Option<UiAction> {
-        let KeyCode::Char(choice) = key.code else {
-            return None;
-        };
-        if self.approval().is_none()
-            || key.kind != KeyEventKind::Press
-            || !matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT)
-            || !matches!(choice, 'y' | 'Y' | 'a' | 'A' | 'n' | 'N' | 'q' | 'Q')
-        {
-            return None;
+    fn handle_ctrl_c(&mut self, kind: KeyEventKind) -> UiAction {
+        if kind != KeyEventKind::Press || self.picker.take().is_some() {
+            return UiAction::None;
         }
-        Some(UiAction::Submit(Op::ExecApproval {
-            id: self.take_approval()?,
-            decision: approval_decision(&choice.to_string()),
-        }))
+        if let Some(id) = self.take_approval() {
+            return UiAction::Submit(Op::ExecApproval {
+                id,
+                decision: ReviewDecision::Abort,
+            });
+        }
+        self.active_turn()
+            .filter(|_| self.is_working())
+            .map_or(UiAction::Exit, |turn_id| {
+                UiAction::Submit(Op::Interrupt {
+                    turn_id: turn_id.to_owned(),
+                })
+            })
+    }
+
+    fn handle_control_key(&mut self, code: KeyCode, catalog: &UiCatalog) -> UiAction {
+        match code {
+            KeyCode::Char('d') if self.input.is_empty() => UiAction::Exit,
+            KeyCode::Char('j') => {
+                self.insert_text("\n");
+                UiAction::None
+            }
+            KeyCode::Char('t') => {
+                self.open_transcript_preview();
+                UiAction::None
+            }
+            KeyCode::Char('r') if self.approval().is_none() => {
+                self.recover_saved_message();
+                UiAction::None
+            }
+            KeyCode::Char('a') => {
+                self.cursor = self.input[..self.cursor]
+                    .rfind('\n')
+                    .map_or(0, |index| index + 1);
+                UiAction::None
+            }
+            KeyCode::Char('e') => {
+                self.cursor = self.input[self.cursor..]
+                    .find('\n')
+                    .map_or(self.input.len(), |index| self.cursor + index);
+                UiAction::None
+            }
+            KeyCode::Char('u' | 'w') => {
+                let start = if code == KeyCode::Char('u') {
+                    self.input[..self.cursor]
+                        .rfind('\n')
+                        .map_or(0, |index| index + 1)
+                } else {
+                    previous_word_boundary(&self.input, self.cursor)
+                };
+                self.input.drain(start..self.cursor);
+                self.cursor = start;
+                self.prune_pastes();
+                self.slash_input_changed();
+                UiAction::None
+            }
+            KeyCode::Char('p') => {
+                if !self.move_menu_up(catalog) && self.approval().is_none() {
+                    self.composer_history_up();
+                }
+                UiAction::None
+            }
+            KeyCode::Char('n') => {
+                if !self.move_menu_down(catalog) && self.approval().is_none() {
+                    self.composer_history_down();
+                }
+                UiAction::None
+            }
+            _ => UiAction::None,
+        }
     }
 
     fn handle_transcript_scroll_key(&mut self, key: KeyCode) -> Option<UiAction> {
@@ -825,7 +877,7 @@ impl TuiState {
             .map(|item| item.value.clone())
     }
 
-    fn slash_suggestions(&self, catalog: &UiCatalog) -> Option<Vec<MenuItem>> {
+    pub(super) fn slash_suggestions(&self, catalog: &UiCatalog) -> Option<Vec<MenuItem>> {
         if self.slash_menu_dismissed {
             return None;
         }
@@ -939,6 +991,12 @@ impl TuiState {
             self.input_limit_reached = true;
             return UiAction::None;
         }
+        if let Some(id) = self.take_approval() {
+            return UiAction::Submit(Op::ExecApproval {
+                id,
+                decision: approval_decision(line.trim()),
+            });
+        }
         if self.upload_in_progress {
             self.push(
                 "wait for attachment uploads to finish before sending",
@@ -958,7 +1016,8 @@ impl TuiState {
             );
             return UiAction::None;
         }
-        self.input.clear();
+        let submitted_input = std::mem::take(&mut self.input);
+        let submitted_cursor = self.cursor;
         self.pastes.clear();
         self.cursor = 0;
         self.slash_input_changed();
@@ -1000,6 +1059,10 @@ impl TuiState {
                     UiAction::None
                 }
                 CommandAction::Print(message) => {
+                    if line.split_whitespace().next() != Some("/status") {
+                        self.input = submitted_input;
+                        self.cursor = submitted_cursor;
+                    }
                     self.push(message, TranscriptTone::Warning);
                     UiAction::None
                 }
@@ -1013,10 +1076,6 @@ impl TuiState {
                 CommandAction::ConfirmDelete => UiAction::ConfirmDelete,
                 CommandAction::Queued => UiAction::Queued,
             };
-        }
-        if let Some(id) = self.take_approval() {
-            let decision = approval_decision(line);
-            return UiAction::Submit(Op::ExecApproval { id, decision });
         }
         if line.is_empty() && self.attachments.is_empty() {
             return UiAction::None;

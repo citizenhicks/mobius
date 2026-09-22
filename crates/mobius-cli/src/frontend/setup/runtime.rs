@@ -48,8 +48,10 @@ pub(super) async fn edit(
             match flow {
                 Flow::Continue => {}
                 Flow::Authenticate => {
-                    authenticate(terminal, state, sender, events).await?;
-                    state.authentication_succeeded();
+                    let result = authenticate(terminal, state, sender, events).await;
+                    if !state.authentication_finished(result)? {
+                        return Ok(false);
+                    }
                     break;
                 }
                 Flow::Remove(instance) => {
@@ -85,8 +87,8 @@ pub(super) async fn authenticate(
     state: &mut SetupState,
     sender: &GatewaySender,
     events: &mut GatewayEvents,
-) -> Result<()> {
-    match state.take_authentication()? {
+) -> Result<bool> {
+    match state.authentication()? {
         Authentication::Reuse => {}
         Authentication::ApiKey(api_key) => {
             state.set_progress(
@@ -99,10 +101,10 @@ pub(super) async fn authenticate(
         Authentication::DeviceCode => {
             state.set_progress("Starting device login", "Requesting a one-time login code…");
             draw(terminal, state)?;
-            device_login(terminal, state, sender, events).await?;
+            return device_login(terminal, state, sender, events).await;
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 pub(super) async fn apply(
@@ -253,10 +255,12 @@ pub(super) async fn update_bot(
         .map_err(gateway_error)?;
     let mut events = events.scoped();
     loop {
-        let frame = next_frame(terminal, state, &mut events, false).await?;
+        let frame = next_frame(terminal, state, &mut events, false)
+            .await?
+            .ok_or_else(|| Error::Stopped("Bot update cancelled".into()))?;
         let ServerFrame { version, message } = frame;
-        if let Some(error) = message.response_error(Some(&request_id)) {
-            return Err(Error::Stopped(error.message.into()));
+        if let Some(error) = configuration_error(&message, &request_id) {
+            return Err(error);
         }
         match message {
             ServerMessage::Bots {
@@ -285,10 +289,12 @@ pub(super) async fn wait_gateway_configured(
 ) -> Result<ReadyPayload> {
     let mut events = events.scoped();
     loop {
-        let frame = next_frame(terminal, state, &mut events, false).await?;
+        let frame = next_frame(terminal, state, &mut events, false)
+            .await?
+            .ok_or_else(|| Error::Stopped("gateway configuration cancelled".into()))?;
         let ServerFrame { version, message } = frame;
-        if let Some(error) = message.response_error(Some(request_id)) {
-            return Err(Error::Stopped(error.message.into()));
+        if let Some(error) = configuration_error(&message, request_id) {
+            return Err(error);
         }
         match message {
             ServerMessage::GatewayConfigured {
@@ -299,6 +305,44 @@ pub(super) async fn wait_gateway_configured(
                 .defer(ServerFrame { version, message })
                 .map_err(|error| Error::Stopped(format!("{operation}: {error}")))?,
         }
+    }
+}
+
+fn configuration_error(message: &ServerMessage, request_id: &str) -> Option<Error> {
+    let error = message.response_error(Some(request_id))?;
+    let stale = matches!(
+        message,
+        ServerMessage::Rejected {
+            request_id: actual,
+            code,
+            ..
+        } if actual == request_id && code == "revision_conflict"
+    );
+    Some(if stale {
+        Error::Stopped(format!("{}; reopen setup to refresh", error.message))
+    } else if error.fatal {
+        Error::Stopped(error.message.into())
+    } else {
+        Error::Config(error.message.into())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn revision_conflict_exits_the_stale_setup_instead_of_offering_a_retry() {
+        let message = ServerMessage::Rejected {
+            request_id: "save".into(),
+            code: "revision_conflict".into(),
+            message: "Bot changed elsewhere".into(),
+            fatal: false,
+        };
+        assert!(matches!(
+            configuration_error(&message, "save"),
+            Some(Error::Stopped(message)) if message.contains("reopen setup")
+        ));
     }
 }
 
@@ -349,7 +393,7 @@ pub(super) async fn device_login(
     state: &mut SetupState,
     sender: &GatewaySender,
     events: &mut GatewayEvents,
-) -> Result<()> {
+) -> Result<bool> {
     let provider = state.definition().provider.clone();
     let request_id = Uuid::new_v4().to_string();
     sender
@@ -366,8 +410,7 @@ pub(super) async fn device_login(
         &request_id,
         ExpectedResponse::Login(&provider),
     )
-    .await?;
-    Ok(())
+    .await
 }
 
 #[derive(Clone, Copy)]
@@ -415,11 +458,14 @@ pub(super) async fn wait_for_response(
     events: &mut GatewayEvents,
     request_id: &str,
     expected: ExpectedResponse<'_>,
-) -> Result<()> {
+) -> Result<bool> {
     let mut progress = ResponseProgress::new(expected);
     let mut events = events.scoped();
     loop {
-        let frame = next_frame(terminal, state, &mut events, expected.is_login()).await?;
+        let Some(frame) = next_frame(terminal, state, &mut events, expected.is_login()).await?
+        else {
+            return Ok(false);
+        };
         let defer = match observe_response(
             terminal,
             state,
@@ -432,7 +478,7 @@ pub(super) async fn wait_for_response(
             Err(error) => return Err(error),
         };
         if progress.accepted && progress.completed {
-            return Ok(());
+            return Ok(true);
         }
         if defer {
             events.defer(frame).map_err(gateway_error)?;
@@ -455,7 +501,11 @@ fn observe_response(
         return Ok(false);
     }
     if let Some(error) = message.response_error(Some(request_id)) {
-        return Err(Error::Stopped(error.message.into()));
+        return Err(if error.fatal {
+            Error::Stopped(error.message.into())
+        } else {
+            Error::Auth(error.message.into())
+        });
     }
     match expected {
         ExpectedResponse::Credential { .. } => {
@@ -542,12 +592,13 @@ pub(super) async fn next_frame(
     state: &SetupState,
     events: &mut GatewayEventScope<'_>,
     cancellable: bool,
-) -> Result<ServerFrame> {
+) -> Result<Option<ServerFrame>> {
     loop {
         tokio::select! {
             frame = events.next() => {
                 return frame
                     .map_err(gateway_error)?
+                    .map(Some)
                     .ok_or_else(|| Error::Stopped("gateway disconnected during setup".into()));
             }
             _ = tokio::time::sleep(INPUT_POLL) => {
@@ -563,10 +614,7 @@ pub(super) async fn next_frame(
                                     || key.modifiers.contains(KeyModifiers::CONTROL)
                                         && matches!(key.code, KeyCode::Char('c' | 'd'))) =>
                         {
-                            return Err(Error::Config(
-                                "setup cancelled; gateway login will stop when its code expires"
-                                    .into(),
-                            ));
+                            return Ok(None);
                         }
                         Event::Resize(_, _) => draw(terminal, state)?,
                         Event::Key(_)

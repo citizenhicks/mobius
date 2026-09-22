@@ -118,6 +118,125 @@ fn composer_targets_interrupt_at_the_active_turn() {
 }
 
 #[test]
+fn interrupt_keys_keep_the_active_draft() {
+    let catalog = default_catalog();
+    for key in [
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+    ] {
+        let mut state = state();
+        state.start_turn("turn".into());
+        state.input = "next request".into();
+        state.cursor = state.input.len();
+
+        assert_eq!(
+            state.handle_key(key, &catalog),
+            UiAction::Submit(Op::Interrupt {
+                turn_id: "turn".into(),
+            })
+        );
+        assert_eq!(state.input, "next request");
+    }
+}
+
+#[test]
+fn newline_keys_insert_text_without_submitting() {
+    let catalog = default_catalog();
+    for key in [
+        KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL),
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL),
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT),
+    ] {
+        let mut state = state();
+        state.input = "first".into();
+        state.cursor = state.input.len();
+
+        assert_eq!(state.handle_key(key, &catalog), UiAction::None);
+        assert_eq!(state.input, "first\n");
+    }
+}
+
+#[test]
+fn control_editing_uses_the_current_line() {
+    let catalog = default_catalog();
+    let mut state = state();
+    state.input = "first\nsecond word".into();
+    state.cursor = state.input.len();
+
+    state.handle_key(
+        KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+        &catalog,
+    );
+    assert_eq!(state.cursor, "first\n".len());
+    state.handle_key(
+        KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
+        &catalog,
+    );
+    assert_eq!(state.cursor, state.input.len());
+    state.handle_key(
+        KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+        &catalog,
+    );
+    assert_eq!(state.input, "first\nsecond ");
+    state.handle_key(
+        KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+        &catalog,
+    );
+    assert_eq!(state.input, "first\n");
+}
+
+#[test]
+fn invalid_command_stays_editable_after_enter() {
+    let catalog = default_catalog();
+    for command in ["/rename", "/unknown option"] {
+        let mut state = state();
+        state.input = command.into();
+        state.cursor = state.input.len();
+
+        assert_eq!(
+            state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &catalog),
+            UiAction::None
+        );
+        assert_eq!(state.input, command);
+        assert_eq!(state.cursor, command.len());
+    }
+}
+
+#[test]
+fn status_command_clears_after_showing_output() {
+    let catalog = default_catalog();
+    let mut state = state();
+    state.input = "/status".into();
+    state.cursor = state.input.len();
+
+    assert_eq!(state.submit_input(&catalog), UiAction::None);
+    assert!(state.input.is_empty());
+}
+
+#[test]
+fn ctrl_c_closes_a_picker_before_interrupting() {
+    let catalog = default_catalog();
+    let mut state = state();
+    state.start_turn("turn".into());
+    state.handle_agent_event(
+        EventMsg::Frontend(FrontendEvent::Picker {
+            title: "Choose".into(),
+            options: Vec::new(),
+        }),
+        Vec::new(),
+    );
+
+    assert_eq!(
+        state.handle_key(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            &catalog
+        ),
+        UiAction::None
+    );
+    assert!(state.picker.is_none());
+}
+
+#[test]
 fn generic_picker_submits_the_selected_operation() {
     let mut state = state();
     state.handle_agent_event(
@@ -633,6 +752,32 @@ fn arrow_up_recalls_composer_history_and_ctrl_t_toggles_transcript() {
 }
 
 #[test]
+fn ctrl_r_recovers_a_failed_draft_without_taking_over_history() {
+    let catalog = default_catalog();
+    let mut state = state();
+    state.remember_composer_input("older sent prompt".into());
+    state.input = "new draft".into();
+    state.cursor = state.input.len();
+    state.restore_failed_message(InputDraft {
+        text: "failed prompt".into(),
+        cursor: 0,
+        pastes: Default::default(),
+        attachments: Vec::new(),
+    });
+
+    state.handle_key(
+        KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+        &catalog,
+    );
+    assert_eq!(state.input, "older sent prompt");
+    state.handle_key(
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+        &catalog,
+    );
+    assert_eq!(state.input, "failed prompt");
+}
+
+#[test]
 fn approval_preserves_an_in_progress_draft() {
     let mut state = state();
     state.input = "steer after approval".into();
@@ -668,6 +813,14 @@ fn approval_preserves_an_in_progress_draft() {
             KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::SHIFT),
             &default_catalog(),
         ),
+        UiAction::None
+    );
+    assert_eq!(state.input, "Y");
+    assert_eq!(
+        state.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &default_catalog()
+        ),
         UiAction::Submit(Op::ExecApproval {
             id: "approval".into(),
             decision: ReviewDecision::Approved,
@@ -679,6 +832,79 @@ fn approval_preserves_an_in_progress_draft() {
         vec![attachment("draft.png"), finished_upload]
     );
     assert!(state.is_working());
+}
+
+#[test]
+fn each_approval_choice_waits_for_enter() {
+    let catalog = default_catalog();
+    for (choice, decision) in [
+        ('y', ReviewDecision::Approved),
+        ('a', ReviewDecision::ApprovedForSession),
+        (
+            'n',
+            ReviewDecision::Denied {
+                rejection: "denied by user".into(),
+            },
+        ),
+        ('q', ReviewDecision::Abort),
+    ] {
+        let mut state = state();
+        state.begin_approval(mobius::protocol::ExecApprovalRequestEvent {
+            id: "approval".into(),
+            turn_id: "turn".into(),
+            calls: Vec::new(),
+            reason: "test".into(),
+        });
+
+        assert_eq!(
+            state.handle_key(
+                KeyEvent::new(KeyCode::Char(choice), KeyModifiers::NONE),
+                &catalog
+            ),
+            UiAction::None
+        );
+        assert_eq!(
+            state.approval().map(|approval| approval.id.as_str()),
+            Some("approval")
+        );
+        assert_eq!(
+            state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &catalog),
+            UiAction::Submit(Op::ExecApproval {
+                id: "approval".into(),
+                decision,
+            })
+        );
+    }
+}
+
+#[test]
+fn ctrl_c_aborts_approval_and_restores_draft() {
+    let catalog = default_catalog();
+    let mut state = state();
+    state.input = "draft".into();
+    state.cursor = state.input.len();
+    state.begin_approval(mobius::protocol::ExecApprovalRequestEvent {
+        id: "approval".into(),
+        turn_id: "turn".into(),
+        calls: Vec::new(),
+        reason: "test".into(),
+    });
+    state.handle_key(
+        KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+        &catalog,
+    );
+
+    assert_eq!(
+        state.handle_key(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            &catalog
+        ),
+        UiAction::Submit(Op::ExecApproval {
+            id: "approval".into(),
+            decision: ReviewDecision::Abort,
+        })
+    );
+    assert_eq!(state.input, "draft");
 }
 
 #[test]
@@ -809,6 +1035,14 @@ fn queued_approvals_keep_the_draft_until_the_last_decision() {
         assert_eq!(
             state.handle_key(
                 KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+                &default_catalog()
+            ),
+            UiAction::None,
+        );
+        assert_eq!(state.input, "y");
+        assert_eq!(
+            state.handle_key(
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
                 &default_catalog()
             ),
             UiAction::Submit(Op::ExecApproval {

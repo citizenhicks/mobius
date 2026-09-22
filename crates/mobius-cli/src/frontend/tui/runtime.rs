@@ -7,12 +7,14 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::SynchronizedUpdate;
 use ratatui::crossterm::event::Event as TerminalEvent;
+use ratatui::crossterm::event::KeyCode;
 use ratatui::crossterm::event::KeyEventKind;
 use ratatui::crossterm::execute;
 use ratatui::crossterm::style::Print;
 use tokio::io::AsyncWriteExt as _;
 use tokio::time::MissedTickBehavior;
 
+use super::InputDraft;
 use super::TranscriptTone;
 use super::TuiState;
 use super::clipboard::{
@@ -32,7 +34,8 @@ use crate::frontend::setup;
 use crate::frontend::terminal::{INPUT_POLL, MAX_INPUT_BATCH, TerminalGuard, poll_event};
 use mobius::backend::checkpoint::ExecutionOutcome;
 use mobius::protocol::{
-    EventMsg, FrontendBlockFormat, FrontendEvent, ModelInfo, Op, SessionFileReference, Submission,
+    Event, EventMsg, FrontendBlockFormat, FrontendEvent, MessageAuthor, ModelInfo, Op,
+    SessionFileReference, Submission,
 };
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
@@ -105,7 +108,7 @@ pub(in crate::frontend) async fn run(
         String::new(),
     );
     sync_session(&mut state, session, gateway)?;
-    if choose_initial_bot {
+    if choose_initial_bot && gateway.bots.len() > 1 {
         choose_bot(
             gateway,
             session,
@@ -175,7 +178,7 @@ pub(in crate::frontend) async fn run(
                             &mut uploads,
                             &mut clipboard_preparation,
                             &mut replay_hydration,
-                            "gateway disconnected · press q to exit",
+                            "gateway disconnected · Ctrl-C to exit",
                         );
                         events_open = false;
                     }
@@ -366,6 +369,14 @@ async fn handle_terminal_input(
 ) -> Result<Option<FrontendExit>> {
     for _ in 0..MAX_INPUT_BATCH {
         let Some(event) = poll_event()? else { break };
+        let draft = matches!(
+            &event,
+            TerminalEvent::Key(key) if key.code == KeyCode::Enter
+                && state.picker.is_none()
+                && state.preview.is_none()
+                && state.capability_overlay.is_none()
+        )
+        .then(|| state.snapshot_input_draft());
         let action = terminal_action(event, state, catalog, dirty);
         match action {
             UiAction::None => {}
@@ -388,7 +399,7 @@ async fn handle_terminal_input(
                 *pending_session_creation =
                     create_session(sender, workspace, bot_id, clear, state).await;
             }
-            UiAction::Submit(op) => send_and_report(sender, session_id, op, state).await,
+            UiAction::Submit(op) => send_and_report(sender, session_id, op, state, draft).await,
             UiAction::Resume(session_id) => return Ok(Some(FrontendExit::Resume(session_id))),
             UiAction::Gateway(action) => {
                 send_gateway_action(sender, session_id, action, state).await
@@ -661,6 +672,7 @@ fn handle_server_message(
             session_id: actual,
             mut record,
         } if actual == session_id => {
+            settle_message_draft(state, &record.event);
             enrich_resume_picker(
                 &mut record.event.msg,
                 &gateway.sessions,
@@ -759,6 +771,24 @@ fn handle_server_message(
             state.history_request_id = None;
             state.push(message, TranscriptTone::Error);
         }
+        ServerMessage::Rejected {
+            request_id,
+            message,
+            fatal,
+            ..
+        } if state.pending_message_drafts.contains_key(&request_id) => {
+            if let Some(draft) = state.pending_message_drafts.remove(&request_id) {
+                state.restore_failed_message(draft);
+            }
+            if fatal {
+                state.disconnected = true;
+                state.recover_unconfirmed_messages();
+            }
+            state.push(
+                format!("message not sent: {message}"),
+                TranscriptTone::Error,
+            );
+        }
         message => {
             if let Some(response) = render_response(&message, &gateway.provider_instances) {
                 let tone = match response.severity {
@@ -767,12 +797,30 @@ fn handle_server_message(
                 };
                 if response.severity == ResponseSeverity::Fatal {
                     state.disconnected = true;
+                    state.recover_unconfirmed_messages();
                 }
                 state.push(response.text, tone);
             }
         }
     }
     None
+}
+
+fn settle_message_draft(state: &mut TuiState, event: &Event) {
+    let Some(id) = event.submission_id.as_deref() else {
+        return;
+    };
+    match &event.msg {
+        EventMsg::Message(message) if message.author == MessageAuthor::User => {
+            state.pending_message_drafts.remove(id);
+        }
+        EventMsg::SubmissionRejected(_) => {
+            if let Some(draft) = state.pending_message_drafts.remove(id) {
+                state.restore_failed_message(draft);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn disconnect(
@@ -792,6 +840,7 @@ fn disconnect(
     for turn_id in state.active_turns.clone() {
         state.finish_turn(&turn_id);
     }
+    state.recover_unconfirmed_messages();
     state.push(message, TranscriptTone::Error);
 }
 
@@ -910,15 +959,32 @@ async fn interrupt_active_turn(sender: &GatewaySender, session_id: &str, state: 
     }
 }
 
-async fn send_and_report(sender: &GatewaySender, session_id: &str, op: Op, state: &mut TuiState) {
+async fn send_and_report(
+    sender: &GatewaySender,
+    session_id: &str,
+    op: Op,
+    state: &mut TuiState,
+    draft: Option<InputDraft>,
+) {
     let requests_preview = matches!(op, Op::CapabilityCommand { .. });
+    let is_message = matches!(op, Op::Message { .. });
     if requests_preview {
         state.preview_request_id = None;
     }
     match send_op(sender, session_id, op).await {
         Ok(id) if requests_preview => state.preview_request_id = Some(id),
+        Ok(id) if is_message => {
+            if let Some(draft) = draft {
+                state.pending_message_drafts.insert(id, draft);
+            }
+        }
         Ok(_) => {}
-        Err(error) => state.push(error.to_string(), TranscriptTone::Error),
+        Err(error) => {
+            if let Some(draft) = draft.filter(|_| is_message) {
+                state.restore_failed_message(draft);
+            }
+            state.push(error.to_string(), TranscriptTone::Error);
+        }
     }
 }
 
@@ -1477,7 +1543,7 @@ fn agent_summary(gateway: &ReadyPayload, session: &SessionReadyPayload, bot: &Bo
         .as_deref()
         .unwrap_or("default");
     format!(
-        "MÖBIUS v{} · {bot_label}\nmodel: {} · {reasoning}\nproviders: {}\nmiddleware: {}\n{}tools: {}\nworkspace: {}",
+        "MÖBIUS v{} · {bot_label}\nmodel: {} · {reasoning}\nproviders: {}\ncapabilities: {}\n{}tools: {}\nworkspace: {}",
         env!("CARGO_PKG_VERSION"),
         super::terminal_text(&session.session.model.model),
         if providers.is_empty() {
@@ -1544,6 +1610,110 @@ mod tests {
                 preview: None,
             },
         }
+    }
+
+    #[test]
+    fn rejected_message_keeps_newer_input_and_recovers_the_failed_draft() {
+        use mobius::protocol::SubmissionRejectedEvent;
+
+        let mut state = TuiState::default();
+        state.pending_message_drafts.insert(
+            "message-1".into(),
+            InputDraft {
+                text: "original request".into(),
+                cursor: "original request".len(),
+                pastes: Default::default(),
+                attachments: vec![SessionFileReference {
+                    id: "file-1".into(),
+                    name: "notes.txt".into(),
+                    size: 12,
+                    media_type: "text/plain".into(),
+                }],
+            },
+        );
+        state.input = "new draft".into();
+        state.cursor = state.input.len();
+        state.composer_history.push_back("older request".into());
+
+        settle_message_draft(
+            &mut state,
+            &Event {
+                submission_id: Some("message-1".into()),
+                msg: EventMsg::SubmissionRejected(SubmissionRejectedEvent {
+                    message: "try again".into(),
+                }),
+            },
+        );
+
+        assert_eq!(state.input, "new draft");
+        assert!(state.pending_message_drafts.is_empty());
+        state.composer_history_up();
+        assert_eq!(state.input, "older request");
+        state.composer_history_down();
+        assert_eq!(state.input, "new draft");
+        state.recover_saved_message();
+        assert_eq!(state.input, "original request");
+        assert_eq!(state.attachments[0].name, "notes.txt");
+        state.recover_saved_message();
+        assert_eq!(state.input, "new draft");
+        assert!(state.attachments.is_empty());
+    }
+
+    #[test]
+    fn disconnect_keeps_unconfirmed_message_available_without_claiming_it_failed() {
+        let mut state = TuiState::default();
+        state.pending_message_drafts.insert(
+            "message-1".into(),
+            InputDraft {
+                text: "possibly delivered".into(),
+                cursor: 0,
+                pastes: Default::default(),
+                attachments: Vec::new(),
+            },
+        );
+
+        state.recover_unconfirmed_messages();
+
+        assert!(state.pending_message_drafts.is_empty());
+        assert_eq!(state.input, "possibly delivered");
+        assert!(
+            state
+                .transcript
+                .iter()
+                .any(|entry| entry.text.contains("delivery unconfirmed"))
+        );
+    }
+
+    #[test]
+    fn accepted_user_message_releases_its_saved_draft() {
+        use mobius::protocol::{MessageDelivery, MessageEvent};
+
+        let mut state = TuiState::default();
+        state.pending_message_drafts.insert(
+            "message-1".into(),
+            InputDraft {
+                text: "sent request".into(),
+                cursor: 0,
+                pastes: Default::default(),
+                attachments: Vec::new(),
+            },
+        );
+        settle_message_draft(
+            &mut state,
+            &Event {
+                submission_id: Some("message-1".into()),
+                msg: EventMsg::Message(MessageEvent {
+                    author: MessageAuthor::User,
+                    delivery: MessageDelivery::Turn,
+                    text: "sent request".into(),
+                    attachments: Vec::new(),
+                    reply: None,
+                    message_target: None,
+                }),
+            },
+        );
+        assert!(state.pending_message_drafts.is_empty());
+        assert!(state.failed_message_drafts.is_empty());
     }
 
     #[test]

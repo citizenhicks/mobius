@@ -51,8 +51,17 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn run_interactive() -> Result<()> {
-    let (mut sender, mut events, mut gateway, mut session, mut disposable_session, mut endpoint) =
-        connect(None, None).await?;
+    let Some((
+        mut sender,
+        mut events,
+        mut gateway,
+        mut session,
+        mut disposable_session,
+        mut endpoint,
+    )) = connect(None, None).await?
+    else {
+        return Ok(());
+    };
     loop {
         let choose_initial_bot =
             disposable_session.as_deref() == Some(session.session.session_id.as_str());
@@ -92,6 +101,9 @@ async fn run_interactive() -> Result<()> {
             }
             FrontendExit::Reconnect => {
                 let selected = Some((endpoint.clone(), session.session.session_id.clone()));
+                let Some(connection) = connect(selected, None).await? else {
+                    return Ok(());
+                };
                 (
                     sender,
                     events,
@@ -99,9 +111,12 @@ async fn run_interactive() -> Result<()> {
                     session,
                     disposable_session,
                     endpoint,
-                ) = connect(selected, None).await?;
+                ) = connection;
             }
             FrontendExit::Fresh => {
+                let Some(connection) = connect(None, None).await? else {
+                    return Ok(());
+                };
                 (
                     sender,
                     events,
@@ -109,7 +124,7 @@ async fn run_interactive() -> Result<()> {
                     session,
                     disposable_session,
                     endpoint,
-                ) = connect(None, None).await?;
+                ) = connection;
             }
         }
     }
@@ -117,8 +132,11 @@ async fn run_interactive() -> Result<()> {
 
 async fn run_task(bot_handle: &str, task_file: &Path) -> Result<()> {
     let task = read_task_file(task_file).await?;
-    let (sender, mut events, mut gateway, session, disposable_session, _) =
-        connect(None, Some(bot_handle)).await?;
+    let Some((sender, mut events, mut gateway, session, disposable_session, _)) =
+        connect(None, Some(bot_handle)).await?
+    else {
+        return Ok(());
+    };
     if gateway.models.is_empty() {
         if let Some(session_id) = disposable_session.as_deref() {
             discard_session(&sender, &mut events, &mut gateway, session_id).await?;
@@ -178,14 +196,16 @@ async fn pair(endpoint: &Endpoint, code: &str) -> std::result::Result<(), mobius
 async fn connect(
     selected: Option<(Endpoint, String)>,
     preferred_bot: Option<&str>,
-) -> Result<(
-    GatewaySender,
-    GatewayEvents,
-    ReadyPayload,
-    SessionReadyPayload,
-    Option<String>,
-    Endpoint,
-)> {
+) -> Result<
+    Option<(
+        GatewaySender,
+        GatewayEvents,
+        ReadyPayload,
+        SessionReadyPayload,
+        Option<String>,
+        Endpoint,
+    )>,
+> {
     let (sender, mut events, mut gateway, local_gateway, endpoint) = connect_gateway().await?;
     let (session, disposable_session) = match selected.filter(|(previous, _)| previous == &endpoint)
     {
@@ -194,8 +214,11 @@ async fn connect(
             (session, None)
         }
         None if local_gateway => {
-            if preferred_bot.is_none() && gateway.bot_defaults.is_none() {
-                frontend::run_gateway_login(&sender, &mut events, &mut gateway).await?;
+            if preferred_bot.is_none()
+                && gateway.bot_defaults.is_none()
+                && !frontend::run_gateway_login(&sender, &mut events, &mut gateway).await?
+            {
+                return Ok(None);
             }
             let bot_id = preferred_bot.map_or_else(
                 || resolve_bot(&gateway.bots, "@mobius"),
@@ -246,14 +269,14 @@ async fn connect(
             }
         }
     };
-    Ok((
+    Ok(Some((
         sender,
         events,
         gateway,
         session,
         disposable_session,
         endpoint,
-    ))
+    )))
 }
 
 async fn connect_gateway() -> Result<(GatewaySender, GatewayEvents, ReadyPayload, bool, Endpoint)> {
@@ -332,17 +355,31 @@ async fn start_local_gateway(endpoint: &Endpoint) -> mobius_gateway::Result<Gate
         }
     }
     let binary = gateway_binary()?;
-    if configured_state_dir.try_exists()? {
+    let configured = configured_state_dir.try_exists()?;
+    if configured {
         validate_local_gateway_config(&configured_state_dir, endpoint, saved_token.is_some())?;
-        let (child, log) = spawn_gateway(&binary, &configured_state_dir)?;
-        return connect_started_gateway(endpoint, child, log).await;
-    }
-    if endpoint.to_string() != DEFAULT_LOCAL_ENDPOINT {
+    } else if endpoint.to_string() != DEFAULT_LOCAL_ENDPOINT {
         return Err(mobius_gateway::Error::Config(format!(
             "saved local gateway {endpoint} is stopped; start it separately before reconnecting"
         )));
     }
-    bootstrap_local_gateway(endpoint, &binary, &configured_state_dir).await
+    let show_status = std::io::stderr().is_terminal();
+    if show_status {
+        eprint!("Starting local gateway at {endpoint}…");
+    }
+    let connected = async {
+        if configured {
+            let (child, log) = spawn_gateway(&binary, &configured_state_dir)?;
+            connect_started_gateway(endpoint, child, log).await
+        } else {
+            bootstrap_local_gateway(endpoint, &binary, &configured_state_dir).await
+        }
+    }
+    .await;
+    if show_status {
+        eprint!("\r\x1b[2K");
+    }
+    connected
 }
 
 fn lock_local_gateway_startup(state_dir: &Path) -> mobius_gateway::Result<File> {

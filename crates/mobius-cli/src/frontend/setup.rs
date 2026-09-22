@@ -84,10 +84,12 @@ pub(in crate::frontend) async fn run_bot(
     )?;
     terminal.clear()?;
 
-    if !edit(terminal, &mut state, sender, events, gateway).await? {
-        return Ok(());
+    while edit(terminal, &mut state, sender, events, gateway).await? {
+        match apply(terminal, &mut state, sender, events, gateway, bot_id).await {
+            Ok(()) => return Ok(()),
+            Err(error) => state.recover_error(error)?,
+        }
     }
-    apply(terminal, &mut state, sender, events, gateway, bot_id).await?;
     Ok(())
 }
 
@@ -112,13 +114,17 @@ pub(crate) async fn run_gateway(
     }
     let mut state = SetupState::new(mode, preferred_provider, gateway, original, true)?;
     terminal.clear()?;
-    if !edit(terminal, &mut state, sender, events, gateway).await? {
-        return Ok(());
+    while edit(terminal, &mut state, sender, events, gateway).await? {
+        match apply_gateway(terminal, &mut state, sender, events, gateway).await {
+            Ok(()) => return Ok(()),
+            Err(error) => state.recover_error(error)?,
+        }
     }
-    apply_gateway(terminal, &mut state, sender, events, gateway).await
+    Ok(())
 }
 
 /// Runs gateway-scoped provider setup before any chat exists.
+/// Returns `false` when setup is cancelled.
 /// # Errors
 ///
 /// Returns an error if validation or an operation required to complete the request fails.
@@ -126,19 +132,30 @@ pub async fn run_gateway_login(
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     gateway: &mut ReadyPayload,
-) -> Result<()> {
+) -> Result<bool> {
     let mut guard = TerminalGuard::alternate()?;
     guard.set_mouse_capture(false)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
-    run_gateway(
-        &mut terminal,
+    let mut state = SetupState::new(
         SetupMode::Login,
         None,
-        sender,
-        events,
         gateway,
-    )
-    .await
+        gateway
+            .bot_defaults
+            .as_ref()
+            .map(|defaults| defaults.config.clone())
+            .unwrap_or_default(),
+        true,
+    )?;
+    state.start_chat = true;
+    terminal.clear()?;
+    while edit(&mut terminal, &mut state, sender, events, gateway).await? {
+        match apply_gateway(&mut terminal, &mut state, sender, events, gateway).await {
+            Ok(()) => return Ok(true),
+            Err(error) => state.recover_error(error)?,
+        }
+    }
+    Ok(false)
 }
 
 #[cfg(test)]

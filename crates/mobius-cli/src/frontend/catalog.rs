@@ -264,12 +264,24 @@ impl UiCatalog {
     }
 
     pub(crate) fn menu(&self) -> String {
-        self.commands
+        let commands = self
+            .commands
             .iter()
             .map(UiCommand::menu_item)
             .map(|item| format!("{:<26} {}", item.label, item.description))
             .collect::<Vec<_>>()
-            .join("\n")
+            .join("\n");
+        format!(
+            "Keys: Enter send · Ctrl-J newline · Alt+Enter alternate delivery while working · Esc/Ctrl-C stop · Ctrl-T transcript · Ctrl-P/N history · Ctrl-R recover draft\nEdit: Ctrl-A/E line ends · Ctrl-U clear line · Ctrl-W delete word\n\n{commands}"
+        )
+    }
+
+    pub(crate) fn composer_hint(&self) -> &'static str {
+        if self.commands.iter().any(|command| command.name == "resume") {
+            "Enter send · / commands · /resume chats · @ files · Ctrl-J newline · Ctrl-T transcript"
+        } else {
+            "Enter send · / commands · @ files · Ctrl-J newline · Ctrl-T transcript"
+        }
     }
 
     pub(crate) fn dispatch(
@@ -424,6 +436,33 @@ impl UiReference {
 fn cli_commands() -> Vec<UiCommand> {
     vec![
         command("help", "show commands", false, CommandHandler::Help),
+        command("new", "start a new chat", true, CommandHandler::New),
+        command("files", "download chat files", false, CommandHandler::Files),
+        UiCommand {
+            name: "diff".into(),
+            arguments: "[unstaged|staged|committed]".into(),
+            description: "show workspace changes".into(),
+            requires_idle: false,
+            handler: CommandHandler::Diff,
+        },
+        command(
+            "status",
+            "show turn, token, and capability status",
+            false,
+            CommandHandler::Status,
+        ),
+        command(
+            "interrupt",
+            "stop the active turn",
+            false,
+            CommandHandler::Interrupt,
+        ),
+        command(
+            "queued",
+            "inspect or edit queued messages",
+            false,
+            CommandHandler::Queued,
+        ),
         command(
             "gateway",
             "view, pair, or reconnect gateways",
@@ -475,7 +514,6 @@ fn cli_commands() -> Vec<UiCommand> {
             false,
             CommandHandler::Pair,
         ),
-        command("new", "start a new chat", true, CommandHandler::New),
         command(
             "clear",
             "clear the terminal and start a new chat",
@@ -505,37 +543,11 @@ fn cli_commands() -> Vec<UiCommand> {
             handler: CommandHandler::Attach,
         },
         command("delete", "delete this chat", true, CommandHandler::Delete),
-        command("files", "download chat files", false, CommandHandler::Files),
-        UiCommand {
-            name: "diff".into(),
-            arguments: "[unstaged|staged|committed]".into(),
-            description: "show workspace changes".into(),
-            requires_idle: false,
-            handler: CommandHandler::Diff,
-        },
         command(
             "branch",
             "switch the workspace Git branch",
             true,
             CommandHandler::Branch,
-        ),
-        command(
-            "queued",
-            "inspect or edit queued messages",
-            false,
-            CommandHandler::Queued,
-        ),
-        command(
-            "status",
-            "show turn, token, and capability status",
-            false,
-            CommandHandler::Status,
-        ),
-        command(
-            "interrupt",
-            "stop the active turn",
-            false,
-            CommandHandler::Interrupt,
         ),
         command("exit", "exit möbius", false, CommandHandler::Exit),
     ]
@@ -810,6 +822,17 @@ mod tests {
             error.to_string(),
             "duplicate registration: frontend command `exit`"
         );
+    }
+
+    #[test]
+    fn composer_only_advertises_resume_when_the_capability_declares_it() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let bare = UiCatalog::build(&[], workspace.path()).expect("bare catalog");
+        let sessions = UiCatalog::build(&[contribution("resume")], workspace.path())
+            .expect("sessions catalog");
+
+        assert!(!bare.composer_hint().contains("/resume"));
+        assert!(sessions.composer_hint().contains("/resume"));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use mobius::backend::model::provider::HostedWebSearch;
 use mobius::protocol::{
     FrontendSetting, FrontendSettingKind, FrontendSettingOption, FrontendSettingValue,
-    FrontendSymbol, MiddlewareFeature, ToolDiscoveryMode,
+    FrontendSymbol, MiddlewareFeature, ModelChoice, ToolDiscoveryMode,
 };
 use mobius_gateway::wire::{
     AgentComposition, ExtensionHookRecord, ExtensionKind, ExtensionRecord, ProviderAuthKind,
@@ -16,7 +16,7 @@ use uuid::Uuid;
 use super::SetupMode;
 use super::runtime::ExpectedResponse;
 use super::state::{
-    ApplyTarget, AuthField, Authentication, Flow, MiddlewareRow, Page, SetupState,
+    ApplyTarget, AuthField, Authentication, Flow, MiddlewareRow, Page, ProviderEntry, SetupState,
     validated_providers,
 };
 use super::view::{agent_layout, display_width, masked_credential, render, render_page};
@@ -103,6 +103,19 @@ fn model(id: &str, label: &str, default_reasoning: Option<&str>) -> ProviderMode
     }
 }
 
+fn route(route: &str, group: &str, model: &str, reasoning_effort: Option<&str>) -> ModelChoice {
+    ModelChoice {
+        route: route.into(),
+        group: group.into(),
+        model: model.into(),
+        reasoning_effort: reasoning_effort.map(str::to_string),
+        context_window: Some(1_000_000),
+        supports_image_input: false,
+        supports_realtime_voice: false,
+        tool_discovery: ToolDiscoveryMode::Rebuild,
+    }
+}
+
 fn state(mode: SetupMode, provider: &str, configured: bool) -> SetupState {
     let statuses = vec![status(provider)];
     let mut original = AgentComposition::default();
@@ -143,8 +156,27 @@ fn state(mode: SetupMode, provider: &str, configured: bool) -> SetupState {
     let providers = validated_providers(&statuses, &instances).expect("validated providers");
     original.middleware.set_enabled("plain", true);
     original.middleware.set_enabled("configured", true);
-    SetupState::from_parts(mode, providers, features(), Vec::new(), original, false)
-        .expect("setup state")
+    let mut state =
+        SetupState::from_parts(mode, providers, features(), Vec::new(), original, false)
+            .expect("setup state");
+    if mode == SetupMode::BotModel {
+        let current = state.original.provider.clone();
+        state
+            .set_bot_model_routes(
+                &[route(
+                    "current-route",
+                    provider,
+                    &current.model,
+                    current.reasoning_effort.as_deref(),
+                )],
+                &std::collections::BTreeMap::from([(
+                    "current-route".into(),
+                    current.instance.clone(),
+                )]),
+            )
+            .expect("Bot model routes");
+    }
+    state
 }
 
 fn features() -> Vec<MiddlewareFeature> {
@@ -268,9 +300,7 @@ fn login_is_three_pages_with_endpoint_and_custom_model_inline() {
     );
     assert_eq!(state.page, Page::Authentication);
     state.credential = "secret".into();
-    // Tab walks Name -> API key -> Base URL for a configurable-endpoint provider.
-    assert_eq!(state.auth_field, AuthField::Label);
-    state.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    // New API-key providers focus the credential before optional settings.
     assert_eq!(state.auth_field, AuthField::Credential);
     state.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     assert_eq!(state.auth_field, AuthField::Endpoint);
@@ -316,7 +346,7 @@ fn empty_api_key_reuse_is_deferred_to_the_gateway() {
     state.reset_provider_fields();
 
     assert!(matches!(
-        state.take_authentication().expect("deferred credential"),
+        state.authentication().expect("deferred credential"),
         Authentication::Reuse
     ));
 }
@@ -332,7 +362,7 @@ fn device_login_is_reused_across_same_provider_instances() {
 
     assert!(state.has_matching_credential());
     assert!(matches!(
-        state.take_authentication().expect("shared provider login"),
+        state.authentication().expect("shared provider login"),
         Authentication::Reuse
     ));
 }
@@ -544,6 +574,98 @@ fn bot_model_setup_updates_only_model_settings() {
     assert_eq!(configured.provider.web_search, HostedWebSearch::Live);
     assert_eq!(configured.middleware, original.middleware);
     assert_eq!(configured.extensions, original.extensions);
+}
+
+#[test]
+fn bot_model_setup_shows_and_selects_models_from_other_configured_providers() {
+    let mut state = state(SetupMode::BotModel, "openai_socket", true);
+    let original = state.original.clone();
+    let mut kimi = original.provider.clone();
+    kimi.instance = "kimi-personal".into();
+    kimi.provider = "kimi".into();
+    kimi.model = "kimi-k3".into();
+    kimi.reasoning_effort = Some("max".into());
+    kimi.base_url = None;
+    state.providers.push(ProviderEntry {
+        status: status("kimi"),
+        instance: Some(ProviderInstance {
+            label: "Personal".into(),
+            tint: Default::default(),
+            configured: true,
+            credential_hint: None,
+            selection: kimi,
+            model_ids: Vec::new(),
+            reasoning_efforts: Vec::new(),
+        }),
+    });
+    state
+        .set_bot_model_routes(
+            &[
+                route("sol", "Work · Sol", "gpt-6-sol", Some("medium")),
+                route("kimi", "Personal · Kimi K3", "kimi-k3", Some("max")),
+            ],
+            &std::collections::BTreeMap::from([
+                ("sol".into(), original.provider.instance.clone()),
+                ("kimi".into(), "kimi-personal".into()),
+            ]),
+        )
+        .expect("available model routes");
+
+    let mut lines = Vec::new();
+    render_page(&mut lines, &state, 100);
+    let rendered = lines
+        .iter()
+        .flat_map(|line| &line.spans)
+        .map(|span| span.content.as_ref())
+        .collect::<Vec<&str>>()
+        .join(" ");
+    assert!(rendered.contains("Work · Sol"));
+    assert!(rendered.contains("Personal · Kimi K3"));
+
+    state.row = 1;
+    state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    state.row = state.models_action_start();
+    assert_eq!(
+        state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        Flow::Finish
+    );
+    let updated = state
+        .agent_composition(&original)
+        .expect("Bot model update");
+    assert_eq!(updated.provider.instance, "kimi-personal");
+    assert_eq!(updated.provider.provider, "kimi");
+    assert_eq!(updated.provider.model, "kimi-k3");
+    assert_eq!(updated.provider.reasoning_effort.as_deref(), Some("max"));
+    assert_eq!(updated.middleware, original.middleware);
+    assert_eq!(updated.extensions, original.extensions);
+}
+
+#[test]
+fn bot_model_setup_requires_a_choice_when_the_current_reasoning_is_unavailable() {
+    let mut state = state(SetupMode::BotModel, "openai_socket", true);
+    let original = state.original.clone();
+    state
+        .set_bot_model_routes(
+            &[route("high", "Work · Sol", "gpt-6-sol", Some("high"))],
+            &std::collections::BTreeMap::from([(
+                "high".into(),
+                original.provider.instance.clone(),
+            )]),
+        )
+        .expect("available model route");
+
+    assert_eq!(state.model, state.model_choice_count());
+    assert!(state.agent_composition(&original).is_err());
+    state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        state
+            .agent_composition(&original)
+            .expect("selected model")
+            .provider
+            .reasoning_effort
+            .as_deref(),
+        Some("high")
+    );
 }
 
 #[test]
@@ -1049,7 +1171,7 @@ fn agent_reuses_authentication_without_provider_controls() {
 
     assert_eq!(state.page, Page::Agent);
     assert!(matches!(
-        state.take_authentication().expect("reuse authentication"),
+        state.authentication().expect("reuse authentication"),
         Authentication::Reuse
     ));
 }
@@ -1058,13 +1180,103 @@ fn agent_reuses_authentication_without_provider_controls() {
 fn credential_entry_is_masked_and_supports_backspace() {
     let mut state = state(SetupMode::Login, "openai_socket", false);
     state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    // The name field takes focus first; tab moves to the key.
-    state.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     assert_eq!(state.auth_field, AuthField::Credential);
     state.paste("abc123\n");
     state.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
 
     assert_eq!(masked_credential(&state.credential), "•••••");
+    assert_eq!(state.label, "openai_socket");
+    let mut lines = Vec::new();
+    render_page(&mut lines, &state, 100);
+    let rendered = lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Name (optional)"));
+    assert!(!rendered.contains("abc12"));
+}
+
+#[test]
+fn authentication_rejection_preserves_input_for_retry() {
+    let mut state = state(SetupMode::Login, "openai_socket", false);
+    state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    state.paste("new-secret");
+    assert!(matches!(
+        state.authentication().expect("authentication"),
+        Authentication::ApiKey(_)
+    ));
+    state.set_progress("Saving credential", "Waiting…");
+
+    assert!(
+        state
+            .authentication_finished(Err(mobius::Error::Auth(
+                "Key rejected; try another key".into()
+            )))
+            .expect("retry")
+    );
+    assert_eq!(state.page, Page::Authentication);
+    assert_eq!(state.credential, "new-secret");
+    assert!(state.progress.is_none());
+    assert_eq!(
+        state.error.as_deref(),
+        Some("Key rejected; try another key")
+    );
+
+    state.authentication_finished(Ok(true)).expect("finish");
+    assert_eq!(state.page, Page::Models);
+    assert!(state.credential.is_empty());
+    assert!(state.error.is_none());
+}
+
+#[test]
+fn cancelled_login_exits_without_an_error() {
+    let mut state = state(SetupMode::Login, "openai_socket", false);
+    state.set_progress("Device login", "Waiting…");
+
+    assert!(
+        !state
+            .authentication_finished(Ok(false))
+            .expect("normal cancellation")
+    );
+    assert!(state.progress.is_none());
+    assert!(state.error.is_none());
+}
+
+#[test]
+fn disconnected_login_does_not_offer_a_retry_on_a_dead_connection() {
+    let mut state = state(SetupMode::Login, "openai_socket", false);
+
+    assert!(matches!(
+        state.authentication_finished(Err(mobius::Error::Stopped("disconnected".into()))),
+        Err(mobius::Error::Stopped(_))
+    ));
+}
+
+#[test]
+fn initial_setup_names_the_chat_action_instead_of_template_management() {
+    let mut state = state(SetupMode::Login, "openai_socket", false);
+    state.page = Page::Models;
+    state.default_only = true;
+    state.start_chat = true;
+    let mut lines = Vec::new();
+    render_page(&mut lines, &state, 100);
+    let rendered = lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Save and start chatting"));
+    assert!(!rendered.contains("Save Bot template"));
+
+    state.start_chat = false;
+    lines.clear();
+    render_page(&mut lines, &state, 100);
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.to_string().contains("Save Bot template"))
+    );
 }
 
 #[test]
@@ -1074,7 +1286,7 @@ fn explicit_api_key_replaces_credentialless_auth() {
     state.credential = "replacement-secret".into();
 
     assert!(matches!(
-        state.take_authentication().expect("API-key authentication"),
+        state.authentication().expect("API-key authentication"),
         Authentication::ApiKey(_)
     ));
     let config = state
