@@ -189,7 +189,7 @@ final class DesktopRuntime {
                 self.task = nil;
             }
         case "desktop_control_ended":
-            if body["executionId"]?.stringValue == executionID { stopExecution() }
+            if body["executionId"]?.stringValue == executionID { stopExecution(settleCursor: true) }
         case "accepted", "rejected":
             if let registrationID, body["requestId"]?.stringValue == registrationID {
                 self.registrationID = nil
@@ -213,19 +213,27 @@ final class DesktopRuntime {
                 ]))
     }
 
-    private func stopExecution() {
+    private func stopExecution(settleCursor: Bool = false) {
         task?.cancel()
         task = nil
         executionID = nil
-        cursorOverlay?.hide()
+        if settleCursor {
+            cursorOverlay?.settle()
+        } else {
+            cursorOverlay?.hide()
+        }
     }
 
     func showCursor(tint: String?) {
         if cursorOverlay == nil { cursorOverlay = DesktopCursorOverlay() }
         cursorOverlay?.prepare(tint: tint)
+        if !isCursorVisible, let point = CGEvent(source: nil)?.location {
+            moveCursor(to: point)
+        }
     }
 
     func moveCursor(to quartzPoint: CGPoint) {
+        guard !Task.isCancelled else { return }
         guard
             let screen = NSScreen.screens.first(where: { screen in
                 guard

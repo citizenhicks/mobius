@@ -78,10 +78,12 @@ extension DesktopRuntime {
                     element.value, kAXValueAttribute as CFString, &settable) == .success,
                 settable.boolValue
             else { throw DesktopError("This control does not accept a text value.") }
+            moveCursor(to: element.value)
             clearObservations()
             result = AXUIElementSetAttributeValue(
                 element.value, kAXValueAttribute as CFString, text as CFTypeRef)
         } else {
+            moveCursor(to: element.value)
             clearObservations()
             result = AXUIElementPerformAction(element.value, kAXPressAction as CFString)
         }
@@ -91,6 +93,38 @@ extension DesktopRuntime {
             )
         }
         return .bool(true)
+    }
+
+    func moveCursor(to element: AXUIElement) {
+        AXUIElementSetMessagingTimeout(element, 0.05)
+        guard
+            let point = Self.elementCenter(
+                position: Self.attribute(element, kAXPositionAttribute),
+                size: Self.attribute(element, kAXSizeAttribute))
+        else { return }
+        moveCursor(to: point)
+    }
+
+    func moveCursorToFocus(in app: NSRunningApplication) {
+        let root = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(root, 0.05)
+        if let focused: AXUIElement = Self.attribute(root, kAXFocusedUIElementAttribute) {
+            moveCursor(to: focused)
+        }
+    }
+
+    static func elementCenter(position: AXValue?, size: AXValue?) -> CGPoint? {
+        var origin = CGPoint.zero
+        var dimensions = CGSize.zero
+        guard let position, let size,
+            AXValueGetValue(position, .cgPoint, &origin),
+            AXValueGetValue(size, .cgSize, &dimensions),
+            dimensions.width.isFinite, dimensions.height.isFinite,
+            dimensions.width > 0, dimensions.height > 0
+        else { return nil }
+        let point = CGPoint(
+            x: origin.x + dimensions.width / 2, y: origin.y + dimensions.height / 2)
+        return point.x.isFinite && point.y.isFinite ? point : nil
     }
 
     static func attribute<T>(_ element: AXUIElement, _ name: String) -> T? {

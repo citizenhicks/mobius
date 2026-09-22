@@ -159,12 +159,80 @@ struct DesktopRuntimeTests {
         #expect(panel?.ignoresMouseEvents == true)
         #expect(panel?.styleMask.contains(.nonactivatingPanel) == true)
         #expect(panel?.sharingType == NSWindow.SharingType.none)
+        #expect((panel?.level.rawValue ?? 0) > NSWindow.Level.popUpMenu.rawValue)
         #expect(panel?.frame.origin == CGPoint(x: 95, y: 69))
         let frame = panel?.frame
         overlay.prepare(tint: "red")
         #expect(overlay.isVisible && panel?.frame == frame)
         overlay.hide()
         #expect(!overlay.isVisible)
+    }
+
+    @Test func accessibilityCursorTargetsRequireValidElementGeometry() throws {
+        var position = CGPoint(x: -1600, y: 40)
+        var size = CGSize(width: 400, height: 100)
+        let positionValue = try #require(AXValueCreate(.cgPoint, &position))
+        let sizeValue = try #require(AXValueCreate(.cgSize, &size))
+        #expect(
+            DesktopRuntime.elementCenter(position: positionValue, size: sizeValue)
+                == CGPoint(x: -1400, y: 90))
+        #expect(DesktopRuntime.elementCenter(position: nil, size: sizeValue) == nil)
+        #expect(DesktopRuntime.elementCenter(position: sizeValue, size: positionValue) == nil)
+        size.width = 0
+        #expect(
+            DesktopRuntime.elementCenter(
+                position: positionValue, size: AXValueCreate(.cgSize, &size)) == nil)
+        position.x = .infinity
+        #expect(
+            DesktopRuntime.elementCenter(
+                position: AXValueCreate(.cgPoint, &position), size: sizeValue) == nil)
+    }
+
+    @Test func desktopCursorAppearsWithoutMouseInputAndSettlesWithoutKeepingControl() async throws {
+        _ = NSApplication.shared
+        NSImage(size: NSSize(width: 16, height: 16)).setName("hi.mousePointer01")
+        let runtime = DesktopRuntime()
+        try runtime.receive(desktopRequest())
+        runtime.showCursor(tint: "red")
+        #expect(runtime.isActive && runtime.isCursorVisible)
+        let ended = try GatewayRequest(
+            "desktop_control_ended", ["executionId": .string("execution")]
+        ).body.decode(GatewayEnvelope.self)
+        try runtime.receive(ended)
+        #expect(!runtime.isActive && runtime.isCursorVisible)
+        try await Task.sleep(for: .milliseconds(600))
+        #expect(!runtime.isCursorVisible)
+
+        try runtime.receive(desktopRequest())
+        runtime.showCursor(tint: "red")
+        try runtime.receive(ended)
+        runtime.stop()
+        #expect(!runtime.isActive && !runtime.isCursorVisible)
+        try runtime.receive(desktopRequest())
+        runtime.showCursor(tint: "red")
+        try runtime.receive(ended)
+        try runtime.receive(desktopRequest())
+        #expect(runtime.isActive && !runtime.isCursorVisible)
+        runtime.disconnected()
+        #expect(!runtime.isActive && !runtime.isCursorVisible)
+        let lateMove = Task { runtime.moveCursor(to: CGDisplayBounds(CGMainDisplayID()).origin) }
+        lateMove.cancel()
+        await lateMove.value
+        #expect(!runtime.isCursorVisible)
+    }
+
+    @Test func previousCursorFeedbackCannotHideTheNextAction() async throws {
+        _ = NSApplication.shared
+        NSImage(size: NSSize(width: 16, height: 16)).setName("hi.mousePointer01")
+        let overlay = DesktopCursorOverlay()
+        defer { overlay.hide() }
+        overlay.prepare(tint: "red")
+        overlay.move(to: CGPoint(x: 100, y: 100))
+        overlay.settle()
+        overlay.prepare(tint: "red")
+        overlay.move(to: CGPoint(x: 200, y: 200))
+        try await Task.sleep(for: .milliseconds(600))
+        #expect(overlay.isVisible)
     }
 
     @Test func cursorPointConvertsQuartzTopLeftToAppKitBottomLeft() {

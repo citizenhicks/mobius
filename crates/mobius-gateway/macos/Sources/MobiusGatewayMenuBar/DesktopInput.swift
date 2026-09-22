@@ -119,6 +119,9 @@ extension DesktopRuntime {
         }
         for (index, characters) in chunks.enumerated() {
             if index > 0 { try await Task.sleep(for: .milliseconds(5)) }
+            if index == 0 {
+                moveCursorToFocus(in: app)
+            }
             try requireControl()
             guard
                 NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier

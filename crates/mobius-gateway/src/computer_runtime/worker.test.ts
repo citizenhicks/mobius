@@ -166,3 +166,17 @@ test("native sandbox denial preserves interpreter without replaying the action",
   assert.match(text(result), /Inspect it before continuing/);
   assert.match(text(await evaluate("kept")), /7/);
 }));
+
+test("large native replies preserve every screenshot byte across pipe chunks and evaluations", { timeout: 5000 }, t => {
+  const png = Buffer.alloc(4 * 1024 * 1024);
+  for (let i = 0; i < png.length; i++) png[i] = i % 251;
+  return withWorker(t.signal, async evaluate => {
+    for (let i = 0; i < 2; i++) {
+      const result = await evaluate("await desktop.screenshot()");
+      assert.equal(result.is_error, false);
+      assert.equal(images(result).length, 1);
+      assert.deepEqual(await readFile(images(result)[0].path), png);
+    }
+    assert.equal(text(await evaluate("6 * 7")), "42");
+  }, () => ({ result: { screenshotId: "observed", png: png.toString("base64") } }));
+});

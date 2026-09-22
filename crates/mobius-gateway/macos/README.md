@@ -64,9 +64,12 @@ server, token, plugin, or agent runs in the app. Native requests and replies use
 its existing authenticated local gateway connection; remote clients cannot host
 the desktop runtime. Linux and headless cloud hosts retain browser control only.
 
-Bot pointer actions show a small click-through Hugeicons `MousePointer01Icon` overlay in
-the controlling Bot's tint. It stays at the last action point until control ends, with a subtle
-wiggle that respects Reduce Motion. It is visual-only and does not alter native input behavior.
+Mac control shows a small click-through Hugeicons `MousePointer01Icon` overlay in
+the controlling Bot's tint. Pointer, accessibility, and keyboard actions position it at
+their target when available. Its subtle wiggle respects Reduce Motion. When control ends,
+the cursor briefly stays still to mark the last action; control and the active badge end
+immediately. Stop, permission loss, disconnect, or a new execution clears the marker.
+The overlay is visual-only and does not alter native input behavior.
 
 ## Install and launch
 

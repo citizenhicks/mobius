@@ -202,10 +202,16 @@ async function main() {
     if (response.length > MAX_FRAME) throw new Error('response frame exceeds limit');
     writeFrame(response);
   }
-  let buffer = Buffer.alloc(0), evaluation;
+  let buffer = Buffer.alloc(0), evaluation, chunks = [], chunkBytes = 0;
   for await (const chunk of process.stdin) {
-    buffer = Buffer.concat([buffer, chunk]);
-    if (buffer.length > MAX_HOST_REPLY + 4) throw new Error('request frame exceeds limit');
+    chunks.push(chunk);
+    chunkBytes += chunk.length;
+    const bufferedBytes = buffer.length + chunkBytes;
+    if (bufferedBytes > MAX_HOST_REPLY + 4) throw new Error('request frame exceeds limit');
+    // A screenshot reply can span many chunks; copy its payload only when the frame is complete.
+    if (buffer.length >= 4 && bufferedBytes < (buffer.readUInt32BE(0) & 0x3fffffff) + 4) continue;
+    buffer = Buffer.concat([buffer, ...chunks], bufferedBytes);
+    chunks = []; chunkBytes = 0;
     while (buffer.length >= 4) {
       const header = buffer.readUInt32BE(0);
       const size = header & 0x3fffffff;
@@ -228,7 +234,7 @@ async function main() {
   }
   nativePending?.reject(new Error('native connection ended; action outcome unknown'));
   await evaluation;
-  if (buffer.length) throw new Error('truncated request frame');
+  if (buffer.length || chunkBytes) throw new Error('truncated request frame');
   void scope;
 }
 main().finally(async()=>{inspector.disconnect(); if (connection) await connection.close();}).catch(error=>{process.stderr.write(String(error)); process.exitCode=1;});

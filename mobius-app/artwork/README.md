@@ -40,6 +40,10 @@ xcrun swift ExportLogo.swift ../apple/Sources/MobiusApp/AppIcon.icon \
   ../apple/Sources/MobiusApp/Assets.xcassets/MobiusLogo.imageset/MobiusLogo.png
 ```
 
+The Mac menu bar uses `MobiusMenuBar.imageset`, a separate 18-point SVG template
+with a solid loop silhouette. Keep its vector representation and template tinting;
+the detailed bead artwork is for larger surfaces.
+
 Clear and tinted icons use the `-Mono.png` variants. These add two icon-only Nord
 area lights (30 W each, 2 × 6 m rectangles at X ±5, Y −0.5, Z 0, aimed at the
 origin) so the side beads remain distinct from dark clear backgrounds. Keep these
