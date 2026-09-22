@@ -73,7 +73,7 @@ mod manifest {
     pub const PROVIDER_DESCRIPTION: &str = "Persistent Responses WebSocket with native compaction";
     pub const TOOL_DISCOVERY: ToolDiscoveryMode = ToolDiscoveryMode::Native;
     pub const CUSTOM_ENDPOINT_TOOL_DISCOVERY: Option<ToolDiscoveryMode> = None;
-    pub const DEFAULT_MODEL: Option<&str> = Some("gpt-5.6-sol");
+    pub const DEFAULT_MODEL: Option<&str> = Some("gpt-6-sol");
     const REASONING: &[ReasoningPreset] = &[
         ReasoningPreset {
             id: "none",
@@ -108,27 +108,18 @@ mod manifest {
     ];
     pub const MODELS: &[ModelPreset] = &[
         ModelPreset {
-            id: "gpt-5.6-sol",
-            label: "5.6 Sol",
-            description: "Frontier capability for complex work",
+            id: "gpt-6-sol",
+            label: "6 Sol",
+            description: "Complex coding and agentic workflows",
             context_window: 1050000,
             reasoning: REASONING,
             default_reasoning: Some("medium"),
             tool_discovery: ToolDiscoveryMode::Native,
         },
         ModelPreset {
-            id: "gpt-5.6-terra",
-            label: "5.6 Terra",
-            description: "Balance intelligence and cost",
-            context_window: 1050000,
-            reasoning: REASONING,
-            default_reasoning: Some("medium"),
-            tool_discovery: ToolDiscoveryMode::Native,
-        },
-        ModelPreset {
-            id: "gpt-5.6-luna",
-            label: "5.6 Luna",
-            description: "Efficient, high-volume workloads",
+            id: "gpt-6-luna",
+            label: "6 Luna",
+            description: "Focused, high-volume tasks",
             context_window: 1050000,
             reasoning: REASONING,
             default_reasoning: Some("medium"),

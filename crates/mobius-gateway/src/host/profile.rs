@@ -311,7 +311,7 @@ mod tests {
         let codex = ProviderConfig {
             instance: "codex".into(),
             provider: "openai_codex".into(),
-            model: "gpt-5.6-sol".into(),
+            model: "gpt-6-sol".into(),
             base_url: None,
             endpoint_auth: ProviderEndpointAuth::ProviderDefault,
             reasoning_effort: None,

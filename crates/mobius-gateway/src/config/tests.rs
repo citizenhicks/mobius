@@ -548,7 +548,7 @@ fn credentialless_endpoint_requires_a_configurable_provider() {
     let selection = ProviderConfig {
         instance: "openai_socket".into(),
         provider: "openai_socket".into(),
-        model: "gpt-5.6-luna".into(),
+        model: "gpt-6-luna".into(),
         base_url: Some("https://connector.example/v1".into()),
         endpoint_auth: ProviderEndpointAuth::Credentialless,
         reasoning_effort: None,
@@ -1290,7 +1290,7 @@ fn realtime_voice_selection_uses_the_provider_catalog_and_persists() {
         let mut config = AgentComposition::default();
         config.provider.provider = provider_id.into();
         config.provider.instance = provider_id.into();
-        config.provider.model = "gpt-5.6-sol".into();
+        config.provider.model = "gpt-6-sol".into();
         config.provider.base_url = provider(provider_id)
             .expect("provider")
             .default_base_url()

@@ -42,7 +42,7 @@ fn status(provider: &str) -> ProviderStatus {
             ProviderAuthKind::ApiKey,
             None,
             Some("OPENAI_API_KEY".into()),
-            vec![model("gpt-5.6-sol", "Sol", Some("medium"))],
+            vec![model("gpt-6-sol", "Sol", Some("medium"))],
             vec![
                 search(HostedWebSearch::Off),
                 search(HostedWebSearch::Cached),
@@ -1017,7 +1017,7 @@ fn setup_rejects_active_provider_values_outside_the_manifest() {
         ProviderConfig {
             instance: "openai_socket".into(),
             provider: "openai_socket".into(),
-            model: "gpt-5.6-sol".into(),
+            model: "gpt-6-sol".into(),
             base_url: None,
             endpoint_auth: ProviderEndpointAuth::ProviderDefault,
             reasoning_effort: Some("missing".into()),

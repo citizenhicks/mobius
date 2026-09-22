@@ -85,9 +85,8 @@ impl ToolDiscoveryWire {
 fn openai_model_pricing(model: &str) -> Option<ModelPricing> {
     let pricing = match model {
         "gpt-6-astra" => ModelPricing::new(10_000_000, 1_000_000, 12_500_000, 50_000_000),
-        "gpt-5.6-sol" => ModelPricing::new(5_000_000, 500_000, 6_250_000, 30_000_000),
-        "gpt-5.6-terra" => ModelPricing::new(2_000_000, 200_000, 2_500_000, 12_000_000),
-        "gpt-5.6-luna" => ModelPricing::new(200_000, 20_000, 250_000, 1_200_000),
+        "gpt-6-sol" => ModelPricing::new(2_000_000, 200_000, 2_500_000, 10_000_000),
+        "gpt-6-luna" => ModelPricing::new(100_000, 10_000, 125_000, 500_000),
         _ => return None,
     };
     Some(pricing.with_long_context(272_000, 2_000, 1_500))

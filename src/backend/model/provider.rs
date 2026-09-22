@@ -839,10 +839,18 @@ mod tests {
     }
 
     #[test]
-    fn astra_is_available_through_openai_codex_and_custom_responses_routes() {
+    fn openai_and_codex_advertise_only_gpt_6_presets() {
         for id in ["openai_socket", "openai_codex"] {
             let definition = provider(id).expect("provider");
-            assert_eq!(definition.default_model(), Some("gpt-5.6-sol"));
+            assert_eq!(definition.default_model(), Some("gpt-6-sol"));
+            assert_eq!(
+                definition
+                    .models()
+                    .iter()
+                    .map(|model| model.id)
+                    .collect::<Vec<_>>(),
+                ["gpt-6-sol", "gpt-6-luna", "gpt-6-astra"]
+            );
             let astra = definition.model("gpt-6-astra").expect("Astra preset");
             assert_eq!(astra.context_window, 1_050_000);
             assert_eq!(astra.default_reasoning, Some("medium"));

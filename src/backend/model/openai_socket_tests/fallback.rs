@@ -111,7 +111,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
         Arc::new(ApiKeyAuthorization::new("test-key".into())),
         &format!("http://{http_address}"),
         &socket_url,
-        "gpt-5.6-sol",
+        "gpt-6-sol",
         reqwest::Client::new(),
     )
     .expect("provider")
