@@ -14,14 +14,14 @@ struct SetupArtwork: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack {
-                Image("MobiusLogo")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 252, height: 252)
-                    .opacity(0.2)
-                    .rotationEffect(.degrees(floating ? 4 : 0))
-                    .offset(x: 58, y: -12)
-                    .animation(drift, value: floating)
+                if scene != .gateway {
+                    MobiusLogo()
+                        .frame(width: 252, height: 252)
+                        .opacity(0.2)
+                        .rotationEffect(.degrees(floating ? 4 : 0))
+                        .offset(x: 58, y: -12)
+                        .animation(drift, value: floating)
+                }
                 Group {
                     switch scene {
                     case .gateway: gateway
@@ -81,11 +81,9 @@ struct SetupArtwork: View {
                 .rotationEffect(.degrees(-9))
                 .offset(x: -92, y: 32)
 
-            MobiusIcon(.plugsConnected, size: 20, foreground: palette.accent)
-                .padding(MobiusSpace.m)
-                .background(palette.raised, in: .circle)
-                .overlay { Circle().strokeBorder(palette.line, lineWidth: 0.75) }
-                .offset(x: -30, y: 67)
+            MobiusLogo()
+                .frame(width: 72, height: 72)
+                .offset(x: -30, y: 32)
         }
     }
 

@@ -383,20 +383,65 @@ final class WelcomeTests: XCTestCase {
 
     func testSetupIllustrationsIncludeTheVendoredArtworkAtCompactWidth() throws {
         XCTAssertNotNil(UIImage(named: MobiusGlyph.smartPhone01.asset))
+        XCTAssertNotNil(UIImage(named: "MobiusLogo"))
         for (name, scene) in [
             ("Gateway", SetupArtwork.Scene.gateway), ("Bot", .bot), ("Workspace", .workspace),
         ] {
-            let renderer = ImageRenderer(
-                content: SetupArtwork(scene: scene, active: false)
-                    .frame(width: 280, height: 220)
-                    .environment(\.mobiusPalette, MobiusPalette(.light)))
-            let image = try XCTUnwrap(renderer.uiImage)
-            XCTAssertEqual(image.size, CGSize(width: 280, height: 220))
-            let attachment = XCTAttachment(image: image)
-            attachment.name = name
-            attachment.lifetime = .keepAlways
-            add(attachment)
+            for scheme in [ColorScheme.light, .dark] {
+                let palette = MobiusPalette(scheme)
+                for size in [CGSize(width: 280, height: 220), CGSize(width: 460, height: 156)] {
+                    let renderer = ImageRenderer(
+                        content: SetupArtwork(scene: scene, active: false)
+                            .frame(width: size.width, height: size.height)
+                            .background(palette.canvas)
+                            .environment(\.colorScheme, scheme)
+                            .environment(\.mobiusPalette, palette))
+                    let image = try XCTUnwrap(renderer.uiImage)
+                    XCTAssertEqual(image.size, size)
+                    let attachment = XCTAttachment(image: image)
+                    attachment.name = "\(name) \(scheme) \(Int(size.height))"
+                    attachment.lifetime = .keepAlways
+                    add(attachment)
+                }
+            }
         }
+    }
+
+    func testBrandLogoFollowsEveryAccentAndPreservesItsSize() throws {
+        var renders = Set<Data>()
+        for accent in AccentTint.allCases {
+            let renderer = ImageRenderer(
+                content: MobiusLogo()
+                    .frame(width: 72, height: 72)
+                    .environment(\.mobiusPalette, MobiusPalette(.dark, accentTint: accent)))
+            let image = try XCTUnwrap(renderer.uiImage)
+            XCTAssertEqual(image.size, CGSize(width: 72, height: 72))
+            XCTAssertTrue(renders.insert(try XCTUnwrap(image.pngData())).inserted, accent.rawValue)
+        }
+
+        let gallery = ImageRenderer(
+            content: VStack(spacing: 0) {
+                ForEach([ColorScheme.light, .dark], id: \.self) { scheme in
+                    HStack(spacing: 8) {
+                        ForEach(AccentTint.allCases) { accent in
+                            VStack(spacing: 8) {
+                                MobiusLogo().frame(width: 72, height: 72)
+                                MobiusLogo().frame(width: 28, height: 28)
+                                Text(accent.label).font(.caption)
+                            }
+                            .frame(width: 80)
+                            .environment(\.mobiusPalette, MobiusPalette(scheme, accentTint: accent))
+                        }
+                    }
+                    .padding(16)
+                    .background(MobiusPalette(scheme).canvas)
+                    .environment(\.colorScheme, scheme)
+                }
+            })
+        let attachment = XCTAttachment(image: try XCTUnwrap(gallery.uiImage))
+        attachment.name = "Brand accents — pairing and sidebar sizes"
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     func testWelcomeCompletionSurvivesRelaunchAndExistingGatewaysSkipIt() async throws {

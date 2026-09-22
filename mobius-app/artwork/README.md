@@ -45,3 +45,26 @@ area lights (30 W each, 2 × 6 m rectangles at X ±5, Y −0.5, Z 0, aimed at th
 origin) so the side beads remain distinct from dark clear backgrounds. Keep these
 variants under the native `tinted` image specialization; the base images remain
 unchanged.
+
+The six `AppIcon-<accent>.icon` alternatives retain those four depth layers and
+the original mono variants. Their colored PNGs use SwiftUI's `colorMultiply`
+with the app's `AccentTint.artworkTint`; their backgrounds use the same dark Nord
+surface tint as the app. Blue remains the original `AppIcon.icon`. The movie
+retains its original lighting.
+
+Rebuild the alternatives from this directory, compiling with the app's palette
+so the export and in-app logo use the same colors:
+
+```sh
+xcrun swiftc -parse-as-library -swift-version 6 -warnings-as-errors \
+  ExportAccentIcons.swift ../apple/Sources/MobiusApp/UI/MobiusPalette.swift \
+  -o /tmp/ExportAccentIcons
+/tmp/ExportAccentIcons ../apple/Sources/MobiusApp/AppIcon.icon \
+  ../apple/Sources/MobiusApp
+```
+
+The exporter only replaces the six named alternatives. Xcode includes them
+through `ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES` and generates their
+`CFBundleAlternateIcons` entries. The system still owns Home Screen tinted and
+clear appearances and shows its standard notification when an alternate is
+selected.

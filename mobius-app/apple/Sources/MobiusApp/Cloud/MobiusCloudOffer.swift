@@ -28,11 +28,7 @@ struct MobiusCloudOfferButton: View {
                     // the accent has to be carried by the label for it to read at all.
                     .foregroundStyle(palette.accent)
             } icon: {
-                // The product's own mark, drawn full-colour: the logo is artwork rather
-                // than a template glyph, so it keeps its own colours beside accent text.
-                Image("MobiusLogo")
-                    .resizable()
-                    .scaledToFit()
+                MobiusLogo()
                     .frame(width: 20, height: 20)
                     .accessibilityHidden(true)
             }

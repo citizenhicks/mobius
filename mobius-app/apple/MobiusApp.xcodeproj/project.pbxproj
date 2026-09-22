@@ -40,6 +40,14 @@
 		200000000000000000000030 /* ProviderUsageChartTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000023 /* ProviderUsageChartTests.swift */; };
 		200000000000000000000031 /* TranscriptWaitingNote.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000024 /* TranscriptWaitingNote.swift */; };
 		200000000000000000000033 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000025 /* AppIcon.icon */; };
+		2000000000000000000000B1 /* AppIcon-teal.icon in Resources */ = {isa = PBXBuildFile; fileRef = 1000000000000000000000B1 /* AppIcon-teal.icon */; };
+		2000000000000000000000B2 /* AppIcon-green.icon in Resources */ = {isa = PBXBuildFile; fileRef = 1000000000000000000000B2 /* AppIcon-green.icon */; };
+		2000000000000000000000B3 /* AppIcon-yellow.icon in Resources */ = {isa = PBXBuildFile; fileRef = 1000000000000000000000B3 /* AppIcon-yellow.icon */; };
+		2000000000000000000000B4 /* AppIcon-orange.icon in Resources */ = {isa = PBXBuildFile; fileRef = 1000000000000000000000B4 /* AppIcon-orange.icon */; };
+		2000000000000000000000B5 /* AppIcon-red.icon in Resources */ = {isa = PBXBuildFile; fileRef = 1000000000000000000000B5 /* AppIcon-red.icon */; };
+		2000000000000000000000B6 /* AppIcon-purple.icon in Resources */ = {isa = PBXBuildFile; fileRef = 1000000000000000000000B6 /* AppIcon-purple.icon */; };
+		2000000000000000000000B7 /* MobiusLogo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1000000000000000000000B7 /* MobiusLogo.swift */; };
+		2000000000000000000000B8 /* AppIconSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1000000000000000000000B8 /* AppIconSystem.swift */; };
 		200000000000000000000034 /* ChatsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000026 /* ChatsView.swift */; };
 		200000000000000000000035 /* GatewayOperation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000027 /* GatewayOperation.swift */; };
 		200000000000000000000036 /* GatewayMessages.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000028 /* GatewayMessages.swift */; };
@@ -194,6 +202,14 @@
 		100000000000000000000023 /* ProviderUsageChartTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderUsageChartTests.swift; sourceTree = "<group>"; };
 		100000000000000000000024 /* TranscriptWaitingNote.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptWaitingNote.swift; sourceTree = "<group>"; };
 		100000000000000000000025 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
+		1000000000000000000000B1 /* AppIcon-teal.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "AppIcon-teal.icon"; sourceTree = "<group>"; };
+		1000000000000000000000B2 /* AppIcon-green.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "AppIcon-green.icon"; sourceTree = "<group>"; };
+		1000000000000000000000B3 /* AppIcon-yellow.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "AppIcon-yellow.icon"; sourceTree = "<group>"; };
+		1000000000000000000000B4 /* AppIcon-orange.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "AppIcon-orange.icon"; sourceTree = "<group>"; };
+		1000000000000000000000B5 /* AppIcon-red.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "AppIcon-red.icon"; sourceTree = "<group>"; };
+		1000000000000000000000B6 /* AppIcon-purple.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "AppIcon-purple.icon"; sourceTree = "<group>"; };
+		1000000000000000000000B7 /* MobiusLogo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobiusLogo.swift; sourceTree = "<group>"; };
+		1000000000000000000000B8 /* AppIconSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIconSystem.swift; sourceTree = "<group>"; };
 		100000000000000000000026 /* ChatsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatsView.swift; sourceTree = "<group>"; };
 		100000000000000000000027 /* GatewayOperation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayOperation.swift; sourceTree = "<group>"; };
 		100000000000000000000028 /* GatewayMessages.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayMessages.swift; sourceTree = "<group>"; };
@@ -370,6 +386,12 @@
 				AA000000000000000000000C /* UI */,
 				AA000000000000000000000D /* Configuration */,
 				100000000000000000000025 /* AppIcon.icon */,
+				1000000000000000000000B1 /* AppIcon-teal.icon */,
+				1000000000000000000000B2 /* AppIcon-green.icon */,
+				1000000000000000000000B3 /* AppIcon-yellow.icon */,
+				1000000000000000000000B4 /* AppIcon-orange.icon */,
+				1000000000000000000000B5 /* AppIcon-red.icon */,
+				1000000000000000000000B6 /* AppIcon-purple.icon */,
 				E10000000000000000000001 /* Localizable.xcstrings */,
 				E10000000000000000000002 /* InfoPlist.xcstrings */,
 				10000000000000000000000B /* Assets.xcassets */,
@@ -568,6 +590,7 @@
 				10000000000000000000000A /* SettingsPrimitives.swift */,
 				F0FCAE497A004C6DA84E4765 /* UserManual.swift */,
 				100000000000000000000041 /* AppModelConfiguration.swift */,
+				1000000000000000000000B8 /* AppIconSystem.swift */,
 			);
 			path = Settings;
 			sourceTree = "<group>";
@@ -578,6 +601,7 @@
 				100000000000000000000039 /* MobiusComponents.swift */,
 				100000000000000000000009 /* MobiusStyle.swift */,
 				F1F2343EA8384F87B12AB093 /* MobiusPalette.swift */,
+				1000000000000000000000B7 /* MobiusLogo.swift */,
 				0E9A8262D71A43258E3F7B01 /* MobiusTokens.swift */,
 				100000000000000000000038 /* MobiusTheme.swift */,
 				10000000000000000000002F /* FrontendWidgetView.swift */,
@@ -778,6 +802,12 @@
 			buildActionMask = 2147483647;
 			files = (
 				200000000000000000000033 /* AppIcon.icon in Resources */,
+				2000000000000000000000B1 /* AppIcon-teal.icon in Resources */,
+				2000000000000000000000B2 /* AppIcon-green.icon in Resources */,
+				2000000000000000000000B3 /* AppIcon-yellow.icon in Resources */,
+				2000000000000000000000B4 /* AppIcon-orange.icon in Resources */,
+				2000000000000000000000B5 /* AppIcon-red.icon in Resources */,
+				2000000000000000000000B6 /* AppIcon-purple.icon in Resources */,
 				B80000000000000000000003 /* ComposingOrb.mov in Resources */,
 				20000000000000000000000B /* Assets.xcassets in Resources */,
 				E20000000000000000000001 /* Localizable.xcstrings in Resources */,
@@ -866,6 +896,8 @@
 				200000000000000000000008 /* MobiusApp.swift in Sources */,
 				200000000000000000000009 /* MobiusStyle.swift in Sources */,
 				09F6AFE0A9E84C2E91831641 /* MobiusPalette.swift in Sources */,
+				2000000000000000000000B7 /* MobiusLogo.swift in Sources */,
+				2000000000000000000000B8 /* AppIconSystem.swift in Sources */,
 				A45F833CC6B14DA999B4B228 /* MobiusTokens.swift in Sources */,
 				20000000000000000000004C /* MobiusTheme.swift in Sources */,
 				20000000000000000000004D /* MobiusComponents.swift in Sources */,
@@ -1060,10 +1092,11 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				APS_ENVIRONMENT = development;
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "AppIcon-teal AppIcon-green AppIcon-yellow AppIcon-orange AppIcon-red AppIcon-purple";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Sources/MobiusApp/MobiusApp.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 369;
+				CURRENT_PROJECT_VERSION = 370;
 				DEAD_CODE_STRIPPING = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1099,10 +1132,11 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				APS_ENVIRONMENT = production;
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "AppIcon-teal AppIcon-green AppIcon-yellow AppIcon-orange AppIcon-red AppIcon-purple";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Sources/MobiusApp/MobiusApp.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 369;
+				CURRENT_PROJECT_VERSION = 370;
 				DEAD_CODE_STRIPPING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sources/MobiusApp/Info.plist;

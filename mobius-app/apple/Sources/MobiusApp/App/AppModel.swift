@@ -129,6 +129,8 @@ final class AppModel {
         }
     }
     var accentTint: AccentTint
+    var isChangingAppIcon = false
+    var appIconError: String?
     var appLockEnabled: Bool
     var isAppLocked: Bool
     var isAppLockAuthenticating = false
@@ -141,6 +143,7 @@ final class AppModel {
     @ObservationIgnored let chat: ChatSessionModel
     @ObservationIgnored let cloud: MobiusCloudModel
     @ObservationIgnored let settingsDefaults: UserDefaults
+    @ObservationIgnored let appIconSystem: AppIconSystem
     @ObservationIgnored let appLockAuthenticator: AppLockAuthenticator
     @ObservationIgnored var appLockAuthenticationGeneration = UUID()
     @ObservationIgnored var startupTask: Task<Void, Never>?
@@ -186,6 +189,7 @@ final class AppModel {
         client: GatewayClient? = nil,
         store: GatewayStore? = nil,
         settingsDefaults: UserDefaults = .standard,
+        appIconSystem: AppIconSystem? = nil,
         appLockAuthenticator: AppLockAuthenticator? = nil,
         remoteNotifications: RemoteNotificationSystem? = nil,
         requestSender: (@MainActor @Sendable (GatewayRequest) async throws -> Void)? = nil,
@@ -217,6 +221,7 @@ final class AppModel {
         )
         self.store = store
         self.settingsDefaults = settingsDefaults
+        self.appIconSystem = appIconSystem ?? .live()
         self.appLockAuthenticator = appLockAuthenticator
         self.cloud = MobiusCloudModel(
             gateway: gateway,

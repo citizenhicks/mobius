@@ -342,28 +342,150 @@ extension AppModelTests {
         XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
     }
 
-    func testAppearanceUsesTheInjectedDefaults() throws {
+    func testAppearanceUsesTheInjectedDefaults() async throws {
         let suiteName = UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
         defaults.set(ThemePreference.lightsOut.rawValue, forKey: "theme")
         defaults.set(AppLanguage.french.rawValue, forKey: "language")
         defaults.set(AccentTint.purple.rawValue, forKey: "accent-tint")
+        var iconName: String?
+        var requestedIcons: [String?] = []
         let model = AppModel(
             client: GatewayClient(),
             store: GatewayStore(defaults: defaults),
-            settingsDefaults: defaults
+            settingsDefaults: defaults,
+            appIconSystem: AppIconSystem(
+                supportsAlternateIcons: { true },
+                alternateIconName: { iconName },
+                setAlternateIconName: {
+                    requestedIcons.append($0)
+                    iconName = $0
+                }
+            )
         )
 
         XCTAssertEqual(model.theme, .lightsOut)
         XCTAssertEqual(model.language, .french)
         XCTAssertEqual(model.accentTint, .purple)
+        XCTAssertTrue(requestedIcons.isEmpty)
         model.setTheme(.light)
         model.setLanguage(.english)
-        model.setAccentTint(.orange)
+        await model.setAccentTint(.orange)
         XCTAssertEqual(defaults.string(forKey: "theme"), ThemePreference.light.rawValue)
         XCTAssertEqual(defaults.string(forKey: "language"), AppLanguage.english.rawValue)
         XCTAssertEqual(defaults.string(forKey: "accent-tint"), AccentTint.orange.rawValue)
+        XCTAssertEqual(iconName, "AppIcon-orange")
+
+        requestedIcons.removeAll()
+        for tint in AccentTint.allCases where tint != .appDefault {
+            await model.setAccentTint(tint)
+            XCTAssertEqual(iconName, "AppIcon-\(tint.rawValue)")
+        }
+        await model.setAccentTint(.appDefault)
+        let requestCount = requestedIcons.count
+        await model.setAccentTint(.appDefault)
+        XCTAssertEqual(requestCount, AccentTint.allCases.count)
+        XCTAssertEqual(requestedIcons.count, requestCount)
+        XCTAssertNil(iconName)
+        XCTAssertEqual(defaults.string(forKey: "accent-tint"), AccentTint.appDefault.rawValue)
+        XCTAssertNil(model.appIconError)
+    }
+
+    func testAccentKeepsAppColorAndReportsIconFailuresThenRetries() async throws {
+        let suiteName = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var supported = false
+        var fails = true
+        var iconName: String?
+        var requests = 0
+        let model = AppModel(
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults,
+            appIconSystem: AppIconSystem(
+                supportsAlternateIcons: { supported },
+                alternateIconName: { iconName },
+                setAlternateIconName: {
+                    requests += 1
+                    if fails {
+                        throw NSError(
+                            domain: "AppIconTests", code: 1,
+                            userInfo: [NSLocalizedDescriptionKey: "Icon denied"]
+                        )
+                    }
+                    iconName = $0
+                }
+            )
+        )
+
+        await model.setAccentTint(.purple)
+        XCTAssertEqual(model.accentTint, .purple)
+        XCTAssertEqual(defaults.string(forKey: "accent-tint"), AccentTint.purple.rawValue)
+        XCTAssertEqual(requests, 0)
+        XCTAssertNotNil(model.appIconError)
+
+        supported = true
+        await model.setAccentTint(.purple)
+        XCTAssertEqual(requests, 1)
+        XCTAssertNil(iconName)
+        XCTAssertEqual(model.accentTint, .purple)
+        XCTAssertTrue(try XCTUnwrap(model.appIconError).contains("Icon denied"))
+        XCTAssertFalse(model.isChangingAppIcon)
+
+        fails = false
+        await model.setAccentTint(.purple)
+        XCTAssertEqual(requests, 2)
+        XCTAssertEqual(iconName, "AppIcon-purple")
+        XCTAssertNil(model.appIconError)
+    }
+
+    func testAccentIgnoresAdditionalSelectionsDuringAnIconChange() async throws {
+        let suiteName = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let gate = AsyncGate()
+        var requestedIcons: [String?] = []
+        let model = AppModel(
+            store: GatewayStore(defaults: defaults),
+            settingsDefaults: defaults,
+            appIconSystem: AppIconSystem(
+                supportsAlternateIcons: { true },
+                alternateIconName: { nil },
+                setAlternateIconName: {
+                    requestedIcons.append($0)
+                    await gate.wait()
+                }
+            )
+        )
+
+        let first = Task { await model.setAccentTint(.green) }
+        let started = await eventually { model.isChangingAppIcon }
+        XCTAssertTrue(started)
+        await model.setAccentTint(.red)
+        XCTAssertEqual(model.accentTint, .green)
+        XCTAssertEqual(defaults.string(forKey: "accent-tint"), AccentTint.green.rawValue)
+        XCTAssertEqual(requestedIcons, ["AppIcon-green"])
+        await gate.open()
+        await first.value
+        XCTAssertFalse(model.isChangingAppIcon)
+    }
+
+    func testBundleIncludesEveryAccentAppIcon() throws {
+        let phoneIcons = try XCTUnwrap(
+            Bundle.main.object(forInfoDictionaryKey: "CFBundleIcons") as? [String: Any]
+        )
+        let padIcons =
+            Bundle.main.object(forInfoDictionaryKey: "CFBundleIcons~ipad")
+            as? [String: Any]
+        for icons in [phoneIcons] + [padIcons].compactMap({ $0 }) {
+            let primary = try XCTUnwrap(icons["CFBundlePrimaryIcon"] as? [String: Any])
+            XCTAssertEqual(primary["CFBundleIconName"] as? String, "AppIcon")
+            let alternates = try XCTUnwrap(icons["CFBundleAlternateIcons"] as? [String: Any])
+            for tint in AccentTint.allCases where tint != .appDefault {
+                XCTAssertNotNil(alternates["AppIcon-\(tint.rawValue)"], tint.rawValue)
+            }
+        }
     }
 
     func testNotificationPreferenceUsesSystemAuthorizationAndPersistsInstallation() async throws {

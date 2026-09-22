@@ -778,6 +778,7 @@ private struct UsageHeatmap: View {
 
 private struct AppearanceSettings: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.mobiusPalette) private var palette
 
     var body: some View {
         Picker(
@@ -796,8 +797,22 @@ private struct AppearanceSettings: View {
         AccentTintPicker(
             selection: Binding(
                 get: { model.accentTint },
-                set: { model.setAccentTint($0) }
-            ))
+                set: { tint in Task { await model.setAccentTint(tint) } }
+            )
+        )
+        .disabled(model.isChangingAppIcon)
+        .accessibilityHint("Changes the app color and Home Screen icon.")
+        Text("Changes the app color and Home Screen icon. iOS may show an icon change alert.")
+            .font(.caption)
+            .foregroundStyle(palette.muted)
+        if model.isChangingAppIcon {
+            ProgressView("Changing Home Screen icon")
+        }
+        if let error = model.appIconError {
+            Text(error)
+                .foregroundStyle(palette.danger)
+                .accessibilityLabel("Home Screen icon status: \(error)")
+        }
 
         Toggle(
             "Simplified chat UI",

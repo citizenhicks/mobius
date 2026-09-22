@@ -9,6 +9,8 @@ struct MobiusPalette: Sendable {
     let line: Color
     /// Strokes, rings, and marks drawn *in* the accent. Not a background for text.
     let accent: Color
+    /// A light color multiplier for shaded brand artwork, independent of interface contrast.
+    let artworkTint: Color
     /// Fill behind `onAccent` labels, darker than `accent` so the pair clears WCAG AA.
     ///
     /// Glass composites its tint with whatever sits behind it, so a fill that only just
@@ -38,6 +40,7 @@ struct MobiusPalette: Sendable {
     ) {
         let isDark = scheme == .dark || lightsOut
         let hue = accentTint.color
+        artworkTint = accentTint.artworkTint
         let surfaceTintAmount = accentTint == .appDefault ? 0.0 : 0.2
         let surfaceHue = hue.mix(
             with: isDark ? .black : .white,
@@ -161,6 +164,11 @@ enum AccentTint: String, Codable, CaseIterable, Identifiable, Sendable {
     static let appDefault: Self = .blue
 
     var id: String { rawValue }
+
+    /// Preserve the original blue render; other accents keep its lighting and bead detail.
+    var artworkTint: Color {
+        self == .appDefault ? .white : color.mix(with: .white, by: 0.35, in: .device)
+    }
 
     var color: Color {
         switch self {

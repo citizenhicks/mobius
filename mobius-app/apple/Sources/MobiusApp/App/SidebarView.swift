@@ -174,9 +174,7 @@ struct SidebarView: View {
         ScrollView {
             VStack(spacing: 0) {
                 HStack(spacing: MobiusSpace.m) {
-                    Image("MobiusLogo")
-                        .resizable()
-                        .scaledToFit()
+                    MobiusLogo()
                         .frame(width: 28, height: 28)
                         .accessibilityHidden(true)
                     Group {

@@ -184,9 +184,28 @@ extension AppModel {
         settingsDefaults.set(language.rawValue, forKey: "language")
     }
 
-    func setAccentTint(_ accentTint: AccentTint) {
+    func setAccentTint(_ accentTint: AccentTint) async {
+        guard !isChangingAppIcon else { return }
         self.accentTint = accentTint
         settingsDefaults.set(accentTint.rawValue, forKey: "accent-tint")
+        appIconError = nil
+        let iconName = accentTint == .appDefault ? nil : "AppIcon-\(accentTint.rawValue)"
+        guard appIconSystem.alternateIconName() != iconName else { return }
+        guard appIconSystem.supportsAlternateIcons() else {
+            appIconError = localizedString(
+                "The app color changed, but changing the Home Screen icon is unavailable."
+            )
+            return
+        }
+        isChangingAppIcon = true
+        defer { isChangingAppIcon = false }
+        do {
+            try await appIconSystem.setAlternateIconName(iconName)
+        } catch {
+            appIconError = localizedString(
+                "The app color changed, but the Home Screen icon could not be changed: \(localizedErrorDescription(error))"
+            )
+        }
     }
 
     func refreshAppLockAuthenticationMethod() {
