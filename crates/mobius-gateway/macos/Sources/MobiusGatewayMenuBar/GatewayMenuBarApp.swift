@@ -38,8 +38,7 @@ struct GatewayMenuBarApp: App {
     }
 
     static let logo: NSImage = {
-        let url = Bundle.main.url(forResource: "MobiusLogo", withExtension: "svg")!
-        let image = NSImage(contentsOf: url)!
+        let image = NSImage(named: "MobiusLogo")!
         image.size = NSSize(width: 22, height: 22)
         image.isTemplate = true
         return image
