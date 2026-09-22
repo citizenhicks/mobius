@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/citizenhicks/mobius/main/mobius-app/apple/Sources/MobiusApp/Assets.xcassets/MobiusLogo.imageset/MobiusLogo.png" width="120" height="120" alt="möbius logo">
+  <img src="https://raw.githubusercontent.com/citizenhicks/mobius/main/mobius-app/apple/Sources/MobiusApp/Assets.xcassets/MobiusLogo.imageset/MobiusLogo.png" width="120" alt="möbius logo">
 </p>
 
 <h1 align="center">möbius</h1>
