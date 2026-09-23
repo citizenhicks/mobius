@@ -240,6 +240,9 @@ pub struct FrontendBlock {
     pub content: super::ToolContent,
     /// The format.
     pub format: FrontendBlockFormat,
+    /// Requested aspect of a pending image, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_aspect: Option<ImageAspect>,
     /// The tone.
     pub tone: FrontendTone,
 }
@@ -317,6 +320,19 @@ pub enum FrontendBlockFormat {
     UnifiedDiff,
     /// Displays a generated image or its pending placeholder.
     Image,
+}
+
+/// Requested shape of a generated image.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageAspect {
+    /// Equal width and height.
+    #[default]
+    Square,
+    /// Wider than tall.
+    Landscape,
+    /// Taller than wide.
+    Portrait,
 }
 
 /// One selectable action supplied by a capability.
@@ -502,6 +518,7 @@ impl EventMsg {
                 files: Vec::new(),
                 content: Default::default(),
                 format: FrontendBlockFormat::PlainText,
+                image_aspect: None,
                 tone: FrontendTone::Error,
             },
             Self::Warning(warning) => FrontendBlock {
@@ -516,6 +533,7 @@ impl EventMsg {
                 files: Vec::new(),
                 content: Default::default(),
                 format: FrontendBlockFormat::PlainText,
+                image_aspect: None,
                 tone: FrontendTone::Warning,
             },
             Self::TurnAborted(turn) => FrontendBlock {
@@ -530,6 +548,7 @@ impl EventMsg {
                 files: Vec::new(),
                 content: Default::default(),
                 format: FrontendBlockFormat::PlainText,
+                image_aspect: None,
                 tone: FrontendTone::Warning,
             },
             Self::ModelStepCompleted(step) if step.outcome == ModelStepOutcome::Retrying => {
@@ -545,6 +564,7 @@ impl EventMsg {
                     files: Vec::new(),
                     content: Default::default(),
                     format: FrontendBlockFormat::PlainText,
+                    image_aspect: None,
                     tone: FrontendTone::Warning,
                 }
             }
@@ -560,6 +580,7 @@ impl EventMsg {
                 files: Vec::new(),
                 content: Default::default(),
                 format: FrontendBlockFormat::PlainText,
+                image_aspect: None,
                 tone: FrontendTone::Neutral,
             },
             Self::WebSearchEnd(search) => {
@@ -604,6 +625,7 @@ impl EventMsg {
                     files: Vec::new(),
                     content: Default::default(),
                     format: FrontendBlockFormat::PlainText,
+                    image_aspect: None,
                     tone,
                 }
             }

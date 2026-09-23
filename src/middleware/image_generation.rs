@@ -14,7 +14,8 @@ use crate::backend::model::{
 use crate::backend::session_files::SessionFileStore;
 use crate::protocol::{
     ContentPart, EventMsg, FrontendBlock, FrontendBlockFormat, FrontendBlockRole,
-    FrontendBlockUpdate, FrontendContribution, ModelCapability, ToolContent, ToolResponse,
+    FrontendBlockUpdate, FrontendContribution, ImageAspect, ModelCapability, ToolContent,
+    ToolResponse,
 };
 use crate::{BoxFuture, Error, Result};
 
@@ -73,7 +74,15 @@ impl Middleware for ImageGeneration {
         block.format = FrontendBlockFormat::Image;
         block.update = FrontendBlockUpdate::Replace;
         match event {
-            EventMsg::ToolCallBegin(_) => block.text.clear(),
+            EventMsg::ToolCallBegin(call) => {
+                block.text.clear();
+                block.image_aspect = Some(
+                    call.arguments
+                        .get("image_aspect")
+                        .and_then(|value| serde_json::from_value(value.clone()).ok())
+                        .unwrap_or_default(),
+                );
+            }
             EventMsg::ToolCallEnd(result) if !result.is_error => {
                 if let Some(file) = result.output.files().next().cloned() {
                     block.title = "Image ready".into();
@@ -94,6 +103,8 @@ impl Middleware for ImageGeneration {
 struct GenerateImageArgs {
     prompt: String,
     #[serde(default)]
+    image_aspect: ImageAspect,
+    #[serde(default)]
     reference_file_ids: Vec<String>,
 }
 
@@ -112,6 +123,7 @@ impl Tool for GenerateImage {
                 "type": "object",
                 "properties": {
                     "prompt": {"type": "string", "minLength": 1, "maxLength": 32000, "description": "Describe the image to create or how to edit the reference images."},
+                    "image_aspect": {"type": "string", "enum": ["square", "landscape", "portrait"], "description": "Choose the canvas shape for the image. Omit for square (1:1)."},
                     "reference_file_ids": {"type": "array", "maxItems": 4, "items": {"type": "string"}, "description": "Optional authorized image file IDs from this chat."}
                 },
                 "required": ["prompt"],
@@ -163,6 +175,7 @@ impl Tool for GenerateImage {
                     route,
                     ImageGenerationRequest {
                         prompt: &arguments.prompt,
+                        image_aspect: arguments.image_aspect,
                         references: &references,
                     },
                 )
@@ -222,8 +235,9 @@ mod tests {
 
         fn generate_image<'a>(
             &'a self,
-            _request: ImageGenerationRequest<'a>,
+            request: ImageGenerationRequest<'a>,
         ) -> BoxFuture<'a, Result<GeneratedImage>> {
+            assert_eq!(request.image_aspect, ImageAspect::Landscape);
             let bytes = self.0.clone();
             Box::pin(async move {
                 Ok(GeneratedImage {
@@ -251,7 +265,7 @@ mod tests {
     async fn generates_one_artifact_and_replaces_its_pending_transcript_block() {
         let state = tempfile::tempdir().expect("state");
         let mut bytes = std::io::Cursor::new(Vec::new());
-        image::DynamicImage::ImageRgba8(image::RgbaImage::new(2, 2))
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(3, 2))
             .write_to(&mut bytes, image::ImageFormat::Png)
             .expect("test image");
         let png = bytes.into_inner();
@@ -324,7 +338,7 @@ mod tests {
         let response = tool
             .call(
                 context,
-                serde_json::json!({"prompt": "a red square", "reference_file_ids": [source.id]}),
+                serde_json::json!({"prompt": "a red landscape", "image_aspect": "landscape", "reference_file_ids": [source.id]}),
             )
             .await
             .expect("generate image");
@@ -357,7 +371,7 @@ mod tests {
                     turn_id: "turn".into(),
                     call_id: "image-call".into(),
                     name: "generate_image".into(),
-                    arguments: serde_json::json!({"prompt": "a red square"}),
+                    arguments: serde_json::json!({"prompt": "a red landscape", "image_aspect": "landscape"}),
                 }),
                 "session",
             )
@@ -377,8 +391,23 @@ mod tests {
         assert_eq!(begin.id, end.id);
         assert_eq!(begin.state, FrontendBlockState::Pending);
         assert_eq!(begin.format, FrontendBlockFormat::Image);
+        assert_eq!(begin.image_aspect, Some(ImageAspect::Landscape));
+        assert_eq!(
+            serde_json::to_value(&begin).expect("pending wire")["image_aspect"],
+            "landscape"
+        );
         assert_eq!(end.state, FrontendBlockState::Complete);
         assert_eq!(end.files, vec![file]);
+
+        let default: GenerateImageArgs =
+            serde_json::from_value(serde_json::json!({"prompt": "x"})).expect("default shape");
+        assert_eq!(default.image_aspect, ImageAspect::Square);
+        assert!(
+            serde_json::from_value::<GenerateImageArgs>(
+                serde_json::json!({"prompt": "x", "image_aspect": "auto"})
+            )
+            .is_err()
+        );
 
         let unsupported_tool = GenerateImage {
             models: Arc::clone(&unsupported.models),

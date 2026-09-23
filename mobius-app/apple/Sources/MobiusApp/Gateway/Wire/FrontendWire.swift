@@ -349,6 +349,12 @@ enum FrontendBlockRole: String, Codable, Hashable, Sendable {
     case notice
 }
 
+enum ImageAspect: String, Codable, Hashable, Sendable {
+    case square
+    case landscape
+    case portrait
+}
+
 struct FrontendBlock: Codable, Hashable, Sendable {
     let id: String?
     let group: String?
@@ -362,8 +368,14 @@ struct FrontendBlock: Codable, Hashable, Sendable {
     let tone: String
     let files: [SessionFileReference]
     var content: [ContentPart] = []
+    var imageAspect: ImageAspect? = nil
 
     var pending: Bool { state == .pending }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, group, update, state, role, title, text, symbol, format, tone, files, content
+        case imageAspect = "image_aspect"
+    }
 }
 
 extension FrontendBlock {
@@ -410,6 +422,15 @@ extension FrontendBlock {
         self.tone = tone
         self.files = try files.map(SessionFileReference.init(json:))
         self.content = try content.map(ContentPart.init(json:))
+        switch json["imageAspect"] {
+        case nil, .some(.null): imageAspect = nil
+        case .some(.string(let value)):
+            guard let aspect = ImageAspect(rawValue: value) else {
+                throw GatewayWireError.invalidFrame("frontend block has invalid image_aspect")
+            }
+            imageAspect = aspect
+        default: throw GatewayWireError.invalidFrame("frontend block has invalid image_aspect")
+        }
     }
 }
 

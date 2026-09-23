@@ -1,0 +1,1 @@
+Bundle mobius 0.15.44 with explicit image aspect selection and matching image artifact placeholders. Gateway wire protocol advances to 84; update clients and the gateway together. Checkpoint and storage schemas are unchanged.

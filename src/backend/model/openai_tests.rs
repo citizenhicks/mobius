@@ -1485,6 +1485,7 @@ async fn native_images_use_json_for_generation_and_multipart_for_public_edits() 
     let generated = provider
         .generate_image(ImageGenerationRequest {
             prompt: "a red fox",
+            image_aspect: crate::protocol::ImageAspect::Square,
             references: &[],
         })
         .await
@@ -1502,6 +1503,7 @@ async fn native_images_use_json_for_generation_and_multipart_for_public_edits() 
     provider
         .generate_image(ImageGenerationRequest {
             prompt: "make the fox blue",
+            image_aspect: crate::protocol::ImageAspect::Landscape,
             references: &references,
         })
         .await
@@ -1511,6 +1513,7 @@ async fn native_images_use_json_for_generation_and_multipart_for_public_edits() 
     assert!(generation.starts_with("POST /images/generations HTTP/1.1"));
     assert!(generation.contains("Bearer test-key"));
     assert!(generation.contains("\"model\":\"gpt-image-2\""));
+    assert!(generation.contains("\"size\":\"1024x1024\""));
     let edit = String::from_utf8_lossy(&requests[1]);
     assert!(edit.starts_with("POST /images/edits HTTP/1.1"));
     assert!(edit.contains("Bearer test-key"));
@@ -1520,6 +1523,8 @@ async fn native_images_use_json_for_generation_and_multipart_for_public_edits() 
     assert!(edit.contains("gpt-image-2"));
     assert!(edit.contains("name=\"prompt\""));
     assert!(edit.contains("make the fox blue"));
+    assert!(edit.contains("name=\"size\""));
+    assert!(edit.contains("1536x1024"));
     assert!(
         requests[1]
             .windows(source.len())

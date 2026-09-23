@@ -1,0 +1,1 @@
+Image generation now accepts an explicit square, landscape, or portrait aspect, defaulting to square. Provider image requests use the matching output size, and image artifact presentation carries the selected aspect so frontends can size the placeholder before the image arrives.

@@ -274,6 +274,7 @@ struct SessionFileCard: View {
     let sessionID: String?
     var animatesThumbnail = false
     var prominentSize: CGFloat? = nil
+    var imageAspect: ImageAspect? = nil
 
     var body: some View {
         let thumbnail = model.chat.fileThumbnail(for: file, sessionID: sessionID)
@@ -285,7 +286,8 @@ struct SessionFileCard: View {
                 thumbnail: thumbnail,
                 canLoadThumbnail: thumbnailTaskID != nil,
                 animatesThumbnail: animatesThumbnail,
-                prominentSize: prominentSize)
+                prominentSize: prominentSize,
+                imageAspect: imageAspect)
         }
         .buttonStyle(.mobiusPlain)
         .accessibilityLabel("Open file \(file.name)")
@@ -331,9 +333,9 @@ struct TranscriptImageCard: View {
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
-            card(size: 380)
-            card(size: 336)
+            card(size: 320)
             card(size: 280)
+            card(size: 240)
         }
     }
 
@@ -341,7 +343,8 @@ struct TranscriptImageCard: View {
     private func card(size: CGFloat) -> some View {
         if let file = entry.files.first {
             SessionFileCard(
-                file: file, sessionID: sessionID, animatesThumbnail: true, prominentSize: size)
+                file: file, sessionID: sessionID, animatesThumbnail: true,
+                prominentSize: size, imageAspect: entry.imageAspect)
         } else {
             VStack(alignment: .leading, spacing: MobiusSpace.s) {
                 FileCard(
@@ -352,12 +355,13 @@ struct TranscriptImageCard: View {
                     showsOrganicReveal: entry.pending,
                     waitsForImage: entry.pending,
                     imageAnimationPaused: !model.gateway.connectionState.isReady,
-                    size: CGSize(width: size, height: size)
+                    statusPill: entry.pending ? detail : nil,
+                    size: (entry.imageAspect ?? .square).cardSize(maximum: size)
                 )
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(
                     entry.pending
-                        ? "Creating image"
+                        ? detail
                         : (entry.title.isEmpty ? "Image unavailable" : entry.title)
                 )
                 if !entry.pending && !entry.text.isEmpty {
@@ -375,6 +379,7 @@ struct TranscriptImageCard: View {
         return model.gateway.connectionState.isReady
             ? "Creating image…" : "Waiting for connection…"
     }
+
 }
 
 struct QueuedMessageView: View {
@@ -431,6 +436,7 @@ private struct SessionFileCardLabel: View {
     let canLoadThumbnail: Bool
     let animatesThumbnail: Bool
     let prominentSize: CGFloat?
+    let imageAspect: ImageAspect?
 
     var body: some View {
         FileCard(
@@ -447,19 +453,32 @@ private struct SessionFileCardLabel: View {
                     mediaType: file.mediaType, size: file.size),
             waitsForImage: canLoadThumbnail,
             imageContentMode: prominentSize == nil ? .fill : .fit,
+            statusPill: prominentSize != nil && thumbnail == nil
+                ? (canLoadThumbnail ? "Loading image…" : "Waiting for image…") : nil,
             size: cardSize
         )
     }
 
     private var cardSize: CGSize {
-        if let prominentSize {
-            return CGSize(width: prominentSize, height: prominentSize)
+        let limits = CGSize(width: prominentSize ?? 136, height: prominentSize ?? 112)
+        guard let thumbnail else {
+            return prominentSize.map { (imageAspect ?? .square).cardSize(maximum: $0) }
+                ?? limits
         }
-        guard let thumbnail else { return CGSize(width: 136, height: 112) }
         let width = CGFloat(thumbnail.width)
         let height = CGFloat(thumbnail.height)
-        let scale = min(136 / width, 112 / height)
+        let scale = min(limits.width / width, limits.height / height)
         return CGSize(width: width * scale, height: height * scale)
+    }
+}
+
+private extension ImageAspect {
+    func cardSize(maximum: CGFloat) -> CGSize {
+        switch self {
+        case .square: CGSize(width: maximum, height: maximum)
+        case .landscape: CGSize(width: maximum, height: maximum * 2 / 3)
+        case .portrait: CGSize(width: maximum * 2 / 3, height: maximum)
+        }
     }
 }
 
@@ -477,6 +496,7 @@ struct FileCard: View {
     var waitsForImage = false
     var imageAnimationPaused = false
     var imageContentMode: ContentMode = .fill
+    var statusPill: String? = nil
     var size = CGSize(width: 136, height: 112)
 
     var body: some View {
@@ -517,19 +537,30 @@ struct FileCard: View {
     }
 
     private var placeholder: some View {
-        VStack(spacing: 0) {
-            MobiusIcon(placeholderGlyph, size: 26, foreground: .primary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            Text(verbatim: name)
-                .font(MobiusStyle.badgeFont)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            detail
-                .font(MobiusStyle.badgeFont)
-                .foregroundStyle(detailColor)
-                .lineLimit(1)
+        Group {
+            if let statusPill {
+                VStack {
+                    Spacer(minLength: 0)
+                    MobiusBadge(text: .verbatim(statusPill))
+                }
+                .frame(maxWidth: .infinity)
+            } else {
+                VStack(spacing: 0) {
+                    MobiusIcon(placeholderGlyph, size: 26, foreground: .primary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    Text(verbatim: name)
+                        .font(MobiusStyle.badgeFont)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    detail
+                        .font(MobiusStyle.badgeFont)
+                        .foregroundStyle(detailColor)
+                        .lineLimit(1)
+                }
+            }
         }
         .padding(MobiusSpace.m)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -626,18 +657,15 @@ private struct OrganicImageReveal: View {
                         let alpha = min(1, max(0, (progress - order * 0.68) / 0.24))
                         context.fill(Path(rect), with: .color(.white.opacity(alpha)))
                     } else {
-                        let first = hypot(
-                            x - 0.5 - 0.24 * sin(time * 0.39),
-                            y - 0.5 - 0.22 * cos(time * 0.31))
-                        let second = hypot(
-                            x - 0.5 + 0.22 * cos(time * 0.27),
-                            y - 0.5 + 0.2 * sin(time * 0.35))
-                        let glow = max(0, 1 - min(first, second) * 1.9)
-                        let pulse = 0.5 + 0.5 * sin(time * 1.8 + noise * 6)
+                        let wave = sin(x * 11 - time * 2.5 + 0.8 * sin(y * 5.5 - time * 0.7))
+                        let crossWave = sin(y * 8 + time * 1.5 - x * 3.4 + noise * 0.6)
+                        let energy = 0.5 + 0.28 * wave + 0.22 * crossWave
                         let inset = min(tileWidth, tileHeight) * (0.10 + noise * 0.06)
                         context.fill(
-                            Path(rect.insetBy(dx: inset, dy: inset)),
-                            with: .color(palette.accent.opacity(0.08 + 0.34 * glow * pulse))
+                            Path(
+                                rect.insetBy(dx: inset, dy: inset)
+                                    .offsetBy(dx: 0, dy: tileHeight * 0.24 * CGFloat(wave))),
+                            with: .color(palette.accent.opacity(0.09 + 0.48 * energy))
                         )
                     }
                 }

@@ -183,6 +183,7 @@ final class TranscriptEntry: Identifiable {
     var group: String?
     var format: String
     var tone: String
+    var imageAspect: ImageAspect?
     var pending: Bool
     var modelStepID: String?
     var turnID: String?
@@ -211,6 +212,7 @@ final class TranscriptEntry: Identifiable {
         group: String? = nil,
         format: String,
         tone: String = "neutral",
+        imageAspect: ImageAspect? = nil,
         pending: Bool,
         modelStepID: String? = nil,
         turnID: String? = nil,
@@ -238,6 +240,7 @@ final class TranscriptEntry: Identifiable {
         self.group = group
         self.format = format
         self.tone = tone
+        self.imageAspect = imageAspect
         self.pending = pending
         self.modelStepID = modelStepID
         self.turnID = turnID

@@ -126,6 +126,7 @@ impl Approval {
                 files: Vec::new(),
                 content: Default::default(),
                 format: crate::protocol::FrontendBlockFormat::PlainText,
+                image_aspect: None,
                 tone: FrontendTone::Warning,
             }),
             _ => None,

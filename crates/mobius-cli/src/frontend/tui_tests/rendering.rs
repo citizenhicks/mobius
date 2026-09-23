@@ -39,6 +39,7 @@ fn git_diff_styles_each_file_and_preserves_metadata_and_truncated_sections() {
         symbol: None,
         content: Default::default(),
         format: FrontendBlockFormat::UnifiedDiff,
+        image_aspect: None,
         tone: FrontendTone::Neutral,
         files: Vec::new(),
     }));
@@ -82,6 +83,7 @@ fn metadata_only_diff_remains_text_instead_of_an_empty_edit() {
         symbol: None,
         content: Default::default(),
         format: FrontendBlockFormat::UnifiedDiff,
+        image_aspect: None,
         tone: FrontendTone::Neutral,
         files: Vec::new(),
     }));
@@ -104,6 +106,7 @@ fn completed_diff_replaces_the_pending_block_with_a_styled_diff() {
         symbol: None,
         content: Default::default(),
         format: FrontendBlockFormat::PlainText,
+        image_aspect: None,
         tone: FrontendTone::Neutral,
         files: Vec::new(),
     }));
@@ -127,6 +130,7 @@ fn completed_diff_replaces_the_pending_block_with_a_styled_diff() {
         symbol: None,
         content: Default::default(),
         format: FrontendBlockFormat::UnifiedDiff,
+        image_aspect: None,
         tone: FrontendTone::Success,
         files: Vec::new(),
     }));
@@ -226,6 +230,7 @@ fn pending_tool_compacts_its_display_without_losing_completed_detail() {
         symbol: None,
         content: Default::default(),
         format: FrontendBlockFormat::PlainText,
+        image_aspect: None,
         tone: FrontendTone::Neutral,
         files: Vec::new(),
     }));
@@ -244,6 +249,7 @@ fn pending_tool_compacts_its_display_without_losing_completed_detail() {
         symbol: None,
         content: Default::default(),
         format: FrontendBlockFormat::PlainText,
+        image_aspect: None,
         tone: FrontendTone::Success,
         files: Vec::new(),
     }));
@@ -425,6 +431,7 @@ fn block_identity_is_scoped_by_explicit_capability() {
         files: Vec::new(),
         content: Default::default(),
         format: FrontendBlockFormat::PlainText,
+        image_aspect: None,
         tone: FrontendTone::Neutral,
     };
     let mut state = state();
@@ -482,6 +489,7 @@ fn gateway_history_preserves_child_diff_rendering() {
                 symbol: None,
                 content: Default::default(),
                 format: FrontendBlockFormat::UnifiedDiff,
+                image_aspect: None,
                 tone: FrontendTone::Neutral,
                 files: Vec::new(),
             })],
@@ -509,6 +517,7 @@ fn session_file_block_renders_download_metadata_as_plain_text() {
         symbol: None,
         content: Default::default(),
         format: FrontendBlockFormat::PlainText,
+        image_aspect: None,
         tone: FrontendTone::Success,
         files: vec![mobius::protocol::SessionFileReference {
             id: "file-a".into(),
@@ -854,6 +863,7 @@ fn transcript_viewport_matches_full_paragraph_for_unicode_scroll_and_resize() {
                 symbol: None,
                 content: Default::default(),
                 format: FrontendBlockFormat::PlainText,
+                image_aspect: None,
                 tone: FrontendTone::Neutral,
                 files: Vec::new(),
             }));
@@ -915,6 +925,7 @@ fn transcript_viewport_matches_full_paragraph_for_unicode_scroll_and_resize() {
             symbol: None,
             content: Default::default(),
             format: FrontendBlockFormat::PlainText,
+            image_aspect: None,
             tone: FrontendTone::Success,
             files: Vec::new(),
         }));

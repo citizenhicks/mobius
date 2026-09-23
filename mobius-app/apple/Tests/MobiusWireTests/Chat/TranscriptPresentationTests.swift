@@ -25,6 +25,44 @@ private func markdownLinks(in markup: Markup) -> [Markdown.Link] {
 
 @MainActor
 extension AppModelTests {
+    func testImageArtifactCardFollowsPredictedAndRenderedAspect() throws {
+        let app = try model()
+        let sessionID = "image-session"
+        let file = SessionFileReference(
+            id: "generated-image", name: "generated.png", size: 1, mediaType: "image/png")
+        let entry = TranscriptEntry(
+            id: "image", text: "", kind: .event, role: .artifact, title: "Generated image",
+            format: "image", imageAspect: .landscape, pending: true)
+
+        func fittedSize() -> CGSize {
+            let host = UIHostingController(
+                rootView: TranscriptImageCard(entry: entry, sessionID: sessionID)
+                    .mobiusTheme().environment(app))
+            return host.sizeThatFits(in: CGSize(width: 390, height: 1_000))
+        }
+
+        let pendingSize = fittedSize()
+        XCTAssertLessThanOrEqual(pendingSize.width, 320)
+        XCTAssertEqual(pendingSize.width / pendingSize.height, 1.5, accuracy: 0.02)
+
+        entry.pending = false
+        entry.files = [file]
+        let loadingSize = fittedSize()
+        XCTAssertEqual(loadingSize.width / loadingSize.height, 1.5, accuracy: 0.02)
+
+        let rendered = UIGraphicsImageRenderer(size: CGSize(width: 300, height: 200)).image {
+            _ in
+            UIColor.red.setFill()
+            UIRectFill(CGRect(x: 0, y: 0, width: 300, height: 200))
+        }
+        app.chat.cacheFileThumbnail(
+            try XCTUnwrap(rendered.cgImage),
+            for: .session(sessionID: sessionID, fileID: file.id))
+
+        let landedSize = fittedSize()
+        XCTAssertEqual(landedSize.width / landedSize.height, 1.5, accuracy: 0.02)
+    }
+
     func testMarkdownRendersBareWebLinksAsInteractiveText() async throws {
         let app = try model(requestSender: { _ in })
         let url = try XCTUnwrap(URL(string: "https://example.org/careers"))

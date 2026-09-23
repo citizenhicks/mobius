@@ -350,6 +350,7 @@ fn blocks(text: &str) -> FrontendWidgetContent {
             symbol: None,
             content: Default::default(),
             format: FrontendBlockFormat::PlainText,
+            image_aspect: None,
             tone: FrontendTone::Neutral,
             files: Vec::new(),
         }],

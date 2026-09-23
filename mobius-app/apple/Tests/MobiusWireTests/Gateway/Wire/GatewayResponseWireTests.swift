@@ -234,6 +234,17 @@ extension GatewayWireTests {
         }
     }
 
+    func testFrontendImageAspectDecodesAndRejectsUnknownValues() throws {
+        let fixture =
+            #"{"id":null,"group":null,"update":"replace","state":"pending","role":"artifact","title":"Generating image","text":"","symbol":null,"format":"image","tone":"neutral","files":[],"content":[],"image_aspect":"landscape"}"#
+        let block = try decoder().decode(FrontendBlock.self, from: Data(fixture.utf8))
+        XCTAssertEqual(block.imageAspect, .landscape)
+
+        let invalid = fixture.replacingOccurrences(
+            of: #""landscape""#, with: #""auto""#)
+        XCTAssertThrowsError(try decoder().decode(FrontendBlock.self, from: Data(invalid.utf8)))
+    }
+
     func testWorkspaceViewerResponsesMatchV28() throws {
         let files = try decodeEnvelope(
             #"{"version":27,"type":"workspace_files","request_id":"files-1","session_id":"chat-1","files":[{"path":"Sources/App.swift","size":3}],"truncated":true}"#

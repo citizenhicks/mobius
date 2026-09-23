@@ -1366,6 +1366,7 @@ impl Middleware for Tools {
                 files: Vec::new(),
                 content: Default::default(),
                 format: FrontendBlockFormat::PlainText,
+                image_aspect: None,
                 tone: FrontendTone::Success,
             });
         }
@@ -1413,6 +1414,7 @@ pub(crate) fn render_tool_event(
                 files: Vec::new(),
                 content: Default::default(),
                 format: FrontendBlockFormat::PlainText,
+                image_aspect: None,
                 tone: FrontendTone::Neutral,
             })
         }
@@ -1438,6 +1440,7 @@ pub(crate) fn render_tool_event(
                     Default::default()
                 },
                 format: FrontendBlockFormat::PlainText,
+                image_aspect: None,
                 tone: if result.is_error {
                     FrontendTone::Error
                 } else {

@@ -248,6 +248,7 @@ impl Middleware for Messages {
             files: Vec::new(),
             content: Default::default(),
             format: FrontendBlockFormat::PlainText,
+            image_aspect: None,
             tone: FrontendTone::Neutral,
         })
     }

@@ -396,6 +396,8 @@ extension ChatSessionModel {
             entries[index].recordedAtMs = recordedAtMs
             entries[index].format = block.format
             entries[index].tone = block.tone
+            entries[index].imageAspect =
+                block.imageAspect ?? (block.format == "image" ? entries[index].imageAspect : nil)
             entries[index].content =
                 appending ? entries[index].content + block.content : block.content
             let currentFiles = entries[index].files
@@ -418,6 +420,7 @@ extension ChatSessionModel {
                     group: block.group,
                     format: block.format,
                     tone: block.tone,
+                    imageAspect: block.imageAspect,
                     pending: block.pending,
                     modelStepID: modelStepID,
                     turnID: turnID,
