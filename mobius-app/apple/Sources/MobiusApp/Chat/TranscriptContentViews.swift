@@ -657,15 +657,12 @@ private struct OrganicImageReveal: View {
                         let alpha = min(1, max(0, (progress - order * 0.68) / 0.24))
                         context.fill(Path(rect), with: .color(.white.opacity(alpha)))
                     } else {
-                        let wave = sin(x * 11 - time * 2.5 + 0.8 * sin(y * 5.5 - time * 0.7))
-                        let crossWave = sin(y * 8 + time * 1.5 - x * 3.4 + noise * 0.6)
-                        let energy = 0.5 + 0.28 * wave + 0.22 * crossWave
+                        let pulse = max(0, sin(time * (1.8 + noise * 1.4) + noise * 24))
+                        let activation = pulse * pulse
                         let inset = min(tileWidth, tileHeight) * (0.10 + noise * 0.06)
                         context.fill(
-                            Path(
-                                rect.insetBy(dx: inset, dy: inset)
-                                    .offsetBy(dx: 0, dy: tileHeight * 0.24 * CGFloat(wave))),
-                            with: .color(palette.accent.opacity(0.09 + 0.48 * energy))
+                            Path(rect.insetBy(dx: inset, dy: inset)),
+                            with: .color(palette.accent.opacity(0.06 + 0.84 * activation))
                         )
                     }
                 }
