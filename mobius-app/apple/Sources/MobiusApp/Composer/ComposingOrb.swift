@@ -3,21 +3,13 @@ import SwiftUI
 import UIKit
 
 struct MobiusComposingOrb: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        Group {
-            if !reduceMotion,
-                let url = Bundle.main.url(forResource: "ComposingOrb", withExtension: "mov")
-            {
-                ComposingOrbVideo(url: url, isPlaying: scenePhase == .active)
-            } else {
-                Image("MobiusLogo")
-                    .resizable()
-                    .scaledToFit()
-            }
-        }
+        ComposingOrbVideo(
+            url: Bundle.main.url(forResource: "ComposingOrb", withExtension: "mov")!,
+            isPlaying: scenePhase == .active
+        )
         .allowsHitTesting(false)
     }
 }
@@ -49,8 +41,6 @@ private final class OrbPlayerView: UIView {
     override class var layerClass: AnyClass { AVPlayerLayer.self }
     let player = AVQueuePlayer()
     let looper: AVPlayerLooper
-    private let poster = UIImageView(image: UIImage(named: "MobiusLogo"))
-    private var readyObservation: NSKeyValueObservation?
 
     init(url: URL) {
         looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(url: url))
@@ -63,16 +53,6 @@ private final class OrbPlayerView: UIView {
         playerLayer.player = player
         playerLayer.videoGravity = .resizeAspect
         playerLayer.isOpaque = false
-        poster.contentMode = .scaleAspectFit
-        poster.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        addSubview(poster)
-        readyObservation = playerLayer.observe(\.isReadyForDisplay, options: [.initial, .new]) {
-            [weak self] _, _ in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                poster.isHidden = (layer as! AVPlayerLayer).isReadyForDisplay
-            }
-        }
     }
 
     @available(*, unavailable)

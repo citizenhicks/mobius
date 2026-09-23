@@ -1492,9 +1492,27 @@ fn tool_heading(name: &str, arguments: &Value) -> ToolHeading {
             detail,
         };
     }
+    if name == "view_image" {
+        let detail = arguments
+            .get("images")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|image| {
+                image
+                    .get("path")
+                    .or_else(|| image.get("file_id"))
+                    .and_then(Value::as_str)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        return ToolHeading {
+            title: text::RENDER_VIEW_IMAGE.into(),
+            detail,
+        };
+    }
     let (label, detail) = match name {
         "read_file" => (text::RENDER_READ_FILE, "path"),
-        "view_image" => (text::RENDER_VIEW_IMAGE, "path"),
         "write_file" => (text::RENDER_WRITE_FILE, "path"),
         "bash" => (text::RENDER_BASH, "command"),
         "start_command" => (text::RENDER_START_COMMAND, "command"),

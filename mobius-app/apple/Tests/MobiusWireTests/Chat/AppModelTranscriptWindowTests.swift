@@ -247,6 +247,12 @@ extension AppModelTests {
         var lastUsage = TokenUsage()
         lastUsage.inputTokens = 30
         lastUsage.outputTokens = 12
+        let observedImage = SessionFileReference(
+            id: "image-1", name: "observed.png", size: 1024, mediaType: "image/png")
+        let observation: [ContentPart] = [
+            .text("Observed image"),
+            .image(observedImage, width: 1024, height: 768, detail: "high"),
+        ]
         await store.saveTranscript(
             accountID: account.id,
             sessionID: "chat-1",
@@ -258,6 +264,7 @@ extension AppModelTests {
                     text: "Already rendered",
                     kind: .assistant,
                     format: "plain_text",
+                    imageAspect: .landscape,
                     pending: false,
                     turnID: "turn-cached",
                     startsTurn: true,
@@ -268,6 +275,7 @@ extension AppModelTests {
                         target: MessageTarget(checkpointSequence: 3, batchItemCount: 2),
                         text: "Earlier message"
                     ),
+                    content: observation,
                     annotations: [
                         .object([
                             "type": .string("url_citation"),
@@ -294,16 +302,18 @@ extension AppModelTests {
         model.gateway.connectionState = .ready
 
         model.chat.openSession("chat-1")
-        try await Task.sleep(for: .milliseconds(20))
-        let requests = await recorder.requests()
-        let request = try XCTUnwrap(requests.first)
-        guard case .openSession(let requestID, let sessionID, let cursor) = request else {
+        let request = await recorder.firstRequest(after: 0) {
+            if case .openSession(_, "chat-1", _) = $0 { true } else { false }
+        }
+        guard case .openSession(let requestID, let sessionID, let cursor) = try XCTUnwrap(request)
+        else {
             return XCTFail("Expected a cached session open")
         }
         XCTAssertEqual(sessionID, "chat-1")
         XCTAssertEqual(cursor, 7)
         XCTAssertFalse(model.chat.isLoadingTranscript)
         XCTAssertEqual(model.chat.displayedTranscript.map(\.text), ["Already rendered"])
+        XCTAssertEqual(model.chat.displayedTranscript.first?.content, observation)
 
         model.gateway.handle(
             .sessionOpened(requestID: requestID, payload: sessionReady(latestSequence: 7)))
@@ -313,6 +323,8 @@ extension AppModelTests {
         XCTAssertEqual(model.chat.transcript.first?.turnTerminal, true)
         XCTAssertEqual(model.chat.transcript.first?.turnElapsedMs, 1_250)
         XCTAssertEqual(model.chat.transcript.first?.reply?.text, "Earlier message")
+        XCTAssertEqual(model.chat.transcript.first?.content, observation)
+        XCTAssertEqual(model.chat.transcript.first?.imageAspect, .landscape)
         XCTAssertEqual(
             model.chat.transcript.first?.annotations.first?["content"]?.stringValue,
             "Relevant excerpt."

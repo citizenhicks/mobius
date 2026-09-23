@@ -121,6 +121,29 @@ fn coding_renderer_groups_read_lifecycle() {
 }
 
 #[test]
+fn view_image_heading_preserves_requested_sources() {
+    let block = Tools::coding(crate::backend::session_files::SessionFileStore::new(
+        tempfile::tempdir().expect("files").path(),
+    ))
+    .render(
+        &EventMsg::ToolCallBegin(crate::protocol::ToolCallBeginEvent {
+            turn_id: "turn".into(),
+            call_id: "call".into(),
+            name: "view_image".into(),
+            arguments: serde_json::json!({"images": [
+                {"path": "images/page.png"},
+                {"file_id": "stored-image"}
+            ]}),
+        }),
+        "session",
+    )
+    .expect("view image heading");
+
+    assert_eq!(block.title, "View image");
+    assert_eq!(block.text, "images/page.png\nstored-image");
+}
+
+#[test]
 fn tool_blocks_format_json_before_appending_and_preserve_plain_text_whitespace() {
     assert_eq!(formatted_tool_text(r#"{"a":1}"#), "{\n  \"a\": 1\n}");
     assert_eq!(

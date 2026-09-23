@@ -11,7 +11,7 @@ private struct GatewayStoreCleanupError: LocalizedError {
 }
 
 struct CachedTranscript: Codable, Sendable {
-    static let currentSchemaVersion = 5
+    static let currentSchemaVersion = 6
 
     private struct Entry: Codable, Sendable {
         let id: String
@@ -26,6 +26,7 @@ struct CachedTranscript: Codable, Sendable {
         let group: String?
         let format: String
         let tone: String
+        let imageAspect: ImageAspect?
         let pending: Bool
         let modelStepID: String?
         let turnID: String?
@@ -37,6 +38,7 @@ struct CachedTranscript: Codable, Sendable {
         let messageTarget: MessageTarget?
         let reply: MessageReply?
         let files: [SessionFileReference]
+        let content: [ContentPart]
         let annotations: [JSONValue]?
 
         @MainActor
@@ -53,6 +55,7 @@ struct CachedTranscript: Codable, Sendable {
             group = entry.group
             format = entry.format
             tone = entry.tone
+            imageAspect = entry.imageAspect
             pending = entry.pending
             modelStepID = entry.modelStepID
             turnID = entry.turnID
@@ -64,6 +67,7 @@ struct CachedTranscript: Codable, Sendable {
             messageTarget = entry.messageTarget
             reply = entry.reply
             files = entry.files
+            content = entry.content
             annotations = entry.annotations.isEmpty ? nil : entry.annotations
         }
 
@@ -81,6 +85,7 @@ struct CachedTranscript: Codable, Sendable {
                 group: group,
                 format: format,
                 tone: tone,
+                imageAspect: imageAspect,
                 pending: pending,
                 modelStepID: modelStepID,
                 turnID: turnID,
@@ -92,6 +97,7 @@ struct CachedTranscript: Codable, Sendable {
                 messageTarget: messageTarget,
                 reply: reply,
                 files: files,
+                content: content,
                 annotations: annotations ?? [],
                 messageMetadata: messageMetadata
             )
