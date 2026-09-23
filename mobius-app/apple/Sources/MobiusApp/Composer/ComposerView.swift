@@ -3,27 +3,30 @@ import SwiftUI
 
 struct ComposerView: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.mobiusHasVerticalToolbar) private var hasVerticalToolbar
-    let showBotSettings: () -> Void
+    var showBotSettings: () -> Void = {}
+    var showsNewChatEntry = false
 
     var body: some View {
         VStack(spacing: MobiusSpace.s) {
-            ForEach(model.composerWidgets(in: .composerHeader)) { widget in
-                FrontendWidgetView(widget: widget)
+            if showsNewChatEntry {
+                SessionComposerSurface(showsNewChatEntry: true)
+            } else {
+                ForEach(model.composerWidgets(in: .composerHeader)) { widget in
+                    FrontendWidgetView(widget: widget)
+                }
+                if let approval = model.chat.pendingApproval {
+                    ApprovalView(approval: approval)
+                }
+                if let picker = model.chat.pendingPicker {
+                    FrontendPickerView(picker: picker)
+                }
+                ComposerStack(showBotSettings: showBotSettings)
             }
-            if let approval = model.chat.pendingApproval {
-                ApprovalView(approval: approval)
-            }
-            if let picker = model.chat.pendingPicker {
-                FrontendPickerView(picker: picker)
-            }
-            ComposerStack(showBotSettings: showBotSettings)
         }
         .frame(maxWidth: MobiusStyle.transcriptWidth)
         .frame(maxWidth: .infinity)
-        .mobiusBottomRailAligned(isActive: model.isPresentingChat)
         .padding(.horizontal, MobiusSpace.l)
-        .padding(.bottom, hasVerticalToolbar ? 0 : MobiusSpace.m)
+        .padding(.bottom, MobiusSpace.m)
     }
 }
 
@@ -48,7 +51,9 @@ private struct ComposerStack: View {
             } else {
                 ComposerActivityView(showBotSettings: showBotSettings)
             }
-            if model.chat.realtimeVoiceCall != nil && !hasVerticalToolbar {
+            if model.chat.dictation.isActive {
+                DictationComposerBar()
+            } else if model.chat.realtimeVoiceCall != nil && !hasVerticalToolbar {
                 RealtimeVoiceComposer()
             } else {
                 SessionComposerSurface()
@@ -56,6 +61,48 @@ private struct ComposerStack: View {
         }
     }
 
+}
+
+private struct DictationComposerBar: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        HStack(spacing: MobiusSpace.s) {
+            Button("Cancel dictation", glyph: .x) {
+                if let original = model.chat.dictation.cancel(currentText: model.chat.composer) {
+                    model.chat.composer = original
+                }
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(MobiusIconButtonStyle(bare: true))
+            .accessibilityLabel("Cancel dictation")
+
+            DictationWaveform(levels: model.chat.dictation.audioLevels)
+                .frame(maxWidth: .infinity)
+                .frame(height: MobiusStyle.iconButtonSize)
+                .accessibilityHidden(true)
+
+            Button("Stop dictation", glyph: .stopFill) {
+                model.chat.dictation.stop()
+                model.chat.composerEntryIntent = .focus
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(MobiusIconButtonStyle(bare: true))
+            .accessibilityLabel("Stop dictation")
+
+            ComposerSendButton { delivery in
+                model.chat.dictation.stop()
+                _ = model.sendMessage(delivery: delivery)
+            }
+            .mobiusProminentIconButton(surfaceSize: 32, flat: true)
+        }
+        .padding(.horizontal, MobiusStyle.iconRowPadding)
+        .frame(height: MobiusStyle.toolbarButtonSize)
+        .mobiusGlass(
+            in: RoundedRectangle(cornerRadius: MobiusStyle.iconButtonSize, style: .continuous)
+        )
+        .accessibilityElement(children: .contain)
+    }
 }
 
 private struct NewChatFolderPicker: View {
@@ -176,7 +223,7 @@ private struct RealtimeVoiceComposer: View {
                 }
                 Spacer(minLength: MobiusSpace.s)
                 Button("End voice chat", glyph: .stopFill) { model.chat.stopRealtimeVoice() }
-                    .buttonStyle(MobiusIconButtonStyle(bare: true))
+                    .mobiusProminentIconButton(surfaceSize: 32, flat: true)
             }
             .labelStyle(.iconOnly)
             .padding(.horizontal, MobiusStyle.iconRowPadding)
@@ -191,57 +238,100 @@ private struct RealtimeVoiceComposer: View {
 private struct SessionComposerSurface: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusHasVerticalToolbar) private var hasVerticalToolbar
+    var showsNewChatEntry = false
 
     var body: some View {
         @Bindable var chat = model.chat
         ComposerSurface(
-            text: $chat.composer,
-            hasContext: chat.hasComposerContext,
-            compactLeadingInset: model.attachmentsEnabled
-                ? MobiusStyle.iconRowPadding + MobiusStyle.iconButtonSize : MobiusSpace.l,
-            compactTrailingInset: hasVerticalToolbar
-                ? MobiusSpace.l
-                : MobiusStyle.iconRowPadding
-                    + (model.selectedRouteSupportsRealtimeVoice && !model.composerUsesPrimaryVoice
-                        ? 2 : 1)
-                        * MobiusStyle.iconButtonSize,
-            focusRequest: chat.composerFocusRequest,
-            blurRequest: chat.composerBlurRequest,
-            referenceRevision: chat.contributionsRevision + model.workspaceFilesRevision,
-            suggestions: referenceSuggestions,
-            send: { model.sendMessage() },
-            context: { close in
-                if let reply = chat.composerReply {
-                    ReplyQuoteView(
-                        reply: reply,
-                        open: {
-                            close(); chat.openMessageReply(reply)
-                        },
-                        dismiss: { chat.composerReply = nil }
-                    )
-                    .padding(.horizontal, MobiusSpace.m)
-                    .padding(.top, MobiusSpace.m)
-                }
-                if !chat.composerAttachments.isEmpty {
-                    ComposerAttachmentsView()
-                        .padding(.horizontal, MobiusSpace.m)
-                        .padding(.top, MobiusSpace.m)
-                }
+            text: showsNewChatEntry ? .constant("") : $chat.composer,
+            hasContext: !showsNewChatEntry && chat.hasComposerContext,
+            activate: activateNewChat,
+            focusOnAppear: !showsNewChatEntry && chat.composerEntryIntent == .focus,
+            didFocusOnAppear: { chat.composerEntryIntent = nil },
+            onCompactChange: { compact in
+                if !showsNewChatEntry { chat.composerIsCompact = compact }
             },
+            compactLeadingInset: showsNewChatEntry || model.attachmentsEnabled
+                ? MobiusStyle.iconRowPadding + MobiusStyle.iconButtonSize : MobiusSpace.l,
+            compactTrailingInset: compactTrailingInset,
+            focusRequest: showsNewChatEntry ? 0 : chat.composerFocusRequest,
+            blurRequest: showsNewChatEntry ? 0 : chat.composerBlurRequest,
+            referenceRevision: showsNewChatEntry
+                ? 0 : chat.contributionsRevision + model.workspaceFilesRevision,
+            suggestions: referenceSuggestions,
+            send: { !showsNewChatEntry && model.sendMessage() },
+            context: { close in composerContext(close: close) },
             controls: { compact, didSend in
-                ComposerOptionsView(
-                    send: { delivery in
-                        if model.sendMessage(delivery: delivery) { didSend() }
-                    },
-                    isCompact: compact
-                )
+                composerControls(compact: compact, didSend: didSend)
             }
         )
+    }
+
+    private var activateNewChat: (() -> Void)? {
+        guard showsNewChatEntry else { return nil }
+        return { openNewChat(.focus) }
+    }
+
+    private var newChatEntryAction: ((ComposerEntryIntent) -> Void)? {
+        guard showsNewChatEntry else { return nil }
+        return { intent in openNewChat(intent) }
+    }
+
+    private var compactTrailingInset: CGFloat {
+        if hasVerticalToolbar && !showsNewChatEntry { return MobiusSpace.l }
+        let supportsVoice =
+            showsNewChatEntry
+            ? model.newChatRouteSupportsRealtimeVoice : model.selectedRouteSupportsRealtimeVoice
+        return MobiusStyle.iconRowPadding
+            + (supportsVoice ? 2 : 1) * MobiusStyle.iconButtonSize
+    }
+
+    @ViewBuilder
+    private func composerContext(close: @escaping () -> Void) -> some View {
+        if !showsNewChatEntry, let reply = model.chat.composerReply {
+            ReplyQuoteView(
+                reply: reply,
+                open: {
+                    close(); model.chat.openMessageReply(reply)
+                },
+                dismiss: { model.chat.composerReply = nil }
+            )
+            .padding(.horizontal, MobiusSpace.m)
+            .padding(.top, MobiusSpace.m)
+        }
+        if !showsNewChatEntry, !model.chat.composerAttachments.isEmpty {
+            ComposerAttachmentsView()
+                .padding(.horizontal, MobiusSpace.m)
+                .padding(.top, MobiusSpace.m)
+        }
+    }
+
+    private func composerControls(compact: Bool, didSend: @escaping () -> Void) -> some View {
+        ComposerOptionsView(
+            send: { delivery in
+                if model.sendMessage(delivery: delivery) { didSend() }
+            },
+            isCompact: compact,
+            newChatEntry: newChatEntryAction
+        )
+        .environment(\.mobiusHasVerticalToolbar, hasVerticalToolbar && !showsNewChatEntry)
+    }
+
+    private func openNewChat(_ intent: ComposerEntryIntent) {
+        model.openNewSession()
+        switch intent {
+        case .focus:
+            model.chat.composerEntryIntent = .focus
+            model.chat.composerFocusRequest &+= 1
+        case .dictate:
+            model.toggleComposerDictation()
+        }
     }
 
     private func referenceSuggestions(text: String, cursorOffset: Int) async
         -> ReferenceSuggestions?
     {
+        guard !showsNewChatEntry else { return nil }
         if let commands = model.commandSuggestions(in: text, cursorOffset: cursorOffset) {
             return commands
         }

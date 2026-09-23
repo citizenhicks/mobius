@@ -48,6 +48,8 @@ enum MobiusStyle {
     static let badgeHeight = rowCompact
     static let controlHeight = rowRegular
     static let iconButtonSize = rowTouch
+    /// Native large circular toolbar controls.
+    static let toolbarButtonSize: CGFloat = 48
 
     // MARK: Transcript
     /// The chat, a subagent preview, and a Bot routine draw the same transcript, so they

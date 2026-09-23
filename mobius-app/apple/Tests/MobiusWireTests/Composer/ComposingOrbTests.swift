@@ -3,6 +3,26 @@ import AVFoundation
 import XCTest
 
 final class ComposingOrbTests: XCTestCase {
+    @MainActor
+    func testOrbStaysDisconnectedFromSystemAudioBeforePlaying() async throws {
+        guard #available(iOS 27.0, *) else { return }
+        let url = try XCTUnwrap(Bundle.main.url(forResource: "ComposingOrb", withExtension: "mov"))
+        let session = AVAudioSession.sharedInstance()
+        let category = session.category
+        let view = OrbPlayerView(url: url)
+        view.isPlaying = true
+        defer { view.isPlaying = false; view.looper.disableLooping() }
+        for _ in 0..<30 {
+            if view.player.disconnectedFromSystemAudio && view.player.rate > 0 { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertTrue(view.player.disconnectedFromSystemAudio)
+        XCTAssertGreaterThan(view.player.rate, 0)
+        XCTAssertEqual(session.category, category)
+        view.isPlaying = false
+        XCTAssertEqual(view.player.rate, 0)
+    }
+
     func testBundledBlenderLoopIsPlayableAndRetainsTransparency() async throws {
         let url = try XCTUnwrap(Bundle.main.url(forResource: "ComposingOrb", withExtension: "mov"))
         let asset = AVURLAsset(url: url)

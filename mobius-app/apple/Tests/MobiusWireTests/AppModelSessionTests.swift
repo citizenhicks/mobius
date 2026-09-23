@@ -224,7 +224,7 @@ extension AppModelTests {
 
         model.bots = [bot(), bot(id: "bot-3")]
         model.openNewSession()
-        XCTAssertNil(model.chat.pendingNewChatBotID)
+        XCTAssertEqual(model.chat.pendingNewChatBotID, "bot-1")
     }
 
     func testNewChatResolvesGatewayDefaultFolderWithoutOpeningBrowser() throws {

@@ -29,18 +29,24 @@ final class ChatTitleWriterTests: XCTestCase {
         XCTAssertEqual(
             ChatTitleWriter.cleaned("Audit the sandbox policy."), "Audit the sandbox policy")
         XCTAssertEqual(
-            ChatTitleWriter.cleaned("  Trim whitespace \n and drop the rest"), "Trim whitespace")
+            ChatTitleWriter.cleaned("  Preserve complete \n wrapped titles"),
+            "Preserve complete wrapped titles")
     }
 
-    func testRejectsOnlyEmptyOutputAndFitsVerboseTitles() {
+    func testRejectsUnusableOutputWithoutCuttingCompleteTitles() {
         XCTAssertNil(ChatTitleWriter.cleaned(""))
         XCTAssertNil(ChatTitleWriter.cleaned("   \n  "))
         XCTAssertNil(ChatTitleWriter.cleaned("\"\""))
-        XCTAssertEqual(ChatTitleWriter.cleaned("One two three four five"), "One two three four")
+        XCTAssertEqual(
+            ChatTitleWriter.cleaned("One two three four five"), "One two three four five")
+        let complete =
+            "Understanding unexpectedly interrupted background audio during on-device dictation"
+        XCTAssertEqual(ChatTitleWriter.cleaned(complete), complete)
         XCTAssertEqual(
             ChatTitleWriter.cleaned("Extraordinarilylongword anotherlongword useful title"),
-            "Extraordinarilylongword anotherlongword…"
+            "Extraordinarilylongword anotherlongword useful title"
         )
+        XCTAssertNil(ChatTitleWriter.cleaned(String(repeating: "a", count: 257)))
     }
 
     @MainActor
@@ -48,9 +54,9 @@ final class ChatTitleWriterTests: XCTestCase {
         let writer = ChatTitleWriter { _ in "One two three four five" }
 
         guard case .title(let title) = await writer.title(for: "Review the gateway") else {
-            return XCTFail("Expected the generated title to be fitted")
+            return XCTFail("Expected the complete generated title")
         }
-        XCTAssertEqual(title, "One two three four")
+        XCTAssertEqual(title, "One two three four five")
     }
 
     @MainActor

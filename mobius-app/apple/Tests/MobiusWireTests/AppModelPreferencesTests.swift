@@ -936,6 +936,19 @@ extension AppModelTests {
         XCTAssertEqual(model.toast?.message, "Helper needs approval.")
     }
 
+    func testUntitledSessionNotificationsUseCatalogFallback() throws {
+        let model = try model()
+        model.chat.sessions = [session(state: .running, firstUserMessage: nil)]
+
+        model.presentSessionNotification(
+            .awaitingApproval, sessionID: "chat-1", approvalRequestID: "approval-1")
+        XCTAssertEqual(model.toast?.message, "new conversation needs approval.")
+        model.presentSessionNotification(.aborted, sessionID: "chat-1", runCount: 1)
+        XCTAssertEqual(model.toast?.message, "new conversation stopped.")
+        model.presentSessionNotification(.failed, sessionID: "chat-1", runCount: 2)
+        XCTAssertEqual(model.toast?.message, "new conversation failed.")
+    }
+
     func testNotificationTapWaitsForCloudCatalogThenOpensChat() throws {
         let model = try model()
         let userID = UUID()

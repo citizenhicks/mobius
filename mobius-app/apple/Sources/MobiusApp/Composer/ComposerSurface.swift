@@ -4,6 +4,10 @@ import UIKit
 struct ComposerSurface<Context: View, Controls: View>: View {
     @Binding var text: String
     var hasContext = false
+    var activate: (() -> Void)? = nil
+    var focusOnAppear = false
+    var didFocusOnAppear: () -> Void = {}
+    var onCompactChange: (Bool) -> Void = { _ in }
     var compactLeadingInset = MobiusSpace.l
     var compactTrailingInset = MobiusStyle.iconRowPadding + MobiusStyle.iconButtonSize
     var focusRequest = 0
@@ -15,52 +19,58 @@ struct ComposerSurface<Context: View, Controls: View>: View {
     @ViewBuilder let controls: (Bool, @escaping () -> Void) -> Controls
     @Environment(\.mobiusPalette) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.mobiusBottomRailGeometry) private var rail
     @State private var selection: TextSelection?
     @FocusState private var isComposerFocused: Bool
     @State private var referenceSuggestions: ReferenceSuggestions?
     @State private var composerHeight: CGFloat = 0
     @State private var optionsHeight = MobiusStyle.iconButtonSize
     @State private var showsExpandedComposer = false
+    @State private var restoreInlineFocus = false
+    @State private var isVisible = false
 
     var body: some View {
         VStack(spacing: 0) {
             if !showsExpandedComposer {
                 context { showsExpandedComposer = false }
-                TextField(
-                    "just say what you need",
-                    text: $text,
-                    selection: $selection,
-                    axis: .vertical
-                )
-                .textFieldStyle(.plain)
-                .focused($isComposerFocused)
-                .lineLimit(1...(isCompact ? 1 : 8))
-                .scrollDismissesKeyboard(.interactively)
-                .font(MobiusStyle.bodyFont)
-                .accessibilityLabel("Message")
-                .onSubmit { _ = submit() }
-                .onKeyPress(.return, phases: .down, action: handleReturn)
+                Group {
+                    if let activate {
+                        Button(action: activate) {
+                            inputLayout(
+                                Text("just say what you need")
+                                    .lineLimit(1)
+                                    .foregroundStyle(palette.muted)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            )
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("New chat")
+                        .accessibilityHint("Opens the composer")
+                    } else {
+                        inputLayout(
+                            TextField(
+                                "just say what you need",
+                                text: $text,
+                                selection: $selection,
+                                axis: .vertical
+                            )
+                            .textFieldStyle(.plain)
+                            .autocorrectionDisabled(false)
+                            .textInputAutocapitalization(.sentences)
+                            .focused($isComposerFocused)
+                            .lineLimit(1...(isCompact ? 1 : 8))
+                            .scrollDismissesKeyboard(.interactively)
+                            .accessibilityLabel("Message")
+                            .onSubmit { _ = submit() }
+                            .onKeyPress(.return, phases: .down, action: handleReturn)
+                        )
+                    }
+                }
                 .onGeometryChange(for: CGFloat.self) { geometry in
                     geometry.size.height
                 } action: { height in
                     composerHeight = height
                 }
-                .frame(
-                    minHeight: isCompact
-                        ? rail?.frame.map { max(0, $0.height - 2 * MobiusStyle.iconRowPadding) }
-                            ?? MobiusStyle.iconButtonSize
-                        : nil
-                )
-                .padding(.leading, isCompact ? compactLeadingInset : MobiusSpace.l)
-                .padding(
-                    .trailing,
-                    isCompact
-                        ? compactTrailingInset
-                        : MobiusSpace.l
-                )
-                .padding(.top, isCompact ? MobiusStyle.iconRowPadding : MobiusSpace.m)
-                .padding(.bottom, isCompact ? MobiusStyle.iconRowPadding : MobiusSpace.xs)
                 .overlay(alignment: .topTrailing) {
                     if showsExpansionControl {
                         ComposerSizeButton(expanded: false) {
@@ -107,7 +117,13 @@ struct ComposerSurface<Context: View, Controls: View>: View {
                 .zIndex(2)
             }
         }
-        .sheet(isPresented: $showsExpandedComposer) {
+        .sheet(
+            isPresented: $showsExpandedComposer,
+            onDismiss: {
+                if restoreInlineFocus && isVisible { isComposerFocused = true }
+                restoreInlineFocus = false
+            }
+        ) {
             expandedEditor
         }
         .task(id: referenceSuggestionRequest) {
@@ -120,30 +136,42 @@ struct ComposerSurface<Context: View, Controls: View>: View {
             referenceSuggestions = result
         }
         .onChange(of: focusRequest) { _, _ in
+            guard isVisible else { return }
             isComposerFocused = true
         }
         .onChange(of: blurRequest) { _, _ in
             isComposerFocused = false
         }
+        .onChange(of: isCompact, initial: true) { _, compact in
+            onCompactChange(compact)
+        }
+        .onAppear {
+            isVisible = true
+            focusIfRequested()
+        }
+        .onDisappear {
+            isVisible = false
+            isComposerFocused = false
+        }
+        .onChange(of: focusOnAppear) { _, _ in focusIfRequested() }
     }
 
     private var expandedEditor: some View {
         VStack(spacing: 0) {
             context { showsExpandedComposer = false }
-            TextEditor(text: $text, selection: $selection)
-                .scrollContentBackground(.hidden)
-                .scrollDismissesKeyboard(.interactively)
-                .focused($isComposerFocused)
-                .font(MobiusStyle.bodyFont)
-                .accessibilityLabel("Message")
-                .onKeyPress(.return, phases: .down, action: handleReturn)
-                .padding(.horizontal, MobiusSpace.l)
-                .padding(.top, MobiusSpace.m)
-                .padding(.bottom, MobiusSpace.xs)
-                .overlay(alignment: .topTrailing) {
-                    ComposerSizeButton(expanded: true, action: { showsExpandedComposer = false })
+            ExpandedComposerTextEditor(
+                text: $text, selection: $selection, handleReturn: handleReturn
+            )
+            .padding(.horizontal, MobiusSpace.l)
+            .padding(.top, MobiusSpace.m)
+            .padding(.bottom, MobiusSpace.xs)
+            .overlay(alignment: .topTrailing) {
+                ComposerSizeButton(expanded: true) {
+                    restoreInlineFocus = true
+                    showsExpandedComposer = false
                 }
-                .frame(maxHeight: .infinity)
+            }
+            .frame(maxHeight: .infinity)
             if let suggestions = referenceSuggestions {
                 ReferenceSuggestionsPopup(suggestions: suggestions, floatsAbove: false) {
                     complete($0, suggestions: suggestions)
@@ -159,7 +187,6 @@ struct ComposerSurface<Context: View, Controls: View>: View {
         .padding(.horizontal, MobiusSpace.l)
         .padding(.top, MobiusSpace.xl)
         .padding(.bottom, MobiusSpace.m)
-        .task { isComposerFocused = true }
         .mobiusSheet(detents: [.fraction(0.75)])
     }
 
@@ -171,12 +198,32 @@ struct ComposerSurface<Context: View, Controls: View>: View {
             )
     }
 
+    private func focusIfRequested() {
+        guard isVisible, focusOnAppear else { return }
+        isComposerFocused = true
+        didFocusOnAppear()
+    }
+
+    private func inputLayout<Content: View>(_ content: Content) -> some View {
+        content
+            .font(MobiusStyle.bodyFont)
+            .frame(
+                minHeight: isCompact
+                    ? MobiusStyle.toolbarButtonSize - 2 * MobiusStyle.iconRowPadding
+                    : nil
+            )
+            .padding(.leading, isCompact ? compactLeadingInset : MobiusSpace.l)
+            .padding(.trailing, isCompact ? compactTrailingInset : MobiusSpace.l)
+            .padding(.top, isCompact ? MobiusStyle.iconRowPadding : MobiusSpace.m)
+            .padding(.bottom, isCompact ? MobiusStyle.iconRowPadding : MobiusSpace.xs)
+    }
+
     static func isCompact(text: String, isFocused: Bool, hasContext: Bool) -> Bool {
         !isFocused && text.isEmpty && !hasContext
     }
 
     private var showsExpansionControl: Bool {
-        composerHeight > UIFont.preferredFont(forTextStyle: .body).lineHeight * 2.5
+        !isCompact && composerHeight > UIFont.preferredFont(forTextStyle: .body).lineHeight * 2.5
     }
 
     private func handleReturn(_ keyPress: KeyPress) -> KeyPress.Result {
@@ -196,6 +243,7 @@ struct ComposerSurface<Context: View, Controls: View>: View {
 
     private func didSend() {
         selection = nil
+        restoreInlineFocus = false
         showsExpandedComposer = false
     }
 
@@ -247,6 +295,26 @@ struct ComposerSurface<Context: View, Controls: View>: View {
     }
 }
 
+private struct ExpandedComposerTextEditor: View {
+    @Binding var text: String
+    @Binding var selection: TextSelection?
+    let handleReturn: (KeyPress) -> KeyPress.Result
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        TextEditor(text: $text, selection: $selection)
+            .scrollContentBackground(.hidden)
+            .scrollDismissesKeyboard(.interactively)
+            .focused($isFocused)
+            .autocorrectionDisabled(false)
+            .textInputAutocapitalization(.sentences)
+            .font(MobiusStyle.bodyFont)
+            .accessibilityLabel("Message")
+            .onKeyPress(.return, phases: .down, action: handleReturn)
+            .task { isFocused = true }
+    }
+}
+
 private struct ComposerSizeButton: View {
     let expanded: Bool
     let action: () -> Void
@@ -263,6 +331,7 @@ private struct ComposerSizeButton: View {
         .labelStyle(.iconOnly)
         .buttonStyle(MobiusIconButtonStyle(bare: true))
         .help(Text(title))
+        .accessibilityLabel(Text(title))
     }
 }
 
@@ -325,5 +394,35 @@ private struct ReferenceSuggestionsPopup: View {
         .mobiusGlass(in: MobiusStyle.tileShape)
         .shadow(color: palette.shadow.opacity(0.2), radius: 16, y: 8)
         .offset(y: floatsAbove ? -height - 8 : 0)
+    }
+}
+
+struct DictationWaveform: View {
+    @Environment(\.mobiusPalette) private var palette
+    let levels: [Double]
+
+    var body: some View {
+        Canvas { context, size in
+            let count = max(1, Int(size.width / 7))
+            let leading = (size.width - CGFloat(count - 1) * 7 - 4) / 2
+            for index in 0..<count {
+                let sample = levels.count - count + index
+                let level = sample >= 0 ? levels[sample] : 0
+                let height = 4 + CGFloat(level) * (size.height - 4)
+                let bar = CGRect(
+                    x: leading + CGFloat(index) * 7,
+                    y: (size.height - height) / 2,
+                    width: 4,
+                    height: height
+                )
+                context.fill(
+                    Path(roundedRect: bar, cornerRadius: 2),
+                    with: .color(
+                        palette.muted.opacity(min(1, Double(index + 1) / (Double(count) * 0.4))))
+                )
+            }
+        }
+        .frame(height: MobiusStyle.iconButtonSize)
+        .accessibilityHidden(true)
     }
 }

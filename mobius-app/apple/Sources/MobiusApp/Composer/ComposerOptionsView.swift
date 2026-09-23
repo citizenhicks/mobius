@@ -163,9 +163,9 @@ struct ComposerOptionsView: View {
     @Environment(\.mobiusPalette) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.mobiusHasVerticalToolbar) private var hasVerticalToolbar
-    @Namespace private var actionTransition
     let send: (ActiveMessageDelivery?) -> Void
     var isCompact = false
+    var newChatEntry: ((ComposerEntryIntent) -> Void)? = nil
     @State private var showsModelSettings = false
     @State private var opensModelSelection = false
     @State private var showsModelSelection = false
@@ -175,7 +175,7 @@ struct ComposerOptionsView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            if model.attachmentsEnabled { addAttachmentControl }
+            if newChatEntry != nil || model.attachmentsEnabled { addAttachmentControl }
             if !isCompact {
                 ForEach(composerSettings) { item in
                     ComposerSettingMenu(item: item)
@@ -218,67 +218,52 @@ struct ComposerOptionsView: View {
 
     /// The photo library and the file browser are separate pickers, so the plus offers both
     /// rather than assuming every attachment lives in Files.
+    @ViewBuilder
     private var addAttachmentControl: some View {
-        Menu {
-            Button("Photos", glyph: .image01) {
-                isPhotoPickerPresented = true
+        if let newChatEntry {
+            Button("New chat", glyph: .plus) { newChatEntry(.focus) }
+                .labelStyle(.iconOnly)
+                .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
+                .buttonStyle(.mobiusPlain)
+                .accessibilityLabel("New chat")
+                .accessibilityHint("Open the composer to add an attachment")
+        } else {
+            Menu {
+                Button("Photos", glyph: .image01) {
+                    isPhotoPickerPresented = true
+                }
+                Button("Files", glyph: .fileText) {
+                    isFileImporterPresented = true
+                }
+            } label: {
+                MobiusLabel(
+                    title: "Add attachment",
+                    glyph: .plus,
+                    iconColor: model.canImportAttachments ? nil : palette.muted,
+                    iconSize: MobiusStyle.glyphLead
+                )
+                .labelStyle(.iconOnly)
+                .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
+                .contentShape(Rectangle())
             }
-            Button("Files", glyph: .fileText) {
-                isFileImporterPresented = true
-            }
-        } label: {
-            MobiusLabel(
-                title: "Add attachment",
-                glyph: .plus,
-                iconColor: model.canImportAttachments ? nil : palette.muted,
-                iconSize: MobiusStyle.glyphLead
-            )
-            .labelStyle(.iconOnly)
-            .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .labelStyle(.titleAndIcon)
+            .menuIndicator(.hidden)
+            .disabled(!model.canImportAttachments)
+            .accessibilityLabel("Add attachment")
         }
-        .buttonStyle(.plain)
-        .labelStyle(.titleAndIcon)
-        .menuIndicator(.hidden)
-        .disabled(!model.canImportAttachments)
-        .accessibilityLabel("Add attachment")
     }
 
     private var modelMenu: some View {
-        let progress = currentChoice.map { model.reasoningFraction(for: $0) } ?? 0
-        let sweep = 250.0
-        let start = 90 + (360 - sweep) / 2
-        let endpoint = (start + sweep * progress) * .pi / 180
-        return Button {
+        Button {
             showsModelSettings = true
         } label: {
-            ZStack {
-                Circle()
-                    .trim(from: 0, to: sweep / 360)
-                    .stroke(
-                        palette.muted.opacity(0.2),
-                        style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
-                    )
-                    .rotationEffect(.degrees(start))
-                Circle()
-                    .trim(from: 0, to: progress * sweep / 360)
-                    .stroke(
-                        providerTint?.color ?? palette.accent,
-                        style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
-                    )
-                    .rotationEffect(.degrees(start))
-                Circle()
-                    .fill(providerTint?.color ?? palette.accent)
-                    .frame(width: 4.5, height: 4.5)
-                    .offset(
-                        x: MobiusStyle.rowCompact / 2 * cos(endpoint),
-                        y: MobiusStyle.rowCompact / 2 * sin(endpoint)
-                    )
-                MobiusIcon(
-                    providerGlyph ?? .aiScan, size: MobiusStyle.glyphInline,
-                    foreground: providerTint?.color)
-            }
-            .frame(width: MobiusStyle.rowCompact, height: MobiusStyle.rowCompact)
+            MobiusIcon(
+                .reasoning(currentChoice.map { model.reasoningFraction(for: $0) } ?? 0),
+                size: MobiusStyle.iconSize
+            )
+            .contentTransition(.opacity)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: currentChoice?.route)
             .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
             .contentShape(Rectangle())
         }
@@ -312,7 +297,7 @@ struct ComposerOptionsView: View {
 
     private var selectedModelBinding: Binding<String?> {
         Binding(
-            get: { selectedBotModelRoute },
+            get: { model.selectedBotModelRoute },
             set: { if let route = $0 { model.selectModelForSelectedBot(route) } }
         )
     }
@@ -325,27 +310,27 @@ struct ComposerOptionsView: View {
     }
 
     private var actionButtons: some View {
-        GlassEffectContainer(spacing: MobiusSpace.s) {
-            HStack(spacing: -MobiusSpace.xs) {
-                if model.selectedRouteSupportsRealtimeVoice && !model.composerUsesPrimaryVoice {
-                    voiceButton
-                        .buttonStyle(MobiusIconButtonStyle(surfaceSize: 32))
-                        .glassEffectID("voice", in: actionTransition)
-                        .glassEffectTransition(reduceMotion ? .identity : .matchedGeometry)
-                }
-                primaryAction
-                    .mobiusProminentIconButton(surfaceSize: 32)
-                    .glassEffectID("primary", in: actionTransition)
-                    .glassEffectTransition(reduceMotion ? .identity : .matchedGeometry)
+        HStack(spacing: -MobiusSpace.xs) {
+            if newChatEntry != nil
+                ? model.newChatRouteSupportsRealtimeVoice
+                : model.selectedRouteSupportsRealtimeVoice
+            {
+                voiceButton
+                    .buttonStyle(MobiusIconButtonStyle(bare: true))
             }
+            primaryAction
+                .mobiusProminentIconButton(surfaceSize: 32, flat: true)
+                .transaction { $0.animation = nil }
         }
-        .animation(
-            reduceMotion ? nil : .smooth(duration: 0.3), value: model.composerUsesPrimaryVoice)
     }
 
     private var voiceButton: some View {
         Button {
-            model.startRealtimeVoice()
+            if newChatEntry != nil {
+                model.openNewVoiceChat()
+            } else {
+                model.startRealtimeVoice()
+            }
         } label: {
             MobiusLabel(
                 title: "Start voice chat", glyph: .audioWave01,
@@ -353,15 +338,23 @@ struct ComposerOptionsView: View {
             )
         }
         .labelStyle(.iconOnly)
-        .disabled(!model.canStartRealtimeVoice)
+        .disabled(newChatEntry != nil ? !model.canCreateSession : !model.canStartRealtimeVoice)
         .help("Start voice chat")
         .accessibilityLabel("Start voice chat")
     }
 
     @ViewBuilder
     private var primaryAction: some View {
-        if model.composerUsesPrimaryVoice {
-            voiceButton
+        if isCompact && (newChatEntry != nil || !model.composerShowsInterruptAction) {
+            Button("Dictate", glyph: .mic01) {
+                if let newChatEntry {
+                    newChatEntry(.dictate)
+                } else {
+                    model.toggleComposerDictation()
+                }
+            }
+            .help("Dictate")
+            .accessibilityLabel("Dictate")
         } else {
             ComposerSendButton(send: send)
         }
@@ -423,12 +416,8 @@ struct ComposerOptionsView: View {
         return "\(base).\(ext)"
     }
 
-    private var selectedBotModelRoute: String? {
-        model.modelRoute(for: model.selectedBot?.config.config)
-    }
-
     private var currentChoice: ModelChoice? {
-        guard let selectedBotModelRoute else { return nil }
+        guard let selectedBotModelRoute = model.selectedBotModelRoute else { return nil }
         return model.modelChoices.first { $0.route == selectedBotModelRoute }
     }
 
@@ -454,16 +443,6 @@ struct ComposerOptionsView: View {
         return .localized("\(modelName) · \(model.reasoningLabel(for: currentChoice))")
     }
 
-    private var providerTint: AccentTint? {
-        currentChoice.map { model.providerTint(for: $0) }
-    }
-
-    private var providerGlyph: MobiusGlyph? {
-        currentChoice
-            .flatMap { model.providerSymbol(for: $0) }
-            .flatMap { MobiusSymbol.knownGlyph(for: $0) }
-    }
-
 }
 
 /// The inline composer and the system rail share the complete send/interrupt interaction.
@@ -481,6 +460,7 @@ struct ComposerSendButton: View {
                     title: "Stop", glyph: .stopFill, iconSize: MobiusStyle.glyphLead)
             }
             .help("Stop")
+            .accessibilityLabel("Stop")
         } else {
             Button(action: { send(nil) }) {
                 Label {
@@ -518,6 +498,7 @@ extension AppModel {
     var composerRailShowsSendAction: Bool {
         chat.realtimeVoiceCall == nil
             && (composerShowsInterruptAction
+                || !chat.composerIsCompact
                 || !chat.composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 || !chat.composerAttachments.isEmpty)
     }

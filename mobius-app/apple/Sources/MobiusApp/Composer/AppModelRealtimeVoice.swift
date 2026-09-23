@@ -3,7 +3,6 @@ import AVFoundation
 import Foundation
 
 enum NewVoiceChatIntent: Equatable {
-    case selectingWorkspace
     case selectingBot
     case openingSession(String)
 }
@@ -21,6 +20,15 @@ extension AppModel {
             chat.selectedSessionID == nil
             ? modelRoute(for: selectedBot?.config.config ?? botDefaultsSnapshot?.config)
             : chat.selectedModelRoute
+        return supportsRealtimeVoice(route)
+    }
+
+    var newChatRouteSupportsRealtimeVoice: Bool {
+        supportsRealtimeVoice(
+            modelRoute(for: newChatBot?.config.config ?? botDefaultsSnapshot?.config))
+    }
+
+    private func supportsRealtimeVoice(_ route: String?) -> Bool {
         guard let route,
             modelChoices.first(where: { $0.route == route })?.supports(.realtimeVoice) == true,
             let instanceID = modelProviders[route],
@@ -35,16 +43,11 @@ extension AppModel {
             && (chat.selectedSessionID != nil || chat.pendingNewChatBotID != nil)
     }
 
-    var composerUsesPrimaryVoice: Bool {
-        selectedRouteSupportsRealtimeVoice && chat.selectedSessionID == nil
-            && chat.composer.isEmpty && !chat.hasComposerContext
-    }
-
     func openNewVoiceChat() {
-        guard canCreateSession, selectedRouteSupportsRealtimeVoice else { return }
+        guard canCreateSession, newChatRouteSupportsRealtimeVoice else { return }
         openNewSession()
-        newVoiceChatIntent = .selectingWorkspace
-        openWorkspaceBrowser()
+        newVoiceChatIntent = .selectingBot
+        createPendingVoiceChat()
     }
 
     func cancelVoiceChatIntent() {
@@ -53,6 +56,7 @@ extension AppModel {
 
     func createPendingVoiceChat() {
         guard newVoiceChatIntent == .selectingBot else { return }
+        guard chat.pendingNewChatBotID != nil else { return }
         guard selectedRouteSupportsRealtimeVoice else {
             cancelVoiceChatIntent()
             showToast("Voice is not available for this Bot's provider.", tone: .warning)
@@ -106,6 +110,7 @@ extension ChatSessionModel {
         dismissComposerFocus()
         realtimeVoiceTask = Task { [weak self] in
             do {
+                await self?.dictation.stopAndReleaseAudioSession()
                 guard self?.realtimeVoiceCall?.requestID == requestID else { return }
                 try await RealtimeCallProvider.shared.start(
                     id: call.systemID,
@@ -178,6 +183,7 @@ extension ChatSessionModel {
                 gateway.transmit(.endRealtimeVoice(sessionID: sessionID, voiceID: voiceID))
                 return
             }
+            startVoiceChatTitle(sessionID: sessionID, requestID: requestID)
             realtimeVoiceCall?.voiceID = voiceID
             RealtimeCallProvider.shared.connected(id: realtimeVoiceCall?.systemID)
             realtimeVoiceTask?.cancel()

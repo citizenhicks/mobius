@@ -2,9 +2,119 @@ import Foundation
 @testable import Mobius
 @preconcurrency import AVFoundation
 import XCTest
+import SwiftUI
+import AudioToolbox
 
 @MainActor
 extension AppModelTests {
+    func testDictationCanActivateTheRecordingSession() async throws {
+        let session = AVAudioSession.sharedInstance()
+        let previousCategory = session.category
+        let previousMode = session.mode
+        let previousOptions = session.categoryOptions
+        let previousHaptics = session.allowHapticsAndSystemSoundsDuringRecording
+        defer {
+            try? session.setAllowHapticsAndSystemSoundsDuringRecording(previousHaptics)
+            try? session.setCategory(
+                previousCategory, mode: previousMode, options: previousOptions)
+        }
+        try await ComposerDictation.setAudioSessionActive(true)
+        XCTAssertEqual(session.category, .record)
+        XCTAssertEqual(session.mode, .measurement)
+        XCTAssertTrue(session.allowHapticsAndSystemSoundsDuringRecording)
+        XCTAssertFalse(session.categoryOptions.contains(.duckOthers))
+        try await ComposerDictation.setAudioSessionActive(false)
+    }
+
+    func testDictationKeepsHistoricalPeaksThroughSilence() throws {
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1_024))
+        buffer.frameLength = buffer.frameCapacity
+        let samples = try XCTUnwrap(buffer.floatChannelData)[0]
+        for index in 0..<Int(buffer.frameLength) { samples[index] = 0 }
+        XCTAssertEqual(ComposerDictation.recordingLevel(in: buffer), 0)
+        for index in 0..<Int(buffer.frameLength) { samples[index] = 0.01 }
+        let level = ComposerDictation.recordingLevel(in: buffer)
+        XCTAssertEqual(level, 0.4, accuracy: 0.001)
+        for index in 0..<Int(buffer.frameLength) { samples[index] = 1 }
+        XCTAssertEqual(ComposerDictation.recordingLevel(in: buffer), 1)
+
+        let dictation = ComposerDictation()
+        dictation.recordAudioLevel(level, duration: 0.05)
+        XCTAssertTrue(dictation.audioLevels.isEmpty)
+        dictation.recordAudioLevel(0, duration: 0.05)
+        XCTAssertEqual(dictation.audioLevels, [level])
+        dictation.recordAudioLevel(0, duration: 0.1)
+        XCTAssertEqual(
+            dictation.audioLevels, [level, 0], "Silence must not flatten recorded speech")
+
+        func image(_ levels: [Double]) throws -> CGImage {
+            let renderer = ImageRenderer(
+                content: DictationWaveform(levels: levels).frame(width: 280, height: 44))
+            renderer.scale = 1
+            return try XCTUnwrap(renderer.cgImage)
+        }
+        let first = try image([1, 0])
+        let next = try image([1, 0, 0])
+        func peakX(_ image: CGImage) throws -> Int? {
+            let context = try XCTUnwrap(
+                CGContext(
+                    data: nil, width: 280, height: 44, bitsPerComponent: 8, bytesPerRow: 280 * 4,
+                    space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.draw(image, in: CGRect(x: 0, y: 0, width: 280, height: 44))
+            let bytes = try XCTUnwrap(context.data).assumingMemoryBound(to: UInt8.self)
+            return (0..<280).first { bytes[(10 * 280 + $0) * 4 + 3] > 0 }
+        }
+        XCTAssertEqual(
+            try XCTUnwrap(peakX(first)) - XCTUnwrap(peakX(next)), 7,
+            "New silence shifts an existing peak left by exactly one bar")
+        for _ in 0..<150 { dictation.recordAudioLevel(0, duration: 0.1) }
+        XCTAssertEqual(dictation.audioLevels.count, 128)
+        XCTAssertTrue(dictation.audioLevels.allSatisfy { $0 == 0 })
+        dictation.stop()
+        XCTAssertTrue(dictation.audioLevels.isEmpty)
+    }
+
+    func testSilentDictationDotsHaveContinuousSpacing() throws {
+        let renderer = ImageRenderer(
+            content:
+                DictationWaveform(levels: []).frame(width: 280, height: 44).background(.black))
+        renderer.scale = 1
+        let image = try XCTUnwrap(renderer.cgImage)
+        let context = try XCTUnwrap(
+            CGContext(
+                data: nil, width: 280, height: 44,
+                bitsPerComponent: 8, bytesPerRow: 280 * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.draw(image, in: CGRect(x: 0, y: 0, width: 280, height: 44))
+        let bytes = try XCTUnwrap(context.data).assumingMemoryBound(to: UInt8.self)
+        var starts: [Int] = []
+        var wasDot = false
+        for x in 0..<280 {
+            let offset = (22 * 280 + x) * 4
+            let isDot = Int(bytes[offset]) + Int(bytes[offset + 1]) + Int(bytes[offset + 2]) > 2
+            if isDot && !wasDot { starts.append(x) }
+            wasDot = isDot
+        }
+        XCTAssertGreaterThan(starts.count, 30)
+        for (left, right) in zip(starts, starts.dropFirst()) {
+            XCTAssertEqual(right - left, 7, "No gap where faded dots meet the active bars")
+        }
+    }
+
+    func testDictationCuesAreBundledPlayableSystemSounds() throws {
+        for name in ["DictationStart", "DictationStop"] {
+            let url = try XCTUnwrap(Bundle.main.url(forResource: name, withExtension: "wav"))
+            let audio = try AVAudioFile(forReading: url)
+            XCTAssertGreaterThan(audio.length, 0)
+            var sound: SystemSoundID = 0
+            XCTAssertEqual(
+                AudioServicesCreateSystemSoundID(url as CFURL, &sound), kAudioServicesNoError)
+            XCTAssertEqual(AudioServicesDisposeSystemSoundID(sound), kAudioServicesNoError)
+        }
+    }
+
     func testIdleDictationDoesNotCreateAnAudioEngine() {
         var engineCreations = 0
         func makeEngine() -> AVAudioEngine {
@@ -29,7 +139,15 @@ extension AppModelTests {
             XCTAssertNil(draft.update("world again", currentText: "Manually edited"))
             XCTAssertNil(draft.update("world again", currentText: ""))
             XCTAssertEqual(draft.text, prefix + "world")
+            XCTAssertEqual(draft.originalText(ifCurrentText: prefix + "world"), original)
+            XCTAssertNil(draft.originalText(ifCurrentText: "Manually edited"))
         }
+    }
+
+    func testDictationOnlyOffersEnglishAndFrench() {
+        XCTAssertTrue(ComposerDictation.supports(Locale(identifier: "en-US")))
+        XCTAssertTrue(ComposerDictation.supports(Locale(identifier: "fr-FR")))
+        XCTAssertFalse(ComposerDictation.supports(Locale(identifier: "de-DE")))
     }
 
     func testDictationAuthorizationAcceptsBackgroundCallbacks() async {
@@ -63,6 +181,10 @@ extension AppModelTests {
         model.gateway.connectionState = .ready
         model.chat.selectedSessionID = "chat-1"
         XCTAssertFalse(model.composerRailShowsSendAction)
+
+        model.chat.composerIsCompact = false
+        XCTAssertTrue(model.composerRailShowsSendAction)
+        model.chat.composerIsCompact = true
 
         model.chat.composer = "Continue with this"
         XCTAssertTrue(model.composerRailShowsSendAction)

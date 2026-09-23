@@ -59,11 +59,16 @@ struct ChatsView: View {
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(.interactively)
         .background { palette.canvas.ignoresSafeArea() }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if selectedSessionIDs == nil {
+                ComposerView(showsNewChatEntry: true)
+                    .disabled(!model.canCreateSession)
+            }
+        }
         .navigationTitle("Chats")
         .toolbarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarSpacer(.flexible, placement: .bottomBar)
-            DefaultToolbarItem(kind: .search, placement: .bottomBar)
+            DefaultToolbarItem(kind: .search, placement: .topBarTrailing)
             if selectedSessionIDs != nil {
                 MobiusToolbarItem(placement: .cancellationAction) {
                     MobiusToolbarIconButton(glyph: .x, label: "Cancel") {
@@ -81,11 +86,8 @@ struct ChatsView: View {
                     .accessibilityValue(Text("\(selectedSessions.count) selected"))
                 }
             } else {
-                MobiusToolbarItem(placement: .primaryAction) {
+                MobiusToolbarItem(placement: .topBarTrailing) {
                     organizationMenu
-                }
-                MobiusToolbarItem(placement: .bottomBar) {
-                    newChatButton
                 }
             }
         }
@@ -261,15 +263,6 @@ struct ChatsView: View {
                     : Text(
                         "\(organization.title), \(model.chat.chatBotFilterIDs.count) Bots selected")
         )
-    }
-
-    private var newChatButton: some View {
-        MobiusToolbarIconButton(glyph: .notePencil, label: "New chat") {
-            model.openNewSession()
-        }
-        .mobiusProminentToolbarButton()
-        .disabled(!model.canCreateSession)
-        .accessibilityHint("Start a new chat")
     }
 
     private var showsLoadingCatalog: Bool {

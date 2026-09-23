@@ -5,15 +5,17 @@ import UIKit
 import XCTest
 
 @MainActor
-func testAccessibilityElements(_ object: NSObject, depth: Int = 0) -> [NSObject] {
-    guard depth < 20 else { return [] }
+func testAccessibilityElements(
+    _ object: NSObject, depth: Int = 0, maxDepth: Int = 20
+) -> [NSObject] {
+    guard depth < maxDepth else { return [] }
     let count = object.accessibilityElementCount()
     let children =
         count > 0 && count < 100
         ? (0..<count).compactMap { object.accessibilityElement(at: $0) as? NSObject } : []
     return [object]
         + (children + ((object as? UIView)?.subviews ?? [])).flatMap {
-            testAccessibilityElements($0, depth: depth + 1)
+            testAccessibilityElements($0, depth: depth + 1, maxDepth: maxDepth)
         }
 }
 

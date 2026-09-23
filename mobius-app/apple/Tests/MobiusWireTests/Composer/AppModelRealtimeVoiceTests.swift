@@ -48,12 +48,313 @@ extension AppModelTests {
         model.providerStatuses[0].realtimeVoices = ["marin", "cedar"]
         model.chat.selectedModelRoute = "unknown"
         XCTAssertFalse(model.selectedRouteSupportsRealtimeVoice)
+        XCTAssertTrue(model.newChatRouteSupportsRealtimeVoice)
         model.chat.selectedModelRoute = "voice-route"
         model.modelProviders["voice-route"] = "other-instance"
         XCTAssertFalse(model.selectedRouteSupportsRealtimeVoice)
     }
 
-    func testComposerOnlyShowsAudioControlsForRealtimeModels() async throws {
+    func testCatalogComposerReopensFocusedDraftAndVoiceSkipsFolderSheet() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try voiceModel(recorder: recorder)
+        let scene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive })
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
+        let host = UIHostingController(
+            rootView: NavigationStack(
+                path: Binding(get: { model.navigationPath }, set: { model.navigationPath = $0 })
+            ) {
+                ChatsView()
+                    .navigationDestination(for: AppRoute.self) { _ in ChatView() }
+            }
+            .mobiusTheme()
+            .environment(model))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer {
+            model.cancelVoiceChatIntent()
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+
+        func capture(_ name: String) {
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+            let attachment = XCTAttachment(image: image)
+            attachment.name = name
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+
+        func navigationController(in controller: UIViewController) -> UINavigationController? {
+            if let navigation = controller as? UINavigationController { return navigation }
+            return controller.children.lazy.compactMap { navigationController(in: $0) }.first
+        }
+
+        for attempt in 1...2 {
+            model.navigationPath = []
+            let appeared = await eventually(timeout: .seconds(3)) {
+                navigationController(in: host)?.viewControllers.count == 1
+                    && navigationController(in: host)?.transitionCoordinator == nil
+                    && testAccessibilityElements(window).contains {
+                        $0.accessibilityLabel == "New chat" && $0.accessibilityFrame.width > 100
+                    }
+            }
+            XCTAssertTrue(appeared)
+            try await Task.sleep(for: .milliseconds(400))
+            capture("Catalog closed composer \(attempt)")
+            let launch = try XCTUnwrap(
+                testAccessibilityElements(window).first {
+                    $0.accessibilityLabel == "New chat" && $0.accessibilityFrame.width > 100
+                })
+            XCTAssertTrue(launch.accessibilityActivate())
+            let focused = await eventually(timeout: .seconds(3)) {
+                model.navigationPath == [.chat(.new)] && !model.chat.composerIsCompact
+                    && testAccessibilityElements(window).contains {
+                        $0.accessibilityLabel == "Message"
+                    }
+            }
+            XCTAssertTrue(focused, "Entry \(attempt) did not focus the composer")
+            XCTAssertTrue(model.currentSessionTitle.isEmpty)
+            XCTAssertNil(model.chat.sessionRequestID)
+            try await Task.sleep(for: .milliseconds(400))
+            XCTAssertFalse(
+                model.chat.composerIsCompact, "Entry \(attempt) lost focus after navigation")
+            XCTAssertTrue(
+                testAccessibilityElements(window).contains {
+                    ($0 as? UIView)?.isFirstResponder == true
+                })
+            capture("Focused untitled draft \(attempt)")
+        }
+
+        model.navigationPath = []
+        let returned = await eventually(timeout: .seconds(3)) {
+            testAccessibilityElements(window).contains { $0.accessibilityLabel == "New chat" }
+        }
+        XCTAssertTrue(returned)
+        try await Task.sleep(for: .milliseconds(400))
+        let voice = try XCTUnwrap(
+            testAccessibilityElements(window).first {
+                $0.accessibilityLabel == "Start voice chat"
+            })
+        XCTAssertTrue(voice.accessibilityActivate())
+        let requested = await eventually { model.chat.sessionRequestID != nil }
+        XCTAssertTrue(requested)
+        XCTAssertFalse(model.showsWorkspaceBrowser)
+        XCTAssertTrue(model.currentSessionTitle.isEmpty)
+        XCTAssertEqual(model.navigationPath, [.chat(.new)])
+        try await Task.sleep(for: .milliseconds(400))
+        capture("Voice uses current workspace")
+        _ = await recorder.firstRequest(after: 0) {
+            if case .createSession = $0 { true } else { false }
+        }
+        let requests = await recorder.requests()
+        XCTAssertEqual(
+            requests.filter { if case .createSession = $0 { true } else { false } }.count, 1)
+    }
+
+    func testReasoningGaugeIncludesAllSixPhases() throws {
+        let glyphs = (0...5).map { MobiusGlyph.reasoning(Double($0) / 5) }
+        XCTAssertEqual(Set(glyphs).count, 6)
+        for glyph in glyphs {
+            XCTAssertNotNil(UIImage(named: glyph.asset))
+        }
+        let renderer = ImageRenderer(
+            content: HStack(spacing: 24) {
+                ForEach(glyphs, id: \.self) { glyph in
+                    MobiusIcon(glyph, size: 44)
+                }
+            }.foregroundStyle(.white).padding(24).background(.black))
+        renderer.scale = 3
+        let attachment = XCTAttachment(image: try XCTUnwrap(renderer.uiImage))
+        attachment.name = "Six reasoning speedometer phases"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    func testExpandedComposerFocusesNativeTextInputAndPreservesDraft() async throws {
+        let model = try voiceModel()
+        model.chooseWorkspace("/srv/project")
+        model.chat.composer = "First line\nSecond line\nThird line"
+        let scene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive })
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
+        window.rootViewController = UIHostingController(
+            rootView: ComposerView().mobiusTheme().environment(model))
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+        for _ in 0..<2 {
+            let appeared = await eventually {
+                testAccessibilityElements(window).contains {
+                    $0.accessibilityLabel == "Expand composer"
+                }
+            }
+            XCTAssertTrue(appeared)
+            let expand = try XCTUnwrap(
+                testAccessibilityElements(window).first {
+                    $0.accessibilityLabel == "Expand composer"
+                })
+            XCTAssertTrue(expand.accessibilityActivate())
+            let focused = await eventually(timeout: .seconds(3)) {
+                testAccessibilityElements(window).contains {
+                    ($0 as? UIView)?.isFirstResponder == true
+                }
+            }
+            let attachment = XCTAttachment(
+                image: UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                    window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+                })
+            attachment.name = "Expanded editor keyboard check"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            XCTAssertTrue(focused, "Expanded editor must open with the keyboard")
+            let responder = try XCTUnwrap(
+                testAccessibilityElements(window).first {
+                    ($0 as? UIView)?.isFirstResponder == true
+                })
+            let editor = try XCTUnwrap(responder as? any UITextInput)
+            XCTAssertEqual(editor.autocorrectionType, .yes)
+            XCTAssertEqual(editor.autocapitalizationType, .sentences)
+            XCTAssertEqual(editor.keyboardType, .default)
+            XCTAssertEqual(
+                editor.text(
+                    in: try XCTUnwrap(
+                        editor.textRange(
+                            from: editor.beginningOfDocument, to: editor.endOfDocument))),
+                model.chat.composer)
+            editor.selectedTextRange = editor.textRange(
+                from: editor.endOfDocument, to: editor.endOfDocument)
+            editor.insertText(" more")
+            let updated = await eventually { model.chat.composer.hasSuffix(" more") }
+            XCTAssertTrue(updated, model.chat.composer)
+            let collapse = try XCTUnwrap(
+                testAccessibilityElements(window).first {
+                    $0.accessibilityLabel == "Collapse composer"
+                })
+            XCTAssertTrue(collapse.accessibilityActivate())
+            let inlineFocused = await eventually {
+                testAccessibilityElements(window).contains {
+                    $0.accessibilityLabel == "Expand composer"
+                }
+                    && testAccessibilityElements(window).contains {
+                        ($0 as? UIView)?.isFirstResponder == true
+                    }
+            }
+            XCTAssertTrue(
+                inlineFocused, "Collapsing must return keyboard focus to the inline composer")
+            try await Task.sleep(for: .milliseconds(500))
+            XCTAssertTrue(model.chat.composer.hasSuffix(" more"))
+        }
+
+        let expand = try XCTUnwrap(
+            testAccessibilityElements(window).first {
+                $0.accessibilityLabel == "Expand composer"
+            })
+        XCTAssertTrue(expand.accessibilityActivate())
+        let expanded = await eventually {
+            testAccessibilityElements(window).contains {
+                $0.accessibilityLabel == "Collapse composer"
+            }
+        }
+        XCTAssertTrue(expanded)
+        let send = try XCTUnwrap(
+            testAccessibilityElements(window).first { $0.accessibilityLabel == "Send" })
+        XCTAssertTrue(send.accessibilityActivate())
+        let sent = await eventually(timeout: .seconds(3)) {
+            model.chat.sessionRequestID != nil
+                && !testAccessibilityElements(window).contains {
+                    $0.accessibilityLabel == "Collapse composer"
+                }
+        }
+        XCTAssertTrue(sent)
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertFalse(
+            testAccessibilityElements(window).contains {
+                ($0 as? UIView)?.isFirstResponder == true
+            }, "Sending from the expanded editor must leave the keyboard dismissed")
+    }
+
+    func testCatalogComposerMatchesSidebarButtons() async throws {
+        let model = try voiceModel()
+        model.showsWelcome = false
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
+        model.gateway.connectionState = .ready
+        model.destination = .chats
+        model.showsPairing = false
+        let scene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive })
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
+        window.rootViewController = UIHostingController(
+            rootView: AppShell().mobiusTheme().environment(model)
+                .environment(\.horizontalSizeClass, .compact))
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+        let appeared = await eventually(timeout: .seconds(3)) {
+            testAccessibilityElements(window, maxDepth: 30).contains {
+                $0.accessibilityLabel == "New chat" && $0.accessibilityFrame.width > 100
+            }
+        }
+        XCTAssertTrue(appeared)
+        try await Task.sleep(for: .milliseconds(500))
+        let attachment = XCTAttachment(
+            image: UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            })
+        attachment.name = "Catalog composer aligned with Settings"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        let elements = testAccessibilityElements(window, maxDepth: 30)
+        let composer = try XCTUnwrap(
+            elements.first {
+                $0.accessibilityLabel == "New chat" && $0.accessibilityFrame.width > 100
+            }
+        ).accessibilityFrame
+        let settings = try XCTUnwrap(
+            elements.first {
+                $0.accessibilityLabel == "Settings" && $0.accessibilityTraits.contains(.button)
+            }
+        ).accessibilityFrame
+        XCTAssertEqual(composer.height, MobiusStyle.toolbarButtonSize, accuracy: 1)
+        XCTAssertEqual(composer.height, settings.height, accuracy: 1)
+        XCTAssertEqual(composer.midY, settings.midY, accuracy: 1)
+        for title in ["Hide sidebar", "Show sidebar", "Hide sidebar", "Show sidebar"] {
+            try activatePresentationToolbarButton(
+                title, in: try XCTUnwrap(window.rootViewController))
+            try await Task.sleep(for: .milliseconds(500))
+            let current = try XCTUnwrap(
+                testAccessibilityElements(window, maxDepth: 30).first {
+                    $0.accessibilityLabel == "New chat" && $0.accessibilityFrame.width > 100
+                }
+            ).accessibilityFrame
+            XCTAssertEqual(current.height, composer.height, accuracy: 1)
+            XCTAssertEqual(
+                current.midY, composer.midY, accuracy: 1,
+                "Opening the sidebar must not move the composer vertically")
+        }
+    }
+
+    func testComposerSwitchesDictationToSendAndShowsVoiceForRealtimeModels() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try voiceModel(recorder: recorder)
         model.chat.selectedSessionID = "chat-1"
@@ -87,24 +388,28 @@ extension AppModelTests {
             previous?.makeKeyAndVisible()
         }
 
-        func checkActions(voice: Bool, send: Bool, name: String) async throws {
+        func checkActions(voice: Bool, send: Bool, dictate: Bool, name: String) async throws {
             let updated = await eventually {
                 window.layoutIfNeeded()
                 host.view.layoutIfNeeded()
                 let labels = testAccessibilityElements(window).compactMap(\.accessibilityLabel)
                 return labels.contains("Send") == send
                     && labels.contains("Start voice chat") == voice
+                    && labels.contains("Dictate") == dictate
             }
             XCTAssertTrue(
                 updated,
                 "\(name): \(testAccessibilityElements(window).compactMap(\.accessibilityLabel))")
-            XCTAssertFalse(
-                testAccessibilityElements(window).contains {
-                    $0.accessibilityLabel == "Start dictation"
-                })
+            if dictate {
+                XCTAssertFalse(
+                    testAccessibilityElements(window).contains {
+                        $0.accessibilityLabel == "Expand composer"
+                    })
+            }
             for element in testAccessibilityElements(window)
             where element.accessibilityLabel == "Send"
                 || element.accessibilityLabel == "Start voice chat"
+                || element.accessibilityLabel == "Dictate"
             {
                 XCTAssertGreaterThanOrEqual(element.accessibilityFrame.width, MobiusStyle.rowTouch)
                 XCTAssertGreaterThanOrEqual(element.accessibilityFrame.height, MobiusStyle.rowTouch)
@@ -120,20 +425,23 @@ extension AppModelTests {
         }
         for route in ["voice-route", "text-route"] {
             model.chat.selectedModelRoute = route
-            try await checkActions(voice: route == "voice-route", send: true, name: route)
+            try await checkActions(
+                voice: route == "voice-route", send: false, dictate: true, name: route)
         }
         model.chooseWorkspace("/srv/project")
         XCTAssertTrue(model.canStartRealtimeVoice)
         for draft in ["", "Hello", ""] {
             model.chat.composer = draft
-            try await checkActions(voice: true, send: !draft.isEmpty, name: "New chat: \(draft)")
+            try await checkActions(
+                voice: true, send: !draft.isEmpty, dictate: draft.isEmpty,
+                name: "New chat: \(draft)")
         }
         model.chat.composerReply = MessageReply(
             target: MessageTarget(checkpointSequence: 1, batchItemCount: 1), text: "Reply"
         )
-        try await checkActions(voice: true, send: true, name: "Reply context")
+        try await checkActions(voice: true, send: true, dictate: false, name: "Reply context")
         model.chat.composerReply = nil
-        try await checkActions(voice: true, send: false, name: "New voice chat")
+        try await checkActions(voice: true, send: false, dictate: true, name: "New voice chat")
         let voice = try XCTUnwrap(
             testAccessibilityElements(window).first {
                 $0.accessibilityLabel == "Start voice chat"
@@ -277,19 +585,21 @@ extension AppModelTests {
             ["Earlier discussion", "Hello!", "Hi there!"])
     }
 
-    func testNewVoiceChatWaitsForWorkspaceBotAndSessionReplay() async throws {
+    func testNewVoiceChatUsesLatestWorkspaceAndBotWithoutSelection() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try voiceModel(recorder: recorder)
         let first = bot()
         let second = bot(id: "bot-2", handle: "reviewer", name: "Reviewer")
         model.bots = [first, second]
+        model.chat.sessions = [
+            session(state: .idle, updatedAt: 200, workspaceLabel: "/srv/project", botID: second.id),
+            session(sessionID: "older", state: .idle, updatedAt: 100, workspaceLabel: "/aaa"),
+        ]
         model.openNewVoiceChat()
-        XCTAssertTrue(model.showsWorkspaceBrowser)
-        XCTAssertEqual(model.newVoiceChatIntent, .selectingWorkspace)
+        XCTAssertFalse(model.showsWorkspaceBrowser)
+        XCTAssertEqual(model.chat.pendingNewChatWorkspace, "/srv/project")
+        XCTAssertEqual(model.chat.pendingNewChatBotID, second.id)
         XCTAssertNil(model.chat.realtimeVoiceCall)
-        model.chooseWorkspace("/srv/project")
-        XCTAssertEqual(model.newVoiceChatIntent, .selectingBot)
-        model.selectBotForNewChat(second)
         let request = await recorder.firstRequest(after: 0) {
             if case .createSession = $0 { true } else { false }
         }
@@ -319,6 +629,50 @@ extension AppModelTests {
         model.openChat("chat-1")
 
         XCTAssertNil(model.newVoiceChatIntent)
+    }
+
+    func testConfirmedVoiceOnlyChatGetsADurableTitleWithoutACatalogRace() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try voiceModel(recorder: recorder)
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
+        model.chat.selectedSessionID = "chat-1"
+        model.chat.prepareChatTitle(for: "chat-1")
+        model.chat.sessionMutationRequestID = "busy"
+        model.chat.realtimeVoiceCall = RealtimeVoiceCall(requestID: "voice-1", sessionID: "chat-1")
+        model.gateway.handle(
+            .realtimeVoiceStarted(
+                requestID: "voice-1", sessionID: "chat-1", voiceID: "call-1", answerSDP: "answer"))
+        model.chat.realtimeVoiceTask?.cancel()
+        XCTAssertEqual(model.currentSessionTitle, "New voice chat")
+        XCTAssertNotNil(model.chat.pendingChatTitles["chat-1"])
+
+        model.chat.sessionMutationRequestID = nil
+        model.applySessions([session(state: .idle, firstUserMessage: nil)])
+        let rename = await recorder.firstRequest(after: 0) {
+            if case .renameSession(_, "chat-1", "New voice chat") = $0 { true } else { false }
+        }
+        XCTAssertNotNil(rename)
+        model.applySessions([session(state: .idle, firstUserMessage: nil, title: "New voice chat")])
+        model.chat.stopRealtimeVoice(notifyGateway: false)
+        XCTAssertNil(model.chat.pendingChatTitles["chat-1"])
+        XCTAssertEqual(model.currentSessionTitle, "New voice chat")
+    }
+
+    func testVoiceTitlePreservesExistingTextAndManualTitles() throws {
+        let model = try voiceModel()
+        model.gateway.selectedAccountID = UUID()
+        for (prompt, title) in [("Existing message", nil), (nil, "My chosen title")] {
+            model.chat.sessions = [session(state: .idle, firstUserMessage: prompt, title: title)]
+            model.chat.startVoiceChatTitle(sessionID: "chat-1", requestID: "voice-1")
+            XCTAssertNil(model.chat.pendingChatTitles["chat-1"])
+            XCTAssertNil(model.chat.sessionMutationRequestID)
+        }
+        let complete =
+            "Understanding unexpectedly interrupted background audio during on-device dictation"
+        model.chat.sessions = [session(state: .idle, title: complete)]
+        XCTAssertEqual(model.sessionTitle("chat-1"), complete, "Native text layout owns truncation")
     }
 
     func testCanceledVoiceStartAndLateAnswerEndOnlyThatCall() async throws {
@@ -427,7 +781,7 @@ extension AppModelTests {
         model.chat.selectedModelRoute = "other-route"
         XCTAssertNil(model.chat.realtimeVoiceCall)
         model.chat.realtimeVoiceCall = call
-        model.newVoiceChatIntent = .selectingWorkspace
+        model.newVoiceChatIntent = .selectingBot
         model.appDidEnterBackground()
         XCTAssertEqual(model.chat.realtimeVoiceCall, call)
         XCTAssertNil(model.newVoiceChatIntent)
@@ -444,10 +798,10 @@ extension AppModelTests {
         model.chat.sessions = [session(sessionID: "previous-chat", state: .idle)]
         model.chat.selectedSessionID = "previous-chat"
         model.openNewVoiceChat()
-        model.chooseWorkspace("/srv/mobius")
+        XCTAssertFalse(model.showsWorkspaceBrowser)
         guard case .openingSession(let requestID) = model.newVoiceChatIntent else {
             return XCTFail(
-                "Expected session creation using the selected workspace and last Bot")
+                "Expected session creation using the current workspace and last Bot")
         }
         model.gateway.handle(
             .sessionOpened(
@@ -462,14 +816,20 @@ extension AppModelTests {
         model.chat.stopRealtimeVoice()
     }
 
-    func testCancelingWorkspaceSelectionDiscardsVoiceIntent() throws {
-        let model = try voiceModel()
-        model.openNewVoiceChat()
-        model.showsWorkspaceBrowser = false
+    func testOpeningEmptyTextComposerDoesNotCreateSessionOrTitle() async throws {
+        let recorder = GatewayRequestRecorder()
+        let model = try voiceModel(recorder: recorder)
+        model.bots = [bot(), bot(id: "default", handle: "mobius")]
+        model.openNewSession()
+        XCTAssertEqual(model.chat.pendingNewChatBotID, "default")
         XCTAssertNil(model.newVoiceChatIntent)
-        model.chooseWorkspace("/srv/mobius")
         XCTAssertNil(model.chat.sessionRequestID)
         XCTAssertNil(model.chat.realtimeVoiceCall)
+        XCTAssertTrue(model.currentSessionTitle.isEmpty)
+        model.chat.composer = "Unsent draft"
+        XCTAssertTrue(model.currentSessionTitle.isEmpty)
+        let requests = await recorder.requests()
+        XCTAssertFalse(requests.contains { if case .createSession = $0 { true } else { false } })
     }
 }
 

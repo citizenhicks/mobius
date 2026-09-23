@@ -228,6 +228,7 @@ extension PrimitiveButtonStyle where Self == MobiusFeedbackButtonStyle<GlassProm
 struct MobiusIconButtonStyle: ButtonStyle {
     var prominent = false
     var bare = false
+    var flat = false
     var surfaceSize = MobiusStyle.iconButtonSize
 
     func makeBody(configuration: Configuration) -> some View {
@@ -236,6 +237,7 @@ struct MobiusIconButtonStyle: ButtonStyle {
             isPressed: configuration.isPressed,
             prominent: prominent,
             bare: bare,
+            flat: flat,
             surfaceSize: surfaceSize
         )
     }
@@ -248,6 +250,7 @@ struct MobiusIconButtonStyle: ButtonStyle {
         let isPressed: Bool
         let prominent: Bool
         let bare: Bool
+        let flat: Bool
         let surfaceSize: CGFloat
 
         var body: some View {
@@ -259,6 +262,11 @@ struct MobiusIconButtonStyle: ButtonStyle {
             Group {
                 if bare {
                     base
+                } else if flat {
+                    base.background(
+                        prominent && isEnabled ? palette.accentFill : palette.muted.opacity(0.15),
+                        in: Circle()
+                    )
                 } else {
                     base.mobiusGlass(
                         in: Circle(),
@@ -378,9 +386,12 @@ extension View {
             .buttonStyle(MobiusIconButtonStyle())
     }
 
-    func mobiusProminentIconButton(surfaceSize: CGFloat = MobiusStyle.iconButtonSize) -> some View {
+    func mobiusProminentIconButton(
+        surfaceSize: CGFloat = MobiusStyle.iconButtonSize, flat: Bool = false
+    ) -> some View {
         labelStyle(.iconOnly)
-            .buttonStyle(MobiusIconButtonStyle(prominent: true, surfaceSize: surfaceSize))
+            .buttonStyle(
+                MobiusIconButtonStyle(prominent: true, flat: flat, surfaceSize: surfaceSize))
     }
 
     /// Lets a row of badges scroll instead of squeezing when it outgrows the width.

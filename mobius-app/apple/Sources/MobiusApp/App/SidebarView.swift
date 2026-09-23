@@ -149,23 +149,14 @@ struct SidebarDrawer<Sidebar: View, Detail: View>: View {
 struct SidebarView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
-    @Environment(\.mobiusHasVerticalToolbar) private var hasVerticalToolbar
     @Environment(\.openWindow) private var openWindow
     @Environment(\.supportsMultipleWindows) private var supportsMultipleWindows
-    let sharesBottomRail: Bool
     let showDetail: (AppDestination) -> Void
 
     var body: some View {
         NavigationStack {
-            content.toolbar {
-                if #available(iOS 27.0, *) {
-                    footerToolbar
-                        .sharedBackgroundVisibility(.hidden)
-                        .contentMarginsRemoved()
-                        .visibilityPriority(.high)
-                } else {
-                    footerToolbar.sharedBackgroundVisibility(.hidden)
-                }
+            content.safeAreaInset(edge: .bottom, spacing: 0) {
+                footer
             }
         }
     }
@@ -233,40 +224,29 @@ struct SidebarView: View {
         .toolbarVisibility(.hidden, for: .navigationBar)
     }
 
-    @ToolbarContentBuilder
-    private var footerToolbar: some ToolbarContent {
-        MobiusToolbarItem(placement: .bottomBar, allowsVerticalLayout: false) {
+    private var footer: some View {
+        HStack(spacing: MobiusSpace.s) {
             settingsButton
-                .buttonStyle(.glass)
-                .mobiusBottomRailAligned(isActive: hasVerticalToolbar)
-        }
-        ToolbarSpacer(.flexible, placement: .bottomBar)
-        if supportsMultipleWindows {
-            MobiusToolbarItem(placement: .bottomBar, allowsVerticalLayout: false) {
+            Spacer(minLength: 0)
+            if supportsMultipleWindows {
                 Button("New window", systemImage: "plus.rectangle.on.rectangle") {
                     openWindow(value: AppWindowState())
                 }
                 .mobiusToolbarIcon()
-                .buttonStyle(.glass)
                 .help("New window")
-                .mobiusBottomRailAligned(isActive: hasVerticalToolbar)
             }
-        }
-        MobiusToolbarItem(placement: .bottomBar, allowsVerticalLayout: false) {
             Button("Event Centre", glyph: model.hasUnreadEvents ? .bellDot : .bell) {
                 showDetail(.eventCentre)
             }
             .mobiusToolbarIcon()
-            .buttonStyle(.glass)
             .tint(model.destination == .eventCentre ? palette.accent : .primary)
             .accessibilityAddTraits(model.destination == .eventCentre ? .isSelected : [])
             .accessibilityValue(model.hasUnreadEvents ? Text("Unread events") : Text("All read"))
             .help("Event Centre")
-            .mobiusBottomRailAligned(isActive: hasVerticalToolbar)
-            .mobiusBottomRailSource(
-                isActive: sharesBottomRail && model.isPresentingChat && !hasVerticalToolbar
-            )
         }
+        .buttonStyle(.glass)
+        .padding(.horizontal, MobiusSpace.l)
+        .padding(.bottom, MobiusSpace.m)
     }
 
     private var settingsButton: some View {
@@ -277,6 +257,7 @@ struct SidebarView: View {
         .tint(model.destination == .profile ? palette.accent : .primary)
         .accessibilityAddTraits(model.destination == .profile ? .isSelected : [])
         .help("Settings")
+        .accessibilityLabel("Settings")
     }
 
     private func navigationButton(

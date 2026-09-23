@@ -51,6 +51,30 @@ extension ChatSessionModel {
         }
     }
 
+    /// Voice-only chats have no submitted prompt, but still need a durable catalog title.
+    func startVoiceChatTitle(sessionID: String, requestID: String) {
+        let session =
+            sessions.first(where: { $0.sessionId == sessionID })
+            ?? botSessions.first(where: { $0.sessionId == sessionID })
+        guard let accountID = gateway.selectedAccountID,
+            titleEligibleSessionIDs.contains(sessionID) || session != nil,
+            session?.explicitTitle == nil,
+            ChatTitleWriter.preview(for: session?.firstUserMessage) == nil,
+            pendingChatTitles[sessionID] == nil
+        else { return }
+        let title = LocalizedStringResource("New voice chat").resolved(locale: locale)
+        pendingChatTitles[sessionID] = PendingChatTitle(
+            attempt: ChatTitleAttempt(
+                accountID: accountID, sessionID: sessionID, submissionID: requestID, prompt: ""),
+            previewTitle: title,
+            generatedTitle: title,
+            renameRequestID: nil,
+            submissionConfirmed: true
+        )
+        titleEligibleSessionIDs.remove(sessionID)
+        persistGeneratedChatTitles()
+    }
+
     func reconcileChatTitleAfterReplay() {
         guard let sessionID = selectedSessionID,
             let pending = pendingChatTitles[sessionID],

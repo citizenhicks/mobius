@@ -130,6 +130,94 @@ extension AppModelTests {
         XCTAssertEqual(model.chat.selectedModelRoute, "medium")
     }
 
+    func testComposerReasoningStaysSelectedAcrossDelayedSaveAndRejection() async throws {
+        let model = try model(requestSender: { _ in })
+        var config = composition()
+        config.provider.reasoningEffort = "low"
+        let choices = ["low", "medium", "high"].map { effort in
+            ModelChoice(
+                route: effort, group: "Test", model: config.provider.model,
+                reasoningEffort: effort, contextWindow: nil, supportsImageInput: false,
+                toolDiscovery: .native)
+        }
+        model.modelChoices = choices
+        model.modelProviders = Dictionary(
+            uniqueKeysWithValues: choices.map { ($0.route, config.provider.instance) })
+        model.providerInstances = [
+            ProviderInstance(
+                label: "Test", tint: .blue, configured: true,
+                selection: config.provider, modelIds: [], reasoningEfforts: [])
+        ]
+        model.bots = [bot(config: VersionedAgentConfig(revision: 1, config: config))]
+        model.gateway.connectionState = .ready
+        model.chooseWorkspace("/srv/project")
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
+        window.rootViewController = UIHostingController(
+            rootView:
+                ComposerOptionsView(send: { _ in }).mobiusTheme().environment(model))
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+        let ready = await eventually {
+            testAccessibilityElements(window).contains {
+                $0.accessibilityLabel == "Model and reasoning"
+            }
+        }
+        XCTAssertTrue(ready)
+        let menu = try XCTUnwrap(
+            testAccessibilityElements(window).first {
+                $0.accessibilityLabel == "Model and reasoning"
+            })
+        XCTAssertTrue(menu.accessibilityActivate())
+        let appeared = await eventually {
+            testAccessibilityElements(window).contains { $0 is UISlider }
+        }
+        XCTAssertTrue(appeared)
+        let slider = try XCTUnwrap(
+            testAccessibilityElements(window).compactMap { $0 as? UISlider }.first)
+        slider.sendActions(for: .touchDown)
+        slider.value = 2
+        slider.sendActions(for: .valueChanged)
+        let previewed = await eventually { slider.accessibilityValue == "high" }
+        XCTAssertTrue(previewed)
+        slider.sendActions(for: .touchUpInside)
+        let request = try XCTUnwrap(model.botMutationRequestID)
+        XCTAssertEqual(model.selectedBot?.config.config.provider.reasoningEffort, "low")
+        XCTAssertEqual(model.selectedBotModelRoute, "high")
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertEqual(slider.value, 2, "Do not snap back while waiting for the gateway")
+        XCTAssertNotNil(slider.window, "Saving must not dismiss the reasoning picker")
+        let saved = try XCTUnwrap(model.botDraft)
+        model.gateway.handle(
+            .bots(
+                requestID: request,
+                bots: [
+                    bot(config: VersionedAgentConfig(revision: 2, config: saved))
+                ]))
+        let applied = await eventually {
+            model.botMutationRequestID == nil && slider.value == 2 && slider.isEnabled
+        }
+        XCTAssertTrue(applied)
+        slider.accessibilityDecrement()
+        let rejectedRequest = try XCTUnwrap(model.botMutationRequestID)
+        XCTAssertEqual(model.selectedBotModelRoute, "medium")
+        model.gateway.handle(
+            .rejected(
+                GatewayRejection(
+                    requestId: rejectedRequest,
+                    code: "invalid_config", message: "Rejected", fatal: false)))
+        let restored = await eventually {
+            slider.value == 2 && model.selectedBotModelRoute == "high"
+        }
+        XCTAssertTrue(restored, "A rejected change must return to the saved level")
+    }
+
     func testNativeNavigationTitlesAndActionsSurvivePushAndPop() async throws {
         let app = try model(requestSender: { _ in })
         app.showsWelcome = false
@@ -210,9 +298,12 @@ extension AppModelTests {
                 let name = try XCTUnwrap(
                     testAccessibilityElements(detail).compactMap { $0 as? UITextField }
                         .first { $0.text == provider.label })
-                let frame = name.convert(name.bounds, to: window)
-                XCTAssertFalse(frame.isEmpty)
-                XCTAssertTrue(window.bounds.contains(frame))
+                let visible = await eventually {
+                    window.layoutIfNeeded()
+                    let frame = name.convert(name.bounds, to: window)
+                    return !frame.isEmpty && window.bounds.contains(frame)
+                }
+                XCTAssertTrue(visible)
             }
             let currentNavigation = try XCTUnwrap(navigation(in: host))
             let item = try XCTUnwrap(currentNavigation.topViewController?.navigationItem)

@@ -2,6 +2,17 @@ import Foundation
 import Observation
 
 extension AppModel {
+    func toggleComposerDictation() {
+        Task {
+            await chat.dictation.toggle(
+                locale: language.locale,
+                currentText: { self.chat.composer },
+                update: { self.chat.composer = $0 },
+                fail: { self.showToast($0, tone: .error) }
+            )
+        }
+    }
+
     func importAttachments(_ urls: [URL]) async {
         guard canImportAttachments else { return }
         let available = max(0, chat.attachmentReferenceLimit - chat.composerAttachments.count)

@@ -526,14 +526,18 @@ extension AppModel {
         let isHiddenApproval =
             kind == .awaitingApproval
             && !chat.sessions.contains(where: { $0.sessionId == sessionID })
-        let title =
+        let sessionName =
             backgroundApproval(forSessionID: sessionID) != nil || isHiddenApproval
             ? botName
             : sessionTitle(sessionID)
+        let title = sessionName.isEmpty ? localizedString("new conversation") : sessionName
         let isActiveChat = chat.selectedSessionID == sessionID && isChatVisible
         switch kind {
         case .awaitingApproval:
-            showToast("\(title) needs approval.", tone: .warning, target: .session(sessionID))
+            showToast(
+                "\(title) needs approval.", tone: .warning,
+                target: .session(sessionID)
+            )
         case .completed:
             guard !isActiveChat else { return }
             showToast(

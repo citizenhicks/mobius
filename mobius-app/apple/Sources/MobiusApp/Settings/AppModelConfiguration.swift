@@ -2,6 +2,14 @@ import Foundation
 import Observation
 
 extension AppModel {
+    var selectedBotModelRoute: String? {
+        guard let bot = selectedBot else { return nil }
+        let config =
+            botMutationRequestID != nil && editingBotID == bot.id
+            ? botDraft : bot.config.config
+        return modelRoute(for: config)
+    }
+
     var botDefaultsDraftModelRoute: String? {
         modelRoute(for: botDefaultsDraft)
     }

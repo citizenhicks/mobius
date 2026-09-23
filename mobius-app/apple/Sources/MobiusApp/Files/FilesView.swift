@@ -6,8 +6,6 @@ struct FilesView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @Environment(\.mobiusPalette) private var palette
-    // Translate the whole native action group; stacked buttons must keep their spacing.
-    @State private var actionsBottom: CGFloat?
 
     // Isolate the inspector's actions from the chat navigation stack.
     var body: some View {
@@ -34,12 +32,6 @@ struct FilesView: View {
                         dismiss()
                     }
                     .buttonStyle(.glass)
-                    .mobiusBottomRailAligned(referenceBottom: actionsBottom)
-                    .onGeometryChange(for: CGFloat.self) { geometry in
-                        geometry.frame(in: .global).maxY
-                    } action: { bottom in
-                        if model.filesInspectorTab != .allFiles { actionsBottom = bottom }
-                    }
                 }
                 .sharedBackgroundVisibility(.hidden)
                 if model.filesInspectorTab == .allFiles {
@@ -52,12 +44,6 @@ struct FilesView: View {
                         .mobiusProminentToolbarButton()
                         .buttonStyle(.glass)
                         .disabled(!model.canOpenSession)
-                        .mobiusBottomRailAligned(referenceBottom: actionsBottom)
-                        .onGeometryChange(for: CGFloat.self) { geometry in
-                            geometry.frame(in: .global).maxY
-                        } action: { bottom in
-                            actionsBottom = bottom
-                        }
                     }
                     .sharedBackgroundVisibility(.hidden)
                 }

@@ -45,9 +45,20 @@ extension AppModel {
         chat.stopRealtimeVoice()
         destination = .chats
         navigationPath = []
-        let path = workspace?.path ?? newChatWorkspacePaths.first ?? "."
+        let path =
+            workspace?.path ?? chat.pendingNewChatWorkspace
+            ?? mostRecentChatSession?.sessionContext.workspaceLabel ?? "."
         chooseWorkspace(path)
         if path == "." { loadDirectory(path) }
+    }
+
+    private var mostRecentChatSession: SessionRecord? {
+        chat.sessions.max { $0.updatedAt < $1.updatedAt }
+    }
+
+    var newChatBot: BotRecord? {
+        selectedBot ?? mostRecentChatSession.flatMap { bot(for: $0) }
+            ?? bots.first { $0.handle == "mobius" } ?? bots.first
     }
 
     var newChatWorkspacePaths: [String] {

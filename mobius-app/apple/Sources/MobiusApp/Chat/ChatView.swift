@@ -5,6 +5,7 @@ import CoreText
 @preconcurrency import AVFoundation
 @preconcurrency import Speech
 import UIKit
+import AudioToolbox
 
 extension MountedWidget {
     var glyph: MobiusGlyph {
@@ -16,7 +17,6 @@ struct ChatView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusHasVerticalToolbar) private var hasVerticalToolbar
     @Environment(\.mobiusPalette) private var palette
-    @Environment(\.locale) private var locale
     @State private var composerHeight: CGFloat = 0
     @State private var isAtBottom = true
     @State private var scrollToBottomRequest = 0
@@ -24,7 +24,6 @@ struct ChatView: View {
     @State private var presentedBotSettings: BotRecord?
     @State private var showsFolderAttachmentBrowser = false
     @State private var transcriptPresentationID = UUID()
-    @State private var dictation = ComposerDictation()
     @State private var voiceOrbOffset = CGSize.zero
     @GestureState private var voiceOrbDrag = CGSize.zero
 
@@ -117,14 +116,21 @@ struct ChatView: View {
         .onChange(of: model.chat.selectedSessionID) {
             resetTranscriptPresentation()
         }
-        .onChange(of: model.chat.composer) { dictation.stopIfDraftChanged(model.chat.composer) }
-        .onChange(of: model.chat.composerBlurRequest) { dictation.stop() }
-        .onDisappear { dictation.stop() }
+        .onChange(of: model.chat.composer) {
+            model.chat.dictation.stopIfDraftChanged(model.chat.composer)
+        }
+        .onChange(of: model.chat.composerBlurRequest) { model.chat.dictation.stop() }
+        .onDisappear { model.chat.dictation.stop() }
         .navigationTitle(chatTitle)
         .navigationSubtitle(navigationSubtitle)
         .toolbarTitleDisplayMode(.inline)
         .toolbarRole(.editor)
         .toolbar {
+            ToolbarItem(placement: .title) {
+                MobiusTitleText(verbatim: chatTitle)
+                    .font(MobiusStyle.titleFont)
+                    .lineLimit(1)
+            }
             if model.chat.selectedSessionID != nil, !model.selectedSessionIsHidden {
                 MobiusToolbarItem(placement: .primaryAction) {
                     ChatOptionsMenu(
@@ -136,25 +142,27 @@ struct ChatView: View {
             }
             if hasVerticalToolbar,
                 !model.selectedSessionIsHidden,
-                model.chat.pendingApproval == nil
+                model.chat.pendingApproval == nil,
+                !model.chat.dictation.isActive
             {
                 ToolbarSpacer(.flexible, placement: .bottomBar)
-                MobiusToolbarItem(placement: .bottomBar) {
-                    MobiusToolbarIconButton(
-                        glyph: dictation.isActive ? .micOff01 : .mic01,
-                        label: dictation.isActive ? "Stop dictation" : "Dictate",
-                        action: toggleDictation
-                    )
-                    .tint(dictation.isActive ? palette.danger : .primary)
-                    .buttonStyle(.glass)
-                    .disabled(model.chat.realtimeVoiceCall != nil)
-                    .onDisappear { dictation.stop() }
+                if model.selectedRouteSupportsRealtimeVoice,
+                    model.chat.realtimeVoiceCall == nil
+                {
+                    MobiusToolbarItem(placement: .bottomBar) {
+                        MobiusToolbarIconButton(
+                            glyph: .audioWave01, label: "Start voice chat"
+                        ) {
+                            model.startRealtimeVoice()
+                        }
+                        .buttonStyle(MobiusIconButtonStyle(bare: true))
+                        .disabled(!model.canStartRealtimeVoice)
+                    }
+                    .sharedBackgroundVisibility(.hidden)
                 }
-                .sharedBackgroundVisibility(.hidden)
                 MobiusToolbarItem(placement: .bottomBar) {
-                    railPrimaryAction
-                        .buttonStyle(.glass)
-                        .mobiusBottomRailSource(isActive: model.isPresentingChat)
+                    railTrailingAction
+                        .mobiusProminentIconButton(surfaceSize: 32, flat: true)
                 }
                 .sharedBackgroundVisibility(.hidden)
             }
@@ -184,49 +192,32 @@ struct ChatView: View {
     }
 
     private func resetTranscriptPresentation() {
-        dictation.stop()
         transcriptPresentationID = UUID()
         isAtBottom = true
     }
 
-    private func toggleDictation() {
-        Task {
-            await dictation.toggle(
-                locale: locale,
-                currentText: { model.chat.composer },
-                update: { model.chat.composer = $0 },
-                fail: { model.showToast($0, tone: .error) }
-            )
-        }
-    }
-
     @ViewBuilder
-    private var railPrimaryAction: some View {
-        if model.composerRailShowsSendAction {
+    private var railTrailingAction: some View {
+        if model.chat.realtimeVoiceCall != nil {
+            MobiusToolbarIconButton(glyph: .stopFill, label: "End voice chat") {
+                model.chat.stopRealtimeVoice()
+            }
+            .tint(palette.danger)
+        } else if !model.composerRailShowsSendAction {
+            MobiusToolbarIconButton(glyph: .mic01, label: "Dictate") {
+                model.toggleComposerDictation()
+            }
+        } else {
             ComposerSendButton(send: sendFromRail)
                 .mobiusToolbarIcon()
                 .buttonStyle(.glass(.regular.tint(palette.accentFill)))
                 .tint(palette.accentFill)
                 .foregroundStyle(palette.onAccent)
-        } else {
-            MobiusToolbarIconButton(
-                glyph: model.chat.realtimeVoiceCall == nil ? .audioWave01 : .stopFill,
-                label: model.chat.realtimeVoiceCall == nil ? "Start voice chat" : "End voice chat"
-            ) {
-                dictation.stop()
-                if model.chat.realtimeVoiceCall == nil {
-                    model.startRealtimeVoice()
-                } else {
-                    model.chat.stopRealtimeVoice()
-                }
-            }
-            .tint(model.chat.realtimeVoiceCall == nil ? .primary : palette.danger)
-            .disabled(model.chat.realtimeVoiceCall == nil && !model.canStartRealtimeVoice)
         }
     }
 
     private func sendFromRail(_ delivery: ActiveMessageDelivery?) {
-        dictation.stop()
+        model.chat.dictation.stop()
         _ = model.sendMessage(delivery: delivery)
     }
 
@@ -256,6 +247,7 @@ struct ChatView: View {
     }
 
     private var navigationSubtitle: Text {
+        guard !chatTitle.isEmpty else { return Text("") }
         let subtitle = Text(verbatim: chatSubtitle)
         guard let folders = model.chat.attachedFolders, !folders.isEmpty else { return subtitle }
         let folderCount = Text("Folders: \(folders.count)")
@@ -309,6 +301,9 @@ private struct DuoVoiceOrb: View {
 final class ComposerDictation {
     private(set) var isRecording = false
     private(set) var isStarting = false
+    private(set) var audioLevels: [Double] = []
+    @ObservationIgnored private var meteredDuration = 0.0
+    @ObservationIgnored private var meteredPeak = 0.0
     var isActive: Bool { isRecording || isStarting }
     @ObservationIgnored private let makeEngine: () -> AVAudioEngine
     @ObservationIgnored private var engine: AVAudioEngine?
@@ -316,11 +311,17 @@ final class ComposerDictation {
     @ObservationIgnored private var task: SFSpeechRecognitionTask?
     @ObservationIgnored private var hasInputTap = false
     @ObservationIgnored private var ownsAudioSession = false
+    @ObservationIgnored private var audioSessionTransition: Task<Void, Error>?
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private var draft: DictationDraft?
 
     init(engine: @autoclosure @escaping () -> AVAudioEngine = AVAudioEngine()) {
         makeEngine = engine
+    }
+
+    static func supports(_ locale: Locale) -> Bool {
+        guard let language = locale.language.languageCode?.identifier else { return false }
+        return language == "en" || language == "fr"
     }
 
     func toggle(
@@ -331,6 +332,10 @@ final class ComposerDictation {
     ) async {
         if isActive {
             stop()
+            return
+        }
+        guard Self.supports(locale) else {
+            fail("Dictation currently supports English and French.")
             return
         }
         let generation = UUID()
@@ -352,8 +357,10 @@ final class ComposerDictation {
             fail("Allow microphone access in Settings to use dictation.")
             return
         }
-        guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else {
-            fail("Dictation is unavailable for this language.")
+        guard let recognizer = SFSpeechRecognizer(locale: locale),
+            recognizer.isAvailable, recognizer.supportsOnDeviceRecognition
+        else {
+            fail("On-device dictation is unavailable for this language.")
             return
         }
 
@@ -361,15 +368,18 @@ final class ComposerDictation {
         request.shouldReportPartialResults = true
         request.addsPunctuation = true
         request.taskHint = .dictation
-        if recognizer.supportsOnDeviceRecognition {
-            request.requiresOnDeviceRecognition = true
-        }
+        request.requiresOnDeviceRecognition = true
 
         do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.record, mode: .measurement, options: .duckOthers)
-            try session.setActive(true, options: .notifyOthersOnDeactivation)
             ownsAudioSession = true
+            let previousTransition = audioSessionTransition
+            let activation = Task {
+                _ = try? await previousTransition?.value
+                try await Self.setAudioSessionActive(true)
+            }
+            audioSessionTransition = activation
+            try await activation.value
+            guard self.generation == generation else { return }
             let engine = makeEngine()
             self.engine = engine
             let input = engine.inputNode
@@ -380,14 +390,21 @@ final class ComposerDictation {
                 )
             }
             input.installTap(onBus: 0, bufferSize: 1_024, format: format) {
-                @Sendable [weak request] buffer, _ in
+                @Sendable [weak self, weak request] buffer, _ in
                 request?.append(buffer)
+                let level = Self.recordingLevel(in: buffer)
+                let duration = Double(buffer.frameLength) / buffer.format.sampleRate
+                Task { @MainActor [weak self] in
+                    guard self?.generation == generation else { return }
+                    self?.recordAudioLevel(level, duration: duration)
+                }
             }
             hasInputTap = true
             engine.prepare()
             try engine.start()
             self.request = request
             isRecording = true
+            Self.playCue("DictationStart")
             task = recognizer.recognitionTask(with: request) {
                 @Sendable [weak self] result, error in
                 let spoken = result?.bestTranscription.formattedString
@@ -417,8 +434,38 @@ final class ComposerDictation {
         }
     }
 
+    /// One bar per 100 ms of microphone audio; retain enough history for the widest composer.
+    func recordAudioLevel(_ level: Double, duration: TimeInterval) {
+        meteredPeak = max(meteredPeak, level)
+        meteredDuration += duration
+        guard meteredDuration >= 0.1 else { return }
+        audioLevels.append(meteredPeak)
+        if audioLevels.count > 128 { audioLevels.removeFirst(audioLevels.count - 128) }
+        meteredDuration.formTruncatingRemainder(dividingBy: 0.1)
+        meteredPeak = 0
+    }
+
+    nonisolated static func recordingLevel(in buffer: AVAudioPCMBuffer) -> Double {
+        guard let samples = buffer.floatChannelData?.pointee else { return 0 }
+        let count = Int(buffer.frameLength)
+        guard count > 0 else { return 0 }
+        let power = UnsafeBufferPointer(start: samples, count: count).reduce(0.0) {
+            $0 + Double($1 * $1)
+        }
+        guard power.isFinite, power > 0 else { return 0 }
+        // Map speech loudness in decibels; linear PCM amplitude makes normal speech invisible.
+        let decibels = 10 * log10(power / Double(count))
+        return min(1, max(0, (decibels + 60) / 50))
+    }
+
     func stopIfDraftChanged(_ text: String) {
         if let draft, draft.text != text { stop() }
+    }
+
+    func cancel(currentText: String) -> String? {
+        let original = draft?.originalText(ifCurrentText: currentText)
+        stop()
+        return original
     }
 
     func stop() {
@@ -435,13 +482,56 @@ final class ComposerDictation {
         task?.cancel()
         request = nil
         task = nil
+        if isRecording { Self.playCue("DictationStop") }
         isRecording = false
+        audioLevels.removeAll(keepingCapacity: true)
+        meteredDuration = 0
+        meteredPeak = 0
         if ownsAudioSession {
             ownsAudioSession = false
-            try? AVAudioSession.sharedInstance().setActive(
-                false,
-                options: .notifyOthersOnDeactivation
-            )
+            let previousTransition = audioSessionTransition
+            audioSessionTransition = Task {
+                _ = try? await previousTransition?.value
+                try await Self.setAudioSessionActive(false)
+            }
+        }
+    }
+
+    func stopAndReleaseAudioSession() async {
+        stop()
+        _ = try? await audioSessionTransition?.value
+    }
+
+    static func playCue(_ name: String) {
+        guard let url = Bundle.main.url(forResource: name, withExtension: "wav") else { return }
+        var sound: SystemSoundID = 0
+        guard AudioServicesCreateSystemSoundID(url as CFURL, &sound) == kAudioServicesNoError
+        else { return }
+        let id = sound
+        AudioServicesPlaySystemSoundWithCompletion(id) { @Sendable in
+            AudioServicesDisposeSystemSoundID(id)
+        }
+    }
+
+    nonisolated static func setAudioSessionActive(_ active: Bool) async throws {
+        if #available(iOS 27.0, *) {
+            let session = AVAudioSession.sharedInstance()
+            if active {
+                try session.setCategory(.record, mode: .measurement)
+                try session.setAllowHapticsAndSystemSoundsDuringRecording(true)
+                guard try await session.activate() else { throw CancellationError() }
+            } else {
+                _ = try await session.deactivate(options: .notifyOthersOnDeactivation)
+            }
+        } else {
+            try await Task.detached {
+                let session = AVAudioSession.sharedInstance()
+                if active {
+                    try session.setCategory(.record, mode: .measurement)
+                    try session.setAllowHapticsAndSystemSoundsDuringRecording(true)
+                }
+                try session.setActive(active, options: active ? [] : .notifyOthersOnDeactivation)
+            }.value
         }
     }
 }
@@ -472,6 +562,10 @@ struct DictationDraft {
             ? "" : " "
         text = original + separator + spoken
         return text
+    }
+
+    func originalText(ifCurrentText currentText: String) -> String? {
+        currentText == text ? original : nil
     }
 }
 

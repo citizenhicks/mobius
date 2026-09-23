@@ -5,6 +5,16 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testUntitledChatKeepsCatalogFallbackWithoutFillingTheHeader() throws {
+        let model = try model()
+        let untitled = session(state: .idle, firstUserMessage: nil)
+        model.chat.sessions = [untitled]
+        model.chat.selectedSessionID = untitled.sessionId
+
+        XCTAssertEqual(model.currentSessionTitle, "")
+        XCTAssertEqual(model.displayedTitle(for: untitled), "new conversation")
+    }
+
     func testDelayedGeneratedTitleDoesNotOverwriteAnExplicitRename() async throws {
         let recorder = GatewayRequestRecorder()
         let writer = ChatTitleWriter { _ in
@@ -18,7 +28,7 @@ extension AppModelTests {
         let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
         try await openNewSession(in: model, recorder: recorder, account: account)
 
-        XCTAssertEqual(model.currentSessionTitle, "new conversation")
+        XCTAssertEqual(model.currentSessionTitle, "")
 
         try await submitMessage("Review the gateway", in: model, recorder: recorder)
         model.applySessions([
@@ -395,7 +405,7 @@ extension AppModelTests {
         await harness.yield(.sessionReplayComplete(requestID: requestID, sessionID: "chat-1"))
         let replayFinished = await eventually { model.canCreateSession }
         XCTAssertTrue(replayFinished)
-        XCTAssertEqual(model.currentSessionTitle, "new conversation")
+        XCTAssertEqual(model.currentSessionTitle, "")
         XCTAssertEqual(model.chat.composer, "Review the gateway")
         try await submitMessage("Review the gateway", in: model, recorder: recorder)
         await fulfillment(of: [secondTitleGenerated], timeout: 1)
@@ -432,7 +442,7 @@ extension AppModelTests {
                     message: "Try again",
                     fatal: false
                 )))
-        XCTAssertEqual(model.currentSessionTitle, "new conversation")
+        XCTAssertEqual(model.currentSessionTitle, "")
         XCTAssertEqual(model.chat.composer, "Review the gateway")
 
         try await submitMessage("Review the gateway again", in: model, recorder: recorder)

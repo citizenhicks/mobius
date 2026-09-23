@@ -24,23 +24,21 @@ private struct ComposingOrbVideo: UIViewRepresentable {
     }
 
     func updateUIView(_ view: OrbPlayerView, context: Context) {
-        if isPlaying {
-            view.player.play()
-        } else {
-            view.player.pause()
-        }
+        view.isPlaying = isPlaying
     }
 
     static func dismantleUIView(_ view: OrbPlayerView, coordinator: ()) {
-        view.player.pause()
+        view.isPlaying = false
         view.looper.disableLooping()
     }
 }
 
-private final class OrbPlayerView: UIView {
+final class OrbPlayerView: UIView {
     override class var layerClass: AnyClass { AVPlayerLayer.self }
     let player = AVQueuePlayer()
     let looper: AVPlayerLooper
+    var isPlaying = false { didSet { updatePlayback() } }
+    private var audioDisconnected = false
 
     init(url: URL) {
         looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(url: url))
@@ -53,6 +51,21 @@ private final class OrbPlayerView: UIView {
         playerLayer.player = player
         playerLayer.videoGravity = .resizeAspect
         playerLayer.isOpaque = false
+        if #available(iOS 27.0, *) {
+            // Muting alone still activates the audio session and can interrupt music.
+            player.setDisconnectedFromSystemAudio(true) { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.audioDisconnected = true
+                    self?.updatePlayback()
+                }
+            }
+        } else {
+            audioDisconnected = true
+        }
+    }
+
+    private func updatePlayback() {
+        if isPlaying && audioDisconnected { player.play() } else { player.pause() }
     }
 
     @available(*, unavailable)

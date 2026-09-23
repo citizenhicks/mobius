@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		B80000000000000000000005 /* DictationStop.wav in Resources */ = {isa = PBXBuildFile; fileRef = B90000000000000000000005 /* DictationStop.wav */; };
+		B80000000000000000000004 /* DictationStart.wav in Resources */ = {isa = PBXBuildFile; fileRef = B90000000000000000000004 /* DictationStart.wav */; };
 		B80000000000000000000003 /* ComposingOrb.mov in Resources */ = {isa = PBXBuildFile; fileRef = B90000000000000000000003 /* ComposingOrb.mov */; };
 		09F6AFE0A9E84C2E91831641 /* MobiusPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1F2343EA8384F87B12AB093 /* MobiusPalette.swift */; };
 		10C531DD2EAA465B95FC0B3C /* ComposerSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5BC0C702B6A44AF8D5D8E31 /* ComposerSurface.swift */; };
@@ -170,6 +172,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		B90000000000000000000005 /* DictationStop.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = DictationStop.wav; sourceTree = "<group>"; };
+		B90000000000000000000004 /* DictationStart.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = DictationStart.wav; sourceTree = "<group>"; };
 		B90000000000000000000003 /* ComposingOrb.mov */ = {isa = PBXFileReference; lastKnownFileType = video.quicktime; path = ComposingOrb.mov; sourceTree = "<group>"; };
 		0E9A8262D71A43258E3F7B01 /* MobiusTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobiusTokens.swift; sourceTree = "<group>"; };
 		100000000000000000000001 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
@@ -523,6 +527,8 @@
 				10000000000000000000002E /* ComposerView.swift */,
 				100000000000000000000014 /* ComposerOptionsView.swift */,
 				100000000000000000000015 /* ComposingOrb.swift */,
+				B90000000000000000000004 /* DictationStart.wav */,
+				B90000000000000000000005 /* DictationStop.wav */,
 				B90000000000000000000003 /* ComposingOrb.mov */,
 				F10000000000000000000101 /* AppModelRealtimeVoice.swift */,
 				F10000000000000000000102 /* RealtimeVoiceSession.swift */,
@@ -808,6 +814,8 @@
 				2000000000000000000000B4 /* AppIcon-orange.icon in Resources */,
 				2000000000000000000000B5 /* AppIcon-red.icon in Resources */,
 				2000000000000000000000B6 /* AppIcon-purple.icon in Resources */,
+				B80000000000000000000004 /* DictationStart.wav in Resources */,
+				B80000000000000000000005 /* DictationStop.wav in Resources */,
 				B80000000000000000000003 /* ComposingOrb.mov in Resources */,
 				20000000000000000000000B /* Assets.xcassets in Resources */,
 				E20000000000000000000001 /* Localizable.xcstrings in Resources */,

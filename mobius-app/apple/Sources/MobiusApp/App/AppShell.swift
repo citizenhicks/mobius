@@ -23,7 +23,6 @@ struct AppShell: View {
     @State private var sidebarIsOpen = !debugStartsOnDetail
     @State private var hasVerticalToolbar = false
     @State private var filesColumnWidth: CGFloat = 320
-    @State private var bottomRailGeometry = MobiusBottomRailGeometry()
     @State private var chatWindowToken = UUID()
 
     var body: some View {
@@ -64,7 +63,6 @@ struct AppShell: View {
         } action: { width in
             filesColumnWidth = width
         }
-        .environment(\.mobiusBottomRailGeometry, bottomRailGeometry)
         // Reconnecting to this gateway preserves local forms; changing gateways discards them.
         .id(model.gateway.selectedAccountID)
         .background {
@@ -279,7 +277,7 @@ struct AppShell: View {
             SidebarDrawer(
                 isOpen: $sidebarIsOpen
             ) {
-                SidebarView(sharesBottomRail: false, showDetail: showDetail)
+                SidebarView(showDetail: showDetail)
             } detail: {
                 detailNavigation
             }
@@ -293,7 +291,7 @@ struct AppShell: View {
             columnVisibility: $columnVisibility,
             preferredCompactColumn: $compactColumn
         ) {
-            SidebarView(sharesBottomRail: sidebarIsPresented, showDetail: showDetail)
+            SidebarView(showDetail: showDetail)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 232, max: 280)
                 .toolbar(removing: .sidebarToggle)
         } detail: {

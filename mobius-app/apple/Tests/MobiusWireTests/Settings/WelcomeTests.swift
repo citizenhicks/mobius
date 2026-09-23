@@ -122,7 +122,7 @@ final class WelcomeTests: XCTestCase {
                 (
                     "Sidebar",
                     AnyView(
-                        SidebarView(sharesBottomRail: false) { _ in }
+                        SidebarView { _ in }
                             .frame(width: SidebarDrawerMetrics.width))
                 ),
             ]

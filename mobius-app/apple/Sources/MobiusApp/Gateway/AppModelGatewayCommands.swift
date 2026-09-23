@@ -166,7 +166,6 @@ extension AppModel {
             return
         }
         guard canCreateSession else { return }
-        if newVoiceChatIntent == .selectingWorkspace { newVoiceChatIntent = .selectingBot }
         if chat.selectedSessionID == nil, case .chat(.new)? = navigationPath.last {
             if chat.pendingNewChatWorkspace != path {
                 workspaceFiles = []
@@ -178,7 +177,7 @@ extension AppModel {
             createPendingVoiceChat()
             return
         }
-        let bot = selectedBot ?? (bots.count == 1 ? bots[0] : nil)
+        let bot = newChatBot
         chat.changeComposerDraftOwner(to: nil)
         chat.discardComposerAttachments()
         let retainedWorkspaceFiles = workspace?.path == path ? workspaceFiles : []

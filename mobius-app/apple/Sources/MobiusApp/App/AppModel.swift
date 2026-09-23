@@ -83,13 +83,7 @@ final class AppModel {
     var routineRunPreviewError: String?
     var workspaceError: String?
     var isChangingWorkspace = false
-    var showsWorkspaceBrowser = false {
-        didSet {
-            if !showsWorkspaceBrowser, newVoiceChatIntent == .selectingWorkspace {
-                cancelVoiceChatIntent()
-            }
-        }
-    }
+    var showsWorkspaceBrowser = false
     var directoryListing: DirectoryListing?
     var directoryError: String?
     var isLoadingDirectories: Bool { directoryRequestID != nil }
@@ -769,7 +763,7 @@ final class AppModel {
     }
 
     var currentSessionTitle: String {
-        chat.selectedSessionID.map(sessionTitle) ?? localizedString("new conversation")
+        chat.selectedSessionID.map(sessionTitle) ?? ""
     }
 
     var selectedSession: SessionRecord? {
@@ -861,8 +855,10 @@ final class AppModel {
         let session =
             chat.sessions.first(where: { $0.sessionId == sessionID })
             ?? chat.botSessions.first(where: { $0.sessionId == sessionID })
-        return session.map { String(displayedTitle(for: $0).prefix(72)) }
-            ?? localizedString("new conversation")
+        return session.flatMap {
+            $0.explicitTitle ?? ChatTitleWriter.preview(for: $0.firstUserMessage)
+        }
+            ?? ""
     }
 
     var gatewayNavigationWidgets: [MountedWidget] {

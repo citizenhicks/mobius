@@ -2,6 +2,11 @@ import CoreGraphics
 import Foundation
 import Observation
 
+enum ComposerEntryIntent: Equatable {
+    case focus
+    case dictate
+}
+
 @MainActor
 @Observable
 final class ChatSessionModel {
@@ -36,7 +41,10 @@ final class ChatSessionModel {
 
     var selectedSessionID: String? {
         didSet {
-            if oldValue != selectedSessionID { stopRealtimeVoice() }
+            if oldValue != selectedSessionID {
+                dictation.stop()
+                stopRealtimeVoice()
+            }
         }
     }
     var transcript: [TranscriptEntry] = [] {
@@ -73,6 +81,9 @@ final class ChatSessionModel {
     }
 
     var composerFocusRequest = 0
+    var composerEntryIntent: ComposerEntryIntent?
+    var composerIsCompact = true
+    var dictation = ComposerDictation()
     private(set) var composerBlurRequest = 0
     var composerAttachments: [ComposerAttachment] = []
     var fileThumbnails: [FileThumbnailKey: CGImage] = [:]
@@ -532,6 +543,8 @@ final class ChatSessionModel {
     }
 
     func resetSessionState(preservingComposerAttachments: Bool = false) {
+        dictation.stop()
+        composerEntryIntent = nil
         stopRealtimeVoice()
         composerReply = nil
         messageNavigationRequest = nil

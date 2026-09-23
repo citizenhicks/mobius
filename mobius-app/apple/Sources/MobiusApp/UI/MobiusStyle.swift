@@ -68,94 +68,6 @@ extension EnvironmentValues {
     /// True when the system can place this navigation container's toolbar on a display edge.
     @Entry var mobiusHasVerticalToolbar = false
     @Entry var mobiusActionIconSize: CGFloat? = nil
-    @Entry var mobiusBottomRailGeometry: MobiusBottomRailGeometry? = nil
-}
-
-/// One window's native bottom action supplies the baseline for adjacent content.
-@MainActor
-@Observable
-final class MobiusBottomRailGeometry {
-    private(set) var frame: CGRect?
-    @ObservationIgnored private var owner: UUID?
-
-    func update(frame: CGRect, owner: UUID) {
-        guard !frame.isEmpty else {
-            remove(owner: owner)
-            return
-        }
-        self.owner = owner
-        self.frame = frame
-    }
-
-    func remove(owner: UUID) {
-        guard self.owner == owner else { return }
-        self.owner = nil
-        frame = nil
-    }
-}
-
-private struct MobiusBottomRailSource: ViewModifier {
-    @Environment(\.mobiusBottomRailGeometry) private var rail
-    @State private var owner = UUID()
-    @State private var frame = CGRect.zero
-    let isActive: Bool
-
-    func body(content: Content) -> some View {
-        content
-            .onGeometryChange(for: CGRect.self) { geometry in
-                geometry.frame(in: .global)
-            } action: { frame in
-                self.frame = frame
-                publish()
-            }
-            .onAppear(perform: publish)
-            .onChange(of: isActive) { publish() }
-            .onDisappear { rail?.remove(owner: owner) }
-    }
-
-    private func publish() {
-        if isActive {
-            rail?.update(frame: frame, owner: owner)
-        } else {
-            rail?.remove(owner: owner)
-        }
-    }
-}
-
-private struct MobiusBottomRailAlignment: ViewModifier {
-    @Environment(\.mobiusBottomRailGeometry) private var rail
-    @State private var bottom: CGFloat?
-    let isActive: Bool
-    let referenceBottom: CGFloat?
-
-    func body(content: Content) -> some View {
-        // Measure the unshifted container, not its offset content, to avoid layout feedback.
-        ZStack { content.offset(y: offset) }
-            .onGeometryChange(for: CGFloat.self) { geometry in
-                geometry.frame(in: .global).maxY
-            } action: { bottom in
-                self.bottom = bottom
-            }
-    }
-
-    private var offset: CGFloat {
-        guard isActive, let bottom = referenceBottom ?? bottom,
-            let target = rail?.frame
-        else { return 0 }
-        return target.maxY - bottom
-    }
-}
-
-extension View {
-    func mobiusBottomRailSource(isActive: Bool = true) -> some View {
-        modifier(MobiusBottomRailSource(isActive: isActive))
-    }
-
-    func mobiusBottomRailAligned(isActive: Bool = true, referenceBottom: CGFloat? = nil)
-        -> some View
-    {
-        modifier(MobiusBottomRailAlignment(isActive: isActive, referenceBottom: referenceBottom))
-    }
 }
 
 /// One HugeIcons glyph, vendored into the asset catalog under `hi.<name>`.
@@ -167,6 +79,11 @@ struct MobiusGlyph: Hashable {
     let asset: String
 
     private init(_ asset: String) { self.asset = asset }
+
+    /// Six shared vector phases: the illuminated arc ends at the needle.
+    static func reasoning(_ fraction: Double) -> Self {
+        Self("composer.reasoning\(Int((min(max(fraction, 0), 1) * 5).rounded()))")
+    }
 
     static let arrowCircleUp = Self("hi.arrowCircleUp")
     static let arrowClockwise = Self("hi.arrowClockwise")
