@@ -50,6 +50,7 @@ pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
     description: text::MANIFEST_DESCRIPTION,
     required: false,
     default_enabled: true,
+    required_model_capability: None,
     settings: &[],
 };
 

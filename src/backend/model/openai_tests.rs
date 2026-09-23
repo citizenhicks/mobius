@@ -1,4 +1,5 @@
 use super::*;
+use crate::backend::model::ImageGenerationReference;
 use crate::backend::model::PromptCacheIdentity;
 use crate::backend::model::REPLAY_REASONING_FIELD;
 use crate::backend::model::transport::capture_http_request;
@@ -56,7 +57,9 @@ fn only_the_first_party_endpoint_reports_known_openai_pricing() {
         let compatible =
             OpenAi::new("test-key", "https://example.com/v1", model).expect("compatible provider");
         assert!(official.supports_realtime_voice());
+        assert!(official.supports_image_generation());
         assert!(!compatible.supports_realtime_voice());
+        assert!(!compatible.supports_image_generation());
         assert_eq!(
             official
                 .pricing()
@@ -1411,6 +1414,117 @@ async fn credentialless_http_omits_authorization() {
 
     let request = server.await.expect("HTTP server");
     assert!(!request.to_ascii_lowercase().contains("authorization:"));
+}
+
+#[tokio::test]
+async fn native_images_use_json_for_generation_and_multipart_for_public_edits() {
+    use base64::Engine as _;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("HTTP listener");
+    let address = listener.local_addr().expect("HTTP address");
+    let server = tokio::spawn(async move {
+        let response = serde_json::json!({
+            "data": [{"b64_json": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/sZkAAAAASUVORK5CYII="}],
+            "usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5}
+        });
+        let response = response.to_string();
+        let mut requests = Vec::new();
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.expect("HTTP connection");
+            let mut request = Vec::new();
+            let body_start = loop {
+                if let Some(start) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                    break start + 4;
+                }
+                let mut chunk = [0_u8; 1024];
+                let read = stream.read(&mut chunk).await.expect("request headers");
+                assert_ne!(read, 0);
+                request.extend_from_slice(&chunk[..read]);
+            };
+            let headers = String::from_utf8_lossy(&request[..body_start]);
+            let length = headers
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().expect("content length"))
+                    })
+                })
+                .expect("content length header");
+            while request.len() < body_start + length {
+                let mut chunk = [0_u8; 1024];
+                let read = stream.read(&mut chunk).await.expect("request body");
+                assert_ne!(read, 0);
+                request.extend_from_slice(&chunk[..read]);
+            }
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                        response.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("response");
+            requests.push(request);
+        }
+        requests
+    });
+    let mut provider = OpenAi::with_client(
+        Some("test-key".into()),
+        format!("http://{address}"),
+        "chat-model",
+        reqwest::Client::new(),
+    )
+    .expect("provider")
+    .with_codex_image_generation();
+    let generated = provider
+        .generate_image(ImageGenerationRequest {
+            prompt: "a red fox",
+            references: &[],
+        })
+        .await
+        .expect("image");
+    assert_eq!(generated.media_type, "image/png");
+    assert_eq!(generated.usage.expect("usage").total_tokens, 5);
+    provider.image_api = Some(ImageApi::OpenAi);
+    let source = base64::engine::general_purpose::STANDARD
+        .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/sZkAAAAASUVORK5CYII=")
+        .expect("source image");
+    let references = [ImageGenerationReference {
+        media_type: "image/png",
+        bytes: &source,
+    }];
+    provider
+        .generate_image(ImageGenerationRequest {
+            prompt: "make the fox blue",
+            references: &references,
+        })
+        .await
+        .expect("edited image");
+    let requests = server.await.expect("server");
+    let generation = String::from_utf8_lossy(&requests[0]);
+    assert!(generation.starts_with("POST /images/generations HTTP/1.1"));
+    assert!(generation.contains("Bearer test-key"));
+    assert!(generation.contains("\"model\":\"gpt-image-2\""));
+    let edit = String::from_utf8_lossy(&requests[1]);
+    assert!(edit.starts_with("POST /images/edits HTTP/1.1"));
+    assert!(edit.contains("Bearer test-key"));
+    assert!(edit.contains("multipart/form-data; boundary="));
+    assert!(edit.contains("name=\"image[]\"; filename=\"reference-0.png\""));
+    assert!(edit.contains("name=\"model\""));
+    assert!(edit.contains("gpt-image-2"));
+    assert!(edit.contains("name=\"prompt\""));
+    assert!(edit.contains("make the fox blue"));
+    assert!(
+        requests[1]
+            .windows(source.len())
+            .any(|bytes| bytes == source)
+    );
 }
 
 #[tokio::test]

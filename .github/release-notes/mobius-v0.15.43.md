@@ -1,0 +1,1 @@
+Add native image generation for supported OpenAI, Codex, and OpenRouter routes. The deferred `generate_image` tool can use images already attached to the session as references, records provider usage, and publishes the result as a session artifact. Provider capabilities and middleware compatibility now use the selected model route, including realtime voice availability.

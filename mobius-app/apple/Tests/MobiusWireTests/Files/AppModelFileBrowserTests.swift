@@ -704,14 +704,14 @@ extension AppModelTests {
         model.chat.cancelSessionFileThumbnailDownloads()
     }
 
-    func testSessionFileThumbnailSourceCapIsExactlyTenMiB() async throws {
+    func testSessionFileThumbnailSourceCapIsExactlyFortyEightMiB() async throws {
         let recorder = GatewayRequestRecorder()
         let model = try model(requestSender: { request in
             await recorder.record(request)
         })
         model.gateway.connectionState = .ready
         model.chat.selectedSessionID = "chat-1"
-        let limit: Int64 = 10 * 1024 * 1024
+        let limit: Int64 = 48 * 1024 * 1024
         let eligible = SessionFileReference(
             id: "at-limit",
             name: "image.png",

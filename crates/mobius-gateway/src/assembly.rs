@@ -19,6 +19,7 @@ use mobius::middleware::attachments::Attachments;
 use mobius::middleware::compaction::{Compaction, CompactionMode};
 use mobius::middleware::context_offloading::ContextOffloading;
 use mobius::middleware::extensions::{Extensions, MANIFEST as EXTENSIONS_MANIFEST};
+use mobius::middleware::image_generation::ImageGeneration;
 use mobius::middleware::instructions::Instructions;
 use mobius::middleware::messages::Messages;
 use mobius::middleware::scratchpad::{Scratchpad, ScratchpadStore};
@@ -121,7 +122,7 @@ pub(crate) async fn prepare_bot(
             unavailable_models(gateway, &config.provider, session_files)?
         };
     let choices = models.choices().cloned().collect::<Vec<_>>();
-    crate::middleware_manifest::validate_choices(&config.middleware, &choices)?;
+    crate::config::validate_bot_compatibility(gateway, config, &choices)?;
     let approval_policy = configured_approval_policy(&config.middleware)?;
     let active_message_delivery = configured_message_delivery(&config.middleware)?;
     let compaction = config
@@ -525,6 +526,7 @@ fn build_route(
     })?;
     let mut choice = route.choice;
     choice.supports_image_input = model.supports_image_input();
+    choice.supports_image_generation = model.supports_image_generation();
     let id = choice.route.clone();
     Ok(RouteValue {
         choice,
@@ -604,6 +606,7 @@ fn unavailable_models(
         reasoning_effort: effort,
         context_window: Some(context_window),
         supports_image_input: definition.supports_image_input(),
+        supports_image_generation: false,
         supports_realtime_voice: false,
         tool_discovery: definition.tool_discovery(&selection.model, selection.base_url.as_deref()),
     })?;
@@ -650,6 +653,10 @@ fn build_middleware(
                 Arc::new(Attachments::new(session_files.clone()).with_workspace(workspace)?)
             }
             BuiltinMiddleware::Artifacts => Arc::new(Artifacts::new(session_files.clone())),
+            BuiltinMiddleware::ImageGeneration => Arc::new(ImageGeneration::new(
+                Arc::clone(&prepared.models),
+                session_files.clone(),
+            )),
             BuiltinMiddleware::Tools => Arc::new(Tools::coding(session_files.clone())),
             BuiltinMiddleware::Instructions => Arc::new(Instructions::discover(workspace)?),
             BuiltinMiddleware::Scratchpad => Arc::new(

@@ -22,7 +22,7 @@ extension AppModel {
             ? modelRoute(for: selectedBot?.config.config ?? botDefaultsSnapshot?.config)
             : chat.selectedModelRoute
         guard let route,
-            modelChoices.first(where: { $0.route == route })?.supportsRealtimeVoice == true,
+            modelChoices.first(where: { $0.route == route })?.supports(.realtimeVoice) == true,
             let instanceID = modelProviders[route],
             let instance = providerInstances.first(where: { $0.instance == instanceID }),
             instance.configured

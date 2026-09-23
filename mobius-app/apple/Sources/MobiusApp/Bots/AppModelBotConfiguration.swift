@@ -52,7 +52,10 @@ extension AppModel {
         var config = bot.config.config
         guard config.middleware.settings[middleware]?[setting] != value else { return }
         config.middleware.setSetting(value, middleware: middleware, setting: setting)
-        config.middleware.reconcile(features: middlewareFeatures)
+        config.middleware.reconcile(
+            features: middlewareFeatures,
+            model: modelChoice(for: config)
+        )
         saveSelectedBot(bot, config: config)
     }
 

@@ -91,7 +91,7 @@ struct TranscriptFileCards: View {
     var body: some View {
         if files.count <= 1 {
             ForEach(files) { file in
-                SessionFileCard(file: file, sessionID: sessionID)
+                SessionFileCard(file: file, sessionID: sessionID, animatesThumbnail: true)
             }
         } else {
             ViewThatFits(in: .horizontal) {
@@ -107,7 +107,7 @@ struct TranscriptFileCards: View {
             ForEach(Array(stride(from: 0, to: files.count, by: columnCount)), id: \.self) { start in
                 HStack(alignment: .top, spacing: MobiusSpace.s) {
                     ForEach(files[start..<min(start + columnCount, files.count)]) { file in
-                        SessionFileCard(file: file, sessionID: sessionID)
+                        SessionFileCard(file: file, sessionID: sessionID, animatesThumbnail: true)
                     }
                 }
             }
@@ -272,13 +272,20 @@ struct SessionFileCard: View {
     @Environment(AppModel.self) private var model
     let file: SessionFileReference
     let sessionID: String?
+    var animatesThumbnail = false
+    var prominentSize: CGFloat? = nil
 
     var body: some View {
         let thumbnail = model.chat.fileThumbnail(for: file, sessionID: sessionID)
         Button {
             model.previewSessionFile(file, sessionID: sessionID)
         } label: {
-            SessionFileCardLabel(file: file, thumbnail: thumbnail)
+            SessionFileCardLabel(
+                file: file,
+                thumbnail: thumbnail,
+                canLoadThumbnail: thumbnailTaskID != nil,
+                animatesThumbnail: animatesThumbnail,
+                prominentSize: prominentSize)
         }
         .buttonStyle(.mobiusPlain)
         .accessibilityLabel("Open file \(file.name)")
@@ -300,6 +307,11 @@ struct SessionFileCard: View {
         .task(id: thumbnailTaskID) {
             model.chat.requestSessionFileThumbnail(file, sessionID: sessionID)
         }
+        .onScrollVisibilityChange(threshold: 0.05) { isVisible in
+            if isVisible {
+                model.chat.requestSessionFileThumbnail(file, sessionID: sessionID)
+            }
+        }
     }
 
     private var thumbnailTaskID: FileThumbnailKey? {
@@ -307,6 +319,61 @@ struct SessionFileCard: View {
             let sessionID
         else { return nil }
         return .session(sessionID: sessionID, fileID: file.id)
+    }
+}
+
+/// Semantic image blocks keep one canvas while generation and thumbnail loading finish.
+struct TranscriptImageCard: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.mobiusPalette) private var palette
+    let entry: TranscriptEntry
+    let sessionID: String?
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            card(size: 380)
+            card(size: 336)
+            card(size: 280)
+        }
+    }
+
+    @ViewBuilder
+    private func card(size: CGFloat) -> some View {
+        if let file = entry.files.first {
+            SessionFileCard(
+                file: file, sessionID: sessionID, animatesThumbnail: true, prominentSize: size)
+        } else {
+            VStack(alignment: .leading, spacing: MobiusSpace.s) {
+                FileCard(
+                    name: entry.title.isEmpty ? "Image" : entry.title,
+                    detail: Text(verbatim: detail),
+                    detailColor: palette.muted,
+                    placeholderGlyph: .image01,
+                    showsOrganicReveal: entry.pending,
+                    waitsForImage: entry.pending,
+                    imageAnimationPaused: !model.gateway.connectionState.isReady,
+                    size: CGSize(width: size, height: size)
+                )
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(
+                    entry.pending
+                        ? "Creating image"
+                        : (entry.title.isEmpty ? "Image unavailable" : entry.title)
+                )
+                if !entry.pending && !entry.text.isEmpty {
+                    CollapsibleText(text: entry.text)
+                        .font(MobiusStyle.bodyFont)
+                        .foregroundStyle(palette.danger)
+                        .frame(width: size, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    private var detail: String {
+        if !entry.pending { return "" }
+        return model.gateway.connectionState.isReady
+            ? "Creating image…" : "Waiting for connection…"
     }
 }
 
@@ -361,6 +428,9 @@ private struct SessionFileCardLabel: View {
     @Environment(\.mobiusPalette) private var palette
     let file: SessionFileReference
     let thumbnail: CGImage?
+    let canLoadThumbnail: Bool
+    let animatesThumbnail: Bool
+    let prominentSize: CGFloat?
 
     var body: some View {
         FileCard(
@@ -370,11 +440,21 @@ private struct SessionFileCardLabel: View {
             ),
             detailColor: palette.muted,
             thumbnail: thumbnail,
+            placeholderGlyph: file.mediaType.lowercased().hasPrefix("image/")
+                ? .image01 : .fileText,
+            showsOrganicReveal: animatesThumbnail
+                && ChatSessionModel.isFileThumbnailCandidate(
+                    mediaType: file.mediaType, size: file.size),
+            waitsForImage: canLoadThumbnail,
+            imageContentMode: prominentSize == nil ? .fill : .fit,
             size: cardSize
         )
     }
 
     private var cardSize: CGSize {
+        if let prominentSize {
+            return CGSize(width: prominentSize, height: prominentSize)
+        }
         guard let thumbnail else { return CGSize(width: 136, height: 112) }
         let width = CGFloat(thumbnail.width)
         let height = CGFloat(thumbnail.height)
@@ -392,6 +472,11 @@ struct FileCard: View {
     let detail: Text
     let detailColor: Color
     var thumbnail: CGImage?
+    var placeholderGlyph: MobiusGlyph = .fileText
+    var showsOrganicReveal = false
+    var waitsForImage = false
+    var imageAnimationPaused = false
+    var imageContentMode: ContentMode = .fill
     var size = CGSize(width: 136, height: 112)
 
     var body: some View {
@@ -406,11 +491,19 @@ struct FileCard: View {
     }
 
     private var content: some View {
-        // The placeholder stays put and the thumbnail dissolves over it, so only one
-        // thing fades while the tile springs into the image's aspect ratio.
         ZStack {
-            placeholder
-            if let thumbnail {
+            if showsOrganicReveal {
+                OrganicImageReveal(
+                    thumbnail: thumbnail,
+                    waitsForImage: waitsForImage,
+                    externallyPaused: imageAnimationPaused,
+                    contentMode: imageContentMode
+                )
+                if thumbnail == nil { placeholder.transition(.opacity) }
+            } else {
+                placeholder
+            }
+            if let thumbnail, !showsOrganicReveal {
                 Image(thumbnail, scale: 1, label: Text(verbatim: name))
                     .resizable()
                     .scaledToFill()
@@ -425,7 +518,7 @@ struct FileCard: View {
 
     private var placeholder: some View {
         VStack(spacing: 0) {
-            MobiusIcon(.fileText, size: 26, foreground: .primary)
+            MobiusIcon(placeholderGlyph, size: 26, foreground: .primary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             Text(verbatim: name)
                 .font(MobiusStyle.badgeFont)
@@ -437,6 +530,124 @@ struct FileCard: View {
                 .lineLimit(1)
         }
         .padding(MobiusSpace.m)
+    }
+}
+
+/// An organic field of pixels resolves into the real thumbnail once it arrives.
+/// The clock keeps its phase when transcript entries are replaced during a live turn.
+private struct OrganicImageReveal: View {
+    @Environment(\.mobiusPalette) private var palette
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var isVisible = true
+    @State private var sawPlaceholder = false
+    @State private var revealStartedAt: Date?
+    @State private var isRevealed = false
+    let thumbnail: CGImage?
+    let waitsForImage: Bool
+    let externallyPaused: Bool
+    let contentMode: ContentMode
+
+    private let revealDuration = 0.72
+
+    var body: some View {
+        let paused =
+            reduceMotion || scenePhase != .active || !isVisible || externallyPaused
+            || (thumbnail == nil && !waitsForImage)
+            || (thumbnail != nil && (revealStartedAt == nil || isRevealed))
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: paused)) { clock in
+            ZStack {
+                palette.raised
+                if waitsForImage && !isRevealed {
+                    pixels(at: clock.date, revealing: false)
+                }
+                if let thumbnail {
+                    Image(thumbnail, scale: 1, label: Text("Image"))
+                        .resizable()
+                        .aspectRatio(contentMode: contentMode)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .clipped()
+                        .mask {
+                            if reduceMotion || isRevealed || !sawPlaceholder {
+                                Color.white
+                            } else {
+                                pixels(at: clock.date, revealing: true)
+                            }
+                        }
+                }
+            }
+        }
+        .onAppear { sawPlaceholder = thumbnail == nil }
+        .onChange(of: thumbnail != nil) { wasReady, isReady in
+            if !isReady {
+                sawPlaceholder = true
+                revealStartedAt = nil
+                isRevealed = false
+            } else if !wasReady {
+                revealStartedAt = .now
+                isRevealed = false
+            }
+        }
+        .task(id: revealStartedAt) {
+            guard revealStartedAt != nil else { return }
+            try? await Task.sleep(for: .milliseconds(760))
+            guard !Task.isCancelled else { return }
+            isRevealed = true
+        }
+        .onScrollVisibilityChange(threshold: 0.05) { isVisible = $0 }
+        .accessibilityHidden(true)
+    }
+
+    private func pixels(at date: Date, revealing: Bool) -> some View {
+        Canvas { context, size in
+            guard size.width > 0, size.height > 0 else { return }
+            let columns = 24
+            let rows = max(1, Int((size.height / size.width * CGFloat(columns)).rounded()))
+            let tileWidth = size.width / CGFloat(columns)
+            let tileHeight = size.height / CGFloat(rows)
+            let time = date.timeIntervalSinceReferenceDate
+            let progress = min(
+                1, max(0, date.timeIntervalSince(revealStartedAt ?? date) / revealDuration))
+
+            for row in 0..<rows {
+                for column in 0..<columns {
+                    let x = (Double(column) + 0.5) / Double(columns)
+                    let y = (Double(row) + 0.5) / Double(rows)
+                    let noise = Self.noise(column, row)
+                    let rect = CGRect(
+                        x: CGFloat(column) * tileWidth,
+                        y: CGFloat(row) * tileHeight,
+                        width: tileWidth,
+                        height: tileHeight
+                    )
+                    if revealing {
+                        let distance = hypot(x - 0.47, y - 0.53)
+                        let order = min(1, distance * 0.9 + noise * 0.3)
+                        let alpha = min(1, max(0, (progress - order * 0.68) / 0.24))
+                        context.fill(Path(rect), with: .color(.white.opacity(alpha)))
+                    } else {
+                        let first = hypot(
+                            x - 0.5 - 0.24 * sin(time * 0.39),
+                            y - 0.5 - 0.22 * cos(time * 0.31))
+                        let second = hypot(
+                            x - 0.5 + 0.22 * cos(time * 0.27),
+                            y - 0.5 + 0.2 * sin(time * 0.35))
+                        let glow = max(0, 1 - min(first, second) * 1.9)
+                        let pulse = 0.5 + 0.5 * sin(time * 1.8 + noise * 6)
+                        let inset = min(tileWidth, tileHeight) * (0.10 + noise * 0.06)
+                        context.fill(
+                            Path(rect.insetBy(dx: inset, dy: inset)),
+                            with: .color(palette.accent.opacity(0.08 + 0.34 * glow * pulse))
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private static func noise(_ column: Int, _ row: Int) -> Double {
+        let value = sin(Double(column) * 12.9898 + Double(row) * 78.233) * 43_758.5453
+        return value - floor(value)
     }
 }
 

@@ -433,6 +433,30 @@ final class TranscriptProjectionTests: XCTestCase {
         XCTAssertTrue(TranscriptProjection(entries: entries + nextTurn).rows.last!.files.isEmpty)
     }
 
+    func testImageBlockRemainsInlineWhenACompletedTurnCollapses() {
+        let user = entry("user", kind: .user, turnID: "turn-1", startsTurn: true)
+        let work = entry("work", turnID: "turn-1")
+        let image = entry("image", pending: true, turnID: "turn-1")
+        image.role = .artifact
+        image.format = "image"
+        let waiting = TranscriptProjection(entries: [user, work, image])
+        XCTAssertEqual(waiting.rows.map(\.kind), [.user, .activityGroup, .narrative])
+        XCTAssertEqual(waiting.rows.last?.id, image.presentationID)
+
+        image.pending = false
+        image.files = [
+            SessionFileReference(
+                id: "rendered", name: "rendered.png", size: 16, mediaType: "image/png")
+        ]
+        let final = entry("final", kind: .assistant, turnID: "turn-1", turnTerminal: true)
+        let completed = TranscriptProjection(entries: [user, work, image, final])
+        XCTAssertEqual(
+            completed.rows.map(\.kind), [.user, .workedGroup, .narrative, .narrative])
+        XCTAssertEqual(completed.rows[2].id, image.presentationID)
+        XCTAssertEqual(completed.rows[2].files.map(\.id), ["rendered"])
+        XCTAssertTrue(completed.rows.last!.files.isEmpty)
+    }
+
     func testTurnWindowKeepsSteeringInsideCompletedTurn() {
         let turnID = "turn-1"
         let earlier = [

@@ -216,6 +216,16 @@ pub enum ToolDiscoveryMode {
     Rebuild,
 }
 
+/// A provider capability used by bot compatibility checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelCapability {
+    /// Provider-native image generation.
+    ImageGeneration,
+    /// Live provider voice.
+    RealtimeVoice,
+}
+
 /// One selectable runtime model route.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelChoice {
@@ -231,10 +241,23 @@ pub struct ModelChoice {
     pub context_window: Option<i64>,
     /// The supports image input.
     pub supports_image_input: bool,
+    /// Whether this route can generate images natively.
+    pub supports_image_generation: bool,
     /// The supports realtime voice.
     pub supports_realtime_voice: bool,
     /// The tool discovery.
     pub tool_discovery: ToolDiscoveryMode,
+}
+
+impl ModelChoice {
+    /// Reports whether this route supports a neutral provider capability.
+    #[must_use]
+    pub const fn supports(&self, capability: ModelCapability) -> bool {
+        match capability {
+            ModelCapability::ImageGeneration => self.supports_image_generation,
+            ModelCapability::RealtimeVoice => self.supports_realtime_voice,
+        }
+    }
 }
 
 /// Who submitted one conversation message.
@@ -830,6 +853,7 @@ mod tests {
             label: "Example".into(),
             description: "Example capability".into(),
             required: false,
+            required_model_capability: None,
             settings: vec![FrontendSetting {
                 id: "limit".into(),
                 label: "Limit".into(),
@@ -850,6 +874,7 @@ mod tests {
                 "label": "Example",
                 "description": "Example capability",
                 "required": false,
+                "required_model_capability": null,
                 "settings": [{
                     "id": "limit",
                     "label": "Limit",

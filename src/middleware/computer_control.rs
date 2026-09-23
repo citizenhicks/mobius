@@ -29,6 +29,7 @@ pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
     description: "Operate a browser and supported native apps with persistent JavaScript and image observations",
     required: false,
     default_enabled: false,
+    required_model_capability: None,
     settings: &[],
 };
 

@@ -549,7 +549,23 @@ impl MiddlewareConfig {
         &self,
         features: &'a [mobius::protocol::MiddlewareFeature],
         id: &str,
+        selected_model: Option<&mobius::protocol::ModelChoice>,
     ) -> Option<&'a str> {
+        if let Some(capability) = features
+            .iter()
+            .find(|feature| feature.id == id)
+            .and_then(|feature| feature.required_model_capability)
+            && selected_model.is_some_and(|model| !model.supports(capability))
+        {
+            return Some(match capability {
+                mobius::protocol::ModelCapability::ImageGeneration => {
+                    "a model without image generation"
+                }
+                mobius::protocol::ModelCapability::RealtimeVoice => {
+                    "a model without realtime voice"
+                }
+            });
+        }
         features
             .iter()
             .filter(|feature| feature.required || self.enabled(&feature.id))
@@ -577,11 +593,15 @@ impl MiddlewareConfig {
     }
 
     /// Applies exclusions advertised by the currently selected policies.
-    pub fn reconcile(&mut self, features: &[mobius::protocol::MiddlewareFeature]) {
+    pub fn reconcile(
+        &mut self,
+        features: &[mobius::protocol::MiddlewareFeature],
+        selected_model: Option<&mobius::protocol::ModelChoice>,
+    ) {
         let excluded = self
             .enabled
             .iter()
-            .filter(|id| self.disabled_by(features, id).is_some())
+            .filter(|id| self.disabled_by(features, id, selected_model).is_some())
             .cloned()
             .collect::<Vec<_>>();
         for id in excluded {

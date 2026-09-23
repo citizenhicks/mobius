@@ -15,6 +15,7 @@ use crate::middleware::tools::{PreparedToolSet, ToolResult, execute_batch};
 use crate::middleware::{PostToolUseContext, PreToolUseContext};
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
+use crate::protocol::TokenUsage;
 use crate::protocol::ToolCall;
 use crate::protocol::ToolCallBeginEvent;
 use crate::protocol::ToolCallEndEvent;
@@ -140,12 +141,14 @@ impl Runner {
                 input_changed: true,
             });
         }
+        let model_route = self.config.provider.clone();
         let execution = execute_batch(
             &catalog,
             &bound_calls,
             Arc::clone(&self.config.sandbox),
             &permissions,
             turn_id,
+            &model_route,
         );
         tokio::pin!(execution);
         let mut executed = false;
@@ -260,16 +263,29 @@ impl Runner {
             })
             .collect::<Vec<_>>();
         events.extend(tool_result_events(submission_id, turn_id, &results));
+        let tool_usage = batch_usage(&results)?;
         let pending_tools = self.state.pending_tools.clone();
         let active_execution = self.state.active_execution.clone();
+        let total_usage = self.state.total_usage.clone();
         let context_len = self.state.context.len();
         let transcript_len = self.transcript_delta.len();
-        self.append_tool_results(results)?;
-        match self.persist_with_events(events, None).await {
+        let outcome = async {
+            self.append_tool_results(results)?;
+            if tool_usage.is_some()
+                && let Some(usage) = self.usage_event(submission_id, tool_usage.as_ref())
+            {
+                events.push(usage);
+            }
+            self.persist_with_events(events, None).await?;
+            Ok(())
+        }
+        .await;
+        match outcome {
             Ok(_) => Ok(()),
             Err(error) => {
                 self.state.pending_tools = pending_tools;
                 self.state.active_execution = active_execution;
+                self.state.total_usage = total_usage;
                 self.state.context.truncate(context_len);
                 self.transcript_delta.truncate(transcript_len);
                 Err(error)
@@ -304,6 +320,9 @@ impl Runner {
         )
         .map_err(|_| Error::Checkpoint("execution failed-tool count is unsupported".into()))?;
         self.record_tools(tool_calls, failed_tool_calls)?;
+        for (route, usage) in results.iter().filter_map(|result| result.usage.as_ref()) {
+            self.record_usage(route, usage)?;
+        }
         let completed = results
             .iter()
             .map(|result| result.call_id.as_str())
@@ -343,6 +362,19 @@ impl Runner {
         self.append_tool_results(results)?;
         Ok(events)
     }
+}
+
+fn batch_usage(results: &[ToolResult]) -> Result<Option<TokenUsage>> {
+    let mut total = None;
+    for (_, usage) in results.iter().filter_map(|result| result.usage.as_ref()) {
+        total
+            .get_or_insert_with(TokenUsage::default)
+            .checked_add(usage)
+            .ok_or_else(|| {
+                Error::Provider("provider token usage exceeds the supported range".into())
+            })?;
+    }
+    Ok(total)
 }
 
 pub(super) fn tool_call_inputs(calls: &[ToolCall]) -> Result<Vec<serde_json::Value>> {
@@ -401,6 +433,32 @@ pub(super) fn order_results(calls: &[ToolCall], results: Vec<ToolResult>) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batch_usage_includes_every_paid_tool_call() {
+        let mut results = (0..2)
+            .map(|index| {
+                ToolResult::error(
+                    &ToolCall {
+                        call_id: index.to_string(),
+                        name: "paid_tool".into(),
+                        arguments: serde_json::Value::Null,
+                    },
+                    "",
+                )
+            })
+            .collect::<Vec<_>>();
+        for (result, tokens) in results.iter_mut().zip([7, 5]) {
+            result.usage = Some((
+                "route".into(),
+                TokenUsage {
+                    total_tokens: tokens,
+                    ..TokenUsage::default()
+                },
+            ));
+        }
+        assert_eq!(batch_usage(&results).unwrap().unwrap().total_tokens, 12);
+    }
 
     #[test]
     fn interrupted_results_do_not_claim_tools_were_denied() {

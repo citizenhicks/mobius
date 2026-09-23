@@ -616,7 +616,7 @@ struct TranscriptProjection {
 
         for entry in entries {
             if entry.presentationID == boundaryID || entry.startsTurn { appendActivity() }
-            if entry.kind.isActivity {
+            if entry.kind.isActivity && entry.format != "image" {
                 if entry.turnTerminal { appendActivity() }
                 activity.append(entry)
                 if entry.turnTerminal { appendActivity() }
@@ -720,7 +720,9 @@ struct TranscriptProjection {
         }
         guard !workRows.isEmpty else { return rows }
 
-        let records = workRows.flatMap(\.records)
+        let imageRows = workRows.filter { $0.records.first?.format == "image" }
+        let records = workRows.filter { $0.records.first?.format != "image" }
+            .flatMap(\.records)
         if let finalIndex = terminalRows.lastIndex(where: { $0.records.first?.kind == .assistant })
         {
             terminalRows[finalIndex].pinnedEntries = records.filter { $0.kind != .user }
@@ -743,14 +745,17 @@ struct TranscriptProjection {
             }()
         var result: [TranscriptPresentationRow] = []
         if let primaryInputIndex { result.append(rows[primaryInputIndex]) }
-        result.append(
-            TranscriptPresentationRow(
-                id: "turn-work:\(turnID.utf8.count):\(turnID)",
-                records: records,
-                sizing: .fixedSummary,
-                kind: .workedGroup,
-                elapsedMs: elapsedMs
-            ))
+        if !records.isEmpty {
+            result.append(
+                TranscriptPresentationRow(
+                    id: "turn-work:\(turnID.utf8.count):\(turnID)",
+                    records: records,
+                    sizing: .fixedSummary,
+                    kind: .workedGroup,
+                    elapsedMs: elapsedMs
+                ))
+        }
+        result.append(contentsOf: imageRows)
         result.append(contentsOf: terminalRows)
         return result
     }

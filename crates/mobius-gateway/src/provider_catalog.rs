@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use mobius::backend::model::provider::{ProviderAuth, ProviderDefinition, provider, providers};
-use mobius::protocol::{FrontendSettingOption, FrontendTone, ModelChoice};
+use mobius::protocol::{FrontendSettingOption, FrontendTone, ModelCapability, ModelChoice};
 
 use crate::config::{
     ConfigStore, ConfiguredProvider, CredentialStore, DEFAULT_CONTEXT_WINDOW, GatewayConfig,
@@ -179,9 +179,14 @@ pub(crate) fn catalog_routes(
                         preset.map_or(DEFAULT_CONTEXT_WINDOW, |preset| preset.context_window),
                     ),
                     supports_image_input: definition.supports_image_input(),
-                    supports_realtime_voice: !definition
-                        .realtime_voices(selection.base_url.as_deref())
-                        .is_empty(),
+                    supports_image_generation: definition.supports(
+                        ModelCapability::ImageGeneration,
+                        selection.base_url.as_deref(),
+                    ),
+                    supports_realtime_voice: definition.supports(
+                        ModelCapability::RealtimeVoice,
+                        selection.base_url.as_deref(),
+                    ),
                     tool_discovery: definition.tool_discovery(model, selection.base_url.as_deref()),
                 },
                 provider,

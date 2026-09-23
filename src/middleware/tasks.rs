@@ -41,6 +41,7 @@ pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
     description: text::MANIFEST_DESCRIPTION,
     required: false,
     default_enabled: false,
+    required_model_capability: None,
     settings: &[],
 };
 
@@ -423,6 +424,7 @@ mod tests {
             Arc::clone(&sandbox),
             &permissions,
             "turn-a",
+            "test",
         )
         .await
         .pop()
@@ -516,7 +518,7 @@ mod tests {
                 &searchable,
             )
             .expect("bind clear");
-        let result = execute_batch(&catalog, &[clear], sandbox, &permissions, "turn-a")
+        let result = execute_batch(&catalog, &[clear], sandbox, &permissions, "turn-a", "test")
             .await
             .pop()
             .expect("clear result");

@@ -421,7 +421,8 @@ private struct EventLine: View {
             }
             if isExpanded {
                 ObservationContentView(
-                    content: entry.content, sessionID: model.chat.selectedSessionID)
+                    content: entry.content, sessionID: model.chat.selectedSessionID,
+                    animatesThumbnails: true)
                 if entry.format == "unified_diff" {
                     InlineUnifiedDiffView(source: entry.text)
                 } else if entry.isWebSearch {

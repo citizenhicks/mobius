@@ -495,6 +495,7 @@ async fn dispatch_rechecks_exposure_in_the_current_catalog() {
         test_sandbox(),
         &test_permissions(&[]),
         "turn",
+        "test",
     )
     .await
     .pop()
@@ -537,6 +538,7 @@ async fn tools_search_executes_as_a_normal_bound_tool_and_reports_loaded_names()
         test_sandbox(),
         &test_permissions(&[]),
         "turn",
+        "test",
     )
     .await
     .pop()

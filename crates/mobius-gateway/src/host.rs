@@ -178,8 +178,7 @@ impl GatewayHost {
         }
         let models = configured_model_choices(&config, &store, &credentials)?;
         for bot in bots.bots()? {
-            config.validate_provider_selection(&bot.config.config.provider)?;
-            crate::middleware_manifest::validate_choices(&bot.config.config.middleware, &models)?;
+            crate::config::validate_bot_compatibility(&config, &bot.config.config, &models)?;
             extensions.resolve(&config, &bot.config.config.extensions)?;
         }
         let discovery_gate = Arc::new(Mutex::new(()));
@@ -877,13 +876,9 @@ fn validate_bot_config(
         .config
         .lock()
         .map_err(|_| internal("gateway configuration lock is poisoned"))?;
-    gateway
-        .validate_provider_selection(&config.provider)
-        .map_err(invalid_config)?;
     let models =
         configured_model_choices(&gateway, &state.store, &state.credentials).map_err(internal)?;
-    crate::middleware_manifest::validate_choices(&config.middleware, &models)
-        .map_err(invalid_config)?;
+    crate::config::validate_bot_compatibility(&gateway, config, &models).map_err(invalid_config)?;
     ExtensionStore::new(&state.store)
         .resolve(&gateway, &config.extensions)
         .map(|_| ())

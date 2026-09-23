@@ -38,7 +38,9 @@ pub use self::store::{
 };
 pub use self::validation::validate_agent_composition;
 use self::validation::*;
-pub(crate) use self::validation::{effective_reasoning_effort, model_route_id};
+pub(crate) use self::validation::{
+    effective_reasoning_effort, model_route_id, validate_bot_compatibility,
+};
 pub(crate) use self::workspace::{
     create_workspace_directory, local_user_name, validate_chat_workspace, workspace_id,
 };

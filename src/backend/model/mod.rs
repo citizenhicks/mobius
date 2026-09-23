@@ -22,6 +22,7 @@ use crate::protocol::{
 
 pub mod anthropic;
 pub mod deepseek;
+mod image_generation;
 pub mod kimi;
 pub(crate) mod media;
 pub mod openai;
@@ -32,6 +33,7 @@ pub mod openrouter;
 pub mod provider;
 pub mod realtime;
 mod router;
+pub use image_generation::{GeneratedImage, ImageGenerationReference, ImageGenerationRequest};
 pub use media::ImageInputLimits;
 mod transport;
 
@@ -765,6 +767,23 @@ pub trait Model: Send + Sync {
     /// Reports whether this provider accepts native image input.
     fn supports_image_input(&self) -> bool {
         false
+    }
+
+    /// Reports whether this provider can generate an image through its native API.
+    fn supports_image_generation(&self) -> bool {
+        false
+    }
+
+    /// Generates or edits one image using provider-native image endpoints.
+    fn generate_image<'a>(
+        &'a self,
+        _request: ImageGenerationRequest<'a>,
+    ) -> BoxFuture<'a, Result<GeneratedImage>> {
+        Box::pin(async {
+            Err(Error::Provider(
+                "image generation is unavailable for this provider".into(),
+            ))
+        })
     }
 
     /// Whether images can remain associated with their originating tool call.

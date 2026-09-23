@@ -506,4 +506,15 @@ extension GatewayWireTests {
         XCTAssertEqual(payload.providers.first?.realtimeVoices, ["marin", "cedar"])
         XCTAssertEqual(payload.models.first?.supportsRealtimeVoice, true)
     }
+
+    func testMiddlewareModelCapabilityDecodesFromOwnedCatalog() throws {
+        let json =
+            #"{"id":"image_generation","label":"Image generation","description":"Create images","required":false,"required_model_capability":"image_generation","settings":[]}"#
+        let feature = try decoder().decode(MiddlewareFeature.self, from: Data(json.utf8))
+        XCTAssertEqual(feature.requiredModelCapability, .imageGeneration)
+        XCTAssertEqual(
+            try decoder().decode(ModelCapability.self, from: Data(#""realtime_voice""#.utf8)),
+            .realtimeVoice
+        )
+    }
 }

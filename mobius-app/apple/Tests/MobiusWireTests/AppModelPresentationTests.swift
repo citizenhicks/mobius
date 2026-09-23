@@ -1458,6 +1458,42 @@ extension AppModelTests {
         XCTAssertEqual(replay.chat.transcript.first?.tone, "warning")
     }
 
+    func testReplacingBlockWithImageFormatRebuildsTranscriptRows() throws {
+        let app = try model()
+        func rendered(_ format: String) -> RenderedBlock {
+            RenderedBlock(
+                capability: "artifact",
+                block: FrontendBlock(
+                    id: "result",
+                    group: nil,
+                    update: .replace,
+                    state: .pending,
+                    role: .artifact,
+                    title: "Image",
+                    text: "",
+                    symbol: nil,
+                    format: format,
+                    tone: "neutral",
+                    files: []
+                ))
+        }
+
+        app.chat.apply(
+            rendered("plain_text"), sequence: 1, blockIndex: 0,
+            recordedAtMs: 1, turnID: nil, modelStepID: nil)
+        XCTAssertEqual(
+            app.chat.transcriptProjection(breakBefore: nil).rows.map(\.kind), [.activityGroup])
+
+        let version = app.chat.transcriptProjectionVersion
+        var entries = app.chat.transcript
+        app.chat.apply(
+            rendered("image"), sequence: 2, blockIndex: 0,
+            recordedAtMs: 2, turnID: nil, modelStepID: nil, to: &entries)
+        XCTAssertEqual(app.chat.transcriptProjectionVersion, version + 1)
+        XCTAssertEqual(
+            app.chat.transcriptProjection(breakBefore: nil).rows.map(\.kind), [.narrative])
+    }
+
     func testRenderedBlocksPreserveCapabilityAndGroup() throws {
         let app = try model()
         for (sequence, capability) in [(UInt64(1), "tools"), (UInt64(2), "review")] {

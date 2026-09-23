@@ -37,6 +37,8 @@ use self::connection::read_exchange;
 use self::connection::websocket_error_cause;
 use super::CompactOutput;
 use super::CompactRequest;
+use super::GeneratedImage;
+use super::ImageGenerationRequest;
 use super::Model;
 use super::ModelEventSink;
 use super::ModelOutput;
@@ -253,6 +255,11 @@ impl OpenAiSocket {
     pub(super) fn with_codex_realtime_voice(mut self) -> Result<Self> {
         self.http = self.http.with_codex_realtime_voice()?;
         Ok(self)
+    }
+
+    pub(super) fn with_codex_image_generation(mut self) -> Self {
+        self.http = self.http.with_codex_image_generation();
+        self
     }
 
     fn with_explicit_prompt_cache(mut self) -> Self {
@@ -610,6 +617,17 @@ impl Model for OpenAiSocket {
         true
     }
 
+    fn supports_image_generation(&self) -> bool {
+        self.http.supports_image_generation()
+    }
+
+    fn generate_image<'a>(
+        &'a self,
+        request: ImageGenerationRequest<'a>,
+    ) -> BoxFuture<'a, Result<GeneratedImage>> {
+        self.http.generate_image(request)
+    }
+
     fn supports_realtime_voice(&self) -> bool {
         self.http.supports_realtime_voice()
     }
@@ -793,6 +811,7 @@ pub(super) const fn provider() -> ProviderDefinition {
         build_provider,
     )
     .with_image_input()
+    .with_image_generation()
     .with_realtime_voices(super::realtime::VOICES)
     .with_tool_discovery(
         manifest::TOOL_DISCOVERY,

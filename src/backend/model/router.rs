@@ -6,6 +6,8 @@ use std::time::SystemTime;
 
 use super::CompactOutput;
 use super::CompactRequest;
+use super::GeneratedImage;
+use super::ImageGenerationRequest;
 use super::Model;
 use super::ModelEventSink;
 use super::ModelOutput;
@@ -175,6 +177,7 @@ impl ModelRouter {
             .find(|current| current.choice.route == choice.route)
             .ok_or_else(|| Error::Unknown(format!("model route `{}`", choice.route)))?;
         choice.supports_image_input = current.provider.supports_image_input();
+        choice.supports_image_generation = current.provider.supports_image_generation();
         choice.supports_realtime_voice = current.provider.supports_realtime_voice();
         choice.tool_discovery = current.provider.tool_discovery();
         current.choice = choice;
@@ -261,6 +264,28 @@ impl ModelRouter {
     /// Returns an error if validation or an operation required by this function fails.
     pub fn supports_image_input(&self, provider: &str) -> Result<bool> {
         Ok(self.provider(provider)?.supports_image_input())
+    }
+
+    /// Reports whether one route supports provider-native image generation.
+    /// # Errors
+    ///
+    /// Returns an error if the route is unknown.
+    pub fn supports_image_generation(&self, provider: &str) -> Result<bool> {
+        Ok(self.provider(provider)?.supports_image_generation())
+    }
+
+    /// Generates or edits an image through one route while enforcing credential lifetime.
+    /// # Errors
+    ///
+    /// Returns an error when input, authorization, or the provider response is invalid.
+    pub async fn generate_image(
+        &self,
+        provider: &str,
+        request: ImageGenerationRequest<'_>,
+    ) -> Result<GeneratedImage> {
+        request.validate(self.image_limits)?;
+        let route = self.route(provider)?;
+        while_valid(&route.credential, || route.provider.generate_image(request)).await
     }
 
     /// Reports whether one route can negotiate realtime voice.
@@ -506,6 +531,7 @@ fn inferred_choice(route: &str, provider: &dyn Model) -> ModelChoice {
         reasoning_effort: info.reasoning_effort,
         context_window: None,
         supports_image_input: provider.supports_image_input(),
+        supports_image_generation: provider.supports_image_generation(),
         supports_realtime_voice: provider.supports_realtime_voice(),
         tool_discovery: provider.tool_discovery(),
     }

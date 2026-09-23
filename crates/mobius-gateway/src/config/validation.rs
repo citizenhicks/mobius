@@ -1,5 +1,32 @@
 use super::*;
 
+/// Validates one Bot against its exact selected model route and capabilities.
+pub(crate) fn validate_bot_compatibility(
+    gateway: &GatewayConfig,
+    config: &AgentComposition,
+    models: &[mobius::protocol::ModelChoice],
+) -> Result<()> {
+    validate_agent_composition(config)?;
+    gateway.validate_provider_selection(&config.provider)?;
+    let selection = &config.provider;
+    let configured = gateway
+        .configured_providers
+        .get(&selection.instance)
+        .ok_or_else(|| Error::Config("active provider is not in the configured catalog".into()))?;
+    let definition = provider(&selection.provider)?;
+    let effort = effective_reasoning_effort(definition, configured, selection);
+    let route = model_route_id(&selection.instance, &selection.model, effort);
+    let catalog = crate::provider_catalog::catalog_routes(definition, configured, selection);
+    let selected = catalog
+        .iter()
+        .find(|candidate| candidate.choice.route == route)
+        .ok_or_else(|| {
+            Error::Config("active model route is not in the configured catalog".into())
+        })?;
+    crate::middleware_manifest::validate_choices(&config.middleware, models, &selected.choice)?;
+    Ok(())
+}
+
 /// Validates the complete frontend-writable agent composition.
 /// # Errors
 ///

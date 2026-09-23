@@ -43,6 +43,7 @@ async fn ordered_images_are_durable_and_reinspectable_after_source_deletion() {
         sandbox.clone(),
         &test_permissions(&[]),
         "turn",
+        "test",
     )
     .await
     .remove(0);
@@ -90,6 +91,7 @@ async fn ordered_images_are_durable_and_reinspectable_after_source_deletion() {
         sandbox.clone(),
         &test_permissions(&[]),
         "turn",
+        "test",
     )
     .await
     .remove(0);
@@ -101,7 +103,7 @@ async fn ordered_images_are_durable_and_reinspectable_after_source_deletion() {
         crate::backend::sandbox::NetworkAccess::Denied,
         Vec::new(),
     );
-    let result = execute_batch(&catalog, &[call], sandbox, &other_session, "turn")
+    let result = execute_batch(&catalog, &[call], sandbox, &other_session, "turn", "test")
         .await
         .remove(0);
     assert!(

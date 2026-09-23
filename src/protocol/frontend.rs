@@ -50,6 +50,8 @@ pub struct MiddlewareFeature {
     pub description: String,
     /// The required.
     pub required: bool,
+    /// Neutral model capability required by this middleware, if any.
+    pub required_model_capability: Option<super::ModelCapability>,
     /// The settings.
     pub settings: Vec<FrontendSetting>,
 }
@@ -313,6 +315,8 @@ pub enum FrontendBlockFormat {
     PlainText,
     /// Selects the unified diff case.
     UnifiedDiff,
+    /// Displays a generated image or its pending placeholder.
+    Image,
 }
 
 /// One selectable action supplied by a capability.

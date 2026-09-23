@@ -8,6 +8,7 @@ use super::provider::HostedWebSearch;
 use super::provider::ProviderAuth;
 use super::provider::ProviderBuildConfig;
 use super::provider::ProviderDefinition;
+use super::provider::uses_default_endpoint;
 use crate::Error;
 use crate::Result;
 use crate::protocol::ToolDiscoveryMode;
@@ -39,6 +40,7 @@ pub(super) const fn provider() -> ProviderDefinition {
         build_provider,
     )
     .with_image_input()
+    .with_image_generation()
     .with_base_url(BASE_URL)
     .with_tool_discovery(
         manifest::TOOL_DISCOVERY,
@@ -53,7 +55,14 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
         .base_url
         .ok_or_else(|| Error::Config("OpenRouter requires a base URL".into()))?;
     let api_key = config.credential.into_optional_api_key("openrouter")?;
-    let provider = OpenAi::with_client(api_key, base_url, config.model, config.http)?;
+    let native_images = api_key.is_some() && uses_default_endpoint(Some(BASE_URL), Some(&base_url));
+    let provider = OpenAi::with_client(api_key, base_url, config.model, config.http)?
+        .without_image_generation();
+    let provider = if native_images {
+        provider.with_openrouter_image_generation()
+    } else {
+        provider
+    };
     let provider = match tool_discovery {
         ToolDiscoveryMode::Native => provider.with_openrouter_tool_search(),
         ToolDiscoveryMode::Rebuild => provider.with_tool_discovery(ToolDiscoveryMode::Rebuild),
@@ -85,7 +94,7 @@ mod tests {
     fn advertised_web_search_modes_build() {
         let definition = provider();
         for web_search in definition.web_search().iter().copied() {
-            definition
+            let model = definition
                 .build(ProviderBuildConfig {
                     credential: ProviderCredential::ApiKey("test-key".into()),
                     model: "test-model".into(),
@@ -95,6 +104,7 @@ mod tests {
                     http: reqwest::Client::new(),
                 })
                 .expect("advertised web search mode builds");
+            assert!(model.supports_image_generation());
         }
     }
 }

@@ -164,6 +164,7 @@ impl Runner {
         let events = self.events.clone();
         let submission_id = submission_id.to_owned();
         let turn_id = turn_id.to_owned();
+        let model_route = self.config.provider.clone();
         streamed.running.push_back(Box::pin(async move {
             let _read;
             let _write;
@@ -187,7 +188,15 @@ impl Runner {
                 ),
             )
             .await?;
-            Ok(execute_call(&catalog, bound, &sandbox, &permissions, &turn_id).await)
+            Ok(execute_call(
+                &catalog,
+                bound,
+                &sandbox,
+                &permissions,
+                &turn_id,
+                &model_route,
+            )
+            .await)
         }));
         Ok(())
     }

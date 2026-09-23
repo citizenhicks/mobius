@@ -131,7 +131,19 @@ extension MiddlewareConfig {
         return nil
     }
 
-    func disabledBy(features: [MiddlewareFeature], middleware: String) -> String? {
+    func disabledBy(
+        features: [MiddlewareFeature],
+        middleware: String,
+        model: ModelChoice? = nil
+    ) -> String? {
+        if let required = features.first(where: { $0.id == middleware })?.requiredModelCapability,
+            let model, !model.supports(required)
+        {
+            return switch required {
+            case .imageGeneration: "a model without image generation"
+            case .realtimeVoice: "a model without realtime voice"
+            }
+        }
         for feature in features where feature.required || enabled.contains(feature.id) {
             for setting in feature.settings {
                 guard case .select(let options, _) = setting.kind,
@@ -147,8 +159,17 @@ extension MiddlewareConfig {
         return nil
     }
 
-    mutating func reconcile(features: [MiddlewareFeature]) {
-        let excluded = enabled.filter { disabledBy(features: features, middleware: $0) != nil }
+    mutating func reconcile(
+        features: [MiddlewareFeature],
+        model: ModelChoice? = nil
+    ) {
+        let excluded = enabled.filter {
+            disabledBy(
+                features: features,
+                middleware: $0,
+                model: model
+            ) != nil
+        }
         enabled.subtract(excluded)
     }
 
@@ -193,7 +214,24 @@ struct MiddlewareFeature: Identifiable, Decodable, Equatable, Sendable {
     let label: String
     let description: String
     let required: Bool
+    let requiredModelCapability: ModelCapability?
     let settings: [FrontendSetting]
+
+    init(
+        id: String,
+        label: String,
+        description: String,
+        required: Bool,
+        settings: [FrontendSetting],
+        requiredModelCapability: ModelCapability? = nil
+    ) {
+        self.id = id
+        self.label = label
+        self.description = description
+        self.required = required
+        self.settings = settings
+        self.requiredModelCapability = requiredModelCapability
+    }
 }
 
 struct FrontendSetting: Identifiable, Decodable, Equatable, Sendable {

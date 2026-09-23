@@ -4,10 +4,10 @@ import AVFoundation
 import ImageIO
 import UniformTypeIdentifiers
 
-private let maximumFileThumbnailSourceBytes: Int64 = 10 * 1024 * 1024
+private let maximumFileThumbnailSourceBytes: Int64 = 48 * 1024 * 1024
 private let maximumCachedFileThumbnails = 32
 private let maximumDiscardedFileThumbnailRequestIDs = 32
-private let maximumFileThumbnailPixelDimension = 384
+private let maximumFileThumbnailPixelDimension = 1024
 
 extension ChatSessionModel {
     nonisolated static func loadImportedAttachment(

@@ -1,0 +1,1 @@
+Bundle mobius 0.15.43 and mobius-gateway 0.15.45. The CLI Bot setup uses the shared capability rules to disable incompatible middleware choices for the selected model route. Bundled gateway wire protocol is 83.

@@ -9,6 +9,8 @@ use serde_json::Value;
 
 use super::CompactOutput;
 use super::CompactRequest;
+use super::GeneratedImage;
+use super::ImageGenerationRequest;
 use super::Model;
 use super::ModelEventSink;
 use super::ModelOutput;
@@ -20,6 +22,7 @@ use super::StreamingToolCalls;
 use super::TOOLS_SEARCH_NAME;
 use super::ToolDefinition;
 use super::image_data_url;
+use super::image_generation::ImageApi;
 use super::image_input;
 use super::openai_auth::ApiKeyAuthorization;
 use super::openai_auth::OpenAiAuthorization;
@@ -63,6 +66,7 @@ mod manifest {
     pub const SEARCH: &[HostedWebSearch] = &[HostedWebSearch::Off];
 }
 const MAX_JSON_BYTES: usize = 16 * 1024 * 1024;
+const MAX_IMAGE_RESPONSE_BYTES: usize = 65 * 1024 * 1024;
 const MAX_STREAM_OUTPUT_ITEMS: usize = 1_024;
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 
@@ -104,6 +108,7 @@ pub struct OpenAi {
     hosted_tools: Vec<Value>,
     compaction_endpoint: bool,
     image_input: bool,
+    image_api: Option<ImageApi>,
     explicit_prompt_cache: bool,
     tool_discovery: ToolDiscoveryWire,
 }
@@ -163,6 +168,9 @@ impl OpenAi {
         } else {
             None
         };
+        let image_api = (auth.is_some()
+            && uses_default_endpoint(Some(DEFAULT_BASE_URL), Some(&base_url)))
+        .then_some(ImageApi::OpenAi);
         Ok(Self {
             client,
             auth,
@@ -174,6 +182,7 @@ impl OpenAi {
             hosted_tools: Vec::new(),
             compaction_endpoint: false,
             image_input: true,
+            image_api,
             explicit_prompt_cache: false,
             tool_discovery: ToolDiscoveryWire::Rebuild,
         })
@@ -186,6 +195,21 @@ impl OpenAi {
             .ok_or_else(|| Error::Config("Codex voice requires authorization".into()))?;
         self.realtime = Some(RealtimeTransport::new(VoiceApi::Codex, Arc::clone(auth))?);
         Ok(self)
+    }
+
+    pub(super) fn with_codex_image_generation(mut self) -> Self {
+        self.image_api = Some(ImageApi::Codex);
+        self
+    }
+
+    pub(super) fn with_openrouter_image_generation(mut self) -> Self {
+        self.image_api = Some(ImageApi::OpenRouter);
+        self
+    }
+
+    pub(super) fn without_image_generation(mut self) -> Self {
+        self.image_api = None;
+        self
     }
 
     /// Selects a Responses reasoning effort.
@@ -320,6 +344,26 @@ impl OpenAi {
         Err(Error::Provider(ProviderError::stream_interrupted(None)))
     }
 
+    async fn send_image(&self, request: ImageGenerationRequest<'_>) -> Result<GeneratedImage> {
+        request.validate(super::ImageInputLimits::default())?;
+        let api = self.image_api.ok_or_else(|| {
+            Error::Provider("image generation is unavailable for this provider".into())
+        })?;
+        let response = if api == ImageApi::OpenAi && !request.references.is_empty() {
+            self.send_authorized_with("images/edits", false, None, |builder| {
+                Ok(builder.multipart(ImageApi::openai_edit_form(&request)?))
+            })
+            .await?
+        } else {
+            let (endpoint, body) = api.wire(&request)?;
+            self.send_authorized(endpoint, &body, false, None).await?
+        };
+        if !response.status().is_success() {
+            return Err(status_error(response, "Images").await);
+        }
+        api.decode(&read_limited(response, MAX_IMAGE_RESPONSE_BYTES, "Images").await?)
+    }
+
     fn finish_stream_event(
         &self,
         event: &Value,
@@ -452,11 +496,21 @@ impl OpenAi {
         streaming: bool,
         session_id: Option<&str>,
     ) -> Result<reqwest::Response> {
+        self.send_authorized_with(endpoint, streaming, session_id, |builder| {
+            Ok(builder.json(body))
+        })
+        .await
+    }
+
+    async fn send_authorized_with(
+        &self,
+        endpoint: &str,
+        streaming: bool,
+        session_id: Option<&str>,
+        mut body: impl FnMut(reqwest::RequestBuilder) -> Result<reqwest::RequestBuilder>,
+    ) -> Result<reqwest::Response> {
         for attempt in 0..2 {
-            let mut request = self
-                .client
-                .post(format!("{}/{endpoint}", self.base_url))
-                .json(body);
+            let mut request = body(self.client.post(format!("{}/{endpoint}", self.base_url)))?;
             let Some(auth) = &self.auth else {
                 return Ok(request.send().await?);
             };
@@ -536,6 +590,17 @@ impl Model for OpenAi {
 
     fn supports_image_input(&self) -> bool {
         self.image_input
+    }
+
+    fn supports_image_generation(&self) -> bool {
+        self.image_api.is_some()
+    }
+
+    fn generate_image<'a>(
+        &'a self,
+        request: ImageGenerationRequest<'a>,
+    ) -> BoxFuture<'a, Result<GeneratedImage>> {
+        Box::pin(self.send_image(request))
     }
 
     fn supports_realtime_voice(&self) -> bool {
@@ -764,6 +829,7 @@ pub(super) const fn generic_provider() -> ProviderDefinition {
         build_generic,
     )
     .with_image_input()
+    .with_image_generation()
     .with_realtime_voices(super::realtime::VOICES)
     .with_tool_discovery(
         manifest::TOOL_DISCOVERY,

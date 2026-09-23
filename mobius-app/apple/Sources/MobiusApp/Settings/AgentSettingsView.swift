@@ -570,10 +570,15 @@ struct AgentSettingsView: View {
     }
 
     private func middlewareUnavailable(_ feature: MiddlewareFeature) -> String? {
+        let selectedModel = model.modelChoice(for: draft)
+        if feature.requiredModelCapability != nil && selectedModel == nil {
+            return model.localizedString("Select an available model to use this capability.")
+        }
         guard
             let label = draft?.middleware.disabledBy(
                 features: model.middlewareFeatures,
-                middleware: feature.id
+                middleware: feature.id,
+                model: selectedModel
             )
         else { return nil }
         return model.localizedString("Unavailable while \(label) is selected.")
@@ -681,7 +686,10 @@ struct AgentSettingsView: View {
     private func updateDraft(_ update: (inout AgentComposition) -> Void) {
         guard var draft else { return }
         update(&draft)
-        draft.middleware.reconcile(features: model.middlewareFeatures)
+        draft.middleware.reconcile(
+            features: model.middlewareFeatures,
+            model: model.modelChoice(for: draft)
+        )
         switch scope {
         case .botDefaults: model.botDefaultsDraft = draft
         case .bot: model.botDraft = draft

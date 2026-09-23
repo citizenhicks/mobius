@@ -92,10 +92,17 @@ async fn apply_patch_edits_an_absolute_workspace_path() {
         }],
     );
 
-    let result = execute_batch(&catalog, &calls, Arc::clone(&sandbox), &permissions, "turn")
-        .await
-        .pop()
-        .expect("tool result");
+    let result = execute_batch(
+        &catalog,
+        &calls,
+        Arc::clone(&sandbox),
+        &permissions,
+        "turn",
+        "test",
+    )
+    .await
+    .pop()
+    .expect("tool result");
 
     assert!(!result.is_error, "{}", result.output.text());
     let output = result.output.text();
@@ -127,10 +134,17 @@ async fn apply_patch_edits_an_absolute_workspace_path() {
             &BTreeSet::new(),
         )
         .expect("bind no-op call");
-    let no_op = execute_batch(&catalog, &[no_op_call], sandbox, &permissions, "turn")
-        .await
-        .pop()
-        .expect("no-op result");
+    let no_op = execute_batch(
+        &catalog,
+        &[no_op_call],
+        sandbox,
+        &permissions,
+        "turn",
+        "test",
+    )
+    .await
+    .pop()
+    .expect("no-op result");
     assert!(no_op.is_error);
     assert_eq!(
         no_op.output.text(),

@@ -1119,6 +1119,11 @@ enum SessionOutcome: String, Codable, Hashable, Sendable {
     case failed
 }
 
+enum ModelCapability: String, Codable, Hashable, Sendable {
+    case imageGeneration = "image_generation"
+    case realtimeVoice = "realtime_voice"
+}
+
 struct ModelChoice: Identifiable, Codable, Hashable, Sendable {
     var id: String { route }
 
@@ -1128,6 +1133,7 @@ struct ModelChoice: Identifiable, Codable, Hashable, Sendable {
     let reasoningEffort: String?
     let contextWindow: Int64?
     let supportsImageInput: Bool
+    let supportsImageGeneration: Bool
     let supportsRealtimeVoice: Bool
     let toolDiscovery: ToolDiscoveryMode
 
@@ -1138,6 +1144,7 @@ struct ModelChoice: Identifiable, Codable, Hashable, Sendable {
         reasoningEffort: String?,
         contextWindow: Int64?,
         supportsImageInput: Bool,
+        supportsImageGeneration: Bool = false,
         supportsRealtimeVoice: Bool = false,
         toolDiscovery: ToolDiscoveryMode
     ) {
@@ -1147,7 +1154,15 @@ struct ModelChoice: Identifiable, Codable, Hashable, Sendable {
         self.reasoningEffort = reasoningEffort
         self.contextWindow = contextWindow
         self.supportsImageInput = supportsImageInput
+        self.supportsImageGeneration = supportsImageGeneration
         self.supportsRealtimeVoice = supportsRealtimeVoice
         self.toolDiscovery = toolDiscovery
+    }
+
+    func supports(_ capability: ModelCapability) -> Bool {
+        switch capability {
+        case .imageGeneration: supportsImageGeneration
+        case .realtimeVoice: supportsRealtimeVoice
+        }
     }
 }

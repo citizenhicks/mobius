@@ -398,7 +398,7 @@ fn render_agent_page(lines: &mut Vec<Line<'static>>, state: &SetupState, width: 
         {
             MiddlewareRow::Feature(feature_index) => {
                 let feature = &state.features[feature_index];
-                let disabled_by = state.middleware.disabled_by(&state.features, &feature.id);
+                let disabled_by = state.disabled_by(&feature.id);
                 let description = disabled_by.map_or_else(
                     || feature.description.clone(),
                     |label| format!("Unavailable while {label} is selected."),

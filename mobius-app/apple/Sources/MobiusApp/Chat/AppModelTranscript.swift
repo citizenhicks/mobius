@@ -370,10 +370,11 @@ extension ChatSessionModel {
         let kind: TranscriptEntry.Kind = block.tone == "error" ? .error : .event
         if let index = entries.firstIndex(where: { $0.id == id }) {
             let previousUpdate = entries[index].update
-            // Grouping keys off kind and role, and both can change on an entry that is
-            // already on screen — an event turning into an error keeps its id. The row
-            // projection cannot see that from the array alone, so it is told here.
-            if entries[index].kind != kind || entries[index].role != block.role {
+            // Presentation depends on kind, role, and format, which can change on an
+            // entry that keeps its id. The cached row projection needs to be rebuilt.
+            if entries[index].kind != kind || entries[index].role != block.role
+                || entries[index].format != block.format
+            {
                 invalidateTranscriptProjection()
             }
             entries[index].text =

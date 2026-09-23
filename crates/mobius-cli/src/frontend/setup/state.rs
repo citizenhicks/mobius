@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use mobius::backend::model::provider::HostedWebSearch;
 use mobius::protocol::{
     FrontendSettingKind, FrontendSettingOption, FrontendSettingValue, MiddlewareFeature,
-    ModelChoice,
+    ModelCapability, ModelChoice,
 };
 use mobius::{Error, Result};
 use mobius_gateway::wire::{
@@ -82,6 +82,7 @@ pub(super) struct SetupState {
     pub(super) authenticated: Option<(String, Option<String>)>,
     pub(super) model: usize,
     pub(super) bot_model_routes: Vec<(ModelChoice, usize)>,
+    pub(super) original_model_choice: Option<ModelChoice>,
     pub(super) custom_model: String,
     pub(super) reasoning: usize,
     pub(super) web_search: usize,
@@ -115,6 +116,7 @@ impl SetupState {
             original,
             default_only,
         )?;
+        state.set_original_model_choice(&gateway.models, &gateway.model_providers);
         if let Some(provider) = preferred_provider {
             state.select_provider(provider)?;
         }
@@ -200,6 +202,7 @@ impl SetupState {
             authenticated: None,
             model: 0,
             bot_model_routes: Vec::new(),
+            original_model_choice: None,
             custom_model: String::new(),
             reasoning: 0,
             web_search: 0,
@@ -230,6 +233,71 @@ impl SetupState {
 
     pub(super) fn definition(&self) -> &ProviderStatus {
         &self.entry().status
+    }
+
+    pub(super) fn set_original_model_choice(
+        &mut self,
+        choices: &[ModelChoice],
+        model_providers: &BTreeMap<String, String>,
+    ) {
+        let selection = &self.original.provider;
+        let effort = selection
+            .reasoning_effort
+            .as_deref()
+            .or_else(|| {
+                self.definition()
+                    .models
+                    .iter()
+                    .find(|model| model.id == selection.model)
+                    .and_then(|model| model.default_reasoning.as_deref())
+            })
+            .or_else(|| {
+                self.instance()
+                    .and_then(|instance| instance.reasoning_efforts.first())
+                    .map(String::as_str)
+            });
+        self.original_model_choice = choices
+            .iter()
+            .find(|choice| {
+                model_providers.get(&choice.route) == Some(&selection.instance)
+                    && choice.model == selection.model
+                    && choice.reasoning_effort.as_deref() == effort
+            })
+            .cloned();
+    }
+
+    pub(super) fn selected_model_choice(&self) -> Option<&ModelChoice> {
+        if self.mode == SetupMode::BotModel {
+            self.bot_model_routes
+                .get(self.model)
+                .map(|(choice, _)| choice)
+        } else {
+            self.original_model_choice.as_ref()
+        }
+    }
+
+    pub(super) fn disabled_by(&self, id: &str) -> Option<&str> {
+        if self.selected_model_choice().is_none()
+            && self
+                .features
+                .iter()
+                .any(|feature| feature.id == id && feature.required_model_capability.is_some())
+        {
+            return Some("no available model");
+        }
+        self.middleware
+            .disabled_by(&self.features, id, self.selected_model_choice())
+    }
+
+    fn reconcile_middleware(&mut self) {
+        let selected_model = if self.mode == SetupMode::BotModel {
+            self.bot_model_routes
+                .get(self.model)
+                .map(|(choice, _)| choice)
+        } else {
+            self.original_model_choice.as_ref()
+        };
+        self.middleware.reconcile(&self.features, selected_model);
     }
 
     /// Fields the active provider actually offers, in tab order.
@@ -341,9 +409,19 @@ impl SetupState {
                     .as_ref()
                     .is_some_and(|instance| instance.selection.instance == current.instance)
         };
-        let selected = routes.iter().position(|route| {
-            same_model(route) && route.0.reasoning_effort == current.reasoning_effort
-        });
+        let selected = self
+            .original_model_choice
+            .as_ref()
+            .and_then(|choice| {
+                routes
+                    .iter()
+                    .position(|route| route.0.route == choice.route)
+            })
+            .or_else(|| {
+                routes.iter().position(|route| {
+                    same_model(route) && route.0.reasoning_effort == current.reasoning_effort
+                })
+            });
         let focus = selected
             .or_else(|| routes.iter().position(same_model))
             .unwrap_or(0);
@@ -740,13 +818,13 @@ impl SetupState {
 
     fn set_middleware_enabled(&mut self, feature: usize, enabled: bool) -> Result<()> {
         let id = &self.features[feature].id;
-        if enabled && let Some(label) = self.middleware.disabled_by(&self.features, id) {
+        if enabled && let Some(label) = self.disabled_by(id) {
             return Err(Error::Config(format!(
                 "Unavailable while {label} is selected."
             )));
         }
         self.middleware.set_enabled(id, enabled);
-        self.middleware.reconcile(&self.features);
+        self.reconcile_middleware();
         Ok(())
     }
 
@@ -842,7 +920,7 @@ impl SetupState {
                 let next = (current as isize + delta).rem_euclid(count as isize) as usize;
                 if next < offset {
                     self.middleware.set_setting(&feature.id, &setting.id, None);
-                    self.middleware.reconcile(&self.features);
+                    self.reconcile_middleware();
                     return Ok(());
                 }
                 FrontendSettingValue::String(options[next - offset].value.clone())
@@ -850,7 +928,7 @@ impl SetupState {
         };
         self.middleware
             .set_setting(&feature.id, &setting.id, Some(value));
-        self.middleware.reconcile(&self.features);
+        self.reconcile_middleware();
         Ok(())
     }
 
@@ -1122,11 +1200,13 @@ impl SetupState {
                 .value
                 .parse::<HostedWebSearch>()?;
             config.provider = selection;
+            config.middleware.reconcile(&self.features, Some(choice));
             if config.realtime_voice.as_ref().is_some_and(|voice| {
-                !self
-                    .definition()
-                    .realtime_voices(config.provider.base_url.as_deref())
-                    .contains(voice)
+                !choice.supports(ModelCapability::RealtimeVoice)
+                    || !self
+                        .definition()
+                        .realtime_voices(config.provider.base_url.as_deref())
+                        .contains(voice)
             }) {
                 config.realtime_voice = None;
             }

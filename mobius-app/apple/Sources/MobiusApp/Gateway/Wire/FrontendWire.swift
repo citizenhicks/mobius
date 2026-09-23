@@ -389,7 +389,7 @@ extension FrontendBlock {
             let title = json["title"]?.stringValue,
             let text = json["text"]?.stringValue,
             let format = json["format"]?.stringValue,
-            ["plain_text", "unified_diff"].contains(format),
+            ["plain_text", "unified_diff", "image"].contains(format),
             let tone = json["tone"]?.stringValue,
             ["neutral", "success", "warning", "error"].contains(tone),
             let content = json["content"]?.arrayValue,

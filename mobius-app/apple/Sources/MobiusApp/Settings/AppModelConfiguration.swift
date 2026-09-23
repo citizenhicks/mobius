@@ -7,12 +7,21 @@ extension AppModel {
     }
 
     func modelRoute(for draft: AgentComposition?) -> String? {
+        modelChoice(for: draft)?.route
+    }
+
+    func modelChoice(for draft: AgentComposition?) -> ModelChoice? {
         guard let provider = draft?.provider else { return nil }
-        return modelChoices.first { choice in
+        let choices = modelChoices.filter { choice in
             choice.model == provider.model
-                && choice.reasoningEffort == provider.reasoningEffort
                 && modelProviders[choice.route] == provider.instance
-        }?.route
+        }
+        guard let first = choices.first else { return nil }
+        if let effort = provider.reasoningEffort {
+            return choices.first { $0.reasoningEffort == effort }
+        }
+        let route = modelRoute(selecting: first, preserving: nil, in: choices)
+        return choices.first { $0.route == route }
     }
 
     func selectBotDefaultsDraftModel(_ route: String) {
@@ -42,6 +51,10 @@ extension AppModel {
         provider.model = choice.model
         provider.reasoningEffort = choice.reasoningEffort
         draft.provider = provider
+        draft.middleware.reconcile(
+            features: middlewareFeatures,
+            model: choice
+        )
         if let voice = draft.realtimeVoice, !realtimeVoices(for: draft).contains(voice) {
             draft.realtimeVoice = nil
         }
@@ -49,8 +62,7 @@ extension AppModel {
     }
 
     func realtimeVoices(for draft: AgentComposition?) -> [String] {
-        guard let draft, let route = modelRoute(for: draft),
-            modelChoices.first(where: { $0.route == route })?.supportsRealtimeVoice == true
+        guard let draft, modelChoice(for: draft)?.supports(.realtimeVoice) == true
         else { return [] }
         return providerStatus(forInstance: draft.provider.instance)?.realtimeVoices ?? []
     }

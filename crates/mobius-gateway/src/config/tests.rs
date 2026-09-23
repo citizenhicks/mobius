@@ -1326,6 +1326,72 @@ fn realtime_voice_selection_uses_the_provider_catalog_and_persists() {
 }
 
 #[test]
+fn bot_compatibility_checks_policies_route_and_voice_without_credentials() {
+    let selection = ProviderConfig {
+        instance: "responses".into(),
+        provider: "responses".into(),
+        model: "custom-model".into(),
+        base_url: Some("https://api.openai.com/v1".into()),
+        endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
+        reasoning_effort: None,
+        web_search: mobius::backend::model::provider::HostedWebSearch::Off,
+    };
+    let gateway = GatewayConfig::new(DEFAULT_LISTEN, None)
+        .expect("gateway config")
+        .registering_provider(
+            selection,
+            "Test".into(),
+            Default::default(),
+            vec!["custom-model".into()],
+            vec!["high".into(), "medium".into()],
+        )
+        .expect("register provider");
+    let mut bot = gateway
+        .bot_defaults
+        .as_ref()
+        .expect("defaults")
+        .config
+        .clone();
+    bot.middleware.set_enabled("image_generation", true);
+    bot.realtime_voice = Some("cedar".into());
+    validate_bot_compatibility(&gateway, &bot, &[])
+        .expect("native endpoint supports both capabilities without credentials");
+
+    bot.middleware.set_setting(
+        "compaction",
+        "mode",
+        Some(mobius::protocol::FrontendSettingValue::String(
+            "handoff".into(),
+        )),
+    );
+    bot.middleware.set_enabled("context_offloading", true);
+    assert!(
+        validate_bot_compatibility(&gateway, &bot, &[])
+            .expect_err("handoff conflicts with context offloading")
+            .to_string()
+            .contains("incompatible")
+    );
+    bot.middleware.set_enabled("compaction", false);
+
+    bot.realtime_voice = Some("cove".into());
+    assert!(
+        validate_bot_compatibility(&gateway, &bot, &[])
+            .expect_err("unsupported voice ID")
+            .to_string()
+            .contains("voice")
+    );
+
+    bot.realtime_voice = None;
+    bot.provider.base_url = Some("https://example.com/v1".into());
+    assert!(
+        validate_bot_compatibility(&gateway, &bot, &[])
+            .expect_err("custom endpoint does not support native image generation")
+            .to_string()
+            .contains("image generation")
+    );
+}
+
+#[test]
 fn agent_composition_requires_a_positive_model_step_limit() {
     let config = AgentComposition {
         max_model_steps: 0,

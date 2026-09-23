@@ -3,6 +3,18 @@ import Foundation
 import XCTest
 
 extension GatewayWireTests {
+    func testImageFrontendBlockDecodesWithItsArtifactReference() throws {
+        let fixture =
+            #"{"id":"image-1","group":null,"update":"replace","state":"complete","role":"artifact","title":"Image","text":"","symbol":"image","format":"image","tone":"success","content":[],"files":[{"id":"file-1","name":"image.png","size":1024,"media_type":"image/png"}]}"#
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let block = try decoder.decode(FrontendBlock.self, from: Data(fixture.utf8))
+
+        XCTAssertEqual(block.format, "image")
+        XCTAssertEqual(block.role, .artifact)
+        XCTAssertEqual(block.files.map(\.id), ["file-1"])
+    }
+
     func testOrderedObservationsRoundTripAndRejectStringOutput() throws {
         let content =
             #"[{"type":"input_text","text":"before"},{"type":"input_image","image":{"file":{"id":"screen","name":"screen.png","size":100,"media_type":"image/png"},"width":10,"height":20,"detail":"high"}},{"type":"input_text","text":"after"}]"#

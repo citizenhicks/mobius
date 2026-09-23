@@ -504,7 +504,9 @@ private struct TranscriptRow: View {
 
     @ViewBuilder
     private var content: some View {
-        if isUser {
+        if entry.format == "image" {
+            TranscriptImageCard(entry: entry, sessionID: fileSessionID)
+        } else if isUser {
             HStack {
                 Spacer(minLength: 42)
                 VStack(alignment: .trailing, spacing: MobiusSpace.s) {

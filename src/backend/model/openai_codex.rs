@@ -43,6 +43,7 @@ pub(super) const fn provider() -> ProviderDefinition {
         build_provider,
     )
     .with_image_input()
+    .with_image_generation()
     .with_realtime_voices(super::realtime::CODEX_VOICES)
     .with_tool_discovery(
         manifest::TOOL_DISCOVERY,
@@ -59,7 +60,8 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn super::Model>> 
         config.model,
         config.http,
     )?
-    .with_codex_realtime_voice()?;
+    .with_codex_realtime_voice()?
+    .with_codex_image_generation();
     let provider = match config.reasoning_effort {
         Some(effort) => provider.with_reasoning_effort(effort)?,
         None => provider,

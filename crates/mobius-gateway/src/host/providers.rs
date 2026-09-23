@@ -66,7 +66,7 @@ impl GatewayHost {
                 .map_err(|_| internal("gateway configuration lock is poisoned"))?;
             let models = configured_model_choices(&current, &state.store, &state.credentials)
                 .map_err(internal)?;
-            crate::middleware_manifest::validate_choices(&config.middleware, &models)
+            crate::config::validate_bot_compatibility(&current, &config, &models)
                 .map_err(invalid_config)?;
             crate::extensions::ExtensionStore::new(&state.store)
                 .resolve(&current, &config.extensions)
@@ -549,11 +549,8 @@ fn validate_bot_catalog(
     let models = configured_model_choices(gateway, &state.store, &state.credentials)
         .map_err(invalid_config)?;
     for bot in bots {
-        if let Err(error) = gateway.validate_provider_selection(&bot.config.config.provider) {
-            return Err(bot_catalog_rejection(bot, error));
-        }
         if let Err(error) =
-            crate::middleware_manifest::validate_choices(&bot.config.config.middleware, &models)
+            crate::config::validate_bot_compatibility(gateway, &bot.config.config, &models)
         {
             return Err(bot_catalog_rejection(bot, error));
         }

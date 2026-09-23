@@ -1,10 +1,10 @@
 //! Core-owned middleware configuration manifests.
 
-use crate::protocol::ModelChoice;
 use crate::protocol::{
     FrontendSetting, FrontendSettingKind, FrontendSettingOption, FrontendSettingValue,
     FrontendSymbol, FrontendTone, MiddlewareFeature,
 };
+use crate::protocol::{ModelCapability, ModelChoice};
 use crate::{Error, Result};
 
 /// Static metadata and configurable policy exported by one middleware module.
@@ -20,6 +20,8 @@ pub struct MiddlewareManifest {
     pub required: bool,
     /// The default enabled.
     pub default_enabled: bool,
+    /// Neutral model capability required by this middleware, if any.
+    pub required_model_capability: Option<ModelCapability>,
     /// The settings.
     pub settings: &'static [MiddlewareSettingManifest],
 }
@@ -33,6 +35,7 @@ impl MiddlewareManifest {
             label: self.label.into(),
             description: self.description.into(),
             required: self.required,
+            required_model_capability: self.required_model_capability,
             settings: self
                 .settings
                 .iter()

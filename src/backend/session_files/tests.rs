@@ -2,6 +2,49 @@ use super::*;
 use cap_std::{ambient_authority, fs::Dir};
 
 #[tokio::test]
+async fn reading_and_publishing_images_retain_only_their_own_files() {
+    let state = tempfile::tempdir().expect("state");
+    let store = SessionFileStore::new(state.path());
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(image::RgbaImage::new(2, 2))
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .expect("encode image");
+    let bytes = encoded.into_inner();
+    let file = store
+        .publish_artifact("session", "source.png".into(), "image/png".into(), &bytes)
+        .await
+        .expect("stored image");
+    assert_eq!(
+        store.read_image("session", &file).await.expect("image"),
+        bytes
+    );
+    assert_eq!(
+        list_completed(&store.session_dir("session"), &store.blob_dir())
+            .await
+            .expect("files")
+            .len(),
+        1
+    );
+    assert!(
+        store
+            .publish_image("session", "wrong.jpg".into(), "image/jpeg", bytes.clone())
+            .await
+            .is_err()
+    );
+    store
+        .publish_image("session", "generated.png".into(), "image/png", bytes)
+        .await
+        .expect("generated artifact");
+    assert_eq!(
+        list_completed(&store.session_dir("session"), &store.blob_dir())
+            .await
+            .expect("files")
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
 async fn upload_round_trip_is_session_scoped_and_atomic() {
     let state = tempfile::tempdir().expect("state");
     let store = SessionFileStore::new(state.path());

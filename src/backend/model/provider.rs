@@ -13,6 +13,7 @@ use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
 use crate::protocol::FrontendSymbol;
+use crate::protocol::ModelCapability;
 use crate::protocol::ToolDiscoveryMode;
 
 mod text {
@@ -351,6 +352,7 @@ pub struct ProviderDefinition {
     default_model: Option<&'static str>,
     web_search: &'static [HostedWebSearch],
     supports_image_input: bool,
+    supports_image_generation: bool,
     realtime_voices: &'static [&'static str],
     tool_discovery: ToolDiscoveryMode,
     custom_endpoint_tool_discovery: Option<ToolDiscoveryMode>,
@@ -385,6 +387,7 @@ impl ProviderDefinition {
             default_model,
             web_search,
             supports_image_input: false,
+            supports_image_generation: false,
             realtime_voices: &[],
             tool_discovery: ToolDiscoveryMode::Rebuild,
             custom_endpoint_tool_discovery: None,
@@ -398,6 +401,13 @@ impl ProviderDefinition {
     #[must_use]
     pub(crate) const fn with_image_input(mut self) -> Self {
         self.supports_image_input = true;
+        self
+    }
+
+    /// Marks a provider whose default endpoint supports native image generation.
+    #[must_use]
+    pub(crate) const fn with_image_generation(mut self) -> Self {
+        self.supports_image_generation = true;
         self
     }
 
@@ -481,6 +491,17 @@ impl ProviderDefinition {
     #[must_use]
     pub const fn supports_image_input(&self) -> bool {
         self.supports_image_input
+    }
+
+    /// Reports a provider capability for the selected endpoint.
+    #[must_use]
+    pub fn supports(&self, capability: ModelCapability, base_url: Option<&str>) -> bool {
+        match capability {
+            ModelCapability::ImageGeneration => {
+                self.supports_image_generation && self.uses_default_endpoint(base_url)
+            }
+            ModelCapability::RealtimeVoice => !self.realtime_voices(base_url).is_empty(),
+        }
     }
 
     /// Returns supported voices, with the default first, for this provider endpoint.
@@ -836,6 +857,48 @@ mod tests {
         ] {
             assert!(provider(id).expect("image provider").supports_image_input());
         }
+    }
+
+    #[test]
+    fn provider_manifests_scope_image_generation_to_native_endpoints() {
+        for id in ["openai_socket", "openai_codex", "openrouter", "responses"] {
+            assert!(
+                provider(id)
+                    .expect("image provider")
+                    .supports(ModelCapability::ImageGeneration, None)
+            );
+        }
+        for id in ["deepseek", "kimi", "anthropic"] {
+            assert!(
+                !provider(id)
+                    .expect("non-image provider")
+                    .supports(ModelCapability::ImageGeneration, None)
+            );
+        }
+        for id in ["openrouter", "responses"] {
+            assert!(!provider(id).expect("image provider").supports(
+                ModelCapability::ImageGeneration,
+                Some("https://example.com/v1"),
+            ));
+        }
+    }
+
+    #[test]
+    fn provider_capabilities_scope_voice_to_native_endpoints() {
+        assert!(
+            provider("responses")
+                .expect("voice provider")
+                .supports(ModelCapability::RealtimeVoice, None,)
+        );
+        assert!(!provider("responses").expect("voice provider").supports(
+            ModelCapability::RealtimeVoice,
+            Some("https://example.com/v1"),
+        ));
+        assert!(
+            !provider("openrouter")
+                .expect("non-voice provider")
+                .supports(ModelCapability::RealtimeVoice, None,)
+        );
     }
 
     #[test]

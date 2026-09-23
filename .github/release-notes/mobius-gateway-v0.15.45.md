@@ -1,0 +1,1 @@
+Expose image generation through the existing middleware catalog and session artifact flow. Bot configuration now validates middleware and realtime voice against the selected model route. Gateway wire protocol advances to 83; update clients and the gateway together. Checkpoint and storage schemas are unchanged.

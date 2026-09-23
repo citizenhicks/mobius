@@ -13,6 +13,7 @@ pub(crate) enum BuiltinMiddleware {
     Sandbox,
     Attachments,
     Artifacts,
+    ImageGeneration,
     Tools,
     Instructions,
     Extensions,
@@ -31,7 +32,7 @@ pub(crate) struct MiddlewareRegistration {
     pub(crate) manifest: &'static MiddlewareManifest,
 }
 
-pub(crate) const MIDDLEWARE: [MiddlewareRegistration; 14] = [
+pub(crate) const MIDDLEWARE: [MiddlewareRegistration; 15] = [
     MiddlewareRegistration {
         kind: BuiltinMiddleware::Sandbox,
         manifest: &mobius::backend::sandbox::MANIFEST,
@@ -43,6 +44,10 @@ pub(crate) const MIDDLEWARE: [MiddlewareRegistration; 14] = [
     MiddlewareRegistration {
         kind: BuiltinMiddleware::Artifacts,
         manifest: &mobius::middleware::artifacts::MANIFEST,
+    },
+    MiddlewareRegistration {
+        kind: BuiltinMiddleware::ImageGeneration,
+        manifest: &mobius::middleware::image_generation::MANIFEST,
     },
     MiddlewareRegistration {
         kind: BuiltinMiddleware::Tools,
@@ -117,7 +122,7 @@ pub(crate) fn default_config() -> MiddlewareConfig {
 pub(crate) fn validate(config: &MiddlewareConfig) -> Result<()> {
     let features = features(&[]);
     for id in config.entries() {
-        if let Some(policy) = config.disabled_by(&features, id) {
+        if let Some(policy) = config.disabled_by(&features, id, None) {
             return Err(Error::Config(format!(
                 "middleware `{id}` is incompatible with the selected `{policy}` policy"
             )));
@@ -168,7 +173,19 @@ pub(crate) fn validate(config: &MiddlewareConfig) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn validate_choices(config: &MiddlewareConfig, models: &[ModelChoice]) -> Result<()> {
+pub(crate) fn validate_choices(
+    config: &MiddlewareConfig,
+    models: &[ModelChoice],
+    selected_model: &ModelChoice,
+) -> Result<()> {
+    let features = features(models);
+    for id in config.entries() {
+        if let Some(policy) = config.disabled_by(&features, id, Some(selected_model)) {
+            return Err(Error::Config(format!(
+                "middleware `{id}` is incompatible with {policy}"
+            )));
+        }
+    }
     for entry in &MIDDLEWARE {
         for setting in entry.manifest.settings {
             setting.validate_choice(
@@ -316,13 +333,43 @@ mod tests {
                 .to_string()
                 .contains("incompatible")
         );
-        config.reconcile(&features(&[]));
+        config.reconcile(&features(&[]), None);
         assert!(!config.enabled("context_offloading"));
         assert!(config.enabled("tasks"));
         assert!(validate(&config).is_ok());
         config.set_enabled("compaction", false);
         config.set_enabled("context_offloading", true);
         assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn image_generation_is_disabled_for_an_unsupported_model() {
+        let mut config = default_config();
+        config.set_enabled("image_generation", true);
+        let models = [ModelChoice {
+            route: "provider::model::default".into(),
+            group: "Provider".into(),
+            model: "model".into(),
+            reasoning_effort: None,
+            context_window: None,
+            supports_image_input: true,
+            supports_image_generation: false,
+            supports_realtime_voice: false,
+            tool_discovery: mobius::protocol::ToolDiscoveryMode::Native,
+        }];
+        assert!(validate_choices(&config, &models, &models[0]).is_err());
+        config.reconcile(&features(&models), Some(&models[0]));
+        assert!(!config.enabled("image_generation"));
+        let mut supported = models;
+        supported[0].supports_image_generation = true;
+        config.set_enabled("image_generation", true);
+        assert!(validate_choices(&config, &supported, &supported[0]).is_ok());
+
+        let mut sibling = supported[0].clone();
+        sibling.route = "provider::other::default".into();
+        sibling.supports_image_generation = false;
+        let models = [supported[0].clone(), sibling];
+        assert!(validate_choices(&config, &models, &models[1]).is_err());
     }
 
     #[test]
@@ -346,6 +393,7 @@ mod tests {
             reasoning_effort: Some("high".into()),
             context_window: Some(200_000),
             supports_image_input: true,
+            supports_image_generation: false,
             supports_realtime_voice: false,
             tool_discovery: mobius::protocol::ToolDiscoveryMode::Native,
         }];
@@ -375,8 +423,8 @@ mod tests {
             Some(FrontendSettingValue::String(models[0].route.clone())),
         );
         assert!(validate(&config).is_ok());
-        assert!(validate_choices(&config, &models).is_ok());
-        assert!(validate_choices(&config, &[]).is_err());
+        assert!(validate_choices(&config, &models, &models[0]).is_ok());
+        assert!(validate_choices(&config, &[], &models[0]).is_err());
     }
 
     #[test]

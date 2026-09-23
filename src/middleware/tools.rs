@@ -35,6 +35,7 @@ use crate::protocol::FrontendBlockState;
 use crate::protocol::FrontendBlockUpdate;
 use crate::protocol::FrontendContribution;
 use crate::protocol::FrontendTone;
+use crate::protocol::TokenUsage;
 use crate::protocol::ToolCall;
 use crate::protocol::ToolLoad;
 use crate::protocol::ToolLoadEvent;
@@ -104,6 +105,7 @@ pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
     description: text::MANIFEST_DESCRIPTION,
     required: true,
     default_enabled: true,
+    required_model_capability: None,
     settings: &[],
 };
 
@@ -144,6 +146,8 @@ pub struct ToolContext {
     pub permissions: ToolPermissions,
     /// The turn identifier.
     pub turn_id: String,
+    model_route: String,
+    usage: ToolUsage,
     input: ToolInput,
 }
 
@@ -157,8 +161,29 @@ impl ToolContext {
             sandbox,
             permissions,
             turn_id: turn_id.into(),
+            model_route: String::new(),
+            usage: ToolUsage::default(),
             input: ToolInput::default(),
         }
+    }
+
+    pub(crate) fn with_model_route(mut self, route: &str) -> Self {
+        self.model_route = route.into();
+        self
+    }
+
+    /// Returns the model route active for this tool call.
+    #[must_use]
+    pub fn model_route(&self) -> &str {
+        &self.model_route
+    }
+
+    /// Records provider-reported usage for a paid tool operation.
+    /// # Errors
+    ///
+    /// Returns an error if usage was already recorded or its state is unavailable.
+    pub fn report_usage(&self, usage: TokenUsage) -> Result<()> {
+        self.usage.record(usage)
     }
 
     /// Adds provider-neutral context immediately after this tool output.
@@ -167,6 +192,31 @@ impl ToolContext {
     /// Returns an error if validation or an operation required by this function fails.
     pub fn push_input(&self, item: Value) -> Result<()> {
         self.input.push(item)
+    }
+}
+
+#[derive(Clone, Default)]
+struct ToolUsage(Arc<Mutex<Option<TokenUsage>>>);
+
+impl ToolUsage {
+    fn record(&self, usage: TokenUsage) -> Result<()> {
+        let mut recorded = self
+            .0
+            .lock()
+            .map_err(|_| Error::Tool("tool usage state is unavailable".into()))?;
+        if recorded.is_some() {
+            return Err(Error::Tool("tool usage was already recorded".into()));
+        }
+        *recorded = Some(usage);
+        Ok(())
+    }
+
+    fn take(&self) -> Result<Option<TokenUsage>> {
+        Ok(self
+            .0
+            .lock()
+            .map_err(|_| Error::Tool("tool usage state is unavailable".into()))?
+            .take())
     }
 }
 
@@ -889,6 +939,7 @@ pub struct ToolResult {
     pub output: crate::protocol::ToolContent,
     /// The is error.
     pub is_error: bool,
+    pub(crate) usage: Option<(String, TokenUsage)>,
     pub(crate) handler_executed: bool,
     pub(crate) additional_input: Vec<Value>,
     pub(crate) events: Vec<EventMsg>,
@@ -901,6 +952,7 @@ impl ToolResult {
             name: call.name.clone(),
             output: capped(output.as_ref(), MAX_TOOL_OUTPUT_BYTES).into(),
             is_error: true,
+            usage: None,
             handler_executed: false,
             additional_input: Vec::new(),
             events: Vec::new(),
@@ -909,6 +961,17 @@ impl ToolResult {
 
     pub(crate) fn replace(&mut self, output: impl AsRef<str>) {
         self.output = capped(output.as_ref(), MAX_TOOL_OUTPUT_BYTES).into();
+    }
+
+    fn with_usage(mut self, pending_usage: ToolUsage, model_route: &str) -> Self {
+        match pending_usage.take() {
+            Ok(usage) => self.usage = usage.map(|usage| (model_route.into(), usage)),
+            Err(error) => {
+                self.output = error.to_string().into();
+                self.is_error = true;
+            }
+        }
+        self
     }
 }
 
@@ -920,6 +983,7 @@ pub(crate) async fn execute_batch(
     sandbox: Arc<Sandbox>,
     permissions: &SandboxPermissions,
     turn_id: &str,
+    model_route: &str,
 ) -> Vec<ToolResult> {
     let mut results = Vec::with_capacity(calls.len());
     let mut index = 0;
@@ -931,12 +995,9 @@ pub(crate) async fn execute_batch(
                 .map_or(calls.len(), |offset| index + offset);
             // ModelOutput validation bounds every batch to 128 calls.
             results.extend(
-                join_all(
-                    calls[index..end]
-                        .iter()
-                        .cloned()
-                        .map(|call| execute_call(catalog, call, &sandbox, permissions, turn_id)),
-                )
+                join_all(calls[index..end].iter().cloned().map(|call| {
+                    execute_call(catalog, call, &sandbox, permissions, turn_id, model_route)
+                }))
                 .await,
             );
             index = end;
@@ -948,6 +1009,7 @@ pub(crate) async fn execute_batch(
                     &sandbox,
                     permissions,
                     turn_id,
+                    model_route,
                 )
                 .await,
             );
@@ -967,6 +1029,7 @@ pub(crate) async fn execute_call(
     sandbox: &Arc<Sandbox>,
     permissions: &SandboxPermissions,
     turn_id: &str,
+    model_route: &str,
 ) -> ToolResult {
     let BoundToolCall {
         call,
@@ -977,8 +1040,10 @@ pub(crate) async fn execute_call(
         Arc::clone(sandbox),
         permissions.for_call(&call.call_id),
         turn_id,
-    );
+    )
+    .with_model_route(model_route);
     let pending_input = context.input.clone();
+    let pending_usage = context.usage.clone();
     let Some(tool) = catalog.get(&call.name) else {
         return ToolResult::error(&call, format!("unknown tool `{}`", call.name));
     };
@@ -1039,10 +1104,12 @@ pub(crate) async fn execute_call(
                         name,
                         output: capped(&error.to_string(), MAX_TOOL_OUTPUT_BYTES).into(),
                         is_error: true,
+                        usage: None,
                         handler_executed: true,
                         additional_input: Vec::new(),
                         events: Vec::new(),
-                    };
+                    }
+                    .with_usage(pending_usage, model_route);
                 }
             };
             let effects =
@@ -1053,6 +1120,7 @@ pub(crate) async fn execute_call(
                 name,
                 output: cap_content(output.content.content),
                 is_error: output.content.is_error,
+                usage: None,
                 handler_executed: true,
                 additional_input,
                 events: effects.events,
@@ -1063,6 +1131,7 @@ pub(crate) async fn execute_call(
             name,
             output: capped(&error.to_string(), MAX_TOOL_OUTPUT_BYTES).into(),
             is_error: true,
+            usage: None,
             handler_executed: true,
             additional_input: Vec::new(),
             events: Vec::new(),
@@ -1072,11 +1141,13 @@ pub(crate) async fn execute_call(
             name,
             output: "tool panicked".into(),
             is_error: true,
+            usage: None,
             handler_executed: true,
             additional_input: Vec::new(),
             events: Vec::new(),
         },
     }
+    .with_usage(pending_usage, model_route)
 }
 
 struct DispatchOutput {

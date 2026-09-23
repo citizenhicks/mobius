@@ -3,6 +3,7 @@ import SwiftUI
 struct ObservationContentView: View {
     let content: [ContentPart]
     let sessionID: String?
+    var animatesThumbnails = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: MobiusSpace.s) {
@@ -12,7 +13,9 @@ struct ObservationContentView: View {
                 case .text(let text):
                     CollapsibleText(text: text)
                 case .image(let file, _, _, _), .file(let file):
-                    SessionFileCard(file: file, sessionID: sessionID)
+                    SessionFileCard(
+                        file: file, sessionID: sessionID,
+                        animatesThumbnail: animatesThumbnails)
                 }
             }
         }

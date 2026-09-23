@@ -37,6 +37,7 @@ pub mod computer_control;
 mod context;
 pub mod context_offloading;
 pub mod extensions;
+pub mod image_generation;
 pub mod instructions;
 pub mod manifest;
 pub mod messages;

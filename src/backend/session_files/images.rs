@@ -10,6 +10,30 @@ const MAX_PIXELS: u64 = 40_000_000;
 const MAX_DECODE_BYTES: u64 = 256 * 1024 * 1024;
 
 impl SessionFileStore {
+    /// Reads and validates an owned image without creating another stored reference.
+    /// # Errors
+    ///
+    /// Returns an error if the file is unauthorized, malformed, or not an image.
+    pub async fn read_image(
+        &self,
+        session_id: &str,
+        file: &SessionFileReference,
+    ) -> Result<Vec<u8>> {
+        let bytes = self.read_file(session_id, file).await?;
+        let (bytes, media_type) = tokio::task::spawn_blocking(move || {
+            let (media_type, _, _) = validate_image(&bytes)?;
+            Ok::<_, Error>((bytes, media_type))
+        })
+        .await
+        .map_err(|error| Error::Tool(format!("image decoder failed: {error}")))??;
+        if file.media_type != media_type {
+            return Err(Error::Tool(
+                "stored file media type does not match the image".into(),
+            ));
+        }
+        Ok(bytes)
+    }
+
     /// Reopens an owned image and retains its bytes independently of an upload.
     /// # Errors
     ///
@@ -150,12 +174,7 @@ impl SessionFileStore {
         bytes: Vec<u8>,
         detail: ImageDetail,
     ) -> Result<ImageReference> {
-        let (bytes, media_type, width, height) = tokio::task::spawn_blocking(move || {
-            let (media_type, width, height) = validate_image(&bytes)?;
-            Ok::<_, Error>((bytes, media_type, width, height))
-        })
-        .await
-        .map_err(|error| Error::Tool(format!("image decoder failed: {error}")))??;
+        let (bytes, media_type, width, height) = validated_image(bytes).await?;
         Ok(ImageReference {
             file: self
                 .publish_bytes(
@@ -170,6 +189,27 @@ impl SessionFileStore {
             height,
             detail,
         })
+    }
+
+    /// Validates and publishes one image directly as an agent artifact.
+    /// # Errors
+    ///
+    /// Returns an error if the image is malformed, mislabeled, or cannot be stored.
+    pub async fn publish_image(
+        &self,
+        session_id: &str,
+        name: String,
+        declared_media_type: &str,
+        bytes: Vec<u8>,
+    ) -> Result<SessionFileReference> {
+        let (bytes, media_type, _, _) = validated_image(bytes).await?;
+        if declared_media_type != media_type {
+            return Err(Error::Tool(
+                "generated image media type does not match its bytes".into(),
+            ));
+        }
+        self.publish_artifact(session_id, name, media_type.into(), &bytes)
+            .await
     }
 
     /// Reads an exact file reference authorized by the owning session.
@@ -201,6 +241,15 @@ impl SessionFileStore {
     ) -> Result<SessionFileReference> {
         Ok(self.resolve(session_id, file_id).await?.0.file)
     }
+}
+
+async fn validated_image(bytes: Vec<u8>) -> Result<(Vec<u8>, &'static str, u32, u32)> {
+    tokio::task::spawn_blocking(move || {
+        let (media_type, width, height) = validate_image(&bytes)?;
+        Ok::<_, Error>((bytes, media_type, width, height))
+    })
+    .await
+    .map_err(|error| Error::Tool(format!("image decoder failed: {error}")))?
 }
 
 /// Retains referenced files before a trusted fork; text-only forks need no file store.

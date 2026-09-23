@@ -1230,6 +1230,11 @@ extension AppModelTests {
             ["work-thorough", "work-brief"]
         )
 
+        var defaultDraft = composition()
+        defaultDraft.provider = work
+        defaultDraft.provider.reasoningEffort = nil
+        XCTAssertEqual(model.modelChoice(for: defaultDraft)?.route, "work-brief")
+
         var draft = composition()
         draft.provider = personal
         model.botDefaultsDraft = draft
@@ -1418,6 +1423,56 @@ extension AppModelTests {
         middleware.setSetting(nil, middleware: "owner", setting: "policy")
         XCTAssertNil(middleware.disabledBy(features: features, middleware: "excluded"))
         XCTAssertFalse(middleware.enabled.contains("excluded"))
+    }
+
+    func testMiddlewareModelRequirementUsesExistingDisabledRule() {
+        let features = [
+            MiddlewareFeature(
+                id: "image_generation", label: "Image generation",
+                description: "Create images", required: false, settings: [],
+                requiredModelCapability: .imageGeneration
+            ),
+            MiddlewareFeature(
+                id: "voice_example", label: "Voice example",
+                description: "Use voice", required: false, settings: [],
+                requiredModelCapability: .realtimeVoice
+            ),
+        ]
+        let voiceModel = ModelChoice(
+            route: "voice", group: "Voice", model: "voice", reasoningEffort: nil,
+            contextWindow: nil, supportsImageInput: false, supportsRealtimeVoice: true,
+            toolDiscovery: .native
+        )
+        let imageModel = ModelChoice(
+            route: "image", group: "Image", model: "image", reasoningEffort: nil,
+            contextWindow: nil, supportsImageInput: false, supportsImageGeneration: true,
+            toolDiscovery: .native
+        )
+        var middleware = MiddlewareConfig(
+            enabled: ["image_generation", "voice_example"], settings: [:])
+        XCTAssertEqual(
+            middleware.disabledBy(
+                features: features, middleware: "image_generation",
+                model: voiceModel
+            ),
+            "a model without image generation"
+        )
+        middleware.reconcile(features: features, model: voiceModel)
+        XCTAssertFalse(middleware.enabled.contains("image_generation"))
+        XCTAssertTrue(middleware.enabled.contains("voice_example"))
+        XCTAssertEqual(
+            middleware.disabledBy(
+                features: features, middleware: "voice_example", model: imageModel
+            ),
+            "a model without realtime voice"
+        )
+        XCTAssertNil(
+            middleware.disabledBy(
+                features: features, middleware: "image_generation",
+                model: imageModel
+            )
+        )
+        XCTAssertNil(middleware.disabledBy(features: features, middleware: "image_generation"))
     }
 
     func testBotDefaultsRefreshDoesNotOverwriteActiveAgentDraft() throws {
