@@ -37,13 +37,21 @@ extension AppModelTests {
 
     func testCatalogSearchExpandsInHeaderAndCollapsesOnDismissal() async throws {
         let model = try voiceModel()
+        model.showsWelcome = false
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
+        model.gateway.connectionState = .ready
+        model.destination = .chats
+        model.showsPairing = false
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
         let previous = scene.keyWindow
         let window = UIWindow(windowScene: scene)
         window.frame = scene.effectiveGeometry.coordinateSpace.bounds
         let host = UIHostingController(
             rootView:
-                NavigationStack { ChatsView() }.mobiusTheme().environment(model))
+                AppShell().mobiusTheme().environment(model)
+                .environment(\.horizontalSizeClass, .compact))
         window.rootViewController = host
         window.makeKeyAndVisible()
         defer {
@@ -52,7 +60,11 @@ extension AppModelTests {
             previous?.makeKeyAndVisible()
         }
         func navigation(_ c: UIViewController) -> UINavigationController? {
-            if let c = c as? UINavigationController { return c }
+            if let c = c as? UINavigationController,
+                c.navigationBar.topItem?.searchController != nil
+            {
+                return c
+            }
             return c.children.lazy.compactMap { navigation($0) }.first
         }
         let ready = await eventually(timeout: .seconds(5)) {
@@ -69,27 +81,50 @@ extension AppModelTests {
             add(attachment)
         }
         try await Task.sleep(for: .milliseconds(600))
-        snapshot("Before search")
-        let search = try XCTUnwrap(navigation(host)?.navigationBar.topItem?.searchController)
-        search.isActive = true
-        search.searchBar.becomeFirstResponder()
-        let active = await eventually(timeout: .seconds(5)) { search.isActive }
-        XCTAssertTrue(active)
+        try activatePresentationToolbarButton("Hide sidebar", in: host)
         try await Task.sleep(for: .milliseconds(600))
-        func searchFields(in view: UIView) -> [UISearchTextField] {
-            (view as? UISearchTextField).map { [$0] }
-                ?? view.subviews.flatMap { searchFields(in: $0) }
+        snapshot("Before search")
+        for query in ["", "test", ""] {
+            let search = try XCTUnwrap(navigation(host)?.navigationBar.topItem?.searchController)
+            func controls(in view: UIView) -> [UIControl] {
+                (view as? UIControl).map { [$0] } ?? view.subviews.flatMap { controls(in: $0) }
+            }
+            let bar = try XCTUnwrap(navigation(host)?.navigationBar)
+            let open = try XCTUnwrap(
+                controls(in: bar).filter {
+                    $0.allControlEvents.contains(.primaryActionTriggered)
+                }.sorted {
+                    $0.convert($0.bounds, to: window).midX < $1.convert($1.bounds, to: window).midX
+                }.dropLast().last)
+            open.sendActions(for: .primaryActionTriggered)
+            let active = await eventually(timeout: .seconds(5)) { search.isActive }
+            XCTAssertTrue(active)
+            try await Task.sleep(for: .milliseconds(600))
+            func searchFields(in view: UIView) -> [UISearchTextField] {
+                (view as? UISearchTextField).map { [$0] }
+                    ?? view.subviews.flatMap { searchFields(in: $0) }
+            }
+            let field = try XCTUnwrap(searchFields(in: window).first { $0.bounds.width > 100 })
+            let frame = field.convert(field.bounds, to: window)
+            XCTAssertGreaterThan(frame.height, 0)
+            XCTAssertLessThan(frame.maxY, window.bounds.midY)
+            field.text = query
+            field.sendActions(for: .editingChanged)
+            try await Task.sleep(for: .milliseconds(600))
+            snapshot("Search at top without composer")
+            let cancel = try XCTUnwrap(
+                controls(in: window).first {
+                    $0 is UIButton && $0.allControlEvents.contains(.touchUpInside)
+                })
+            cancel.sendActions(for: .touchUpInside)
+            let dismissed = await eventually(timeout: .seconds(5)) { !search.isActive }
+            XCTAssertTrue(dismissed)
+            try await Task.sleep(for: .seconds(2))
+            XCTAssertFalse(search.isActive, "Search reopened after dismissal")
+            XCTAssertFalse(
+                navigation(host)?.navigationBar.topItem?.searchController?.isActive ?? false)
+            snapshot("After dismissing search")
         }
-        let field = try XCTUnwrap(searchFields(in: window).first { $0.bounds.width > 100 })
-        let frame = field.convert(field.bounds, to: window)
-        XCTAssertGreaterThan(frame.height, 0)
-        XCTAssertLessThan(frame.maxY, window.bounds.midY)
-        snapshot("Search at top without composer")
-        search.searchBar.delegate?.searchBarCancelButtonClicked?(search.searchBar)
-        let dismissed = await eventually(timeout: .seconds(5)) { !search.isActive }
-        XCTAssertTrue(dismissed)
-        try await Task.sleep(for: .seconds(2))
-        snapshot("After dismissing search")
     }
 
     func testRealtimeEligibilityUsesSelectedRouteAndConfiguredInstance() throws {

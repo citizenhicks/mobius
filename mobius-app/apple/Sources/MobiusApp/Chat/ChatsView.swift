@@ -39,7 +39,6 @@ struct ChatsView: View {
     @State private var showsAttentionOnly = false
     @State private var organization = ChatOrganization.byProject
     @State private var searchText = ""
-    @State private var isSearchPresented = false
     @State private var selectedSessionIDs: Set<String>?
 
     var body: some View {
@@ -61,8 +60,8 @@ struct ChatsView: View {
         .scrollDismissesKeyboard(.interactively)
         .background { palette.canvas.ignoresSafeArea() }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if selectedSessionIDs == nil && !isSearchPresented {
-                ComposerView(showsNewChatEntry: true)
+            if selectedSessionIDs == nil {
+                ChatCatalogComposer()
                     .disabled(!model.canCreateSession)
             }
         }
@@ -92,10 +91,7 @@ struct ChatsView: View {
                 }
             }
         }
-        .searchable(
-            text: $searchText, isPresented: $isSearchPresented,
-            placement: .toolbar, prompt: "Search chats"
-        )
+        .searchable(text: $searchText, placement: .toolbar, prompt: "Search chats")
         .searchToolbarBehavior(.minimize)
         .background { ChatSearchPlacement() }
         .onChange(of: model.chat.sessions.map(\.sessionId)) { _, sessionIDs in
@@ -452,14 +448,24 @@ struct ChatsView: View {
 
 }
 
+private struct ChatCatalogComposer: View {
+    @Environment(\.isSearching) private var isSearching
+
+    var body: some View {
+        if !isSearching {
+            ComposerView(showsNewChatEntry: true)
+        }
+    }
+}
+
 private struct ChatSearchPlacement: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> Controller { Controller() }
 
     func updateUIViewController(_ controller: Controller, context: Context) {}
 
     final class Controller: UIViewController {
-        override func viewWillLayoutSubviews() {
-            super.viewWillLayoutSubviews()
+        override func viewIsAppearing(_ animated: Bool) {
+            super.viewIsAppearing(animated)
             guard let item = parent?.navigationItem,
                 item.searchBarPlacementAllowsToolbarIntegration
             else { return }
