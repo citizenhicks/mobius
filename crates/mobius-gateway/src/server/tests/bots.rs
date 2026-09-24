@@ -170,6 +170,7 @@ async fn bot_catalog_broadcasts_do_not_reintroduce_a_deleted_bot() {
             client_connections: Arc::new(ClientConnections::default()),
             client_revocations,
             admission: ConnectionAdmission::new(1, 1).admit().await,
+            access_lease: None,
         },
         Instant::now() + PRE_AUTH_TIMEOUT,
         None,

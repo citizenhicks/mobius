@@ -32,6 +32,7 @@ pub(super) struct ConnectionContext {
     pub(super) client_connections: Arc<ClientConnections>,
     pub(super) client_revocations: broadcast::Sender<String>,
     pub(super) admission: PreAuthConnectionAdmission,
+    pub(super) access_lease: Option<AccessLease>,
 }
 
 struct PendingProfile {
@@ -498,7 +499,11 @@ where
         client_connections,
         client_revocations,
         admission,
+        access_lease,
     } = connection;
+    if access_lease.is_some_and(AccessLease::expired) {
+        return Ok(());
+    }
     let mut revocations = client_revocations.subscribe();
     let (reader, mut writer) = tokio::io::split(stream);
     let mut reader = FrameReader::new(reader);
@@ -507,6 +512,9 @@ where
     else {
         return Ok(());
     };
+    if access_lease.is_some_and(AccessLease::expired) {
+        return Ok(());
+    }
 
     let _client_connection = client_connections.register(client_id.clone(), client_kind)?;
     let _ = authentication_complete.map(|complete| complete.send(()));
@@ -584,6 +592,9 @@ where
         let Some(frame) = incoming? else {
             return Ok(());
         };
+        if access_lease.is_some_and(AccessLease::expired) {
+            return Ok(());
+        }
         if let Err(error) = validate_version(frame.version) {
             write_server_error(&mut writer, "protocol_version", error.to_string(), true).await?;
             return Ok(());

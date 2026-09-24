@@ -1741,7 +1741,7 @@ dependencies = [
 
 [[package]]
 name = "mobius-gateway"
-version = "0.15.48"
+version = "0.15.49"
 dependencies = [
  "base64",
  "chrono",

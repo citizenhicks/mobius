@@ -1,6 +1,74 @@
 use super::*;
 
 #[test]
+fn cloud_gateway_access_lease_fails_closed_after_five_minutes() {
+    let now = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    assert!(access_lease(None, true, now).is_err());
+    assert!(access_lease(Some("1699999700"), true, now).is_err());
+    assert!(access_lease(Some("1699999701"), true, now).is_ok());
+    assert!(
+        access_lease(None, false, now)
+            .expect("local gateway")
+            .is_none()
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn access_lease_closes_existing_client_and_listener() {
+    let root = tempfile::tempdir().expect("temporary directory");
+    let (mut server, grant) = GatewayServer::bootstrap(
+        root.path().join("state"),
+        std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+    )
+    .await
+    .expect("bootstrap gateway");
+    let listen = server.listen_addr();
+    server.access_lease = Some(AccessLease {
+        expires_at: SystemTime::now() + Duration::from_secs(30),
+        deadline: Instant::now() + Duration::from_secs(30),
+    });
+    let serving = tokio::spawn(server.serve_until(std::future::pending()));
+    let endpoint = format!("tcp://{listen}")
+        .parse::<Endpoint>()
+        .expect("endpoint");
+    let (client, _) = GatewayClient::pair(&endpoint, grant.code, "lease test", ClientKind::Ios)
+        .await
+        .expect("pair client");
+    let (_, mut events) = client.into_parts();
+    wait_gateway_ready(&mut events).await;
+
+    tokio::time::advance(Duration::from_secs(30)).await;
+    serving
+        .await
+        .expect("gateway task")
+        .expect("lease shutdown");
+    assert!(events.next().await.expect("client disconnect").is_none());
+    assert!(TcpStream::connect(listen).await.is_err());
+}
+
+#[tokio::test(start_paused = true)]
+async fn wall_clock_expiry_closes_a_warm_gateway_before_its_timer() {
+    let root = tempfile::tempdir().expect("temporary directory");
+    let (mut server, _) = GatewayServer::bootstrap(
+        root.path().join("state"),
+        std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+    )
+    .await
+    .expect("bootstrap gateway");
+    let listen = server.listen_addr();
+    server.access_lease = Some(AccessLease {
+        expires_at: SystemTime::now() - Duration::from_secs(1),
+        deadline: Instant::now() + Duration::from_secs(60),
+    });
+
+    server
+        .serve_until(std::future::pending())
+        .await
+        .expect("wall clock lease shutdown");
+    assert!(TcpStream::connect(listen).await.is_err());
+}
+
+#[test]
 fn connection_diagnostics_do_not_render_peer_controlled_errors() {
     let details = "private-peer-data";
     let json_error = serde_json::from_value::<u64>(serde_json::json!(details))
@@ -305,6 +373,7 @@ async fn websocket_upgrade_and_authentication_share_one_deadline() {
                 client_connections,
                 client_revocations,
                 admission,
+                access_lease: None,
             },
             PlaintextHandshake {
                 expected_websocket_host: None,
