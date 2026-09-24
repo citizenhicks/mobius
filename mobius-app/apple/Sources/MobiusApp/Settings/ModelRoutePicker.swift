@@ -95,7 +95,12 @@ struct ModelRoutePicker: View {
         }
         .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
         .disabled(!isEnabled)
-        .sensoryFeedback(.selection, trigger: reasoningPreview)
+        .sensoryFeedback(trigger: reasoningPreview) { _, preview in
+            guard let preview else { return nil }
+            return .impact(
+                weight: .light,
+                intensity: 0.4 + 0.6 * preview / Double(max(1, reasoningChoices.count - 1)))
+        }
         .onChange(of: route) { reasoningPreview = nil }
         .onChange(of: choices) { reasoningPreview = nil }
         .sheet(isPresented: $showsModels) {

@@ -174,16 +174,12 @@ struct ComposerOptionsView: View {
     @State private var photoSelection: [PhotosPickerItem] = []
 
     var body: some View {
-        HStack(spacing: 0) {
-            if newChatEntry != nil || model.attachmentsEnabled { addAttachmentControl }
-            if !isCompact {
-                ForEach(composerSettings) { item in
-                    ComposerSettingMenu(item: item)
-                }
+        Group {
+            if model.gateway.connectionState.isLoading && model.modelChoices.isEmpty {
+                loadingControls
+            } else {
+                controls
             }
-            Spacer(minLength: MobiusSpace.s)
-            if !isCompact { modelMenu }
-            if !hasVerticalToolbar { actionButtons }
         }
         .sheet(isPresented: $showsModelSelection) {
             ModelSelectionSheet(
@@ -214,6 +210,61 @@ struct ComposerOptionsView: View {
             guard !imports.isEmpty else { return }
             Task { await importMedia(imports) }
         }
+    }
+
+    private var controls: some View {
+        HStack(spacing: 0) {
+            HStack(spacing: -MobiusSpace.s) {
+                if newChatEntry != nil || model.attachmentsEnabled { addAttachmentControl }
+                if !isCompact {
+                    if model.selectedBot == nil {
+                        unselectedBotPlaceholder
+                    } else {
+                        ForEach(composerSettings) { item in
+                            ComposerSettingMenu(item: item)
+                        }
+                    }
+                }
+            }
+            Spacer(minLength: MobiusSpace.s)
+            HStack(spacing: showsVoiceButton ? -MobiusSpace.s : 0) {
+                if !isCompact {
+                    if model.selectedBot == nil {
+                        unselectedBotPlaceholder
+                    } else {
+                        modelMenu
+                    }
+                }
+                if !hasVerticalToolbar { actionButtons }
+            }
+        }
+    }
+
+    private var loadingControls: some View {
+        HStack(spacing: 0) {
+            HStack(spacing: -MobiusSpace.s) {
+                if newChatEntry != nil || model.attachmentsEnabled { placeholderButton() }
+                if !isCompact { placeholderButton() }
+            }
+            Spacer(minLength: MobiusSpace.s)
+            if !isCompact { placeholderButton() }
+            if !hasVerticalToolbar { placeholderButton(size: 32) }
+        }
+        .mobiusLoadingPlaceholder("Loading composer controls")
+    }
+
+    private var unselectedBotPlaceholder: some View {
+        placeholderButton()
+            .mobiusRunningShimmer(active: true)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+
+    private func placeholderButton(size: CGFloat = MobiusStyle.glyphLead) -> some View {
+        Circle()
+            .fill(palette.muted)
+            .frame(width: size, height: size)
+            .frame(width: MobiusStyle.iconButtonSize, height: MobiusStyle.iconButtonSize)
     }
 
     /// The photo library and the file browser are separate pickers, so the plus offers both
@@ -311,10 +362,7 @@ struct ComposerOptionsView: View {
 
     private var actionButtons: some View {
         HStack(spacing: -MobiusSpace.xs) {
-            if newChatEntry != nil
-                ? model.newChatRouteSupportsRealtimeVoice
-                : model.selectedRouteSupportsRealtimeVoice
-            {
+            if showsVoiceButton {
                 voiceButton
                     .buttonStyle(MobiusIconButtonStyle(bare: true))
             }
@@ -322,6 +370,12 @@ struct ComposerOptionsView: View {
                 .mobiusProminentIconButton(surfaceSize: 32, flat: true)
                 .transaction { $0.animation = nil }
         }
+    }
+
+    private var showsVoiceButton: Bool {
+        newChatEntry != nil
+            ? model.newChatRouteSupportsRealtimeVoice
+            : model.selectedRouteSupportsRealtimeVoice
     }
 
     private var voiceButton: some View {
