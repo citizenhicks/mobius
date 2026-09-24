@@ -39,6 +39,7 @@ struct ChatsView: View {
     @State private var showsAttentionOnly = false
     @State private var organization = ChatOrganization.byProject
     @State private var searchText = ""
+    @State private var isSearchPresented = false
     @State private var selectedSessionIDs: Set<String>?
 
     var body: some View {
@@ -60,7 +61,7 @@ struct ChatsView: View {
         .scrollDismissesKeyboard(.interactively)
         .background { palette.canvas.ignoresSafeArea() }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if selectedSessionIDs == nil {
+            if selectedSessionIDs == nil && !isSearchPresented {
                 ComposerView(showsNewChatEntry: true)
                     .disabled(!model.canCreateSession)
             }
@@ -91,8 +92,10 @@ struct ChatsView: View {
                 }
             }
         }
-        .searchable(text: $searchText, prompt: "Search chats")
-        .searchToolbarBehavior(.minimize)
+        .searchable(
+            text: $searchText, isPresented: $isSearchPresented,
+            placement: .navigationBarDrawer, prompt: "Search chats"
+        )
         .onChange(of: model.chat.sessions.map(\.sessionId)) { _, sessionIDs in
             guard let selection = selectedSessionIDs, !selection.isEmpty else { return }
             let remaining = selection.intersection(sessionIDs)
