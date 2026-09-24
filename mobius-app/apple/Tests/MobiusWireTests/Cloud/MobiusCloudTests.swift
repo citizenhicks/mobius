@@ -46,7 +46,7 @@ final class MobiusCloudTests: XCTestCase {
     func testCloudPurchasesUsesInjectedAppStoreURL() async throws {
         let url = try XCTUnwrap(URL(string: "https://apps.apple.com/"))
         let purchases = MobiusCloudPurchases(
-            displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
+            displayPrices: { [.cloud: "$7.00", .cloudPlus: "$20.00"] },
             unfinishedPurchases: { MobiusCloudPurchaseScan() },
             currentEntitlements: { _ in MobiusCloudPurchaseScan() },
             purchase: { _, _ in throw MobiusCloudPurchaseError.unavailable },
@@ -232,7 +232,7 @@ final class MobiusCloudTests: XCTestCase {
         var requests: [URLRequest] = []
         let responses = [
             #"{"token":"\#(token)","userId":"\#(userID.uuidString)","expiresAt":"2099-01-01T00:00:00Z"}"#,
-            #"{"userId":"\#(userID.uuidString)","email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":true,"subscriptionStartedAt":"2026-08-24T00:00:00Z","luna":{"creditMicrousd":2400000,"remainingMicrousd":1992000,"resetsAt":"2099-02-01T00:00:00Z"}}"#,
+            #"{"userId":"\#(userID.uuidString)","email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":true,"subscriptionStartedAt":"2026-08-24T00:00:00Z","luna":{"creditMicrousd":3000000,"remainingMicrousd":2490000,"resetsAt":"2099-02-01T00:00:00Z"}}"#,
             #"{}"#,
             #"{"accepted":true}"#,
             #"{"status":"ready"}"#,
@@ -281,8 +281,8 @@ final class MobiusCloudTests: XCTestCase {
                 sharesDiagnostics: true,
                 subscriptionStartedAt: subscriptionStartedAt,
                 luna: MobiusCloudUsageLimit(
-                    creditMicrousd: 2_400_000,
-                    remainingMicrousd: 1_992_000,
+                    creditMicrousd: 3_000_000,
+                    remainingMicrousd: 2_490_000,
                     resetsAt: reset
                 )
             )
@@ -534,7 +534,7 @@ final class MobiusCloudTests: XCTestCase {
             settingsDefaults: defaults,
             cloudClient: client,
             cloudPurchases: MobiusCloudPurchases(
-                displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
+                displayPrices: { [.cloud: "$7.00", .cloudPlus: "$20.00"] },
                 unfinishedPurchases: { MobiusCloudPurchaseScan() },
                 currentEntitlements: { synchronize in
                     XCTAssertTrue(synchronize)
@@ -622,7 +622,7 @@ final class MobiusCloudTests: XCTestCase {
             connectionOpener: { _ in AsyncThrowingStream { _ in } },
             cloudClient: client,
             cloudPurchases: MobiusCloudPurchases(
-                displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
+                displayPrices: { [.cloud: "$7.00", .cloudPlus: "$20.00"] },
                 unfinishedPurchases: { MobiusCloudPurchaseScan() },
                 currentEntitlements: { synchronize in
                     XCTAssertTrue(synchronize)
@@ -697,7 +697,7 @@ final class MobiusCloudTests: XCTestCase {
             settingsDefaults: defaults,
             cloudClient: client,
             cloudPurchases: MobiusCloudPurchases(
-                displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
+                displayPrices: { [.cloud: "$7.00", .cloudPlus: "$20.00"] },
                 unfinishedPurchases: { MobiusCloudPurchaseScan() },
                 currentEntitlements: { _ in
                     readCurrentEntitlements = true
@@ -788,7 +788,7 @@ final class MobiusCloudTests: XCTestCase {
                 "subscribed": true, "sharesDiagnostics": false,
                 "subscriptionStartedAt": "2098-08-12T08:00:00Z", "subscription": subscription,
                 "luna": [
-                    "creditMicrousd": 10_000_000, "remainingMicrousd": 3_000_000,
+                    "creditMicrousd": 12_000_000, "remainingMicrousd": 3_000_000,
                     "resetsAt": NSNull(),
                 ],
             ]
@@ -801,7 +801,7 @@ final class MobiusCloudTests: XCTestCase {
         let pending = try await client.account()
         XCTAssertEqual(pending.subscription?.tier, .cloudPlus)
         XCTAssertEqual(pending.subscription?.nextTier, .cloud)
-        XCTAssertEqual(pending.luna?.creditMicrousd, 10_000_000)
+        XCTAssertEqual(pending.luna?.creditMicrousd, 12_000_000)
         cancelledRenewal.value = true
         let cancelled = try await client.account()
         XCTAssertEqual(cancelled.subscription?.autoRenews, false)
@@ -828,7 +828,7 @@ final class MobiusCloudTests: XCTestCase {
             let json =
                 requestCount == 1
                 ? #"{"token":"ttttttttttttttttttttttttttttttttttttttttttt","userId":"00000000-0000-0000-0000-000000000001","expiresAt":"2099-01-01T00:00:00Z"}"#
-                : #"{"userId":"00000000-0000-0000-0000-000000000001","email":null,"subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2026-08-24T00:00:00Z","luna":{"creditMicrousd":2400000,"remainingMicrousd":2400001,"resetsAt":"2099-02-01T00:00:00Z"}}"#
+                : #"{"userId":"00000000-0000-0000-0000-000000000001","email":null,"subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2026-08-24T00:00:00Z","luna":{"creditMicrousd":3000000,"remainingMicrousd":3000001,"resetsAt":"2099-02-01T00:00:00Z"}}"#
             return try self.response(for: request, json: json)
         }
         _ = try await client.authenticate(
@@ -1094,7 +1094,7 @@ final class MobiusCloudTests: XCTestCase {
         }
         let stream = AsyncStream.makeStream(of: MobiusCloudPurchase.self)
         let purchases = MobiusCloudPurchases(
-            displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
+            displayPrices: { [.cloud: "$7.00", .cloudPlus: "$20.00"] },
             unfinishedPurchases: { MobiusCloudPurchaseScan() },
             currentEntitlements: { _ in MobiusCloudPurchaseScan() },
             purchase: { _, _ in throw MobiusCloudPurchaseError.unavailable },
@@ -1179,7 +1179,7 @@ final class MobiusCloudTests: XCTestCase {
         var finished = false
         let stream = AsyncStream.makeStream(of: MobiusCloudPurchase.self)
         let purchases = MobiusCloudPurchases(
-            displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
+            displayPrices: { [.cloud: "$7.00", .cloudPlus: "$20.00"] },
             unfinishedPurchases: { MobiusCloudPurchaseScan() },
             currentEntitlements: { _ in MobiusCloudPurchaseScan() },
             purchase: { _, _ in throw MobiusCloudPurchaseError.unavailable },
@@ -1256,7 +1256,7 @@ final class MobiusCloudTests: XCTestCase {
             finished = true
         }
         let purchases = MobiusCloudPurchases(
-            displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
+            displayPrices: { [.cloud: "$7.00", .cloudPlus: "$20.00"] },
             unfinishedPurchases: { MobiusCloudPurchaseScan(purchases: [purchase]) },
             currentEntitlements: { _ in
                 XCTFail("A subscribed account must not scan current entitlements")
@@ -1351,7 +1351,7 @@ final class MobiusCloudTests: XCTestCase {
             acceptedFinished = true
         }
         let purchases = MobiusCloudPurchases(
-            displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
+            displayPrices: { [.cloud: "$7.00", .cloudPlus: "$20.00"] },
             unfinishedPurchases: {
                 MobiusCloudPurchaseScan(
                     purchases: [rejected],
@@ -1428,7 +1428,7 @@ final class MobiusCloudTests: XCTestCase {
         }
         var purchaseAttempts = 0
         let purchases = MobiusCloudPurchases(
-            displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
+            displayPrices: { [.cloud: "$7.00", .cloudPlus: "$20.00"] },
             unfinishedPurchases: { MobiusCloudPurchaseScan() },
             currentEntitlements: { synchronize in
                 XCTAssertFalse(synchronize)
@@ -1514,7 +1514,7 @@ final class MobiusCloudTests: XCTestCase {
             await withCheckedContinuation { finishContinuation = $0 }
         }
         let purchases = MobiusCloudPurchases(
-            displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
+            displayPrices: { [.cloud: "$7.00", .cloudPlus: "$20.00"] },
             unfinishedPurchases: {
                 scanCount += 1
                 if scanCount == 2 { secondScan.fulfill() }
@@ -1584,7 +1584,7 @@ final class MobiusCloudTests: XCTestCase {
             finished = true
         }
         let purchases = MobiusCloudPurchases(
-            displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
+            displayPrices: { [.cloud: "$7.00", .cloudPlus: "$20.00"] },
             unfinishedPurchases: { MobiusCloudPurchaseScan() },
             currentEntitlements: { synchronize in
                 XCTAssertFalse(synchronize)
@@ -1679,7 +1679,7 @@ final class MobiusCloudTests: XCTestCase {
             settingsDefaults: defaults,
             cloudClient: client,
             cloudPurchases: MobiusCloudPurchases(
-                displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
+                displayPrices: { [.cloud: "$7.00", .cloudPlus: "$20.00"] },
                 unfinishedPurchases: { MobiusCloudPurchaseScan() },
                 currentEntitlements: { _ in MobiusCloudPurchaseScan() },
                 purchase: { _, _ in throw MobiusCloudPurchaseError.cancelled }
@@ -1736,7 +1736,7 @@ final class MobiusCloudTests: XCTestCase {
                 settingsDefaults: defaults,
                 cloudClient: client,
                 cloudPurchases: MobiusCloudPurchases(
-                    displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
+                    displayPrices: { [.cloud: "$7.00", .cloudPlus: "$20.00"] },
                     unfinishedPurchases: { MobiusCloudPurchaseScan() },
                     currentEntitlements: { _ in MobiusCloudPurchaseScan() },
                     purchase: { _, _ in throw purchaseError }
@@ -1788,7 +1788,7 @@ final class MobiusCloudTests: XCTestCase {
             settingsDefaults: defaults,
             cloudClient: client,
             cloudPurchases: MobiusCloudPurchases(
-                displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
+                displayPrices: { [.cloud: "$7.00", .cloudPlus: "$20.00"] },
                 unfinishedPurchases: { MobiusCloudPurchaseScan() },
                 currentEntitlements: { _ in MobiusCloudPurchaseScan() },
                 purchase: { _, _ in throw MobiusCloudPurchaseError.pending }
@@ -1856,7 +1856,7 @@ final class MobiusCloudTests: XCTestCase {
             finished = true
         }
         let purchases = MobiusCloudPurchases(
-            displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
+            displayPrices: { [.cloud: "$7.00", .cloudPlus: "$20.00"] },
             unfinishedPurchases: { MobiusCloudPurchaseScan(purchases: [purchase]) },
             currentEntitlements: { _ in
                 XCTFail("A subscribed account must not scan current entitlements")
@@ -2392,7 +2392,7 @@ final class MobiusCloudTests: XCTestCase {
             finished = true
         }
         let purchases = MobiusCloudPurchases(
-            displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
+            displayPrices: { [.cloud: "$7.00", .cloudPlus: "$20.00"] },
             unfinishedPurchases: { MobiusCloudPurchaseScan() },
             currentEntitlements: { shouldSynchronize in
                 synchronized = shouldSynchronize
@@ -2783,7 +2783,7 @@ final class MobiusCloudTests: XCTestCase {
             transactionFinished = true
         }
         let purchases = MobiusCloudPurchases(
-            displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
+            displayPrices: { [.cloud: "$7.00", .cloudPlus: "$20.00"] },
             unfinishedPurchases: { MobiusCloudPurchaseScan() },
             currentEntitlements: { _ in
                 MobiusCloudPurchaseScan(purchases: shouldRecover.value ? [purchase] : [])
@@ -3047,7 +3047,7 @@ final class MobiusCloudTests: XCTestCase {
             ),
             (
                 200,
-                #"{"userId":"00000000-0000-0000-0000-000000000001","email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2026-08-24T00:00:00Z","luna":{"creditMicrousd":2400000,"remainingMicrousd":1992000,"resetsAt":"2099-02-01T00:00:00Z"}}"#
+                #"{"userId":"00000000-0000-0000-0000-000000000001","email":"private@privaterelay.appleid.com","subscribed":true,"sharesDiagnostics":false,"subscriptionStartedAt":"2026-08-24T00:00:00Z","luna":{"creditMicrousd":3000000,"remainingMicrousd":2490000,"resetsAt":"2099-02-01T00:00:00Z"}}"#
             ),
             (503, #"{}"#),
             (204, #"{}"#),

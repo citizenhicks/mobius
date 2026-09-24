@@ -257,7 +257,7 @@ final class WelcomeTests: XCTestCase {
             store: GatewayStore(defaults: defaults),
             settingsDefaults: defaults,
             cloudPurchases: MobiusCloudPurchases(
-                displayPrices: { [.cloud: "$5.99", .cloudPlus: "$15.99"] },
+                displayPrices: { [.cloud: "$7.00", .cloudPlus: "$20.00"] },
                 unfinishedPurchases: { MobiusCloudPurchaseScan() },
                 currentEntitlements: { _ in MobiusCloudPurchaseScan() },
                 purchase: { _, _ in throw MobiusCloudPurchaseError.unavailable }
