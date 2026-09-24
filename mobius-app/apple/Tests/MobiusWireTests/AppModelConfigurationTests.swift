@@ -5,7 +5,7 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
-    func testReasoningSliderSnapsPreviewsCommitsAndSupportsAccessibility() async throws {
+    func testReasoningSliderContinuousPreviewSnapAndAccessibility() async throws {
         let model = try model()
         let choices = ["low", "medium", "high"].map { effort in
             ModelChoice(
@@ -50,55 +50,26 @@ extension AppModelTests {
         XCTAssertEqual(slider.accessibilityLabel, model.localizedString("Reasoning effort"))
         XCTAssertEqual(slider.accessibilityValue, "low")
         XCTAssertTrue(slider.accessibilityTraits.contains(.adjustable))
-        XCTAssertEqual(slider.trackConfiguration?.ticks.count, 3)
         let track = slider.trackRect(forBounds: slider.bounds)
-        XCTAssertEqual(track.height * 1.1, MobiusStyle.iconButtonSize, accuracy: 0.001)
+        XCTAssertEqual(track.height, MobiusStyle.rowTouch * 0.7, accuracy: 0.001)
         XCTAssertEqual(slider.minimumTrackTintColor, .clear)
         XCTAssertEqual(slider.maximumTrackTintColor, .clear)
-        XCTAssertNil(slider.thumbImage(for: .normal))
+        XCTAssertNotNil(slider.thumbImage(for: .normal))
         XCTAssertNil(slider.minimumTrackImage(for: .normal))
         XCTAssertNil(slider.maximumTrackImage(for: .normal))
-        let gradient = try XCTUnwrap(
-            slider.layer.sublayers?.flatMap { $0.sublayers ?? [] }
-                .compactMap { $0 as? CAGradientLayer }.first)
-        for value in [Float(0), 1, 2] {
-            let thumb = slider.thumbRect(forBounds: slider.bounds, trackRect: track, value: value)
-            XCTAssertEqual(thumb.width, thumb.height)
-            XCTAssertEqual(thumb.height, MobiusStyle.iconButtonSize * 1.02, accuracy: 0.001)
-            XCTAssertEqual(track.midY, thumb.midY, accuracy: 0.001)
-            slider.value = value
-            slider.setNeedsLayout()
-            slider.layoutIfNeeded()
-            XCTAssertEqual(
-                try XCTUnwrap(gradient.mask).frame.width,
-                track.width * CGFloat(value / 2), accuracy: 0.001)
-            XCTAssertEqual(try XCTUnwrap(gradient.mask).cornerRadius, track.height / 2)
-        }
-        slider.maximumValue = 4
-        slider.trackConfiguration = .init(enabledRange: 0...4, numberOfTicks: 5)
         for direction: UISemanticContentAttribute in [.forceLeftToRight, .forceRightToLeft] {
             slider.semanticContentAttribute = direction
-            slider.value = 1
-            slider.setNeedsLayout()
-            slider.layoutIfNeeded()
-            let thumb = slider.thumbRect(forBounds: slider.bounds, trackRect: track, value: 1)
             let start = slider.thumbRect(forBounds: slider.bounds, trackRect: track, value: 0)
-            let end = slider.thumbRect(forBounds: slider.bounds, trackRect: track, value: 4)
-            let reversed = start.midX > end.midX
-            let fill = try XCTUnwrap(gradient.mask).frame
-            XCTAssertEqual(
-                reversed ? fill.minX : fill.maxX, thumb.midX - track.minX, accuracy: 0.001)
-            XCTAssertEqual(gradient.startPoint.x, reversed ? 1 : 0)
-            XCTAssertEqual(gradient.endPoint.x, reversed ? 0 : 1)
+            let end = slider.thumbRect(forBounds: slider.bounds, trackRect: track, value: 2)
+            XCTAssertEqual(start.width, start.height)
+            XCTAssertEqual(start.height, track.height - 6, accuracy: 0.001)
+            XCTAssertEqual(start.midY, track.midY, accuracy: 0.001)
+            XCTAssertEqual(min(start.minX, end.minX), track.minX + 3, accuracy: 0.001)
+            XCTAssertEqual(max(start.maxX, end.maxX), track.maxX - 3, accuracy: 0.001)
+            XCTAssertEqual(start.midX > end.midX, direction == .forceRightToLeft)
         }
         slider.semanticContentAttribute = .unspecified
-        slider.maximumValue = 2
-        slider.trackConfiguration = .init(enabledRange: 0...2, numberOfTicks: 3)
         slider.value = 0
-        let minimumThumb = slider.thumbRect(forBounds: slider.bounds, trackRect: track, value: 0)
-        let maximumThumb = slider.thumbRect(forBounds: slider.bounds, trackRect: track, value: 2)
-        XCTAssertEqual(minimumThumb.minX, track.minX, accuracy: 0.001)
-        XCTAssertEqual(maximumThumb.maxX, track.maxX, accuracy: 0.001)
 
         slider.sendActions(for: .touchDown)
         slider.value = 1.4
@@ -106,15 +77,16 @@ extension AppModelTests {
         let previewed = await eventually { slider.accessibilityValue == "medium" }
         XCTAssertTrue(previewed)
         XCTAssertEqual(model.chat.selectedModelRoute, "low")
-        XCTAssertEqual(slider.value, 1)
+        XCTAssertEqual(slider.value, 1.4, accuracy: 0.001)
         let attachment = XCTAttachment(
             image: UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
                 host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
             })
-        attachment.name = "Reasoning slider native track preview"
+        attachment.name = "Reasoning slider white fill and accent thumb"
         attachment.lifetime = .keepAlways
         add(attachment)
         slider.sendActions(for: .touchUpInside)
+        XCTAssertEqual(slider.value, 1)
         XCTAssertEqual(model.chat.selectedModelRoute, "medium")
         slider.accessibilityIncrement()
         XCTAssertEqual(model.chat.selectedModelRoute, "high")

@@ -1,3 +1,4 @@
+import CoreHaptics
 import SwiftUI
 import UIKit
 
@@ -79,7 +80,7 @@ struct ModelRoutePicker: View {
             if reasoningChoices.count > 1 {
                 ReasoningSlider(
                     value: Binding(
-                        get: { Double(previewReasoningIndex) },
+                        get: { reasoningPreview ?? Double(selectedReasoningIndex) },
                         set: { reasoningPreview = $0 }
                     ),
                     count: reasoningChoices.count,
@@ -95,12 +96,6 @@ struct ModelRoutePicker: View {
         }
         .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
         .disabled(!isEnabled)
-        .sensoryFeedback(trigger: reasoningPreview) { previous, current in
-            guard let current else { return nil }
-            let previous = previous ?? Double(selectedReasoningIndex)
-            guard current != previous else { return nil }
-            return current > previous ? .increase : .decrease
-        }
         .onChange(of: route) { reasoningPreview = nil }
         .onChange(of: choices) { reasoningPreview = nil }
         .sheet(isPresented: $showsModels) {
@@ -143,7 +138,7 @@ struct ModelRoutePicker: View {
 
     private var previewReasoningIndex: Int {
         min(
-            max(Int(reasoningPreview ?? Double(selectedReasoningIndex)), 0),
+            max(Int((reasoningPreview ?? Double(selectedReasoningIndex)).rounded()), 0),
             reasoningChoices.count - 1)
     }
 
@@ -162,7 +157,6 @@ private struct ReasoningSlider: UIViewRepresentable {
 
     func makeUIView(context: Context) -> ThumbHeightSlider {
         let slider = ThumbHeightSlider()
-        // Keep UIKit's live Liquid Glass thumb; custom thumb/track images opt out.
         slider.minimumTrackTintColor = .clear
         slider.maximumTrackTintColor = .clear
         slider.isAccessibilityElement = true
@@ -179,14 +173,11 @@ private struct ReasoningSlider: UIViewRepresentable {
     func updateUIView(_ slider: ThumbHeightSlider, context: Context) {
         context.coordinator.owner = self
         slider.maximumValue = Float(count - 1)
-        slider.trackConfiguration = .init(
-            enabledRange: 0...slider.maximumValue, numberOfTicks: count)
-        slider.value = Float(value)
+        if !slider.isTracking { slider.value = Float(value) }
         slider.isEnabled = isEnabled
+        if !isEnabled { context.coordinator.stopHaptics() }
         slider.tintColor = UIColor(palette.accent)
-        slider.gradient.colors = [
-            UIColor(palette.accentSoft).cgColor, UIColor(palette.accent).cgColor,
-        ]
+        slider.updateThumb(color: UIColor(palette.accent))
         slider.setNeedsLayout()
         slider.accessibilityLabel = String(localized: "Reasoning effort", locale: locale)
         slider.accessibilityValue = valueLabel
@@ -195,73 +186,127 @@ private struct ReasoningSlider: UIViewRepresentable {
     @MainActor final class Coordinator: NSObject {
         var owner: ReasoningSlider
         private var isEditing = false
+        private var engine: CHHapticEngine?
+        private var player: (any CHHapticAdvancedPatternPlayer)?
 
         init(_ owner: ReasoningSlider) { self.owner = owner }
 
-        @objc func began() { isEditing = true }
+        @objc func began(_ slider: UISlider) {
+            isEditing = true
+            guard CHHapticEngine.capabilitiesForHardware().supportsHaptics else { return }
+            do {
+                if engine == nil {
+                    engine = try CHHapticEngine()
+                    engine?.playsHapticsOnly = true
+                    engine?.isAutoShutdownEnabled = true
+                }
+                try engine?.start()
+                let event = CHHapticEvent(
+                    eventType: .hapticContinuous,
+                    parameters: [
+                        .init(parameterID: .hapticIntensity, value: 1),
+                        .init(parameterID: .hapticSharpness, value: 0),
+                    ], relativeTime: 0, duration: 1)
+                let pattern = try CHHapticPattern(events: [event], parameters: [])
+                player = try engine?.makeAdvancedPlayer(with: pattern)
+                player?.loopEnabled = true
+                updateHaptics(slider)
+                try player?.start(atTime: CHHapticTimeImmediate)
+            } catch { stopHaptics() }
+        }
+
+        private func updateHaptics(_ slider: UISlider) {
+            let progress = slider.value / max(1, slider.maximumValue)
+            do {
+                try player?.sendParameters(
+                    [
+                        .init(
+                            parameterID: .hapticIntensityControl,
+                            value: 0.12 + 0.48 * progress, relativeTime: 0),
+                        .init(
+                            parameterID: .hapticSharpnessControl,
+                            value: 0.15 + 0.7 * progress, relativeTime: 0),
+                    ], atTime: CHHapticTimeImmediate)
+            } catch { stopHaptics() }
+        }
+
+        func stopHaptics() {
+            try? player?.stop(atTime: CHHapticTimeImmediate)
+            player = nil
+        }
 
         @objc func changed(_ slider: UISlider) {
-            owner.value = Double(slider.value.rounded())
+            owner.value = Double(slider.value)
+            updateHaptics(slider)
             if !isEditing { owner.commit() }
         }
 
-        @objc func ended() {
+        @objc func ended(_ slider: UISlider) {
+            slider.value = slider.value.rounded()
             isEditing = false
+            stopHaptics()
             owner.commit()
         }
     }
 
+    static func dismantleUIView(_ uiView: ThumbHeightSlider, coordinator: Coordinator) {
+        coordinator.stopHaptics()
+    }
+
     final class ThumbHeightSlider: UISlider {
-        private let thumbDiameter = MobiusStyle.iconButtonSize * 1.02
-        let gradient = CAGradientLayer()
-        private let trackBackground = CALayer()
-        private let fillMask = CALayer()
+        private let thumbDiameter = MobiusStyle.rowTouch * 0.7 - 6
+        private var thumbColor: UIColor?
 
-        override init(frame: CGRect) {
-            super.init(frame: frame)
-            trackBackground.masksToBounds = true
-            layer.insertSublayer(trackBackground, at: 0)
-            gradient.startPoint = CGPoint(x: 0, y: 0.5)
-            gradient.endPoint = CGPoint(x: 1, y: 0.5)
-            fillMask.backgroundColor = UIColor.black.cgColor
-            gradient.mask = fillMask
-            trackBackground.addSublayer(gradient)
+        func updateThumb(color: UIColor) {
+            guard thumbColor != color else { return }
+            thumbColor = color
+            let size = CGSize(width: thumbDiameter, height: thumbDiameter)
+            let image = UIGraphicsImageRenderer(size: size).image { _ in
+                color.setFill()
+                UIBezierPath(ovalIn: CGRect(origin: .zero, size: size)).fill()
+            }
+            setThumbImage(image, for: .normal)
+            setThumbImage(image, for: .highlighted)
         }
-
-        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
         override func layoutSubviews() {
             super.layoutSubviews()
+            setNeedsDisplay()
+        }
+
+        override func draw(_ rect: CGRect) {
+            UIColor.white.withAlphaComponent(isEnabled ? 0.08 : 0.03).setFill()
+            UIBezierPath(roundedRect: bounds, cornerRadius: bounds.height / 2).fill()
             let track = trackRect(forBounds: bounds)
             let thumb = thumbRect(forBounds: bounds, trackRect: track, value: value)
-            let minimumThumb = thumbRect(forBounds: bounds, trackRect: track, value: minimumValue)
-            let maximumThumb = thumbRect(forBounds: bounds, trackRect: track, value: maximumValue)
-            let isReversed = minimumThumb.midX > maximumThumb.midX
-            let edge = min(track.width, max(0, thumb.midX - track.minX))
-            var fill = CGRect(
-                x: isReversed ? edge : 0, y: 0,
-                width: isReversed ? track.width - edge : edge, height: track.height)
-            if value <= minimumValue { fill.size.width = 0 }
-            if value >= maximumValue { fill = CGRect(origin: .zero, size: track.size) }
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            trackBackground.frame = track
-            trackBackground.cornerRadius = track.height / 2
-            trackBackground.backgroundColor = UIColor.tertiarySystemFill.cgColor
-            trackBackground.opacity = isEnabled ? 1 : 0.4
-            gradient.frame = trackBackground.bounds
-            gradient.startPoint.x = isReversed ? 1 : 0
-            gradient.endPoint.x = isReversed ? 0 : 1
-            fillMask.frame = fill
-            fillMask.cornerRadius = track.height / 2
-            CATransaction.commit()
+            let minimum = thumbRect(forBounds: bounds, trackRect: track, value: minimumValue)
+            let maximum = thumbRect(forBounds: bounds, trackRect: track, value: maximumValue)
+            let reversed = minimum.midX > maximum.midX
+            let opacity: CGFloat = isEnabled ? 1 : 0.4
+            let fill = CGRect(
+                x: reversed ? thumb.minX - 3 : track.minX, y: track.minY,
+                width: reversed ? track.maxX - thumb.minX + 3 : thumb.maxX + 3 - track.minX,
+                height: track.height)
+            UIColor.white.withAlphaComponent(opacity).setFill()
+            UIBezierPath(roundedRect: fill, cornerRadius: track.height / 2).fill()
+            for index in 0...Int(maximumValue) {
+                let tick = thumbRect(forBounds: bounds, trackRect: track, value: Float(index))
+                let color: UIColor = Float(index) <= value ? .black : .white
+                color.withAlphaComponent(0.4 * opacity).setFill()
+                UIBezierPath(
+                    ovalIn: CGRect(
+                        x: tick.midX - 4, y: track.midY - 4,
+                        width: 8, height: 8)
+                ).fill()
+            }
         }
 
         override func trackRect(forBounds bounds: CGRect) -> CGRect {
             let track = super.trackRect(forBounds: bounds)
-            let height = MobiusStyle.iconButtonSize / 1.1
+            let height = MobiusStyle.rowTouch * 0.7
             return CGRect(
-                x: track.minX, y: bounds.midY - height / 2, width: track.width, height: height)
+                x: track.minX + 7, y: bounds.midY - height / 2, width: max(0, track.width - 14),
+                height: height)
         }
 
         override func thumbRect(forBounds bounds: CGRect, trackRect rect: CGRect, value: Float)
@@ -269,13 +314,12 @@ private struct ReasoningSlider: UIViewRepresentable {
         {
             let minimum = super.thumbRect(forBounds: bounds, trackRect: rect, value: minimumValue)
             let maximum = super.thumbRect(forBounds: bounds, trackRect: rect, value: maximumValue)
-            // Retain UIKit's direction and value mapping, but align the circular thumb's
-            // edges with the rounded track instead of retaining the capsule thumb's inset.
+            // Retain UIKit's right-to-left mapping and inset the thumb within the track.
             let range = maximumValue - minimumValue
             let fraction = range > 0 ? CGFloat((value - minimumValue) / range) : 0
             let progress = minimum.midX > maximum.midX ? 1 - fraction : fraction
             return CGRect(
-                x: rect.minX + progress * (rect.width - thumbDiameter),
+                x: rect.minX + 3 + progress * (rect.width - thumbDiameter - 6),
                 y: rect.midY - thumbDiameter / 2,
                 width: thumbDiameter, height: thumbDiameter)
         }
