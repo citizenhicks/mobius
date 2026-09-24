@@ -35,6 +35,63 @@ extension AppModelTests {
         return model
     }
 
+    func testCatalogSearchExpandsInHeaderAndCollapsesOnDismissal() async throws {
+        let model = try voiceModel()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
+        let host = UIHostingController(
+            rootView:
+                NavigationStack { ChatsView() }.mobiusTheme().environment(model))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+        func navigation(_ c: UIViewController) -> UINavigationController? {
+            if let c = c as? UINavigationController { return c }
+            return c.children.lazy.compactMap { navigation($0) }.first
+        }
+        let ready = await eventually(timeout: .seconds(5)) {
+            navigation(host)?.navigationBar.topItem?.searchController != nil
+        }
+        XCTAssertTrue(ready)
+        func snapshot(_ name: String) {
+            let attachment = XCTAttachment(
+                image: UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                    window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+                })
+            attachment.name = name
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+        try await Task.sleep(for: .milliseconds(600))
+        snapshot("Before search")
+        let search = try XCTUnwrap(navigation(host)?.navigationBar.topItem?.searchController)
+        search.isActive = true
+        search.searchBar.becomeFirstResponder()
+        let active = await eventually(timeout: .seconds(5)) { search.isActive }
+        XCTAssertTrue(active)
+        try await Task.sleep(for: .milliseconds(600))
+        func searchFields(in view: UIView) -> [UISearchTextField] {
+            (view as? UISearchTextField).map { [$0] }
+                ?? view.subviews.flatMap { searchFields(in: $0) }
+        }
+        let field = try XCTUnwrap(searchFields(in: window).first { $0.bounds.width > 100 })
+        let frame = field.convert(field.bounds, to: window)
+        XCTAssertGreaterThan(frame.height, 0)
+        XCTAssertLessThan(frame.maxY, window.bounds.midY)
+        snapshot("Search at top without composer")
+        search.searchBar.delegate?.searchBarCancelButtonClicked?(search.searchBar)
+        let dismissed = await eventually(timeout: .seconds(5)) { !search.isActive }
+        XCTAssertTrue(dismissed)
+        try await Task.sleep(for: .seconds(2))
+        snapshot("After dismissing search")
+    }
+
     func testRealtimeEligibilityUsesSelectedRouteAndConfiguredInstance() throws {
         let model = try voiceModel()
         XCTAssertTrue(model.selectedRouteSupportsRealtimeVoice)

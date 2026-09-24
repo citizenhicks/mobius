@@ -94,8 +94,10 @@ struct ChatsView: View {
         }
         .searchable(
             text: $searchText, isPresented: $isSearchPresented,
-            placement: .navigationBarDrawer, prompt: "Search chats"
+            placement: .toolbar, prompt: "Search chats"
         )
+        .searchToolbarBehavior(.minimize)
+        .background { ChatSearchPlacement() }
         .onChange(of: model.chat.sessions.map(\.sessionId)) { _, sessionIDs in
             guard let selection = selectedSessionIDs, !selection.isEmpty else { return }
             let remaining = selection.intersection(sessionIDs)
@@ -448,6 +450,23 @@ struct ChatsView: View {
         model.beginDeletingSessions(sessions)
     }
 
+}
+
+private struct ChatSearchPlacement: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> Controller { Controller() }
+
+    func updateUIViewController(_ controller: Controller, context: Context) {}
+
+    final class Controller: UIViewController {
+        override func viewWillLayoutSubviews() {
+            super.viewWillLayoutSubviews()
+            guard let item = parent?.navigationItem,
+                item.searchBarPlacementAllowsToolbarIntegration
+            else { return }
+            // Keep native search in the header when its collapsed button expands.
+            item.searchBarPlacementAllowsToolbarIntegration = false
+        }
+    }
 }
 
 struct WorkspaceSessionCatalog: View {
