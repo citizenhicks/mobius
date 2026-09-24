@@ -685,6 +685,8 @@ private struct ChatOptionsMenu: View {
                     .disabled(!model.canRenameSession)
                 }
             }
+        } icon: {
+            ChatBotFace(size: MobiusStyle.headerFaceSize)
         }
         .popover(isPresented: $showsChatInfo) {
             ChatInfoView()

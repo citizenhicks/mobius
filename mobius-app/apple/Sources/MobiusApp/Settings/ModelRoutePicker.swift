@@ -91,7 +91,7 @@ struct ModelRoutePicker: View {
                         self.reasoningPreview = nil
                     }
                 }
-                .frame(height: MobiusStyle.rowTouch)
+                .frame(height: ReasoningSlider.height)
             }
         }
         .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
@@ -145,6 +145,8 @@ struct ModelRoutePicker: View {
 }
 
 private struct ReasoningSlider: UIViewRepresentable {
+    static let height = MobiusStyle.rowTouch + 6
+
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.locale) private var locale
     @Environment(\.mobiusPalette) private var palette
@@ -254,7 +256,7 @@ private struct ReasoningSlider: UIViewRepresentable {
     }
 
     final class ThumbHeightSlider: UISlider {
-        private let thumbDiameter = MobiusStyle.rowTouch * 0.7 - 6
+        private let thumbDiameter = ReasoningSlider.height - 20
         private var thumbColor: UIColor?
 
         func updateThumb(color: UIColor) {
@@ -303,12 +305,12 @@ private struct ReasoningSlider: UIViewRepresentable {
             }
         }
 
+        override var intrinsicContentSize: CGSize {
+            CGSize(width: super.intrinsicContentSize.width, height: ReasoningSlider.height)
+        }
+
         override func trackRect(forBounds bounds: CGRect) -> CGRect {
-            let track = super.trackRect(forBounds: bounds)
-            let height = MobiusStyle.rowTouch * 0.7
-            return CGRect(
-                x: track.minX + 7, y: bounds.midY - height / 2, width: max(0, track.width - 14),
-                height: height)
+            bounds.insetBy(dx: 7, dy: 7)
         }
 
         override func thumbRect(forBounds bounds: CGRect, trackRect rect: CGRect, value: Float)

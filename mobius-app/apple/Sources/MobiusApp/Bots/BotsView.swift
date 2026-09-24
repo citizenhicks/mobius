@@ -119,12 +119,7 @@ struct BotsView: View {
             }
         ) {
             HStack(spacing: MobiusSpace.s) {
-                MobiusIcon(
-                    .aiScan,
-                    size: MobiusStyle.glyphLead,
-                    foreground: bot.tint.color
-                )
-                .accessibilityHidden(true)
+                BotFace(tint: bot.tint.color, size: MobiusStyle.glyphLead + 6)
                 VStack(alignment: .leading, spacing: MobiusSpace.xxs) {
                     Text(verbatim: bot.name)
                         .lineLimit(1)
@@ -301,6 +296,13 @@ struct BotDetailView: View {
                         }
                     }
                 ) {
+                    Section {
+                        BotFace(tint: bot.tint.color, size: 96)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, MobiusSpace.l)
+                            .listRowBackground(Color.clear)
+                    }
+
                     Section("Description") {
                         Text(verbatim: bot.description)
                             .font(MobiusStyle.bodyFont)

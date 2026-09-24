@@ -404,8 +404,9 @@ struct ReadOnlyTranscriptSheet: View {
                 if isLoading {
                     ZStack {
                         palette.canvas.opacity(0.58)
-                        MobiusComposingOrb()
-                            .frame(width: 112, height: 112)
+                        BotFace(
+                            tint: palette.accent.mix(with: .white, by: 0.5, in: .device),
+                            mood: .thinking, size: MobiusStyle.transcriptFaceSize)
                     }
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Loading earlier agent messages")

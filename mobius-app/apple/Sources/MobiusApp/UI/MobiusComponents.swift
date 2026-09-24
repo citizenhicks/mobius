@@ -324,15 +324,20 @@ struct MobiusSwipeAction: View {
     }
 }
 
-struct HeaderOptionsMenu<Content: View>: View {
+struct HeaderOptionsMenu<Content: View, Icon: View>: View {
     let label: LocalizedStringResource
     @ViewBuilder let content: Content
+    @ViewBuilder let icon: Icon
 
     var body: some View {
         Menu {
             content
         } label: {
-            MobiusLabel(title: label, glyph: .dotsThree)
+            Label {
+                Text(label)
+            } icon: {
+                icon
+            }
         }
         .menuStyle(.button)
         .mobiusCircularIconControl()
@@ -340,6 +345,12 @@ struct HeaderOptionsMenu<Content: View>: View {
         .menuIndicator(.hidden)
         .tint(.primary)
         .help(Text(label))
+    }
+}
+
+extension HeaderOptionsMenu where Icon == MobiusIcon {
+    init(label: LocalizedStringResource, @ViewBuilder content: () -> Content) {
+        self.init(label: label, content: content) { MobiusIcon(.dotsThree) }
     }
 }
 

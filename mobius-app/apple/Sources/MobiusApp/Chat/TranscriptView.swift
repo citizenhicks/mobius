@@ -446,8 +446,7 @@ struct TranscriptView: View {
     }
 
     private var emptyState: some View {
-        MobiusComposingOrb()
-            .frame(width: MobiusStyle.transcriptOrbSize, height: MobiusStyle.transcriptOrbSize)
+        ChatBotFace(size: MobiusStyle.transcriptFaceSize)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(.bottom, bottomInset)
             .accessibilityHidden(true)
@@ -466,8 +465,7 @@ private struct TranscriptLoadingView: View {
     var body: some View {
         ZStack {
             MobiusBackdrop()
-            MobiusComposingOrb()
-                .frame(width: MobiusStyle.transcriptOrbSize, height: MobiusStyle.transcriptOrbSize)
+            ChatBotFace(size: MobiusStyle.transcriptFaceSize)
                 .offset(y: -bottomInset / 2)
         }
         .accessibilityElement(children: .ignore)
