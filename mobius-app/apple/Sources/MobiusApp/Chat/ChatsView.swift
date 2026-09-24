@@ -34,11 +34,14 @@ struct ChatsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mobiusPalette) private var palette
     @Environment(\.locale) private var locale
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var collapsedWorkspaces: Set<String> = []
     @State private var visibleSessionCounts: [String: Int] = [:]
     @State private var showsAttentionOnly = false
     @State private var organization = ChatOrganization.byProject
     @State private var searchText = ""
+    @State private var isSearchPresented = false
+    @FocusState private var isSearchFocused: Bool
     @State private var selectedSessionIDs: Set<String>?
 
     var body: some View {
@@ -60,15 +63,27 @@ struct ChatsView: View {
         .scrollDismissesKeyboard(.interactively)
         .background { palette.canvas.ignoresSafeArea() }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if selectedSessionIDs == nil {
+            if selectedSessionIDs == nil && !isSearchPresented {
                 ComposerView(showsNewChatEntry: true)
                     .disabled(!model.canCreateSession)
             }
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if isSearchPresented {
+                searchHeader
+                    .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .trailing)))
+            }
+        }
+        .toolbarVisibility(isSearchPresented ? .hidden : .visible, for: .navigationBar)
         .navigationTitle("Chats")
         .toolbarTitleDisplayMode(.inline)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: isSearchPresented)
         .toolbar {
-            DefaultToolbarItem(kind: .search, placement: .topBarTrailing)
+            MobiusToolbarItem(placement: .topBarTrailing) {
+                MobiusToolbarIconButton(glyph: .magnifyingGlass, label: "Search chats") {
+                    isSearchPresented = true
+                }
+            }
             if selectedSessionIDs != nil {
                 MobiusToolbarItem(placement: .cancellationAction) {
                     MobiusToolbarIconButton(glyph: .x, label: "Cancel") {
@@ -91,8 +106,6 @@ struct ChatsView: View {
                 }
             }
         }
-        .searchable(text: $searchText, prompt: "Search chats")
-        .searchToolbarBehavior(.minimize)
         .onChange(of: model.chat.sessions.map(\.sessionId)) { _, sessionIDs in
             guard let selection = selectedSessionIDs, !selection.isEmpty else { return }
             let remaining = selection.intersection(sessionIDs)
@@ -104,6 +117,42 @@ struct ChatsView: View {
         .task(id: model.gateway.connectionState.isReady) {
             await model.refreshProfileWhileVisible()
         }
+    }
+
+    // Custom SwiftUI search header: native search reopens after dismissal on iOS 27,
+    // leaving the composer hidden. Keep presentation and animation owned by this view.
+    private var searchHeader: some View {
+        HStack(spacing: MobiusSpace.s) {
+            HStack(spacing: MobiusSpace.s) {
+                MobiusIcon(.magnifyingGlass, foreground: palette.muted)
+                TextField("Search chats", text: $searchText)
+                    .textFieldStyle(.plain)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .submitLabel(.search)
+                    .focused($isSearchFocused)
+                    .accessibilityLabel("Search chats")
+                if !searchText.isEmpty {
+                    Button("Clear search", glyph: .x) { searchText = "" }
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(MobiusIconButtonStyle(bare: true))
+                }
+            }
+            .padding(.horizontal, MobiusSpace.l)
+            .frame(minHeight: MobiusStyle.iconButtonSize)
+            .mobiusGlass(in: Capsule())
+            Button("Close search", glyph: .x) {
+                isSearchFocused = false
+                isSearchPresented = false
+                searchText = ""
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(MobiusIconButtonStyle())
+            .keyboardShortcut(.cancelAction)
+        }
+        .padding(.horizontal, MobiusSpace.l)
+        .padding(.vertical, MobiusSpace.s)
+        .onAppear { isSearchFocused = true }
     }
 
     private var catalogHeading: some View {

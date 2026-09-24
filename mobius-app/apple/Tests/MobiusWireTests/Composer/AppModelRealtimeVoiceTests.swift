@@ -35,6 +35,74 @@ extension AppModelTests {
         return model
     }
 
+    func testCatalogSearchExpandsInHeaderAndCollapsesOnDismissal() async throws {
+        let model = try voiceModel()
+        model.showsWelcome = false
+        let account = GatewayAccount(endpoint: try GatewayEndpoint("tcp://localhost:9191"))
+        model.gateway.accounts = [account]
+        model.gateway.selectedAccountID = account.id
+        model.gateway.connectionState = .ready
+        model.destination = .chats
+        model.showsPairing = false
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
+        let host = UIHostingController(
+            rootView:
+                NavigationStack { ChatsView() }.mobiusTheme().environment(model))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+        func field() -> UITextField? {
+            testAccessibilityElements(window).compactMap { $0 as? UITextField }.first {
+                $0.window != nil && !$0.isHidden
+            }
+        }
+        try await Task.sleep(for: .milliseconds(600))
+        for query in ["", "test", ""] {
+            try activatePresentationToolbarButton("Search chats", in: host)
+            let active = await eventually(timeout: .seconds(5)) {
+                field()?.isFirstResponder == true
+            }
+            XCTAssertTrue(active)
+            let input = try XCTUnwrap(field())
+            XCTAssertLessThan(input.convert(input.bounds, to: window).maxY, window.bounds.midY)
+            input.text = query
+            input.sendActions(for: .editingChanged)
+            try await Task.sleep(for: .milliseconds(300))
+            var responder: UIResponder? = input
+            var commands: [UIKeyCommand] = []
+            while let current = responder {
+                commands += current.keyCommands ?? []
+                responder = current.next
+            }
+            let close = try XCTUnwrap(
+                commands.first { $0.input == UIKeyCommand.inputEscape },
+                "Commands: \(commands.map { $0.input ?? "nil" })")
+            XCTAssertTrue(
+                UIApplication.shared.sendAction(
+                    try XCTUnwrap(close.action), to: nil, from: close, for: nil))
+            let dismissed = await eventually(timeout: .seconds(5)) {
+                field() == nil
+            }
+            XCTAssertTrue(dismissed)
+            try await Task.sleep(for: .seconds(2))
+            XCTAssertNil(field(), "Search reopened after dismissal")
+        }
+        let attachment = XCTAttachment(
+            image: UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            })
+        attachment.name = "Search closed and composer restored"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     func testRealtimeEligibilityUsesSelectedRouteAndConfiguredInstance() throws {
         let model = try voiceModel()
         XCTAssertTrue(model.selectedRouteSupportsRealtimeVoice)
