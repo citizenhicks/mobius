@@ -275,7 +275,7 @@ private struct ReasoningSlider: UIViewRepresentable {
         }
 
         override func draw(_ rect: CGRect) {
-            UIColor.white.withAlphaComponent(isEnabled ? 0.08 : 0.03).setFill()
+            UIColor.secondarySystemFill.withAlphaComponent(isEnabled ? 1 : 0.4).setFill()
             UIBezierPath(roundedRect: bounds, cornerRadius: bounds.height / 2).fill()
             let track = trackRect(forBounds: bounds)
             let thumb = thumbRect(forBounds: bounds, trackRect: track, value: value)
@@ -291,8 +291,10 @@ private struct ReasoningSlider: UIViewRepresentable {
             UIBezierPath(roundedRect: fill, cornerRadius: track.height / 2).fill()
             for index in 0...Int(maximumValue) {
                 let tick = thumbRect(forBounds: bounds, trackRect: track, value: Float(index))
-                let color: UIColor = Float(index) <= value ? .black : .white
-                color.withAlphaComponent(0.4 * opacity).setFill()
+                let color: UIColor =
+                    Float(index) <= value
+                    ? UIColor.black.withAlphaComponent(0.4) : .secondaryLabel
+                color.withAlphaComponent(color.cgColor.alpha * opacity).setFill()
                 UIBezierPath(
                     ovalIn: CGRect(
                         x: tick.midX - 4, y: track.midY - 4,
