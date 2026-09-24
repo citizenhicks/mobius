@@ -1,0 +1,147 @@
+# Provider-owned model catalog and token prices.
+default_model = "gpt-6-sol"
+
+[[models]]
+id = "gpt-6-sol"
+label = "6 Sol"
+description = "Complex coding and agentic workflows"
+default_reasoning = "medium"
+context_window = 1050000
+tool_discovery = "native"
+
+[[models.reasoning]]
+id = "none"
+label = "None"
+description = "Skip reasoning for the lowest latency"
+
+[[models.reasoning]]
+id = "low"
+label = "Low"
+description = "Faster answers for straightforward work"
+
+[[models.reasoning]]
+id = "medium"
+label = "Medium"
+description = "Balanced reasoning and latency"
+
+[[models.reasoning]]
+id = "high"
+label = "High"
+description = "Deeper reasoning for complex work"
+
+[[models.reasoning]]
+id = "xhigh"
+label = "Extra high"
+description = "Extended reasoning for demanding work"
+
+[[models.reasoning]]
+id = "max"
+label = "Maximum"
+description = "Maximum reasoning for the hardest work"
+
+[[models.pricing]]
+effective_from = 0
+[models.pricing.rates]
+input_microusd_per_million = 2000000
+cached_input_microusd_per_million = 200000
+cache_write_input_microusd_per_million = 2500000
+output_microusd_per_million = 10000000
+[models.pricing.rates.long_context]
+threshold_input_tokens = 272000
+input_multiplier_millis = 2000
+output_multiplier_millis = 1500
+
+[[models]]
+id = "gpt-6-luna"
+label = "6 Luna"
+description = "Focused, high-volume tasks"
+default_reasoning = "medium"
+context_window = 1050000
+tool_discovery = "native"
+
+[[models.reasoning]]
+id = "none"
+label = "None"
+description = "Skip reasoning for the lowest latency"
+
+[[models.reasoning]]
+id = "low"
+label = "Low"
+description = "Faster answers for straightforward work"
+
+[[models.reasoning]]
+id = "medium"
+label = "Medium"
+description = "Balanced reasoning and latency"
+
+[[models.reasoning]]
+id = "high"
+label = "High"
+description = "Deeper reasoning for complex work"
+
+[[models.reasoning]]
+id = "xhigh"
+label = "Extra high"
+description = "Extended reasoning for demanding work"
+
+[[models.reasoning]]
+id = "max"
+label = "Maximum"
+description = "Maximum reasoning for the hardest work"
+
+[[models.pricing]]
+effective_from = 0
+[models.pricing.rates]
+input_microusd_per_million = 100000
+cached_input_microusd_per_million = 10000
+cache_write_input_microusd_per_million = 125000
+output_microusd_per_million = 500000
+[models.pricing.rates.long_context]
+threshold_input_tokens = 272000
+input_multiplier_millis = 2000
+output_multiplier_millis = 1500
+
+[[models]]
+id = "gpt-6-astra"
+label = "6 Astra"
+description = "Advanced reasoning and complex end-to-end work"
+default_reasoning = "medium"
+context_window = 1050000
+tool_discovery = "native"
+
+[[models.reasoning]]
+id = "low"
+label = "Low"
+description = "Faster answers for straightforward work"
+
+[[models.reasoning]]
+id = "medium"
+label = "Medium"
+description = "Balanced reasoning and latency"
+
+[[models.reasoning]]
+id = "high"
+label = "High"
+description = "Deeper reasoning for complex work"
+
+[[models.reasoning]]
+id = "xhigh"
+label = "Extra high"
+description = "Extended reasoning for demanding work"
+
+[[models.reasoning]]
+id = "max"
+label = "Maximum"
+description = "Maximum reasoning for the hardest work"
+
+[[models.pricing]]
+effective_from = 0
+[models.pricing.rates]
+input_microusd_per_million = 10000000
+cached_input_microusd_per_million = 1000000
+cache_write_input_microusd_per_million = 12500000
+output_microusd_per_million = 50000000
+[models.pricing.rates.long_context]
+threshold_input_tokens = 272000
+input_multiplier_millis = 2000
+output_multiplier_millis = 1500

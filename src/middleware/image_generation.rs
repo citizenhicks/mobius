@@ -1,6 +1,6 @@
 //! Native image generation, publication, and transcript presentation.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -19,16 +19,34 @@ use crate::protocol::{
 };
 use crate::{BoxFuture, Error, Result};
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Definition {
+    default_enabled: bool,
+    manifest_label: String,
+    manifest_description: String,
+    render_pending: String,
+    render_ready: String,
+    render_failed: String,
+    model: String,
+    tool: ToolDefinition,
+}
+
+static DEFINITION: LazyLock<Definition> = LazyLock::new(|| {
+    toml::from_str(include_str!("image_generation.toml"))
+        .expect("bundled image generation definition must be valid")
+});
+
 /// Configuration metadata for native image generation.
-pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
+pub static MANIFEST: LazyLock<MiddlewareManifest> = LazyLock::new(|| MiddlewareManifest {
     id: "image_generation",
-    label: "Image generation",
-    description: "Create images with a supported OpenAI or OpenRouter model",
+    label: &DEFINITION.manifest_label,
+    description: &DEFINITION.manifest_description,
     required: false,
-    default_enabled: false,
+    default_enabled: DEFINITION.default_enabled,
     required_model_capability: Some(ModelCapability::ImageGeneration),
     settings: &[],
-};
+});
 
 /// Generates a session image and publishes it as a chat artifact.
 pub struct ImageGeneration {
@@ -67,8 +85,8 @@ impl Middleware for ImageGeneration {
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
         let mut block = render_tool_event(
             event,
-            |name| name == "generate_image",
-            |_, _| "Generating image".into(),
+            |name| name == DEFINITION.tool.name,
+            |_, _| DEFINITION.render_pending.as_str().into(),
         )?;
         block.role = FrontendBlockRole::Artifact;
         block.format = FrontendBlockFormat::Image;
@@ -85,13 +103,13 @@ impl Middleware for ImageGeneration {
             }
             EventMsg::ToolCallEnd(result) if !result.is_error => {
                 if let Some(file) = result.output.files().next().cloned() {
-                    block.title = "Image ready".into();
+                    block.title = DEFINITION.render_ready.clone();
                     block.text.clear();
                     block.content = ToolContent::default();
                     block.files = vec![file];
                 }
             }
-            EventMsg::ToolCallEnd(_) => block.title = "Image generation failed".into(),
+            EventMsg::ToolCallEnd(_) => block.title = DEFINITION.render_failed.clone(),
             _ => {}
         }
         Some(block)
@@ -116,20 +134,7 @@ struct GenerateImage {
 
 impl Tool for GenerateImage {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "generate_image".into(),
-            description: "Generate one image from a prompt, optionally using images already attached to this chat as references. The finished image is sent to the user.".into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "prompt": {"type": "string", "minLength": 1, "maxLength": 32000, "description": "Describe the image to create or how to edit the reference images."},
-                    "image_aspect": {"type": "string", "enum": ["square", "landscape", "portrait"], "description": "Choose the canvas shape for the image. Omit for square (1:1)."},
-                    "reference_file_ids": {"type": "array", "maxItems": 4, "items": {"type": "string"}, "description": "Optional authorized image file IDs from this chat."}
-                },
-                "required": ["prompt"],
-                "additionalProperties": false
-            }),
-        }
+        DEFINITION.tool.clone()
     }
 
     fn approval(&self) -> ApprovalRequirement {
@@ -174,6 +179,7 @@ impl Tool for GenerateImage {
                 .generate_image(
                     route,
                     ImageGenerationRequest {
+                        model: &DEFINITION.model,
                         prompt: &arguments.prompt,
                         image_aspect: arguments.image_aspect,
                         references: &references,
@@ -237,6 +243,7 @@ mod tests {
             &'a self,
             request: ImageGenerationRequest<'a>,
         ) -> BoxFuture<'a, Result<GeneratedImage>> {
+            assert_eq!(request.model, "gpt-image-2.5-sunburst");
             assert_eq!(request.image_aspect, ImageAspect::Landscape);
             let bytes = self.0.clone();
             Box::pin(async move {

@@ -8,11 +8,11 @@ use uuid::Uuid;
 
 use super::runtime::{AgentPresentation, MAX_MESSAGE_BYTES, Shared, Wake, monitor_agent};
 use super::{
-    AgentScope, DEFAULT_WAIT_MS, ForkTurns, MAX_TASK_NAME_BYTES, MAX_WAIT_MS, MIN_WAIT_MS, text,
+    AgentScope, ForkTurns, MAX_TASK_NAME_BYTES, MAX_WAIT_MS, MIN_WAIT_MS, default_wait_ms, text,
 };
 use crate::backend::model::ToolDefinition;
-use crate::middleware::attachments::strip_attachment_references;
 use crate::middleware::tools::{HookIdentity, Tool, ToolContext};
+use crate::protocol::strip_attachment_references;
 use crate::protocol::{MessageAuthor, MessageSubmission, Op, is_internal_message};
 use crate::{BoxFuture, Error, Result};
 
@@ -37,26 +37,26 @@ impl Tool for SpawnAgent {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "spawn_agent".into(),
-            description: text::TOOL_SPAWN_AGENT_DESCRIPTION.into(),
+            description: text::DEFINITION.tool_spawn_agent_description.clone(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "task_name": {
                         "type": "string",
-                        "description": text::TOOL_SPAWN_AGENT_PARAMETER_TASK_NAME_DESCRIPTION
+                        "description": text::DEFINITION.tool_spawn_agent_parameter_task_name_description.as_str()
                     },
                     "text": {"type": "string"},
                     "fork_turns": {
                         "type": "string",
-                        "description": text::TOOL_SPAWN_AGENT_PARAMETER_FORK_TURNS_DESCRIPTION
+                        "description": text::DEFINITION.tool_spawn_agent_parameter_fork_turns_description.as_str()
                     },
                     "model": {
                         "type": "string",
-                        "description": text::TOOL_SPAWN_AGENT_PARAMETER_MODEL_DESCRIPTION
+                        "description": text::DEFINITION.tool_spawn_agent_parameter_model_description.as_str()
                     },
                     "reasoning_effort": {
                         "type": "string",
-                        "description": text::TOOL_SPAWN_AGENT_PARAMETER_REASONING_EFFORT_DESCRIPTION
+                        "description": text::DEFINITION.tool_spawn_agent_parameter_reasoning_effort_description.as_str()
                     }
                 },
                 "required": ["task_name", "text"],
@@ -179,13 +179,13 @@ impl Tool for SendMessage {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "send_message".into(),
-            description: text::TOOL_SEND_MESSAGE_DESCRIPTION.into(),
+            description: text::DEFINITION.tool_send_message_description.clone(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "target": {
                         "type": "string",
-                        "description": text::TOOL_PARAMETER_TARGET_DESCRIPTION
+                        "description": text::DEFINITION.tool_parameter_target_description.as_str()
                     },
                     "text": {"type": "string"}
                 },
@@ -299,7 +299,7 @@ impl Tool for ListAgents {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "list_agents".into(),
-            description: text::TOOL_LIST_AGENTS_DESCRIPTION.into(),
+            description: text::DEFINITION.tool_list_agents_description.clone(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {"path_prefix": {"type": "string"}},
@@ -342,13 +342,13 @@ impl Tool for InterruptAgent {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "interrupt_agent".into(),
-            description: text::TOOL_INTERRUPT_AGENT_DESCRIPTION.into(),
+            description: text::DEFINITION.tool_interrupt_agent_description.clone(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "target": {
                         "type": "string",
-                        "description": text::TOOL_PARAMETER_TARGET_DESCRIPTION
+                        "description": text::DEFINITION.tool_parameter_target_description.as_str()
                     }
                 },
                 "required": ["target"],
@@ -388,7 +388,7 @@ impl Tool for WaitAgent {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "wait_agent".into(),
-            description: text::TOOL_WAIT_AGENT_DESCRIPTION.into(),
+            description: text::DEFINITION.tool_wait_agent_description.clone(),
             parameters: wait_parameters(),
         }
     }
@@ -434,7 +434,7 @@ pub(super) fn wait_parameters() -> Value {
 }
 
 pub(super) fn wait_timeout(timeout_ms: Option<u64>) -> Result<Duration> {
-    let timeout_ms = timeout_ms.unwrap_or(DEFAULT_WAIT_MS);
+    let timeout_ms = timeout_ms.unwrap_or(default_wait_ms());
     if !(MIN_WAIT_MS..=MAX_WAIT_MS).contains(&timeout_ms) {
         return Err(Error::Tool(format!(
             "timeout_ms must be between {MIN_WAIT_MS} and {MAX_WAIT_MS}"

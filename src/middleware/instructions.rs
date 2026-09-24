@@ -14,24 +14,35 @@ use super::manifest::MiddlewareManifest;
 use crate::{Error, Result};
 
 mod text {
-    pub const MANIFEST_DESCRIPTION: &str = "Load optional root AGENTS.md guidance";
-    pub const MANIFEST_LABEL: &str = "Workspace instructions";
-    pub const PROMPT_TITLE: &str = "workspace instructions";
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct Definition {
+        pub(super) default_enabled: bool,
+        pub(super) manifest_description: String,
+        pub(super) manifest_label: String,
+        pub(super) prompt_title: String,
+    }
+    pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
+        std::sync::LazyLock::new(|| {
+            toml::from_str(include_str!("instructions.toml"))
+                .expect("bundled instructions definition must be valid")
+        });
 }
 const OVERRIDE_FILE: &str = "AGENTS.override.md";
 const INSTRUCTIONS_FILE: &str = "AGENTS.md";
 const MAX_INSTRUCTIONS_BYTES: u64 = 40_000;
 
 /// Configuration and presentation metadata for workspace instructions.
-pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
-    id: "instructions",
-    label: text::MANIFEST_LABEL,
-    description: text::MANIFEST_DESCRIPTION,
-    required: false,
-    default_enabled: false,
-    required_model_capability: None,
-    settings: &[],
-};
+pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
+    std::sync::LazyLock::new(|| MiddlewareManifest {
+        id: "instructions",
+        label: text::DEFINITION.manifest_label.as_str(),
+        description: text::DEFINITION.manifest_description.as_str(),
+        required: false,
+        default_enabled: text::DEFINITION.default_enabled,
+        required_model_capability: None,
+        settings: &[],
+    });
 
 /// Optional root workspace instructions composed into the system prompt once.
 pub struct Instructions {
@@ -60,7 +71,7 @@ impl Instructions {
     fn section(&self) -> Option<PromptSection> {
         self.body
             .clone()
-            .map(|body| PromptSection::titled(text::PROMPT_TITLE, body))
+            .map(|body| PromptSection::titled(text::DEFINITION.prompt_title.as_str(), body))
     }
 }
 

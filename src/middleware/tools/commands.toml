@@ -1,0 +1,41 @@
+# Tool schemas, presentation, and defaults owned by commands.
+initial_wait_ms = 1000
+
+[bash]
+title = "Bash"
+detail = "command"
+
+[bash.tool]
+name = "bash"
+description = "Run a sandboxed command under the active network policy. Returns output and exit status if it finishes quickly, otherwise returns running status, initial output, and a command_id for manage_command. Do not relaunch a running command."
+
+[bash.tool.parameters]
+type = "object"
+required = ["command"]
+additionalProperties = false
+
+[bash.tool.parameters.properties]
+
+[bash.tool.parameters.properties.command]
+type = "string"
+
+[manage_command]
+title = "Command"
+detail = "action"
+
+[manage_command.tool]
+name = "manage_command"
+description = "Manage a running command returned by bash. Poll reads new output; stop cancels the command. Completion or stopping consumes the command ID."
+
+[manage_command.tool.parameters]
+type = "object"
+required = ["command_id", "action"]
+additionalProperties = false
+
+[manage_command.tool.parameters.properties.command_id]
+type = "string"
+format = "uuid"
+
+[manage_command.tool.parameters.properties.action]
+type = "string"
+enum = ["poll", "stop"]

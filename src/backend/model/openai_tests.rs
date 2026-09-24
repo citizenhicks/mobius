@@ -1481,9 +1481,10 @@ async fn native_images_use_json_for_generation_and_multipart_for_public_edits() 
         reqwest::Client::new(),
     )
     .expect("provider")
-    .with_codex_image_generation();
+    .with_image_api(Some(&IMAGE_APIS["codex"]));
     let generated = provider
         .generate_image(ImageGenerationRequest {
+            model: "gpt-image-2.5-sunburst",
             prompt: "a red fox",
             image_aspect: crate::protocol::ImageAspect::Square,
             references: &[],
@@ -1492,7 +1493,7 @@ async fn native_images_use_json_for_generation_and_multipart_for_public_edits() 
         .expect("image");
     assert_eq!(generated.media_type, "image/png");
     assert_eq!(generated.usage.expect("usage").total_tokens, 5);
-    provider.image_api = Some(ImageApi::OpenAi);
+    provider.image_api = Some(&IMAGE_APIS["openai"]);
     let source = base64::engine::general_purpose::STANDARD
         .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/sZkAAAAASUVORK5CYII=")
         .expect("source image");
@@ -1502,6 +1503,7 @@ async fn native_images_use_json_for_generation_and_multipart_for_public_edits() 
     }];
     provider
         .generate_image(ImageGenerationRequest {
+            model: "gpt-image-2.5-flare",
             prompt: "make the fox blue",
             image_aspect: crate::protocol::ImageAspect::Landscape,
             references: &references,
@@ -1512,7 +1514,7 @@ async fn native_images_use_json_for_generation_and_multipart_for_public_edits() 
     let generation = String::from_utf8_lossy(&requests[0]);
     assert!(generation.starts_with("POST /images/generations HTTP/1.1"));
     assert!(generation.contains("Bearer test-key"));
-    assert!(generation.contains("\"model\":\"gpt-image-2\""));
+    assert!(generation.contains("\"model\":\"gpt-image-2.5-sunburst\""));
     assert!(generation.contains("\"size\":\"1024x1024\""));
     let edit = String::from_utf8_lossy(&requests[1]);
     assert!(edit.starts_with("POST /images/edits HTTP/1.1"));
@@ -1520,7 +1522,7 @@ async fn native_images_use_json_for_generation_and_multipart_for_public_edits() 
     assert!(edit.contains("multipart/form-data; boundary="));
     assert!(edit.contains("name=\"image[]\"; filename=\"reference-0.png\""));
     assert!(edit.contains("name=\"model\""));
-    assert!(edit.contains("gpt-image-2"));
+    assert!(edit.contains("gpt-image-2.5-flare"));
     assert!(edit.contains("name=\"prompt\""));
     assert!(edit.contains("make the fox blue"));
     assert!(edit.contains("name=\"size\""));

@@ -1,0 +1,15 @@
+default_enabled = true
+default_delivery = "steer"
+# Editable text and defaults owned by this middleware.
+defaults_max_pending = 64
+manifest_description = "Deliver conversation messages at the correct turn boundary"
+manifest_label = "Messages"
+setting_delivery_description = "Default behavior for user messages sent while the agent is working"
+setting_delivery_label = "Active message delivery"
+setting_delivery_queue_description = "Start a new turn after the active turn finishes"
+setting_delivery_queue_label = "Queue"
+setting_delivery_steer_description = "Inject at the next model boundary of the active turn"
+setting_delivery_steer_label = "Steer"
+setting_max_pending_description = "Maximum messages waiting for delivery"
+setting_max_pending_label = "Maximum pending messages"
+setting_max_pending_step = 1

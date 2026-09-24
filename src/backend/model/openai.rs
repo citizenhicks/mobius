@@ -22,7 +22,7 @@ use super::StreamingToolCalls;
 use super::TOOLS_SEARCH_NAME;
 use super::ToolDefinition;
 use super::image_data_url;
-use super::image_generation::ImageApi;
+use super::image_generation::{IMAGE_APIS, ImageApi};
 use super::image_input;
 use super::openai_auth::ApiKeyAuthorization;
 use super::openai_auth::OpenAiAuthorization;
@@ -86,15 +86,11 @@ impl ToolDiscoveryWire {
     }
 }
 
-fn openai_model_pricing(model: &str) -> Option<ModelPricing> {
-    let pricing = match model {
-        "gpt-6-astra" => ModelPricing::new(10_000_000, 1_000_000, 12_500_000, 50_000_000),
-        "gpt-6-sol" => ModelPricing::new(2_000_000, 200_000, 2_500_000, 10_000_000),
-        "gpt-6-luna" => ModelPricing::new(100_000, 10_000, 125_000, 500_000),
-        _ => return None,
-    };
-    Some(pricing.with_long_context(272_000, 2_000, 1_500))
-}
+pub(super) static CATALOG: std::sync::LazyLock<super::provider::ModelCatalog> =
+    std::sync::LazyLock::new(|| {
+        toml::from_str(include_str!("openai.toml"))
+            .expect("bundled openai model catalog must be valid")
+    });
 
 /// OpenAI Responses API configuration.
 pub struct OpenAi {
@@ -108,7 +104,7 @@ pub struct OpenAi {
     hosted_tools: Vec<Value>,
     compaction_endpoint: bool,
     image_input: bool,
-    image_api: Option<ImageApi>,
+    image_api: Option<&'static ImageApi>,
     explicit_prompt_cache: bool,
     tool_discovery: ToolDiscoveryWire,
 }
@@ -170,7 +166,7 @@ impl OpenAi {
         };
         let image_api = (auth.is_some()
             && uses_default_endpoint(Some(DEFAULT_BASE_URL), Some(&base_url)))
-        .then_some(ImageApi::OpenAi);
+        .then_some(&IMAGE_APIS["openai"]);
         Ok(Self {
             client,
             auth,
@@ -197,18 +193,8 @@ impl OpenAi {
         Ok(self)
     }
 
-    pub(super) fn with_codex_image_generation(mut self) -> Self {
-        self.image_api = Some(ImageApi::Codex);
-        self
-    }
-
-    pub(super) fn with_openrouter_image_generation(mut self) -> Self {
-        self.image_api = Some(ImageApi::OpenRouter);
-        self
-    }
-
-    pub(super) fn without_image_generation(mut self) -> Self {
-        self.image_api = None;
+    pub(super) fn with_image_api(mut self, api: Option<&'static ImageApi>) -> Self {
+        self.image_api = api;
         self
     }
 
@@ -349,9 +335,9 @@ impl OpenAi {
         let api = self.image_api.ok_or_else(|| {
             Error::Provider("image generation is unavailable for this provider".into())
         })?;
-        let response = if api == ImageApi::OpenAi && !request.references.is_empty() {
-            self.send_authorized_with("images/edits", false, None, |builder| {
-                Ok(builder.multipart(ImageApi::openai_edit_form(&request)?))
+        let response = if api.uses_multipart(&request) {
+            self.send_authorized_with(&api.edit_path, false, None, |builder| {
+                Ok(builder.multipart(api.edit_form(&request)?))
             })
             .await?
         } else {
@@ -636,7 +622,7 @@ impl Model for OpenAi {
 
     fn pricing(&self) -> Option<ModelPricing> {
         uses_default_endpoint(Some(DEFAULT_BASE_URL), Some(&self.base_url))
-            .then(|| openai_model_pricing(&self.model))
+            .then(|| CATALOG.pricing(&self.model))
             .flatten()
     }
 

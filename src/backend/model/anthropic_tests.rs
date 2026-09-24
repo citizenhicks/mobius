@@ -92,16 +92,12 @@ fn sonnet_5_pricing_changes_at_the_standard_rate_date() {
         total_tokens: 2_000_000,
         ..TokenUsage::default()
     };
-    let before = anthropic_model_pricing_at(
-        "claude-sonnet-5",
-        SONNET_5_STANDARD_PRICING_START_UNIX_SECONDS - 1,
-    )
-    .and_then(|pricing| pricing.estimate_microusd(&usage));
-    let after = anthropic_model_pricing_at(
-        "claude-sonnet-5",
-        SONNET_5_STANDARD_PRICING_START_UNIX_SECONDS,
-    )
-    .and_then(|pricing| pricing.estimate_microusd(&usage));
+    let before = CATALOG
+        .pricing_at("claude-sonnet-5", 1_788_220_800 - 1)
+        .and_then(|pricing| pricing.estimate_microusd(&usage));
+    let after = CATALOG
+        .pricing_at("claude-sonnet-5", 1_788_220_800)
+        .and_then(|pricing| pricing.estimate_microusd(&usage));
 
     assert_eq!((before, after), (Some(11_790_000), Some(17_685_000)));
 }

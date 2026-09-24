@@ -160,10 +160,10 @@ impl Default for AgentComposition {
             provider: ProviderConfig {
                 instance: provider.id().into(),
                 provider: provider.id().into(),
-                model: model.id.into(),
+                model: model.id.clone(),
                 base_url: provider.default_base_url().map(str::to_string),
                 endpoint_auth: ProviderEndpointAuth::ProviderDefault,
-                reasoning_effort: model.default_reasoning.map(str::to_string),
+                reasoning_effort: model.default_reasoning.clone(),
                 web_search: *provider
                     .web_search()
                     .first()

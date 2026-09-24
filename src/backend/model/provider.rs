@@ -28,33 +28,71 @@ pub use super::transport::streaming_client;
 pub use reqwest::Client as HttpClient;
 
 /// A reasoning choice advertised for one model.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReasoningPreset {
     /// The identifier.
-    pub id: &'static str,
+    pub id: String,
     /// The label.
-    pub label: &'static str,
+    pub label: String,
     /// The description.
-    pub description: &'static str,
+    pub description: String,
 }
 
 /// A model choice advertised by its backend provider.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelPreset {
     /// The identifier.
-    pub id: &'static str,
+    pub id: String,
     /// The label.
-    pub label: &'static str,
+    pub label: String,
     /// The description.
-    pub description: &'static str,
+    pub description: String,
     /// The context window.
     pub context_window: i64,
     /// The reasoning.
-    pub reasoning: &'static [ReasoningPreset],
+    pub reasoning: Vec<ReasoningPreset>,
     /// The default reasoning.
-    pub default_reasoning: Option<&'static str>,
+    pub default_reasoning: Option<String>,
     /// The tool discovery.
     pub tool_discovery: ToolDiscoveryMode,
+    #[serde(default)]
+    pricing: Vec<EffectivePricing>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EffectivePricing {
+    effective_from: u64,
+    rates: super::ModelPricing,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ModelCatalog {
+    pub(super) default_model: Option<String>,
+    pub(super) models: Vec<ModelPreset>,
+}
+
+impl ModelCatalog {
+    pub(super) fn pricing(&self, model: &str) -> Option<super::ModelPricing> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs());
+        self.pricing_at(model, now)
+    }
+
+    pub(super) fn pricing_at(&self, model: &str, unix_seconds: u64) -> Option<super::ModelPricing> {
+        self.models
+            .iter()
+            .find(|preset| preset.id == model)?
+            .pricing
+            .iter()
+            .filter(|price| price.effective_from <= unix_seconds)
+            .max_by_key(|price| price.effective_from)
+            .map(|price| price.rates)
+    }
 }
 
 /// One provider-reported account usage window.
@@ -583,7 +621,7 @@ impl ProviderDefinition {
         if config.reasoning_effort.is_none() {
             config.reasoning_effort = self
                 .model(&config.model)
-                .and_then(|model| model.default_reasoning)
+                .and_then(|model| model.default_reasoning.as_deref())
                 .map(str::to_string);
         }
         self.build_config_is_valid(
@@ -735,20 +773,22 @@ pub(super) fn validate_base_url(base_url: &str) -> Result<()> {
     Ok(())
 }
 
-static PROVIDERS: &[ProviderDefinition] = &[
-    super::openai_socket::provider(),
-    super::openai_codex::provider(),
-    super::deepseek::provider(),
-    super::kimi::provider(),
-    super::openrouter::provider(),
-    super::anthropic::provider(),
-    super::openai::generic_provider(),
-];
+static PROVIDERS: std::sync::LazyLock<[ProviderDefinition; 7]> = std::sync::LazyLock::new(|| {
+    [
+        super::openai_socket::provider(),
+        super::openai_codex::provider(),
+        super::deepseek::provider(),
+        super::kimi::provider(),
+        super::openrouter::provider(),
+        super::anthropic::provider(),
+        super::openai::generic_provider(),
+    ]
+});
 
 /// Returns every built-in provider in setup-menu order.
 #[must_use]
 pub fn providers() -> &'static [ProviderDefinition] {
-    PROVIDERS
+    &*PROVIDERS
 }
 
 /// Returns the provider used by an unconfigured composition.
@@ -814,26 +854,31 @@ mod tests {
 
             assert_eq!(
                 provider.default_model(),
-                provider.models().first().map(|model| model.id),
+                provider.models().first().map(|model| model.id.as_str()),
                 "provider `{}` must use its first preset as the default model",
                 provider.id()
             );
             let mut model_ids = BTreeSet::new();
             for model in provider.models() {
-                assert!(model_ids.insert(model.id), "duplicate model `{}`", model.id);
+                assert!(
+                    model_ids.insert(model.id.as_str()),
+                    "duplicate model `{}`",
+                    model.id
+                );
                 assert!(!model.label.trim().is_empty());
                 assert!(!model.description.trim().is_empty());
                 assert!(model.context_window > 0);
 
                 let mut reasoning_ids = BTreeSet::new();
-                for reasoning in model.reasoning {
-                    assert!(reasoning_ids.insert(reasoning.id));
+                for reasoning in &model.reasoning {
+                    assert!(reasoning_ids.insert(reasoning.id.as_str()));
                     assert!(!reasoning.label.trim().is_empty());
                     assert!(!reasoning.description.trim().is_empty());
                 }
                 assert!(
                     model
                         .default_reasoning
+                        .as_deref()
                         .is_none_or(|default| reasoning_ids.contains(default))
                 );
             }
@@ -910,18 +955,18 @@ mod tests {
                 definition
                     .models()
                     .iter()
-                    .map(|model| model.id)
+                    .map(|model| model.id.as_str())
                     .collect::<Vec<_>>(),
                 ["gpt-6-sol", "gpt-6-luna", "gpt-6-astra"]
             );
             let astra = definition.model("gpt-6-astra").expect("Astra preset");
             assert_eq!(astra.context_window, 1_050_000);
-            assert_eq!(astra.default_reasoning, Some("medium"));
+            assert_eq!(astra.default_reasoning.as_deref(), Some("medium"));
             assert_eq!(
                 astra
                     .reasoning
                     .iter()
-                    .map(|effort| effort.id)
+                    .map(|effort| effort.id.as_str())
                     .collect::<Vec<_>>(),
                 ["low", "medium", "high", "xhigh", "max"]
             );

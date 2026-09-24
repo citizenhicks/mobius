@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -34,6 +35,7 @@ impl BackgroundCommandStatus {
 }
 
 pub(crate) struct BackgroundCommandPoll {
+    pub(crate) command_id: Option<String>,
     pub(crate) status: BackgroundCommandStatus,
     pub(crate) exit_code: Option<i32>,
     pub(crate) stdout: String,
@@ -51,6 +53,38 @@ struct Entry {
     owner: String,
     output: Arc<Mutex<BufferedOutput>>,
     task: JoinHandle<Result<CommandOutput>>,
+}
+
+// Until its ID reaches the caller, cancellation must not leave a command running.
+pub(super) struct StartingCommand<'a> {
+    commands: &'a BackgroundCommands,
+    id: String,
+    completion: oneshot::Receiver<()>,
+    delivered: bool,
+}
+
+impl StartingCommand<'_> {
+    pub(super) async fn wait(
+        mut self,
+        owner: &str,
+        initial_wait: std::time::Duration,
+    ) -> Result<BackgroundCommandPoll> {
+        let _ = tokio::time::timeout(initial_wait, &mut self.completion).await;
+        let output = self.commands.poll(owner, &self.id).await?;
+        self.delivered = true;
+        Ok(output)
+    }
+}
+
+impl Drop for StartingCommand<'_> {
+    fn drop(&mut self) {
+        if !self.delivered
+            && let Ok(mut entries) = self.commands.entries.lock()
+            && let Some(entry) = entries.remove(&self.id)
+        {
+            entry.task.abort();
+        }
+    }
 }
 
 #[derive(Default)]
@@ -78,7 +112,7 @@ impl BackgroundCommands {
         command: String,
         sandbox_mode: SandboxMode,
         network_access: NetworkAccess,
-    ) -> Result<String> {
+    ) -> Result<StartingCommand<'_>> {
         let mut entries = self.entries.lock().map_err(|_| state_error())?;
         if entries.len() >= MAX_BACKGROUND_COMMANDS {
             return Err(Error::Sandbox(format!(
@@ -98,8 +132,9 @@ impl BackgroundCommands {
                 output.push(stream, bytes);
             }
         });
+        let (finished, completion) = oneshot::channel();
         let task = tokio::spawn(async move {
-            backend
+            let result = backend
                 .execute(
                     &command,
                     sandbox_mode,
@@ -107,7 +142,9 @@ impl BackgroundCommands {
                     CommandMode::Background,
                     sink,
                 )
-                .await
+                .await;
+            let _ = finished.send(());
+            result
         });
         entries.insert(
             id.clone(),
@@ -117,7 +154,12 @@ impl BackgroundCommands {
                 task,
             },
         );
-        Ok(id)
+        Ok(StartingCommand {
+            commands: self,
+            id,
+            completion,
+            delivered: false,
+        })
     }
 
     pub(super) async fn poll(&self, owner: &str, id: &str) -> Result<BackgroundCommandPoll> {
@@ -126,7 +168,7 @@ impl BackgroundCommands {
             let entry = entries.get(id).ok_or_else(|| unknown(id))?;
             ensure_owner(entry, owner, id)?;
             if !entry.task.is_finished() {
-                return poll_running(&entry.output);
+                return poll_running(id, &entry.output);
             }
             entries.remove(id).ok_or_else(|| unknown(id))?
         };
@@ -213,9 +255,10 @@ struct TakenOutput {
     saw_output: bool,
 }
 
-fn poll_running(output: &Arc<Mutex<BufferedOutput>>) -> Result<BackgroundCommandPoll> {
+fn poll_running(id: &str, output: &Arc<Mutex<BufferedOutput>>) -> Result<BackgroundCommandPoll> {
     let output = take_output(output)?;
     Ok(BackgroundCommandPoll {
+        command_id: Some(id.into()),
         status: BackgroundCommandStatus::Running,
         exit_code: None,
         stdout: output.stdout,
@@ -233,6 +276,7 @@ async fn completed(entry: Entry) -> Result<BackgroundCommandPoll> {
 fn stopped(output: &Arc<Mutex<BufferedOutput>>) -> Result<BackgroundCommandPoll> {
     let output = take_output(output)?;
     Ok(BackgroundCommandPoll {
+        command_id: None,
         status: BackgroundCommandStatus::Stopped,
         exit_code: None,
         stdout: output.stdout,
@@ -254,6 +298,7 @@ fn finish(
                 output.stderr = command.stderr;
             }
             Ok(BackgroundCommandPoll {
+                command_id: None,
                 status: BackgroundCommandStatus::Exited,
                 exit_code: Some(command.exit_code),
                 stdout: output.stdout,
@@ -266,6 +311,7 @@ fn finish(
             let error = error.to_string();
             let truncated = error.len() > MAX_ERROR_BYTES;
             Ok(BackgroundCommandPoll {
+                command_id: None,
                 status: BackgroundCommandStatus::Failed,
                 exit_code: None,
                 stdout: output.stdout,
@@ -275,6 +321,7 @@ fn finish(
             })
         }
         Err(error) => Ok(BackgroundCommandPoll {
+            command_id: None,
             status: if error.is_cancelled() {
                 BackgroundCommandStatus::Stopped
             } else {
@@ -381,7 +428,7 @@ mod tests {
         let started = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
         let commands = BackgroundCommands::default();
-        let id = commands
+        let command = commands
             .start(
                 "session-a",
                 Arc::new(StreamingBackend {
@@ -394,6 +441,7 @@ mod tests {
                 NetworkAccess::Denied,
             )
             .expect("start");
+        let id = command.id.clone();
         started.notified().await;
 
         assert!(commands.has_owner("session-a").expect("owned command"));
@@ -479,7 +527,7 @@ mod tests {
         let started = Arc::new(Notify::new());
         let cancelled = Arc::new(AtomicBool::new(false));
         let commands = BackgroundCommands::default();
-        commands
+        let _command = commands
             .start(
                 "session-a",
                 Arc::new(PendingBackend {
@@ -499,11 +547,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelling_the_initial_wait_stops_the_undelivered_command() {
+        let started = Arc::new(Notify::new());
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let commands = BackgroundCommands::default();
+        let command = commands
+            .start(
+                "session",
+                Arc::new(PendingBackend {
+                    started: Arc::clone(&started),
+                    cancelled: Arc::clone(&cancelled),
+                }),
+                "command".into(),
+                SandboxMode::WorkspaceWrite,
+                NetworkAccess::Denied,
+            )
+            .expect("start");
+        let mut waiting = Box::pin(command.wait("session", std::time::Duration::from_secs(60)));
+        tokio::select! {
+            _ = &mut waiting => panic!("command must still be running"),
+            () = started.notified() => {}
+        }
+        drop(waiting);
+        assert!(!commands.has_owner("session").expect("no orphan command"));
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while !cancelled.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("command cancelled");
+    }
+
+    #[tokio::test]
     async fn stopping_a_finished_command_preserves_its_result() {
         let started = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
         let commands = BackgroundCommands::default();
-        let id = commands
+        let command = commands
             .start(
                 "session",
                 Arc::new(StreamingBackend {
@@ -516,6 +597,7 @@ mod tests {
                 NetworkAccess::Denied,
             )
             .expect("start");
+        let id = command.id.clone();
         started.notified().await;
         release.notify_one();
         while !commands

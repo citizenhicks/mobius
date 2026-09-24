@@ -12,51 +12,31 @@ use crate::Error;
 use crate::Result;
 
 mod manifest {
-    use crate::backend::model::provider::{HostedWebSearch, ModelPreset, ReasoningPreset};
+    use crate::backend::model::provider::HostedWebSearch;
     use crate::protocol::ToolDiscoveryMode;
     pub const PROVIDER_LABEL: &str = "DeepSeek";
     pub const PROVIDER_DESCRIPTION: &str = "DeepSeek Responses API";
     pub const TOOL_DISCOVERY: ToolDiscoveryMode = ToolDiscoveryMode::Rebuild;
     pub const CUSTOM_ENDPOINT_TOOL_DISCOVERY: Option<ToolDiscoveryMode> = None;
-    pub const DEFAULT_MODEL: Option<&str> = Some("deepseek-v4-flash");
-    pub const MODELS: &[ModelPreset] = &[ModelPreset {
-        id: "deepseek-v4-flash",
-        label: "DeepSeek V4 Flash",
-        description: "DeepSeek's fast frontier agentic model",
-        context_window: 1000000,
-        reasoning: &[
-            ReasoningPreset {
-                id: "low",
-                label: "Low",
-                description: "Prefer speed and lower cost",
-            },
-            ReasoningPreset {
-                id: "high",
-                label: "High",
-                description: "DeepSeek's default reasoning effort",
-            },
-            ReasoningPreset {
-                id: "max",
-                label: "Maximum",
-                description: "Use maximum available reasoning",
-            },
-        ],
-        default_reasoning: Some("high"),
-        tool_discovery: ToolDiscoveryMode::Rebuild,
-    }];
     pub const SEARCH: &[HostedWebSearch] = &[HostedWebSearch::Off, HostedWebSearch::Live];
 }
+pub(super) static CATALOG: std::sync::LazyLock<super::provider::ModelCatalog> =
+    std::sync::LazyLock::new(|| {
+        toml::from_str(include_str!("deepseek.toml"))
+            .expect("bundled deepseek model catalog must be valid")
+    });
+
 const BASE_URL: &str = "https://api.deepseek.com";
 
-pub(super) const fn provider() -> ProviderDefinition {
+pub(super) fn provider() -> ProviderDefinition {
     ProviderDefinition::new(
         "deepseek",
         manifest::PROVIDER_LABEL,
         "deepseek",
         manifest::PROVIDER_DESCRIPTION,
         ProviderAuth::ApiKey("DEEPSEEK_API_KEY"),
-        manifest::MODELS,
-        manifest::DEFAULT_MODEL,
+        &CATALOG.models,
+        CATALOG.default_model.as_deref(),
         manifest::SEARCH,
         build_provider,
     )
@@ -132,7 +112,7 @@ mod tests {
             definition.auth(),
             ProviderAuth::ApiKey("DEEPSEEK_API_KEY")
         ));
-        assert_eq!(definition.models(), manifest::MODELS);
+        assert_eq!(definition.models(), &CATALOG.models);
         assert_eq!(definition.web_search(), manifest::SEARCH);
         assert_eq!(model.info().reasoning_effort.as_deref(), Some("high"));
         assert!(!model.supports_image_input());

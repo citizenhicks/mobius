@@ -30,51 +30,19 @@ use crate::protocol::ModelInfo;
 use crate::protocol::TokenUsage;
 
 mod manifest {
-    use crate::backend::model::provider::{HostedWebSearch, ModelPreset, ReasoningPreset};
+    use crate::backend::model::provider::HostedWebSearch;
     use crate::protocol::ToolDiscoveryMode;
     pub const PROVIDER_LABEL: &str = "Kimi";
     pub const PROVIDER_DESCRIPTION: &str = "Kimi Chat Completions API";
     pub const TOOL_DISCOVERY: ToolDiscoveryMode = ToolDiscoveryMode::Rebuild;
     pub const CUSTOM_ENDPOINT_TOOL_DISCOVERY: Option<ToolDiscoveryMode> = None;
-    pub const DEFAULT_MODEL: Option<&str> = Some("kimi-k3");
-    pub const MODELS: &[ModelPreset] = &[
-        ModelPreset {
-            id: "kimi-k3",
-            label: "Kimi K3",
-            description: "Moonshot's agentic coding model",
-            context_window: 1048576,
-            reasoning: &[
-                ReasoningPreset {
-                    id: "low",
-                    label: "Low",
-                    description: "Prefer speed and lower cost",
-                },
-                ReasoningPreset {
-                    id: "high",
-                    label: "High",
-                    description: "Use deeper reasoning",
-                },
-                ReasoningPreset {
-                    id: "max",
-                    label: "Maximum",
-                    description: "Use K3's maximum reasoning effort",
-                },
-            ],
-            default_reasoning: Some("max"),
-            tool_discovery: ToolDiscoveryMode::Rebuild,
-        },
-        ModelPreset {
-            id: "kimi-k2.7-code",
-            label: "Kimi K2.7 Code",
-            description: "Moonshot's coding model",
-            context_window: 262144,
-            reasoning: &[],
-            default_reasoning: None,
-            tool_discovery: ToolDiscoveryMode::Rebuild,
-        },
-    ];
     pub const SEARCH: &[HostedWebSearch] = &[HostedWebSearch::Off];
 }
+pub(super) static CATALOG: std::sync::LazyLock<super::provider::ModelCatalog> =
+    std::sync::LazyLock::new(|| {
+        toml::from_str(include_str!("kimi.toml")).expect("bundled kimi model catalog must be valid")
+    });
+
 const DEFAULT_BASE_URL: &str = "https://api.moonshot.ai/v1";
 
 /// Kimi's native Chat Completions provider.
@@ -129,7 +97,8 @@ impl Kimi {
     /// Returns an error if validation or an operation required by this function fails.
     pub fn with_reasoning_effort(mut self, effort: impl Into<String>) -> Result<Self> {
         let effort = effort.into();
-        let supported = manifest::MODELS
+        let supported = CATALOG
+            .models
             .iter()
             .find(|model| model.id == self.model)
             .is_some_and(|model| model.reasoning.iter().any(|preset| preset.id == effort));
@@ -567,15 +536,15 @@ fn decode_usage(usage: Option<&Value>) -> Result<TokenUsage> {
     })
 }
 
-pub(super) const fn provider() -> ProviderDefinition {
+pub(super) fn provider() -> ProviderDefinition {
     ProviderDefinition::new(
         "kimi",
         manifest::PROVIDER_LABEL,
         "kimi",
         manifest::PROVIDER_DESCRIPTION,
         ProviderAuth::ApiKey("MOONSHOT_API_KEY"),
-        manifest::MODELS,
-        manifest::DEFAULT_MODEL,
+        &CATALOG.models,
+        CATALOG.default_model.as_deref(),
         manifest::SEARCH,
         build_provider,
     )

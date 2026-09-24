@@ -32,68 +32,71 @@ pub(crate) struct MiddlewareRegistration {
     pub(crate) manifest: &'static MiddlewareManifest,
 }
 
-pub(crate) const MIDDLEWARE: [MiddlewareRegistration; 15] = [
-    MiddlewareRegistration {
-        kind: BuiltinMiddleware::Sandbox,
-        manifest: &mobius::backend::sandbox::MANIFEST,
-    },
-    MiddlewareRegistration {
-        kind: BuiltinMiddleware::Attachments,
-        manifest: &mobius::middleware::attachments::MANIFEST,
-    },
-    MiddlewareRegistration {
-        kind: BuiltinMiddleware::Artifacts,
-        manifest: &mobius::middleware::artifacts::MANIFEST,
-    },
-    MiddlewareRegistration {
-        kind: BuiltinMiddleware::ImageGeneration,
-        manifest: &mobius::middleware::image_generation::MANIFEST,
-    },
-    MiddlewareRegistration {
-        kind: BuiltinMiddleware::Tools,
-        manifest: &mobius::middleware::tools::MANIFEST,
-    },
-    MiddlewareRegistration {
-        kind: BuiltinMiddleware::Instructions,
-        manifest: &mobius::middleware::instructions::MANIFEST,
-    },
-    MiddlewareRegistration {
-        kind: BuiltinMiddleware::Extensions,
-        manifest: &mobius::middleware::extensions::MANIFEST,
-    },
-    MiddlewareRegistration {
-        kind: BuiltinMiddleware::Tasks,
-        manifest: &mobius::middleware::tasks::MANIFEST,
-    },
-    MiddlewareRegistration {
-        kind: BuiltinMiddleware::Subagents,
-        manifest: &mobius::middleware::subagents::MANIFEST,
-    },
-    MiddlewareRegistration {
-        kind: BuiltinMiddleware::Messages,
-        manifest: &mobius::middleware::messages::MANIFEST,
-    },
-    MiddlewareRegistration {
-        kind: BuiltinMiddleware::ContextOffloading,
-        manifest: &mobius::middleware::context_offloading::MANIFEST,
-    },
-    MiddlewareRegistration {
-        kind: BuiltinMiddleware::ComputerControl,
-        manifest: &mobius::middleware::computer_control::MANIFEST,
-    },
-    MiddlewareRegistration {
-        kind: BuiltinMiddleware::Compaction,
-        manifest: &mobius::middleware::compaction::MANIFEST,
-    },
-    MiddlewareRegistration {
-        kind: BuiltinMiddleware::Scratchpad,
-        manifest: &mobius::middleware::scratchpad::MANIFEST,
-    },
-    MiddlewareRegistration {
-        kind: BuiltinMiddleware::Sessions,
-        manifest: &mobius::middleware::sessions::MANIFEST,
-    },
-];
+pub(crate) static MIDDLEWARE: std::sync::LazyLock<[MiddlewareRegistration; 15]> =
+    std::sync::LazyLock::new(|| {
+        [
+            MiddlewareRegistration {
+                kind: BuiltinMiddleware::Sandbox,
+                manifest: &mobius::backend::sandbox::MANIFEST,
+            },
+            MiddlewareRegistration {
+                kind: BuiltinMiddleware::Attachments,
+                manifest: &mobius::middleware::attachments::MANIFEST,
+            },
+            MiddlewareRegistration {
+                kind: BuiltinMiddleware::Artifacts,
+                manifest: &mobius::middleware::artifacts::MANIFEST,
+            },
+            MiddlewareRegistration {
+                kind: BuiltinMiddleware::ImageGeneration,
+                manifest: &mobius::middleware::image_generation::MANIFEST,
+            },
+            MiddlewareRegistration {
+                kind: BuiltinMiddleware::Tools,
+                manifest: &mobius::middleware::tools::MANIFEST,
+            },
+            MiddlewareRegistration {
+                kind: BuiltinMiddleware::Instructions,
+                manifest: &mobius::middleware::instructions::MANIFEST,
+            },
+            MiddlewareRegistration {
+                kind: BuiltinMiddleware::Extensions,
+                manifest: &mobius::middleware::extensions::MANIFEST,
+            },
+            MiddlewareRegistration {
+                kind: BuiltinMiddleware::Tasks,
+                manifest: &mobius::middleware::tasks::MANIFEST,
+            },
+            MiddlewareRegistration {
+                kind: BuiltinMiddleware::Subagents,
+                manifest: &mobius::middleware::subagents::MANIFEST,
+            },
+            MiddlewareRegistration {
+                kind: BuiltinMiddleware::Messages,
+                manifest: &mobius::middleware::messages::MANIFEST,
+            },
+            MiddlewareRegistration {
+                kind: BuiltinMiddleware::ContextOffloading,
+                manifest: &mobius::middleware::context_offloading::MANIFEST,
+            },
+            MiddlewareRegistration {
+                kind: BuiltinMiddleware::ComputerControl,
+                manifest: &mobius::middleware::computer_control::MANIFEST,
+            },
+            MiddlewareRegistration {
+                kind: BuiltinMiddleware::Compaction,
+                manifest: &mobius::middleware::compaction::MANIFEST,
+            },
+            MiddlewareRegistration {
+                kind: BuiltinMiddleware::Scratchpad,
+                manifest: &mobius::middleware::scratchpad::MANIFEST,
+            },
+            MiddlewareRegistration {
+                kind: BuiltinMiddleware::Sessions,
+                manifest: &mobius::middleware::sessions::MANIFEST,
+            },
+        ]
+    });
 
 pub(crate) fn features(models: &[ModelChoice]) -> Vec<MiddlewareFeature> {
     MIDDLEWARE
@@ -107,7 +110,7 @@ pub(crate) fn default_config() -> MiddlewareConfig {
         enabled: BTreeSet::new(),
         settings: BTreeMap::new(),
     };
-    for entry in &MIDDLEWARE {
+    for entry in MIDDLEWARE.iter() {
         let manifest = entry.manifest;
         if !manifest.required {
             config.set_enabled(manifest.id, manifest.default_enabled);
@@ -155,7 +158,7 @@ pub(crate) fn validate(config: &MiddlewareConfig) -> Result<()> {
             }
         }
     }
-    for entry in &MIDDLEWARE {
+    for entry in MIDDLEWARE.iter() {
         for setting in entry.manifest.settings {
             setting.validate(
                 entry.manifest.id,
@@ -186,7 +189,7 @@ pub(crate) fn validate_choices(
             )));
         }
     }
-    for entry in &MIDDLEWARE {
+    for entry in MIDDLEWARE.iter() {
         for setting in entry.manifest.settings {
             setting.validate_choice(
                 entry.manifest.id,
@@ -272,7 +275,7 @@ fn setting_type(middleware: &str, setting: &str, expected: &str) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use mobius::middleware::context_offloading::DEFAULT_STALE_AFTER_TOKENS;
+    use mobius::middleware::context_offloading::default_stale_after_tokens;
     use mobius::protocol::FrontendSettingKind;
 
     use super::*;
@@ -298,7 +301,7 @@ mod tests {
         assert_eq!(
             integer_setting(&config, "context_offloading", "stale_after_tokens")
                 .expect("context setting"),
-            DEFAULT_STALE_AFTER_TOKENS,
+            default_stale_after_tokens(),
         );
         assert_eq!(
             config.setting("messages", "delivery"),

@@ -1,0 +1,24 @@
+# Provider wire mappings; image model policy lives in the middleware TOML.
+[openai]
+model_prefix = ""
+generation_path = "images/generations"
+edit_path = "images/edits"
+reference_format = "multipart"
+input_tokens = "/input_tokens"
+output_tokens = "/output_tokens"
+
+[codex]
+model_prefix = ""
+generation_path = "images/generations"
+edit_path = "images/edits"
+reference_format = "image_urls"
+input_tokens = "/input_tokens"
+output_tokens = "/output_tokens"
+
+[openrouter]
+model_prefix = "openai/"
+generation_path = "images"
+edit_path = "images"
+reference_format = "input_references"
+input_tokens = "/prompt_tokens"
+output_tokens = "/completion_tokens"

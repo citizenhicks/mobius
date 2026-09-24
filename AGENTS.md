@@ -24,6 +24,16 @@ module.
 ## Design rules
 
 - Reuse an existing trait or protocol record before adding a new abstraction.
+- Keep seams narrow: the owning module hides its state, validation, policy, and wire
+  details behind an existing trait or protocol. Do not introduce forwarding layers
+  or make callers coordinate an owner's internal steps.
+- Keep editable prompts, tool text, model catalogs, defaults, and provider wire mappings
+  in owner-local TOML files, embedded and deserialized into typed data. Maintain one
+  source of truth; do not duplicate those values in Rust or build a global config registry.
+  Runtime control flow, trust-boundary validation, and internal safety bounds remain Rust.
+- Prefer data lookup for static mappings and owner-provided parsing for policy choices.
+  Keep exhaustive protocol matches and explicit composition readable; do not hide
+  necessary behavior behind a generic rule engine just to reduce branch counts.
 - Keep dependencies explicit. Registries assemble objects; they are not service locators.
 - Middleware declaration order is observable hook and prompt-section order;
   `session_end` alone unwinds in reverse.
@@ -116,6 +126,10 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --locked --no-de
 cargo test --workspace --all-targets --all-features --locked
 RUSTDOCFLAGS="-D warnings" cargo test --workspace --doc --all-features --locked
 ```
+
+Run `just complexity` for the Rust and Swift complexity gates. Simplify touched code
+before handoff; do not raise thresholds or suppress warnings to make a change pass.
+Audit findings should identify the owning seam and the smallest behavior-preserving fix.
 
 Linux sandbox tests require Bubblewrap. `just test` and `just fmt` are shortcuts
 for local iteration.

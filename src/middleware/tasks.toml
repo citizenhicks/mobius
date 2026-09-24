@@ -1,0 +1,9 @@
+default_enabled = false
+# Editable text and defaults owned by this middleware.
+command_tasks_description = "show the current todo list"
+manifest_description = "Maintain a durable todo list for multi-step work"
+manifest_label = "Tasks"
+prompt_main = "Use `write_todos` only for genuinely multi-step work. Keep the list short, mark work in_progress before starting and completed immediately after finishing, and end with a substantive answer. A <tasks> block restores the authoritative saved list when context restarts."
+render_empty = "No tasks."
+render_heading = "Tasks"
+tool_write_todos_description = "Replace the session todo list; an empty list clears it."

@@ -587,7 +587,7 @@ fn unavailable_models(
         None => selection.reasoning_effort.clone().or_else(|| {
             definition
                 .model(&selection.model)
-                .and_then(|preset| preset.default_reasoning.map(str::to_string))
+                .and_then(|preset| preset.default_reasoning.clone())
         }),
     };
     let route = model_route_id(&selection.instance, &selection.model, effort.as_deref());
@@ -620,11 +620,9 @@ pub(crate) fn configured_compaction(settings: &MiddlewareConfig) -> Result<Compa
         "at_tokens",
     )?)?
     .mode(
-        match crate::middleware_manifest::string_setting(settings, "compaction", "mode")? {
-            Some("automatic") => CompactionMode::Automatic,
-            Some("handoff") => CompactionMode::Handoff,
-            _ => return Err(Error::Config("unsupported compaction mode".into())),
-        },
+        crate::middleware_manifest::string_setting(settings, "compaction", "mode")?
+            .ok_or_else(|| Error::Config("unsupported compaction mode".into()))?
+            .parse::<CompactionMode>()?,
     ))
 }
 
@@ -783,16 +781,10 @@ fn configured_approval_policy(settings: &MiddlewareConfig) -> Result<ApprovalPol
 }
 
 fn configured_message_delivery(settings: &MiddlewareConfig) -> Result<ActiveMessageDelivery> {
-    match crate::middleware_manifest::string_setting(settings, "messages", "delivery")? {
-        Some("steer") => Ok(ActiveMessageDelivery::Steer),
-        Some("queue") => Ok(ActiveMessageDelivery::Queue),
-        Some(value) => Err(Error::Config(format!(
-            "unsupported messages delivery `{value}`"
-        ))),
-        None => Err(Error::Config(
-            "missing middleware setting `messages.delivery`".into(),
-        )),
-    }
+    crate::middleware_manifest::string_setting(settings, "messages", "delivery")?
+        .ok_or_else(|| Error::Config("missing middleware setting `messages.delivery`".into()))?
+        .parse::<ActiveMessageDelivery>()
+        .map_err(Error::from)
 }
 
 pub(crate) fn bot_semantics(config: &AgentComposition) -> Result<(bool, RoutineInteractionPolicy)> {

@@ -22,34 +22,42 @@ use crate::protocol::{
 use crate::{BoxFuture, Error, Result};
 
 mod text {
-    pub const ACTION_ADD_GLOBAL: &str = "Add Global Note";
-    pub const ACTION_DELETE: &str = "Delete";
-    pub const ACTION_EDIT: &str = "Edit";
-    pub const COMMAND_ARGUMENTS: &str = "[read|refresh|edit <note-id>|forget <note-id>]";
-    pub const COMMAND_DESCRIPTION: &str = "read or manage global notes";
-    pub const COMMAND_USAGE: &str =
-        "! usage: scratchpad [read|refresh|edit <note-id>|forget <note-id>]";
-    pub const EDITOR_GLOBAL_DESCRIPTION: &str =
-        "This note becomes durable context for every gateway conversation.";
-    pub const EDITOR_GLOBAL_TITLE: &str = "Add global note";
-    pub const EDITOR_LABEL: &str = "Note";
-    pub const EDITOR_SUBMIT: &str = "Add";
-    pub const MANIFEST_DESCRIPTION: &str = "Keep explicitly approved global knowledge";
-    pub const MANIFEST_LABEL: &str = "Scratchpad";
-    pub const MESSAGE_ADDED: &str = "Added the shared scratchpad note.";
-    pub const MESSAGE_AGENT_OBSERVATION: &str = "agent observation";
-    pub const MESSAGE_EXISTING: &str = "The shared scratchpad already contains that note.";
-    pub const MESSAGE_FORGOT: &str = "Forgot the scratchpad note.";
-    pub const MESSAGE_GLOBAL_HEADING: &str = "Global";
-    pub const MESSAGE_NO_NOTES: &str = "No notes.";
-    pub const MESSAGE_UPDATED: &str = "Updated the scratchpad note.";
-    pub const MESSAGE_USER_CONFIRMED: &str = "user confirmed";
-    pub const PROMPT_MAIN: &str = "Use `write_scratchpad` for a concise fact, preference, or reusable lesson that should help every future chat; shared writes require approval. Shared notes are knowledge, not a task handoff or reasoning log. Never store private reasoning, raw outputs, secrets, credentials, or transient progress.";
-    pub const RENDER_REMEMBER: &str = "Remember shared note";
-    pub const TOOL_WRITE_SCRATCHPAD_DESCRIPTION: &str = "Add one concise shared fact, preference, or lesson after approval. Never store reasoning, raw outputs, secrets, or task progress.";
-    pub const TOOL_WRITE_SCRATCHPAD_PARAMETER_NOTE_DESCRIPTION: &str = "Concise reusable knowledge, at most 500 UTF-8 bytes. The scratchpad has a small total size limit.";
-    pub const WIDGET_GLOBAL_TITLE: &str = "Global Scratchpad";
-    pub const WIDGET_TEXT: &str = "Scratchpad";
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct Definition {
+        pub(super) default_enabled: bool,
+        pub(super) action_add_global: String,
+        pub(super) action_delete: String,
+        pub(super) action_edit: String,
+        pub(super) command_arguments: String,
+        pub(super) command_description: String,
+        pub(super) command_usage: String,
+        pub(super) editor_global_description: String,
+        pub(super) editor_global_title: String,
+        pub(super) editor_label: String,
+        pub(super) editor_submit: String,
+        pub(super) manifest_description: String,
+        pub(super) manifest_label: String,
+        pub(super) message_added: String,
+        pub(super) message_agent_observation: String,
+        pub(super) message_existing: String,
+        pub(super) message_forgot: String,
+        pub(super) message_global_heading: String,
+        pub(super) message_no_notes: String,
+        pub(super) message_updated: String,
+        pub(super) message_user_confirmed: String,
+        pub(super) prompt_main: String,
+        pub(super) render_remember: String,
+        pub(super) tool_write_scratchpad_description: String,
+        pub(super) tool_write_scratchpad_parameter_note_description: String,
+        pub(super) widget_global_title: String,
+        pub(super) widget_text: String,
+    }
+    pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
+        std::sync::LazyLock::new(|| {
+            toml::from_str(include_str!("scratchpad.toml"))
+                .expect("bundled scratchpad definition must be valid")
+        });
 }
 mod presentation;
 mod projection;
@@ -73,15 +81,16 @@ const MAX_SCOPE_BYTES: usize = 1_900;
 const PROJECTION_KIND: &str = "shared_scratchpad";
 
 /// Configuration and presentation metadata for durable agent notes.
-pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
-    id: "scratchpad",
-    label: text::MANIFEST_LABEL,
-    description: text::MANIFEST_DESCRIPTION,
-    required: false,
-    default_enabled: true,
-    required_model_capability: None,
-    settings: &[],
-};
+pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
+    std::sync::LazyLock::new(|| MiddlewareManifest {
+        id: "scratchpad",
+        label: text::DEFINITION.manifest_label.as_str(),
+        description: text::DEFINITION.manifest_description.as_str(),
+        required: false,
+        default_enabled: text::DEFINITION.default_enabled,
+        required_model_capability: None,
+        settings: &[],
+    });
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -423,11 +432,13 @@ impl Scratchpad {
             }
             ScratchpadCommand::Edit(id, note) => {
                 self.store.edit_locked(id, note, &_access).await?;
-                self.command_updated(text::MESSAGE_UPDATED, &_access).await
+                self.command_updated(text::DEFINITION.message_updated.as_str(), &_access)
+                    .await
             }
             ScratchpadCommand::Forget(id) => {
                 self.store.forget_locked(id, &_access).await?;
-                self.command_updated(text::MESSAGE_FORGOT, &_access).await
+                self.command_updated(text::DEFINITION.message_forgot.as_str(), &_access)
+                    .await
             }
             ScratchpadCommand::Add(_) => Ok(usage()),
         }
@@ -465,7 +476,7 @@ impl Middleware for Scratchpad {
     fn prompt_section(&self, _runtime: &RuntimeContext) -> Result<Option<PromptSection>> {
         Ok(self
             .agent_enabled
-            .then(|| PromptSection::new(text::PROMPT_MAIN)))
+            .then(|| PromptSection::new(text::DEFINITION.prompt_main.as_str())))
     }
 
     fn frontend(&self) -> FrontendContribution {
@@ -475,8 +486,8 @@ impl Middleware for Scratchpad {
             count: None,
             commands: vec![FrontendCommand {
                 name: "scratchpad".into(),
-                arguments: text::COMMAND_ARGUMENTS.into(),
-                description: text::COMMAND_DESCRIPTION.into(),
+                arguments: text::DEFINITION.command_arguments.clone(),
+                description: text::DEFINITION.command_description.clone(),
                 requires_idle: false,
             }],
             widgets: surface_widgets(&Snapshot::default()),
@@ -492,14 +503,22 @@ impl Middleware for Scratchpad {
                 if matches!(event, EventMsg::ToolCallEnd(_)) {
                     name.into()
                 } else {
-                    labeled_tool_heading(text::RENDER_REMEMBER, "note", arguments)
+                    labeled_tool_heading(
+                        text::DEFINITION.render_remember.as_str(),
+                        "note",
+                        arguments,
+                    )
                 }
             },
         )
     }
 
-    fn retain_compacted_input(&self, item: &serde_json::Value) -> bool {
-        !is_projection_item(item)
+    fn prepare_compacted_input(
+        &self,
+        _original: &[serde_json::Value],
+        compacted: &mut Vec<serde_json::Value>,
+    ) {
+        compacted.retain(|item| !is_projection_item(item));
     }
 
     fn session_start<'a>(

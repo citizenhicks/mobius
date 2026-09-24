@@ -18,27 +18,35 @@ use crate::protocol::{EventMsg, FrontendBlock, FrontendContribution};
 use crate::{BoxFuture, Error, Result};
 
 mod text {
-    pub const MANIFEST_DESCRIPTION: &str =
-        "Let the agent publish workspace files to the current chat";
-    pub const MANIFEST_LABEL: &str = "Artifacts";
-    pub const PROMPT_MAIN: &str = "To send a generated file to the user, first create it in the workspace with another tool, then call `send_artifact` with its path or an authorized stored file_id.";
-    pub const RENDER_SEND: &str = "Send";
-    pub const RENDER_SENT_PREFIX: &str = "Sent ";
-    pub const TOOL_SEND_ARTIFACT_DESCRIPTION: &str =
-        "Send one existing workspace file to the user.";
-    pub const TOOL_SEND_ARTIFACT_PARAMETER_PATH_DESCRIPTION: &str =
-        "Workspace-relative path to the finished file.";
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct Definition {
+        pub(super) default_enabled: bool,
+        pub(super) manifest_description: String,
+        pub(super) manifest_label: String,
+        pub(super) prompt_main: String,
+        pub(super) render_send: String,
+        pub(super) render_sent_prefix: String,
+        pub(super) tool_send_artifact_description: String,
+        pub(super) tool_send_artifact_parameter_path_description: String,
+    }
+    pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
+        std::sync::LazyLock::new(|| {
+            toml::from_str(include_str!("artifacts.toml"))
+                .expect("bundled artifacts definition must be valid")
+        });
 }
 /// Configuration metadata for agent-published files.
-pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
-    id: "artifacts",
-    label: text::MANIFEST_LABEL,
-    description: text::MANIFEST_DESCRIPTION,
-    required: false,
-    default_enabled: true,
-    required_model_capability: None,
-    settings: &[],
-};
+pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
+    std::sync::LazyLock::new(|| MiddlewareManifest {
+        id: "artifacts",
+        label: text::DEFINITION.manifest_label.as_str(),
+        description: text::DEFINITION.manifest_description.as_str(),
+        required: false,
+        default_enabled: text::DEFINITION.default_enabled,
+        required_model_capability: None,
+        settings: &[],
+    });
 
 /// Publishes workspace files as session-bound assistant files.
 pub struct Artifacts {
@@ -66,7 +74,9 @@ impl Middleware for Artifacts {
     }
 
     fn prompt_section(&self, _runtime: &RuntimeContext) -> Result<Option<PromptSection>> {
-        Ok(Some(PromptSection::new(text::PROMPT_MAIN)))
+        Ok(Some(PromptSection::new(
+            text::DEFINITION.prompt_main.as_str(),
+        )))
     }
 
     fn frontend(&self) -> FrontendContribution {
@@ -84,7 +94,7 @@ impl Middleware for Artifacts {
                 if matches!(event, EventMsg::ToolCallEnd(_)) {
                     name.into()
                 } else {
-                    labeled_tool_heading(text::RENDER_SEND, "path", arguments)
+                    labeled_tool_heading(text::DEFINITION.render_send.as_str(), "path", arguments)
                 }
             },
         )?;
@@ -100,7 +110,11 @@ impl Middleware for Artifacts {
         block.update = crate::protocol::FrontendBlockUpdate::Replace;
         block.state = crate::protocol::FrontendBlockState::Complete;
         block.role = crate::protocol::FrontendBlockRole::Artifact;
-        block.title = format!("{}{}", text::RENDER_SENT_PREFIX, file.name);
+        block.title = format!(
+            "{}{}",
+            text::DEFINITION.render_sent_prefix.as_str(),
+            file.name
+        );
         block.text.clear();
         block.content = Default::default();
         block.files = vec![file];
@@ -124,14 +138,14 @@ impl Tool for SendArtifact {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "send_artifact".into(),
-            description: text::TOOL_SEND_ARTIFACT_DESCRIPTION.into(),
+            description: text::DEFINITION.tool_send_artifact_description.clone(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "file_id": {"type":"string", "description":"Authorized stored file ID to publish without copying bytes."},
                     "path": {
                         "type": "string",
-                        "description": text::TOOL_SEND_ARTIFACT_PARAMETER_PATH_DESCRIPTION
+                        "description": text::DEFINITION.tool_send_artifact_parameter_path_description.as_str()
                     }
                 },
                 "oneOf": [{"required":["path"]},{"required":["file_id"]}],

@@ -1,0 +1,101 @@
+# Tool schemas, presentation, and prompts owned by coding.
+
+[read_file]
+title = "Read"
+detail = "path"
+group = "read"
+
+[read_file.tool]
+name = "read_file"
+description = "Read a UTF-8 text file under the active sandbox policy."
+
+[read_file.tool.parameters]
+type = "object"
+required = ["path"]
+additionalProperties = false
+
+[read_file.tool.parameters.properties]
+
+[read_file.tool.parameters.properties.path]
+type = "string"
+description = "Workspace-relative path such as `src/main.rs`, or an absolute path allowed by the active sandbox policy."
+
+[view_image]
+title = "View image"
+detail = ""
+
+[view_image.tool]
+name = "view_image"
+description = "View a local PNG, JPEG, WebP, or GIF image when visual inspection is needed."
+
+[view_image.tool.parameters]
+type = "object"
+required = ["images"]
+additionalProperties = false
+
+[view_image.tool.parameters.properties]
+
+[view_image.tool.parameters.properties.images]
+type = "array"
+minItems = 1
+maxItems = 16
+
+[view_image.tool.parameters.properties.images.items]
+type = "object"
+additionalProperties = false
+oneOf = [{ required = ["path"] }, { required = ["file_id"] }]
+
+[view_image.tool.parameters.properties.images.items.properties]
+
+[view_image.tool.parameters.properties.images.items.properties.path]
+type = "string"
+description = "Workspace-relative image path, or an absolute path allowed by the active sandbox policy."
+
+[view_image.tool.parameters.properties.images.items.properties.file_id]
+type = "string"
+description = "An image file ID authorized in this session; provide either path or file_id."
+
+[view_image.tool.parameters.properties.images.items.properties.detail]
+type = "string"
+enum = ["auto", "low", "high"]
+
+[write_file]
+title = "Write"
+detail = "path"
+
+[write_file.tool]
+name = "write_file"
+description = "Write a UTF-8 file under the active sandbox policy."
+
+[write_file.tool.parameters]
+type = "object"
+required = ["path", "content"]
+additionalProperties = false
+
+[write_file.tool.parameters.properties]
+
+[write_file.tool.parameters.properties.path]
+type = "string"
+
+[write_file.tool.parameters.properties.content]
+type = "string"
+
+[apply_patch]
+title = "Patch"
+detail = ""
+prompt = "Before editing an existing file, read its current contents and enough surrounding context. Build patches only from that exact text. Use the `apply_patch` envelope exactly: `*** Begin Patch`, one `*** Update File: path`, bare `@@` or `@@ context` changes, then `*** End Patch`. Do not use numbered unified-diff ranges or Markdown fences."
+
+[apply_patch.tool]
+name = "apply_patch"
+description = "Apply a patch to one existing file under the active sandbox policy."
+
+[apply_patch.tool.parameters]
+type = "object"
+required = ["patch"]
+additionalProperties = false
+
+[apply_patch.tool.parameters.properties]
+
+[apply_patch.tool.parameters.properties.patch]
+type = "string"
+description = "One `apply_patch` envelope containing exactly one `*** Update File: path` operation and bare `@@` or `@@ context` changes."

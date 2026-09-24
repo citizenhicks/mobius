@@ -22,16 +22,32 @@ use crate::protocol::{
 };
 use crate::{BoxFuture, Error, Result};
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Definition {
+    default_enabled: bool,
+    manifest_label: String,
+    manifest_description: String,
+    prompt: String,
+    resume_notice: String,
+    tool: ToolDefinition,
+}
+static DEFINITION: std::sync::LazyLock<Definition> = std::sync::LazyLock::new(|| {
+    toml::from_str(include_str!("computer_control.toml"))
+        .expect("bundled computer control definition must be valid")
+});
+
 /// Optional computer control; deployment supplies the runtime and its documentation.
-pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
-    id: "computer_control",
-    label: "Computer control",
-    description: "Operate a browser and supported native apps with persistent JavaScript and image observations",
-    required: false,
-    default_enabled: false,
-    required_model_capability: None,
-    settings: &[],
-};
+pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
+    std::sync::LazyLock::new(|| MiddlewareManifest {
+        id: "computer_control",
+        label: &DEFINITION.manifest_label,
+        description: &DEFINITION.manifest_description,
+        required: false,
+        default_enabled: DEFINITION.default_enabled,
+        required_model_capability: None,
+        settings: &[],
+    });
 
 /// Owns computer tools and observations; execution and approval remain in the sandbox.
 pub struct ComputerControl {
@@ -77,9 +93,9 @@ impl Middleware for ComputerControl {
     }
 
     fn prompt_section(&self, _: &RuntimeContext) -> Result<Option<PromptSection>> {
-        Ok(Some(PromptSection::new(format!(
-            "Computer control is available. Read {} before using computer_control. Browser state and JavaScript variables survive context compaction. Action failures can retain interpreter state; follow the reported state. An overall evaluation deadline, cancellation, or runtime restart loses interpreter state and may leave an action completed; never repeat it automatically. Child agents have independent browser contexts.",
-            self.documentation.display()
+        Ok(Some(PromptSection::new(DEFINITION.prompt.replace(
+            "{documentation}",
+            &self.documentation.display().to_string(),
         ))))
     }
 
@@ -89,7 +105,7 @@ impl Middleware for ComputerControl {
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             if !context.supports_tool_image_input() {
-                context.hide(&["computer_control"]);
+                context.hide(&[DEFINITION.tool.name.as_str()]);
             }
             Ok(())
         })
@@ -101,7 +117,10 @@ impl Middleware for ComputerControl {
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             if context.source() == SessionStartSource::Resume {
-                context.push_input(internal_user_message("computer_runtime", "This session's execution lifetime restarted. The previous computer interpreter and private temporary files are gone. Prior actions may have completed. Start a fresh browser context and inspect before acting; recorded observations remain accessible by file_id."));
+                context.push_input(internal_user_message(
+                    "computer_runtime",
+                    &DEFINITION.resume_notice,
+                ));
             }
             Ok(())
         })
@@ -159,13 +178,7 @@ enum WorkerPart {
 
 impl Tool for Evaluate {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition { name: "computer_control".into(), description: "Evaluate JavaScript in this session's persistent computer runtime. Read the installed documentation first. Await every action. Use the documented browser or native desktop APIs and image helpers. Reset explicitly after state loss; never automatically repeat an uncertain action.".into(), parameters: serde_json::json!({
-            "type":"object", "properties":{
-                "code":{"type":"string", "maxLength":40000},
-                "reset":{"type":"boolean", "description":"Discard the interpreter and create a new browser context before this evaluation."},
-                "timeout_ms":{"type":"integer", "minimum":1, "maximum":120000}
-            }, "required":["code"], "additionalProperties":false
-        }) }
+        DEFINITION.tool.clone()
     }
 
     fn approval(&self) -> ApprovalRequirement {

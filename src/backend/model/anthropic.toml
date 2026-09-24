@@ -1,0 +1,108 @@
+# Provider-owned model catalog and token prices.
+default_model = "claude-sonnet-5"
+
+[[models]]
+id = "claude-sonnet-5"
+label = "Claude Sonnet 5"
+description = "Fast frontier model for coding and agents"
+default_reasoning = "high"
+context_window = 1000000
+tool_discovery = "rebuild"
+
+[[models.reasoning]]
+id = "low"
+label = "Low"
+description = "Prefer speed and lower cost"
+
+[[models.reasoning]]
+id = "medium"
+label = "Medium"
+description = "Balance reasoning and latency"
+
+[[models.reasoning]]
+id = "high"
+label = "High"
+description = "Anthropic's default reasoning effort"
+
+[[models.reasoning]]
+id = "xhigh"
+label = "Extra high"
+description = "Extended effort for long-horizon work"
+
+[[models.reasoning]]
+id = "max"
+label = "Maximum"
+description = "Use maximum available reasoning"
+
+[[models.pricing]]
+effective_from = 0
+[models.pricing.rates]
+input_microusd_per_million = 2000000
+cached_input_microusd_per_million = 200000
+cache_write_input_microusd_per_million = 2500000
+output_microusd_per_million = 10000000
+
+[[models.pricing]]
+effective_from = 1788220800
+[models.pricing.rates]
+input_microusd_per_million = 3000000
+cached_input_microusd_per_million = 300000
+cache_write_input_microusd_per_million = 3750000
+output_microusd_per_million = 15000000
+
+[[models]]
+id = "claude-opus-4-8"
+label = "Claude Opus 4.8"
+description = "Highest-capability Anthropic model"
+default_reasoning = "high"
+context_window = 1000000
+tool_discovery = "native"
+
+[[models.reasoning]]
+id = "low"
+label = "Low"
+description = "Prefer speed and lower cost"
+
+[[models.reasoning]]
+id = "medium"
+label = "Medium"
+description = "Balance reasoning and latency"
+
+[[models.reasoning]]
+id = "high"
+label = "High"
+description = "Anthropic's default reasoning effort"
+
+[[models.reasoning]]
+id = "xhigh"
+label = "Extra high"
+description = "Extended effort for long-horizon work"
+
+[[models.reasoning]]
+id = "max"
+label = "Maximum"
+description = "Use maximum available reasoning"
+
+[[models.pricing]]
+effective_from = 0
+[models.pricing.rates]
+input_microusd_per_million = 5000000
+cached_input_microusd_per_million = 500000
+cache_write_input_microusd_per_million = 6250000
+output_microusd_per_million = 25000000
+
+[[models]]
+id = "claude-haiku-4-5"
+label = "Claude Haiku 4.5"
+description = "Fast, economical Anthropic model"
+context_window = 200000
+tool_discovery = "native"
+reasoning = []
+
+[[models.pricing]]
+effective_from = 0
+[models.pricing.rates]
+input_microusd_per_million = 1000000
+cached_input_microusd_per_million = 100000
+cache_write_input_microusd_per_million = 1250000
+output_microusd_per_million = 5000000

@@ -99,9 +99,7 @@ fn only_core_tools_are_direct_by_default() {
         WriteFile.exposure(),
         ApplyPatch.exposure(),
         Bash.exposure(),
-        StartCommand.exposure(),
-        PollCommand.exposure(),
-        StopCommand.exposure(),
+        ManageCommand.exposure(),
     ] {
         assert_eq!(exposure, ToolExposure::Direct);
     }

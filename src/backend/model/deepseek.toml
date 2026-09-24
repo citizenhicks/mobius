@@ -1,0 +1,25 @@
+# Provider-owned model catalog and token prices.
+default_model = "deepseek-v4-flash"
+
+[[models]]
+id = "deepseek-v4-flash"
+label = "DeepSeek V4 Flash"
+description = "DeepSeek's fast frontier agentic model"
+default_reasoning = "high"
+context_window = 1000000
+tool_discovery = "rebuild"
+
+[[models.reasoning]]
+id = "low"
+label = "Low"
+description = "Prefer speed and lower cost"
+
+[[models.reasoning]]
+id = "high"
+label = "High"
+description = "DeepSeek's default reasoning effort"
+
+[[models.reasoning]]
+id = "max"
+label = "Maximum"
+description = "Use maximum available reasoning"

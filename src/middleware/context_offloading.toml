@@ -1,0 +1,8 @@
+default_enabled = true
+# Editable text and defaults owned by this middleware.
+defaults_stale_after_tokens = 50000
+manifest_description = "Mask stale successful tool output from active model context"
+manifest_label = "Context offloading"
+setting_stale_after_tokens_description = "Successful tool results older than this trailing window are masked"
+setting_stale_after_tokens_label = "Stale after tokens"
+setting_stale_after_tokens_step = 10000

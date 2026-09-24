@@ -48,11 +48,20 @@ mod hooks;
 mod package;
 
 mod text {
-    pub const FALLBACK_SKILL_DESCRIPTION: &str = "Local workflow instructions.";
-    pub const MANIFEST_DESCRIPTION: &str =
-        "Load standalone Agent Skills and activated OpenAI plugin packages";
-    pub const MANIFEST_LABEL: &str = "Extensions";
-    pub const PROMPT_DEFAULT: &str = "When a skill is named or matches the task, use `read_file` to read its complete `SKILL.md` at the advertised location before following it. Resolve referenced paths relative to that skill directory and use their absolute paths with normal tools.";
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct Definition {
+        pub(super) default_enabled: bool,
+        pub(super) fallback_skill_description: String,
+        pub(super) manifest_description: String,
+        pub(super) manifest_label: String,
+        pub(super) prompt_default: String,
+    }
+    pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
+        std::sync::LazyLock::new(|| {
+            toml::from_str(include_str!("extensions.toml"))
+                .expect("bundled extensions definition must be valid")
+        });
 }
 const MAX_SKILLS: usize = 64;
 const MAX_SKILL_BYTES: u64 = 40_000;
@@ -67,15 +76,16 @@ const SESSION_HOOK_CONTEXT_KIND: &str = "extension_session_hook";
 pub type HookAuthorization = CommandAuthorization;
 
 /// Configuration and presentation metadata for installed extensions.
-pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
-    id: "extensions",
-    label: text::MANIFEST_LABEL,
-    description: text::MANIFEST_DESCRIPTION,
-    required: false,
-    default_enabled: false,
-    required_model_capability: None,
-    settings: &[],
-};
+pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
+    std::sync::LazyLock::new(|| MiddlewareManifest {
+        id: "extensions",
+        label: text::DEFINITION.manifest_label.as_str(),
+        description: text::DEFINITION.manifest_description.as_str(),
+        required: false,
+        default_enabled: text::DEFINITION.default_enabled,
+        required_model_capability: None,
+        settings: &[],
+    });
 
 /// One validated package format understood by the extensions middleware.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,7 +169,7 @@ impl Extensions {
             plugins: BTreeSet::new(),
             hooks: Vec::new(),
             hook_runtime: None,
-            prompt: text::PROMPT_DEFAULT.into(),
+            prompt: text::DEFINITION.prompt_default.clone(),
         })
     }
 
@@ -1118,7 +1128,7 @@ fn skill_metadata(path: &std::path::Path, content: &str) -> (String, String) {
         name.filter(|value| !value.is_empty()).unwrap_or(fallback),
         description
             .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| text::FALLBACK_SKILL_DESCRIPTION.into())
+            .unwrap_or_else(|| text::DEFINITION.fallback_skill_description.clone())
             .chars()
             .take(500)
             .collect(),
@@ -1190,7 +1200,7 @@ mod tests {
             extensions.section(),
             Some(PromptSection::new(format!(
                 "{}\n\n- name: \"alpha\"\n  description: \"First alphabetically\"\n  location: {}\n- name: \"zebra\"\n  description: \"Last alphabetically\"\n  location: {}",
-                text::PROMPT_DEFAULT,
+                text::DEFINITION.prompt_default.as_str(),
                 prompt_value(&alpha.display().to_string()),
                 prompt_value(&zebra.display().to_string())
             )))

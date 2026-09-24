@@ -54,76 +54,91 @@ const MAX_TASK_NAME_BYTES: usize = 64;
 const IDENTITY_KEY: &str = "subagents.identity";
 const SPAWN_CONTEXT_KEY: &str = "subagents.spawn_context";
 mod text {
-    pub const COMMAND_DESCRIPTION: &str = "open a subagent thread";
-    pub const DEFAULTS_MAX_AGENTS: i64 = 101;
-    pub const DEFAULTS_MAX_CONCURRENCY: i64 = 8;
-    pub const DEFAULTS_MAX_DEPTH: i64 = 4;
-    pub const DEFAULTS_WAIT_MS: i64 = 30000;
-    pub const MANIFEST_DESCRIPTION: &str = "Delegate independent work to durable child agents";
-    pub const MANIFEST_LABEL: &str = "Subagents";
-    pub const PROMPT_DEFAULT: &str = "Collaborate continuously with your parent: use `send_message` at its canonical path for useful findings, blockers, and questions as they arise. Complete the task and report concisely when done.";
-    pub const PROMPT_ROOT: &str = "Delegate independent work to subagents when it can run in parallel. Spawn with fresh context by default; include recent turns only when the task requires them, and full history only when essential. They share your workspace; continue your own work while they run, and wait only when you need their results.";
-    pub const RENDER_AGENT: &str = "Agent";
-    pub const RENDER_AGENTS: &str = "Agents";
-    pub const RENDER_EMPTY: &str = "no subagents";
-    pub const RENDER_INTERRUPT: &str = "Interrupt";
-    pub const RENDER_MESSAGE: &str = "Message";
-    pub const RENDER_OPEN: &str = "Open subagent";
-    pub const RENDER_WAIT: &str = "Wait";
-    pub const SETTING_MAX_AGENTS_DESCRIPTION: &str = "Maximum retained agents, including the root";
-    pub const SETTING_MAX_AGENTS_LABEL: &str = "Maximum agents";
-    pub const SETTING_MAX_AGENTS_STEP: i64 = 1;
-    pub const SETTING_MAX_CONCURRENCY_DESCRIPTION: &str =
-        "Maximum active agents, including the root";
-    pub const SETTING_MAX_CONCURRENCY_LABEL: &str = "Maximum concurrency";
-    pub const SETTING_MAX_CONCURRENCY_STEP: i64 = 1;
-    pub const SETTING_MAX_DEPTH_DESCRIPTION: &str = "Maximum child-agent nesting depth";
-    pub const SETTING_MAX_DEPTH_LABEL: &str = "Maximum depth";
-    pub const SETTING_MAX_DEPTH_STEP: i64 = 1;
-    pub const SETTING_MODEL_ROUTE_DESCRIPTION: &str =
-        "Model route used by child agents when a spawn does not select one";
-    pub const SETTING_MODEL_ROUTE_LABEL: &str = "Default model";
-    pub const SETTING_MODEL_ROUTE_UNSET_LABEL: &str = "Inherit parent";
-    pub const TOOL_INTERRUPT_AGENT_DESCRIPTION: &str = "Interrupt a subagent in this chat's task tree and return its prior status. Cannot target /root.";
-    pub const TOOL_LIST_AGENTS_DESCRIPTION: &str = "List this chat's subagents and their canonical task paths; does not list unrelated agent trees.";
-    pub const TOOL_PARAMETER_TARGET_DESCRIPTION: &str = "Exact canonical task path from spawn_agent or list_agents, such as /root/reviewer; not an agent nickname or owner ID.";
-    pub const TOOL_SEND_MESSAGE_DESCRIPTION: &str = "Send collaboration context to an agent in this chat's subagent task tree; completed or interrupted children are started again for the message. A child may message its parent at the parent's canonical path, including /root. The root agent is never restarted.";
-    pub const TOOL_SPAWN_AGENT_DESCRIPTION: &str = "Start an async child for independent work in this chat's subagent task tree; return its canonical task path.";
-    pub const TOOL_SPAWN_AGENT_PARAMETER_FORK_TURNS_DESCRIPTION: &str = "`none` for a fresh child (default), a positive integer for required recent turns, or `all` only when full history is essential.";
-    pub const TOOL_SPAWN_AGENT_PARAMETER_MODEL_DESCRIPTION: &str =
-        "Registered route; defaults to the child route, then parent.";
-    pub const TOOL_SPAWN_AGENT_PARAMETER_REASONING_EFFORT_DESCRIPTION: &str =
-        "Reasoning effort for the selected model; defaults to middleware configuration.";
-    pub const TOOL_SPAWN_AGENT_PARAMETER_TASK_NAME_DESCRIPTION: &str =
-        "1-64 lowercase letters, digits, or underscores.";
-    pub const TOOL_WAIT_AGENT_DESCRIPTION: &str =
-        "Wait for an update from this chat's subagent task tree.";
+    use super::*;
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct Definition {
+        pub(super) default_enabled: bool,
+        pub(super) command_description: String,
+        pub(super) defaults_max_agents: i64,
+        pub(super) defaults_max_concurrency: i64,
+        pub(super) defaults_max_depth: i64,
+        pub(super) defaults_wait_ms: i64,
+        pub(super) manifest_description: String,
+        pub(super) manifest_label: String,
+        pub(super) prompt_default: String,
+        pub(super) prompt_root: String,
+        pub(super) render_agent: String,
+        pub(super) render_agents: String,
+        pub(super) render_empty: String,
+        pub(super) render_interrupt: String,
+        pub(super) render_message: String,
+        pub(super) render_open: String,
+        pub(super) render_wait: String,
+        pub(super) setting_max_agents_description: String,
+        pub(super) setting_max_agents_label: String,
+        pub(super) setting_max_agents_step: i64,
+        pub(super) setting_max_concurrency_description: String,
+        pub(super) setting_max_concurrency_label: String,
+        pub(super) setting_max_concurrency_step: i64,
+        pub(super) setting_max_depth_description: String,
+        pub(super) setting_max_depth_label: String,
+        pub(super) setting_max_depth_step: i64,
+        pub(super) setting_model_route_description: String,
+        pub(super) setting_model_route_label: String,
+        pub(super) setting_model_route_unset_label: String,
+        pub(super) tool_interrupt_agent_description: String,
+        pub(super) tool_list_agents_description: String,
+        pub(super) tool_parameter_target_description: String,
+        pub(super) tool_send_message_description: String,
+        pub(super) tool_spawn_agent_description: String,
+        pub(super) tool_spawn_agent_parameter_fork_turns_description: String,
+        pub(super) tool_spawn_agent_parameter_model_description: String,
+        pub(super) tool_spawn_agent_parameter_reasoning_effort_description: String,
+        pub(super) tool_spawn_agent_parameter_task_name_description: String,
+        pub(super) tool_wait_agent_description: String,
+    }
+    pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
+        std::sync::LazyLock::new(|| {
+            let definition: Definition = toml::from_str(include_str!("subagents.toml"))
+                .expect("bundled subagents definition must be valid");
+
+            assert!(definition.defaults_wait_ms >= MIN_WAIT_MS as i64);
+            assert!(definition.defaults_wait_ms <= MAX_WAIT_MS as i64);
+            assert!(definition.defaults_max_depth >= 1);
+            assert!(definition.defaults_max_depth <= MAX_CONFIGURED_DEPTH as i64);
+            assert!(definition.defaults_max_concurrency >= 2);
+            assert!(definition.defaults_max_concurrency <= MAX_CONFIGURED_CONCURRENCY as i64);
+            assert!(definition.defaults_max_agents >= definition.defaults_max_concurrency);
+            assert!(definition.defaults_max_agents <= MAX_CONFIGURED_AGENTS as i64);
+            assert!(definition.setting_max_depth_step > 0);
+            assert!(definition.setting_max_concurrency_step > 0);
+            assert!(definition.setting_max_agents_step > 0);
+
+            definition
+        });
 }
 const MIN_WAIT_MS: u64 = 10_000;
 const MAX_WAIT_MS: u64 = 120_000;
 const MAX_CONFIGURED_DEPTH: u8 = 16;
 const MAX_CONFIGURED_CONCURRENCY: usize = 64;
 const MAX_CONFIGURED_AGENTS: usize = 256;
-const _: () = {
-    assert!(text::DEFAULTS_WAIT_MS >= MIN_WAIT_MS as i64);
-    assert!(text::DEFAULTS_WAIT_MS <= MAX_WAIT_MS as i64);
-    assert!(text::DEFAULTS_MAX_DEPTH >= 1);
-    assert!(text::DEFAULTS_MAX_DEPTH <= MAX_CONFIGURED_DEPTH as i64);
-    assert!(text::DEFAULTS_MAX_CONCURRENCY >= 2);
-    assert!(text::DEFAULTS_MAX_CONCURRENCY <= MAX_CONFIGURED_CONCURRENCY as i64);
-    assert!(text::DEFAULTS_MAX_AGENTS >= text::DEFAULTS_MAX_CONCURRENCY);
-    assert!(text::DEFAULTS_MAX_AGENTS <= MAX_CONFIGURED_AGENTS as i64);
-    assert!(text::SETTING_MAX_DEPTH_STEP > 0);
-    assert!(text::SETTING_MAX_CONCURRENCY_STEP > 0);
-    assert!(text::SETTING_MAX_AGENTS_STEP > 0);
-};
-const DEFAULT_WAIT_MS: u64 = text::DEFAULTS_WAIT_MS as u64;
+
+fn default_wait_ms() -> u64 {
+    text::DEFINITION.defaults_wait_ms as u64
+}
 /// Default maximum child-agent nesting depth.
-pub const DEFAULT_MAX_DEPTH: u8 = text::DEFAULTS_MAX_DEPTH as u8;
+pub fn default_max_depth() -> u8 {
+    text::DEFINITION.defaults_max_depth as u8
+}
 /// Default number of concurrently active agents, including the root.
-pub const DEFAULT_MAX_CONCURRENCY: usize = text::DEFAULTS_MAX_CONCURRENCY as usize;
+pub fn default_max_concurrency() -> usize {
+    text::DEFINITION.defaults_max_concurrency as usize
+}
 /// Default number of retained agents, including the root.
-pub const DEFAULT_MAX_AGENTS: usize = text::DEFAULTS_MAX_AGENTS as usize;
+pub fn default_max_agents() -> usize {
+    text::DEFINITION.defaults_max_agents as usize
+}
 
 /// Validates subagent tree limits shared by framework and host composition.
 /// # Errors
@@ -153,56 +168,62 @@ pub fn validate_limits(max_depth: u8, max_concurrency: usize, max_agents: usize)
     Ok(())
 }
 
-const SETTINGS: &[MiddlewareSettingManifest] = &[
-    MiddlewareSettingManifest::Select {
-        id: "model_route",
-        label: text::SETTING_MODEL_ROUTE_LABEL,
-        description: text::SETTING_MODEL_ROUTE_DESCRIPTION,
-        choices: MiddlewareSettingChoices::ModelRoutes,
-        unset_label: Some(text::SETTING_MODEL_ROUTE_UNSET_LABEL),
-        default: None,
-        max_bytes: 4 * 1024,
-        composer: false,
-    },
-    MiddlewareSettingManifest::Integer {
-        id: "max_depth",
-        label: text::SETTING_MAX_DEPTH_LABEL,
-        description: text::SETTING_MAX_DEPTH_DESCRIPTION,
-        min: 1,
-        max: Some(MAX_CONFIGURED_DEPTH as i64),
-        step: text::SETTING_MAX_DEPTH_STEP,
-        default: DEFAULT_MAX_DEPTH as i64,
-    },
-    MiddlewareSettingManifest::Integer {
-        id: "max_concurrency",
-        label: text::SETTING_MAX_CONCURRENCY_LABEL,
-        description: text::SETTING_MAX_CONCURRENCY_DESCRIPTION,
-        min: 2,
-        max: Some(MAX_CONFIGURED_CONCURRENCY as i64),
-        step: text::SETTING_MAX_CONCURRENCY_STEP,
-        default: DEFAULT_MAX_CONCURRENCY as i64,
-    },
-    MiddlewareSettingManifest::Integer {
-        id: "max_agents",
-        label: text::SETTING_MAX_AGENTS_LABEL,
-        description: text::SETTING_MAX_AGENTS_DESCRIPTION,
-        min: 2,
-        max: Some(MAX_CONFIGURED_AGENTS as i64),
-        step: text::SETTING_MAX_AGENTS_STEP,
-        default: DEFAULT_MAX_AGENTS as i64,
-    },
-];
+static SETTINGS: std::sync::LazyLock<Vec<MiddlewareSettingManifest>> =
+    std::sync::LazyLock::new(|| {
+        vec![
+            MiddlewareSettingManifest::Select {
+                id: "model_route",
+                label: text::DEFINITION.setting_model_route_label.as_str(),
+                description: text::DEFINITION.setting_model_route_description.as_str(),
+                choices: MiddlewareSettingChoices::ModelRoutes,
+                unset_label: Some(text::DEFINITION.setting_model_route_unset_label.as_str()),
+                default: None,
+                max_bytes: 4 * 1024,
+                composer: false,
+            },
+            MiddlewareSettingManifest::Integer {
+                id: "max_depth",
+                label: text::DEFINITION.setting_max_depth_label.as_str(),
+                description: text::DEFINITION.setting_max_depth_description.as_str(),
+                min: 1,
+                max: Some(MAX_CONFIGURED_DEPTH as i64),
+                step: text::DEFINITION.setting_max_depth_step,
+                default: default_max_depth() as i64,
+            },
+            MiddlewareSettingManifest::Integer {
+                id: "max_concurrency",
+                label: text::DEFINITION.setting_max_concurrency_label.as_str(),
+                description: text::DEFINITION
+                    .setting_max_concurrency_description
+                    .as_str(),
+                min: 2,
+                max: Some(MAX_CONFIGURED_CONCURRENCY as i64),
+                step: text::DEFINITION.setting_max_concurrency_step,
+                default: default_max_concurrency() as i64,
+            },
+            MiddlewareSettingManifest::Integer {
+                id: "max_agents",
+                label: text::DEFINITION.setting_max_agents_label.as_str(),
+                description: text::DEFINITION.setting_max_agents_description.as_str(),
+                min: 2,
+                max: Some(MAX_CONFIGURED_AGENTS as i64),
+                step: text::DEFINITION.setting_max_agents_step,
+                default: default_max_agents() as i64,
+            },
+        ]
+    });
 
 /// Configuration and presentation metadata for child-agent collaboration.
-pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
-    id: "subagents",
-    label: text::MANIFEST_LABEL,
-    description: text::MANIFEST_DESCRIPTION,
-    required: false,
-    default_enabled: true,
-    required_model_capability: None,
-    settings: SETTINGS,
-};
+pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
+    std::sync::LazyLock::new(|| MiddlewareManifest {
+        id: "subagents",
+        label: text::DEFINITION.manifest_label.as_str(),
+        description: text::DEFINITION.manifest_description.as_str(),
+        required: false,
+        default_enabled: text::DEFINITION.default_enabled,
+        required_model_capability: None,
+        settings: &SETTINGS,
+    });
 
 /// Child-agent parameters owned by the subagent capability.
 #[derive(Clone)]
@@ -446,7 +467,7 @@ impl Subagents {
             launch_agent,
             default_model: None,
             default_reasoning: None,
-            prompt: text::PROMPT_DEFAULT.into(),
+            prompt: text::DEFINITION.prompt_default.clone(),
             shared: Arc::new(Shared::new(max_concurrency, max_agents)),
         })
     }
@@ -496,7 +517,7 @@ impl Subagents {
 
     fn section(&self, identity: &AgentIdentity) -> PromptSection {
         let body = if identity.depth == 0 {
-            text::PROMPT_ROOT.into()
+            text::DEFINITION.prompt_root.clone()
         } else {
             format!(
                 "You are `{}`, a child agent.\n{}",
@@ -530,14 +551,18 @@ impl Subagents {
         if options.is_empty() {
             return Ok(MiddlewareCommandOutput::events(vec![
                 FrontendEvent::Picker {
-                    title: format!("{} · {}", text::RENDER_OPEN, text::RENDER_EMPTY),
+                    title: format!(
+                        "{} · {}",
+                        text::DEFINITION.render_open.as_str(),
+                        text::DEFINITION.render_empty.as_str()
+                    ),
                     options,
                 },
             ]));
         }
         Ok(MiddlewareCommandOutput::events(vec![
             FrontendEvent::Picker {
-                title: text::RENDER_OPEN.into(),
+                title: text::DEFINITION.render_open.clone(),
                 options,
             },
         ]))
@@ -670,7 +695,7 @@ impl Middleware for Subagents {
             commands: vec![FrontendCommand {
                 name: "subagents".into(),
                 arguments: String::new(),
-                description: text::COMMAND_DESCRIPTION.into(),
+                description: text::DEFINITION.command_description.clone(),
                 requires_idle: false,
             }],
             widgets: Vec::new(),
@@ -693,15 +718,31 @@ impl Middleware for Subagents {
             },
             |name, arguments| match name {
                 _ if matches!(event, EventMsg::ToolCallEnd(_)) => name.into(),
-                "spawn_agent" => labeled_tool_heading(text::RENDER_AGENT, "task_name", arguments),
-                "send_message" => labeled_tool_heading(text::RENDER_MESSAGE, "target", arguments),
-                "list_agents" => {
-                    labeled_tool_heading(text::RENDER_AGENTS, "path_prefix", arguments)
-                }
-                "interrupt_agent" => {
-                    labeled_tool_heading(text::RENDER_INTERRUPT, "target", arguments)
-                }
-                "wait_agent" => labeled_tool_heading(text::RENDER_WAIT, "timeout_ms", arguments),
+                "spawn_agent" => labeled_tool_heading(
+                    text::DEFINITION.render_agent.as_str(),
+                    "task_name",
+                    arguments,
+                ),
+                "send_message" => labeled_tool_heading(
+                    text::DEFINITION.render_message.as_str(),
+                    "target",
+                    arguments,
+                ),
+                "list_agents" => labeled_tool_heading(
+                    text::DEFINITION.render_agents.as_str(),
+                    "path_prefix",
+                    arguments,
+                ),
+                "interrupt_agent" => labeled_tool_heading(
+                    text::DEFINITION.render_interrupt.as_str(),
+                    "target",
+                    arguments,
+                ),
+                "wait_agent" => labeled_tool_heading(
+                    text::DEFINITION.render_wait.as_str(),
+                    "timeout_ms",
+                    arguments,
+                ),
                 _ => name.to_string().into(),
             },
         )?;

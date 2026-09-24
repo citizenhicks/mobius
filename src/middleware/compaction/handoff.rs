@@ -60,7 +60,7 @@ impl Tool for HandoffTool {
         if self.write {
             ToolDefinition {
                 name: "write_handoff".into(),
-                description: text::TOOL_WRITE_HANDOFF_DESCRIPTION.into(),
+                description: text::DEFINITION.tool_write_handoff_description.clone(),
                 parameters: serde_json::json!({
                     "type": "object", "properties": {"notes": {
                         "type": "string", "minLength": 1,
@@ -72,7 +72,7 @@ impl Tool for HandoffTool {
         } else {
             ToolDefinition {
                 name: "new_context".into(),
-                description: text::TOOL_NEW_CONTEXT_DESCRIPTION.into(),
+                description: text::DEFINITION.tool_new_context_description.clone(),
                 parameters: serde_json::json!({"type": "object", "properties": {}, "additionalProperties": false}),
             }
         }
@@ -148,7 +148,10 @@ pub(super) fn is_control(item: &Value) -> bool {
 }
 
 fn note_message(notes: &str) -> Value {
-    internal_user_message(NOTES, &format!("{}\n\n{notes}", text::PROMPT_RESTORED))
+    internal_user_message(
+        NOTES,
+        &format!("{}\n\n{notes}", text::DEFINITION.prompt_restored.as_str()),
+    )
 }
 
 pub(super) async fn restore_notes(context: &mut SessionStartContext<'_>) -> Result<()> {
@@ -176,9 +179,9 @@ pub(super) fn decorate(context: &mut ModelRequestContext<'_>) {
         .iter()
         .rev()
         .find_map(|item| match internal_message_kind(item) {
-            Some(RESET_ONLY) => Some(text::PROMPT_RESET),
-            Some(URGENT) => Some(text::PROMPT_URGENT),
-            Some(WARNING) => Some(text::PROMPT_WARNING),
+            Some(RESET_ONLY) => Some(text::DEFINITION.prompt_reset.as_str()),
+            Some(URGENT) => Some(text::DEFINITION.prompt_urgent.as_str()),
+            Some(WARNING) => Some(text::DEFINITION.prompt_warning.as_str()),
             _ => None,
         });
     if let Some(prompt) = prompt {
@@ -358,8 +361,7 @@ fn fresh_input(input: &[Value], call_id: &str) -> Result<Vec<Value>> {
             !is_control(item)
                 && (*index >= tail
                     || (*index >= active_turn
-                        && (item.get("role").and_then(Value::as_str) == Some("user")
-                            || super::is_attachment_materialization(item))))
+                        && item.get("role").and_then(Value::as_str) == Some("user")))
         })
         .map(|(_, item)| item.clone())
         .collect())

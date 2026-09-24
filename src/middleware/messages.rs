@@ -20,86 +20,106 @@ use crate::protocol::{
 use crate::{BoxFuture, Error, Result};
 
 mod text {
-    pub const DEFAULTS_MAX_PENDING: i64 = 64;
-    pub const MANIFEST_DESCRIPTION: &str =
-        "Deliver conversation messages at the correct turn boundary";
-    pub const MANIFEST_LABEL: &str = "Messages";
-    pub const SETTING_DELIVERY_DESCRIPTION: &str =
-        "Default behavior for user messages sent while the agent is working";
-    pub const SETTING_DELIVERY_LABEL: &str = "Active message delivery";
-    pub const SETTING_DELIVERY_QUEUE_DESCRIPTION: &str =
-        "Start a new turn after the active turn finishes";
-    pub const SETTING_DELIVERY_QUEUE_LABEL: &str = "Queue";
-    pub const SETTING_DELIVERY_STEER_DESCRIPTION: &str =
-        "Inject at the next model boundary of the active turn";
-    pub const SETTING_DELIVERY_STEER_LABEL: &str = "Steer";
-    pub const SETTING_MAX_PENDING_DESCRIPTION: &str = "Maximum messages waiting for delivery";
-    pub const SETTING_MAX_PENDING_LABEL: &str = "Maximum pending messages";
-    pub const SETTING_MAX_PENDING_STEP: i64 = 1;
+    use super::*;
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct Definition {
+        pub(super) default_enabled: bool,
+        pub(super) default_delivery: ActiveMessageDelivery,
+        pub(super) defaults_max_pending: i64,
+        pub(super) manifest_description: String,
+        pub(super) manifest_label: String,
+        pub(super) setting_delivery_description: String,
+        pub(super) setting_delivery_label: String,
+        pub(super) setting_delivery_queue_description: String,
+        pub(super) setting_delivery_queue_label: String,
+        pub(super) setting_delivery_steer_description: String,
+        pub(super) setting_delivery_steer_label: String,
+        pub(super) setting_max_pending_description: String,
+        pub(super) setting_max_pending_label: String,
+        pub(super) setting_max_pending_step: i64,
+    }
+    pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
+        std::sync::LazyLock::new(|| {
+            let definition: Definition = toml::from_str(include_str!("messages.toml"))
+                .expect("bundled messages definition must be valid");
+
+            assert!(definition.defaults_max_pending >= 1);
+            assert!(definition.defaults_max_pending <= MAX_PENDING_MESSAGES as i64);
+            assert!(definition.setting_max_pending_step > 0);
+
+            definition
+        });
 }
 const MAX_PENDING_MESSAGES: usize = 1_024;
-const _: () = {
-    assert!(text::DEFAULTS_MAX_PENDING >= 1);
-    assert!(text::DEFAULTS_MAX_PENDING <= MAX_PENDING_MESSAGES as i64);
-    assert!(text::SETTING_MAX_PENDING_STEP > 0);
-};
 
 /// Default number of pending messages retained by the delivery queue.
-pub const DEFAULT_MAX_PENDING: usize = text::DEFAULTS_MAX_PENDING as usize;
+pub fn default_max_pending() -> usize {
+    text::DEFINITION.defaults_max_pending as usize
+}
 /// Default delivery for user messages submitted during an active turn.
-pub const DEFAULT_DELIVERY: ActiveMessageDelivery = ActiveMessageDelivery::Steer;
+pub fn default_delivery() -> ActiveMessageDelivery {
+    text::DEFINITION.default_delivery
+}
 
-const DELIVERIES: &[MiddlewareSettingChoice] = &[
-    MiddlewareSettingChoice {
-        disables: &[],
-        value: "steer",
-        label: text::SETTING_DELIVERY_STEER_LABEL,
-        description: text::SETTING_DELIVERY_STEER_DESCRIPTION,
-        symbol: Some("steer"),
-        tone: FrontendTone::Neutral,
-    },
-    MiddlewareSettingChoice {
-        disables: &[],
-        value: "queue",
-        label: text::SETTING_DELIVERY_QUEUE_LABEL,
-        description: text::SETTING_DELIVERY_QUEUE_DESCRIPTION,
-        symbol: Some("queue"),
-        tone: FrontendTone::Neutral,
-    },
-];
+static DELIVERIES: std::sync::LazyLock<Vec<MiddlewareSettingChoice>> =
+    std::sync::LazyLock::new(|| {
+        vec![
+            MiddlewareSettingChoice {
+                disables: &[],
+                value: "steer",
+                label: text::DEFINITION.setting_delivery_steer_label.as_str(),
+                description: text::DEFINITION.setting_delivery_steer_description.as_str(),
+                symbol: Some("steer"),
+                tone: FrontendTone::Neutral,
+            },
+            MiddlewareSettingChoice {
+                disables: &[],
+                value: "queue",
+                label: text::DEFINITION.setting_delivery_queue_label.as_str(),
+                description: text::DEFINITION.setting_delivery_queue_description.as_str(),
+                symbol: Some("queue"),
+                tone: FrontendTone::Neutral,
+            },
+        ]
+    });
 
-const SETTINGS: &[MiddlewareSettingManifest] = &[
-    MiddlewareSettingManifest::Select {
-        id: "delivery",
-        label: text::SETTING_DELIVERY_LABEL,
-        description: text::SETTING_DELIVERY_DESCRIPTION,
-        choices: MiddlewareSettingChoices::Static(DELIVERIES),
-        unset_label: None,
-        default: Some("steer"),
-        max_bytes: 8,
-        composer: false,
-    },
-    MiddlewareSettingManifest::Integer {
-        id: "max_pending",
-        label: text::SETTING_MAX_PENDING_LABEL,
-        description: text::SETTING_MAX_PENDING_DESCRIPTION,
-        min: 1,
-        max: Some(MAX_PENDING_MESSAGES as i64),
-        step: text::SETTING_MAX_PENDING_STEP,
-        default: DEFAULT_MAX_PENDING as i64,
-    },
-];
+static SETTINGS: std::sync::LazyLock<Vec<MiddlewareSettingManifest>> =
+    std::sync::LazyLock::new(|| {
+        vec![
+            MiddlewareSettingManifest::Select {
+                id: "delivery",
+                label: text::DEFINITION.setting_delivery_label.as_str(),
+                description: text::DEFINITION.setting_delivery_description.as_str(),
+                choices: MiddlewareSettingChoices::Static(&DELIVERIES),
+                unset_label: None,
+                default: Some(default_delivery().id()),
+                max_bytes: 8,
+                composer: false,
+            },
+            MiddlewareSettingManifest::Integer {
+                id: "max_pending",
+                label: text::DEFINITION.setting_max_pending_label.as_str(),
+                description: text::DEFINITION.setting_max_pending_description.as_str(),
+                min: 1,
+                max: Some(MAX_PENDING_MESSAGES as i64),
+                step: text::DEFINITION.setting_max_pending_step,
+                default: default_max_pending() as i64,
+            },
+        ]
+    });
 
 /// Configuration and presentation metadata for message delivery.
-pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
-    id: "messages",
-    label: text::MANIFEST_LABEL,
-    description: text::MANIFEST_DESCRIPTION,
-    required: true,
-    default_enabled: true,
-    required_model_capability: None,
-    settings: SETTINGS,
-};
+pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
+    std::sync::LazyLock::new(|| MiddlewareManifest {
+        id: "messages",
+        label: text::DEFINITION.manifest_label.as_str(),
+        description: text::DEFINITION.manifest_description.as_str(),
+        required: true,
+        default_enabled: text::DEFINITION.default_enabled,
+        required_model_capability: None,
+        settings: &SETTINGS,
+    });
 
 const EDIT_COMMAND: &str = "edit";
 const STALE_EDIT: &str = "message is no longer queued";
@@ -114,8 +134,8 @@ pub struct Messages {
 impl Default for Messages {
     fn default() -> Self {
         Self {
-            max_pending: DEFAULT_MAX_PENDING,
-            delivery: DEFAULT_DELIVERY,
+            max_pending: default_max_pending(),
+            delivery: default_delivery(),
         }
     }
 }
@@ -403,6 +423,21 @@ impl Middleware for Messages {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn declared_deliveries_parse_at_the_protocol_boundary() {
+        for choice in super::DELIVERIES.iter() {
+            assert_eq!(
+                choice
+                    .value
+                    .parse::<super::ActiveMessageDelivery>()
+                    .expect("declared delivery")
+                    .id(),
+                choice.value
+            );
+        }
+        assert!("other".parse::<super::ActiveMessageDelivery>().is_err());
+    }
+
     use std::collections::BTreeMap;
     use std::sync::Arc;
 

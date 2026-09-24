@@ -9,14 +9,27 @@ use crate::protocol::{TOOL_ERROR_FIELD, is_internal_message, tool_complete_bound
 use crate::{BoxFuture, Error, Result};
 
 mod text {
-    pub const DEFAULTS_STALE_AFTER_TOKENS: i64 = 50000;
-    pub const MANIFEST_DESCRIPTION: &str =
-        "Mask stale successful tool output from active model context";
-    pub const MANIFEST_LABEL: &str = "Context offloading";
-    pub const SETTING_STALE_AFTER_TOKENS_DESCRIPTION: &str =
-        "Successful tool results older than this trailing window are masked";
-    pub const SETTING_STALE_AFTER_TOKENS_LABEL: &str = "Stale after tokens";
-    pub const SETTING_STALE_AFTER_TOKENS_STEP: i64 = 10000;
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct Definition {
+        pub(super) default_enabled: bool,
+        pub(super) defaults_stale_after_tokens: i64,
+        pub(super) manifest_description: String,
+        pub(super) manifest_label: String,
+        pub(super) setting_stale_after_tokens_description: String,
+        pub(super) setting_stale_after_tokens_label: String,
+        pub(super) setting_stale_after_tokens_step: i64,
+    }
+    pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
+        std::sync::LazyLock::new(|| {
+            let definition: Definition = toml::from_str(include_str!("context_offloading.toml"))
+                .expect("bundled context_offloading definition must be valid");
+
+            assert!(definition.defaults_stale_after_tokens >= 1);
+            assert!(definition.setting_stale_after_tokens_step > 0);
+
+            definition
+        });
 }
 const MASKED_TOOL_OUTPUT: &str = "[offloaded]";
 
@@ -24,32 +37,36 @@ fn high_water_tokens(stale_after_tokens: usize) -> usize {
     stale_after_tokens.saturating_add((stale_after_tokens / 2).max(1))
 }
 
-const _: () = {
-    assert!(text::DEFAULTS_STALE_AFTER_TOKENS >= 1);
-    assert!(text::SETTING_STALE_AFTER_TOKENS_STEP > 0);
-};
 /// Default trailing token window retained by context offloading.
-pub const DEFAULT_STALE_AFTER_TOKENS: i64 = text::DEFAULTS_STALE_AFTER_TOKENS;
-const SETTINGS: &[MiddlewareSettingManifest] = &[MiddlewareSettingManifest::Integer {
-    id: "stale_after_tokens",
-    label: text::SETTING_STALE_AFTER_TOKENS_LABEL,
-    description: text::SETTING_STALE_AFTER_TOKENS_DESCRIPTION,
-    min: 1,
-    max: None,
-    step: text::SETTING_STALE_AFTER_TOKENS_STEP,
-    default: DEFAULT_STALE_AFTER_TOKENS,
-}];
+pub fn default_stale_after_tokens() -> i64 {
+    text::DEFINITION.defaults_stale_after_tokens
+}
+static SETTINGS: std::sync::LazyLock<Vec<MiddlewareSettingManifest>> =
+    std::sync::LazyLock::new(|| {
+        vec![MiddlewareSettingManifest::Integer {
+            id: "stale_after_tokens",
+            label: text::DEFINITION.setting_stale_after_tokens_label.as_str(),
+            description: text::DEFINITION
+                .setting_stale_after_tokens_description
+                .as_str(),
+            min: 1,
+            max: None,
+            step: text::DEFINITION.setting_stale_after_tokens_step,
+            default: default_stale_after_tokens(),
+        }]
+    });
 
 /// Configuration and presentation metadata for context offloading.
-pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
-    id: "context_offloading",
-    label: text::MANIFEST_LABEL,
-    description: text::MANIFEST_DESCRIPTION,
-    required: false,
-    default_enabled: true,
-    required_model_capability: None,
-    settings: SETTINGS,
-};
+pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
+    std::sync::LazyLock::new(|| MiddlewareManifest {
+        id: "context_offloading",
+        label: text::DEFINITION.manifest_label.as_str(),
+        description: text::DEFINITION.manifest_description.as_str(),
+        required: false,
+        default_enabled: text::DEFINITION.default_enabled,
+        required_model_capability: None,
+        settings: &SETTINGS,
+    });
 
 /// Masks successful tool output older than a trailing token window.
 pub struct ContextOffloading {

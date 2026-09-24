@@ -277,11 +277,7 @@ impl UiCatalog {
     }
 
     pub(crate) fn composer_hint(&self) -> &'static str {
-        if self.commands.iter().any(|command| command.name == "resume") {
-            "Enter send · / commands · /resume chats · @ files · Ctrl-J newline · Ctrl-T transcript"
-        } else {
-            "Enter send · / commands · @ files · Ctrl-J newline · Ctrl-T transcript"
-        }
+        "Enter send · / commands · @ files · Ctrl-J newline · Ctrl-T transcript"
     }
 
     pub(crate) fn dispatch(
@@ -312,14 +308,12 @@ impl UiCatalog {
             CommandHandler::GatewaySettings if arguments.is_empty() => {
                 CommandAction::GatewaySettings
             }
-            CommandHandler::GatewaySettings => CommandAction::Print("usage: /gateway".into()),
+            CommandHandler::GatewaySettings => command.usage(),
             CommandHandler::Extensions if arguments.is_empty() => CommandAction::Extensions,
-            CommandHandler::Extensions => CommandAction::Print("usage: /extensions".into()),
+            CommandHandler::Extensions => command.usage(),
             CommandHandler::Bot if arguments.is_empty() => CommandAction::Bots,
-            CommandHandler::Bot => CommandAction::Print("usage: /bot".into()),
-            CommandHandler::Workspace if arguments.is_empty() => {
-                CommandAction::Print("usage: /workspace <gateway-path>".into())
-            }
+            CommandHandler::Bot => command.usage(),
+            CommandHandler::Workspace if arguments.is_empty() => command.usage(),
             CommandHandler::Workspace => CommandAction::ChooseBot {
                 workspace: PathBuf::from(arguments),
                 clear: false,
@@ -330,11 +324,11 @@ impl UiCatalog {
                     provider: (!arguments.is_empty()).then(|| arguments.into()),
                 }
             }
-            CommandHandler::Login => CommandAction::Print("usage: /login [provider]".into()),
+            CommandHandler::Login => command.usage(),
             CommandHandler::Pair => CommandAction::Gateway(GatewayAction::Pair),
             CommandHandler::Profile => CommandAction::Gateway(GatewayAction::Profile),
             CommandHandler::Events if arguments.is_empty() => CommandAction::Events,
-            CommandHandler::Events => CommandAction::Print("usage: /events".into()),
+            CommandHandler::Events => command.usage(),
             CommandHandler::New => CommandAction::ChooseBot {
                 workspace: self.workspace.clone(),
                 clear: false,
@@ -343,34 +337,30 @@ impl UiCatalog {
                 workspace: self.workspace.clone(),
                 clear: true,
             },
-            CommandHandler::Rename if arguments.is_empty() => {
-                CommandAction::Print("usage: /rename <title>".into())
-            }
+            CommandHandler::Rename if arguments.is_empty() => command.usage(),
             CommandHandler::Rename => {
                 CommandAction::Gateway(GatewayAction::Rename(arguments.into()))
             }
             CommandHandler::Pin if arguments.is_empty() => {
                 CommandAction::Gateway(GatewayAction::SetPinned(true))
             }
-            CommandHandler::Pin => CommandAction::Print("usage: /pin".into()),
+            CommandHandler::Pin => command.usage(),
             CommandHandler::Unpin if arguments.is_empty() => {
                 CommandAction::Gateway(GatewayAction::SetPinned(false))
             }
-            CommandHandler::Unpin => CommandAction::Print("usage: /unpin".into()),
+            CommandHandler::Unpin => command.usage(),
             CommandHandler::Reassign if arguments.is_empty() => CommandAction::ReassignBot,
-            CommandHandler::Reassign => CommandAction::Print("usage: /reassign".into()),
-            CommandHandler::Attach if arguments.is_empty() => {
-                CommandAction::Print("usage: /attach <gateway-path>".into())
-            }
+            CommandHandler::Reassign => command.usage(),
+            CommandHandler::Attach if arguments.is_empty() => command.usage(),
             CommandHandler::Attach => {
                 CommandAction::Gateway(GatewayAction::AttachFolder(PathBuf::from(arguments)))
             }
             CommandHandler::Delete if arguments.is_empty() => CommandAction::ConfirmDelete,
-            CommandHandler::Delete => CommandAction::Print("usage: /delete".into()),
+            CommandHandler::Delete => command.usage(),
             CommandHandler::Files if arguments.is_empty() => {
                 CommandAction::Gateway(GatewayAction::ListSessionFiles)
             }
-            CommandHandler::Files => CommandAction::Print("usage: /files".into()),
+            CommandHandler::Files => command.usage(),
             CommandHandler::Diff => match arguments {
                 "" | "unstaged" => {
                     CommandAction::Gateway(GatewayAction::GitDiff(GitDiffScope::Unstaged))
@@ -379,12 +369,12 @@ impl UiCatalog {
                 "committed" => {
                     CommandAction::Gateway(GatewayAction::GitDiff(GitDiffScope::Committed))
                 }
-                _ => CommandAction::Print("usage: /diff [unstaged|staged|committed]".into()),
+                _ => command.usage(),
             },
             CommandHandler::Branch if arguments.is_empty() => CommandAction::Branches,
-            CommandHandler::Branch => CommandAction::Print("usage: /branch".into()),
+            CommandHandler::Branch => command.usage(),
             CommandHandler::Queued if arguments.is_empty() => CommandAction::Queued,
-            CommandHandler::Queued => CommandAction::Print("usage: /queued".into()),
+            CommandHandler::Queued => command.usage(),
             CommandHandler::Status => CommandAction::Print(context.status.to_string()),
             CommandHandler::Interrupt => context.active_turn.map_or_else(
                 || CommandAction::Print("no active turn to interrupt".into()),
@@ -409,6 +399,10 @@ impl UiCatalog {
 }
 
 impl UiCommand {
+    fn usage(&self) -> CommandAction {
+        CommandAction::Print(format!("usage: {}", self.menu_item().label))
+    }
+
     fn menu_item(&self) -> MenuItem {
         let command = format!("{COMMAND_PREFIX}{}", self.name);
         MenuItem {
@@ -825,14 +819,15 @@ mod tests {
     }
 
     #[test]
-    fn composer_only_advertises_resume_when_the_capability_declares_it() {
+    fn composer_hint_is_independent_of_capability_commands() {
         let workspace = tempfile::tempdir().expect("workspace");
         let bare = UiCatalog::build(&[], workspace.path()).expect("bare catalog");
         let sessions = UiCatalog::build(&[contribution("resume")], workspace.path())
             .expect("sessions catalog");
 
         assert!(!bare.composer_hint().contains("/resume"));
-        assert!(sessions.composer_hint().contains("/resume"));
+        assert_eq!(bare.composer_hint(), sessions.composer_hint());
+        assert!(sessions.menu().contains("/resume"));
     }
 
     #[test]

@@ -231,7 +231,8 @@ impl PromptCacheMode {
 }
 
 /// Token rates owned by one concrete provider/model implementation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelPricing {
     input_microusd_per_million: u64,
     cached_input_microusd_per_million: u64,
@@ -240,7 +241,8 @@ pub struct ModelPricing {
     long_context: Option<LongContextPricing>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LongContextPricing {
     threshold_input_tokens: u64,
     input_multiplier_millis: u32,
@@ -263,20 +265,6 @@ impl ModelPricing {
             output_microusd_per_million,
             long_context: None,
         }
-    }
-
-    pub(crate) const fn with_long_context(
-        mut self,
-        threshold_input_tokens: u64,
-        input_multiplier_millis: u32,
-        output_multiplier_millis: u32,
-    ) -> Self {
-        self.long_context = Some(LongContextPricing {
-            threshold_input_tokens,
-            input_multiplier_millis,
-            output_multiplier_millis,
-        });
-        self
     }
 
     /// Estimates request cost in millionths of a dollar, rounded up.

@@ -32,6 +32,75 @@ pub(crate) fn is_internal_message(message: &Value) -> bool {
     internal_message_kind(message).is_some()
 }
 
+const FORKED_ATTACHMENT_PLACEHOLDER: &str = "[Attachment unavailable in this fork]";
+
+pub(crate) fn strip_attachment_references(items: &mut Vec<Value>) {
+    for item in items.iter_mut() {
+        let needs_placeholder = item.get("role").and_then(Value::as_str) == Some("user")
+            && item
+                .get(ATTACHMENTS_FIELD)
+                .and_then(|value| {
+                    serde_json::from_value::<Vec<crate::protocol::SessionFileReference>>(
+                        value.clone(),
+                    )
+                    .ok()
+                })
+                .is_some_and(|files| !files.is_empty())
+            && message_text(item, "user").is_none_or(|text| text.trim().is_empty());
+        if let Some(object) = item.as_object_mut() {
+            object.remove(ATTACHMENTS_FIELD);
+            if needs_placeholder {
+                object.insert(
+                    "content".into(),
+                    serde_json::json!([{
+                        "type": "input_text",
+                        "text": FORKED_ATTACHMENT_PLACEHOLDER
+                    }]),
+                );
+            }
+            if let Some(mut message) = object
+                .get(MESSAGE_METADATA_FIELD)
+                .cloned()
+                .and_then(|value| serde_json::from_value::<MessageEvent>(value).ok())
+            {
+                message.attachments.clear();
+                if needs_placeholder {
+                    message.text = FORKED_ATTACHMENT_PLACEHOLDER.into();
+                }
+                if let Ok(metadata) = serde_json::to_value(message) {
+                    object.insert(MESSAGE_METADATA_FIELD.into(), metadata);
+                }
+            }
+        }
+    }
+    items.retain_mut(|item| {
+        if internal_message_kind(item) != Some(ATTACHMENT_CONTEXT_MARKER) { return true; }
+        let images = item.get("content").and_then(Value::as_array).into_iter().flatten()
+            .filter(|part| part.get("type").and_then(Value::as_str) == Some("input_image")).cloned().collect::<Vec<_>>();
+        if images.is_empty() { return false; }
+        *item = serde_json::json!({"role":"user", "content": images, (INTERNAL_MESSAGE_FIELD): "inherited_media"});
+        true
+    });
+}
+
+fn message_text(value: &Value, role: &str) -> Option<String> {
+    if value.get("role").and_then(Value::as_str) != Some(role) {
+        return None;
+    }
+    let content = value.get("content")?;
+    match content {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(parts) => {
+            let text: String = parts
+                .iter()
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .collect();
+            (!text.is_empty()).then_some(text)
+        }
+        _ => None,
+    }
+}
+
 /// Returns one-based context boundaries with no unfinished tool calls.
 pub(crate) fn tool_complete_boundaries<'a>(
     input: impl IntoIterator<Item = &'a Value>,
@@ -269,6 +338,56 @@ fn arguments(value: Option<&Value>) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stripped_attachment_only_messages_keep_a_neutral_fork_placeholder() {
+        use crate::backend::model::internal_user_message;
+        use crate::protocol::{
+            MessageAuthor, MessageDelivery, MessageTarget, SessionFileReference, replay_events,
+        };
+
+        let typed_user_message = |text: &str, attachments| {
+            crate::backend::model::message_input(&MessageEvent {
+                author: MessageAuthor::User,
+                delivery: MessageDelivery::Turn,
+                text: text.into(),
+                attachments,
+                reply: None,
+                message_target: None,
+            })
+            .expect("typed user message")
+        };
+        let mut items = vec![
+            typed_user_message(
+                "",
+                vec![SessionFileReference {
+                    id: "3d46beff-7e84-46ea-859a-e66b4614a79b".into(),
+                    name: "photo.png".into(),
+                    size: 4,
+                    media_type: "image/png".into(),
+                }],
+            ),
+            internal_user_message(ATTACHMENT_CONTEXT_MARKER, "private blob context"),
+        ];
+
+        strip_attachment_references(&mut items);
+        assert_eq!(items.len(), 1);
+        let context = [(
+            MessageTarget {
+                checkpoint_sequence: 1,
+                batch_item_count: 1,
+            },
+            items.remove(0),
+        )];
+        let replayed = replay_events(&context, "fork");
+
+        assert!(matches!(
+            replayed.as_slice(),
+            [EventMsg::Message(message)]
+                if message.text == FORKED_ATTACHMENT_PLACEHOLDER
+                    && message.attachments.is_empty()
+        ));
+    }
+
     use super::*;
     use crate::protocol::{
         MessageAuthor, MessageDelivery, ModelStepAnnotation, SessionFileReference,

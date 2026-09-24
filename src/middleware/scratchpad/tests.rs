@@ -440,7 +440,8 @@ async fn startup_and_compaction_restore_shared_notes_without_chat_menu_or_duplic
         middleware.frontend().widgets[0].slot,
         FrontendSlot::Navigation
     );
-    assert!(!middleware.retain_compacted_input(&input[0]));
+    middleware.prepare_compacted_input(&[], &mut input);
+    assert!(input.is_empty());
 }
 
 #[tokio::test]

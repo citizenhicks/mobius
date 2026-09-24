@@ -1,0 +1,9 @@
+default_enabled = true
+# Editable text and defaults owned by this middleware.
+manifest_description = "Let the agent publish workspace files to the current chat"
+manifest_label = "Artifacts"
+prompt_main = "To send a generated file to the user, first create it in the workspace with another tool, then call `send_artifact` with its path or an authorized stored file_id."
+render_send = "Send"
+render_sent_prefix = "Sent "
+tool_send_artifact_description = "Send one existing workspace file to the user."
+tool_send_artifact_parameter_path_description = "Workspace-relative path to the finished file."

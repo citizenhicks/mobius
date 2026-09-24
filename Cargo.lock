@@ -1693,7 +1693,7 @@ dependencies = [
 
 [[package]]
 name = "mobius"
-version = "0.15.45"
+version = "0.15.46"
 dependencies = [
  "base64",
  "bm25",
@@ -1711,13 +1711,14 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "tokio-tungstenite",
+ "toml",
  "uuid",
  "whichdisk",
 ]
 
 [[package]]
 name = "mobius-cli"
-version = "0.15.47"
+version = "0.15.48"
 dependencies = [
  "arboard",
  "chrono",
@@ -1740,7 +1741,7 @@ dependencies = [
 
 [[package]]
 name = "mobius-gateway"
-version = "0.15.47"
+version = "0.15.48"
 dependencies = [
  "base64",
  "chrono",

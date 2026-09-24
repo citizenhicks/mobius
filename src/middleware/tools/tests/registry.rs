@@ -42,7 +42,7 @@ fn read_file_definition_explains_path_scope() {
     assert!(definition.description.contains("active sandbox policy"));
     assert_eq!(
         definition.parameters["properties"]["path"]["description"],
-        text::TOOL_READ_FILE_PARAMETER_PATH_DESCRIPTION
+        "Workspace-relative path such as `src/main.rs`, or an absolute path allowed by the active sandbox policy."
     );
 }
 
@@ -74,6 +74,30 @@ impl Tool for InterruptibleTool {
 }
 
 struct DefinitionTool(ToolDefinition);
+
+#[test]
+fn custom_tool_names_do_not_select_builtin_prompts_or_presentation() {
+    let tools = Tools::new(vec![Arc::new(DefinitionTool(ToolDefinition {
+        name: "apply_patch".into(),
+        description: "A custom tool with its own behavior".into(),
+        parameters: serde_json::json!({}),
+    }))]);
+    assert_eq!(tools.section(), Tools::new(Vec::new()).section());
+    let block = tools
+        .render(
+            &EventMsg::ToolCallEnd(crate::protocol::ToolCallEndEvent {
+                turn_id: "turn".into(),
+                call_id: "call".into(),
+                name: "apply_patch".into(),
+                output: "--- a/note.txt\n+++ b/note.txt\n@@ -1 +1 @@\n-old\n+new\n".into(),
+                is_error: false,
+            }),
+            "session",
+        )
+        .expect("owned tool rendering");
+    assert_eq!(block.format, FrontendBlockFormat::PlainText);
+    assert_eq!(block.title, "apply_patch");
+}
 
 impl Tool for DefinitionTool {
     fn definition(&self) -> ToolDefinition {

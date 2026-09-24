@@ -10,7 +10,7 @@ pub(crate) use self::replay::{
     ATTACHMENT_CONTEXT_MARKER, ATTACHMENTS_FIELD, CONTEXT_COMPACTED_MARKER, INTERNAL_MESSAGE_FIELD,
     MESSAGE_METADATA_FIELD, PROMPT_CACHE_BREAKPOINT_FIELD, REPLAY_REASONING_FIELD,
     TOOL_ERROR_FIELD, internal_message_kind, is_internal_message, message_metadata,
-    tool_complete_boundaries,
+    strip_attachment_references, tool_complete_boundaries,
 };
 
 mod content;
@@ -288,6 +288,28 @@ pub enum ActiveMessageDelivery {
     Steer,
     /// Selects the queue case.
     Queue,
+}
+
+impl ActiveMessageDelivery {
+    /// Returns the delivery identifier used in configuration and protocol records.
+    #[must_use]
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Steer => "steer",
+            Self::Queue => "queue",
+        }
+    }
+}
+
+impl std::str::FromStr for ActiveMessageDelivery {
+    type Err = crate::Error;
+
+    fn from_str(value: &str) -> crate::Result<Self> {
+        serde::Deserialize::deserialize(
+            serde::de::value::StrDeserializer::<serde::de::value::Error>::new(value),
+        )
+        .map_err(|_| crate::Error::Config(format!("unsupported messages delivery `{value}`")))
+    }
 }
 
 /// One provider-neutral conversation message submitted to an agent.

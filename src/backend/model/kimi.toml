@@ -1,0 +1,33 @@
+# Provider-owned model catalog and token prices.
+default_model = "kimi-k3"
+
+[[models]]
+id = "kimi-k3"
+label = "Kimi K3"
+description = "Moonshot's agentic coding model"
+default_reasoning = "max"
+context_window = 1048576
+tool_discovery = "rebuild"
+
+[[models.reasoning]]
+id = "low"
+label = "Low"
+description = "Prefer speed and lower cost"
+
+[[models.reasoning]]
+id = "high"
+label = "High"
+description = "Use deeper reasoning"
+
+[[models.reasoning]]
+id = "max"
+label = "Maximum"
+description = "Use K3's maximum reasoning effort"
+
+[[models]]
+id = "kimi-k2.7-code"
+label = "Kimi K2.7 Code"
+description = "Moonshot's coding model"
+context_window = 262144
+tool_discovery = "rebuild"
+reasoning = []

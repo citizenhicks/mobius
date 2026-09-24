@@ -278,7 +278,7 @@ pub(crate) fn effective_reasoning_effort<'a>(
         .or_else(|| {
             definition
                 .model(&selection.model)
-                .and_then(|model| model.default_reasoning)
+                .and_then(|model| model.default_reasoning.as_deref())
         })
         .or_else(|| configured.reasoning_efforts.first().map(String::as_str))
 }

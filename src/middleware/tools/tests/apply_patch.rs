@@ -1,4 +1,5 @@
 use super::*;
+use diffy::Patch;
 
 async fn rejected_patch(content: &str, patch: &str) -> String {
     let workspace = tempfile::tempdir().expect("workspace");

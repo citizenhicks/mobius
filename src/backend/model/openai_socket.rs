@@ -45,16 +45,15 @@ use super::ModelOutput;
 use super::ModelPricing;
 use super::ModelRequest;
 use super::PromptCacheMode;
-use super::openai::OpenAi;
 use super::openai::decode_response;
 use super::openai::wire_input_with_cache;
 use super::openai::wire_tools;
+use super::openai::{CATALOG, OpenAi};
 use super::openai_auth::ApiKeyAuthorization;
 use super::openai_auth::OpenAiAuthorization;
 #[cfg(test)]
 use super::openai_auth::ResolvedAuthorization;
 use super::provider::HostedWebSearch;
-use super::provider::ModelPreset;
 use super::provider::ProviderAuth;
 use super::provider::ProviderBuildConfig;
 use super::provider::ProviderDefinition;
@@ -69,106 +68,19 @@ use crate::protocol::ToolDiscoveryMode;
 mod connection;
 
 mod manifest {
-    use crate::backend::model::provider::{HostedWebSearch, ModelPreset, ReasoningPreset};
+    use crate::backend::model::provider::HostedWebSearch;
     use crate::protocol::ToolDiscoveryMode;
     pub const PROVIDER_LABEL: &str = "OpenAI";
     pub const PROVIDER_DESCRIPTION: &str = "Persistent Responses WebSocket with native compaction";
     pub const TOOL_DISCOVERY: ToolDiscoveryMode = ToolDiscoveryMode::Native;
     pub const CUSTOM_ENDPOINT_TOOL_DISCOVERY: Option<ToolDiscoveryMode> = None;
-    pub const DEFAULT_MODEL: Option<&str> = Some("gpt-6-sol");
-    const REASONING: &[ReasoningPreset] = &[
-        ReasoningPreset {
-            id: "none",
-            label: "None",
-            description: "Skip reasoning for the lowest latency",
-        },
-        ReasoningPreset {
-            id: "low",
-            label: "Low",
-            description: "Faster answers for straightforward work",
-        },
-        ReasoningPreset {
-            id: "medium",
-            label: "Medium",
-            description: "Balanced reasoning and latency",
-        },
-        ReasoningPreset {
-            id: "high",
-            label: "High",
-            description: "Deeper reasoning for complex work",
-        },
-        ReasoningPreset {
-            id: "xhigh",
-            label: "Extra high",
-            description: "Extended reasoning for demanding work",
-        },
-        ReasoningPreset {
-            id: "max",
-            label: "Maximum",
-            description: "Maximum reasoning for the hardest work",
-        },
-    ];
-    pub const MODELS: &[ModelPreset] = &[
-        ModelPreset {
-            id: "gpt-6-sol",
-            label: "6 Sol",
-            description: "Complex coding and agentic workflows",
-            context_window: 1050000,
-            reasoning: REASONING,
-            default_reasoning: Some("medium"),
-            tool_discovery: ToolDiscoveryMode::Native,
-        },
-        ModelPreset {
-            id: "gpt-6-luna",
-            label: "6 Luna",
-            description: "Focused, high-volume tasks",
-            context_window: 1050000,
-            reasoning: REASONING,
-            default_reasoning: Some("medium"),
-            tool_discovery: ToolDiscoveryMode::Native,
-        },
-        ModelPreset {
-            id: "gpt-6-astra",
-            label: "6 Astra",
-            description: "Advanced reasoning and complex end-to-end work",
-            context_window: 1050000,
-            reasoning: &[
-                ReasoningPreset {
-                    id: "low",
-                    label: "Low",
-                    description: "Faster answers for straightforward work",
-                },
-                ReasoningPreset {
-                    id: "medium",
-                    label: "Medium",
-                    description: "Balanced reasoning and latency",
-                },
-                ReasoningPreset {
-                    id: "high",
-                    label: "High",
-                    description: "Deeper reasoning for complex work",
-                },
-                ReasoningPreset {
-                    id: "xhigh",
-                    label: "Extra high",
-                    description: "Extended reasoning for demanding work",
-                },
-                ReasoningPreset {
-                    id: "max",
-                    label: "Maximum",
-                    description: "Maximum reasoning for the hardest work",
-                },
-            ],
-            default_reasoning: Some("medium"),
-            tool_discovery: ToolDiscoveryMode::Native,
-        },
-    ];
     pub const SEARCH: &[HostedWebSearch] = &[
         HostedWebSearch::Off,
         HostedWebSearch::Cached,
         HostedWebSearch::Live,
     ];
 }
+
 const OPENAI_HTTP_URL: &str = "https://api.openai.com/v1";
 const OPENAI_SOCKET_URL: &str = "wss://api.openai.com/v1/responses";
 const MAX_SESSION_ENTRIES: usize = 128;
@@ -257,8 +169,11 @@ impl OpenAiSocket {
         Ok(self)
     }
 
-    pub(super) fn with_codex_image_generation(mut self) -> Self {
-        self.http = self.http.with_codex_image_generation();
+    pub(super) fn with_image_api(
+        mut self,
+        api: Option<&'static super::image_generation::ImageApi>,
+    ) -> Self {
+        self.http = self.http.with_image_api(api);
         self
     }
 
@@ -274,7 +189,8 @@ impl OpenAiSocket {
     /// Returns an error if validation or an operation required by this function fails.
     pub fn with_reasoning_effort(mut self, effort: impl Into<String>) -> Result<Self> {
         let effort = effort.into();
-        let supported = manifest::MODELS
+        let supported = CATALOG
+            .models
             .iter()
             .find(|model| model.id == self.model)
             .is_some_and(|model| model.reasoning.iter().any(|preset| preset.id == effort));
@@ -794,19 +710,17 @@ impl Write for HasherWriter<'_> {
     }
 }
 
-pub(super) const MODELS: &[ModelPreset] = manifest::MODELS;
-pub(super) const DEFAULT_MODEL: Option<&str> = manifest::DEFAULT_MODEL;
 pub(super) const SEARCH: &[HostedWebSearch] = manifest::SEARCH;
 
-pub(super) const fn provider() -> ProviderDefinition {
+pub(super) fn provider() -> ProviderDefinition {
     ProviderDefinition::new(
         "openai_socket",
         manifest::PROVIDER_LABEL,
         "chat_gpt",
         manifest::PROVIDER_DESCRIPTION,
         ProviderAuth::ApiKey("OPENAI_API_KEY"),
-        MODELS,
-        DEFAULT_MODEL,
+        &CATALOG.models,
+        CATALOG.default_model.as_deref(),
         SEARCH,
         build_provider,
     )

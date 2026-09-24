@@ -22,13 +22,13 @@ impl Tool for WriteScratchpad {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "write_scratchpad".into(),
-            description: text::TOOL_WRITE_SCRATCHPAD_DESCRIPTION.into(),
+            description: text::DEFINITION.tool_write_scratchpad_description.clone(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "note": {
                         "type": "string",
-                        "description": text::TOOL_WRITE_SCRATCHPAD_PARAMETER_NOTE_DESCRIPTION,
+                        "description": text::DEFINITION.tool_write_scratchpad_parameter_note_description.as_str(),
                         "maxLength": MAX_NOTE_BYTES
                     }
                 },
@@ -59,9 +59,9 @@ impl Tool for WriteScratchpad {
                 publish_widgets(&self.frontend, &snapshot)?;
             }
             Ok(match outcome {
-                WriteOutcome::Added => text::MESSAGE_ADDED,
-                WriteOutcome::Updated => text::MESSAGE_UPDATED,
-                WriteOutcome::Existing => text::MESSAGE_EXISTING,
+                WriteOutcome::Added => text::DEFINITION.message_added.as_str(),
+                WriteOutcome::Updated => text::DEFINITION.message_updated.as_str(),
+                WriteOutcome::Existing => text::DEFINITION.message_existing.as_str(),
             }
             .into())
         })

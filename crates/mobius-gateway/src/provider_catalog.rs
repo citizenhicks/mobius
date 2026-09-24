@@ -131,7 +131,7 @@ pub(crate) fn catalog_routes(
     let mut models = definition
         .models()
         .iter()
-        .map(|preset| (preset.id, Some(preset)))
+        .map(|preset| (preset.id.as_str(), Some(preset)))
         .collect::<Vec<_>>();
     for model in &configured.model_ids {
         if models.iter().all(|(candidate, _)| *candidate != model) {
@@ -143,8 +143,8 @@ pub(crate) fn catalog_routes(
     let mut routes = Vec::new();
     for (model, preset) in models {
         let mut efforts = Vec::new();
-        for reasoning in preset.into_iter().flat_map(|preset| preset.reasoning) {
-            let effort = Some(reasoning.id);
+        for reasoning in preset.into_iter().flat_map(|preset| &preset.reasoning) {
+            let effort = Some(reasoning.id.as_str());
             if !efforts.contains(&effort) {
                 efforts.push(effort);
             }
@@ -171,7 +171,7 @@ pub(crate) fn catalog_routes(
                     group: format!(
                         "{} · {}",
                         configured.label,
-                        preset.map_or(model, |preset| preset.label)
+                        preset.map_or(model, |preset| preset.label.as_str())
                     ),
                     model: model.into(),
                     reasoning_effort: effort.map(str::to_string),
@@ -252,20 +252,20 @@ fn provider_status(definition: &ProviderDefinition) -> ProviderStatus {
             .models()
             .iter()
             .map(|model| ProviderModel {
-                id: model.id.into(),
-                label: model.label.into(),
-                description: model.description.into(),
+                id: model.id.clone(),
+                label: model.label.clone(),
+                description: model.description.clone(),
                 context_window: model.context_window,
                 reasoning: model
                     .reasoning
                     .iter()
                     .map(|reasoning| ReasoningChoice {
-                        id: reasoning.id.into(),
-                        label: reasoning.label.into(),
-                        description: reasoning.description.into(),
+                        id: reasoning.id.clone(),
+                        label: reasoning.label.clone(),
+                        description: reasoning.description.clone(),
                     })
                     .collect(),
-                default_reasoning: model.default_reasoning.map(str::to_string),
+                default_reasoning: model.default_reasoning.clone(),
                 tool_discovery: model.tool_discovery,
             })
             .collect(),

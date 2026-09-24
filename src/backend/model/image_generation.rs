@@ -1,7 +1,10 @@
 //! Provider-neutral image requests and the two native Images API wire shapes.
 
+use std::{collections::BTreeMap, sync::LazyLock};
+
 use base64::Engine as _;
 use image::ImageFormat;
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{ImageInputLimits, image_data_url, usage_i64, validate_usage};
@@ -25,6 +28,8 @@ pub struct ImageGenerationReference<'a> {
 /// Input for native image generation or an edit when references are present.
 #[derive(Debug)]
 pub struct ImageGenerationRequest<'a> {
+    /// Image model selected by the caller; provider naming is applied by the transport.
+    pub model: &'a str,
     /// The requested image or edit.
     pub prompt: &'a str,
     /// Explicit output shape.
@@ -45,6 +50,9 @@ impl ImageAspect {
 
 impl ImageGenerationRequest<'_> {
     pub(super) fn validate(&self, limits: ImageInputLimits) -> Result<()> {
+        if self.model.trim().is_empty() || self.model.len() > 256 {
+            return Err(Error::Tool("image model must contain 1–256 bytes".into()));
+        }
         if self.prompt.trim().is_empty() || self.prompt.chars().count() > MAX_PROMPT_CHARS {
             return Err(Error::Tool(
                 "image prompt must contain 1–32000 characters".into(),
@@ -90,31 +98,42 @@ pub struct GeneratedImage {
     pub usage: Option<TokenUsage>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ImageApi {
-    OpenAi,
-    Codex,
-    OpenRouter,
+pub(super) static IMAGE_APIS: LazyLock<BTreeMap<String, ImageApi>> = LazyLock::new(|| {
+    toml::from_str(include_str!("image_generation.toml"))
+        .expect("bundled image transport definitions must be valid")
+});
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ImageApi {
+    model_prefix: String,
+    generation_path: String,
+    pub(super) edit_path: String,
+    reference_format: ImageReferenceFormat,
+    input_tokens: String,
+    output_tokens: String,
+}
+
+#[derive(Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum ImageReferenceFormat {
+    Multipart,
+    ImageUrls,
+    InputReferences,
 }
 
 impl ImageApi {
-    pub(super) const fn default_model(self) -> &'static str {
-        match self {
-            Self::OpenAi | Self::Codex => "gpt-image-2",
-            Self::OpenRouter => "openai/gpt-image-2",
-        }
+    pub(super) fn uses_multipart(&self, request: &ImageGenerationRequest<'_>) -> bool {
+        !request.references.is_empty() && self.reference_format == ImageReferenceFormat::Multipart
     }
 
-    pub(super) fn wire(
-        self,
-        request: &ImageGenerationRequest<'_>,
-    ) -> Result<(&'static str, Value)> {
-        if self == Self::OpenAi && !request.references.is_empty() {
+    pub(super) fn wire(&self, request: &ImageGenerationRequest<'_>) -> Result<(&str, Value)> {
+        if self.uses_multipart(request) {
             return Err(Error::Provider(
-                "public OpenAI image edits require multipart upload".into(),
+                "image edits require multipart upload".into(),
             ));
         }
-        let model = self.default_model();
+        let model = format!("{}{}", self.model_prefix, request.model);
         let size = request.image_aspect.image_size();
         let encoded = request
             .references
@@ -136,45 +155,34 @@ impl ImageApi {
                 Ok(image_data_url(image.media_type, &data))
             })
             .collect::<Result<Vec<_>>>()?;
-        match self {
-            Self::OpenAi | Self::Codex if encoded.is_empty() => Ok((
-                "images/generations",
-                json!({"model": model, "prompt": request.prompt, "n": 1, "size": size}),
-            )),
-            Self::Codex => Ok((
-                "images/edits",
-                json!({
-                    "model": model,
-                    "prompt": request.prompt,
-                    "n": 1,
-                    "size": size,
-                    "images": encoded.into_iter().map(|image_url| json!({"image_url": image_url})).collect::<Vec<_>>(),
-                }),
-            )),
-            Self::OpenAi => Err(Error::Provider(
-                "public OpenAI image edits require multipart upload".into(),
-            )),
-            Self::OpenRouter => {
-                let mut body =
-                    json!({"model": model, "prompt": request.prompt, "n": 1, "size": size});
-                if !encoded.is_empty() {
-                    body["input_references"] = Value::Array(
-                        encoded
-                            .into_iter()
-                            .map(|url| json!({"type": "image_url", "image_url": {"url": url}}))
-                            .collect(),
-                    );
-                }
-                Ok(("images", body))
-            }
+        let mut body = json!({"model": model, "prompt": request.prompt, "n": 1, "size": size});
+        if encoded.is_empty() {
+            return Ok((&self.generation_path, body));
         }
+        match self.reference_format {
+            ImageReferenceFormat::ImageUrls => {
+                body["images"] = encoded
+                    .into_iter()
+                    .map(|image_url| json!({"image_url": image_url}))
+                    .collect();
+            }
+            ImageReferenceFormat::InputReferences => {
+                body["input_references"] = encoded
+                    .into_iter()
+                    .map(|url| json!({"type": "image_url", "image_url": {"url": url}}))
+                    .collect();
+            }
+            ImageReferenceFormat::Multipart => unreachable!("multipart requests are handled above"),
+        }
+        Ok((&self.edit_path, body))
     }
 
-    pub(super) fn openai_edit_form(
+    pub(super) fn edit_form(
+        &self,
         request: &ImageGenerationRequest<'_>,
     ) -> Result<reqwest::multipart::Form> {
         let mut form = reqwest::multipart::Form::new()
-            .text("model", Self::OpenAi.default_model())
+            .text("model", format!("{}{}", self.model_prefix, request.model))
             .text("prompt", request.prompt.to_owned())
             .text("n", "1")
             .text("size", request.image_aspect.image_size());
@@ -193,7 +201,7 @@ impl ImageApi {
         Ok(form)
     }
 
-    pub(super) fn decode(self, response: &[u8]) -> Result<GeneratedImage> {
+    pub(super) fn decode(&self, response: &[u8]) -> Result<GeneratedImage> {
         let response: Value = serde_json::from_slice(response)?;
         let data = response
             .get("data")
@@ -235,16 +243,12 @@ impl ImageApi {
     }
 }
 
-fn parse_usage(value: Option<&Value>, api: ImageApi) -> Result<Option<TokenUsage>> {
+fn parse_usage(value: Option<&Value>, api: &ImageApi) -> Result<Option<TokenUsage>> {
     let Some(value) = value.filter(|value| !value.is_null()) else {
         return Ok(None);
     };
-    let (input_field, output_field) = match api {
-        ImageApi::OpenAi | ImageApi::Codex => ("/input_tokens", "/output_tokens"),
-        ImageApi::OpenRouter => ("/prompt_tokens", "/completion_tokens"),
-    };
-    let input_tokens = usage_i64(Some(value), input_field, "Images")?.unwrap_or_default();
-    let output_tokens = usage_i64(Some(value), output_field, "Images")?.unwrap_or_default();
+    let input_tokens = usage_i64(Some(value), &api.input_tokens, "Images")?.unwrap_or_default();
+    let output_tokens = usage_i64(Some(value), &api.output_tokens, "Images")?.unwrap_or_default();
     let total_tokens = match usage_i64(Some(value), "/total_tokens", "Images")? {
         Some(total) => total,
         None => input_tokens
@@ -288,6 +292,7 @@ mod tests {
             bytes: PNG,
         }];
         let request = ImageGenerationRequest {
+            model: "gpt-image-2.5-sunburst",
             prompt: "paint this blue",
             image_aspect: ImageAspect::Landscape,
             references: &references,
@@ -295,9 +300,9 @@ mod tests {
         request
             .validate(ImageInputLimits::default())
             .expect("input");
-        let (endpoint, openai) = ImageApi::Codex.wire(&request).expect("Codex JSON edit");
+        let (endpoint, openai) = IMAGE_APIS["codex"].wire(&request).expect("Codex JSON edit");
         assert_eq!(endpoint, "images/edits");
-        assert_eq!(openai["model"], "gpt-image-2");
+        assert_eq!(openai["model"], "gpt-image-2.5-sunburst");
         assert_eq!(openai["size"], "1536x1024");
         assert!(
             openai["images"][0]["image_url"]
@@ -305,41 +310,46 @@ mod tests {
                 .unwrap()
                 .starts_with("data:image/png;base64,")
         );
-        assert!(ImageApi::OpenAi.wire(&request).is_err());
-        let (endpoint, openrouter) = ImageApi::OpenRouter
+        assert!(IMAGE_APIS["openai"].wire(&request).is_err());
+        let (endpoint, openrouter) = IMAGE_APIS["openrouter"]
             .wire(&request)
             .expect("OpenRouter JSON edit");
         assert_eq!(endpoint, "images");
+        assert_eq!(openrouter["model"], "openai/gpt-image-2.5-sunburst");
         assert_eq!(openrouter["input_references"][0]["type"], "image_url");
         assert_eq!(openrouter["size"], "1536x1024");
 
-        let (endpoint, portrait) = ImageApi::OpenAi
+        let (endpoint, portrait) = IMAGE_APIS["openai"]
             .wire(&ImageGenerationRequest {
+                model: "gpt-image-2.5-flare",
                 prompt: "a tall painting",
                 image_aspect: ImageAspect::Portrait,
                 references: &[],
             })
             .expect("OpenAI generation");
         assert_eq!(endpoint, "images/generations");
+        assert_eq!(portrait["model"], "gpt-image-2.5-flare");
         assert_eq!(portrait["size"], "1024x1536");
 
         let image = base64::engine::general_purpose::STANDARD.encode(PNG);
-        let decoded = ImageApi::OpenRouter
+        let decoded = IMAGE_APIS["openrouter"]
             .decode(json!({"data": [{"b64_json": image, "media_type": "image/png"}], "usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5, "cost": 0.04}}).to_string().as_bytes())
             .expect("response");
         assert_eq!(decoded.bytes, PNG);
         assert_eq!(decoded.media_type, "image/png");
         assert_eq!(decoded.usage.unwrap().total_tokens, 5);
         assert!(
-            ImageApi::openai_edit_form(&ImageGenerationRequest {
-                prompt: "edit",
-                image_aspect: ImageAspect::Portrait,
-                references: &[ImageGenerationReference {
-                    media_type: "image/gif",
-                    bytes: PNG,
-                }],
-            })
-            .is_err()
+            IMAGE_APIS["openai"]
+                .edit_form(&ImageGenerationRequest {
+                    model: "gpt-image-2.5-sunburst",
+                    prompt: "edit",
+                    image_aspect: ImageAspect::Portrait,
+                    references: &[ImageGenerationReference {
+                        media_type: "image/gif",
+                        bytes: PNG,
+                    }],
+                })
+                .is_err()
         );
     }
 
@@ -352,6 +362,7 @@ mod tests {
             bytes: &bytes,
         }];
         let request = ImageGenerationRequest {
+            model: "gpt-image-2.5-sunburst",
             prompt: "edit",
             image_aspect: ImageAspect::Square,
             references: &references,
@@ -359,8 +370,8 @@ mod tests {
         request
             .validate(ImageInputLimits::default())
             .expect("aggregate request budget");
-        assert!(ImageApi::OpenAi.wire(&request).is_err());
-        assert!(ImageApi::Codex.wire(&request).is_err());
-        assert!(ImageApi::openai_edit_form(&request).is_ok());
+        assert!(IMAGE_APIS["openai"].wire(&request).is_err());
+        assert!(IMAGE_APIS["codex"].wire(&request).is_err());
+        assert!(IMAGE_APIS["openai"].edit_form(&request).is_ok());
     }
 }

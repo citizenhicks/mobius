@@ -21,29 +21,39 @@ use crate::protocol::{
 use crate::{BoxFuture, Error, Result};
 
 mod text {
-    pub const COMMAND_TASKS_DESCRIPTION: &str = "show the current todo list";
-    pub const MANIFEST_DESCRIPTION: &str = "Maintain a durable todo list for multi-step work";
-    pub const MANIFEST_LABEL: &str = "Tasks";
-    pub const PROMPT_MAIN: &str = "Use `write_todos` only for genuinely multi-step work. Keep the list short, mark work in_progress before starting and completed immediately after finishing, and end with a substantive answer. A <tasks> block restores the authoritative saved list when context restarts.";
-    pub const RENDER_EMPTY: &str = "No tasks.";
-    pub const RENDER_HEADING: &str = "Tasks";
-    pub const TOOL_WRITE_TODOS_DESCRIPTION: &str =
-        "Replace the session todo list; an empty list clears it.";
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct Definition {
+        pub(super) default_enabled: bool,
+        pub(super) command_tasks_description: String,
+        pub(super) manifest_description: String,
+        pub(super) manifest_label: String,
+        pub(super) prompt_main: String,
+        pub(super) render_empty: String,
+        pub(super) render_heading: String,
+        pub(super) tool_write_todos_description: String,
+    }
+    pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
+        std::sync::LazyLock::new(|| {
+            toml::from_str(include_str!("tasks.toml"))
+                .expect("bundled tasks definition must be valid")
+        });
 }
 const STATE_KEY: &str = "tasks.v1";
 const PROJECTION_KIND: &str = "tasks_state";
 const MAX_TODOS: usize = 50;
 const MAX_TODO_BYTES: usize = 500;
 /// Configuration and presentation metadata for durable tasks.
-pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
-    id: "tasks",
-    label: text::MANIFEST_LABEL,
-    description: text::MANIFEST_DESCRIPTION,
-    required: false,
-    default_enabled: false,
-    required_model_capability: None,
-    settings: &[],
-};
+pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
+    std::sync::LazyLock::new(|| MiddlewareManifest {
+        id: "tasks",
+        label: text::DEFINITION.manifest_label.as_str(),
+        description: text::DEFINITION.manifest_description.as_str(),
+        required: false,
+        default_enabled: text::DEFINITION.default_enabled,
+        required_model_capability: None,
+        settings: &[],
+    });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -84,7 +94,9 @@ impl Middleware for Tasks {
     }
 
     fn prompt_section(&self, _runtime: &RuntimeContext) -> Result<Option<PromptSection>> {
-        Ok(Some(PromptSection::new(text::PROMPT_MAIN)))
+        Ok(Some(PromptSection::new(
+            text::DEFINITION.prompt_main.as_str(),
+        )))
     }
 
     fn frontend(&self) -> FrontendContribution {
@@ -93,7 +105,7 @@ impl Middleware for Tasks {
             commands: vec![FrontendCommand {
                 name: "tasks".into(),
                 arguments: String::new(),
-                description: text::COMMAND_TASKS_DESCRIPTION.into(),
+                description: text::DEFINITION.command_tasks_description.clone(),
                 requires_idle: true,
             }],
             ..FrontendContribution::default()
@@ -113,15 +125,15 @@ impl Middleware for Tasks {
                     .and_then(Value::as_array)
                     .map_or(0, Vec::len);
                 super::tools::ToolHeading {
-                    title: text::RENDER_HEADING.into(),
+                    title: text::DEFINITION.render_heading.clone(),
                     detail: count.to_string(),
                 }
             },
         )
     }
 
-    fn retain_compacted_input(&self, item: &Value) -> bool {
-        internal_message_kind(item) != Some(PROJECTION_KIND)
+    fn prepare_compacted_input(&self, _original: &[Value], compacted: &mut Vec<Value>) {
+        compacted.retain(|item| internal_message_kind(item) != Some(PROJECTION_KIND));
     }
 
     fn session_start<'a>(
@@ -182,7 +194,7 @@ impl Tool for WriteTodos {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "write_todos".into(),
-            description: text::TOOL_WRITE_TODOS_DESCRIPTION.into(),
+            description: text::DEFINITION.tool_write_todos_description.clone(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -286,7 +298,7 @@ fn widget_event(todos: &[Todo]) -> FrontendEvent {
             }),
             content: Some(FrontendWidgetContent::ActionList {
                 actions: Vec::new(),
-                title: text::RENDER_HEADING.into(),
+                title: text::DEFINITION.render_heading.clone(),
                 items: todos
                     .iter()
                     .enumerate()
@@ -309,7 +321,7 @@ fn widget_event(todos: &[Todo]) -> FrontendEvent {
 
 fn format_todos(todos: &[Todo]) -> String {
     if todos.is_empty() {
-        return text::RENDER_EMPTY.into();
+        return text::DEFINITION.render_empty.clone();
     }
     todos
         .iter()
@@ -356,7 +368,7 @@ mod tests {
         });
         assert_eq!(
             Tasks.render(&begin, "session").unwrap().title,
-            text::RENDER_HEADING
+            text::DEFINITION.render_heading.as_str()
         );
         assert_eq!(Tasks.render(&end, "session").unwrap().title, "write_todos");
     }
@@ -486,7 +498,7 @@ mod tests {
             );
             crate::backend::model::mark_prompt_cache_breakpoint(&mut input[1]);
         }
-        input.retain(|item| tasks.retain_compacted_input(item));
+        tasks.prepare_compacted_input(&[], &mut input);
         assert_eq!(input.as_slice(), std::slice::from_ref(&user));
         let previous_events = frontend_events.lock().expect("events").len();
         tasks
@@ -529,7 +541,7 @@ mod tests {
         ));
         for source in [SessionStartSource::Resume, SessionStartSource::Compact] {
             if source == SessionStartSource::Compact {
-                input.retain(|item| tasks.retain_compacted_input(item));
+                tasks.prepare_compacted_input(&[], &mut input);
             }
             tasks
                 .session_start(&mut SessionStartContext {

@@ -1,16 +1,31 @@
-use diffy::DiffOptions;
+use diffy::{DiffOptions, Patch};
 use serde::Deserialize;
 use serde_json::Value;
 
 use super::patch::{apply_patch_document, parse_patch_document};
 use super::{
     ApprovalRequirement, ExecutionMode, HookIdentity, MAX_MUTATION_BYTES, MAX_TOOL_OUTPUT_BYTES,
-    Tool, ToolContext, ToolExposure, text,
+    Tool, ToolContext, ToolExposure,
 };
 use crate::backend::model::ToolDefinition;
 use crate::backend::session_files::SessionFileStore;
-use crate::protocol::{ContentPart, ImageDetail, ToolContent, ToolResponse};
+use crate::protocol::{
+    ContentPart, EventMsg, FrontendBlock, FrontendBlockFormat, FrontendBlockUpdate, ImageDetail,
+    ToolContent, ToolResponse,
+};
 use crate::{BoxFuture, Error, Result};
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Definition {
+    read_file: super::ToolSpec,
+    view_image: super::ToolSpec,
+    write_file: super::ToolSpec,
+    apply_patch: super::ToolSpec,
+}
+static DEFINITION: std::sync::LazyLock<Definition> = std::sync::LazyLock::new(|| {
+    toml::from_str(include_str!("coding.toml")).expect("bundled coding tools must be valid")
+});
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -22,21 +37,11 @@ pub(super) struct ReadFile;
 
 impl Tool for ReadFile {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "read_file".into(),
-            description: text::TOOL_READ_FILE_DESCRIPTION.into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": text::TOOL_READ_FILE_PARAMETER_PATH_DESCRIPTION
-                    }
-                },
-                "required": ["path"],
-                "additionalProperties": false
-            }),
-        }
+        DEFINITION.read_file.tool.clone()
+    }
+
+    fn render(&self, event: &crate::protocol::EventMsg) -> Option<crate::protocol::FrontendBlock> {
+        DEFINITION.read_file.render(event)
     }
 
     fn exposure(&self) -> ToolExposure {
@@ -84,23 +89,39 @@ struct ImageSource {
 
 impl Tool for ViewImage {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "view_image".into(),
-            description: text::TOOL_VIEW_IMAGE_DESCRIPTION.into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {"images": {
-                    "type": "array", "minItems": 1, "maxItems": 16,
-                    "items": {"type": "object", "properties": {
-                        "path": {"type": "string", "description": text::TOOL_VIEW_IMAGE_PARAMETER_PATH_DESCRIPTION},
-                        "file_id": {"type": "string", "description": "An image file ID authorized in this session; provide either path or file_id."},
-                        "detail": {"type": "string", "enum": ["auto", "low", "high"]}
-                    }, "additionalProperties": false,
-                    "oneOf": [{"required": ["path"]}, {"required": ["file_id"]}]}
-                }},
-                "required": ["images"], "additionalProperties": false
-            }),
+        DEFINITION.view_image.tool.clone()
+    }
+
+    fn tool_exposure(&self, context: &mut super::ToolExposureContext<'_>) {
+        if !context.supports_tool_image_input() {
+            context.hide(&[DEFINITION.view_image.tool.name.as_str()]);
         }
+    }
+
+    fn render(&self, event: &EventMsg) -> Option<FrontendBlock> {
+        super::render_tool_event(
+            event,
+            |name| name == DEFINITION.view_image.tool.name,
+            |_, arguments| {
+                let detail = arguments
+                    .get("images")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|image| {
+                        image
+                            .get("path")
+                            .or_else(|| image.get("file_id"))
+                            .and_then(Value::as_str)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                super::ToolHeading {
+                    title: DEFINITION.view_image.title.clone(),
+                    detail,
+                }
+            },
+        )
     }
 
     fn exposure(&self) -> ToolExposure {
@@ -188,19 +209,11 @@ pub(super) struct WriteFile;
 
 impl Tool for WriteFile {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "write_file".into(),
-            description: text::TOOL_WRITE_FILE_DESCRIPTION.into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"},
-                    "content": {"type": "string"}
-                },
-                "required": ["path", "content"],
-                "additionalProperties": false
-            }),
-        }
+        DEFINITION.write_file.tool.clone()
+    }
+
+    fn render(&self, event: &crate::protocol::EventMsg) -> Option<crate::protocol::FrontendBlock> {
+        DEFINITION.write_file.render(event)
     }
 
     fn exposure(&self) -> ToolExposure {
@@ -247,21 +260,44 @@ pub(super) struct ApplyPatch;
 
 impl Tool for ApplyPatch {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "apply_patch".into(),
-            description: text::TOOL_APPLY_PATCH_DESCRIPTION.into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "patch": {
-                        "type": "string",
-                        "description": text::TOOL_APPLY_PATCH_PARAMETER_PATCH_DESCRIPTION
-                    }
-                },
-                "required": ["patch"],
-                "additionalProperties": false
-            }),
+        DEFINITION.apply_patch.tool.clone()
+    }
+
+    fn prompt_section(&self) -> Option<&str> {
+        DEFINITION.apply_patch.prompt.as_deref()
+    }
+
+    fn render(&self, event: &EventMsg) -> Option<FrontendBlock> {
+        let mut block = super::render_tool_event(
+            event,
+            |name| name == DEFINITION.apply_patch.tool.name,
+            |_, arguments| {
+                let detail = arguments
+                    .get("patch")
+                    .and_then(Value::as_str)
+                    .and_then(|patch| {
+                        patch
+                            .lines()
+                            .find_map(|line| line.strip_prefix("*** Update File: "))
+                    })
+                    .unwrap_or_default()
+                    .into();
+                super::ToolHeading {
+                    title: DEFINITION.apply_patch.title.clone(),
+                    detail,
+                }
+            },
+        )?;
+        if let EventMsg::ToolCallEnd(result) = event
+            && !result.is_error
+            && Patch::from_str(&result.output.text()).is_ok()
+        {
+            block.update = FrontendBlockUpdate::Replace;
+            block.title = DEFINITION.apply_patch.title.clone();
+            block.text = result.output.text();
+            block.format = FrontendBlockFormat::UnifiedDiff;
         }
+        Some(block)
     }
 
     fn exposure(&self) -> ToolExposure {
@@ -350,7 +386,7 @@ mod tests {
         assert!(
             serde_json::from_value::<WriteArgs>(serde_json::json!({
                 "path": "README.md",
-                "content": "text",
+                "content": "",
                 "unexpected": true,
             }))
             .is_err()

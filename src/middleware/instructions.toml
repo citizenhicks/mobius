@@ -1,0 +1,5 @@
+default_enabled = false
+# Editable text and defaults owned by this middleware.
+manifest_description = "Load optional root AGENTS.md guidance"
+manifest_label = "Workspace instructions"
+prompt_title = "workspace instructions"

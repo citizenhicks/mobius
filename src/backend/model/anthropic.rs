@@ -3,8 +3,6 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
 
 use reqwest::Client;
 use serde::Deserialize;
@@ -47,97 +45,26 @@ use crate::protocol::ToolLoad;
 use crate::protocol::WebSearchAction;
 
 mod manifest {
-    use crate::backend::model::provider::{HostedWebSearch, ModelPreset, ReasoningPreset};
+    use crate::backend::model::provider::HostedWebSearch;
     use crate::protocol::ToolDiscoveryMode;
     pub const PROVIDER_LABEL: &str = "Anthropic";
     pub const PROVIDER_DESCRIPTION: &str = "Native Messages API with adaptive thinking";
     pub const TOOL_DISCOVERY: ToolDiscoveryMode = ToolDiscoveryMode::Rebuild;
     pub const CUSTOM_ENDPOINT_TOOL_DISCOVERY: Option<ToolDiscoveryMode> =
         Some(ToolDiscoveryMode::Rebuild);
-    pub const DEFAULT_MODEL: Option<&str> = Some("claude-sonnet-5");
-    const REASONING: &[ReasoningPreset] = &[
-        ReasoningPreset {
-            id: "low",
-            label: "Low",
-            description: "Prefer speed and lower cost",
-        },
-        ReasoningPreset {
-            id: "medium",
-            label: "Medium",
-            description: "Balance reasoning and latency",
-        },
-        ReasoningPreset {
-            id: "high",
-            label: "High",
-            description: "Anthropic's default reasoning effort",
-        },
-        ReasoningPreset {
-            id: "xhigh",
-            label: "Extra high",
-            description: "Extended effort for long-horizon work",
-        },
-        ReasoningPreset {
-            id: "max",
-            label: "Maximum",
-            description: "Use maximum available reasoning",
-        },
-    ];
-    pub const MODELS: &[ModelPreset] = &[
-        ModelPreset {
-            id: "claude-sonnet-5",
-            label: "Claude Sonnet 5",
-            description: "Fast frontier model for coding and agents",
-            context_window: 1000000,
-            reasoning: REASONING,
-            default_reasoning: Some("high"),
-            tool_discovery: ToolDiscoveryMode::Rebuild,
-        },
-        ModelPreset {
-            id: "claude-opus-4-8",
-            label: "Claude Opus 4.8",
-            description: "Highest-capability Anthropic model",
-            context_window: 1000000,
-            reasoning: REASONING,
-            default_reasoning: Some("high"),
-            tool_discovery: ToolDiscoveryMode::Native,
-        },
-        ModelPreset {
-            id: "claude-haiku-4-5",
-            label: "Claude Haiku 4.5",
-            description: "Fast, economical Anthropic model",
-            context_window: 200000,
-            reasoning: &[],
-            default_reasoning: None,
-            tool_discovery: ToolDiscoveryMode::Native,
-        },
-    ];
     pub const SEARCH: &[HostedWebSearch] = &[HostedWebSearch::Off, HostedWebSearch::Live];
 }
+pub(super) static CATALOG: std::sync::LazyLock<super::provider::ModelCatalog> =
+    std::sync::LazyLock::new(|| {
+        toml::from_str(include_str!("anthropic.toml"))
+            .expect("bundled anthropic model catalog must be valid")
+    });
+
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com/v1";
 const API_VERSION: &str = "2023-06-01";
 const MAX_OUTPUT_TOKENS: u64 = 64_000;
 const MAX_CONTENT_BLOCKS: usize = 1_024;
 const RAW_CONTENT: &str = "_anthropic_content";
-const SONNET_5_STANDARD_PRICING_START_UNIX_SECONDS: u64 = 1_788_220_800;
-
-fn anthropic_model_pricing(model: &str) -> Option<ModelPricing> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs());
-    anthropic_model_pricing_at(model, now)
-}
-
-pub(super) fn anthropic_model_pricing_at(model: &str, unix_seconds: u64) -> Option<ModelPricing> {
-    match model {
-        "claude-sonnet-5" if unix_seconds < SONNET_5_STANDARD_PRICING_START_UNIX_SECONDS => {
-            Some(ModelPricing::new(2_000_000, 200_000, 2_500_000, 10_000_000))
-        }
-        "claude-sonnet-5" => Some(ModelPricing::new(3_000_000, 300_000, 3_750_000, 15_000_000)),
-        "claude-opus-4-8" => Some(ModelPricing::new(5_000_000, 500_000, 6_250_000, 25_000_000)),
-        "claude-haiku-4-5" => Some(ModelPricing::new(1_000_000, 100_000, 1_250_000, 5_000_000)),
-        _ => None,
-    }
-}
 
 /// Anthropic's native Messages API provider.
 pub struct Anthropic {
@@ -196,7 +123,8 @@ impl Anthropic {
     /// Returns an error if validation or an operation required by this function fails.
     pub fn with_reasoning_effort(mut self, effort: impl Into<String>) -> Result<Self> {
         let effort = effort.into();
-        let supported = manifest::MODELS
+        let supported = &CATALOG
+            .models
             .iter()
             .find(|model| model.id == self.model)
             .is_some_and(|model| model.reasoning.iter().any(|preset| preset.id == effort));
@@ -330,7 +258,7 @@ impl Model for Anthropic {
     }
 
     fn pricing(&self) -> Option<ModelPricing> {
-        anthropic_model_pricing(&self.model)
+        CATALOG.pricing(&self.model)
     }
 
     fn respond<'a>(
@@ -1133,15 +1061,15 @@ fn update_i64(target: &mut i64, value: &Value, path: &str) -> Result<()> {
     Ok(())
 }
 
-pub(super) const fn provider() -> ProviderDefinition {
+pub(super) fn provider() -> ProviderDefinition {
     ProviderDefinition::new(
         "anthropic",
         manifest::PROVIDER_LABEL,
         "claude",
         manifest::PROVIDER_DESCRIPTION,
         ProviderAuth::ApiKey("ANTHROPIC_API_KEY"),
-        manifest::MODELS,
-        manifest::DEFAULT_MODEL,
+        &CATALOG.models,
+        CATALOG.default_model.as_deref(),
         manifest::SEARCH,
         build_provider,
     )

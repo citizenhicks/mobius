@@ -478,23 +478,27 @@ impl Sandbox {
             .await
     }
 
-    pub(crate) fn start_background(
+    pub(crate) async fn run_command(
         &self,
         command: String,
         permissions: &ToolPermissions,
-    ) -> Result<String> {
+        initial_wait: std::time::Duration,
+    ) -> Result<BackgroundCommandPoll> {
         if !permissions.mutation {
             return Err(Error::Sandbox(
                 "tool call is not authorized to execute commands".into(),
             ));
         }
-        self.background.start(
-            &permissions.session_id,
-            Arc::clone(&self.backend),
-            command,
-            permissions.sandbox_mode,
-            permissions.network_access,
-        )
+        self.background
+            .start(
+                &permissions.session_id,
+                Arc::clone(&self.backend),
+                command,
+                permissions.sandbox_mode,
+                permissions.network_access,
+            )?
+            .wait(&permissions.session_id, initial_wait)
+            .await
     }
 
     /// Reports whether one session still owns a background command result.

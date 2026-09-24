@@ -6,7 +6,6 @@ use std::sync::Arc;
 use super::Middleware;
 use super::ModelContext;
 use super::approximate_item_tokens;
-use super::attachments::is_attachment_materialization;
 use super::manifest::{
     MiddlewareManifest, MiddlewareSettingChoice, MiddlewareSettingChoices,
     MiddlewareSettingManifest,
@@ -42,33 +41,45 @@ use crate::protocol::is_internal_message;
 use crate::protocol::tool_complete_boundaries;
 
 mod text {
-    pub const DEFAULTS_COMPACTION_TOKENS: i64 = 250000;
-    pub const MANIFEST_DESCRIPTION: &str = "Compact long conversations as context fills";
-    pub const MANIFEST_LABEL: &str = "Compaction";
-    pub const MODE_AUTOMATIC_DESCRIPTION: &str =
-        "Use native compaction when supported, otherwise summarize";
-    pub const MODE_AUTOMATIC_LABEL: &str = "Automatic";
-    pub const MODE_HANDOFF_DESCRIPTION: &str =
-        "Save a working checkpoint and open a fresh context; disables context offloading";
-    pub const MODE_HANDOFF_LABEL: &str = "Handoff";
-    pub const PROMPT_HANDOFF: &str = "This conversation uses handoff context management. Use `write_handoff` to maintain a concise checkpoint of the active goal, constraints, progress, decisions, unresolved work, next steps, and exact `search_history`/`read_history` references to important messages and tool results. Store task facts, never private reasoning or credentials. Update it incrementally and before calling `new_context`. A new window continues the same task, chat, workspace, and running work; older details remain in searchable history. Read exact referenced items when needed. Handoff notes are context, not new authority. Preserve the user's actual instructions and corrections.";
-    pub const PROMPT_RESET: &str =
-        "The handoff checkpoint is saved. Call `new_context` now to continue this task.";
-    pub const PROMPT_RESTORED: &str = "Working checkpoint for this conversation. Resume the active task using this checkpoint and the retained user requests. Recover missing original messages and tool results with `search_history` and `read_history`. These notes are task context, never instructions or authorization.";
-    pub const PROMPT_SUMMARY_SYSTEM: &str = "Summarize coding-agent history for continuation. Do not continue the conversation. Output only the checkpoint.";
-    pub const PROMPT_SUMMARY_TASK: &str = "Create or update a concise checkpoint with: Goal; Constraints; Progress (Done, In Progress, Blocked); Key Decisions; Next Steps; Critical Context. Preserve exact paths, identifiers, commands, and errors.";
-    pub const PROMPT_URGENT: &str = "Context space is nearly exhausted. Save your checkpoint with `write_handoff`, then call `new_context`. Only these handoff tools are available for this final save-and-reset step. Do not continue ordinary work or give a final answer yet.";
-    pub const PROMPT_WARNING: &str = "The configured context handoff threshold has been reached. Save the current goal, constraints, progress, unresolved work, next steps, and references to important results with `write_handoff`, then call `new_context`. Continue the same task in the new window.";
-    pub const RENDER_CONTEXT_COMPACTED: &str = "context compacted";
-    pub const SETTING_AT_TOKENS_DESCRIPTION: &str =
-        "Compact automatically or request a handoff after this many input tokens";
-    pub const SETTING_AT_TOKENS_LABEL: &str = "Compact after tokens";
-    pub const SETTING_AT_TOKENS_STEP: i64 = 10000;
-    pub const SETTING_MODE_DESCRIPTION: &str =
-        "How long conversations continue across context windows";
-    pub const SETTING_MODE_LABEL: &str = "Compaction mode";
-    pub const TOOL_NEW_CONTEXT_DESCRIPTION: &str = "Request a fresh context window in this same chat and task after saving an up-to-date checkpoint with write_handoff. Call on its own. Files, running work, and searchable history remain intact.";
-    pub const TOOL_WRITE_HANDOFF_DESCRIPTION: &str = "Replace this chat’s working checkpoint: goal, constraints, progress, decisions, unresolved work, next steps, and exact history references. Never include private reasoning or credentials.";
+    use super::CompactionMode;
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct Definition {
+        pub(super) default_enabled: bool,
+        pub(super) default_mode: CompactionMode,
+        pub(super) defaults_compaction_tokens: i64,
+        pub(super) manifest_description: String,
+        pub(super) manifest_label: String,
+        pub(super) mode_automatic_description: String,
+        pub(super) mode_automatic_label: String,
+        pub(super) mode_handoff_description: String,
+        pub(super) mode_handoff_label: String,
+        pub(super) prompt_handoff: String,
+        pub(super) prompt_reset: String,
+        pub(super) prompt_restored: String,
+        pub(super) prompt_summary_system: String,
+        pub(super) prompt_summary_task: String,
+        pub(super) prompt_urgent: String,
+        pub(super) prompt_warning: String,
+        pub(super) render_context_compacted: String,
+        pub(super) setting_at_tokens_description: String,
+        pub(super) setting_at_tokens_label: String,
+        pub(super) setting_at_tokens_step: i64,
+        pub(super) setting_mode_description: String,
+        pub(super) setting_mode_label: String,
+        pub(super) tool_new_context_description: String,
+        pub(super) tool_write_handoff_description: String,
+    }
+    pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
+        std::sync::LazyLock::new(|| {
+            let definition: Definition = toml::from_str(include_str!("compaction.toml"))
+                .expect("bundled compaction definition must be valid");
+
+            assert!(definition.defaults_compaction_tokens >= 1);
+            assert!(definition.setting_at_tokens_step > 0);
+
+            definition
+        });
 }
 mod handoff;
 
@@ -76,73 +87,103 @@ const KEEP_RECENT_TOKENS: usize = 20_000;
 const NATIVE_RETAINED_TOKENS: usize = 64_000;
 const MAX_SUMMARY_TOOL_RESULT_CHARS: usize = 2_000;
 const COMPACTION_RESERVE_TOKENS: i64 = 16_384;
-const _: () = {
-    assert!(text::DEFAULTS_COMPACTION_TOKENS >= 1);
-    assert!(text::SETTING_AT_TOKENS_STEP > 0);
-};
+
 /// Default compaction trigger for middleware instances without an override.
-pub const DEFAULT_COMPACTION_TOKENS: i64 = text::DEFAULTS_COMPACTION_TOKENS;
+pub fn default_compaction_tokens() -> i64 {
+    text::DEFINITION.defaults_compaction_tokens
+}
 const HANDOFF_EXCLUDES: &[&str] = &["context_offloading"];
-const MODES: &[MiddlewareSettingChoice] = &[
-    MiddlewareSettingChoice {
-        disables: &[],
-        value: "automatic",
-        label: text::MODE_AUTOMATIC_LABEL,
-        description: text::MODE_AUTOMATIC_DESCRIPTION,
-        symbol: None,
-        tone: FrontendTone::Neutral,
-    },
-    MiddlewareSettingChoice {
-        disables: HANDOFF_EXCLUDES,
-        value: "handoff",
-        label: text::MODE_HANDOFF_LABEL,
-        description: text::MODE_HANDOFF_DESCRIPTION,
-        symbol: None,
-        tone: FrontendTone::Neutral,
-    },
-];
-const SETTINGS: &[MiddlewareSettingManifest] = &[
-    MiddlewareSettingManifest::Select {
-        id: "mode",
-        label: text::SETTING_MODE_LABEL,
-        description: text::SETTING_MODE_DESCRIPTION,
-        choices: MiddlewareSettingChoices::Static(MODES),
-        unset_label: None,
-        default: Some("automatic"),
-        max_bytes: 9,
-        composer: false,
-    },
-    MiddlewareSettingManifest::Integer {
-        id: "at_tokens",
-        label: text::SETTING_AT_TOKENS_LABEL,
-        description: text::SETTING_AT_TOKENS_DESCRIPTION,
-        min: 1,
-        max: None,
-        step: text::SETTING_AT_TOKENS_STEP,
-        default: DEFAULT_COMPACTION_TOKENS,
-    },
-];
+static MODES: std::sync::LazyLock<Vec<MiddlewareSettingChoice>> = std::sync::LazyLock::new(|| {
+    vec![
+        MiddlewareSettingChoice {
+            disables: &[],
+            value: "automatic",
+            label: text::DEFINITION.mode_automatic_label.as_str(),
+            description: text::DEFINITION.mode_automatic_description.as_str(),
+            symbol: None,
+            tone: FrontendTone::Neutral,
+        },
+        MiddlewareSettingChoice {
+            disables: HANDOFF_EXCLUDES,
+            value: "handoff",
+            label: text::DEFINITION.mode_handoff_label.as_str(),
+            description: text::DEFINITION.mode_handoff_description.as_str(),
+            symbol: None,
+            tone: FrontendTone::Neutral,
+        },
+    ]
+});
+static SETTINGS: std::sync::LazyLock<Vec<MiddlewareSettingManifest>> =
+    std::sync::LazyLock::new(|| {
+        vec![
+            MiddlewareSettingManifest::Select {
+                id: "mode",
+                label: text::DEFINITION.setting_mode_label.as_str(),
+                description: text::DEFINITION.setting_mode_description.as_str(),
+                choices: MiddlewareSettingChoices::Static(&MODES),
+                unset_label: None,
+                default: Some(text::DEFINITION.default_mode.id()),
+                max_bytes: 9,
+                composer: false,
+            },
+            MiddlewareSettingManifest::Integer {
+                id: "at_tokens",
+                label: text::DEFINITION.setting_at_tokens_label.as_str(),
+                description: text::DEFINITION.setting_at_tokens_description.as_str(),
+                min: 1,
+                max: None,
+                step: text::DEFINITION.setting_at_tokens_step,
+                default: default_compaction_tokens(),
+            },
+        ]
+    });
 
 /// Policy used when a conversation reaches its context threshold.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CompactionMode {
     /// Use the provider's native compaction capability, or a model summary.
-    #[default]
     Automatic,
     /// Let the model save working notes and request a new context window.
     Handoff,
 }
 
+impl Default for CompactionMode {
+    fn default() -> Self {
+        text::DEFINITION.default_mode
+    }
+}
+
+impl CompactionMode {
+    const fn id(self) -> &'static str {
+        match self {
+            Self::Automatic => "automatic",
+            Self::Handoff => "handoff",
+        }
+    }
+}
+
+impl std::str::FromStr for CompactionMode {
+    type Err = Error;
+    fn from_str(value: &str) -> Result<Self> {
+        serde::Deserialize::deserialize(
+            serde::de::value::StrDeserializer::<serde::de::value::Error>::new(value),
+        )
+        .map_err(|_| Error::Config("unsupported compaction mode".into()))
+    }
+}
+
 /// Configuration and presentation metadata for compaction.
-pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
-    id: "compaction",
-    label: text::MANIFEST_LABEL,
-    description: text::MANIFEST_DESCRIPTION,
-    required: false,
-    default_enabled: true,
-    required_model_capability: None,
-    settings: SETTINGS,
-};
+pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
+    std::sync::LazyLock::new(|| MiddlewareManifest {
+        id: "compaction",
+        label: text::DEFINITION.manifest_label.as_str(),
+        description: text::DEFINITION.manifest_description.as_str(),
+        required: false,
+        default_enabled: text::DEFINITION.default_enabled,
+        required_model_capability: None,
+        settings: &SETTINGS,
+    });
 
 /// Compacts visible context after a configurable token threshold.
 pub struct Compaction {
@@ -153,8 +194,8 @@ pub struct Compaction {
 impl Default for Compaction {
     fn default() -> Self {
         Self {
-            at_tokens: DEFAULT_COMPACTION_TOKENS,
-            mode: CompactionMode::Automatic,
+            at_tokens: default_compaction_tokens(),
+            mode: CompactionMode::default(),
         }
     }
 }
@@ -172,7 +213,7 @@ impl Compaction {
         }
         Ok(Self {
             at_tokens,
-            mode: CompactionMode::Automatic,
+            mode: CompactionMode::default(),
         })
     }
 
@@ -216,10 +257,8 @@ impl Middleware for Compaction {
     }
 
     fn prompt_section(&self, _runtime: &RuntimeContext) -> Result<Option<PromptSection>> {
-        Ok(
-            (self.mode == CompactionMode::Handoff)
-                .then(|| PromptSection::new(text::PROMPT_HANDOFF)),
-        )
+        Ok((self.mode == CompactionMode::Handoff)
+            .then(|| PromptSection::new(text::DEFINITION.prompt_handoff.as_str())))
     }
 
     fn post_tool_use<'a>(
@@ -246,8 +285,8 @@ impl Middleware for Compaction {
         })
     }
 
-    fn retain_compacted_input(&self, item: &Value) -> bool {
-        !handoff::is_control(item)
+    fn prepare_compacted_input(&self, _original: &[Value], compacted: &mut Vec<Value>) {
+        compacted.retain(|item| !handoff::is_control(item));
     }
 
     fn session_start<'a>(
@@ -276,7 +315,7 @@ impl Middleware for Compaction {
             update: crate::protocol::FrontendBlockUpdate::Replace,
             state: crate::protocol::FrontendBlockState::Complete,
             role: crate::protocol::FrontendBlockRole::Notice,
-            title: text::RENDER_CONTEXT_COMPACTED.into(),
+            title: text::DEFINITION.render_context_compacted.clone(),
             text: String::new(),
             symbol: None,
             files: Vec::new(),
@@ -362,11 +401,13 @@ async fn apply_compaction(
     let latest_turn_input = latest_turn_input(context.input());
     let active_message_metadata = latest_turn_input
         .as_ref()
-        .and_then(|active| active.item.get(MESSAGE_METADATA_FIELD))
+        .and_then(|active| active.get(MESSAGE_METADATA_FIELD))
         .cloned();
     let mut compacted = retain_native_context(context.input(), output);
-    context.hooks.retain_compacted_input(&mut compacted);
     restore_input_private_fields(&mut compacted, latest_turn_input);
+    context
+        .hooks
+        .prepare_compacted_input(context.input(), &mut compacted);
     validate_active_message_metadata(&compacted, active_message_metadata.as_ref())?;
     if let Some(tool_load) = tool_load {
         compacted.push(tool_load);
@@ -417,44 +458,28 @@ fn retain_native_context(input: &[Value], mut compacted: Vec<Value>) -> Vec<Valu
     let cut = recent_cut(input, NATIVE_RETAINED_TOKENS).unwrap_or(0);
     let recent = &input[cut..];
     let mut retained = Vec::new();
-    for (index, item) in recent.iter().enumerate() {
+    for item in recent {
         if (!is_internal_message(item) || item.get(MESSAGE_METADATA_FIELD).is_some())
             && item.get("role").and_then(Value::as_str) == Some("user")
         {
             retained.push(item.clone());
-            if let Some(materialization) = recent.get(index + 1)
-                && is_attachment_materialization(materialization)
-            {
-                retained.push(materialization.clone());
-            }
         }
     }
     retained.append(&mut compacted);
     retained
 }
 
-struct LatestTurnInput<'a> {
-    item: &'a Value,
-    materialization: Option<&'a Value>,
-}
-
-fn latest_turn_input(input: &[Value]) -> Option<LatestTurnInput<'_>> {
-    let index = input
+fn latest_turn_input(input: &[Value]) -> Option<&Value> {
+    input
         .iter()
-        .rposition(|item| item.get(MESSAGE_METADATA_FIELD).is_some())?;
-    Some(LatestTurnInput {
-        item: &input[index],
-        materialization: input
-            .get(index + 1)
-            .filter(|item| is_attachment_materialization(item)),
-    })
+        .rfind(|item| item.get(MESSAGE_METADATA_FIELD).is_some())
 }
 
 fn validate_active_message_metadata(input: &[Value], expected: Option<&Value>) -> Result<()> {
     let Some(expected) = expected else {
         return Ok(());
     };
-    if latest_turn_input(input).and_then(|active| active.item.get(MESSAGE_METADATA_FIELD))
+    if latest_turn_input(input).and_then(|active| active.get(MESSAGE_METADATA_FIELD))
         == Some(expected)
     {
         return Ok(());
@@ -464,15 +489,8 @@ fn validate_active_message_metadata(input: &[Value], expected: Option<&Value>) -
     ))
 }
 
-fn restore_input_private_fields(
-    compacted: &mut Vec<Value>,
-    latest_turn_input: Option<LatestTurnInput<'_>>,
-) {
-    let Some(LatestTurnInput {
-        item: input,
-        materialization,
-    }) = latest_turn_input
-    else {
+fn restore_input_private_fields(compacted: &mut Vec<Value>, latest_turn_input: Option<&Value>) {
+    let Some(input) = latest_turn_input else {
         return;
     };
     let Some(fields) = input.as_object() else {
@@ -483,38 +501,18 @@ fn restore_input_private_fields(
         .filter(|(name, _)| name.starts_with('_'))
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect::<Vec<_>>();
-    if private.is_empty() && materialization.is_none() {
+    if private.is_empty() {
         return;
     }
     let retained_index = compacted.iter().rposition(|item| {
         item.get("role") == input.get("role") && item.get("content") == input.get("content")
     });
-    let input_index = if let Some(index) = retained_index {
+    if let Some(index) = retained_index {
         if let Some(fields) = compacted[index].as_object_mut() {
             fields.extend(private);
         }
-        index
     } else {
         compacted.push(input.clone());
-        compacted.len() - 1
-    };
-    restore_attachment_materialization(compacted, input_index, materialization);
-}
-
-fn restore_attachment_materialization(
-    compacted: &mut Vec<Value>,
-    user_index: usize,
-    materialization: Option<&Value>,
-) {
-    let Some(materialization) = materialization else {
-        return;
-    };
-    match compacted.get(user_index + 1) {
-        Some(retained) if retained == materialization => {}
-        Some(retained) if is_attachment_materialization(retained) => {
-            compacted[user_index + 1] = materialization.clone();
-        }
-        Some(_) | None => compacted.insert(user_index + 1, materialization.clone()),
     }
 }
 
@@ -559,7 +557,7 @@ async fn summarize(context: &ModelContext<'_>) -> Result<CompactOutput> {
             key: &cache_key,
             context_epoch: *context.context_epoch,
         }),
-        instructions: text::PROMPT_SUMMARY_SYSTEM,
+        instructions: text::DEFINITION.prompt_summary_system.as_str(),
         input: &input,
         catalog_revision: context.tools.revision()?,
         tools: &[],
@@ -631,7 +629,7 @@ fn safe_boundaries(input: &[Value]) -> Vec<usize> {
 }
 
 fn safe_start(item: &Value) -> bool {
-    if is_attachment_materialization(item) {
+    if is_internal_message(item) && item.get(MESSAGE_METADATA_FIELD).is_none() {
         return false;
     }
     match item.get("type").and_then(Value::as_str) {
@@ -666,7 +664,10 @@ fn summary_prompt(history: &[Value]) -> Option<String> {
             "\n<previous_summary>\n{summary}\n</previous_summary>\n"
         ));
     }
-    prompt.push_str(&format!("\n{}", text::PROMPT_SUMMARY_TASK));
+    prompt.push_str(&format!(
+        "\n{}",
+        text::DEFINITION.prompt_summary_task.as_str()
+    ));
     Some(prompt)
 }
 
@@ -745,6 +746,21 @@ fn truncate_chars(text: &str, limit: usize) -> String {
 mod tests {
     use super::*;
     use crate::backend::model::tool_output;
+
+    #[test]
+    fn configured_modes_parse_at_the_owner_boundary() {
+        for choice in MODES.iter() {
+            assert_eq!(
+                choice
+                    .value
+                    .parse::<CompactionMode>()
+                    .expect("declared mode")
+                    .id(),
+                choice.value
+            );
+        }
+        assert!("other".parse::<CompactionMode>().is_err());
+    }
 
     #[test]
     fn handoff_event_shows_written_notes() {
@@ -844,13 +860,7 @@ mod tests {
             serde_json::json!({"type": "compaction", "encrypted_content": "opaque"}),
         ];
 
-        restore_input_private_fields(
-            &mut compacted,
-            Some(LatestTurnInput {
-                item: &user,
-                materialization: None,
-            }),
-        );
+        restore_input_private_fields(&mut compacted, Some(&user));
 
         assert_eq!(compacted.len(), 2);
         assert_eq!(compacted[0]["id"], "message-1");
@@ -921,7 +931,11 @@ mod tests {
         let mut compacted = vec![compaction.clone()];
 
         restore_input_private_fields(&mut compacted, latest_turn_input(&input));
-
+        let files = tempfile::tempdir().expect("files");
+        let attachments = super::super::attachments::Attachments::new(
+            crate::backend::session_files::SessionFileStore::new(files.path()),
+        );
+        attachments.prepare_compacted_input(&input, &mut compacted);
         assert_eq!(compacted, vec![compaction, user, materialization]);
     }
 

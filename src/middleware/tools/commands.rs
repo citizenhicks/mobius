@@ -3,11 +3,22 @@ use serde_json::Value;
 
 use super::{
     ApprovalRequirement, HookIdentity, MAX_COMMAND_BYTES, MAX_TOOL_OUTPUT_BYTES, Tool, ToolContext,
-    ToolExposure, text,
+    ToolExposure,
 };
 use crate::backend::model::ToolDefinition;
 use crate::backend::sandbox::BackgroundCommandPoll;
 use crate::{BoxFuture, Error, Result};
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Definition {
+    bash: super::ToolSpec,
+    manage_command: super::ToolSpec,
+    initial_wait_ms: u64,
+}
+static DEFINITION: std::sync::LazyLock<Definition> = std::sync::LazyLock::new(|| {
+    toml::from_str(include_str!("commands.toml")).expect("bundled commands tools must be valid")
+});
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -19,16 +30,11 @@ pub(super) struct Bash;
 
 impl Tool for Bash {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "bash".into(),
-            description: text::TOOL_BASH_DESCRIPTION.into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {"command": {"type": "string"}},
-                "required": ["command"],
-                "additionalProperties": false
-            }),
-        }
+        DEFINITION.bash.tool.clone()
+    }
+
+    fn render(&self, event: &crate::protocol::EventMsg) -> Option<crate::protocol::FrontendBlock> {
+        DEFINITION.bash.render(event)
     }
 
     fn exposure(&self) -> ToolExposure {
@@ -60,83 +66,40 @@ impl Tool for Bash {
             validate_command(&arguments.command)?;
             let output = context
                 .sandbox
-                .execute(&arguments.command, &context.permissions)
+                .run_command(
+                    arguments.command,
+                    &context.permissions,
+                    std::time::Duration::from_millis(DEFINITION.initial_wait_ms),
+                )
                 .await?;
-            Ok((format!(
-                "exit code: {}\nstdout:\n{}\nstderr:\n{}",
-                output.exit_code, output.stdout, output.stderr
-            ))
-            .into())
-        })
-    }
-}
-
-pub(super) struct StartCommand;
-
-impl Tool for StartCommand {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "start_command".into(),
-            description: text::TOOL_START_COMMAND_DESCRIPTION.into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {"command": {"type": "string"}},
-                "required": ["command"],
-                "additionalProperties": false
-            }),
-        }
-    }
-
-    fn exposure(&self) -> ToolExposure {
-        ToolExposure::Direct
-    }
-
-    fn approval(&self) -> ApprovalRequirement {
-        ApprovalRequirement::Always
-    }
-
-    fn hook_identity(&self) -> Option<HookIdentity> {
-        Some(HookIdentity {
-            name: "Bash",
-            subjects: &["Bash"],
-        })
-    }
-
-    fn rewrite_hook_input(&self, input: Value) -> Result<Value> {
-        rewrite_command_input(&input)
-    }
-
-    fn call<'a>(
-        &'a self,
-        context: ToolContext,
-        arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
-        Box::pin(async move {
-            let arguments: BashArgs = serde_json::from_value(arguments)?;
-            validate_command(&arguments.command)?;
-            let id = context
-                .sandbox
-                .start_background(arguments.command, &context.permissions)?;
-            Ok((serde_json::json!({"command_id": id, "status": "running"}).to_string()).into())
+            Ok(background_output(output).into())
         })
     }
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CommandIdArgs {
+struct ManageCommandArgs {
     command_id: String,
+    action: CommandAction,
 }
 
-pub(super) struct PollCommand;
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CommandAction {
+    Poll,
+    Stop,
+}
 
-impl Tool for PollCommand {
+pub(super) struct ManageCommand;
+
+impl Tool for ManageCommand {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "poll_command".into(),
-            description: text::TOOL_POLL_COMMAND_DESCRIPTION.into(),
-            parameters: command_id_schema(),
-        }
+        DEFINITION.manage_command.tool.clone()
+    }
+
+    fn render(&self, event: &crate::protocol::EventMsg) -> Option<crate::protocol::FrontendBlock> {
+        DEFINITION.manage_command.render(event)
     }
 
     fn exposure(&self) -> ToolExposure {
@@ -149,45 +112,23 @@ impl Tool for PollCommand {
         arguments: Value,
     ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
-            let arguments: CommandIdArgs = serde_json::from_value(arguments)?;
+            let arguments: ManageCommandArgs = serde_json::from_value(arguments)?;
             validate_command_id(&arguments.command_id)?;
-            let output = context
-                .sandbox
-                .poll_background(&arguments.command_id, &context.permissions)
-                .await?;
-            Ok((background_output(output)).into())
-        })
-    }
-}
-
-pub(super) struct StopCommand;
-
-impl Tool for StopCommand {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "stop_command".into(),
-            description: text::TOOL_STOP_COMMAND_DESCRIPTION.into(),
-            parameters: command_id_schema(),
-        }
-    }
-
-    fn exposure(&self) -> ToolExposure {
-        ToolExposure::Direct
-    }
-
-    fn call<'a>(
-        &'a self,
-        context: ToolContext,
-        arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
-        Box::pin(async move {
-            let arguments: CommandIdArgs = serde_json::from_value(arguments)?;
-            validate_command_id(&arguments.command_id)?;
-            let output = context
-                .sandbox
-                .stop_background(&arguments.command_id, &context.permissions)
-                .await?;
-            Ok((background_output(output)).into())
+            let output = match arguments.action {
+                CommandAction::Poll => {
+                    context
+                        .sandbox
+                        .poll_background(&arguments.command_id, &context.permissions)
+                        .await?
+                }
+                CommandAction::Stop => {
+                    context
+                        .sandbox
+                        .stop_background(&arguments.command_id, &context.permissions)
+                        .await?
+                }
+            };
+            Ok(background_output(output).into())
         })
     }
 }
@@ -218,19 +159,11 @@ fn validate_command_id(id: &str) -> Result<()> {
         .map_err(|_| Error::Tool("command_id must be a UUID".into()))
 }
 
-fn command_id_schema() -> Value {
-    serde_json::json!({
-        "type": "object",
-        "properties": {"command_id": {"type": "string", "format": "uuid"}},
-        "required": ["command_id"],
-        "additionalProperties": false
-    })
-}
-
 pub(super) fn background_output(output: BackgroundCommandPoll) -> String {
     let status = output.status.as_str();
     let exit_code = output.exit_code;
     let rendered = serde_json::json!({
+        "command_id": output.command_id,
         "status": status,
         "exit_code": exit_code,
         "stdout": output.stdout,
@@ -243,6 +176,7 @@ pub(super) fn background_output(output: BackgroundCommandPoll) -> String {
         return rendered;
     }
     serde_json::json!({
+        "command_id": output.command_id,
         "status": status,
         "exit_code": exit_code,
         "stdout": "",
@@ -266,8 +200,9 @@ mod tests {
             .is_err()
         );
         assert!(
-            serde_json::from_value::<CommandIdArgs>(serde_json::json!({
+            serde_json::from_value::<ManageCommandArgs>(serde_json::json!({
                 "command_id": uuid::Uuid::nil().to_string(),
+                "action": "poll",
                 "unexpected": true,
             }))
             .is_err()

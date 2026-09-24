@@ -57,12 +57,9 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
     let api_key = config.credential.into_optional_api_key("openrouter")?;
     let native_images = api_key.is_some() && uses_default_endpoint(Some(BASE_URL), Some(&base_url));
     let provider = OpenAi::with_client(api_key, base_url, config.model, config.http)?
-        .without_image_generation();
-    let provider = if native_images {
-        provider.with_openrouter_image_generation()
-    } else {
-        provider
-    };
+        .with_image_api(
+            native_images.then_some(&super::image_generation::IMAGE_APIS["openrouter"]),
+        );
     let provider = match tool_discovery {
         ToolDiscoveryMode::Native => provider.with_openrouter_tool_search(),
         ToolDiscoveryMode::Rebuild => provider.with_tool_discovery(ToolDiscoveryMode::Rebuild),

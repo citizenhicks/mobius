@@ -297,11 +297,9 @@ pub trait Middleware: Send + Sync {
         Box::pin(async { Ok(()) })
     }
 
-    /// Keeps one compacted context item before it is committed or observed by hooks.
-    /// Capability-owned projections may be discarded even when a later hook stops or fails.
-    fn retain_compacted_input(&self, _item: &Value) -> bool {
-        true
-    }
+    /// Repairs or discards capability-owned projections before compacted input is committed.
+    /// The original input is read-only; changes are validated before the rewrite is saved.
+    fn prepare_compacted_input(&self, _original: &[Value], _compacted: &mut Vec<Value>) {}
 
     /// Intercepts the committed compacted context and may stop the active turn.
     fn post_compact<'a>(
@@ -784,9 +782,9 @@ impl MiddlewareStack {
         Ok(context.stop_reason)
     }
 
-    pub(crate) fn retain_compacted_input(&self, input: &mut Vec<Value>) {
+    pub(crate) fn prepare_compacted_input(&self, original: &[Value], compacted: &mut Vec<Value>) {
         for entry in &self.entries {
-            input.retain(|item| entry.retain_compacted_input(item));
+            entry.prepare_compacted_input(original, compacted);
         }
     }
 

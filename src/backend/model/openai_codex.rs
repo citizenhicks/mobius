@@ -4,8 +4,7 @@ use std::sync::Arc;
 
 use self::auth::BROWSER_AUTH;
 use self::auth::ChatGptAuth;
-use super::openai_socket::DEFAULT_MODEL;
-use super::openai_socket::MODELS;
+use super::openai::CATALOG;
 use super::openai_socket::OpenAiSocket;
 use super::openai_socket::SEARCH;
 use super::provider::HostedWebSearch;
@@ -30,15 +29,15 @@ const HTTP_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const SOCKET_URL: &str = "wss://chatgpt.com/backend-api/codex/responses";
 pub(super) const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 
-pub(super) const fn provider() -> ProviderDefinition {
+pub(super) fn provider() -> ProviderDefinition {
     ProviderDefinition::new(
         PROVIDER_ID,
         manifest::PROVIDER_LABEL,
         "chat_gpt",
         manifest::PROVIDER_DESCRIPTION,
         ProviderAuth::Browser(&BROWSER_AUTH),
-        MODELS,
-        DEFAULT_MODEL,
+        &CATALOG.models,
+        CATALOG.default_model.as_deref(),
         SEARCH,
         build_provider,
     )
@@ -61,7 +60,7 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn super::Model>> 
         config.http,
     )?
     .with_codex_realtime_voice()?
-    .with_codex_image_generation();
+    .with_image_api(Some(&super::image_generation::IMAGE_APIS["codex"]));
     let provider = match config.reasoning_effort {
         Some(effort) => provider.with_reasoning_effort(effort)?,
         None => provider,

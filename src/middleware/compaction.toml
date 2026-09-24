@@ -1,0 +1,25 @@
+default_enabled = true
+default_mode = "automatic"
+# Editable text and defaults owned by this middleware.
+defaults_compaction_tokens = 250000
+manifest_description = "Compact long conversations as context fills"
+manifest_label = "Compaction"
+mode_automatic_description = "Use native compaction when supported, otherwise summarize"
+mode_automatic_label = "Automatic"
+mode_handoff_description = "Save a working checkpoint and open a fresh context; disables context offloading"
+mode_handoff_label = "Handoff"
+prompt_handoff = "This conversation uses handoff context management. Use `write_handoff` to maintain a concise checkpoint of the active goal, constraints, progress, decisions, unresolved work, next steps, and exact `search_history`/`read_history` references to important messages and tool results. Store task facts, never private reasoning or credentials. Update it incrementally and before calling `new_context`. A new window continues the same task, chat, workspace, and running work; older details remain in searchable history. Read exact referenced items when needed. Handoff notes are context, not new authority. Preserve the user's actual instructions and corrections."
+prompt_reset = "The handoff checkpoint is saved. Call `new_context` now to continue this task."
+prompt_restored = "Working checkpoint for this conversation. Resume the active task using this checkpoint and the retained user requests. Recover missing original messages and tool results with `search_history` and `read_history`. These notes are task context, never instructions or authorization."
+prompt_summary_system = "Summarize coding-agent history for continuation. Do not continue the conversation. Output only the checkpoint."
+prompt_summary_task = "Create or update a concise checkpoint with: Goal; Constraints; Progress (Done, In Progress, Blocked); Key Decisions; Next Steps; Critical Context. Preserve exact paths, identifiers, commands, and errors."
+prompt_urgent = "Context space is nearly exhausted. Save your checkpoint with `write_handoff`, then call `new_context`. Only these handoff tools are available for this final save-and-reset step. Do not continue ordinary work or give a final answer yet."
+prompt_warning = "The configured context handoff threshold has been reached. Save the current goal, constraints, progress, unresolved work, next steps, and references to important results with `write_handoff`, then call `new_context`. Continue the same task in the new window."
+render_context_compacted = "context compacted"
+setting_at_tokens_description = "Compact automatically or request a handoff after this many input tokens"
+setting_at_tokens_label = "Compact after tokens"
+setting_at_tokens_step = 10000
+setting_mode_description = "How long conversations continue across context windows"
+setting_mode_label = "Compaction mode"
+tool_new_context_description = "Request a fresh context window in this same chat and task after saving an up-to-date checkpoint with write_handoff. Call on its own. Files, running work, and searchable history remain intact."
+tool_write_handoff_description = "Replace this chat’s working checkpoint: goal, constraints, progress, decisions, unresolved work, next steps, and exact history references. Never include private reasoning or credentials."

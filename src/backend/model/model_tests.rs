@@ -92,9 +92,15 @@ fn pricing_separates_cache_buckets_and_applies_long_context_rates() {
 
     assert_eq!(pricing.estimate_microusd(&usage), Some(1_095));
     assert_eq!(
-        pricing
-            .with_long_context(999, 2_000, 1_500)
-            .estimate_microusd(&usage),
+        ModelPricing {
+            long_context: Some(LongContextPricing {
+                threshold_input_tokens: 999,
+                input_multiplier_millis: 2000,
+                output_multiplier_millis: 1500
+            }),
+            ..pricing
+        }
+        .estimate_microusd(&usage),
         Some(2_090)
     );
 }
