@@ -246,11 +246,15 @@ struct ComposerOptionsView: View {
                 if newChatEntry != nil || model.attachmentsEnabled { placeholderButton() }
                 if !isCompact { placeholderButton() }
             }
+            .mobiusLoadingPlaceholder("Loading composer controls")
             Spacer(minLength: MobiusSpace.s)
-            if !isCompact { placeholderButton() }
-            if !hasVerticalToolbar { placeholderButton(size: 32) }
+            if !isCompact { unselectedBotPlaceholder }
+            if !hasVerticalToolbar {
+                ComposerSendButton(send: send)
+                    .mobiusProminentIconButton(surfaceSize: 32, flat: true)
+                    .transaction { $0.animation = nil }
+            }
         }
-        .mobiusLoadingPlaceholder("Loading composer controls")
     }
 
     private var unselectedBotPlaceholder: some View {

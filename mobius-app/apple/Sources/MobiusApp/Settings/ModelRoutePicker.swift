@@ -95,11 +95,11 @@ struct ModelRoutePicker: View {
         }
         .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
         .disabled(!isEnabled)
-        .sensoryFeedback(trigger: reasoningPreview) { _, preview in
-            guard let preview else { return nil }
-            return .impact(
-                weight: .light,
-                intensity: 0.4 + 0.6 * preview / Double(max(1, reasoningChoices.count - 1)))
+        .sensoryFeedback(trigger: reasoningPreview) { previous, current in
+            guard let current else { return nil }
+            let previous = previous ?? Double(selectedReasoningIndex)
+            guard current != previous else { return nil }
+            return current > previous ? .increase : .decrease
         }
         .onChange(of: route) { reasoningPreview = nil }
         .onChange(of: choices) { reasoningPreview = nil }
