@@ -70,7 +70,7 @@ extension EnvironmentValues {
     @Entry var mobiusActionIconSize: CGFloat? = nil
 }
 
-/// One HugeIcons glyph, vendored into the asset catalog under `hi.<name>`.
+/// An app glyph from the asset catalog; vendored HugeIcons use `hi.<name>`.
 ///
 /// A type rather than a raw asset name: a missing SF Symbol at least logs, but a misspelled
 /// asset name draws nothing at all and says nothing about it, so the names are worth holding
@@ -96,6 +96,7 @@ struct MobiusGlyph: Hashable {
     static let bell = Self("hi.bell")
     static let bellDot = Self("hi.bellDot")
     static let bellOff = Self("hi.bellOff")
+    static let bot = Self("bot.face")
     static let brain = Self("hi.brain")
     static let caretDown = Self("hi.caretDown")
     static let caretRight = Self("hi.caretRight")

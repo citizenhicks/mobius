@@ -644,7 +644,7 @@ private struct ChatOptionsMenu: View {
                 }
                 .disabled(model.selectedBot == nil)
                 if let session = model.selectedSession {
-                    Button("Reassign Bot", glyph: .aiScan) {
+                    Button("Reassign Bot", glyph: .bot) {
                         model.chat.sessionToReassign = session
                     }
                     .disabled(!model.canReassignSession(session))
@@ -785,7 +785,7 @@ struct ReassignChatSheet: View {
                             title: .verbatim(bot.name), detail: .verbatim("@\(bot.handle)")
                         ) {
                             MobiusIcon(
-                                .aiScan, size: MobiusStyle.glyphLead, foreground: bot.tint.color)
+                                .bot, size: MobiusStyle.glyphLead, foreground: bot.tint.color)
                         }
                         if bot.id == currentBotID {
                             MobiusIcon(.check)

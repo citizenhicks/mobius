@@ -144,7 +144,7 @@ private struct AppToastView: View {
             ZStack {
                 Circle().fill(bot.tint.color.opacity(0.16))
                 MobiusIcon(
-                    .aiScan,
+                    .bot,
                     size: MobiusStyle.glyphLead,
                     foreground: bot.tint.color,
                     gutter: false

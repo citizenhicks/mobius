@@ -595,7 +595,7 @@ private struct TranscriptRow: View {
                         .accessibilityHidden(true)
                         .padding(.horizontal, MobiusSpace.xs)
                     MobiusIcon(
-                        .aiScan,
+                        .bot,
                         size: MobiusStyle.glyphMark,
                         foreground: bot.tint.color,
                         gutter: false
@@ -670,7 +670,7 @@ private struct TranscriptRow: View {
             Button("you", glyph: .userFocus) {}
                 .disabled(true)
         } else if let bot = displayedBot {
-            if let image = MobiusGlyph.aiScan.menuImage(bot.tint.color) {
+            if let image = MobiusGlyph.bot.menuImage(bot.tint.color) {
                 Button(action: {}) {
                     Label {
                         Text(verbatim: bot.name)
@@ -680,7 +680,7 @@ private struct TranscriptRow: View {
                 }
                 .disabled(true)
             } else {
-                Button(verbatim: bot.name, glyph: .aiScan) {}
+                Button(verbatim: bot.name, glyph: .bot) {}
                     .disabled(true)
             }
         }

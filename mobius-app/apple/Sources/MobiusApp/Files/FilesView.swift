@@ -389,7 +389,7 @@ private struct ChatFileList: View {
                 loadingTitle: "Loading agent files",
                 emptyTitle: "No agent files",
                 records: agentFiles,
-                emptyGlyph: .aiScan,
+                emptyGlyph: .bot,
                 accessibilityOrigin: "agent"
             )
             fileSection(

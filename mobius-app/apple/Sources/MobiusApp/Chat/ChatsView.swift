@@ -169,7 +169,7 @@ struct ChatsView: View {
                                     .accessibilityHidden(true)
                                 MobiusLabel(
                                     verbatim: "@\(bot.handle)",
-                                    glyph: .aiScan,
+                                    glyph: .bot,
                                     iconColor: bot.tint.color,
                                     iconSize: MobiusStyle.glyphInline
                                 )
@@ -267,7 +267,7 @@ struct ChatsView: View {
                 } label: {
                     MobiusLabel(
                         title: "All",
-                        glyph: model.chat.chatBotFilterIDs.isEmpty ? .check : .aiScan
+                        glyph: model.chat.chatBotFilterIDs.isEmpty ? .check : .bot
                     )
                 }
                 ForEach(orderedBots) { bot in
@@ -455,7 +455,7 @@ struct ChatsView: View {
     @ViewBuilder
     private func botFilterLabel(_ bot: BotRecord) -> some View {
         let selected = model.chat.chatBotFilterIDs.contains(bot.id)
-        let glyph = selected ? MobiusGlyph.check : .aiScan
+        let glyph = selected ? MobiusGlyph.check : .bot
         let color = selected ? palette.accent : bot.tint.color
         let title = "\(bot.name) (@\(bot.handle))"
         if let image = glyph.menuImage(color) {
@@ -726,7 +726,7 @@ struct SessionCatalogRow: View {
             model.chat.setSessionPinned(session, pinned: !session.pinned)
         }
         .disabled(!model.canRenameSession)
-        Button("Reassign Bot", glyph: .aiScan) {
+        Button("Reassign Bot", glyph: .bot) {
             model.chat.sessionToReassign = session
         }
         .disabled(!model.canReassignSession(session))

@@ -159,7 +159,7 @@ private struct NewChatBotPicker: View {
                     Label {
                         Text(verbatim: bot.name)
                     } icon: {
-                        MobiusGlyph.aiScan.menuImage(bot.tint.color)
+                        MobiusGlyph.bot.menuImage(bot.tint.color)
                     }
                     .tag(Optional(bot.id))
                 }
@@ -168,7 +168,7 @@ private struct NewChatBotPicker: View {
         } label: {
             MobiusMenuLabel(
                 text: model.selectedBot.map { .verbatim($0.name) } ?? .localized("Choose Bot"),
-                glyph: .aiScan,
+                glyph: .bot,
                 glyphColor: model.selectedBot?.tint.color ?? palette.muted
             )
             .frame(minHeight: MobiusStyle.iconButtonSize)
@@ -413,7 +413,7 @@ private struct BotActivityBadge: View {
         Button(action: action) {
             MobiusBadge(
                 text: .verbatim(bot.name),
-                glyph: .aiScan,
+                glyph: .bot,
                 glyphColor: bot.tint.color,
                 interactive: true
             )

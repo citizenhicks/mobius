@@ -1,130 +1,80 @@
 {
-  "fill" : {
-    "linear-gradient" : [
+  "fill": {
+    "linear-gradient": [
       "srgb:0.24934,0.26291996,0.29574996,1.0",
       "srgb:0.20885369,0.2188572,0.23893434,1.0"
     ],
-    "orientation" : {
-      "start" : {
-        "x" : 0.5,
-        "y" : 0
+    "orientation": {
+      "start": {
+        "x": 0.5,
+        "y": 0
       },
-      "stop" : {
-        "x" : 0.5,
-        "y" : 0.69999999999999996
+      "stop": {
+        "x": 0.5,
+        "y": 0.7
       }
     }
   },
-  "groups" : [
+  "groups": [
     {
-      "layers" : [
+      "layers": [
         {
-          "glass" : false,
-          "image-name-specializations" : [
-            {
-              "value" : "Foreground.png"
-            },
-            {
-              "appearance" : "tinted",
-              "value" : "Foreground-Mono.png"
-            }
-          ],
-          "name" : "Foreground"
+          "name": "Bot",
+          "glass": false,
+          "image-name": "Bot.svg"
         }
       ],
-      "lighting" : "combined",
-      "shadow" : {
-        "kind" : "neutral",
-        "opacity" : 0.17999999999999999
+      "lighting": "combined",
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.2
       },
-      "translucency" : {
-        "enabled" : false,
-        "value" : 0
+      "translucency": {
+        "enabled": false,
+        "value": 0
       }
     },
     {
-      "layers" : [
+      "layers": [
         {
-          "glass" : false,
-          "image-name-specializations" : [
-            {
-              "value" : "Front.png"
-            },
-            {
-              "appearance" : "tinted",
-              "value" : "Front-Mono.png"
-            }
-          ],
-          "name" : "Front"
+          "name": "Fold",
+          "glass": false,
+          "image-name": "Fold.svg"
         }
       ],
-      "lighting" : "combined",
-      "shadow" : {
-        "kind" : "neutral",
-        "opacity" : 0.17999999999999999
+      "lighting": "combined",
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.2
       },
-      "translucency" : {
-        "enabled" : false,
-        "value" : 0
+      "translucency": {
+        "enabled": false,
+        "value": 0
       }
     },
     {
-      "layers" : [
+      "layers": [
         {
-          "glass" : false,
-          "image-name-specializations" : [
-            {
-              "value" : "Body.png"
-            },
-            {
-              "appearance" : "tinted",
-              "value" : "Body-Mono.png"
-            }
-          ],
-          "name" : "Body"
+          "name": "Ribbon",
+          "glass": false,
+          "image-name": "Ribbon.svg"
         }
       ],
-      "lighting" : "combined",
-      "shadow" : {
-        "kind" : "neutral",
-        "opacity" : 0.17999999999999999
+      "lighting": "combined",
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.2
       },
-      "translucency" : {
-        "enabled" : false,
-        "value" : 0
-      }
-    },
-    {
-      "layers" : [
-        {
-          "glass" : false,
-          "image-name-specializations" : [
-            {
-              "value" : "Rear.png"
-            },
-            {
-              "appearance" : "tinted",
-              "value" : "Rear-Mono.png"
-            }
-          ],
-          "name" : "Rear"
-        }
-      ],
-      "lighting" : "combined",
-      "shadow" : {
-        "kind" : "neutral",
-        "opacity" : 0.17999999999999999
-      },
-      "translucency" : {
-        "enabled" : false,
-        "value" : 0
+      "translucency": {
+        "enabled": false,
+        "value": 0
       }
     }
   ],
-  "supported-platforms" : {
-    "circles" : [
+  "supported-platforms": {
+    "circles": [
       "watchOS"
     ],
-    "squares" : "shared"
+    "squares": "shared"
   }
 }

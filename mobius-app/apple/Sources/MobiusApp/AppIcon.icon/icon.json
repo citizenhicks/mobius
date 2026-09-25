@@ -19,23 +19,15 @@
     {
       "layers": [
         {
-          "name": "Foreground",
+          "name": "Bot",
           "glass": false,
-          "image-name-specializations": [
-            {
-              "value": "Foreground.png"
-            },
-            {
-              "appearance": "tinted",
-              "value": "Foreground-Mono.png"
-            }
-          ]
+          "image-name": "Bot.svg"
         }
       ],
       "lighting": "combined",
       "shadow": {
         "kind": "neutral",
-        "opacity": 0.18
+        "opacity": 0.2
       },
       "translucency": {
         "enabled": false,
@@ -45,23 +37,15 @@
     {
       "layers": [
         {
-          "name": "Front",
+          "name": "Fold",
           "glass": false,
-          "image-name-specializations": [
-            {
-              "value": "Front.png"
-            },
-            {
-              "appearance": "tinted",
-              "value": "Front-Mono.png"
-            }
-          ]
+          "image-name": "Fold.svg"
         }
       ],
       "lighting": "combined",
       "shadow": {
         "kind": "neutral",
-        "opacity": 0.18
+        "opacity": 0.2
       },
       "translucency": {
         "enabled": false,
@@ -71,49 +55,15 @@
     {
       "layers": [
         {
-          "name": "Body",
+          "name": "Ribbon",
           "glass": false,
-          "image-name-specializations": [
-            {
-              "value": "Body.png"
-            },
-            {
-              "appearance": "tinted",
-              "value": "Body-Mono.png"
-            }
-          ]
+          "image-name": "Ribbon.svg"
         }
       ],
       "lighting": "combined",
       "shadow": {
         "kind": "neutral",
-        "opacity": 0.18
-      },
-      "translucency": {
-        "enabled": false,
-        "value": 0
-      }
-    },
-    {
-      "layers": [
-        {
-          "name": "Rear",
-          "glass": false,
-          "image-name-specializations": [
-            {
-              "value": "Rear.png"
-            },
-            {
-              "appearance": "tinted",
-              "value": "Rear-Mono.png"
-            }
-          ]
-        }
-      ],
-      "lighting": "combined",
-      "shadow": {
-        "kind": "neutral",
-        "opacity": 0.18
+        "opacity": 0.2
       },
       "translucency": {
         "enabled": false,

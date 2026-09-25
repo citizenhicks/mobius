@@ -35,7 +35,7 @@ enum AppDestination: Codable, Hashable, Sendable {
         case .botDefaults: .slidersHorizontal
         case .providers: .plugsConnected
         case .extensions: .squaresFour
-        case .bots: .aiScan
+        case .bots: .bot
         case .globalContributions: .brain
         case .eventCentre: .bell
         case .profile: .gear

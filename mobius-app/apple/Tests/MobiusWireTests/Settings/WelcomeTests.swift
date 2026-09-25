@@ -383,7 +383,12 @@ final class WelcomeTests: XCTestCase {
 
     func testSetupIllustrationsIncludeTheVendoredArtworkAtCompactWidth() throws {
         XCTAssertNotNil(UIImage(named: MobiusGlyph.smartPhone01.asset))
-        XCTAssertNotNil(UIImage(named: "MobiusLogo"))
+        for asset in [
+            "MobiusLogoRibbon", "MobiusLogoFold", "MobiusLogoBot", "MobiusLogoEyes",
+            MobiusGlyph.bot.asset,
+        ] {
+            XCTAssertNotNil(UIImage(named: asset), asset)
+        }
         for (name, scene) in [
             ("Gateway", SetupArtwork.Scene.gateway), ("Bot", .bot), ("Workspace", .workspace),
         ] {

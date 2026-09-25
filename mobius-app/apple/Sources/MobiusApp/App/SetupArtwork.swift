@@ -90,7 +90,7 @@ struct SetupArtwork: View {
     private var bot: some View {
         VStack(alignment: .leading, spacing: MobiusSpace.l) {
             HStack(spacing: MobiusSpace.m) {
-                MobiusIcon(.aiScan, size: 28, foreground: palette.accent)
+                MobiusIcon(.bot, size: 28, foreground: palette.accent)
                     .padding(MobiusSpace.m)
                     .background(palette.accentSoft, in: .rect(cornerRadius: 16))
                 VStack(alignment: .leading, spacing: MobiusSpace.xs) {
@@ -138,7 +138,7 @@ struct SetupArtwork: View {
                     .background(palette.accentSoft, in: .rect(cornerRadius: 12))
                     .frame(maxWidth: .infinity, alignment: .trailing)
                 HStack(alignment: .top, spacing: MobiusSpace.s) {
-                    MobiusIcon(.aiScan, size: 17, foreground: palette.accent)
+                    MobiusIcon(.bot, size: 17, foreground: palette.accent)
                     Text("Here’s what I found.").font(.caption).foregroundStyle(palette.muted)
                 }
                 Spacer(minLength: MobiusSpace.xl)

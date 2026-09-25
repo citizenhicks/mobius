@@ -95,7 +95,7 @@ struct BotsView: View {
         Button {
             newBotFormID = UUID()
         } label: {
-            MobiusIcon(.aiScan, gutter: false)
+            MobiusIcon(.bot, gutter: false)
         }
         .mobiusProminentToolbarButton()
         .disabled(!model.canMutateBots || newBotFormID != nil)
@@ -178,9 +178,7 @@ struct NewBotForm: View {
     var body: some View {
         VStack(alignment: .leading, spacing: MobiusSpace.l) {
             HStack(spacing: MobiusSpace.m) {
-                MobiusIcon(.aiScan, size: 36, foreground: palette.accent)
-                    .padding(MobiusSpace.m)
-                    .background(palette.accentSoft, in: .rect(cornerRadius: 16))
+                BotFace(tint: model.accentTint.color, size: 60)
                 VStack(alignment: .leading, spacing: MobiusSpace.xs) {
                     Text(name.nonEmpty ?? model.localizedString("Your Bot"))
                         .font(.headline)
@@ -356,7 +354,7 @@ struct BotDetailView: View {
             } else {
                 MobiusUnavailable(
                     title: "Bot unavailable",
-                    glyph: .aiScan,
+                    glyph: .bot,
                     detail: "This Bot is no longer available."
                 )
             }
