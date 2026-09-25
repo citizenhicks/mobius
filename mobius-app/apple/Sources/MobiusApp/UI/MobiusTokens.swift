@@ -57,7 +57,6 @@ enum MobiusStyle {
     static let transcriptWidth: CGFloat = 880
     static let transcriptRowSpacing = MobiusSpace.m
     static let transcriptFaceSize: CGFloat = 112
-    static let headerFaceSize: CGFloat = 26
     static let transcriptPadding = MobiusSpace.l
 
     // MARK: Glyphs

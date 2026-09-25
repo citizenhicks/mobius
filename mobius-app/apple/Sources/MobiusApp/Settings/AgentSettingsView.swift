@@ -24,6 +24,12 @@ struct AgentSettingsView: View {
             if draft != nil {
                 if case .bot = scope {
                     Section("Identity") {
+                        VStack(spacing: MobiusSpace.m) {
+                            BotFace(tint: model.botTintDraft.color, size: 96)
+                                .padding(.top, MobiusSpace.s)
+                            AccentTintPicker(selection: $model.botTintDraft)
+                        }
+                        .settingsBareRow()
                         TextField("Bot name", text: $model.botNameDraft)
                             .textInputAutocapitalization(.words)
                             .font(MobiusStyle.bodyFont)
@@ -42,8 +48,6 @@ struct AgentSettingsView: View {
                         .labelsHidden()
                         .accessibilityLabel("Operational description")
                         .promptCard()
-                        AccentTintPicker(selection: $model.botTintDraft)
-                            .settingsBareRow()
                     }
                 }
                 Section("System prompt") {

@@ -333,17 +333,13 @@ struct HeaderOptionsMenu<Content: View, Icon: View>: View {
         Menu {
             content
         } label: {
-            Label {
-                Text(label)
-            } icon: {
-                icon
-            }
+            icon
         }
         .menuStyle(.button)
         .mobiusCircularIconControl()
-        .buttonStyle(.automatic)
         .menuIndicator(.hidden)
         .tint(.primary)
+        .accessibilityLabel(Text(label))
         .help(Text(label))
     }
 }

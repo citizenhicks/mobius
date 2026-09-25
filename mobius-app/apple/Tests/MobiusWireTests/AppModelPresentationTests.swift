@@ -6,6 +6,59 @@ import XCTest
 
 @MainActor
 extension AppModelTests {
+    func testChatOptionsToolbarShowsBotFaceAndOpensMenu() async throws {
+        let app = try model(requestSender: { _ in })
+        app.chat.selectedSessionID = "chat-1"
+        let scene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive })
+        let previous = scene.keyWindow
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.effectiveGeometry.coordinateSpace.bounds
+        let host = UIHostingController(
+            rootView: NavigationStack { ChatView() }
+                .mobiusTheme().environment(app))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKeyAndVisible()
+        }
+        let appeared = await eventually {
+            testAccessibilityElements(window).contains {
+                $0.accessibilityLabel == "Chat options" && $0.accessibilityTraits.contains(.button)
+                    && !$0.accessibilityFrame.isEmpty
+            }
+        }
+        XCTAssertTrue(appeared)
+        let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "Chat options bot face"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        let button = try XCTUnwrap(
+            testAccessibilityElements(window).first {
+                $0.accessibilityLabel == "Chat options" && $0.accessibilityTraits.contains(.button)
+                    && !$0.accessibilityFrame.isEmpty
+            })
+        XCTAssertEqual(button.accessibilityFrame.width, 44, accuracy: 1)
+        XCTAssertEqual(button.accessibilityFrame.height, 44, accuracy: 1)
+        XCTAssertFalse(
+            testAccessibilityElements(window).compactMap { $0 as? UILabel }.contains {
+                $0.text == "Chat options" && !$0.isHidden && $0.alpha > 0
+            }, "The toolbar must render the bot face instead of its accessibility label")
+        XCTAssertTrue(button.accessibilityActivate())
+        let opened = await eventually {
+            scene.windows.flatMap { testAccessibilityElements($0) }.contains {
+                $0.accessibilityLabel == "Chat info"
+            }
+        }
+        XCTAssertTrue(opened)
+    }
+
     func testExtensionsStatusHeaderStaysIconOnlyWhileLoadingAndSettled() async throws {
         let app = try model(requestSender: { _ in })
         app.gateway.connectionState = .connecting

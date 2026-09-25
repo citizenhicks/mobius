@@ -139,6 +139,7 @@ struct ChatView: View {
                         showsFolderAttachmentBrowser: $showsFolderAttachmentBrowser
                     )
                 }
+                .sharedBackgroundVisibility(.hidden)
             }
             if hasVerticalToolbar,
                 !model.selectedSessionIsHidden,
@@ -686,8 +687,9 @@ private struct ChatOptionsMenu: View {
                 }
             }
         } icon: {
-            ChatBotFace(size: MobiusStyle.headerFaceSize)
+            ChatBotFace(size: MobiusStyle.rowTouch)
         }
+        .buttonStyle(.plain)
         .popover(isPresented: $showsChatInfo) {
             ChatInfoView()
                 .presentationCompactAdaptation(.popover)
