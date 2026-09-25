@@ -25,7 +25,13 @@ It writes:
   selected accent and theme.
 - `MobiusMenuBar.svg`: the 18-point two-tone ribbon for the Mac menu bar. The Bot is too
   small to read at that size.
-- `MobiusMark.svg`: the full-colour reference mark used by the repository README.
+- `MobiusMark.svg` and `MobiusMark-light.svg`: full-colour marks for dark and light
+  backgrounds. The repository README selects the matching appearance.
+- `MobiusIcon.svg`: the mark on a rounded night background for browser tabs.
+
+The public website (`thinkingsand/mobius`) and cloud console (`mobius-cloud`) vendor
+`MobiusMark.svg` as `public/mobius-mark.svg` and `MobiusIcon.svg` as `app/icon.svg`.
+Copy these generated files when updating the web branding; keep the geometry here.
 
 Xcode includes the alternates through `ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES`,
 and `crates/mobius-gateway/macos/build.sh` compiles `AppIcon.icon` and the asset catalog

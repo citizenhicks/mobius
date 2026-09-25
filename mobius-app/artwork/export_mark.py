@@ -180,9 +180,13 @@ def export_menu_bar() -> None:
 
 def export_reference(fold, body) -> None:
     tint = TINTS[DEFAULT_TINT]
-    write(HERE / "MobiusMark.svg", svg(
-        94, f'<path d="{path_data(body, 1)}" fill="{tint}"/><path d="{path_data(fold, 1)}" fill="{fold_color(tint)}"/>'
-            f'{bot_body(1, SNOW, NIGHT)}', "2 2 94 94"))
+    ribbon = (f'<path d="{path_data(body, 1)}" fill="{tint}"/>'
+              f'<path d="{path_data(fold, 1)}" fill="{fold_color(tint)}"/>')
+    for name, ball, eye in (("MobiusMark", SNOW, NIGHT), ("MobiusMark-light", NIGHT, SNOW)):
+        write(HERE / f"{name}.svg", svg(94, ribbon + bot_body(1, ball, eye), "2 2 94 94"))
+    write(HERE / "MobiusIcon.svg", svg(
+        100, f'<rect width="100" height="100" rx="22" fill="{NIGHT}"/>'
+             + ribbon + bot_body(1, SNOW, NIGHT)))
 
 
 if __name__ == "__main__":
