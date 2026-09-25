@@ -46,6 +46,13 @@ impl ClientFrame {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]
 pub enum ClientMessage {
+    /// Replaces this connection's optional notification exclusions.
+    SetNotifications {
+        /// The request identifier.
+        request_id: String,
+        /// Broadcasts to suppress until replaced or the connection closes.
+        disabled: BTreeSet<GatewayNotification>,
+    },
     /// Selects the set desktop runtime case.
     SetDesktopRuntime {
         /// The request identifier.

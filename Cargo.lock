@@ -1693,7 +1693,7 @@ dependencies = [
 
 [[package]]
 name = "mobius"
-version = "0.15.46"
+version = "0.15.47"
 dependencies = [
  "base64",
  "bm25",
@@ -1718,7 +1718,7 @@ dependencies = [
 
 [[package]]
 name = "mobius-cli"
-version = "0.15.48"
+version = "0.15.49"
 dependencies = [
  "arboard",
  "chrono",

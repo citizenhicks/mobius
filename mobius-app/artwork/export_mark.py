@@ -7,23 +7,23 @@ import json
 import re
 from pathlib import Path
 
-from shapely.geometry import Point, Polygon
+from shapely import affinity
+from shapely.geometry import Polygon
 
 HERE = Path(__file__).parent
 APP = HERE / "../apple/Sources/MobiusApp"
 MENU_BAR = APP / "Assets.xcassets/MobiusMenuBar.imageset/MobiusMenuBar.svg"
 RIBBON_SOURCE = HERE / "ribbon.svg"  # the original potrace silhouette
 
-NIGHT, SNOW = "#2E3440", "#ECEFF4"
+NIGHT = "#2E3440"
 TINTS = {
     "blue": "#5E81AC", "teal": "#8FBCBB", "green": "#A3BE8C", "yellow": "#EBCB8B",
     "orange": "#D08770", "red": "#BF616A", "purple": "#B48EAD",
 }
 DEFAULT_TINT = "blue"
 
-# Artboard units: the icon square is 100 × 100.
-RIBBON_ORIGIN, RIBBON_SIZE = (7, 5), 72
-BOT_CENTER, BOT_RADIUS, GAP = (73, 74), 15.5, 2.4
+# Artboard units: the icon square is 100 × 100, and the ribbon's longer side spans RIBBON_SPAN.
+RIBBON_SPAN = 70
 
 
 def fold_color(hex_color: str) -> str:
@@ -72,20 +72,18 @@ def potrace_polygons(d: str) -> list[Polygon]:
     return polygons
 
 
-def ribbon_uncut():
-    """The macOS silhouette's two pieces in artboard units: (fold, body)."""
-    d = re.search(r' d="([^"]+)"', RIBBON_SOURCE.read_text()).group(1)
-    k = RIBBON_SIZE / 5120
-    ox, oy = RIBBON_ORIGIN
-    place = lambda poly: Polygon([(ox + px * k, oy + RIBBON_SIZE - py * k) for px, py in poly.exterior.coords])
-    fold, body = (place(p) for p in potrace_polygons(d))
-    return fold, body
-
-
 def ribbon_shapes():
-    """The ribbon with a transparent gap cut around the Bot."""
-    cut = Point(BOT_CENTER).buffer(BOT_RADIUS + GAP, quad_segs=32)
-    return tuple(piece.difference(cut) for piece in ribbon_uncut())
+    """The macOS silhouette's two pieces, centred in the 100-unit artboard: (fold, body)."""
+    d = re.search(r' d="([^"]+)"', RIBBON_SOURCE.read_text()).group(1)
+    fold, body = (Polygon([(x, -y) for x, y in p.exterior.coords]) for p in potrace_polygons(d))
+    minx, miny, maxx, maxy = body.union(fold).bounds
+    k = RIBBON_SPAN / max(maxx - minx, maxy - miny)
+    place = lambda piece: affinity.translate(
+        affinity.scale(piece, k, k, origin=(0, 0)),
+        50 - (minx + maxx) / 2 * k,
+        50 - (miny + maxy) / 2 * k,
+    )
+    return place(fold), place(body)
 
 
 def path_data(geometry, scale: float) -> str:
@@ -97,25 +95,10 @@ def path_data(geometry, scale: float) -> str:
     return "".join(parts)
 
 
-def eyes(scale: float) -> list[tuple[float, float, float, float]]:
-    """(cx, cy, radius, stroke) for the Bot's two `o` eyes; the near one is larger."""
-    cx, cy = BOT_CENTER
-    r = BOT_RADIUS
-    return [((cx - 0.12 * r + dx * r) * scale, (cy - 0.2 * r) * scale, rr * r * scale, 0.15 * r * scale)
-            for dx, rr in ((-0.3, 0.15), (0.3, 0.175))]
-
-
 def svg(size: float, body: str, view: str | None = None) -> str:
     view = view or f"0 0 {size:g} {size:g}"
     return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{size:g}" height="{size:g}" '
             f'viewBox="{view}">{body}</svg>\n')
-
-
-def bot_body(scale: float, ball: str, eye: str) -> str:
-    cx, cy = BOT_CENTER
-    ring = "".join(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{r:.2f}" fill="none" stroke="{eye}" '
-                   f'stroke-width="{w:.2f}"/>' for x, y, r, w in eyes(scale))
-    return f'<circle cx="{cx * scale:g}" cy="{cy * scale:g}" r="{BOT_RADIUS * scale:g}" fill="{ball}"/>{ring}'
 
 
 def write(path: Path, text: str) -> None:
@@ -130,7 +113,6 @@ def export_icon(icon: Path, tint: str, fold, body) -> None:
         old.unlink()
     write(assets / "Ribbon.svg", svg(1024, f'<path d="{path_data(body, scale)}" fill="{tint}"/>'))
     write(assets / "Fold.svg", svg(1024, f'<path d="{path_data(fold, scale)}" fill="{fold_color(tint)}"/>'))
-    write(assets / "Bot.svg", svg(1024, bot_body(scale, SNOW, NIGHT)))
 
     manifest = json.loads((icon / "icon.json").read_text())
     manifest["groups"] = [
@@ -140,7 +122,7 @@ def export_icon(icon: Path, tint: str, fold, body) -> None:
             "shadow": {"kind": "neutral", "opacity": 0.2},
             "translucency": {"enabled": False, "value": 0},
         }
-        for name in ("Bot", "Fold", "Ribbon")
+        for name in ("Fold", "Ribbon")
     ]
     write(icon / "icon.json", json.dumps(manifest, indent=2) + "\n")
 
@@ -149,17 +131,15 @@ def export_templates(fold, body) -> None:
     """Single-colour vector layers that MobiusLogo tints from the palette."""
     catalog = APP / "Assets.xcassets"
     scale = 10.24
-    view = f"{2 * scale:g} {2 * scale:g} {94 * scale:g} {94 * scale:g}"
+    inset = (100 - RIBBON_SPAN) / 2
+    view = f"{inset * scale:g} {inset * scale:g} {RIBBON_SPAN * scale:g} {RIBBON_SPAN * scale:g}"
     layers = {
         "MobiusLogoRibbon": f'<path d="{path_data(body, scale)}"/>',
         "MobiusLogoFold": f'<path d="{path_data(fold, scale)}"/>',
-        "MobiusLogoBot": f'<circle cx="{BOT_CENTER[0] * scale:g}" cy="{BOT_CENTER[1] * scale:g}" r="{BOT_RADIUS * scale:g}"/>',
-        "MobiusLogoEyes": "".join(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{r:.2f}" fill="none" stroke="#000" '
-                                  f'stroke-width="{w:.2f}"/>' for x, y, r, w in eyes(scale)),
     }
     for name, content in layers.items():
         folder = catalog / f"{name}.imageset"
-        write(folder / f"{name}.svg", svg(94 * scale, content, view))
+        write(folder / f"{name}.svg", svg(RIBBON_SPAN * scale, content, view))
         write(folder / "Contents.json", json.dumps({
             "images": [{"filename": f"{name}.svg", "idiom": "universal"}],
             "info": {"author": "xcode", "version": 1},
@@ -167,13 +147,12 @@ def export_templates(fold, body) -> None:
         }, indent=2) + "\n")
 
 
-def export_menu_bar() -> None:
-    """18-point two-tone ribbon for the Mac menu bar. The Bot is too small to read there."""
+def export_menu_bar(fold, body) -> None:
+    """18-point two-tone ribbon for the Mac menu bar."""
     tint = TINTS[DEFAULT_TINT]
-    fold, body = ribbon_uncut()
-    scale = 18 / RIBBON_SIZE
-    x0, y0 = RIBBON_ORIGIN
-    view = f"{x0 * scale:g} {y0 * scale:g} 18 18"
+    inset = (100 - RIBBON_SPAN) / 2
+    scale = 18 / RIBBON_SPAN
+    view = f"{inset * scale:g} {inset * scale:g} 18 18"
     write(MENU_BAR, svg(18, f'<path d="{path_data(body, scale)}" fill="{tint}"/>'
                         f'<path d="{path_data(fold, scale)}" fill="{fold_color(tint)}"/>', view))
 
@@ -182,11 +161,10 @@ def export_reference(fold, body) -> None:
     tint = TINTS[DEFAULT_TINT]
     ribbon = (f'<path d="{path_data(body, 1)}" fill="{tint}"/>'
               f'<path d="{path_data(fold, 1)}" fill="{fold_color(tint)}"/>')
-    for name, ball, eye in (("MobiusMark", SNOW, NIGHT), ("MobiusMark-light", NIGHT, SNOW)):
-        write(HERE / f"{name}.svg", svg(94, ribbon + bot_body(1, ball, eye), "2 2 94 94"))
+    inset = (100 - RIBBON_SPAN) / 2
+    write(HERE / "MobiusMark.svg", svg(RIBBON_SPAN, ribbon, f"{inset:g} {inset:g} {RIBBON_SPAN} {RIBBON_SPAN}"))
     write(HERE / "MobiusIcon.svg", svg(
-        100, f'<rect width="100" height="100" rx="22" fill="{NIGHT}"/>'
-             + ribbon + bot_body(1, SNOW, NIGHT)))
+        100, f'<rect width="100" height="100" rx="22" fill="{NIGHT}"/>' + ribbon))
 
 
 if __name__ == "__main__":
@@ -196,5 +174,5 @@ if __name__ == "__main__":
         if name != DEFAULT_TINT:
             export_icon(APP / f"AppIcon-{name}.icon", tint, fold, body)
     export_templates(fold, body)
-    export_menu_bar()
+    export_menu_bar(fold, body)
     export_reference(fold, body)

@@ -29,7 +29,7 @@ use crate::{Error, Result};
 use self::codec::deserialize_frame;
 pub use self::codec::{FrameReader, read_frame, validate_version, write_frame};
 pub(crate) use self::codec::{
-    framed_to_websocket, read_frame_with_limit, validate_session_id, websocket_error,
+    SharedFrame, framed_to_websocket, read_frame_with_limit, validate_session_id, websocket_error,
     websocket_to_framed,
 };
 pub use self::messages::{
@@ -60,10 +60,11 @@ mod base64_bytes {
 }
 
 /// Current gateway protocol version.
-pub const PROTOCOL_VERSION: u16 = 84;
+pub const PROTOCOL_VERSION: u16 = 85;
 /// Maximum encoded JSON payload accepted in one frame.
 pub const MAX_FRAME_BYTES: usize = 50 * 1024 * 1024;
 const WEBSOCKET_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[cfg(test)]
 mod tests;

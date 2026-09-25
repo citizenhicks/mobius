@@ -414,8 +414,7 @@ impl HostState {
                     record: project_record(&self.running.frontend, journal),
                 });
                 if replayable(&frame) {
-                    validate_event_frame(&frame).map_err(internal)?;
-                    replay.push(frame);
+                    replay.push(SharedFrame::encoded(frame).map_err(internal)?);
                 }
             }
             replay
@@ -449,7 +448,7 @@ impl HostState {
     pub(super) fn replay_after(
         &self,
         last_sequence: Option<u64>,
-    ) -> std::result::Result<Vec<ServerFrame>, Rejection> {
+    ) -> std::result::Result<Vec<SharedFrame>, Rejection> {
         let Some(last_sequence) = last_sequence else {
             return Ok(self
                 .replay

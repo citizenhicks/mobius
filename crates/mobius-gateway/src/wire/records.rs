@@ -1,5 +1,16 @@
 use super::*;
 
+/// Optional gateway broadcasts a client may suppress on its connection.
+/// Approvals, session events, errors, and request responses cannot be suppressed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayNotification {
+    /// Unsolicited conversation catalog and activity updates.
+    Sessions,
+    /// Unsolicited Bot catalog updates.
+    Bots,
+}
+
 /// Gateway-wide frontend-safe state sent after authentication.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReadyPayload {

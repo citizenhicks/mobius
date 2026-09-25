@@ -1,5 +1,56 @@
 use super::*;
 
+/// An immutable session frame shared by replay and live subscribers.
+#[derive(Debug, Clone)]
+pub(crate) struct SharedFrame {
+    frame: std::sync::Arc<ServerFrame>,
+    payload: Option<std::sync::Arc<[u8]>>,
+}
+
+impl SharedFrame {
+    pub(crate) fn new(frame: ServerFrame) -> Self {
+        Self {
+            frame: std::sync::Arc::new(frame),
+            payload: None,
+        }
+    }
+
+    pub(crate) fn encoded(frame: ServerFrame) -> Result<Self> {
+        let payload = serde_json::to_vec(&frame)?;
+        if payload.len() > MAX_FRAME_BYTES {
+            return Err(Error::Protocol(format!(
+                "agent event exceeds the {MAX_FRAME_BYTES}-byte gateway frame limit"
+            )));
+        }
+        Ok(Self {
+            frame: std::sync::Arc::new(frame),
+            payload: Some(payload.into()),
+        })
+    }
+
+    pub(crate) fn encoded_len(&self) -> usize {
+        self.payload
+            .as_ref()
+            .expect("replay frames are encoded")
+            .len()
+    }
+
+    pub(crate) async fn write(&self, writer: &mut (impl AsyncWrite + Unpin)) -> Result<()> {
+        match &self.payload {
+            Some(payload) => write_payload(writer, payload).await,
+            None => write_frame(writer, &*self.frame).await,
+        }
+    }
+}
+
+impl std::ops::Deref for SharedFrame {
+    type Target = ServerFrame;
+
+    fn deref(&self) -> &Self::Target {
+        &self.frame
+    }
+}
+
 /// Cancellation-safe reader for length-prefixed gateway frames.
 pub struct FrameReader<R> {
     reader: R,
@@ -86,6 +137,7 @@ where
 }
 
 /// Writes one bounded length-prefixed JSON value.
+/// Discard the connection after a write error: the frame may be partially written.
 /// # Errors
 ///
 /// Returns an error if the value cannot be encoded or persisted.
@@ -94,6 +146,13 @@ where
     T: Serialize,
 {
     let payload = serde_json::to_vec(value)?;
+    write_payload(writer, &payload).await
+}
+
+pub(crate) async fn write_payload(
+    writer: &mut (impl AsyncWrite + Unpin),
+    payload: &[u8],
+) -> Result<()> {
     if payload.is_empty() || payload.len() > MAX_FRAME_BYTES {
         return Err(Error::Protocol(format!(
             "encoded frame must be 1–{MAX_FRAME_BYTES} bytes"
@@ -101,9 +160,13 @@ where
     }
     let length = u32::try_from(payload.len())
         .map_err(|_| Error::Protocol("encoded frame length is unsupported".into()))?;
-    writer.write_all(&length.to_be_bytes()).await?;
-    writer.write_all(&payload).await?;
-    writer.flush().await?;
+    tokio::time::timeout(WRITE_TIMEOUT, async {
+        writer.write_all(&length.to_be_bytes()).await?;
+        writer.write_all(payload).await?;
+        writer.flush().await
+    })
+    .await
+    .map_err(|_| std::io::Error::from(std::io::ErrorKind::TimedOut))??;
     Ok(())
 }
 
@@ -149,15 +212,15 @@ pub(crate) async fn framed_to_websocket(
             {
                 Ok(read) => read?,
                 Err(_) => {
-                    outgoing
-                        .send(Message::Ping(Vec::new().into()))
-                        .await
-                        .map_err(websocket_error)?;
+                    send_websocket(&mut outgoing, Message::Ping(Vec::new().into())).await?;
                     continue;
                 }
             };
         if first == 0 {
-            return outgoing.close().await.map_err(websocket_error);
+            return tokio::time::timeout(WRITE_TIMEOUT, outgoing.close())
+                .await
+                .map_err(|_| std::io::Error::from(std::io::ErrorKind::TimedOut))?
+                .map_err(websocket_error);
         }
         reader.read_exact(&mut prefix[1..]).await?;
         let length = usize::try_from(u32::from_be_bytes(prefix))
@@ -169,11 +232,18 @@ pub(crate) async fn framed_to_websocket(
         }
         let mut payload = vec![0_u8; length];
         reader.read_exact(&mut payload).await?;
-        outgoing
-            .send(Message::Binary(payload.into()))
-            .await
-            .map_err(websocket_error)?;
+        send_websocket(&mut outgoing, Message::Binary(payload.into())).await?;
     }
+}
+
+async fn send_websocket(
+    outgoing: &mut (impl Sink<Message, Error = WebSocketError> + Unpin),
+    message: Message,
+) -> Result<()> {
+    tokio::time::timeout(WRITE_TIMEOUT, outgoing.send(message))
+        .await
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::TimedOut))?
+        .map_err(websocket_error)
 }
 
 pub(crate) fn websocket_error(error: WebSocketError) -> Error {

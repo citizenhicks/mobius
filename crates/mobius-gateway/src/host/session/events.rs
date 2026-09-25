@@ -50,7 +50,7 @@ impl HostState {
         &mut self,
         journal: JournalEvent,
         delivery: JournalDelivery,
-    ) -> Result<Option<ServerFrame>> {
+    ) -> Result<Option<SharedFrame>> {
         validate_gateway_event(&journal.event.msg)?;
         let sequence_kind = classify_journal_sequence(self.sequence, journal.sequence, delivery)?;
         let sequence = journal.sequence;
@@ -84,7 +84,8 @@ impl HostState {
             self.next_before_sequence = self
                 .replay
                 .front()
-                .and_then(|entry| event_sequence(&entry.frame));
+                .and_then(|entry| event_sequence(&entry.frame))
+                .or_else(|| sequence.checked_add(1));
         }
         self.sequence = sequence;
         Ok(Some(entry.frame))
@@ -346,7 +347,9 @@ impl HostState {
     }
 
     pub(super) fn broadcast(&self, message: ServerMessage) {
-        let _ = self.events.send(ServerFrame::new(message));
+        let _ = self
+            .events
+            .send(SharedFrame::new(ServerFrame::new(message)));
     }
 
     pub(super) fn require_idle(&self) -> std::result::Result<(), Rejection> {

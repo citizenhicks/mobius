@@ -16,7 +16,7 @@ pub(crate) struct HostHandle {
 pub(super) struct HostInner {
     pub(super) session_id: Arc<str>,
     pub(super) commands: mpsc::Sender<HostCommand>,
-    pub(super) events: broadcast::Sender<ServerFrame>,
+    pub(super) events: broadcast::Sender<SharedFrame>,
     pub(super) alive: Arc<AtomicBool>,
     pub(super) terminated: Arc<AtomicBool>,
     pub(super) termination: Arc<tokio::sync::Notify>,
@@ -47,7 +47,7 @@ struct HostState {
     approval_active: bool,
     turn_error: Option<String>,
     last_assistant_text: Option<String>,
-    pending_startup: Vec<ServerFrame>,
+    pending_startup: Vec<SharedFrame>,
     active_routine: Option<ActiveRoutine>,
     sequence: u64,
     pub(super) replay: VecDeque<ReplayEntry>,
@@ -55,7 +55,7 @@ struct HostState {
     pub(super) next_before_sequence: Option<u64>,
     pub(super) widgets: SessionWidgets,
     commands: mpsc::Receiver<HostCommand>,
-    events: broadcast::Sender<ServerFrame>,
+    events: broadcast::Sender<SharedFrame>,
     gateway_events: broadcast::Sender<ServerFrame>,
     idle_waiters: Vec<oneshot::Sender<()>>,
 }
@@ -320,7 +320,7 @@ impl HostHandle {
         &self.inner.session_id
     }
 
-    pub(crate) fn subscribe(&self) -> broadcast::Receiver<ServerFrame> {
+    pub(crate) fn subscribe(&self) -> broadcast::Receiver<SharedFrame> {
         self.inner.events.subscribe()
     }
 
@@ -562,11 +562,32 @@ impl HostHandle {
     }
 
     async fn send(&self, command: HostCommand) -> std::result::Result<(), Rejection> {
+        if matches!(
+            command,
+            HostCommand::Shutdown
+                | HostCommand::WaitIdle { .. }
+                | HostCommand::StopIfIdle { .. }
+                | HostCommand::ObserveVoiceUsage { .. }
+                | HostCommand::ProviderCutoverStatus { .. }
+        ) {
+            return self
+                .inner
+                .commands
+                .send(command)
+                .await
+                .map_err(|_| stopped());
+        }
         self.inner
             .commands
-            .send(command)
-            .await
-            .map_err(|_| stopped())
+            .try_send(command)
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => Rejection {
+                    code: "server_busy",
+                    message: "the session request queue is full; retry later".into(),
+                    fatal: false,
+                },
+                mpsc::error::TrySendError::Closed(_) => stopped(),
+            })
     }
 }
 

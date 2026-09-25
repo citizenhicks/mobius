@@ -5,7 +5,7 @@ mod responses;
 mod transport;
 mod voice;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -39,9 +39,9 @@ use crate::config::{ConfigStore, CredentialStore, GatewayConfig, TlsConfig};
 use crate::host::{GatewayHost, HostHandle, Rejection};
 use crate::wire::{
     ClientFrame, ClientKind, ClientMessage, ClientStatus, DirectoryEntry, DirectoryListing,
-    FrameReader, MAX_FRAME_BYTES, ProfileSnapshot, ServerFrame, ServerMessage, framed_to_websocket,
-    read_frame, read_frame_with_limit, validate_version, websocket_error, websocket_to_framed,
-    write_frame,
+    FrameReader, GatewayNotification, MAX_FRAME_BYTES, ProfileSnapshot, ServerFrame, ServerMessage,
+    SharedFrame, framed_to_websocket, read_frame, read_frame_with_limit, validate_version,
+    websocket_error, websocket_to_framed, write_frame,
 };
 use crate::{Error, Result};
 
@@ -71,6 +71,7 @@ pub struct GatewayServer {
     auth: Arc<AuthStore>,
     host: GatewayHost,
     bots: Arc<BotStore>,
+    ready: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl GatewayServer {
@@ -134,7 +135,14 @@ impl GatewayServer {
             auth,
             host,
             bots,
+            ready: None,
         })
+    }
+
+    pub(crate) fn notify_ready(&mut self) -> tokio::sync::oneshot::Receiver<()> {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        self.ready = Some(sender);
+        receiver
     }
 
     /// Serves until a process shutdown signal or 72 hours of inactivity.
@@ -218,7 +226,7 @@ impl GatewayServer {
     }
 
     async fn serve_until_inactive_with_host(
-        self,
+        mut self,
         shutdown: impl Future<Output = ()>,
         inactivity_timeout: Duration,
         websocket_host: Option<String>,
@@ -242,6 +250,9 @@ impl GatewayServer {
         let mut routine_timer = tokio::time::interval(ROUTINE_TICK);
         routine_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         tokio::pin!(shutdown);
+        if let Some(ready) = self.ready.take() {
+            let _ = ready.send(());
+        }
         let mut access_expired = false;
         let result = async {
             loop {

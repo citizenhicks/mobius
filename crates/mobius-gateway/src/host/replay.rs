@@ -2,13 +2,17 @@ use super::*;
 
 #[derive(Clone)]
 pub(super) struct ReplayEntry {
-    pub(super) frame: ServerFrame,
+    pub(super) frame: SharedFrame,
     bytes: usize,
 }
 
 impl ReplayEntry {
     pub(super) fn new(frame: ServerFrame) -> Result<Self> {
-        let bytes = validate_event_frame(&frame)?;
+        #[cfg(test)]
+        FRAME_SIZE_MEASUREMENTS.with(|count| count.set(count.get() + 1));
+        let frame = SharedFrame::encoded(frame)?;
+        // Charge both the logical event (estimated by its JSON size) and cached bytes.
+        let bytes = frame.encoded_len().saturating_mul(2);
         Ok(Self { frame, bytes })
     }
 }
@@ -266,7 +270,7 @@ pub(super) fn update_widgets(widgets: &mut SessionWidgets, event: &EventMsg) {
 pub(super) fn record_and_publish(
     replay: &mut VecDeque<ReplayEntry>,
     replay_bytes: &mut usize,
-    events: &broadcast::Sender<ServerFrame>,
+    events: &broadcast::Sender<SharedFrame>,
     entry: ReplayEntry,
     suppress_broadcast: bool,
 ) -> bool {
@@ -285,11 +289,16 @@ pub(super) fn record_and_publish(
             *replay_bytes = replay_bytes.saturating_sub(discarded.bytes);
             truncated = true;
         }
-        *replay_bytes = replay_bytes.saturating_add(frame_bytes);
-        replay.push_back(ReplayEntry {
-            frame: frame.clone(),
-            bytes: frame_bytes,
-        });
+        if frame_bytes <= MAX_REPLAY_BYTES {
+            *replay_bytes = replay_bytes.saturating_add(frame_bytes);
+            replay.push_back(ReplayEntry {
+                frame: frame.clone(),
+                bytes: frame_bytes,
+            });
+        } else {
+            // Still deliver the event live; reconnects can reload it from the journal.
+            truncated = true;
+        }
     }
     if !suppress_broadcast {
         let _ = events.send(frame);
@@ -345,24 +354,12 @@ pub(super) fn replayable(frame: &ServerFrame) -> bool {
     )
 }
 
-pub(super) fn validate_event_frame(frame: &ServerFrame) -> Result<usize> {
-    #[cfg(test)]
-    FRAME_SIZE_MEASUREMENTS.with(|count| count.set(count.get() + 1));
-    let frame_bytes = serde_json::to_vec(frame)?.len();
-    if frame_bytes > MAX_FRAME_BYTES {
-        return Err(Error::Protocol(format!(
-            "agent event exceeds the {MAX_FRAME_BYTES}-byte gateway frame limit"
-        )));
-    }
-    Ok(frame_bytes)
-}
-
 pub(super) fn publish_ready_and_pending(
-    events: &broadcast::Sender<ServerFrame>,
+    events: &broadcast::Sender<SharedFrame>,
     ready: ServerFrame,
-    pending: Vec<ServerFrame>,
+    pending: Vec<SharedFrame>,
 ) {
-    let _ = events.send(ready);
+    let _ = events.send(SharedFrame::new(ready));
     for frame in pending {
         let _ = events.send(frame);
     }

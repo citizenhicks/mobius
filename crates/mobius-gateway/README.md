@@ -205,9 +205,24 @@ directly. These views use this machine's saved gateway pairing.
 Exit verifies the gateway's locked process record before sending
 SIGINT and waits up to five seconds for shutdown.
 `serve --background` starts a detached process on macOS or Linux and returns
-only after that process owns the gateway process record. Foreground `serve`
+only after the serving loop finishes initialization and publishes its locked process record. Foreground `serve`
 continues to run until interrupted. Use `serve --background` for ordinary
 restarts after at least one client is paired.
+
+Authenticated clients may send `set_notifications` with a request ID and a `disabled` array
+containing `sessions` and/or `bots` to suppress unsolicited catalog updates. An empty array
+restores them. Preferences last for that connection; initial and recovery `ready` snapshots,
+explicit responses, approvals, and session events remain mandatory. Provider command clients
+use these exclusions while awaiting their responses.
+
+Full session request queues reject new external work with `server_busy` before accepting it;
+clients may retry that rejection with backoff. Internal shutdown, accounting, and routine
+delivery still wait for capacity. Each frame write has a 30-second deadline; failed or cancelled
+writes invalidate the client writer, and server write failures close the connection. Reconnect
+using the last received sequence; do not blindly resubmit a mutation after losing its response.
+Immutable agent-event frames share their validated JSON bytes across replay and subscribers.
+The replay budget charges both event data and cached bytes; an event that exceeds that budget
+is delivered live and remains recoverable from the durable journal.
 
 If every client token is lost, stop the gateway and run the supervised pairing
 flow again; existing paired clients remain valid:

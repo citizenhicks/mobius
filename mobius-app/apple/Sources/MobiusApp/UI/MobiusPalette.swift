@@ -9,10 +9,9 @@ struct MobiusPalette: Sendable {
     let line: Color
     /// Strokes, rings, and marks drawn *in* the accent. Not a background for text.
     let accent: Color
-    /// The logo ribbon, its lighter folded face, and the Bot, independent of interface contrast.
+    /// The logo ribbon and its lighter folded face, independent of interface contrast.
     let artwork: Color
     let artworkFold: Color
-    let artworkBot: Color
     /// Fill behind `onAccent` labels, darker than `accent` so the pair clears WCAG AA.
     ///
     /// Glass composites its tint with whatever sits behind it, so a fill that only just
@@ -44,7 +43,6 @@ struct MobiusPalette: Sendable {
         let hue = accentTint.color
         artwork = hue
         artworkFold = accentTint.artworkTint
-        artworkBot = isDark ? .nord6 : .nord0
         let surfaceTintAmount = accentTint == .appDefault ? 0.0 : 0.2
         let surfaceHue = hue.mix(
             with: isDark ? .black : .white,

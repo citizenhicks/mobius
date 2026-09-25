@@ -106,6 +106,25 @@ pub(super) fn register_provider_json(provider: &str) -> Result<String> {
     Ok(serde_json::to_string(&RegisterProviderOutput { provider })?)
 }
 
+async fn provider_command_connection(
+    endpoint: &Endpoint,
+    token: &str,
+) -> Result<(crate::client::GatewaySender, crate::client::GatewayEvents)> {
+    let client = GatewayClient::connect(endpoint, token, ClientKind::GatewayDashboard).await?;
+    let (sender, events) = client.into_parts();
+    sender
+        .send(ClientMessage::SetNotifications {
+            request_id: Uuid::new_v4().to_string(),
+            disabled: [
+                crate::wire::GatewayNotification::Sessions,
+                crate::wire::GatewayNotification::Bots,
+            ]
+            .into(),
+        })
+        .await?;
+    Ok((sender, events))
+}
+
 async fn request_provider_credential(
     endpoint: &Endpoint,
     token: &str,
@@ -115,8 +134,7 @@ async fn request_provider_credential(
     api_key: String,
     expires_at: Option<u64>,
 ) -> Result<()> {
-    let client = GatewayClient::connect(endpoint, token, ClientKind::GatewayDashboard).await?;
-    let (sender, mut events) = client.into_parts();
+    let (sender, mut events) = provider_command_connection(endpoint, token).await?;
     let request_id = Uuid::new_v4().to_string();
     let message = match base_url {
         Some(base_url) => ClientMessage::SetProviderEndpointCredential {
@@ -167,8 +185,7 @@ async fn request_provider_registration(
     token: &str,
     registration: ConfiguredProvider,
 ) -> Result<()> {
-    let client = GatewayClient::connect(endpoint, token, ClientKind::GatewayDashboard).await?;
-    let (sender, mut events) = client.into_parts();
+    let (sender, mut events) = provider_command_connection(endpoint, token).await?;
     let request_id = Uuid::new_v4().to_string();
     sender
         .send(ClientMessage::RegisterProvider {
@@ -213,8 +230,7 @@ pub(super) async fn clear_provider_credential(
     let endpoint = direct_loopback_endpoint(&config)?;
     let token = load_local_client(&endpoint)?
         .ok_or_else(|| Error::Config("gateway local control credential is unavailable".into()))?;
-    let client = GatewayClient::connect(&endpoint, &token, ClientKind::GatewayDashboard).await?;
-    let (sender, mut events) = client.into_parts();
+    let (sender, mut events) = provider_command_connection(&endpoint, &token).await?;
     let request_id = Uuid::new_v4().to_string();
     sender
         .send(ClientMessage::ClearProviderCredential {

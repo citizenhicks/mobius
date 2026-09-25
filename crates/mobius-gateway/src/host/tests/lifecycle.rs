@@ -1,6 +1,59 @@
 use super::*;
 
 #[tokio::test]
+async fn full_session_queue_rejects_external_work_but_preserves_shutdown() {
+    let (commands, mut pending) = mpsc::channel(1);
+    let (events, _) = broadcast::channel(1);
+    let handle = HostHandle {
+        inner: Arc::new(HostInner {
+            session_id: Arc::from("saturated"),
+            commands,
+            events,
+            alive: Arc::new(AtomicBool::new(true)),
+            terminated: Arc::new(AtomicBool::new(true)),
+            termination: Arc::new(tokio::sync::Notify::new()),
+            session_mutations: Arc::new(RwLock::new(())),
+            realtime_voice: Arc::new(Mutex::new(())),
+        }),
+    };
+    let (reply, _) = tokio::sync::oneshot::channel();
+    handle
+        .inner
+        .commands
+        .try_send(HostCommand::BotId { reply })
+        .unwrap();
+    let rejected = tokio::time::timeout(std::time::Duration::from_secs(1), handle.snapshot(None))
+        .await
+        .expect("reject without waiting")
+        .err()
+        .expect("full queue");
+    assert_eq!(rejected.code, "server_busy");
+    assert!(!rejected.fatal);
+    let shutdown = handle.shutdown();
+    tokio::pin!(shutdown);
+    tokio::select! {
+        biased;
+        () = &mut shutdown => panic!("shutdown must wait for capacity"),
+        () = std::future::ready(()) => {}
+    }
+    assert!(matches!(
+        pending.recv().await,
+        Some(HostCommand::BotId { .. })
+    ));
+    shutdown.await;
+    assert!(matches!(pending.recv().await, Some(HostCommand::Shutdown)));
+    assert!(
+        pending.try_recv().is_err(),
+        "rejected snapshot was never queued"
+    );
+    drop(pending);
+    assert_eq!(
+        handle.snapshot(None).await.err().unwrap().code,
+        stopped().code
+    );
+}
+
+#[tokio::test]
 async fn concurrent_catalog_updates_preserve_both_fields_for_resident_and_stopped_chats() {
     let root = tempfile::tempdir().expect("root");
     let workspace = root.path().join("workspace");

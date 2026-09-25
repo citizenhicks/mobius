@@ -1,0 +1,1 @@
+Simplifies interrupted-execution recovery and completed model-step failure handling while preserving cancellation, durable accounting, and middleware cleanup. No framework API or checkpoint format changes.

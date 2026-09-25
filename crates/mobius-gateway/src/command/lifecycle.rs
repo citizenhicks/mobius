@@ -37,28 +37,41 @@ pub(super) async fn serve(
     if let Some((endpoint, token)) = provision_cloudflare_local_client(&auth, &config)? {
         save_local_client(&endpoint, token)?;
     }
-    let server = GatewayServer::open(state_dir.clone()).await?;
-    let Some(mut tunnel) = CloudflareTunnel::start(&store, &config)? else {
-        let _process_record = ProcessRecordGuard::create(&state_dir, None)?;
-        drop(startup);
-        #[cfg(target_os = "macos")]
-        menu_bar::open_if_installed(&state_dir);
-        println!("gateway serving in foreground");
-        print_listener(&config, None);
-        return server.serve().await;
+    let mut server = GatewayServer::open(state_dir.clone()).await?;
+    let ready = server.notify_ready();
+    let mut tunnel = CloudflareTunnel::start(&store, &config)?;
+    let endpoint = match &mut tunnel {
+        Some(tunnel) => Some(tunnel.endpoint().await?),
+        None => None,
     };
-    let endpoint = tunnel.endpoint().await?;
-    let server = server.serve_cloudflare(endpoint.host().to_owned());
-    tokio::pin!(server);
-    let _process_record = ProcessRecordGuard::create(&state_dir, Some(&endpoint))?;
+    let serving = async {
+        match &endpoint {
+            Some(endpoint) => server.serve_cloudflare(endpoint.host().to_owned()).await,
+            None => server.serve().await,
+        }
+    };
+    tokio::pin!(serving);
+    tokio::select! {
+        biased;
+        result = &mut serving => return result,
+        result = ready => result.map_err(|_| Error::Config("gateway stopped before becoming ready".into()))?,
+    }
+    // The parent treats this locked record as readiness, so publish it only after
+    // the serving loop has completed initialization and can accept connections.
+    let _process_record = ProcessRecordGuard::create(&state_dir, endpoint.as_ref())?;
     drop(startup);
     #[cfg(target_os = "macos")]
     menu_bar::open_if_installed(&state_dir);
     println!("gateway serving in foreground");
-    print_listener(&config, Some(&endpoint));
+    print_listener(&config, endpoint.as_ref());
     tokio::select! {
-        result = &mut server => result,
-        result = tunnel.wait() => result,
+        result = &mut serving => result,
+        result = async {
+            match &mut tunnel {
+                Some(tunnel) => tunnel.wait().await,
+                None => std::future::pending().await,
+            }
+        } => result,
     }
 }
 

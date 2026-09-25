@@ -1,6 +1,7 @@
 # möbius Gateway 0.15.49
 
-- Stop cloud-managed gateways at the verified subscription expiry plus five minutes, closing paired clients and running routines even when Cloud reconciliation is unavailable.
-- Reject startup with a missing, invalid, or expired access lease on cloud-managed gateways. Standalone gateways do not require a lease.
-- The lease bounds ordinary reconciliation outages and restarts. A Sprite user with Full access can alter the gateway runtime; adversarial revocation requires a trusted edge outside the Sprite.
-- Preserve protocol 84, configuration version 26, checkpoint payload 17, Bot SQLite schema 3, and session SQLite schema 10. Existing gateway state upgrades in place.
+Rejects excess session requests promptly, announces background readiness after initialization, and prevents busy or stalled clients from monopolizing connections. Optional per-connection catalog exclusions preserve approvals, events, and explicit responses. Immutable session frames share their encoded payload across replay and subscribers, with both retained representations charged against the existing replay budget.
+
+Cloud-managed gateways stop at verified subscription expiry plus five minutes even during reconciliation outages; missing or expired leases reject startup. The Mac app includes the refreshed two-tone ribbon artwork.
+
+Protocol 85 requires updated clients, including CLI 0.15.49 and iOS 0.10.0 build 392. Configuration 26, checkpoint payload 17, Bot SQLite schema 3, and session SQLite schema 10 are unchanged. Packages retain LICENSE, NOTICE, and pinned cloudflared.

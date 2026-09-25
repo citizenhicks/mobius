@@ -2,6 +2,137 @@ use tokio::io::duplex;
 
 use super::*;
 
+#[tokio::test(start_paused = true)]
+async fn stalled_websocket_output_times_out() {
+    let mut bytes = Vec::new();
+    write_frame(&mut bytes, &"payload").await.unwrap();
+    let sink = Box::pin(futures_util::sink::unfold((), |(), _: Message| {
+        std::future::pending::<std::result::Result<(), WebSocketError>>()
+    }));
+    let error = framed_to_websocket(bytes.as_slice(), sink)
+        .await
+        .expect_err("stalled websocket");
+    assert!(matches!(error, Error::Io(error) if error.kind() == std::io::ErrorKind::TimedOut));
+}
+
+#[test]
+fn notification_preferences_reject_required_or_unknown_event_names() {
+    for notification in ["background_approvals", "agent_event", "error", "unknown"] {
+        let frame = serde_json::json!({
+            "version": PROTOCOL_VERSION, "type": "set_notifications",
+            "request_id": "preferences", "disabled": [notification],
+        });
+        assert!(serde_json::from_value::<ClientFrame>(frame).is_err());
+    }
+}
+
+#[tokio::test]
+#[ignore = "manual release-mode serialization benchmark"]
+async fn shared_frame_fanout_benchmark() {
+    let frame = ServerFrame::new(ServerMessage::AgentEvent {
+        session_id: "benchmark".into(),
+        record: RecordedEvent {
+            sequence: 1,
+            recorded_at_ms: 1,
+            event: Event {
+                submission_id: Some("submission".into()),
+                msg: EventMsg::AssistantContentDelta(
+                    mobius::protocol::AssistantContentDeltaEvent {
+                        session_id: "benchmark".into(),
+                        turn_id: "turn".into(),
+                        model_step_id: "step".into(),
+                        delta: "streamed text ".repeat(512),
+                        phase: mobius::protocol::ModelStepContentPhase::FinalAnswer,
+                    },
+                ),
+            },
+            stream_metrics: Vec::new(),
+            blocks: Vec::new(),
+            preview: None,
+        },
+    });
+    for subscribers in [1, 8, 32] {
+        let mut repeated = Vec::new();
+        let mut shared = Vec::new();
+        for _ in 0..5 {
+            let started = std::time::Instant::now();
+            for _ in 0..500 {
+                std::hint::black_box(serde_json::to_vec(&frame).unwrap());
+                for _ in 0..subscribers {
+                    write_frame(&mut tokio::io::sink(), std::hint::black_box(&frame.clone()))
+                        .await
+                        .unwrap();
+                }
+            }
+            repeated.push(started.elapsed());
+            let started = std::time::Instant::now();
+            for _ in 0..500 {
+                let encoded = SharedFrame::encoded(frame.clone()).unwrap();
+                for _ in 0..subscribers {
+                    std::hint::black_box(encoded.clone())
+                        .write(&mut tokio::io::sink())
+                        .await
+                        .unwrap();
+                }
+            }
+            shared.push(started.elapsed());
+        }
+        repeated.sort_unstable();
+        shared.sort_unstable();
+        eprintln!(
+            "{subscribers} subscribers, 500 events, median of 5: repeated={:?}, shared={:?}",
+            repeated[2], shared[2]
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn stalled_frame_write_times_out_after_partial_output() {
+    let (mut writer, mut reader) = duplex(4);
+    let error = write_frame(&mut writer, &"payload")
+        .await
+        .expect_err("stalled write");
+    assert!(matches!(error, Error::Io(error) if error.kind() == std::io::ErrorKind::TimedOut));
+    drop(writer);
+    let mut partial = Vec::new();
+    reader
+        .read_to_end(&mut partial)
+        .await
+        .expect("partial bytes");
+    assert_eq!(partial.len(), 4, "only the frame prefix reached the peer");
+}
+
+#[tokio::test]
+async fn shared_frame_writes_preserve_the_wire_payload_for_every_subscriber() {
+    let frame = ServerFrame::new(ServerMessage::Error {
+        code: "test".into(),
+        message: "shared payload".repeat(100),
+        fatal: false,
+    });
+    let shared = SharedFrame::encoded(frame.clone()).expect("encode frame");
+    let (events, mut first) = tokio::sync::broadcast::channel(1);
+    let mut second = events.subscribe();
+    events.send(shared.clone()).expect("broadcast");
+    let original = shared.clone();
+    for delivered in [
+        first.recv().await.unwrap(),
+        second.recv().await.unwrap(),
+        shared,
+    ] {
+        assert!(std::ptr::eq(&*delivered, &*original));
+        let mut bytes = Vec::new();
+        delivered
+            .write(&mut bytes)
+            .await
+            .expect("write cached bytes");
+        let mut reader = FrameReader::new(bytes.as_slice());
+        assert_eq!(
+            read_frame::<ServerFrame>(&mut reader).await.unwrap(),
+            Some(frame.clone())
+        );
+    }
+}
+
 #[tokio::test]
 async fn framed_json_round_trip_preserves_the_versioned_message() {
     let expected = ClientFrame::new(ClientMessage::Authenticate {

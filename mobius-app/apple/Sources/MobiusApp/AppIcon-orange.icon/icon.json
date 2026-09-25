@@ -19,24 +19,6 @@
     {
       "layers": [
         {
-          "name": "Bot",
-          "glass": false,
-          "image-name": "Bot.svg"
-        }
-      ],
-      "lighting": "combined",
-      "shadow": {
-        "kind": "neutral",
-        "opacity": 0.2
-      },
-      "translucency": {
-        "enabled": false,
-        "value": 0
-      }
-    },
-    {
-      "layers": [
-        {
           "name": "Fold",
           "glass": false,
           "image-name": "Fold.svg"

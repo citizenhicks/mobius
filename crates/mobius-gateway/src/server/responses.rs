@@ -76,7 +76,7 @@ pub(super) async fn open_selected(
     )
     .await?;
     for frame in snapshot.replay {
-        write_frame(writer, &frame).await?;
+        frame.write(writer).await?;
     }
     write_frame(
         writer,

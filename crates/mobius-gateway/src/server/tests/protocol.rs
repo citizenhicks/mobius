@@ -1,5 +1,96 @@
 use super::*;
 
+#[tokio::test]
+async fn notification_opt_out_preserves_approvals_and_explicit_catalog_requests() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let (server, grant) = configured_test_server(root.path().join("state")).await;
+    let host = server.host.clone();
+    let endpoint: Endpoint = format!("tcp://{}", server.listen_addr()).parse().unwrap();
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let serving = tokio::spawn(server.serve_until(async {
+        let _ = stopped.await;
+    }));
+    let (client, _) = GatewayClient::pair(&endpoint, grant.code, "notifications", ClientKind::Cli)
+        .await
+        .unwrap();
+    let (sender, mut events) = client.into_parts();
+    wait_gateway_ready(&mut events).await;
+    let (session_id, _) = create_bot_chat(&sender, &mut events, &workspace).await;
+    sender
+        .send(ClientMessage::SetNotifications {
+            request_id: "preferences".into(),
+            disabled: [GatewayNotification::Sessions, GatewayNotification::Bots].into(),
+        })
+        .await
+        .unwrap();
+    loop {
+        if matches!(next_gateway_message(&mut events).await, ServerMessage::Accepted { request_id } if request_id == "preferences")
+        {
+            break;
+        }
+    }
+    host.rename_session(&session_id, "updated").await.unwrap();
+    loop {
+        match next_gateway_message(&mut events).await {
+            ServerMessage::Sessions {
+                request_id: None, ..
+            } => panic!("suppressed broadcast"),
+            ServerMessage::BackgroundApprovals { .. } => break,
+            _ => {}
+        }
+    }
+    sender
+        .send(ClientMessage::ListSessions {
+            request_id: "catalog".into(),
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::Sessions {
+            request_id: Some(id),
+            sessions,
+        } = next_gateway_message(&mut events).await
+        {
+            assert_eq!(id, "catalog");
+            assert!(
+                sessions
+                    .iter()
+                    .any(|session| session.session_id == session_id)
+            );
+            break;
+        }
+    }
+    sender
+        .send(ClientMessage::SetNotifications {
+            request_id: "enable".into(),
+            disabled: BTreeSet::new(),
+        })
+        .await
+        .unwrap();
+    loop {
+        if matches!(next_gateway_message(&mut events).await, ServerMessage::Accepted { request_id } if request_id == "enable")
+        {
+            break;
+        }
+    }
+    host.rename_session(&session_id, "again").await.unwrap();
+    loop {
+        if matches!(
+            next_gateway_message(&mut events).await,
+            ServerMessage::Sessions {
+                request_id: None,
+                ..
+            }
+        ) {
+            break;
+        }
+    }
+    stop.send(()).unwrap();
+    serving.await.unwrap().unwrap();
+}
+
 #[test]
 fn tls_loader_rejects_empty_pem_files() {
     let file = tempfile::NamedTempFile::new().expect("temporary PEM");

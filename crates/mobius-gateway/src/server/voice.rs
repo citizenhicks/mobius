@@ -262,7 +262,7 @@ async fn drive(
     model: &crate::host::RealtimeModel,
     call: &mut RealtimeVoiceCall,
     transcript: &mut VoiceTranscript,
-    events: &mut broadcast::Receiver<ServerFrame>,
+    events: &mut broadcast::Receiver<SharedFrame>,
     stopped: oneshot::Receiver<()>,
 ) -> Result<()> {
     transcript.start_call(&call.voice).await?;
@@ -315,7 +315,7 @@ async fn drive_conversation(
     model: &crate::host::RealtimeModel,
     call: &mut RealtimeVoiceCall,
     transcript: &mut VoiceTranscript,
-    events: &mut broadcast::Receiver<ServerFrame>,
+    events: &mut broadcast::Receiver<SharedFrame>,
     conversation: &mut VoiceConversation,
     mut stopped: oneshot::Receiver<()>,
 ) -> Result<()> {
@@ -331,7 +331,7 @@ async fn drive_conversation(
             }
             event = events.recv() => {
                 let frame = event.map_err(|_| Error::Protocol("voice lost its conversation event stream".into()))?;
-                match frame.message {
+                match &frame.message {
                     ServerMessage::SessionChanged { .. } => {
                         let current = host.realtime_model().await.map_err(rejected)?;
                         if !Arc::ptr_eq(&model.router, &current.router) || model.route != current.route || model.voice != current.voice {
@@ -354,7 +354,7 @@ async fn drive_conversation(
                         if let Some(update) = conversation.progress(&record.event) { commands.insert(0, update); }
                         commands
                     }
-                    ServerMessage::Error { fatal: true, message, .. } => return Err(Error::Protocol(message)),
+                    ServerMessage::Error { fatal: true, message, .. } => return Err(Error::Protocol(message.clone())),
                     _ => Vec::new(),
                 }
             }

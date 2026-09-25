@@ -467,10 +467,8 @@ pub(super) async fn serve_websocket(
     let (outgoing, incoming) = websocket.split();
     let (bridge_reader, bridge_writer) = tokio::io::split(bridge_stream);
     let gateway_and_outgoing = async {
-        let (gateway, outgoing) =
-            tokio::join!(&mut gateway, framed_to_websocket(bridge_reader, outgoing),);
-        gateway?;
-        outgoing
+        tokio::try_join!(&mut gateway, framed_to_websocket(bridge_reader, outgoing))?;
+        Ok(())
     };
     tokio::pin!(gateway_and_outgoing);
     tokio::select! {
@@ -538,10 +536,14 @@ where
     let mut pending_git = JoinSet::new();
     let mut pending_profile = None;
     let mut queued_profile_request = None;
+    let mut disabled_notifications = BTreeSet::new();
 
     loop {
+        // Check revocation before fairly polling ordinary input and output.
+        if connection_revoked(&mut revocations, &client_id) {
+            return Ok(());
+        }
         let incoming = tokio::select! {
-            biased;
             revoked = revocations.recv() => {
                 if !matches!(revoked, Ok(revoked) if revoked != client_id) {
                     return Ok(());
@@ -574,7 +576,7 @@ where
                 None
             }
             outgoing = gateway_broadcasts.recv() => {
-                if !handle_gateway_broadcast(outgoing, &host, &mut writer).await? {
+                if !handle_gateway_broadcast(outgoing, &host, &disabled_notifications, &mut writer).await? {
                     return Ok(());
                 }
                 None
@@ -624,6 +626,7 @@ where
             &bots,
             &client,
             ConnectionSessionState {
+                disabled_notifications: &mut disabled_notifications,
                 selected: &mut selected,
                 git_diffs: &mut pending_git,
                 session_files: &session_files,
@@ -635,6 +638,16 @@ where
             &mut writer,
         )
         .await?;
+    }
+}
+
+fn connection_revoked(revocations: &mut broadcast::Receiver<String>, client_id: &str) -> bool {
+    loop {
+        match revocations.try_recv() {
+            Ok(revoked) if revoked != client_id => {}
+            Err(broadcast::error::TryRecvError::Empty) => return false,
+            _ => return true,
+        }
     }
 }
 
@@ -849,9 +862,11 @@ async fn write_gateway_broadcast(
 async fn handle_gateway_broadcast(
     outgoing: std::result::Result<ServerFrame, broadcast::error::RecvError>,
     host: &GatewayHost,
+    disabled: &BTreeSet<GatewayNotification>,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<bool> {
     match outgoing {
+        Ok(frame) if notification_disabled(&frame.message, disabled) => Ok(true),
         Ok(frame) => write_gateway_broadcast(writer, host, frame)
             .await
             .map(|()| true),
@@ -871,12 +886,28 @@ async fn handle_gateway_broadcast(
     }
 }
 
+fn notification_disabled(
+    message: &ServerMessage,
+    disabled: &BTreeSet<GatewayNotification>,
+) -> bool {
+    let notification = match message {
+        ServerMessage::Sessions {
+            request_id: None, ..
+        } => GatewayNotification::Sessions,
+        ServerMessage::Bots {
+            request_id: None, ..
+        } => GatewayNotification::Bots,
+        _ => return false,
+    };
+    disabled.contains(&notification)
+}
+
 async fn handle_selected_broadcast(
-    outgoing: std::result::Result<ServerFrame, broadcast::error::RecvError>,
+    outgoing: std::result::Result<SharedFrame, broadcast::error::RecvError>,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<bool> {
     match outgoing {
-        Ok(frame) => write_frame(writer, &frame).await.map(|()| true),
+        Ok(frame) => frame.write(writer).await.map(|()| true),
         Err(broadcast::error::RecvError::Lagged(_)) => {
             write_server_error(
                 writer,

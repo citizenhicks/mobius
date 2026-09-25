@@ -70,7 +70,7 @@ pub struct GatewayClient {
 /// Cloneable framed command writer.
 #[derive(Clone)]
 pub struct GatewaySender {
-    writer: Arc<Mutex<WriteHalf<BoxedTransport>>>,
+    writer: Arc<Mutex<Option<WriteHalf<BoxedTransport>>>>,
 }
 
 /// Single-owner framed event reader.
@@ -325,7 +325,7 @@ impl GatewayClient {
     fn from_parts(reader: ReadHalf<BoxedTransport>, writer: WriteHalf<BoxedTransport>) -> Self {
         Self {
             sender: GatewaySender {
-                writer: Arc::new(Mutex::new(writer)),
+                writer: Arc::new(Mutex::new(Some(writer))),
             },
             events: GatewayEvents {
                 reader: FrameReader::new(reader),
@@ -379,8 +379,13 @@ impl GatewaySender {
     }
 
     async fn write(&self, message: ClientMessage) -> Result<()> {
-        let mut writer = self.writer.lock().await;
-        write_frame(&mut *writer, &ClientFrame::new(message)).await
+        let mut slot = self.writer.lock().await;
+        let mut writer = slot.take().ok_or_else(|| {
+            Error::Protocol("gateway writer is closed after a failed or cancelled write".into())
+        })?;
+        write_frame(&mut writer, &ClientFrame::new(message)).await?;
+        *slot = Some(writer);
+        Ok(())
     }
 }
 
@@ -484,6 +489,22 @@ fn format_address(host: &str, port: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn timed_out_writer_cannot_send_another_frame() {
+        let (transport, _peer) = tokio::io::duplex(4);
+        let (reader, writer) = tokio::io::split(Box::new(transport) as BoxedTransport);
+        let (sender, _events) = GatewayClient::from_parts(reader, writer).into_parts();
+        let request = ClientMessage::ListSessions {
+            request_id: "request".into(),
+        };
+        assert!(
+            matches!(sender.send(request.clone()).await, Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut)
+        );
+        assert!(
+            matches!(sender.send(request).await, Err(Error::Protocol(message)) if message.contains("writer is closed"))
+        );
+    }
 
     #[tokio::test]
     async fn connect_authenticates_without_a_session_cursor() {

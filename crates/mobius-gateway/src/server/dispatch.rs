@@ -6,7 +6,7 @@ use crate::wire::{GitDiffScope, WorkspaceFileScope};
 
 pub(super) struct SelectedChat {
     pub(super) host: HostHandle,
-    pub(super) broadcasts: broadcast::Receiver<ServerFrame>,
+    pub(super) broadcasts: broadcast::Receiver<SharedFrame>,
     pub(super) delivered_sequence: u64,
 }
 
@@ -21,6 +21,7 @@ pub(super) struct AuthenticatedClient<'a> {
 const MAX_PENDING_GIT_DIFFS: usize = 4;
 
 pub(super) struct ConnectionSessionState<'a> {
+    pub(super) disabled_notifications: &'a mut BTreeSet<GatewayNotification>,
     pub(super) selected: &'a mut Option<SelectedChat>,
     pub(super) git_diffs: &'a mut JoinSet<ServerMessage>,
     pub(super) session_files: &'a SessionFileStore,
@@ -32,7 +33,7 @@ pub(super) struct ConnectionSessionState<'a> {
 
 pub(super) async fn selected_broadcast(
     selected: &mut Option<SelectedChat>,
-) -> std::result::Result<ServerFrame, broadcast::error::RecvError> {
+) -> std::result::Result<SharedFrame, broadcast::error::RecvError> {
     let Some(active) = selected else {
         return std::future::pending().await;
     };
@@ -63,6 +64,13 @@ pub(super) async fn handle_message(
         return Ok(());
     };
     match message {
+        ClientMessage::SetNotifications {
+            request_id,
+            disabled,
+        } => {
+            *connection.disabled_notifications = disabled;
+            return write_result(writer, request_id, Ok(())).await;
+        }
         ClientMessage::Pair { .. }
         | ClientMessage::RepairPairing { .. }
         | ClientMessage::Authenticate { .. } => {

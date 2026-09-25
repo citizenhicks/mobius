@@ -1,11 +1,10 @@
 # Mark
 
 The möbius mark is the triangular ribbon from `ribbon.svg`, the original potrace
-silhouette, with a Bot in front of its lower corner. The ribbon's two pieces take two
-shades: the body uses the accent, and the folded face uses the accent mixed 35% toward
-white, the same rule as `AccentTint.artworkTint`. The Bot is a snow ball with night
-`o o` eyes, matching the animated Bot faces in the app. A transparent gap separates the
-Bot from the ribbon, so every output works on light and dark backgrounds.
+silhouette, centred in the icon. Its two pieces take two shades: the body uses the
+accent, and the folded face uses the accent mixed 35% toward white, the same rule as
+`AccentTint.artworkTint`. The mark has no background of its own, so every output works
+on light and dark backgrounds.
 
 `export_mark.py` generates every output from that geometry. From this directory:
 
@@ -16,17 +15,14 @@ uv run --with shapely python export_mark.py
 
 It writes:
 
-- `AppIcon.icon` and the six `AppIcon-<accent>.icon` alternates: three flat SVG layers
-  (`Bot`, `Fold`, `Ribbon`), each in its own group so Icon Composer can apply depth,
+- `AppIcon.icon` and the six `AppIcon-<accent>.icon` alternates: two flat SVG layers
+  (`Fold`, `Ribbon`), each in its own group so Icon Composer can apply depth,
   shadows, and the tinted and clear appearances. The exporter keeps each icon's
   background fill in `icon.json`.
-- `MobiusLogoRibbon`, `MobiusLogoFold`, `MobiusLogoBot`, and `MobiusLogoEyes`: template
-  vectors that `MobiusLogo.swift` tints from the palette, so the in-app logo follows the
+- `MobiusLogoRibbon` and `MobiusLogoFold`: template vectors that `MobiusLogo.swift` tints from the palette, so the in-app logo follows the
   selected accent and theme.
-- `MobiusMenuBar.svg`: the 18-point two-tone ribbon for the Mac menu bar. The Bot is too
-  small to read at that size.
-- `MobiusMark.svg` and `MobiusMark-light.svg`: full-colour marks for dark and light
-  backgrounds. The repository README selects the matching appearance.
+- `MobiusMenuBar.svg`: the 18-point two-tone ribbon for the Mac menu bar.
+- `MobiusMark.svg`: the full-colour mark, used by the repository README.
 - `MobiusIcon.svg`: the mark on a rounded night background for browser tabs.
 
 The public website (`thinkingsand/mobius`) and cloud console (`mobius-cloud`) vendor

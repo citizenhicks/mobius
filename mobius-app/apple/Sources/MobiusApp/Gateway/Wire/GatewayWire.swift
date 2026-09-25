@@ -1,7 +1,7 @@
 import Foundation
 import UIKit
 
-let gatewayProtocolVersion = 84
+let gatewayProtocolVersion = 85
 let maximumGatewayFrameBytes = 50 * 1024 * 1024
 let maximumComposerBytes = 1024 * 1024
 let maximumWireSessionFileReferences = 16

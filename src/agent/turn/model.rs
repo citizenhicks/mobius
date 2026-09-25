@@ -705,6 +705,18 @@ impl Runner {
         }
     }
 
+    async fn fail_completed_model_step(
+        &mut self,
+        submission_id: &str,
+        mut step: CompletedModelStep,
+        error: Error,
+    ) -> Result<Option<NormalizedModelStep>> {
+        step.streamed.cancel();
+        self.fail_model_step(submission_id, &step.started, &step.model_events, error)
+            .await?;
+        Ok(None)
+    }
+
     async fn normalize_and_persist_model_step(
         &mut self,
         inbox: &mut SubmissionInbox,
@@ -715,22 +727,19 @@ impl Runner {
     ) -> Result<Option<NormalizedModelStep>> {
         let provider = self.config.provider.clone();
         if let Err(error) = self.record_usage(&provider, &step.output.usage) {
-            step.streamed.cancel();
-            self.fail_model_step(submission_id, &step.started, &step.model_events, error)
-                .await?;
-            return Ok(None);
+            return self
+                .fail_completed_model_step(submission_id, step, error)
+                .await;
         }
         self.state.last_usage = Some(step.output.usage.clone());
         if !step.output.tool_calls.starts_with(&step.streamed.originals) {
-            step.streamed.cancel();
-            self.fail_model_step(
-                submission_id,
-                &step.started,
-                &step.model_events,
-                Error::Provider("completed response changed streamed tool calls".into()),
-            )
-            .await?;
-            return Ok(None);
+            return self
+                .fail_completed_model_step(
+                    submission_id,
+                    step,
+                    Error::Provider("completed response changed streamed tool calls".into()),
+                )
+                .await;
         }
         let mut tool_effects = match step.tools.accept_materialized(
             step.output.materialized_tools(),
@@ -739,10 +748,9 @@ impl Runner {
         ) {
             Ok(effects) => effects,
             Err(error) => {
-                step.streamed.cancel();
-                self.fail_model_step(submission_id, &step.started, &step.model_events, error)
-                    .await?;
-                return Ok(None);
+                return self
+                    .fail_completed_model_step(submission_id, step, error)
+                    .await;
             }
         };
         let original_tool_calls = step.output.tool_calls.clone();
@@ -777,15 +785,9 @@ impl Runner {
                     }
                     Ok(None) => {}
                     Err(error) => {
-                        step.streamed.cancel();
-                        self.fail_model_step(
-                            submission_id,
-                            &step.started,
-                            &step.model_events,
-                            error,
-                        )
-                        .await?;
-                        return Ok(None);
+                        return self
+                            .fail_completed_model_step(submission_id, step, error)
+                            .await;
                     }
                 }
             }
@@ -797,10 +799,9 @@ impl Runner {
         if step.output.tool_calls != original_tool_calls
             && let Err(error) = step.output.sync_tool_calls()
         {
-            step.streamed.cancel();
-            self.fail_model_step(submission_id, &step.started, &step.model_events, error)
-                .await?;
-            return Ok(None);
+            return self
+                .fail_completed_model_step(submission_id, step, error)
+                .await;
         }
         if let Some(interrupt_submission_id) =
             self.drain_submissions(inbox, turn_id).await?.interrupted

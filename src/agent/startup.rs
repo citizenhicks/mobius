@@ -235,13 +235,14 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
             }),
         });
     }
+    let mut recovered_tool_calls = 0;
     if uncertain_tools {
         if interrupted_model_step {
             let calls = super::tool_step::tool_call_inputs(&state.pending_tools)?;
             state.context.extend(calls.iter().cloned());
             recovery_delta.extend(calls);
         }
-        let recovered_tool_calls = u64::try_from(state.pending_tools.len())
+        recovered_tool_calls = u64::try_from(state.pending_tools.len())
             .map_err(|_| Error::Checkpoint("recovered tool-call count is unsupported".into()))?;
         let recovered_turn = state
             .active_execution
@@ -268,27 +269,8 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
             });
         }
         state.pending_approval = None;
-        config.middleware.finish_message_turn(
-            &mut state.pending_messages,
-            &recovered_turn,
-            ExecutionOutcome::Aborted,
-        )?;
-        let active = state
-            .active_execution
-            .as_mut()
-            .ok_or_else(|| Error::Checkpoint("recovery lost its active execution".into()))?;
-        active.tool_calls = active
-            .tool_calls
-            .checked_add(recovered_tool_calls)
-            .ok_or_else(|| Error::Checkpoint("execution tool-call count overflow".into()))?;
-        active.failed_tool_calls = active
-            .failed_tool_calls
-            .checked_add(recovered_tool_calls)
-            .ok_or_else(|| Error::Checkpoint("execution failed-tool count overflow".into()))?;
-        recovery_execution =
-            Some(state.finish_execution(ExecutionOutcome::Aborted, unix_timestamp_ms()?)?);
-        state_changed = true;
-    } else if interrupted_model_step {
+    }
+    if interrupted_execution {
         let recovered_turn = state
             .active_execution
             .as_ref()
@@ -299,6 +281,22 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
             &recovered_turn,
             ExecutionOutcome::Aborted,
         )?;
+        if uncertain_tools {
+            let active = state
+                .active_execution
+                .as_mut()
+                .ok_or_else(|| Error::Checkpoint("recovery lost its active execution".into()))?;
+            active.tool_calls = active
+                .tool_calls
+                .checked_add(recovered_tool_calls)
+                .ok_or_else(|| Error::Checkpoint("execution tool-call count overflow".into()))?;
+            active.failed_tool_calls = active
+                .failed_tool_calls
+                .checked_add(recovered_tool_calls)
+                .ok_or_else(|| {
+                Error::Checkpoint("execution failed-tool count overflow".into())
+            })?;
+        }
         recovery_execution =
             Some(state.finish_execution(ExecutionOutcome::Aborted, unix_timestamp_ms()?)?);
         state_changed = true;

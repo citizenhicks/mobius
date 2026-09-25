@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The flat mark from `artwork/export_mark.py`: the accent ribbon with a Bot in front.
+/// The flat mark from `artwork/export_mark.py`: the two-tone accent ribbon.
 struct MobiusLogo: View {
     @Environment(\.mobiusPalette) private var palette
 
@@ -8,8 +8,6 @@ struct MobiusLogo: View {
         ZStack {
             layer("MobiusLogoRibbon", palette.artwork)
             layer("MobiusLogoFold", palette.artworkFold)
-            layer("MobiusLogoBot", palette.artworkBot)
-            layer("MobiusLogoEyes", palette.canvas)
         }
         .compositingGroup()
     }

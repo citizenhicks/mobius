@@ -326,12 +326,15 @@ extension AppModelTests {
         model.resetGatewayDependentState(preservingDrafts: true, preservingSession: true)
         XCTAssertEqual(model.chat.displayedTranscript.map(\.text), visibleBeforeReconnect)
         model.gateway.connectionState = .ready
+        let reconnectRequestCount = await recorder.requestCount()
         model.chat.restoreSession("chat-1")
-        try await Task.sleep(for: .milliseconds(30))
-        let reconnectRequests = await recorder.requests()
+        let reconnectRequest = await recorder.firstRequest(after: reconnectRequestCount) {
+            if case .openSession(_, "chat-1", _) = $0 { return true }
+            return false
+        }
         guard
             case .openSession(let reconnectID, _, _) = try XCTUnwrap(
-                reconnectRequests.last
+                reconnectRequest
             )
         else { return XCTFail("Expected reconnect session open") }
         model.gateway.handle(

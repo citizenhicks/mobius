@@ -1,5 +1,160 @@
 use super::*;
 
+#[tokio::test]
+async fn queued_client_requests_do_not_starve_gateway_broadcasts() {
+    let root = tempfile::tempdir().unwrap();
+    let (server, grant) = configured_test_server(root.path().join("state")).await;
+    let identity = server.auth.pair(&grant.code, "busy client").unwrap();
+    let (revocations, _) = broadcast::channel(1);
+    let connection = ConnectionContext {
+        local: true,
+        auth: Arc::clone(&server.auth),
+        host: server.host.clone(),
+        bots: Arc::clone(&server.bots),
+        client_connections: Arc::new(ClientConnections::default()),
+        client_revocations: revocations,
+        admission: ConnectionAdmission::new(1, 1).admit().await,
+        access_lease: None,
+    };
+    let (client, stream) = tokio::io::duplex(1024 * 1024);
+    let (reader, mut writer) = tokio::io::split(client);
+    let mut reader = FrameReader::new(reader);
+    write_frame(
+        &mut writer,
+        &ClientFrame::new(ClientMessage::Authenticate {
+            token: identity.token,
+            client_kind: ClientKind::Cli,
+        }),
+    )
+    .await
+    .unwrap();
+    let serving = serve_connection(stream, connection, Instant::now() + PRE_AUTH_TIMEOUT, None);
+    tokio::pin!(serving);
+    tokio::select! {
+        result = &mut serving => panic!("connection stopped: {result:?}"),
+        () = async {
+            while !matches!(read_frame::<ServerFrame>(&mut reader).await.unwrap().unwrap().message, ServerMessage::Ready { .. }) {}
+        } => {}
+    }
+    // Pause connection polling so both directions are ready before testing fairness.
+    for id in 0..128 {
+        write_frame(
+            &mut writer,
+            &ClientFrame::new(ClientMessage::SetNotifications {
+                request_id: id.to_string(),
+                disabled: BTreeSet::new(),
+            }),
+        )
+        .await
+        .unwrap();
+    }
+    server
+        .host
+        .create_bot("Fairness", "Transport test")
+        .await
+        .unwrap();
+    tokio::select! {
+        result = &mut serving => panic!("connection stopped: {result:?}"),
+        () = async {
+            let mut responses = 0;
+            loop {
+                match read_frame::<ServerFrame>(&mut reader).await.unwrap().unwrap().message {
+                    ServerMessage::Bots { .. } => break,
+                    ServerMessage::Accepted { .. } => responses += 1,
+                    _ => {}
+                }
+                assert!(responses < 128, "input drained before an already-ready broadcast");
+            }
+        } => {}
+    }
+    server.host.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn non_reading_client_releases_its_authenticated_connection_slot() {
+    let root = tempfile::tempdir().unwrap();
+    let (server, grant) = configured_test_server(root.path().join("state")).await;
+    let identity = server.auth.pair(&grant.code, "stalled").unwrap();
+    let admission = ConnectionAdmission::new(1, 1);
+    let (revocations, _) = broadcast::channel(1);
+    let connection = ConnectionContext {
+        local: true,
+        auth: Arc::clone(&server.auth),
+        host: server.host.clone(),
+        bots: Arc::clone(&server.bots),
+        client_connections: Arc::new(ClientConnections::default()),
+        client_revocations: revocations,
+        admission: admission.admit().await,
+        access_lease: None,
+    };
+    let (mut client, stream) = tokio::io::duplex(64);
+    let serving = tokio::spawn(serve_connection(
+        stream,
+        connection,
+        Instant::now() + PRE_AUTH_TIMEOUT,
+        None,
+    ));
+    write_frame(
+        &mut client,
+        &ClientFrame::new(ClientMessage::Authenticate {
+            token: identity.token,
+            client_kind: ClientKind::Cli,
+        }),
+    )
+    .await
+    .unwrap();
+    let error = serving
+        .await
+        .unwrap()
+        .expect_err("stalled write closes the connection");
+    assert!(matches!(error, Error::Io(error) if error.kind() == std::io::ErrorKind::TimedOut));
+    assert!(admission.admit().await.promote().is_some());
+    server.host.shutdown().await;
+}
+
+#[tokio::test]
+async fn readiness_follows_initialization_and_allows_authenticated_connections() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut server, grant) =
+        GatewayServer::bootstrap(root.path().join("state"), "127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+    let endpoint: Endpoint = format!("tcp://{}", server.listen_addr()).parse().unwrap();
+    let mut ready = server.notify_ready();
+    assert!(matches!(
+        ready.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let serving = tokio::spawn(server.serve_until(async {
+        let _ = stopped.await;
+    }));
+    ready.await.expect("serving loop ready");
+    let (client, _) = GatewayClient::pair(&endpoint, grant.code, "readiness", ClientKind::Cli)
+        .await
+        .unwrap();
+    let (_, mut events) = client.into_parts();
+    wait_gateway_ready(&mut events).await;
+    stop.send(()).unwrap();
+    serving.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn failed_listener_initialization_never_signals_readiness() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut server, _) =
+        GatewayServer::bootstrap(root.path().join("state"), "127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+    server.config.tls = Some(TlsConfig {
+        certificate: root.path().join("missing.pem"),
+        private_key: root.path().join("missing.key"),
+    });
+    let ready = server.notify_ready();
+    assert!(server.serve_until(std::future::pending()).await.is_err());
+    assert!(ready.await.is_err(), "failure must not announce readiness");
+}
+
 #[test]
 fn cloud_gateway_access_lease_fails_closed_after_five_minutes() {
     let now = UNIX_EPOCH + Duration::from_secs(1_700_000_000);

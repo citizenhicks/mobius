@@ -2215,21 +2215,8 @@ final class MobiusCloudTests: XCTestCase {
 
     func testClearDataAndGatewayInformationPerformsALocalCleanReset() async throws {
         let suiteName = "app.mobius.cloud.tests.\(UUID())"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        defer {
-            defaults.removePersistentDomain(forName: suiteName)
-            try? FileManager.default.removeItem(at: root)
-        }
+        let (defaults, gatewayStore) = try makeGatewayStore(suiteName: suiteName)
         defaults.set(ThemePreference.light.rawValue, forKey: "theme")
-        let gatewayStore = GatewayStore(
-            defaults: defaults,
-            catalogDirectory: root.appendingPathComponent("Catalogs", isDirectory: true),
-            transcriptDirectory: root.appendingPathComponent("Transcripts", isDirectory: true),
-            thumbnailDirectory: root.appendingPathComponent("Thumbnails", isDirectory: true),
-            draftDirectory: root.appendingPathComponent("Drafts", isDirectory: true)
-        )
         let firstGateway = GatewayAccount(
             endpoint: try GatewayEndpoint("tcp://localhost:9191")
         )
@@ -3454,19 +3441,7 @@ final class MobiusCloudTests: XCTestCase {
         let firstToken = String(repeating: "a", count: 43)
         let secondToken = String(repeating: "b", count: 43)
         let service = "app.mobius.cloud.tests.\(UUID())"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: service))
-        let root = URL.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let gatewayStore = GatewayStore(
-            defaults: defaults,
-            catalogDirectory: root.appendingPathComponent("Catalogs", isDirectory: true),
-            transcriptDirectory: root.appendingPathComponent("Transcripts", isDirectory: true),
-            thumbnailDirectory: root.appendingPathComponent("Thumbnails", isDirectory: true),
-            draftDirectory: root.appendingPathComponent("Drafts", isDirectory: true)
-        )
-        defer {
-            try? FileManager.default.removeItem(at: root)
-            defaults.removePersistentDomain(forName: service)
-        }
+        let (defaults, gatewayStore) = try makeGatewayStore(suiteName: service)
         let store = MobiusCloudSessionStore(service: service)
         defer { try? store.remove() }
         let deleteStarted = expectation(description: "Cloud delete request started")
@@ -3564,19 +3539,7 @@ final class MobiusCloudTests: XCTestCase {
         let firstUserID = UUID()
         let secondUserID = UUID()
         let service = "app.mobius.cloud.tests.\(UUID())"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: service))
-        let root = URL.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let gatewayStore = GatewayStore(
-            defaults: defaults,
-            catalogDirectory: root.appendingPathComponent("Catalogs", isDirectory: true),
-            transcriptDirectory: root.appendingPathComponent("Transcripts", isDirectory: true),
-            thumbnailDirectory: root.appendingPathComponent("Thumbnails", isDirectory: true),
-            draftDirectory: root.appendingPathComponent("Drafts", isDirectory: true)
-        )
-        defer {
-            try? FileManager.default.removeItem(at: root)
-            defaults.removePersistentDomain(forName: service)
-        }
+        let (defaults, gatewayStore) = try makeGatewayStore(suiteName: service)
         let sessionStore = MobiusCloudSessionStore(service: service)
         defer { try? sessionStore.remove() }
         let client = MobiusCloudClient(store: sessionStore) { request in
@@ -3704,20 +3667,7 @@ final class MobiusCloudTests: XCTestCase {
 
     func testCloudRefreshCompletingAfterRootResetCannotReconnect() async throws {
         let service = "app.mobius.cloud.tests.\(UUID())"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: service))
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        defer {
-            defaults.removePersistentDomain(forName: service)
-            try? FileManager.default.removeItem(at: root)
-        }
-        let gatewayStore = GatewayStore(
-            defaults: defaults,
-            catalogDirectory: root.appendingPathComponent("Catalogs", isDirectory: true),
-            transcriptDirectory: root.appendingPathComponent("Transcripts", isDirectory: true),
-            thumbnailDirectory: root.appendingPathComponent("Thumbnails", isDirectory: true),
-            draftDirectory: root.appendingPathComponent("Drafts", isDirectory: true)
-        )
+        let (defaults, gatewayStore) = try makeGatewayStore(suiteName: service)
         var keychainDeleteFails = true
         let sessionStore = MobiusCloudSessionStore(
             service: service,
@@ -3828,20 +3778,7 @@ final class MobiusCloudTests: XCTestCase {
 
     func testCloudProvisionGrantCompletingAfterRootResetCannotPair() async throws {
         let service = "app.mobius.cloud.tests.\(UUID())"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: service))
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        defer {
-            defaults.removePersistentDomain(forName: service)
-            try? FileManager.default.removeItem(at: root)
-        }
-        let gatewayStore = GatewayStore(
-            defaults: defaults,
-            catalogDirectory: root.appendingPathComponent("Catalogs", isDirectory: true),
-            transcriptDirectory: root.appendingPathComponent("Transcripts", isDirectory: true),
-            thumbnailDirectory: root.appendingPathComponent("Thumbnails", isDirectory: true),
-            draftDirectory: root.appendingPathComponent("Drafts", isDirectory: true)
-        )
+        let (defaults, gatewayStore) = try makeGatewayStore(suiteName: service)
         var keychainDeleteFails = true
         let sessionStore = MobiusCloudSessionStore(
             service: service,
@@ -3985,20 +3922,7 @@ final class MobiusCloudTests: XCTestCase {
 
     func testCloudSignInCompletingAfterRootResetCannotPersistCredential() async throws {
         let service = "app.mobius.cloud.tests.\(UUID())"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: service))
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        defer {
-            defaults.removePersistentDomain(forName: service)
-            try? FileManager.default.removeItem(at: root)
-        }
-        let gatewayStore = GatewayStore(
-            defaults: defaults,
-            catalogDirectory: root.appendingPathComponent("Catalogs", isDirectory: true),
-            transcriptDirectory: root.appendingPathComponent("Transcripts", isDirectory: true),
-            thumbnailDirectory: root.appendingPathComponent("Thumbnails", isDirectory: true),
-            draftDirectory: root.appendingPathComponent("Drafts", isDirectory: true)
-        )
+        let (defaults, gatewayStore) = try makeGatewayStore(suiteName: service)
         let sessionStore = MobiusCloudSessionStore(service: service)
         defer { try? sessionStore.remove() }
         let authGate = AsyncGate()
@@ -4050,6 +3974,26 @@ final class MobiusCloudTests: XCTestCase {
         XCTAssertNil(persistedSession)
         XCTAssertNil(model.cloud.cloudSession)
         XCTAssertTrue(model.gateway.accounts.isEmpty)
+    }
+
+    private func makeGatewayStore(suiteName: String) throws -> (UserDefaults, GatewayStore) {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let root = URL.temporaryDirectory.appendingPathComponent(
+            UUID().uuidString, isDirectory: true)
+        addTeardownBlock {
+            UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: root)
+        }
+        return (
+            defaults,
+            GatewayStore(
+                defaults: defaults,
+                catalogDirectory: root.appendingPathComponent("Catalogs", isDirectory: true),
+                transcriptDirectory: root.appendingPathComponent("Transcripts", isDirectory: true),
+                thumbnailDirectory: root.appendingPathComponent("Thumbnails", isDirectory: true),
+                draftDirectory: root.appendingPathComponent("Drafts", isDirectory: true)
+            )
+        )
     }
 
     private func response(

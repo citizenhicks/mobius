@@ -1,0 +1,1 @@
+Updates the terminal client and bundled gateway to protocol 85, with bounded request admission, reliable background startup, stalled-client deadlines, and shared event encoding. Pins mobius 0.15.47 and mobius-gateway 0.15.49. No CLI configuration changes.

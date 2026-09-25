@@ -54,8 +54,8 @@ use crate::wire::{
     AgentComposition, GitDiffScope, MAX_FRAME_BYTES, ProfileSnapshot, ProviderConfig, ReadyPayload,
     RecordedEvent, RenderedEvent, RenderedPreview, RoutineRunStatus, RunStats, RunSummary,
     ServerFrame, ServerMessage, SessionActivity, SessionActivityState, SessionReadyPayload,
-    SessionRecord, SessionRunGroup, SessionWidget, SshIdentityRecord, WorkspaceFileScope,
-    validate_session_id,
+    SessionRecord, SessionRunGroup, SessionWidget, SharedFrame, SshIdentityRecord,
+    WorkspaceFileScope, validate_session_id,
 };
 use crate::{Error, Result};
 
@@ -145,7 +145,7 @@ async fn gateway_ready_after_unlock(
 
 pub(crate) struct HostSnapshot {
     pub(crate) ready: SessionReadyPayload,
-    pub(crate) replay: Vec<ServerFrame>,
+    pub(crate) replay: Vec<crate::wire::SharedFrame>,
 }
 
 pub(crate) struct SessionHistoryPage {

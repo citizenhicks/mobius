@@ -1,6 +1,22 @@
 use super::*;
 
 #[test]
+fn event_larger_than_replay_budget_is_delivered_without_retaining_its_cache() {
+    let (events, mut live) = broadcast::channel(1);
+    let mut replay = VecDeque::new();
+    let mut bytes = 0;
+    let frame = ServerFrame::new(ServerMessage::Error {
+        code: "large".into(),
+        message: "x".repeat(MAX_REPLAY_BYTES / 2),
+        fatal: false,
+    });
+    assert!(publish_frame(&mut replay, &mut bytes, &events, frame, false).unwrap());
+    assert!(replay.is_empty());
+    assert_eq!(bytes, 0);
+    assert!(live.try_recv().is_ok(), "the live event is still delivered");
+}
+
+#[test]
 fn replay_is_bounded_by_event_count() {
     let frame = ServerFrame::new(ServerMessage::Error {
         code: "test".into(),
@@ -11,7 +27,10 @@ fn replay_is_bounded_by_event_count() {
         ReplayEntry::new(frame.clone()).expect("measure frame");
         REPLAY_CAPACITY
     ]);
-    let mut replay_bytes = serde_json::to_vec(&frame).expect("encode frame").len() * replay.len();
+    let mut replay_bytes = replay
+        .iter()
+        .map(|entry| entry.frame.encoded_len() * 2)
+        .sum();
     let (events, _) = broadcast::channel(1);
     FRAME_SIZE_MEASUREMENTS.with(|count| count.set(0));
     assert!(
@@ -22,11 +41,11 @@ fn replay_is_bounded_by_event_count() {
 }
 
 #[test]
-fn replay_is_bounded_by_encoded_bytes() {
+fn replay_is_bounded_by_event_and_cached_bytes() {
     let (events, _) = broadcast::channel(1);
     let mut replay = VecDeque::new();
     let mut replay_bytes = 0;
-    let large_message = "x".repeat(MAX_REPLAY_BYTES / 2);
+    let large_message = "x".repeat(MAX_REPLAY_BYTES / 4);
     let first = ServerFrame::new(ServerMessage::Error {
         code: "first".into(),
         message: large_message.clone(),
@@ -70,7 +89,7 @@ fn suppressed_frames_enter_replay_without_broadcasting() {
     )
     .expect("record history");
 
-    assert_eq!(replay.back().map(|entry| &entry.frame), Some(&history));
+    assert_eq!(replay.back().map(|entry| &*entry.frame), Some(&history));
     assert!(matches!(
         receiver.try_recv(),
         Err(broadcast::error::TryRecvError::Empty)
@@ -145,7 +164,7 @@ fn transient_controls_are_broadcast_without_entering_replay() {
             false,
         )
         .expect("broadcast transient control");
-        assert_eq!(receiver.try_recv().expect("live transient control"), frame);
+        assert_eq!(*receiver.try_recv().expect("live transient control"), frame);
     }
 
     assert!(replay.is_empty());
@@ -208,11 +227,7 @@ fn completed_step_compacts_only_its_progressive_replay_frames() {
         .collect::<VecDeque<_>>();
     let mut replay_bytes = replay
         .iter()
-        .map(|frame| {
-            serde_json::to_vec(&frame.frame)
-                .expect("encode frame")
-                .len()
-        })
+        .map(|entry| entry.frame.encoded_len() * 2)
         .sum();
 
     FRAME_SIZE_MEASUREMENTS.with(|count| count.set(0));
@@ -228,9 +243,7 @@ fn completed_step_compacts_only_its_progressive_replay_frames() {
     );
     assert_eq!(
         replay_bytes,
-        serde_json::to_vec(&replay.front().expect("remaining frame").frame)
-            .expect("encode remaining frame")
-            .len()
+        replay.front().expect("remaining frame").frame.encoded_len() * 2
     );
 }
 
@@ -248,14 +261,14 @@ fn replacement_startup_is_published_only_after_ready() {
         fatal: false,
     });
 
-    publish_ready_and_pending(&events, ready, vec![startup]);
+    publish_ready_and_pending(&events, ready, vec![SharedFrame::new(startup)]);
 
     assert!(matches!(
-        receiver.try_recv().expect("ready frame").message,
+        &receiver.try_recv().expect("ready frame").message,
         ServerMessage::Error { code, .. } if code == "ready"
     ));
     assert!(matches!(
-        receiver.try_recv().expect("startup frame").message,
+        &receiver.try_recv().expect("startup frame").message,
         ServerMessage::Error { code, .. } if code == "startup"
     ));
 }
@@ -263,7 +276,7 @@ fn replacement_startup_is_published_only_after_ready() {
 fn publish_frame(
     replay: &mut VecDeque<ReplayEntry>,
     replay_bytes: &mut usize,
-    events: &broadcast::Sender<ServerFrame>,
+    events: &broadcast::Sender<SharedFrame>,
     frame: ServerFrame,
     suppress_broadcast: bool,
 ) -> Result<bool> {

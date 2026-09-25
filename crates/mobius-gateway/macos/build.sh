@@ -56,7 +56,7 @@ xcrun actool "$repo_dir/mobius-app/apple/Sources/MobiusApp/Assets.xcassets" \
     --minimum-deployment-target 26.0 --target-device mac --app-icon AppIcon \
     --output-partial-info-plist "$output_dir/icon-info.plist"
 /usr/libexec/PlistBuddy -c "Merge '$output_dir/icon-info.plist'" "$app/Contents/Info.plist"
-xcrun swift -e 'import AppKit; for name in ["MobiusLogoRibbon", "MobiusLogoFold", "MobiusLogoBot", "MobiusLogoEyes", "MobiusMenuBar"] { precondition(Bundle(path: CommandLine.arguments[1])?.image(forResource: name) != nil, "Packaged \(name) is missing") }' "$app"
+xcrun swift -e 'import AppKit; for name in ["MobiusLogoRibbon", "MobiusLogoFold", "MobiusMenuBar"] { precondition(Bundle(path: CommandLine.arguments[1])?.image(forResource: name) != nil, "Packaged \(name) is missing") }' "$app"
 ditto "$bin_dir/WebRTC.framework" "$app/Contents/Frameworks/WebRTC.framework"
 cp "$repo_dir/LICENSE" "$repo_dir/NOTICE" "$app/Contents/Resources/"
 cp "$project_dir/Resources/WebRTC-LICENSE.txt" "$app/Contents/Resources/"
