@@ -263,6 +263,7 @@ extension AppModelTests {
                 }
                 return testAccessibilityElements(window).contains {
                     $0.accessibilityLabel == action && $0.accessibilityTraits.contains(.button)
+                        && window.bounds.contains(window.convert($0.accessibilityFrame, from: nil))
                 }
             }
             XCTAssertTrue(appeared, "Expected native navigation heading: \(title)")
