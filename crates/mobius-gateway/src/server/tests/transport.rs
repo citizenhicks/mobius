@@ -345,10 +345,16 @@ fn client_inventory_aggregates_connections_and_keeps_inactive_devices() {
         .expect("second connection");
 
     let two = clients.snapshot(&paired).expect("two connections")[0].connections;
+    assert_eq!(clients.native_count().unwrap(), 2);
     drop(first);
     let one = clients.snapshot(&paired).expect("one connection")[0].connections;
     drop(second);
     let inactive = clients.snapshot(&paired).expect("inactive client")[0].clone();
+    assert_eq!(
+        clients.native_count().unwrap(),
+        0,
+        "dashboard is not native activity"
+    );
 
     assert_eq!(
         (two, one, inactive.connections, inactive.kinds),

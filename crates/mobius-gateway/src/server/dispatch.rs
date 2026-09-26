@@ -56,6 +56,11 @@ pub(super) async fn handle_message(
     mut connection: ConnectionSessionState<'_>,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<()> {
+    let Some(message) =
+        handle_runtime_message(message, gateway, client.connections, writer).await?
+    else {
+        return Ok(());
+    };
     if let Err(rejection) = gateway.reconcile_pending_bot_deletion().await {
         return write_server_error(writer, "bot_deletion_recovery", rejection.message, false).await;
     }
@@ -64,6 +69,11 @@ pub(super) async fn handle_message(
         return Ok(());
     };
     match message {
+        ClientMessage::GetRuntimeActivity { .. }
+        | ClientMessage::PrepareIdleShutdown { .. }
+        | ClientMessage::CancelIdleShutdown { .. } => {
+            unreachable!("runtime control was handled above")
+        }
         ClientMessage::SetNotifications {
             request_id,
             disabled,
@@ -1689,5 +1699,82 @@ async fn get_routine_run_preview(
             .await
         }
         Err(rejection) => write_rejection(writer, request_id, rejection).await,
+    }
+}
+
+async fn handle_runtime_message(
+    message: ClientMessage,
+    gateway: &GatewayHost,
+    connections: &ClientConnections,
+    writer: &mut (impl AsyncWrite + Unpin),
+) -> Result<Option<ClientMessage>> {
+    match message {
+        ClientMessage::GetRuntimeActivity { request_id } => {
+            let activity = match gateway.runtime_activity().await {
+                Ok(activity) => activity,
+                Err(rejection) => {
+                    return write_rejection(writer, request_id, rejection)
+                        .await
+                        .map(|()| None);
+                }
+            };
+            return write_frame(
+                writer,
+                &ServerFrame::new(ServerMessage::RuntimeActivity {
+                    request_id,
+                    idle: activity.idle,
+                    connected_clients: connections.native_count()?,
+                    activity_revision: activity.activity_revision,
+                    next_routine_at: activity.next_routine_at,
+                }),
+            )
+            .await
+            .map(|()| None);
+        }
+        ClientMessage::PrepareIdleShutdown {
+            request_id,
+            expected_activity_revision,
+        } => {
+            let prepared = match gateway
+                .prepare_idle_shutdown(&expected_activity_revision, || connections.native_count())
+                .await
+            {
+                Ok(prepared) => prepared,
+                Err(rejection) => {
+                    return write_rejection(writer, request_id, rejection)
+                        .await
+                        .map(|()| None);
+                }
+            };
+            let next_routine_at = if prepared {
+                match gateway.runtime_activity().await {
+                    Ok(activity) => activity.next_routine_at,
+                    Err(rejection) => {
+                        return write_rejection(writer, request_id, rejection)
+                            .await
+                            .map(|()| None);
+                    }
+                }
+            } else {
+                None
+            };
+            return write_frame(
+                writer,
+                &ServerFrame::new(ServerMessage::IdleShutdownPrepared {
+                    request_id,
+                    prepared,
+                    next_routine_at,
+                }),
+            )
+            .await
+            .map(|()| None);
+        }
+        ClientMessage::CancelIdleShutdown { request_id } => {
+            gateway.cancel_idle_shutdown().await;
+            return write_result(writer, request_id, Ok(()))
+                .await
+                .map(|()| None);
+        }
+        other => Ok(Some(other)),
     }
 }

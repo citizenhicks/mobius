@@ -73,6 +73,7 @@ impl HostState {
         if sequence_kind == JournalSequence::AlreadyLoaded {
             return Ok(None);
         }
+        self.work_activity.mark();
         let truncated = record_and_publish(
             &mut self.replay,
             &mut self.replay_bytes,

@@ -764,6 +764,24 @@ impl BotStore {
         self.routine_record_from(stored, now)
     }
 
+    pub(crate) fn has_running_routines(&self) -> Result<bool> {
+        self.storage.has_running_routines()
+    }
+
+    pub(crate) fn next_routine_at(&self, now: i64) -> Result<Option<String>> {
+        self.fresh_state()?
+            .routines
+            .iter()
+            .filter_map(|routine| routine.next_run_at(now))
+            .min()
+            .map(|timestamp| {
+                chrono::DateTime::from_timestamp(timestamp, 0)
+                    .map(|date| date.to_rfc3339())
+                    .ok_or_else(|| Error::Config("routine timestamp is invalid".into()))
+            })
+            .transpose()
+    }
+
     pub(crate) fn has_active_routines(&self, now: i64) -> Result<bool> {
         let state = self.fresh_state()?;
         Ok(state

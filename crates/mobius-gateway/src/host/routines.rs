@@ -128,6 +128,7 @@ impl GatewayHost {
         &self,
         routine_id: String,
     ) -> std::result::Result<(), Rejection> {
+        self.work_activity.mark();
         let _mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
         let run = match state.bots.begin_run(&routine_id).map_err(invalid_routine)? {
@@ -149,6 +150,7 @@ impl GatewayHost {
         routine_id: String,
         run: ActiveRoutineRun,
     ) -> std::result::Result<(), Rejection> {
+        self.work_activity.mark();
         let _mutation = match self.begin_mutation().await {
             Ok(mutation) => mutation,
             Err(rejection) => {

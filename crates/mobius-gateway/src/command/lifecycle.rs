@@ -24,6 +24,7 @@ pub(super) struct StartupGuard {
 pub(super) async fn serve(
     state_dir: PathBuf,
     lock_startup: bool,
+    start_quiesced: bool,
     save_local_client: fn(&Endpoint, String) -> Result<()>,
     load_local_client: fn(&Endpoint) -> Result<Option<String>>,
 ) -> Result<()> {
@@ -39,6 +40,11 @@ pub(super) async fn serve(
         .await?
         .is_some()
     {
+        if start_quiesced {
+            return Err(Error::Config(
+                "--start-quiesced requires starting a new gateway process".into(),
+            ));
+        }
         println!("gateway is already running at the same or a newer version");
         return Ok(());
     }
@@ -49,6 +55,9 @@ pub(super) async fn serve(
         save_local_client(&endpoint, token)?;
     }
     let mut server = GatewayServer::open(state_dir.clone()).await?;
+    if start_quiesced {
+        server.start_quiesced().await?;
+    }
     let ready = server.notify_ready();
     let mut tunnel = CloudflareTunnel::start(&store, &config)?;
     let endpoint = match &mut tunnel {

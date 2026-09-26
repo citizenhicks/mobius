@@ -177,6 +177,10 @@ struct ServeArgs {
     /// Start the gateway as a background process.
     #[arg(long)]
     background: bool,
+
+    /// Hold work and native connections until authenticated lifecycle activation.
+    #[arg(long, conflicts_with = "background")]
+    start_quiesced: bool,
 }
 
 #[derive(Debug)]
@@ -200,6 +204,7 @@ pub(super) enum Command {
     Serve {
         state_dir: PathBuf,
         background: bool,
+        start_quiesced: bool,
     },
     ServeChild {
         state_dir: PathBuf,
@@ -320,6 +325,7 @@ impl GatewayCli {
             Some(GatewaySubcommand::Serve(arguments)) => Ok(Command::Serve {
                 state_dir,
                 background: arguments.background,
+                start_quiesced: arguments.start_quiesced,
             }),
             Some(GatewaySubcommand::ServeChild) => Ok(Command::ServeChild { state_dir }),
             Some(GatewaySubcommand::Exit) => Ok(Command::Exit { state_dir }),
