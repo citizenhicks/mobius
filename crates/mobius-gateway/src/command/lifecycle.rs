@@ -60,8 +60,6 @@ pub(super) async fn serve(
     // the serving loop has completed initialization and can accept connections.
     let _process_record = ProcessRecordGuard::create(&state_dir, endpoint.as_ref())?;
     drop(startup);
-    #[cfg(target_os = "macos")]
-    menu_bar::open_if_installed(&state_dir);
     println!("gateway serving in foreground");
     print_listener(&config, endpoint.as_ref());
     tokio::select! {

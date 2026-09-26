@@ -161,7 +161,7 @@ home, end, pageup, pagedown, and f1–f12. Modifiers are an array containing com
 shift, option, or control, for example `await desktop.pressKey(pid, "a", ["command"])`.
 Observe again to verify the result.
 
-One evaluation controls this Mac at a time. Stop in the menu bar app, lock, revoked
+One evaluation controls this Mac at a time. Stop in the desktop app, lock, revoked
 permissions, disconnect, cancellation, or timeout ends control. Desktop changes
 survive interpreter reset. After any failed or interrupted action, inspect the
 actual app state before continuing; never automatically replay an uncertain action.

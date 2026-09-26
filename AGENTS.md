@@ -127,7 +127,7 @@ cargo test --workspace --all-targets --all-features --locked
 RUSTDOCFLAGS="-D warnings" cargo test --workspace --doc --all-features --locked
 ```
 
-Run `just complexity` for the Rust and Swift complexity gates. Simplify touched code
+Run `just complexity` for the Rust complexity gate. Simplify touched code
 before handoff; do not raise thresholds or suppress warnings to make a change pass.
 Audit findings should identify the owning seam and the smallest behavior-preserving fix.
 

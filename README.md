@@ -54,12 +54,11 @@ Install with [Homebrew](https://github.com/citizenhicks/homebrew-mobius):
 brew tap citizenhicks/mobius
 brew trust citizenhicks/mobius
 brew install mobius-cli
-# Optional Mac menu bar app (macOS 26+, Apple Silicon)
-brew install --cask mobius-app
 ```
 
 The CLI package installs the gateway as a dependency. To install just the gateway,
-use `brew install mobius-gateway`. The Mac app is Developer ID signed and notarized.
+use `brew install mobius-gateway`. The native macOS desktop app is maintained in
+the separate private `mobius-app` repository.
 
 You can also download a **`mobius-cli` release** from [GitHub Releases](https://github.com/citizenhicks/mobius/releases).
 Choose the `mobius-<version>-<target>.tar.gz` archive for your machine:
@@ -205,9 +204,9 @@ supply their own complete runtime can set `MOBIUS_COMPUTER_RUNTIME` to its absol
 directory. Linux hosts still need Chromium's system libraries and Bubblewrap.
 
 On macOS, the same worker's `desktop` API controls native apps through the existing
-menu bar app connection: accessibility inspection and actions, screenshots, app
+desktop app connection: accessibility inspection and actions, screenshots, app
 activation, mouse input, and keyboard input. Enable **Allow Mac control** in the
-menu bar, grant macOS Accessibility and Screen Recording permissions, and select
+desktop app, grant macOS Accessibility and Screen Recording permissions, and select
 the Bot's **Full access** sandbox policy. Stop, disconnect, or an inactive desktop
 session revokes control. The gateway remains the sole agent and approval owner.
 Headless cloud gateways keep browser control only.

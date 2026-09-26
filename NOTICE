@@ -36,8 +36,8 @@ SOFTWARE.
 
 --------------------------------------------------------------------------------
 
-The Apple client bundles icon artwork from HugeIcons (the free set), redrawn as
-SVG assets under mobius-app/apple/Sources/MobiusApp/Assets.xcassets as hi.*.
+The separately maintained native Apple clients bundle icon artwork from HugeIcons
+(the free set), redrawn as hi.* SVG assets.
 
   Hugeicons Core Free Icons — https://hugeicons.com
   Copyright (c) Hugeicons

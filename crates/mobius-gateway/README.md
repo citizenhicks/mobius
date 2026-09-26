@@ -35,7 +35,6 @@ brew tap citizenhicks/mobius
 brew trust citizenhicks/mobius
 brew install mobius-gateway
 # Both commands: brew install mobius-cli
-# Mac menu bar app: brew install --cask mobius-app
 ```
 
 Cargo remains available with `cargo install --locked mobius-cli`.
@@ -54,14 +53,12 @@ Setup finishes before the Bot is saved; failed downloads can be retried by enabl
 the capability again. Linux hosts need Chromium's system libraries and Bubblewrap.
 `MOBIUS_COMPUTER_RUNTIME` can select an administrator-provided runtime instead.
 
-On macOS 26+, the optional **möbius-app.app** adds voice and native computer control in the
-menu bar. It shares the gateway's chats and workspaces and leaves background tasks
-running when closed. Cargo installs the command-line binaries; install the native
-app separately through Homebrew or the gateway release. Native control uses the
-same authenticated connection and requires **Allow Mac control**, macOS
-Accessibility and Screen Recording access, and the Bot's **Full access** policy.
-See the [macOS guide](https://github.com/citizenhicks/mobius/blob/main/crates/mobius-gateway/macos/README.md)
-for building, packaging, and local connection requirements.
+On macOS 26+, the native desktop app adds voice and native computer control.
+It shares the gateway's chats and workspaces and leaves background tasks running
+when closed. The desktop app is maintained in the separate private `mobius-app`
+repository. Native control uses the same authenticated connection and requires
+**Allow Mac control**, macOS Accessibility and Screen Recording access, and the
+Bot's **Full access** policy.
 
 Library hosts should signal shutdown through `GatewayServer::serve_until` and
 await its return. The server closes connections, finishes routine dispatch, and

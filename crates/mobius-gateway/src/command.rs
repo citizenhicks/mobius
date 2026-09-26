@@ -4,8 +4,6 @@ mod args;
 mod connection;
 mod init;
 mod lifecycle;
-#[cfg(target_os = "macos")]
-mod menu_bar;
 mod provider;
 
 use std::ffi::OsString;
@@ -161,12 +159,6 @@ pub async fn run_cli(
         }
         Command::ServeChild { state_dir } => serve(state_dir, false, save_local_client).await,
         Command::Exit { state_dir } => exit_gateway(state_dir),
-        #[cfg(target_os = "macos")]
-        Command::MenuBar { state_dir } => menu_bar::open(&state_dir),
-        #[cfg(target_os = "macos")]
-        Command::MenuBarConnect { state_dir } => {
-            menu_bar::connect(state_dir, load_local_client).await
-        }
     }
 }
 

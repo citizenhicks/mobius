@@ -1,4 +1,4 @@
-//! Native requests travel over the menu bar app's existing authenticated connection.
+//! Native requests travel over the desktop app's existing authenticated connection.
 
 use std::sync::{Arc, Mutex};
 
@@ -175,7 +175,7 @@ impl Drop for DesktopConnection {
 }
 
 fn unavailable() -> Error {
-    Error::Sandbox("Mac desktop control is unavailable; open the möbius-app menu bar app and enable desktop control".into())
+    Error::Sandbox("Mac desktop control is unavailable; open the möbius desktop app and enable desktop control".into())
 }
 
 #[cfg(test)]
