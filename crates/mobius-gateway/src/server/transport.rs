@@ -265,9 +265,22 @@ pub(super) struct ClientConnections {
 pub(super) struct ClientConnectionGuard {
     connections: Arc<ClientConnections>,
     key: (String, ClientKind),
+    activity: Option<GatewayHost>,
 }
 
 impl ClientConnections {
+    pub(super) fn native_count(&self) -> Result<usize> {
+        let entries = self
+            .entries
+            .lock()
+            .map_err(|_| Error::Config("client-connection lock is poisoned".into()))?;
+        Ok(entries
+            .iter()
+            .filter(|((_, kind), _)| *kind != ClientKind::GatewayDashboard)
+            .map(|(_, count)| count)
+            .sum())
+    }
+
     pub(super) fn register(
         self: &Arc<Self>,
         client_id: String,
@@ -286,6 +299,7 @@ impl ClientConnections {
         Ok(ClientConnectionGuard {
             connections: Arc::clone(self),
             key,
+            activity: None,
         })
     }
 
@@ -327,6 +341,9 @@ impl Drop for ClientConnectionGuard {
         let Some(connections) = entries.get_mut(&self.key) else {
             return;
         };
+        if let Some(host) = &self.activity {
+            host.mark_runtime_activity();
+        }
         if *connections > 1 {
             *connections -= 1;
         } else {
@@ -480,6 +497,33 @@ pub(super) async fn serve_websocket(
     }
 }
 
+async fn register_client_connection(
+    connections: &Arc<ClientConnections>,
+    id: String,
+    kind: ClientKind,
+    host: &GatewayHost,
+    writer: &mut (impl AsyncWrite + Unpin),
+) -> Result<Option<ClientConnectionGuard>> {
+    let admission = if kind == ClientKind::GatewayDashboard {
+        None
+    } else {
+        match host.begin_mutation().await {
+            Ok(admission) => Some(admission),
+            Err(rejection) => {
+                write_server_error(writer, rejection.code, rejection.message, false).await?;
+                return Ok(None);
+            }
+        }
+    };
+    let mut connection = connections.register(id, kind)?;
+    if admission.is_some() {
+        host.mark_runtime_activity();
+        connection.activity = Some(host.clone());
+    }
+    drop(admission);
+    Ok(Some(connection))
+}
+
 pub(super) async fn serve_connection<S>(
     stream: S,
     connection: ConnectionContext,
@@ -514,7 +558,17 @@ where
         return Ok(());
     }
 
-    let _client_connection = client_connections.register(client_id.clone(), client_kind)?;
+    let Some(_client_connection) = register_client_connection(
+        &client_connections,
+        client_id.clone(),
+        client_kind,
+        &host,
+        &mut writer,
+    )
+    .await?
+    else {
+        return Ok(());
+    };
     let _ = authentication_complete.map(|complete| complete.send(()));
 
     write_frame(&mut writer, &ServerFrame::new(ServerMessage::Authenticated)).await?;

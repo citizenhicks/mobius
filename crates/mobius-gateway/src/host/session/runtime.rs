@@ -144,6 +144,14 @@ impl HostState {
 
     pub(super) async fn handle(&mut self, command: HostCommand) -> bool {
         match command {
+            HostCommand::RuntimeIsIdle { reply } => {
+                let result = if self.is_idle() {
+                    self.runtime_is_idle().await
+                } else {
+                    Ok(false)
+                };
+                let _ = reply.send(result);
+            }
             #[cfg(test)]
             HostCommand::BotId { reply } => {
                 let _ = reply.send(self.spec.bot_id.clone());
@@ -556,6 +564,7 @@ impl HostState {
                 message: error.to_string(),
                 fatal: matches!(error, mobius::Error::Stopped(_)),
             })?;
+        self.work_activity.mark();
         if let Some(submission_id) = message_submission_id {
             self.pending_turns += 1;
             self.pending_messages.insert(submission_id);

@@ -25,6 +25,7 @@ pub(super) struct HostInner {
 }
 
 struct HostState {
+    work_activity: Arc<WorkActivity>,
     store: ConfigStore,
     gateway: Arc<StdMutex<GatewayConfig>>,
     spec: ChatSpec,
@@ -108,6 +109,9 @@ pub(super) struct ActiveRoutine {
 }
 
 pub(super) enum HostCommand {
+    RuntimeIsIdle {
+        reply: oneshot::Sender<std::result::Result<bool, Rejection>>,
+    },
     #[cfg(test)]
     BotId {
         reply: oneshot::Sender<String>,
@@ -229,6 +233,7 @@ impl HostHandle {
         desktop: Arc<DesktopControl>,
         provider_epoch: Arc<AtomicU64>,
         activities: SessionActivities,
+        work_activity: Arc<WorkActivity>,
         gateway_events: broadcast::Sender<ServerFrame>,
         session_id: String,
         origin_label: &str,
@@ -265,6 +270,7 @@ impl HostHandle {
             .state
             == SessionActivityState::AwaitingApproval;
         let mut state = HostState {
+            work_activity,
             store,
             gateway,
             spec,
@@ -483,6 +489,12 @@ impl HostHandle {
         let (reply, receiver) = oneshot::channel();
         self.send(HostCommand::SwitchGitBranch { branch, reply })
             .await?;
+        receive(receiver).await
+    }
+
+    pub(super) async fn runtime_is_idle(&self) -> std::result::Result<bool, Rejection> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(HostCommand::RuntimeIsIdle { reply }).await?;
         receive(receiver).await
     }
 

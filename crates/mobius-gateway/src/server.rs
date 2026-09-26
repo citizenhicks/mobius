@@ -145,6 +145,10 @@ impl GatewayServer {
         receiver
     }
 
+    pub(crate) async fn start_quiesced(&self) -> Result<()> {
+        self.host.start_quiesced().await
+    }
+
     /// Serves until a process shutdown signal or 72 hours of inactivity.
     /// # Errors
     ///
@@ -273,6 +277,9 @@ impl GatewayServer {
                         access_expired = true;
                         break Ok(());
                     }
+                    // Keep reservation and the shutdown decision under the same
+                    // admission gate; future schedules alone do not keep it open.
+                    let Ok(_admission) = self.host.begin_mutation().await else { continue; };
                     let now = Utc::now().timestamp();
                     let poll = self.bots.poll_due(now)?;
                     let routines_active = poll.active;

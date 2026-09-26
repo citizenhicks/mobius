@@ -98,6 +98,26 @@ pub(crate) struct GatewayHost {
     state: Arc<Mutex<GatewayState>>,
     capacity_gate: Arc<Mutex<()>>,
     events: broadcast::Sender<ServerFrame>,
+    work_activity: Arc<WorkActivity>,
+    idle_shutdown: Arc<Mutex<Option<tokio::sync::OwnedRwLockWriteGuard<()>>>>,
+}
+
+struct WorkActivity {
+    instance: Uuid,
+    revision: AtomicU64,
+    quiesced: AtomicBool,
+}
+
+impl WorkActivity {
+    fn mark(&self) {
+        self.revision.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+pub(crate) struct RuntimeActivity {
+    pub(crate) idle: bool,
+    pub(crate) activity_revision: String,
+    pub(crate) next_routine_at: Option<String>,
 }
 
 struct GatewayState {
@@ -221,6 +241,12 @@ impl GatewayHost {
             })),
             capacity_gate: Arc::new(Mutex::new(())),
             events,
+            work_activity: Arc::new(WorkActivity {
+                instance: Uuid::new_v4(),
+                revision: AtomicU64::new(0),
+                quiesced: AtomicBool::new(false),
+            }),
+            idle_shutdown: Arc::default(),
         };
         host.reconcile_pending_bot_deletion()
             .await
@@ -259,9 +285,99 @@ impl GatewayHost {
         }
     }
 
-    async fn begin_mutation(
+    pub(crate) async fn runtime_activity(&self) -> std::result::Result<RuntimeActivity, Rejection> {
+        let before = self.work_activity.revision.load(Ordering::Acquire);
+        // Keep the registry stable while asking each resident actor. Actor idle
+        // checks never acquire GatewayState; hidden routine sessions are included.
+        let state = self.state.lock().await;
+        let starting = !state
+            .starting_sessions
+            .lock()
+            .map_err(|_| internal("session startup lock is poisoned"))?
+            .is_empty();
+        let mut idle = !starting && !state.bots.has_running_routines().map_err(internal)?;
+        for session in state.sessions.values() {
+            if session.inner.alive.load(Ordering::Acquire) && !session.runtime_is_idle().await? {
+                idle = false;
+            }
+        }
+        // Routine reservations happen outside the registry lock; observe them
+        // again and reject an idle result if any work changed during this query.
+        idle &= !state.bots.has_running_routines().map_err(internal)?;
+        let after = self.work_activity.revision.load(Ordering::Acquire);
+        Ok(RuntimeActivity {
+            idle: idle && before == after,
+            activity_revision: format!("{}:{after}", self.work_activity.instance),
+            next_routine_at: state
+                .bots
+                .next_routine_at(Utc::now().timestamp())
+                .map_err(internal)?,
+        })
+    }
+
+    pub(crate) fn mark_runtime_activity(&self) {
+        self.work_activity.mark();
+    }
+
+    pub(crate) async fn start_quiesced(&self) -> Result<()> {
+        let mut shutdown = self.idle_shutdown.lock().await;
+        let gate = Arc::clone(&self.state.lock().await.session_mutations);
+        let guard = gate.try_write_owned().map_err(|_| {
+            Error::Config("cannot start quiesced after gateway work has begun".into())
+        })?;
+        self.work_activity.quiesced.store(true, Ordering::Release);
+        *shutdown = Some(guard);
+        Ok(())
+    }
+
+    pub(crate) async fn prepare_idle_shutdown(
+        &self,
+        expected_revision: &str,
+        native_connections: impl FnOnce() -> Result<usize>,
+    ) -> std::result::Result<bool, Rejection> {
+        let Ok(mut shutdown) = self.idle_shutdown.try_lock() else {
+            return Ok(false);
+        };
+        let gate = Arc::clone(&self.state.lock().await.session_mutations);
+        let guard = if shutdown.is_none() {
+            match gate.try_write_owned() {
+                Ok(guard) => Some(guard),
+                Err(_) => return Ok(false),
+            }
+        } else {
+            None
+        };
+        let activity = self.runtime_activity().await?;
+        if !activity.idle
+            || activity.activity_revision != expected_revision
+            || native_connections().map_err(internal)? != 0
+        {
+            return Ok(false);
+        }
+        if let Some(guard) = guard {
+            self.work_activity.quiesced.store(true, Ordering::Release);
+            *shutdown = Some(guard);
+        }
+        Ok(true)
+    }
+
+    pub(crate) async fn cancel_idle_shutdown(&self) {
+        let mut shutdown = self.idle_shutdown.lock().await;
+        self.work_activity.quiesced.store(false, Ordering::Release);
+        shutdown.take();
+    }
+
+    pub(crate) async fn begin_mutation(
         &self,
     ) -> std::result::Result<tokio::sync::OwnedRwLockReadGuard<()>, Rejection> {
+        let shutdown = self.idle_shutdown.lock().await;
+        if shutdown.is_some() {
+            return Err(Rejection {
+                code: "gateway_busy",
+                message: "retry after the idle shutdown finishes".into(),
+                fatal: false,
+            });
+        }
         let (gate, bots) = {
             let state = self.state.lock().await;
             (
@@ -269,7 +385,10 @@ impl GatewayHost {
                 Arc::clone(&state.bots),
             )
         };
+        // Preserve ordinary cascade waiting, but never queue behind a retained
+        // shutdown guard. Preparation try-locks the same admission decision.
         let mutation = gate.read_owned().await;
+        drop(shutdown);
         reject_pending_bot_deletion(&bots)?;
         Ok(mutation)
     }
@@ -282,6 +401,10 @@ impl GatewayHost {
     async fn begin_exclusive_mutation(
         &self,
     ) -> std::result::Result<tokio::sync::OwnedRwLockWriteGuard<()>, Rejection> {
+        let shutdown = self.idle_shutdown.lock().await;
+        if shutdown.is_some() {
+            return Err(internal("gateway is prepared for idle shutdown"));
+        }
         let (gate, bots) = {
             let state = self.state.lock().await;
             (
@@ -290,6 +413,7 @@ impl GatewayHost {
             )
         };
         let mutation = gate.write_owned().await;
+        drop(shutdown);
         reject_pending_bot_deletion(&bots)?;
         Ok(mutation)
     }
@@ -303,8 +427,14 @@ impl GatewayHost {
     }
 
     pub(crate) async fn ready(&self) -> std::result::Result<ReadyPayload, Rejection> {
-        self.reconcile_pending_bot_deletion().await?;
-        let _mutation = self.begin_mutation().await?;
+        // Dashboard controllers must still authenticate to cancel a prepared
+        // shutdown. The retained write guard already freezes this read-only view.
+        let _mutation = if self.work_activity.quiesced.load(Ordering::Acquire) {
+            None
+        } else {
+            self.reconcile_pending_bot_deletion().await?;
+            Some(self.begin_mutation().await?)
+        };
         let snapshot = self.state.lock().await.ready_snapshot()?;
         gateway_ready(&snapshot).await
     }
@@ -591,6 +721,7 @@ impl GatewayHost {
         origin_label: &str,
         cache: bool,
     ) -> std::result::Result<HostHandle, Rejection> {
+        self.work_activity.mark();
         let state = self.state.lock().await;
         let start = HostHandle::start(
             state.store.clone(),
@@ -606,6 +737,7 @@ impl GatewayHost {
             Arc::clone(&self.desktop),
             Arc::clone(&state.provider_epoch),
             Arc::clone(&state.activities),
+            Arc::clone(&self.work_activity),
             self.events.clone(),
             starting.id.clone(),
             origin_label,

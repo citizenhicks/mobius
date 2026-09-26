@@ -4,6 +4,7 @@ use mobius::protocol::{SessionContext, TokenUsage};
 use super::*;
 use mobius::backend::checkpoint::ExecutionStats;
 
+mod activity;
 mod bots;
 mod descriptors;
 mod lifecycle;

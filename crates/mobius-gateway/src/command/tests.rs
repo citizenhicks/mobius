@@ -281,8 +281,29 @@ fn parse_serve_accepts_an_explicit_state_directory() {
         Command::Serve {
             state_dir,
             background: false,
+            start_quiesced: false,
         } if state_dir == std::path::Path::new("/tmp/mobius")
     ));
+}
+
+#[test]
+fn parse_serve_accepts_quiesced_foreground_only() {
+    assert!(matches!(
+        parse(vec!["serve".into(), "--start-quiesced".into()]).unwrap(),
+        Command::Serve {
+            background: false,
+            start_quiesced: true,
+            ..
+        }
+    ));
+    assert!(
+        parse(vec![
+            "serve".into(),
+            "--start-quiesced".into(),
+            "--background".into(),
+        ])
+        .is_err()
+    );
 }
 
 #[test]
@@ -752,6 +773,7 @@ fn parse_serve_accepts_background_with_an_explicit_state_directory() {
         Command::Serve {
             state_dir,
             background: true,
+            start_quiesced: false,
         } if state_dir == std::path::Path::new("/tmp/mobius")
     ));
 }

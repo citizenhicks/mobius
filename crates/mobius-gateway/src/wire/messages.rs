@@ -99,6 +99,23 @@ pub enum ClientMessage {
         /// The request identifier.
         request_id: String,
     },
+    /// Observes machine-wide work without counting the observer as activity.
+    GetRuntimeActivity {
+        /// The request identifier.
+        request_id: String,
+    },
+    /// Closes work admission only if the observed idle state has not changed.
+    PrepareIdleShutdown {
+        /// The request identifier.
+        request_id: String,
+        /// The revision returned by the last runtime activity query.
+        expected_activity_revision: String,
+    },
+    /// Reopens work admission after a cancelled idle shutdown.
+    CancelIdleShutdown {
+        /// The request identifier.
+        request_id: String,
+    },
     /// Selects the unpair client case.
     UnpairClient {
         /// The request identifier.
@@ -670,6 +687,28 @@ impl ServerFrame {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ServerMessage {
+    /// Result of conditionally closing work admission for an external shutdown.
+    IdleShutdownPrepared {
+        /// The request identifier.
+        request_id: String,
+        /// Whether admission is closed and the runtime is safe to stop.
+        prepared: bool,
+        /// Earliest enabled routine deadline, frozen by successful preparation.
+        next_routine_at: Option<String>,
+    },
+    /// A point-in-time view of all loaded session and routine work.
+    RuntimeActivity {
+        /// The request identifier.
+        request_id: String,
+        /// Whether no session, subagent, background command or routine is active.
+        idle: bool,
+        /// Number of authenticated connections other than dashboard observers.
+        connected_clients: usize,
+        /// Opaque process-scoped revision, changed by work but never by this query.
+        activity_revision: String,
+        /// Earliest enabled routine deadline as an RFC 3339 timestamp, if any.
+        next_routine_at: Option<String>,
+    },
     /// Selects the desktop control requested case.
     DesktopControlRequested {
         /// The request identifier.
