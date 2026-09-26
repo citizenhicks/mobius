@@ -31,7 +31,7 @@ pub(super) async fn connect(
     state_dir: PathBuf,
 ) -> Result<(GatewaySender, GatewayEvents, DashboardState)> {
     let endpoint = dashboard_gateway_endpoint(&state_dir).map_err(gateway_error)?;
-    mobius_gateway::command::ensure_background_gateway(state_dir)
+    mobius_gateway::command::ensure_background_gateway(state_dir, configured_token)
         .await
         .map_err(gateway_error)?;
     let token = configured_token(&endpoint)

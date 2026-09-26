@@ -875,6 +875,178 @@ fn process_record_rejects_a_non_websocket_runtime_endpoint() {
     assert!(error.to_string().contains("must use wss://"));
 }
 
+#[test]
+fn gateway_versions_follow_semantic_precedence() {
+    for (running, starting, older) in [
+        ("0.9.9", "0.10.0", Some(true)),
+        ("1.0.0", "1.0.0", Some(false)),
+        ("2.0.0", "1.9.9", Some(false)),
+        ("1.0.0-rc.1", "1.0.0", Some(true)),
+        ("1.0.0-rc.2", "1.0.0-rc.10", Some(true)),
+        ("1.0.0", "1.0.0-rc.1", Some(false)),
+        ("1.0.0+old", "1.0.0+new", Some(false)),
+        ("unknown", "1.0.0", None),
+        ("1.0.0", "unknown", None),
+    ] {
+        assert_eq!(
+            gateway_version_is_older(running, starting).ok(),
+            older,
+            "running {running}, starting {starting}"
+        );
+    }
+}
+
+#[cfg(unix)]
+async fn report_gateway_version(
+    listener: tokio::net::TcpListener,
+    version: Option<&str>,
+    protocol: u16,
+) {
+    use crate::wire::{
+        ClientFrame, FrameReader, PROTOCOL_VERSION, ServerFrame, read_frame, write_frame,
+    };
+
+    for expected_protocol in [PROTOCOL_VERSION, protocol] {
+        let (stream, _) = listener.accept().await.expect("accept version check");
+        let (reader, mut writer) = tokio::io::split(stream);
+        let frame = read_frame::<ClientFrame>(&mut FrameReader::new(reader))
+            .await
+            .expect("read authentication")
+            .expect("authentication frame");
+        assert_eq!(frame.version, expected_protocol);
+        assert_eq!(
+            frame.message,
+            ClientMessage::Authenticate {
+                token: "version-check-token".into(),
+                client_kind: ClientKind::GatewayDashboard,
+            }
+        );
+        if frame.version != protocol {
+            write_frame(
+                &mut writer,
+                &ServerFrame {
+                    version: protocol,
+                    message: ServerMessage::Error {
+                        code: "protocol_version".into(),
+                        message: "unsupported protocol version".into(),
+                        fatal: true,
+                    },
+                },
+            )
+            .await
+            .expect("reject newer protocol");
+            continue;
+        }
+        write_frame(
+            &mut writer,
+            &ServerFrame {
+                version: protocol,
+                message: ServerMessage::Authenticated,
+            },
+        )
+        .await
+        .expect("authenticate client");
+        if let Some(version) = version {
+            write_frame(
+                &mut writer,
+                &serde_json::json!({
+                    "version": protocol,
+                    "type": "ready",
+                    "payload": { "gateway_version": version },
+                }),
+            )
+            .await
+            .expect("report gateway version");
+        }
+        return;
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn gateway_reuse_evicts_only_a_confirmed_older_release() {
+    use crate::wire::PROTOCOL_VERSION;
+
+    for (version, protocol, expected_reuse) in [
+        (Some("0.0.0"), PROTOCOL_VERSION, Some(false)),
+        (Some("0.15.46"), 84, Some(false)),
+        (
+            Some(env!("CARGO_PKG_VERSION")),
+            PROTOCOL_VERSION,
+            Some(true),
+        ),
+        (Some("999.0.0"), PROTOCOL_VERSION, Some(true)),
+        (Some("unknown"), PROTOCOL_VERSION, None),
+        (None, PROTOCOL_VERSION, None),
+    ] {
+        let directory = tempfile::tempdir().expect("gateway state parent");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind version peer");
+        let (store, config) = ConfigStore::initialize(
+            directory.path().join("gateway"),
+            listener.local_addr().expect("version peer address"),
+            None,
+        )
+        .expect("gateway config");
+        let path = store.state_dir().join(PROCESS_FILE);
+        let mut file = File::create(&path).expect("process record");
+        file.lock().expect("lock process record");
+        let mut child = TokioCommand::new("sleep")
+            .arg("30")
+            .kill_on_drop(true)
+            .spawn()
+            .expect("disposable gateway process");
+        let pid = child.id().expect("disposable process ID");
+        serde_json::to_writer(
+            &mut file,
+            &ProcessRecord {
+                pid,
+                endpoint: None,
+            },
+        )
+        .expect("write disposable process record");
+        file.flush().expect("flush process record");
+        let (cleanup, cleanup_requested) = tokio::sync::oneshot::channel();
+        let stopped = tokio::spawn(async move {
+            let status = tokio::select! {
+                status = child.wait() => status.map(|_| ()),
+                _ = cleanup_requested => child.kill().await,
+            };
+            drop(file);
+            status
+        });
+        let peer = tokio::spawn(async move {
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                report_gateway_version(listener, version, protocol),
+            )
+            .await
+            .expect("version peer completes");
+        });
+
+        let result = reuse_current_gateway(&store, &config, None, |_| {
+            Ok(Some("version-check-token".into()))
+        })
+        .await;
+        let running = running_process_pid(&path);
+        let _ = cleanup.send(());
+        stopped.await.expect("process task").expect("reap process");
+        peer.await.expect("version peer");
+
+        assert_eq!(
+            result.map(|process| process.is_some()).ok(),
+            expected_reuse,
+            "reported version {version:?}, protocol {protocol}"
+        );
+        assert_eq!(
+            running.expect("check process lifetime"),
+            (expected_reuse != Some(false)).then_some(pid),
+            "reported version {version:?}, protocol {protocol}"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn process_record_carries_the_quick_tunnel_endpoint() {

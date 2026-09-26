@@ -1,6 +1,6 @@
 [package]
 name = "mobius-gateway"
-version = "0.15.49"
+version = "0.15.50"
 edition.workspace = true
 rust-version.workspace = true
 description = "Headless authenticated gateway for möbius frontends"
@@ -25,6 +25,7 @@ futures-util.workspace = true
 mobius.workspace = true
 rusqlite.workspace = true
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+semver = "1"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

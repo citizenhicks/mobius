@@ -25,12 +25,23 @@ pub(super) async fn serve(
     state_dir: PathBuf,
     lock_startup: bool,
     save_local_client: fn(&Endpoint, String) -> Result<()>,
+    load_local_client: fn(&Endpoint) -> Result<Option<String>>,
 ) -> Result<()> {
     let (store, config) = ConfigStore::open(state_dir)?;
     let state_dir = store.state_dir().to_path_buf();
     let startup = lock_startup
         .then(|| StartupGuard::create(&state_dir))
         .transpose()?;
+    #[cfg(not(unix))]
+    let _ = load_local_client;
+    #[cfg(unix)]
+    if reuse_current_gateway(&store, &config, None, load_local_client)
+        .await?
+        .is_some()
+    {
+        println!("gateway is already running at the same or a newer version");
+        return Ok(());
+    }
     #[cfg(unix)]
     ensure_gateway_stopped(&store, &config)?;
     let auth = AuthStore::open(store.auth_path())?;
@@ -74,33 +85,40 @@ pub(super) async fn serve(
 }
 
 #[cfg(unix)]
-pub(super) async fn serve_in_background(state_dir: PathBuf) -> Result<()> {
+pub(super) async fn serve_in_background(
+    state_dir: PathBuf,
+    load_local_client: fn(&Endpoint) -> Result<Option<String>>,
+) -> Result<()> {
     let (store, config) = ConfigStore::open(state_dir)?;
     let _startup = StartupGuard::create(store.state_dir())?;
     let mut interrupts = signal(SignalKind::interrupt())?;
     let mut terminations = signal(SignalKind::terminate())?;
-    let Some(process) =
-        start_background_gateway(store.state_dir(), &mut interrupts, &mut terminations).await?
+    let Some(process) = start_background_gateway(
+        store.state_dir(),
+        &mut interrupts,
+        &mut terminations,
+        load_local_client,
+    )
+    .await?
     else {
         println!("gateway start cancelled");
         return Ok(());
     };
-    println!("gateway started in background (pid {})", process.pid);
+    println!("gateway running (pid {})", process.pid);
     print_listener(&config, process.endpoint()?.as_ref());
     Ok(())
 }
 
-/// Starts the configured detached gateway unless its process is already running.
+/// Starts the configured detached gateway, replacing an older running release.
 #[cfg(unix)]
 /// # Errors
 ///
 /// Returns an error if the supplied value is invalid.
-pub async fn ensure_background_gateway(state_dir: PathBuf) -> Result<()> {
-    let (store, _) = ConfigStore::open(state_dir.clone())?;
-    if running_process_pid(&store.state_dir().join(PROCESS_FILE))?.is_some() {
-        return Ok(());
-    }
-    serve_in_background(state_dir).await
+pub async fn ensure_background_gateway(
+    state_dir: PathBuf,
+    load_local_client: fn(&Endpoint) -> Result<Option<String>>,
+) -> Result<()> {
+    serve_in_background(state_dir, load_local_client).await
 }
 
 #[cfg(unix)]
@@ -108,11 +126,13 @@ pub(super) async fn start_background_gateway(
     state_dir: &Path,
     interrupts: &mut TokioSignal,
     terminations: &mut TokioSignal,
+    load_local_client: fn(&Endpoint) -> Result<Option<String>>,
 ) -> Result<Option<ProcessRecord>> {
     let state_dir = fs::canonicalize(state_dir)?;
     let process_path = state_dir.join(PROCESS_FILE);
-    if running_process_pid(&process_path)?.is_some() {
-        return Err(Error::Config("gateway is already running".into()));
+    let (store, config) = ConfigStore::open(state_dir.clone())?;
+    if let Some(process) = reuse_current_gateway(&store, &config, None, load_local_client).await? {
+        return Ok(Some(process));
     }
 
     let log = tempfile::NamedTempFile::new_in(&state_dir)?;
@@ -198,13 +218,69 @@ pub(super) async fn shutdown_signal(interrupts: &mut TokioSignal, terminations: 
 }
 
 #[cfg(not(unix))]
-pub(super) async fn serve_in_background(_state_dir: PathBuf) -> Result<()> {
+pub(super) async fn serve_in_background(
+    _state_dir: PathBuf,
+    _load_local_client: fn(&Endpoint) -> Result<Option<String>>,
+) -> Result<()> {
     Err(unsupported_lifecycle())
 }
 
 #[cfg(not(unix))]
-pub async fn ensure_background_gateway(_state_dir: PathBuf) -> Result<()> {
+pub async fn ensure_background_gateway(
+    _state_dir: PathBuf,
+    _load_local_client: fn(&Endpoint) -> Result<Option<String>>,
+) -> Result<()> {
     Err(unsupported_lifecycle())
+}
+
+#[cfg(unix)]
+pub(super) async fn reuse_current_gateway(
+    store: &ConfigStore,
+    config: &GatewayConfig,
+    configured_endpoint: Option<&Endpoint>,
+    load_local_client: fn(&Endpoint) -> Result<Option<String>>,
+) -> Result<Option<ProcessRecord>> {
+    let Some(process) = running_process_record(&store.state_dir().join(PROCESS_FILE))? else {
+        return Ok(None);
+    };
+    let endpoint = if config.tls.is_some() {
+        let endpoint =
+            configured_endpoint.map_or_else(Endpoint::from_env, |endpoint| Ok(endpoint.clone()))?;
+        if endpoint.is_plaintext() || endpoint.is_websocket() {
+            return Err(Error::Config(
+                "TLS gateway upgrades require MOBIUS_GATEWAY_ENDPOINT with the certificate hostname".into(),
+            ));
+        }
+        endpoint
+    } else {
+        loopback_endpoint(config)?
+    };
+    let token = load_local_client(&endpoint)?.ok_or_else(|| {
+        Error::Config("local gateway credential is unavailable; cannot check its version".into())
+    })?;
+    let version = tokio::time::timeout(
+        Duration::from_secs(2),
+        endpoint.local_gateway_version(config.listen, &token),
+    )
+    .await
+    .map_err(|_| Error::Config("gateway version check timed out".into()))??;
+    if !gateway_version_is_older(&version, env!("CARGO_PKG_VERSION"))? {
+        return Ok(Some(process));
+    }
+    let state_dir = store.state_dir().to_path_buf();
+    tokio::task::spawn_blocking(move || stop_gateway(&state_dir, Some(process.pid)))
+        .await
+        .map_err(|error| Error::Config(format!("gateway stop task failed: {error}")))??;
+    Ok(None)
+}
+
+#[cfg(any(unix, test))]
+pub(super) fn gateway_version_is_older(running: &str, starting: &str) -> Result<bool> {
+    let parse = |version: &str| {
+        semver::Version::parse(version)
+            .map_err(|error| Error::Config(format!("invalid gateway version `{version}`: {error}")))
+    };
+    Ok(parse(running)?.cmp_precedence(&parse(starting)?).is_lt())
 }
 
 #[cfg(unix)]
@@ -274,11 +350,11 @@ pub(super) fn exit_gateway(state_dir: PathBuf) -> Result<()> {
 pub(super) fn stop_gateway(state_dir: &Path, expected_pid: Option<u32>) -> Result<()> {
     let path = state_dir.join(PROCESS_FILE);
     let Some((record, file)) = open_process_record(&path)? else {
-        println!("gateway is stopped");
+        eprintln!("gateway is stopped");
         return Ok(());
     };
     if !process_is_running(&file)? {
-        println!("gateway is stopped");
+        eprintln!("gateway is stopped");
         return Ok(());
     }
     if let Some(expected_pid) = expected_pid
@@ -294,7 +370,7 @@ pub(super) fn stop_gateway(state_dir: &Path, expected_pid: Option<u32>) -> Resul
         .map_err(|_| Error::Config("invalid gateway process record".into()))?;
     if let Err(error) = kill(pid, Signal::SIGINT) {
         if !process_is_running(&file)? {
-            println!("gateway is stopped");
+            eprintln!("gateway is stopped");
             return Ok(());
         }
         return Err(Error::Config(format!(
@@ -312,7 +388,7 @@ pub(super) fn stop_gateway(state_dir: &Path, expected_pid: Option<u32>) -> Resul
         }
         std::thread::sleep(EXIT_POLL_INTERVAL);
     }
-    println!("gateway stopped");
+    eprintln!("gateway stopped");
     Ok(())
 }
 

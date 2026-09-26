@@ -19,6 +19,8 @@ use tokio_tungstenite::tungstenite::http::uri::Authority;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async_with_config};
 
+#[cfg(unix)]
+use crate::wire::read_frame_with_limit;
 use crate::wire::{
     ClientFrame, ClientKind, ClientMessage, FrameReader, MAX_FRAME_BYTES, ServerFrame,
     ServerMessage, framed_to_websocket, read_frame, validate_version, websocket_error,
@@ -121,6 +123,10 @@ impl Endpoint {
         }
         let address = format_address(&self.host, self.port);
         let stream = TcpStream::connect(&address).await?;
+        self.secure_tcp(stream).await
+    }
+
+    async fn secure_tcp(&self, stream: TcpStream) -> Result<BoxedTransport> {
         if self.security == Security::Plaintext {
             let peer = stream.peer_addr()?;
             if !peer.ip().is_loopback() {
@@ -145,6 +151,79 @@ impl Endpoint {
                 Error::Protocol(format!("TLS handshake failed: {:?}", error.kind()))
             })?;
         Ok(Box::new(stream))
+    }
+
+    #[cfg(unix)]
+    pub(crate) async fn local_gateway_version(
+        &self,
+        mut listen: std::net::SocketAddr,
+        token: &str,
+    ) -> Result<String> {
+        if self.is_websocket() {
+            return Err(Error::Config(
+                "local gateway control requires TCP or TLS".into(),
+            ));
+        }
+        if listen.ip().is_unspecified() {
+            listen.set_ip(match listen.ip() {
+                IpAddr::V4(_) => std::net::Ipv4Addr::LOCALHOST.into(),
+                IpAddr::V6(_) => std::net::Ipv6Addr::LOCALHOST.into(),
+            });
+        }
+        let mut version = crate::wire::PROTOCOL_VERSION;
+        for attempt in 0..2 {
+            let transport = self.secure_tcp(TcpStream::connect(listen).await?).await?;
+            let (reader, mut writer) = tokio::io::split(transport);
+            let mut reader = FrameReader::new(reader);
+            write_frame(
+                &mut writer,
+                &ClientFrame {
+                    version,
+                    message: ClientMessage::Authenticate {
+                        token: token.into(),
+                        client_kind: ClientKind::GatewayDashboard,
+                    },
+                },
+            )
+            .await?;
+            let response = read_frame_with_limit::<ServerFrame>(&mut reader, 4 * 1024)
+                .await?
+                .ok_or_else(|| {
+                    Error::Protocol("gateway closed during version authentication".into())
+                })?;
+            match response.message {
+                ServerMessage::Error { code, .. }
+                    if attempt == 0 && code == "protocol_version" && response.version > 0 =>
+                {
+                    version = response.version;
+                    continue;
+                }
+                ServerMessage::Authenticated if response.version == version => {}
+                ServerMessage::Error { code, message, .. } => {
+                    return Err(connection_error(&code, message));
+                }
+                _ => {
+                    return Err(Error::Protocol(
+                        "gateway did not authenticate the version check".into(),
+                    ));
+                }
+            }
+            let frame = read_frame::<serde_json::Value>(&mut reader)
+                .await?
+                .ok_or_else(|| {
+                    Error::Protocol("gateway disconnected before reporting its version".into())
+                })?;
+            if frame["type"] != "ready" || frame["version"].as_u64() != Some(u64::from(version)) {
+                return Err(Error::Protocol(
+                    "gateway did not report a valid ready frame".into(),
+                ));
+            }
+            return frame["payload"]["gateway_version"]
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| Error::Protocol("gateway did not report its version".into()));
+        }
+        Err(Error::Protocol("gateway did not report its version".into()))
     }
 
     async fn connect_websocket(&self) -> Result<BoxedTransport> {

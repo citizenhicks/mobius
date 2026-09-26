@@ -8,6 +8,13 @@ pub(super) async fn connect(
     let (store, config) = ConfigStore::open(options.state_dir)?;
     let configured_endpoint = connection_endpoint(&config, options.endpoint)?;
     let startup = StartupGuard::create(store.state_dir())?;
+    reuse_current_gateway(
+        &store,
+        &config,
+        configured_endpoint.as_ref(),
+        load_local_client,
+    )
+    .await?;
     if let Some((client_endpoint, pairing_endpoint)) =
         running_connection_endpoints(&store, &config, configured_endpoint.clone())?
     {
@@ -34,26 +41,31 @@ pub(super) async fn connect(
     let auth = AuthStore::open(store.auth_path())?;
     let grant = auth.create_pairing_code()?;
     let deadline = pairing_deadline(grant.expires_at)?;
-    let process =
-        match start_background_gateway(store.state_dir(), &mut interrupts, &mut terminations).await
-        {
-            Ok(Some(process)) => process,
-            Ok(None) => {
-                AuthStore::open(store.auth_path())?.revoke_pairing_code(&grant.code)?;
-                println!("connection cancelled");
-                return Ok(());
+    let process = match start_background_gateway(
+        store.state_dir(),
+        &mut interrupts,
+        &mut terminations,
+        load_local_client,
+    )
+    .await
+    {
+        Ok(Some(process)) => process,
+        Ok(None) => {
+            AuthStore::open(store.auth_path())?.revoke_pairing_code(&grant.code)?;
+            println!("connection cancelled");
+            return Ok(());
+        }
+        Err(error) => {
+            if let Err(revoke) =
+                AuthStore::open(store.auth_path())?.revoke_pairing_code(&grant.code)
+            {
+                return Err(Error::Config(format!(
+                    "{error}; failed to revoke one-time code: {revoke}"
+                )));
             }
-            Err(error) => {
-                if let Err(revoke) =
-                    AuthStore::open(store.auth_path())?.revoke_pairing_code(&grant.code)
-                {
-                    return Err(Error::Config(format!(
-                        "{error}; failed to revoke one-time code: {revoke}"
-                    )));
-                }
-                return Err(error);
-            }
-        };
+            return Err(error);
+        }
+    };
     let pid = process.pid;
     let endpoint = match process.endpoint().and_then(|runtime| {
         runtime

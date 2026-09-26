@@ -206,6 +206,11 @@ only after the serving loop finishes initialization and publishes its locked pro
 continues to run until interrupted. Use `serve --background` for ordinary
 restarts after at least one client is paired.
 
+Gateway startup reuses a running release at the same or a newer version. When
+the starting gateway executable is newer, it gracefully stops the old process
+and starts a fresh one with the existing configuration, chats, and pairing state.
+CLI autostart and the dashboard use this same version check.
+
 Authenticated clients may send `set_notifications` with a request ID and a `disabled` array
 containing `sessions` and/or `bots` to suppress unsolicited catalog updates. An empty array
 restores them. Preferences last for that connection; initial and recovery `ready` snapshots,

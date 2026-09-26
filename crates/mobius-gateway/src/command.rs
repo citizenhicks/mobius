@@ -152,12 +152,14 @@ pub async fn run_cli(
             background,
         } => {
             if background {
-                serve_in_background(state_dir).await
+                serve_in_background(state_dir, load_local_client).await
             } else {
-                serve(state_dir, true, save_local_client).await
+                serve(state_dir, true, save_local_client, load_local_client).await
             }
         }
-        Command::ServeChild { state_dir } => serve(state_dir, false, save_local_client).await,
+        Command::ServeChild { state_dir } => {
+            serve(state_dir, false, save_local_client, load_local_client).await
+        }
         Command::Exit { state_dir } => exit_gateway(state_dir),
     }
 }

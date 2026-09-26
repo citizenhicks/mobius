@@ -31,8 +31,9 @@ use tokio::process::{Child, Command};
 use uuid::Uuid;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
-const STARTUP_TIMEOUT: Duration = Duration::from_secs(40);
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(50);
 const DEFAULT_LOCAL_ENDPOINT: &str = "tcp://127.0.0.1:8741";
+#[cfg(not(unix))]
 const STARTUP_RETRY: Duration = Duration::from_millis(50);
 const MAX_STARTUP_ERROR_BYTES: u64 = 8192;
 
@@ -285,7 +286,14 @@ async fn connect_gateway() -> Result<(GatewaySender, GatewayEvents, ReadyPayload
     let local_gateway = endpoint.is_plaintext();
     let token = configured_token(&endpoint).map_err(gateway_error)?;
     let connected = if automatically_manage_local_gateway(&endpoint) {
-        connect_local(&endpoint, token).await
+        #[cfg(unix)]
+        {
+            start_local_gateway(&endpoint).await
+        }
+        #[cfg(not(unix))]
+        {
+            connect_local(&endpoint, token).await
+        }
     } else {
         match token {
             Some(token) => GatewayClient::connect(&endpoint, token, ClientKind::Cli).await,
@@ -304,6 +312,7 @@ fn automatically_manage_local_gateway(endpoint: &Endpoint) -> bool {
         && env::var_os("MOBIUS_GATEWAY_TOKEN").is_none()
 }
 
+#[cfg(not(unix))]
 async fn connect_local(
     endpoint: &Endpoint,
     token: Option<String>,
@@ -343,6 +352,7 @@ async fn start_local_gateway(endpoint: &Endpoint) -> mobius_gateway::Result<Gate
     let configured_state_dir = state_dir()?;
     let _startup_lock = lock_local_gateway_startup(&configured_state_dir)?;
     let saved_token = configured_token(endpoint)?;
+    #[cfg(not(unix))]
     if let Some(token) = saved_token.as_deref() {
         match connect_local_once(endpoint, token).await {
             Ok(client) => return Ok(client),
@@ -503,10 +513,56 @@ fn spawn_gateway(
         .stdout(Stdio::null())
         .stderr(Stdio::from(log.reopen()?));
     #[cfg(unix)]
-    command.as_std_mut().process_group(0);
+    {
+        command.arg("--background");
+        command.as_std_mut().process_group(0);
+    }
     Ok((command.spawn()?, log))
 }
 
+#[cfg(unix)]
+async fn connect_started_gateway(
+    endpoint: &Endpoint,
+    mut child: Child,
+    log: tempfile::NamedTempFile,
+) -> mobius_gateway::Result<GatewayClient> {
+    wait_gateway_startup(&mut child, &log).await?;
+    let token = configured_token(endpoint)?.ok_or_else(|| missing_local_token(endpoint))?;
+    match connect_local_once(endpoint, &token).await {
+        Err(mobius_gateway::Error::Unauthorized) => Err(missing_local_token(endpoint)),
+        result => result,
+    }
+}
+
+#[cfg(unix)]
+async fn wait_gateway_startup(
+    child: &mut Child,
+    log: &tempfile::NamedTempFile,
+) -> mobius_gateway::Result<()> {
+    match tokio::time::timeout(STARTUP_TIMEOUT, child.wait()).await {
+        Ok(Ok(status)) if status.success() => Ok(()),
+        Ok(Ok(status)) => Err(startup_error(
+            format!("mobius-gateway exited during startup with {status}"),
+            log,
+        )),
+        Ok(Err(error)) => {
+            stop_child(child).await;
+            Err(error.into())
+        }
+        Err(_) => {
+            stop_child(child).await;
+            Err(startup_error(
+                format!(
+                    "mobius-gateway did not start within {} seconds",
+                    STARTUP_TIMEOUT.as_secs()
+                ),
+                log,
+            ))
+        }
+    }
+}
+
+#[cfg(not(unix))]
 async fn connect_started_gateway(
     endpoint: &Endpoint,
     mut child: Child,
@@ -576,6 +632,7 @@ async fn connect_started_gateway(
     }
 }
 
+#[cfg(not(unix))]
 fn startup_connection_pending(error: &mobius_gateway::Error) -> bool {
     matches!(
         error,
@@ -587,6 +644,7 @@ fn startup_connection_pending(error: &mobius_gateway::Error) -> bool {
     )
 }
 
+#[cfg(not(unix))]
 fn detach_child(mut child: Child) {
     tokio::spawn(async move {
         let _ = child.wait().await;
@@ -596,6 +654,18 @@ fn detach_child(mut child: Child) {
 async fn stop_child(child: &mut Child) {
     #[cfg(unix)]
     if let Some(pid) = child.id() {
+        let _ = Command::new("/bin/kill")
+            .args(["-TERM", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await;
+        if matches!(
+            tokio::time::timeout(Duration::from_secs(5), child.wait()).await,
+            Ok(Ok(_))
+        ) {
+            return;
+        }
         mobius_gateway::command::terminate_process_group(pid);
     }
     #[cfg(not(unix))]
@@ -844,6 +914,49 @@ mod tests {
         let error = startup_error("gateway exited", &log);
 
         assert!(error.to_string().contains("Bubblewrap is unavailable"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn gateway_startup_requires_the_starter_to_finish_successfully() {
+        use tokio::io::AsyncWriteExt as _;
+
+        for exit_code in [0, 7] {
+            let log = tempfile::NamedTempFile::new().expect("startup log");
+            let mut child = Command::new("sh")
+                .args([
+                    "-c",
+                    "read status; echo startup-diagnostic >&2; exit \"$status\"",
+                ])
+                .stdin(Stdio::piped())
+                .stderr(Stdio::from(log.reopen().expect("startup stderr")))
+                .spawn()
+                .expect("starter process");
+            let mut input = child.stdin.take().expect("starter input");
+            let startup = wait_gateway_startup(&mut child, &log);
+            tokio::pin!(startup);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(20), &mut startup)
+                    .await
+                    .is_err(),
+                "the existing endpoint must not be used while startup is pending"
+            );
+            input
+                .write_all(format!("{exit_code}\n").as_bytes())
+                .await
+                .expect("release starter");
+            let result = startup.await;
+            if exit_code == 0 {
+                result.expect("successful startup");
+            } else {
+                assert!(
+                    result
+                        .expect_err("failed startup must prevent connection")
+                        .to_string()
+                        .contains("startup-diagnostic")
+                );
+            }
+        }
     }
 
     #[tokio::test]
