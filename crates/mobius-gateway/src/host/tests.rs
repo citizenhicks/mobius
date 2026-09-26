@@ -5,6 +5,7 @@ use super::*;
 use mobius::backend::checkpoint::ExecutionStats;
 
 mod bots;
+mod descriptors;
 mod lifecycle;
 mod projection;
 mod replay;

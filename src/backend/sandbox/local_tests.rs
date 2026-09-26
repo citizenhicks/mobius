@@ -7,6 +7,58 @@ use tokio::process::Command;
 #[cfg(target_os = "macos")]
 use crate::backend::sandbox::MACOS_COMMAND_WRAPPER;
 
+#[cfg(unix)]
+#[tokio::test]
+async fn shared_directory_handles_preserve_policy_and_release_with_their_owners() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let resources = tempfile::tempdir().expect("resources");
+    let requested = std::fs::canonicalize(resources.path())
+        .unwrap()
+        .join("file.txt");
+    std::fs::write(&requested, "original").unwrap();
+    let reader = local_sandbox(workspace.path())
+        .allow_read_root(resources.path())
+        .unwrap();
+    let writer = local_sandbox(workspace.path())
+        .allow_workspace_root(resources.path())
+        .unwrap();
+    let child = reader.isolated_execution().unwrap();
+    assert!(Arc::ptr_eq(&reader.root_dir, &writer.root_dir));
+    assert!(Arc::ptr_eq(
+        &reader.read_roots[0].directory,
+        &writer.workspace_roots[0].directory
+    ));
+    assert!(Arc::ptr_eq(
+        &reader.read_roots[0].directory,
+        &child.read_roots[0].directory
+    ));
+    assert_ne!(reader.temporary_directory(), child.temporary_directory());
+    let path = requested.to_str().unwrap();
+    assert!(
+        reader
+            .write(path, "denied", SandboxMode::WorkspaceWrite)
+            .await
+            .is_err()
+    );
+    writer
+        .write(path, "updated", SandboxMode::WorkspaceWrite)
+        .await
+        .unwrap();
+    assert_eq!(
+        reader
+            .read(path, SandboxMode::WorkspaceWrite)
+            .await
+            .unwrap(),
+        "updated"
+    );
+    let pinned = Arc::downgrade(&reader.read_roots[0].directory);
+    drop((reader, writer, child));
+    assert!(
+        pinned.upgrade().is_none(),
+        "directory cache must not retain descriptors"
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn ssh_agent_mount_accepts_only_a_real_socket() {

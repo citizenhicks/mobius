@@ -1,11 +1,12 @@
 //! Local filesystem adapter with policy-selected command isolation.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::{Arc, LazyLock, Mutex, Weak};
 use std::time::Duration;
 
 use cap_std::ambient_authority;
@@ -35,12 +36,32 @@ use self::files::read_binary_file;
 use self::files::read_file;
 use self::files::read_file_range;
 
-static TEMP_PARENT: std::sync::LazyLock<std::io::Result<tempfile::TempDir>> =
-    std::sync::LazyLock::new(|| {
-        tempfile::Builder::new()
-            .prefix("mobius-execution-")
-            .tempdir()
-    });
+static TEMP_PARENT: LazyLock<std::io::Result<tempfile::TempDir>> = LazyLock::new(|| {
+    tempfile::Builder::new()
+        .prefix("mobius-execution-")
+        .tempdir()
+});
+
+// Policy stays on each sandbox; identical pinned directories need only one handle.
+// Weak entries cannot extend a session's filesystem capability lifetime.
+static PINNED_DIRECTORIES: LazyLock<Mutex<BTreeMap<PathBuf, Weak<Dir>>>> =
+    LazyLock::new(|| Mutex::new(BTreeMap::new()));
+
+fn pin_directory(path: &Path) -> Result<Arc<Dir>> {
+    let mut directories = PINNED_DIRECTORIES
+        .lock()
+        .map_err(|_| Error::Sandbox("pinned directory lock is poisoned".into()))?;
+    directories.retain(|_, directory| directory.strong_count() > 0);
+    if let Some(directory) = directories.get(path).and_then(Weak::upgrade)
+        && validate_root(path, &directory).is_ok()
+    {
+        return Ok(directory);
+    }
+    let directory = Arc::new(Dir::open_ambient_dir(path, ambient_authority())?);
+    validate_root(path, &directory)?;
+    directories.insert(path.into(), Arc::downgrade(&directory));
+    Ok(directory)
+}
 
 const MAX_COMMAND_OUTPUT_BYTES: usize = 40_000;
 /// Read-only inspection feeds a UI rather than a model context, so it keeps a larger budget.
@@ -60,11 +81,11 @@ const ISOLATED_ENVIRONMENT: [&str; 8] = [
 /// Provides capability-safe file tools and policy-selected command execution.
 pub struct LocalSandbox {
     root: PathBuf,
-    root_dir: Dir,
+    root_dir: Arc<Dir>,
     workspace_roots: Vec<PinnedRoot>,
     read_roots: Vec<PinnedRoot>,
-    temp: std::sync::Arc<tempfile::TempDir>,
-    temp_root: Dir,
+    temp: Arc<tempfile::TempDir>,
+    temp_root: Arc<Dir>,
     command_timeout: Duration,
     denied_reads: Vec<DeniedRead>,
     denied_environment: BTreeSet<String>,
@@ -79,18 +100,10 @@ struct DeniedRead {
     directory: bool,
 }
 
+#[derive(Clone)]
 struct PinnedRoot {
     path: PathBuf,
-    directory: Dir,
-}
-
-impl PinnedRoot {
-    fn try_clone(&self) -> Result<Self> {
-        Ok(Self {
-            path: self.path.clone(),
-            directory: self.directory.try_clone()?,
-        })
-    }
+    directory: Arc<Dir>,
 }
 
 enum Invocation<'a> {
@@ -139,21 +152,20 @@ impl LocalSandbox {
                 )));
             }
             validate_public_root(&root)?;
-            let root_dir = Dir::open_ambient_dir(&root, ambient_authority())?;
-            validate_root(&root, &root_dir)?;
+            let root_dir = pin_directory(&root)?;
             let parent = TEMP_PARENT.as_ref().map_err(|error| {
                 Error::Sandbox(format!("temporary storage unavailable: {error}"))
             })?;
             let temp = tempfile::Builder::new()
                 .prefix("session-")
                 .tempdir_in(parent.path())?;
-            let temp_root = Dir::open_ambient_dir(temp.path(), ambient_authority())?;
+            let temp_root = Arc::new(Dir::open_ambient_dir(temp.path(), ambient_authority())?);
             Ok(Self {
                 root,
                 root_dir,
                 workspace_roots: Vec::new(),
                 read_roots: Vec::new(),
-                temp: std::sync::Arc::new(temp),
+                temp: Arc::new(temp),
                 temp_root,
                 command_timeout: DEFAULT_COMMAND_TIMEOUT,
                 denied_reads: Vec::new(),
@@ -172,17 +184,9 @@ impl LocalSandbox {
     pub fn isolated_execution(&self) -> Result<Self> {
         self.validate_workspace_roots()?;
         let mut scoped = Self::new(&self.root)?;
-        scoped.root_dir = self.root_dir.try_clone()?;
-        scoped.workspace_roots = self
-            .workspace_roots
-            .iter()
-            .map(PinnedRoot::try_clone)
-            .collect::<Result<_>>()?;
-        scoped.read_roots = self
-            .read_roots
-            .iter()
-            .map(PinnedRoot::try_clone)
-            .collect::<Result<_>>()?;
+        scoped.root_dir = Arc::clone(&self.root_dir);
+        scoped.workspace_roots = self.workspace_roots.clone();
+        scoped.read_roots = self.read_roots.clone();
         scoped.command_timeout = self.command_timeout;
         scoped.denied_reads = self.denied_reads.clone();
         scoped.denied_environment = self.denied_environment.clone();
@@ -199,8 +203,8 @@ impl LocalSandbox {
     ///
     /// Returns an error if validation or an operation required by this function fails.
     pub fn share_temporary_directory(mut self, owner: &Self) -> Result<Self> {
-        self.temp = std::sync::Arc::clone(&owner.temp);
-        self.temp_root = owner.temp_root.try_clone()?;
+        self.temp = Arc::clone(&owner.temp);
+        self.temp_root = Arc::clone(&owner.temp_root);
         Ok(self)
     }
 
@@ -314,8 +318,7 @@ impl LocalSandbox {
         if path == self.root || self.workspace_roots.iter().any(|root| root.path == path) {
             return Ok(self);
         }
-        let directory = Dir::open_ambient_dir(&path, ambient_authority())?;
-        validate_root(&path, &directory)?;
+        let directory = pin_directory(&path)?;
         self.workspace_roots.push(PinnedRoot { path, directory });
         Ok(self)
     }
@@ -345,8 +348,7 @@ impl LocalSandbox {
         if self.read_roots.iter().any(|root| root.path == path) {
             return Ok(self);
         }
-        let directory = Dir::open_ambient_dir(&path, ambient_authority())?;
-        validate_root(&path, &directory)?;
+        let directory = pin_directory(&path)?;
         self.read_roots.push(PinnedRoot { path, directory });
         Ok(self)
     }
