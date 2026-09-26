@@ -426,6 +426,8 @@ pub enum ProviderTint {
     Red,
     /// Selects the purple case.
     Purple,
+    /// Selects the white case.
+    White,
 }
 
 /// One durable setup of a provider. Several may share one `provider`.

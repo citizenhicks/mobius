@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/citizenhicks/mobius/main/mobius-app/artwork/MobiusMark.svg" width="120" height="120" alt="möbius logo">
+  <img src="https://raw.githubusercontent.com/citizenhicks/mobius/main/docs/MobiusMark.svg" width="120" height="120" alt="möbius logo">
 </p>
 
 <h1 align="center">möbius</h1>
@@ -9,7 +9,6 @@
 
 <p align="center">
   <a href="https://github.com/citizenhicks/mobius/actions/workflows/ci.yml"><img src="https://github.com/citizenhicks/mobius/actions/workflows/ci.yml/badge.svg?branch=main" alt="Rust CI"></a>
-  <a href="https://github.com/citizenhicks/mobius/actions/workflows/swift.yml"><img src="https://github.com/citizenhicks/mobius/actions/workflows/swift.yml/badge.svg?branch=main" alt="Swift CI"></a>
   <a href="https://crates.io/crates/mobius"><img src="https://img.shields.io/crates/v/mobius" alt="mobius crate version"></a>
   <a href="https://github.com/citizenhicks/mobius/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="Apache 2.0 license"></a>
 </p>
@@ -27,7 +26,9 @@ Create **Bots** with their own models, instructions, tools, and approval policie
 those Bots across devices, schedule recurring jobs, or delegate focused subagents.
 Your **gateway** runs the agents and keeps their workspaces and saved conversations together.
 
-Underneath the apps is a small, modular Rust framework you can embed in your own software.
+This repository contains the Rust framework, gateway, and terminal client. The native
+macOS desktop and SwiftUI iPhone and iPad apps are maintained in separate private repositories.
+You can also embed the Rust framework in your own software.
 
 ## What you can do
 
@@ -129,9 +130,9 @@ gateway restarts; the [gateway guide](https://github.com/citizenhicks/mobius/blo
 covers stable addresses and direct TLS setup. Keep your gateway machine awake and reachable
 for remote access and scheduled work.
 
-**Apple app:** the iPhone and iPad client is currently in TestFlight beta. The
-[Apple guide](https://github.com/citizenhicks/mobius/blob/main/mobius-app/apple/README.md)
-explains how to build it from source.
+**Apple app:** the iPhone and iPad client is currently in TestFlight beta. Its
+source and [Apple guide](https://github.com/citizenhicks/mobius-ios/blob/main/apple/README.md)
+live in the private `mobius-ios` repository.
 
 **Prefer a hosted gateway?** [möbius Cloud](https://mobius.thinkingsand.dev/) runs the same
 open-source gateway in a dedicated microVM. Cloud is currently in beta and is optional.
@@ -232,7 +233,6 @@ connectors are not yet supported.
 | [`mobius`](https://crates.io/crates/mobius) | Embeddable Rust agent framework. |
 | [`mobius-gateway`](https://crates.io/crates/mobius-gateway) | Headless runtime library: authentication, Bots, chats, and routines. |
 | [`mobius-cli`](https://crates.io/crates/mobius-cli) | Installs the `mobius` terminal client and `mobius-gateway` executable. |
-| [Apple app](https://github.com/citizenhicks/mobius/tree/main/mobius-app/apple) | Native SwiftUI client for iPhone and iPad. |
 
 ## Documentation and contributing
 
@@ -243,7 +243,6 @@ connectors are not yet supported.
 | [CLI guide](https://github.com/citizenhicks/mobius/blob/main/crates/mobius-cli/README.md) | Installation, provider setup, and terminal controls. |
 | [Gateway guide](https://github.com/citizenhicks/mobius/blob/main/crates/mobius-gateway/README.md) | Hosting, pairing, authentication, and sandbox policy. |
 | [Bots and context](https://github.com/citizenhicks/mobius/blob/main/crates/mobius-gateway/BOTS.md) | Chats, routines, subagents, and memory boundaries. |
-| [Apple guide](https://github.com/citizenhicks/mobius/blob/main/mobius-app/apple/README.md) | Building and testing the iPhone and iPad app. |
 
 Contributions and [issue reports](https://github.com/citizenhicks/mobius/issues) are welcome.
 Read [AGENTS.md](https://github.com/citizenhicks/mobius/blob/main/AGENTS.md) for module ownership,
