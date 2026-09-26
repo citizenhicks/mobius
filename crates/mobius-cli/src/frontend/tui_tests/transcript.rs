@@ -106,6 +106,7 @@ fn commentary_is_committed_before_a_tool_block() {
             format: FrontendBlockFormat::PlainText,
             image_aspect: None,
             tone: FrontendTone::Neutral,
+            links: Vec::new(),
             files: Vec::new(),
         })],
     );

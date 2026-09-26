@@ -318,6 +318,7 @@ impl Middleware for Compaction {
             title: text::DEFINITION.render_context_compacted.clone(),
             text: String::new(),
             symbol: None,
+            links: Vec::new(),
             files: Vec::new(),
             content: Default::default(),
             format: crate::protocol::FrontendBlockFormat::PlainText,

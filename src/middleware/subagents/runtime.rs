@@ -608,6 +608,7 @@ fn subagent_error_notice(message: String) -> FrontendEvent {
             title: "Subagent error".into(),
             text: message,
             symbol: Some(FrontendSymbol::Agent),
+            links: Vec::new(),
             files: Vec::new(),
             content: Default::default(),
             format: crate::protocol::FrontendBlockFormat::PlainText,

@@ -41,6 +41,7 @@ fn git_diff_styles_each_file_and_preserves_metadata_and_truncated_sections() {
         format: FrontendBlockFormat::UnifiedDiff,
         image_aspect: None,
         tone: FrontendTone::Neutral,
+        links: Vec::new(),
         files: Vec::new(),
     }));
     let lines = view::live_transcript_lines(&mut state, 0, 80);
@@ -85,6 +86,7 @@ fn metadata_only_diff_remains_text_instead_of_an_empty_edit() {
         format: FrontendBlockFormat::UnifiedDiff,
         image_aspect: None,
         tone: FrontendTone::Neutral,
+        links: Vec::new(),
         files: Vec::new(),
     }));
     let text = rendered_text(&view::live_transcript_lines(&mut state, 0, 80));
@@ -108,6 +110,7 @@ fn completed_diff_replaces_the_pending_block_with_a_styled_diff() {
         format: FrontendBlockFormat::PlainText,
         image_aspect: None,
         tone: FrontendTone::Neutral,
+        links: Vec::new(),
         files: Vec::new(),
     }));
     view::live_transcript_lines(&mut state, 0, 80);
@@ -132,6 +135,7 @@ fn completed_diff_replaces_the_pending_block_with_a_styled_diff() {
         format: FrontendBlockFormat::UnifiedDiff,
         image_aspect: None,
         tone: FrontendTone::Success,
+        links: Vec::new(),
         files: Vec::new(),
     }));
     assert!(
@@ -232,6 +236,7 @@ fn pending_tool_compacts_its_display_without_losing_completed_detail() {
         format: FrontendBlockFormat::PlainText,
         image_aspect: None,
         tone: FrontendTone::Neutral,
+        links: Vec::new(),
         files: Vec::new(),
     }));
     assert_eq!(
@@ -251,6 +256,7 @@ fn pending_tool_compacts_its_display_without_losing_completed_detail() {
         format: FrontendBlockFormat::PlainText,
         image_aspect: None,
         tone: FrontendTone::Success,
+        links: Vec::new(),
         files: Vec::new(),
     }));
 
@@ -428,6 +434,7 @@ fn block_identity_is_scoped_by_explicit_capability() {
         title: title.into(),
         text: String::new(),
         symbol: None,
+        links: Vec::new(),
         files: Vec::new(),
         content: Default::default(),
         format: FrontendBlockFormat::PlainText,
@@ -491,6 +498,7 @@ fn gateway_history_preserves_child_diff_rendering() {
                 format: FrontendBlockFormat::UnifiedDiff,
                 image_aspect: None,
                 tone: FrontendTone::Neutral,
+                links: Vec::new(),
                 files: Vec::new(),
             })],
             None,
@@ -519,6 +527,7 @@ fn session_file_block_renders_download_metadata_as_plain_text() {
         format: FrontendBlockFormat::PlainText,
         image_aspect: None,
         tone: FrontendTone::Success,
+        links: Vec::new(),
         files: vec![mobius::protocol::SessionFileReference {
             id: "file-a".into(),
             name: "report.xlsx".into(),
@@ -865,6 +874,7 @@ fn transcript_viewport_matches_full_paragraph_for_unicode_scroll_and_resize() {
                 format: FrontendBlockFormat::PlainText,
                 image_aspect: None,
                 tone: FrontendTone::Neutral,
+                links: Vec::new(),
                 files: Vec::new(),
             }));
         }
@@ -927,6 +937,7 @@ fn transcript_viewport_matches_full_paragraph_for_unicode_scroll_and_resize() {
             format: FrontendBlockFormat::PlainText,
             image_aspect: None,
             tone: FrontendTone::Success,
+            links: Vec::new(),
             files: Vec::new(),
         }));
     }

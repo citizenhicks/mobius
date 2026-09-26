@@ -234,6 +234,10 @@ pub struct FrontendBlock {
     pub text: String,
     /// The symbol.
     pub symbol: Option<FrontendSymbol>,
+    /// Inline resource links displayed beside the compact row label.
+    /// Append updates retain previous links and add these; Replace updates set the list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<FrontendLink>,
     /// Downloadable files owned by the session rendering this block.
     pub files: Vec<SessionFileReference>,
     /// Ordered observations rendered after the block summary.
@@ -245,6 +249,15 @@ pub struct FrontendBlock {
     pub image_aspect: Option<ImageAspect>,
     /// The tone.
     pub tone: FrontendTone,
+}
+
+/// A capability-owned link to a file or web resource, independent of body formatting.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FrontendLink {
+    /// Compact visible text, such as a file name.
+    pub label: String,
+    /// URI reference: relative file URI, absolute `file:` URI, or HTTP(S) URL.
+    pub href: String,
 }
 
 /// A block together with its explicit semantic owner.
@@ -515,6 +528,7 @@ impl EventMsg {
                 title: "Error".into(),
                 text: error.message.clone(),
                 symbol: None,
+                links: Vec::new(),
                 files: Vec::new(),
                 content: Default::default(),
                 format: FrontendBlockFormat::PlainText,
@@ -530,6 +544,7 @@ impl EventMsg {
                 title: "Warning".into(),
                 text: warning.message.clone(),
                 symbol: None,
+                links: Vec::new(),
                 files: Vec::new(),
                 content: Default::default(),
                 format: FrontendBlockFormat::PlainText,
@@ -545,6 +560,7 @@ impl EventMsg {
                 title: "Turn aborted".into(),
                 text: turn.reason.clone(),
                 symbol: None,
+                links: Vec::new(),
                 files: Vec::new(),
                 content: Default::default(),
                 format: FrontendBlockFormat::PlainText,
@@ -561,6 +577,7 @@ impl EventMsg {
                     title: "Reconnecting…".into(),
                     text: String::new(),
                     symbol: None,
+                    links: Vec::new(),
                     files: Vec::new(),
                     content: Default::default(),
                     format: FrontendBlockFormat::PlainText,
@@ -577,6 +594,7 @@ impl EventMsg {
                 title: "Searching the web".into(),
                 text: String::new(),
                 symbol: Some(FrontendSymbol::Search),
+                links: Vec::new(),
                 files: Vec::new(),
                 content: Default::default(),
                 format: FrontendBlockFormat::PlainText,
@@ -622,6 +640,7 @@ impl EventMsg {
                     title: title.into(),
                     text,
                     symbol: Some(FrontendSymbol::Search),
+                    links: Vec::new(),
                     files: Vec::new(),
                     content: Default::default(),
                     format: FrontendBlockFormat::PlainText,

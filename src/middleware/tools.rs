@@ -1354,6 +1354,7 @@ impl Middleware for Tools {
                 title: text::DEFINITION.render_load.clone(),
                 text: load.tools.join("\n"),
                 symbol: None,
+                links: Vec::new(),
                 files: Vec::new(),
                 content: Default::default(),
                 format: FrontendBlockFormat::PlainText,
@@ -1394,6 +1395,7 @@ pub(crate) fn render_tool_event(
                 title: heading.title,
                 text: formatted_tool_text(&heading.detail),
                 symbol: None,
+                links: Vec::new(),
                 files: Vec::new(),
                 content: Default::default(),
                 format: FrontendBlockFormat::PlainText,
@@ -1416,6 +1418,7 @@ pub(crate) fn render_tool_event(
                     output
                 },
                 symbol: None,
+                links: Vec::new(),
                 files: Vec::new(),
                 content: if result.output.files().next().is_some() {
                     result.output.clone()
@@ -1446,6 +1449,7 @@ struct ToolSpec {
     tool: ToolDefinition,
     title: String,
     detail: String,
+    link_path: Option<String>,
     group: Option<String>,
     prompt: Option<String>,
 }
@@ -1457,6 +1461,13 @@ impl ToolSpec {
             |name| name == self.tool.name,
             |_, arguments| labeled_tool_heading(&self.title, &self.detail, arguments),
         )?;
+        if let EventMsg::ToolCallBegin(call) = event
+            && let Some(key) = &self.link_path
+            && let Some(path) = call.arguments.get(key).and_then(Value::as_str)
+            && let Some(link) = file_link(path)
+        {
+            block.links.push(link);
+        }
         if let Some(group) = &self.group {
             let turn_id = match event {
                 EventMsg::ToolCallBegin(call) => &call.turn_id,
@@ -1467,6 +1478,19 @@ impl ToolSpec {
         }
         Some(block)
     }
+}
+
+fn file_link(path: &str) -> Option<crate::protocol::FrontendLink> {
+    let file = std::path::Path::new(path);
+    let label = file.file_name()?.to_string_lossy().into_owned();
+    let href = if file.is_absolute() {
+        reqwest::Url::from_file_path(file).ok()?.to_string()
+    } else {
+        let mut url = reqwest::Url::parse("file:///").ok()?;
+        url.path_segments_mut().ok()?.push(path);
+        url.path().strip_prefix('/')?.to_owned()
+    };
+    Some(crate::protocol::FrontendLink { label, href })
 }
 
 impl From<&str> for ToolHeading {

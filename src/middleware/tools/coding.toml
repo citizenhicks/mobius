@@ -3,6 +3,7 @@
 [read_file]
 title = "Read"
 detail = "path"
+link_path = "path"
 group = "read"
 
 [read_file.tool]
@@ -62,6 +63,7 @@ enum = ["auto", "low", "high"]
 [write_file]
 title = "Write"
 detail = "path"
+link_path = "path"
 
 [write_file.tool]
 name = "write_file"

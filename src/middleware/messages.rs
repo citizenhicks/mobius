@@ -265,6 +265,7 @@ impl Middleware for Messages {
             title: format!("Message received from @{handle}"),
             text: message.text.clone(),
             symbol: Some(symbol.clone().unwrap_or(FrontendSymbol::Chat)),
+            links: Vec::new(),
             files: Vec::new(),
             content: Default::default(),
             format: FrontendBlockFormat::PlainText,

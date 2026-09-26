@@ -133,6 +133,7 @@ impl MiddlewareCommandOutput {
                 title,
                 text: String::new(),
                 symbol: None,
+                links: Vec::new(),
                 files: Vec::new(),
                 content: Default::default(),
                 format: crate::protocol::FrontendBlockFormat::PlainText,

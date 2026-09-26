@@ -229,3 +229,72 @@ fn tool_load_uses_the_standard_tool_presentation() {
         )
     );
 }
+
+#[test]
+fn coding_file_links_come_from_owned_arguments_and_keep_bodies_unchanged() {
+    let tools = Tools::coding(crate::backend::session_files::SessionFileStore::new(
+        tempfile::tempdir().expect("files").path(),
+    ));
+    for (name, title, path) in [
+        ("read_file", "Read", "src/test #é.rs"),
+        ("write_file", "Write", "/workspace/test #é.rs"),
+    ] {
+        let block = tools
+            .render(
+                &EventMsg::ToolCallBegin(crate::protocol::ToolCallBeginEvent {
+                    turn_id: "turn".into(),
+                    call_id: "call".into(),
+                    name: name.into(),
+                    arguments: serde_json::json!({"path":path,"content":"unchanged"}),
+                }),
+                "session",
+            )
+            .expect("file rendering");
+        assert_eq!(block.title, title);
+        assert_eq!(block.text, path);
+        assert_eq!(block.links.len(), 1);
+        assert_eq!(block.links[0].label, "test #é.rs");
+        let uri = reqwest::Url::parse("file:///")
+            .unwrap()
+            .join(&block.links[0].href)
+            .unwrap();
+        let decoded = uri.to_file_path().unwrap();
+        assert_eq!(
+            decoded.to_string_lossy(),
+            if path.starts_with('/') {
+                path.into()
+            } else {
+                format!("/{path}")
+            }
+        );
+        let mut serialized = serde_json::to_value(&block).unwrap();
+        assert_eq!(
+            serde_json::from_value::<FrontendBlock>(serialized.clone())
+                .unwrap()
+                .links,
+            block.links
+        );
+        serialized.as_object_mut().unwrap().remove("links");
+        assert!(
+            serde_json::from_value::<FrontendBlock>(serialized)
+                .unwrap()
+                .links
+                .is_empty()
+        );
+    }
+    let generic = render_tool_event(
+        &EventMsg::ToolCallBegin(crate::protocol::ToolCallBeginEvent {
+            turn_id: "turn".into(),
+            call_id: "other".into(),
+            name: "other_tool".into(),
+            arguments: serde_json::json!({"path":"unrelated.txt"}),
+        }),
+        |_| true,
+        |_, _| "Other".into(),
+    )
+    .unwrap();
+    assert!(
+        generic.links.is_empty(),
+        "generic rendering must not infer file semantics"
+    );
+}

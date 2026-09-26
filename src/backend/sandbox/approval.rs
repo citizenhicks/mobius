@@ -123,6 +123,7 @@ impl Approval {
                 title: "Approval required".into(),
                 text: format!("{}\n{}", request.reason, approval_tools(&request.calls)),
                 symbol: None,
+                links: Vec::new(),
                 files: Vec::new(),
                 content: Default::default(),
                 format: crate::protocol::FrontendBlockFormat::PlainText,
