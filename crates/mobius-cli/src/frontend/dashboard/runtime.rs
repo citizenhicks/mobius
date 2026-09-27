@@ -24,8 +24,8 @@ use super::view::{dashboard_areas, render};
 use crate::frontend::bots;
 use crate::frontend::setup::{self, SetupMode};
 use crate::frontend::terminal::{INPUT_POLL, MAX_INPUT_BATCH, poll_event, terminal_text};
-use crate::gateway_accounts::{configured_token, dashboard_gateway_endpoint};
 use crate::gateway_error;
+use mobius_gateway::gateway_accounts::{configured_token, dashboard_gateway_endpoint};
 
 pub(super) async fn connect(
     state_dir: PathBuf,

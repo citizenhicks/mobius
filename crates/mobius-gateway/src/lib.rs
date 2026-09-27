@@ -9,6 +9,8 @@ pub mod command;
 mod computer_runtime;
 pub mod config;
 mod extensions;
+/// Shared saved gateway accounts and endpoint selection.
+pub mod gateway_accounts;
 mod host;
 mod middleware_manifest;
 mod provider_catalog;

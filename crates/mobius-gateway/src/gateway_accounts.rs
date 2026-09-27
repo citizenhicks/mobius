@@ -5,10 +5,10 @@ use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
-use mobius_gateway::auth::MAX_CLIENT_CREDENTIAL_BYTES as MAX_TOKEN_BYTES;
-use mobius_gateway::client::{Endpoint, token_from_env};
-use mobius_gateway::config::{ConfigStore, GatewayConfig};
-use mobius_gateway::{Error, Result};
+use crate::auth::MAX_CLIENT_CREDENTIAL_BYTES as MAX_TOKEN_BYTES;
+use crate::client::{Endpoint, token_from_env};
+use crate::config::{ConfigStore, GatewayConfig};
+use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 
 const MAX_STORE_BYTES: usize = 64 * 1024;
@@ -404,8 +404,7 @@ mod tests {
     fn local_gateway_config_rejects_a_different_saved_endpoint() {
         let directory = tempfile::tempdir().expect("gateway state parent");
         let state = directory.path().join("gateway");
-        mobius_gateway::command::initialize_quick_cloudflare(state.clone())
-            .expect("initialize gateway");
+        crate::command::initialize_quick_cloudflare(state.clone()).expect("initialize gateway");
         let endpoint = endpoint("tcp://127.0.0.1:9999");
 
         let error = validate_local_gateway_config(&state, &endpoint, true)

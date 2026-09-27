@@ -2,9 +2,9 @@
 use std::path::PathBuf;
 
 use clap::Parser as _;
-use mobius_cli::gateway_accounts::GatewayAccounts;
 use mobius_gateway::client::Endpoint;
 use mobius_gateway::command::{FrontendCommand, GatewayCli};
+use mobius_gateway::gateway_accounts::GatewayAccounts;
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {

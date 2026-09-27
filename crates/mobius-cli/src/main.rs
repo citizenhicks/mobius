@@ -15,13 +15,13 @@ use mobius::protocol::MAX_MESSAGE_BYTES;
 use mobius::{Error, Result};
 use mobius_cli::command::{Cli, Command as CliCommand};
 use mobius_cli::frontend::{self, FrontendExit};
-use mobius_cli::gateway_accounts::{
-    GatewayAccounts, configured_endpoint, configured_token, missing_local_token,
-    validate_local_gateway_config,
-};
 use mobius_cli::gateway_error;
 use mobius_gateway::client::{Endpoint, GatewayClient, GatewayEvents, GatewaySender};
 use mobius_gateway::config::state_dir;
+use mobius_gateway::gateway_accounts::{
+    GatewayAccounts, configured_endpoint, configured_token, missing_local_token,
+    validate_local_gateway_config,
+};
 use mobius_gateway::wire::{
     BotRecord, ClientKind, ClientMessage, ReadyPayload, ServerFrame, ServerMessage,
     SessionActivityState, SessionReadyPayload, SessionRecord,
