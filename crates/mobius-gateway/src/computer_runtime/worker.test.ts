@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 const COMPUTER_WORKER = readFileSync(new URL("worker.cjs", import.meta.url), "utf8");
 
 type Part = { type: "text"; text: string } | { type: "image"; path: string; detail: string };
-type Observation = { content: Part[]; is_error: boolean };
+type Observation = { content: Part[]; is_error: boolean; devtools?: string };
 type Evaluate = (code: string) => Promise<Observation>;
 const runtime = process.env.MOBIUS_COMPUTER_RUNTIME;
 
@@ -103,7 +103,12 @@ test("computer runtime preserves variables, ordered snapshots, and the original 
 
 test("browser action failure captures fresh state without replay, exceeding capture deadlines, or leaking late output", { skip: !runtime, timeout: 20000 }, t => withWorker(t.signal, async evaluate => {
   const html = `<form onsubmit="event.preventDefault(); window.submissions=(window.submissions||0)+1; document.getElementById('result').textContent='Saved: '+this.elements.q.value"><label>Search<input name=q></label></form><p id=result></p>`;
-  assert.equal((await evaluate(`var page=await getPage(); await page.setContent(${JSON.stringify(html)});`)).is_error, false);
+  assert.equal((await evaluate("0")).devtools, undefined);
+  const started = await evaluate(`var page=await getPage(); await page.setContent(${JSON.stringify(html)});`);
+  assert.equal(started.is_error, false);
+  assert.match(started.devtools!, /^http:\/\/127\.0\.0\.1:[1-9]\d*$/);
+  const tabs = await fetch(started.devtools + "/json/list", { signal: t.signal }).then(response => response.json());
+  assert.equal(tabs.filter(tab => tab.type === "page" && tab.url === "about:blank").length, 1);
   const failure = await evaluate("await page.getByRole('textbox',{name:'Search'}).fill('möbius'); await page.getByRole('textbox',{name:'Search'}).press('Enter'); console.log('x'.repeat(40000)); await page.getByRole('button',{name:'Temporary suggestion'}).click({timeout:80});");
   assert.equal(failure.is_error, true);
   assert.match(text(failure), /Failure: action_timeout; session state: retained/);
@@ -122,7 +127,7 @@ test("browser action failure captures fresh state without replay, exceeding capt
   assert.match(text(captureDeadline), /Failure screenshot unavailable: capture deadline expired/);
   assert.match(text(captureDeadline), /heading "Other"/);
   const next = await evaluate("page.screenshot=originalCapture; await require('node:timers/promises').setTimeout(1000); console.log('clean next evaluation');");
-  assert.deepEqual(next, { content: [{ type: "text", text: "clean next evaluation" }], is_error: false });
+  assert.deepEqual(next, { content: [{ type: "text", text: "clean next evaluation" }], is_error: false, devtools: started.devtools });
 
   const fullImages = await evaluate("for(var i=0;i<16;i++){await screenshot();} throw new Error('after captures');");
   assert.equal(images(fullImages).length, 16);
@@ -131,6 +136,7 @@ test("browser action failure captures fresh state without replay, exceeding capt
   assert.notDeepEqual(await readFile(images(fullImages)[0].path), await readFile(images(fullImages).at(-1)!.path));
   const lost = await evaluate("await page.context().browser().close(); throw new Error('browser disconnected');");
   assert.match(text(lost), /Failure: browser_lost; session state: lost; interpreter state: retained/);
+  assert.equal(lost.devtools, undefined);
 }));
 
 

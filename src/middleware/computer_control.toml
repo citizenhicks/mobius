@@ -1,4 +1,7 @@
 default_enabled = false
+browser_label = "Browser"
+browser_title = "Agent browser"
+browser_notice = "The agent's browser is running. Watch it from möbius on the computer running this gateway."
 manifest_label = "Computer control"
 manifest_description = "Operate a browser and supported native apps with persistent JavaScript and image observations"
 prompt = "Computer control is available. Read {documentation} before using computer_control. Browser state and JavaScript variables survive context compaction. Action failures can retain interpreter state; follow the reported state. An overall evaluation deadline, cancellation, or runtime restart loses interpreter state and may leave an action completed; never repeat it automatically. Child agents have independent browser contexts."

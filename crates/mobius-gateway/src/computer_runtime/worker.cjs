@@ -94,10 +94,22 @@ function emitImage(source, detail = 'auto') {
   content.push({type:'image', path:destination, detail});
   imageCount += 1;
 }
+// A loopback DevTools port so a möbius app on this machine can watch and share the page.
+let devtools;
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const server = require('node:net').createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => { const {port} = server.address(); server.close(() => resolve(port)); });
+  });
+}
 async function getPage() {
   if (!page) {
     const { chromium } = require('playwright');
-    connection = await chromium.launch({headless:true});
+    // Without a loopback port (a sandbox without network) the browser still runs, unwatched.
+    const port = await freePort().catch(() => undefined);
+    connection = await chromium.launch(port ? {headless:true, args:['--remote-debugging-address=127.0.0.1', '--remote-debugging-port=' + port]} : {headless:true});
+    devtools = port && 'http://127.0.0.1:' + port;
     const context = await connection.newContext({viewport:{width:1365,height:768}, deviceScaleFactor:1});
     page = await context.newPage();
     page.setDefaultTimeout(10000);
@@ -198,7 +210,8 @@ async function main() {
       await inspector.post('Runtime.releaseObjectGroup', {objectGroup:'evaluation'}).catch(()=>{});
     }
     active = false;
-    const response = Buffer.from(JSON.stringify({content,is_error}));
+    const live = connection?.isConnected() ? devtools : undefined;
+    const response = Buffer.from(JSON.stringify(live ? {content,is_error,devtools:live} : {content,is_error}));
     if (response.length > MAX_FRAME) throw new Error('response frame exceeds limit');
     writeFrame(response);
   }
