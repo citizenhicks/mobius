@@ -7,7 +7,6 @@ use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use futures_util::StreamExt as _;
 use rustls::ClientConfig;
 use rustls::RootCertStore;
 use rustls::pki_types::ServerName;
@@ -15,16 +14,20 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio_rustls::TlsConnector;
+use tokio_tungstenite::connect_async_with_config;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
 use tokio_tungstenite::tungstenite::http::uri::Authority;
+use tokio_tungstenite::tungstenite::http::{
+    HeaderValue, Request,
+    header::{AUTHORIZATION, SEC_WEBSOCKET_PROTOCOL},
+};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async_with_config};
 
 #[cfg(unix)]
 use crate::wire::read_frame_with_limit;
 use crate::wire::{
-    ClientFrame, ClientKind, ClientMessage, FrameReader, MAX_FRAME_BYTES, ServerFrame,
-    ServerMessage, framed_to_websocket, read_frame, validate_version, websocket_error,
-    websocket_to_framed, write_frame,
+    ClientFrame, ClientKind, ClientMessage, FrameReader, ServerFrame, ServerMessage, read_frame,
+    validate_version, websocket_error, write_frame,
 };
 use crate::{Error, Result};
 
@@ -37,7 +40,6 @@ trait Transport: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T> Transport for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
 
 type BoxedTransport = Box<dyn Transport>;
-type GatewayWebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// Validated plaintext-loopback, authenticated-root TLS, or WSS endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +47,7 @@ pub struct Endpoint {
     security: Security,
     host: String,
     port: u16,
+    websocket_authorization: Option<HeaderValue>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,15 +114,38 @@ impl Endpoint {
         matches!(self.security, Security::WebSocketTls)
     }
 
+    /// Adds a bearer credential to the secure WebSocket upgrade only.
+    /// The caller must verify that this endpoint is trusted to receive the credential.
+    /// Gateway protocol authentication remains separate.
+    /// # Errors
+    ///
+    /// Returns an error for other transports or an invalid bearer credential.
+    pub fn with_websocket_bearer(mut self, token: &str) -> Result<Self> {
+        if !self.is_websocket()
+            || token.is_empty()
+            || token.bytes().any(|byte| !byte.is_ascii_graphic())
+        {
+            return Err(Error::Config(
+                "invalid secure WebSocket bearer credential".into(),
+            ));
+        }
+        let mut value = HeaderValue::from_str(&format!("Bearer {token}"))
+            .map_err(|_| Error::Config("invalid secure WebSocket bearer credential".into()))?;
+        value.set_sensitive(true);
+        self.websocket_authorization = Some(value);
+        Ok(self)
+    }
+
     /// Returns the validated endpoint host for server-side routing policy.
     #[must_use]
     pub(crate) fn host(&self) -> &str {
         &self.host
     }
 
-    async fn connect(&self) -> Result<BoxedTransport> {
+    async fn connect(&self, credential: &str) -> Result<BoxedTransport> {
         if self.is_websocket() {
-            return self.connect_websocket().await;
+            crate::channel::credential_key(credential)?;
+            return self.connect_websocket(credential).await;
         }
         let address = format_address(&self.host, self.port);
         let stream = TcpStream::connect(&address).await?;
@@ -226,18 +252,64 @@ impl Endpoint {
         Err(Error::Protocol("gateway did not report its version".into()))
     }
 
-    async fn connect_websocket(&self) -> Result<BoxedTransport> {
+    async fn connect_websocket(&self, credential: &str) -> Result<BoxedTransport> {
         let config = WebSocketConfig::default()
-            .max_message_size(Some(MAX_FRAME_BYTES))
-            .max_frame_size(Some(MAX_FRAME_BYTES));
-        let (websocket, _) = connect_async_with_config(self.to_string(), Some(config), false)
-            .await
-            .map_err(websocket_error)?;
+            .max_message_size(Some(crate::channel::MAX_RECORD))
+            .max_frame_size(Some(crate::channel::MAX_RECORD));
+        let (mut websocket, response) =
+            connect_async_with_config(self.websocket_request()?, Some(config), false)
+                .await
+                .map_err(|error| match error {
+                    tokio_tungstenite::tungstenite::Error::Http(response)
+                        if self.websocket_authorization.is_some()
+                            && matches!(response.status().as_u16(), 401 | 403) =>
+                    {
+                        Error::Config(
+                            "gateway access was denied; sign in to the gateway service again"
+                                .into(),
+                        )
+                    }
+                    error => websocket_error(error),
+                })?;
+        if response
+            .headers()
+            .get(SEC_WEBSOCKET_PROTOCOL)
+            .and_then(|value| value.to_str().ok())
+            != Some(crate::channel::SUBPROTOCOL)
+        {
+            return Err(Error::Config(
+                "gateway does not support the encrypted WebSocket protocol; update the gateway"
+                    .into(),
+            ));
+        }
+        let state = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            crate::channel::client_handshake(&mut websocket, credential),
+        )
+        .await
+        .map_err(|_| Error::Unauthorized)??;
         let (transport, bridge) = tokio::io::duplex(WEBSOCKET_BRIDGE_BYTES);
         tokio::spawn(async move {
-            let _result = bridge_websocket(websocket, bridge).await;
+            let _result = crate::channel::bridge(websocket, state, bridge).await;
         });
         Ok(Box::new(transport))
+    }
+
+    fn websocket_request(&self) -> Result<Request<()>> {
+        let mut request = self
+            .to_string()
+            .into_client_request()
+            .map_err(websocket_error)?;
+        request.headers_mut().insert(
+            SEC_WEBSOCKET_PROTOCOL,
+            HeaderValue::from_static(crate::channel::SUBPROTOCOL),
+        );
+        if let Some(authorization) = &self.websocket_authorization {
+            request
+                .headers_mut()
+                .insert(AUTHORIZATION, authorization.clone());
+        }
+        Ok(request)
     }
 }
 
@@ -294,6 +366,7 @@ impl FromStr for Endpoint {
             security,
             host: host.into(),
             port,
+            websocket_authorization: None,
         })
     }
 }
@@ -319,18 +392,6 @@ impl fmt::Display for Endpoint {
     }
 }
 
-async fn bridge_websocket(
-    websocket: GatewayWebSocket,
-    bridge: tokio::io::DuplexStream,
-) -> Result<()> {
-    let (outgoing, incoming) = websocket.split();
-    let (reader, writer) = tokio::io::split(bridge);
-    tokio::select! {
-        result = websocket_to_framed(incoming, writer) => result,
-        result = framed_to_websocket(reader, outgoing) => result,
-    }
-}
-
 impl GatewayClient {
     /// Authenticates an existing client and leaves the gateway Ready frame for `events`.
     /// # Errors
@@ -341,15 +402,13 @@ impl GatewayClient {
         token: impl Into<String>,
         client_kind: ClientKind,
     ) -> Result<Self> {
-        let transport = endpoint.connect().await?;
+        let token = token.into();
+        let transport = endpoint.connect(&token).await?;
         let (reader, writer) = tokio::io::split(transport);
         let client = Self::from_parts(reader, writer);
         client
             .sender
-            .write(ClientMessage::Authenticate {
-                token: token.into(),
-                client_kind,
-            })
+            .write(ClientMessage::Authenticate { token, client_kind })
             .await?;
         client.expect_authenticated().await
     }
@@ -364,13 +423,14 @@ impl GatewayClient {
         client_label: impl Into<String>,
         client_kind: ClientKind,
     ) -> Result<(Self, PairedClient)> {
-        let transport = endpoint.connect().await?;
+        let code = code.into();
+        let transport = endpoint.connect(&code).await?;
         let (reader, writer) = tokio::io::split(transport);
         let mut client = Self::from_parts(reader, writer);
         client
             .sender
             .write(ClientMessage::Pair {
-                code: code.into(),
+                code,
                 client_label: client_label.into(),
                 client_kind,
             })
@@ -568,6 +628,69 @@ fn format_address(host: &str, port: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn websocket_admission_is_sensitive_and_separate_from_the_endpoint() {
+        let endpoint: Endpoint = "wss://gateway.example".parse().expect("endpoint");
+        assert!(
+            !endpoint
+                .websocket_request()
+                .expect("request")
+                .headers()
+                .contains_key(AUTHORIZATION)
+        );
+        let endpoint = endpoint
+            .with_websocket_bearer("cloud-secret")
+            .expect("bearer");
+        let request = endpoint.websocket_request().expect("request");
+        assert_eq!(request.headers()[AUTHORIZATION], "Bearer cloud-secret");
+        assert!(request.headers()[AUTHORIZATION].is_sensitive());
+        assert_eq!(endpoint.to_string(), "wss://gateway.example");
+        assert!(!format!("{endpoint:?} {request:?}").contains("cloud-secret"));
+        for invalid in ["", "two words", "secret\r\nInjected: value", "nonascii-é"] {
+            assert!(endpoint.clone().with_websocket_bearer(invalid).is_err());
+        }
+        assert!(
+            "tcp://127.0.0.1:8741"
+                .parse::<Endpoint>()
+                .expect("loopback")
+                .with_websocket_bearer("secret")
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_redirects_are_rejected_without_exposing_response_secrets() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let endpoint = "wss://gateway.example"
+            .parse::<Endpoint>()
+            .expect("endpoint")
+            .with_websocket_bearer("cloud-secret")
+            .expect("bearer");
+        let (client, mut server) = tokio::io::duplex(2048);
+        let response = tokio::spawn(async move {
+            let mut headers = Vec::new();
+            while !headers.ends_with(b"\r\n\r\n") {
+                headers.push(server.read_u8().await.expect("request header"));
+            }
+            assert!(
+                String::from_utf8(headers)
+                    .expect("headers")
+                    .contains("Bearer cloud-secret")
+            );
+            server.write_all(b"HTTP/1.1 302 Found\r\nLocation: https://evil.example\r\nContent-Length: 12\r\n\r\ncloud-secret")
+                .await.expect("redirect response");
+        });
+        let error =
+            tokio_tungstenite::client_async(endpoint.websocket_request().expect("request"), client)
+                .await
+                .expect_err("a redirect must not follow the bearer");
+        let error = websocket_error(error).to_string();
+        assert!(error.contains("HTTP 302"));
+        assert!(!error.contains("cloud-secret"));
+        response.await.expect("server");
+    }
 
     #[tokio::test(start_paused = true)]
     async fn timed_out_writer_cannot_send_another_frame() {

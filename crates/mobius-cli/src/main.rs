@@ -184,11 +184,12 @@ fn output_text(value: &str, terminal: bool) -> String {
 }
 
 async fn pair(endpoint: &Endpoint, code: &str) -> std::result::Result<(), mobius_gateway::Error> {
+    let endpoint = mobius_cli::authenticated_endpoint(endpoint.clone())?;
     let mut accounts = GatewayAccounts::load()?;
     accounts.prepare()?;
     let (_client, paired) =
-        GatewayClient::pair(endpoint, code, "mobius-cli", ClientKind::Cli).await?;
-    accounts.add(endpoint, paired.token)?;
+        GatewayClient::pair(&endpoint, code, "mobius-cli", ClientKind::Cli).await?;
+    accounts.add(&endpoint, paired.token)?;
     accounts.save()?;
     println!("paired {} · token saved", paired.client_id);
     Ok(())
@@ -281,7 +282,9 @@ async fn connect(
 }
 
 async fn connect_gateway() -> Result<(GatewaySender, GatewayEvents, ReadyPayload, bool, Endpoint)> {
-    let endpoint = configured_endpoint().map_err(gateway_error)?;
+    let endpoint =
+        mobius_cli::authenticated_endpoint(configured_endpoint().map_err(gateway_error)?)
+            .map_err(gateway_error)?;
     // ponytail: TLS gateways skip local `@` scanning; use a gateway-backed inventory if needed.
     let local_gateway = endpoint.is_plaintext();
     let token = configured_token(&endpoint).map_err(gateway_error)?;

@@ -186,6 +186,7 @@ pub(crate) async fn assemble(
     session_files: SessionFileStore,
     discovery_gate: Arc<tokio::sync::Mutex<()>>,
     desktop: Arc<crate::computer_runtime::desktop::DesktopControl>,
+    browser: Arc<crate::computer_runtime::browser::BrowserHost>,
     session_id: Option<String>,
     origin_label: &str,
     prepared: Arc<PreparedBot>,
@@ -259,6 +260,7 @@ pub(crate) async fn assemble(
                 COMMAND_TIMEOUT,
             )?
             .with_desktop(desktop)
+            .with_browser(browser)
             .allow_attached_folders(attached_folders.iter().cloned())?
             .allow_read_roots(read_roots)?,
         );

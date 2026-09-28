@@ -53,13 +53,16 @@ pub(crate) async fn run(terminal: &mut GatewayTerminal, connected: &str) -> Resu
                 Ok(Action::Cancel) => return Ok(false),
                 Ok(Action::Reconnect) => return Ok(true),
                 Ok(Action::Pair) => {
-                    let (endpoint, code) = match state.pairing_request() {
-                        Ok(request) => request,
-                        Err(error) => {
-                            state.error = Some(error.to_string());
-                            continue;
-                        }
-                    };
+                    let (endpoint, code) =
+                        match state.pairing_request().and_then(|(endpoint, code)| {
+                            crate::authenticated_endpoint(endpoint).map(|endpoint| (endpoint, code))
+                        }) {
+                            Ok(request) => request,
+                            Err(error) => {
+                                state.error = Some(error.to_string());
+                                continue;
+                            }
+                        };
                     if let Err(error) = state.accounts.prepare() {
                         state.error = Some(error.to_string());
                         continue;

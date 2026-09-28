@@ -8,7 +8,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use futures_util::{Sink, SinkExt as _, Stream, StreamExt as _};
 use mobius::backend::checkpoint::StreamMetrics;
 use mobius::backend::model::provider::{HostedWebSearch, UsageLimit};
 use mobius::protocol::{
@@ -22,15 +21,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use tokio_tungstenite::tungstenite::error::Error as WebSocketError;
-use tokio_tungstenite::tungstenite::protocol::Message;
 
 use crate::{Error, Result};
 
 use self::codec::deserialize_frame;
 pub use self::codec::{FrameReader, read_frame, validate_version, write_frame};
 pub(crate) use self::codec::{
-    SharedFrame, framed_to_websocket, read_frame_with_limit, validate_session_id, websocket_error,
-    websocket_to_framed,
+    SharedFrame, read_frame_with_limit, validate_session_id, websocket_error,
 };
 pub use self::messages::{
     ClientFrame, ClientMessage, GatewayResponseError, ServerFrame, ServerMessage,
@@ -60,10 +57,9 @@ mod base64_bytes {
 }
 
 /// Current gateway protocol version.
-pub const PROTOCOL_VERSION: u16 = 85;
+pub const PROTOCOL_VERSION: u16 = 86;
 /// Maximum encoded JSON payload accepted in one frame.
 pub const MAX_FRAME_BYTES: usize = 50 * 1024 * 1024;
-const WEBSOCKET_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[cfg(test)]

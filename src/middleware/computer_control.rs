@@ -298,7 +298,10 @@ impl Tool for Evaluate {
                     "computer code or timeout exceeds its limit".into(),
                 ));
             }
-            let request = serde_json::to_vec(&serde_json::json!({"code":args.code}))?;
+            // A page lent by the Mac app's browser stands in for the worker's own.
+            let browser = context.sandbox.browser_page(&context.permissions).await;
+            let request =
+                serde_json::to_vec(&serde_json::json!({"code": args.code, "browser": browser}))?;
             let mut evaluation = EvaluationGuard(Some(self));
             let output = context
                 .sandbox
@@ -478,6 +481,51 @@ mod tests {
                 matches!(&events[1], FrontendEvent::RemoveWidget { id, .. } if id == BROWSER_WIDGET)
             );
         }
+    }
+
+    #[tokio::test]
+    async fn the_worker_is_told_whether_a_browser_page_is_lent() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let state = tempfile::tempdir().expect("state");
+        // Echoes the evaluation request back as the observation's text.
+        let echo = "import sys,struct,json; n=struct.unpack('>I',sys.stdin.buffer.read(4))[0]; request=sys.stdin.buffer.read(n).decode(); data=json.dumps({'content':[{'type':'text','text':request}],'is_error':False}).encode(); sys.stdout.buffer.write(struct.pack('>I',len(data))+data); sys.stdout.buffer.flush()";
+        let tool = Evaluate {
+            files: SessionFileStore::new(state.path()),
+            worker: WorkerCommand {
+                executable: "/usr/bin/python3".into(),
+                arguments: vec!["-c".into(), echo.into()],
+            },
+            session_id: "session".into(),
+            frontend: Arc::new(|_| Ok(())),
+            browser: std::sync::Mutex::new(None),
+        };
+        let sandbox = Arc::new(Sandbox::new(
+            Arc::new(LocalSandbox::new(workspace.path()).expect("sandbox")),
+            ApprovalPolicy::Ask,
+        ));
+        let permissions = SandboxPermissions::restore(
+            "session",
+            SandboxMode::WorkspaceWrite,
+            NetworkAccess::Allowed,
+            ["call".into()],
+        )
+        .for_call("call");
+        let result = tool
+            .call(
+                ToolContext::new(sandbox, permissions, "turn"),
+                serde_json::json!({"code":"await getPage()"}),
+            )
+            .await
+            .expect("echoed request");
+        let request: Value = serde_json::from_str(&result.content.text()).expect("request JSON");
+        assert_eq!(request["code"], "await getPage()");
+        // A local sandbox lends no page, so the worker runs its own browser.
+        assert_eq!(request["browser"], Value::Null);
+        assert!(
+            request
+                .as_object()
+                .is_some_and(|request| request.contains_key("browser"))
+        );
     }
 
     #[tokio::test]

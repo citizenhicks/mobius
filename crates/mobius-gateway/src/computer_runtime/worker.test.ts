@@ -5,11 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { createConnection, createServer } from "node:net";
 const COMPUTER_WORKER = readFileSync(new URL("worker.cjs", import.meta.url), "utf8");
 
 type Part = { type: "text"; text: string } | { type: "image"; path: string; detail: string };
 type Observation = { content: Part[]; is_error: boolean; devtools?: string };
-type Evaluate = (code: string) => Promise<Observation>;
+type Evaluate = (code: string, browser?: string) => Promise<Observation>;
 const runtime = process.env.MOBIUS_COMPUTER_RUNTIME;
 
 async function withWorker(signal: AbortSignal, run: (evaluate: Evaluate, directory: string) => Promise<void>, host?: (request: any) => unknown) {
@@ -32,8 +34,8 @@ async function withWorker(signal: AbortSignal, run: (evaluate: Evaluate, directo
   signal.addEventListener("abort", kill, { once: true });
   const output = child.stdout[Symbol.asyncIterator]();
   let buffer = Buffer.alloc(0);
-  async function evaluate(code: string): Promise<Observation> {
-    const payload = Buffer.from(JSON.stringify({ code }));
+  async function evaluate(code: string, browser?: string): Promise<Observation> {
+    const payload = Buffer.from(JSON.stringify({ code, browser }));
     const header = Buffer.alloc(4);
     header.writeUInt32BE(payload.length);
     child.stdin.write(Buffer.concat([header, payload]));
@@ -185,4 +187,45 @@ test("large native replies preserve every screenshot byte across pipe chunks and
     }
     assert.equal(text(await evaluate("6 * 7")), "42");
   }, () => ({ result: { screenshotId: "observed", png: png.toString("base64") } }));
+});
+
+test("a page lent by the Mac app is driven in place, then released without closing it", { skip: !runtime, timeout: 30000 }, async t => {
+  // A Chromium on a Unix socket stands in for the app's page endpoint.
+  process.env.PLAYWRIGHT_BROWSERS_PATH ??= join(runtime!, "browsers");
+  const { chromium } = createRequire(join(runtime!, "node_modules/"))("playwright");
+  const directory = await mkdtemp(join(tmpdir(), "mobius-lent-"));
+  const app = await chromium.launchPersistentContext(join(directory, "profile"), { headless: true, args: ["--remote-debugging-port=0"] });
+  const [port, path] = (await readFile(join(directory, "profile", "DevToolsActivePort"), "utf8")).trim().split("\n");
+  const socket = join(directory, "lent.sock");
+  const server = createServer(client => {
+    const upstream = createConnection(Number(port), "127.0.0.1");
+    client.pipe(upstream).pipe(client);
+    client.on("error", () => upstream.destroy());
+    upstream.on("error", () => client.destroy());
+  });
+  await new Promise<void>(resolve => server.listen(socket, resolve));
+  const lent = `ws+unix://${socket}:${path}`;
+  try {
+    await withWorker(t.signal, async evaluate => {
+      const driven = await evaluate("var page = await getPage(); await page.setContent('<title>Lent</title>'); await screenshot(); console.log(await page.title())", lent);
+      assert.equal(driven.is_error, false, text(driven));
+      assert.match(text(driven), /Lent/);
+      assert.match(text(driven), /Size: \{"width":\d+,"height":\d+\}/);
+      assert.equal(driven.devtools, undefined, "a lent page is already on the user's screen");
+      assert.equal(await app.pages()[0].title(), "Lent");
+      const rejected = await evaluate("0", "ws://127.0.0.1:9222/devtools/browser/x").catch(error => error);
+      assert.ok(rejected instanceof Error, "only Unix socket endpoints are accepted");
+    });
+    await withWorker(t.signal, async evaluate => {
+      await evaluate("await getPage()", lent);
+      const own = await evaluate("var page = await getPage(); await page.setContent('<title>Own</title>');");
+      assert.equal(own.is_error, false, text(own));
+      assert.match(own.devtools!, /^http:\/\/127\.0\.0\.1:/);
+      assert.equal(await app.pages()[0].title(), "Lent", "releasing the lent page left it open");
+    });
+  } finally {
+    server.close();
+    await app.close();
+    await rm(directory, { recursive: true });
+  }
 });

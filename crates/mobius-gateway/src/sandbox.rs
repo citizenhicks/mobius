@@ -49,8 +49,12 @@ const GIT_ARGUMENTS: [&str; 7] = [
     "-c",
     "core.fsmonitor=false",
 ];
-const GATEWAY_CREDENTIAL_ENVIRONMENT: [&str; 3] =
-    ["MOBIUS_GATEWAY_TOKEN", "TUNNEL_TOKEN", "TUNNEL_TOKEN_FILE"];
+const GATEWAY_CREDENTIAL_ENVIRONMENT: [&str; 4] = [
+    "MOBIUS_GATEWAY_TOKEN",
+    "MOBIUS_GATEWAY_BEARER_TOKEN",
+    "TUNNEL_TOKEN",
+    "TUNNEL_TOKEN_FILE",
+];
 #[cfg(target_os = "linux")]
 const SANDBOX_PROC_ENVIRONMENT: &str = "MOBIUS_GATEWAY_SANDBOX_PROC";
 
@@ -80,6 +84,7 @@ pub struct GatewaySandbox {
     delegate: LocalSandbox,
     full_access_delegate: LocalSandbox,
     desktop: Option<std::sync::Arc<crate::computer_runtime::desktop::DesktopControl>>,
+    browser: Option<std::sync::Arc<crate::computer_runtime::browser::BrowserHost>>,
 }
 
 impl GatewaySandbox {
@@ -140,6 +145,7 @@ impl GatewaySandbox {
             delegate,
             full_access_delegate,
             desktop: None,
+            browser: None,
         })
     }
 
@@ -148,6 +154,14 @@ impl GatewaySandbox {
         desktop: std::sync::Arc<crate::computer_runtime::desktop::DesktopControl>,
     ) -> Self {
         self.desktop = Some(desktop);
+        self
+    }
+
+    pub(crate) fn with_browser(
+        mut self,
+        browser: std::sync::Arc<crate::computer_runtime::browser::BrowserHost>,
+    ) -> Self {
+        self.browser = Some(browser);
         self
     }
 
@@ -243,6 +257,15 @@ impl SandboxBackend for GatewaySandbox {
         })
     }
 
+    fn browser_page<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Option<String>> {
+        Box::pin(async move {
+            match &self.browser {
+                Some(browser) => browser.page(session_id).await,
+                None => None,
+            }
+        })
+    }
+
     fn start_worker(
         &self,
         command: &mobius::backend::sandbox::WorkerCommand,
@@ -263,6 +286,7 @@ impl SandboxBackend for GatewaySandbox {
             delegate,
             full_access_delegate,
             desktop: self.desktop.clone(),
+            browser: self.browser.as_ref().map(std::sync::Arc::clone),
         }))
     }
 
@@ -377,12 +401,45 @@ mod tests {
         );
     }
 
-    #[test]
-    fn gateway_bearer_environment_is_hidden_from_commands() {
-        assert_eq!(
-            GATEWAY_CREDENTIAL_ENVIRONMENT,
-            ["MOBIUS_GATEWAY_TOKEN", "TUNNEL_TOKEN", "TUNNEL_TOKEN_FILE"]
-        );
+    #[tokio::test]
+    async fn gateway_bearer_environment_is_hidden_from_commands() {
+        const TEST: &str = "sandbox::tests::gateway_bearer_environment_is_hidden_from_commands";
+        const TOKEN: &str = "MOBIUS_GATEWAY_BEARER_TOKEN";
+        if std::env::var(TOKEN).as_deref() != Ok("synthetic-admission-secret") {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([TEST, "--exact"])
+                .env(TOKEN, "synthetic-admission-secret")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            return;
+        }
+        let workspace = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let sandbox =
+            GatewaySandbox::new(workspace.path(), state.path(), None, Duration::from_secs(5))
+                .unwrap();
+        for mode in [SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess] {
+            let output = sandbox
+                .execute(
+                    r#"printf '%s' "${MOBIUS_GATEWAY_BEARER_TOKEN+present}""#,
+                    mode,
+                    NetworkAccess::Denied,
+                    CommandMode::Foreground,
+                    CommandOutputSink::default(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(output.exit_code, 0, "{}", output.stderr);
+            assert!(
+                output.stdout.is_empty(),
+                "admission token reached a tool process"
+            );
+        }
     }
 
     #[test]

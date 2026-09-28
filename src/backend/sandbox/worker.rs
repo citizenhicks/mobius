@@ -403,6 +403,10 @@ mod tests {
             })
         }
 
+        fn browser_page<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Option<String>> {
+            Box::pin(async { Some("ws+unix:///lent.sock:/token".into()) })
+        }
+
         fn read<'a>(&'a self, _: &'a str, _: SandboxMode) -> BoxFuture<'a, Result<String>> {
             Box::pin(async { unreachable!() })
         }
@@ -439,6 +443,24 @@ mod tests {
             _: NetworkAccess,
         ) -> Result<WorkerProcess> {
             WorkerProcess::spawn(Command::new(&spec.executable).args(&spec.arguments))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_lent_browser_page_needs_network_access() {
+        let sandbox = Sandbox::new(Arc::new(TestBackend), ApprovalPolicy::Ask);
+        for (network, lent) in [
+            (NetworkAccess::Allowed, true),
+            (NetworkAccess::Denied, false),
+        ] {
+            let permissions = SandboxPermissions::restore(
+                "session",
+                SandboxMode::WorkspaceWrite,
+                network,
+                ["call".into()],
+            )
+            .for_call("call");
+            assert_eq!(sandbox.browser_page(&permissions).await.is_some(), lent);
         }
     }
 

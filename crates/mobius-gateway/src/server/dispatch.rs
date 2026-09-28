@@ -29,6 +29,7 @@ pub(super) struct ConnectionSessionState<'a> {
     pub(super) uploads: &'a mut BTreeMap<(String, String), PendingSessionFileWrite>,
     pub(super) voice: &'a mut Option<super::voice::ConnectionVoice>,
     pub(super) desktop: &'a mut Option<crate::computer_runtime::desktop::DesktopConnection>,
+    pub(super) browser: &'a mut Option<crate::computer_runtime::browser::BrowserConnection>,
 }
 
 pub(super) async fn selected_broadcast(
@@ -629,6 +630,17 @@ pub(super) async fn handle_message(
                 message,
                 &gateway.desktop,
                 connection.desktop,
+                client.local,
+                client.kind,
+                writer,
+            )
+            .await;
+        }
+        ClientMessage::SetBrowserRuntime { .. } | ClientMessage::BrowserPageReply { .. } => {
+            return crate::computer_runtime::browser::handle_message(
+                message,
+                &gateway.browser,
+                connection.browser,
                 client.local,
                 client.kind,
                 writer,
