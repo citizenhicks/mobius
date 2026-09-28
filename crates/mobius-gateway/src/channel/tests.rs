@@ -156,7 +156,8 @@ fn shared_noise_test_vector() {
     assert_eq!(fixture, expected);
 }
 
-#[tokio::test]
+// Keep this in-memory correctness deadline independent of host CPU speed.
+#[tokio::test(start_paused = true)]
 async fn encrypted_records_preserve_maximum_application_frame() {
     let (initiator, responder) = transport_pair();
     let (client_socket, server_socket) = tokio::io::duplex(16 * 1024);
