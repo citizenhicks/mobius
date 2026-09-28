@@ -40,7 +40,7 @@ use uuid::Uuid;
 
 use crate::assembly::{BuiltAgent, assemble};
 use crate::bots::{ActiveRoutineRun, BeginRun, BotStore};
-use crate::computer_runtime::desktop::DesktopControl;
+use crate::computer_runtime::{browser::BrowserHost, desktop::DesktopControl};
 use crate::config::{
     ChatSpec, ConfigStore, CredentialStore, GatewayConfig,
     create_workspace_directory as create_workspace_directory_on_disk,
@@ -95,6 +95,7 @@ type SessionActivities = Arc<Mutex<catalog::SessionCatalog>>;
 #[derive(Clone)]
 pub(crate) struct GatewayHost {
     pub(crate) desktop: Arc<DesktopControl>,
+    pub(crate) browser: Arc<BrowserHost>,
     state: Arc<Mutex<GatewayState>>,
     capacity_gate: Arc<Mutex<()>>,
     events: broadcast::Sender<ServerFrame>,
@@ -218,6 +219,7 @@ impl GatewayHost {
         restore_pending_approval_activities(&checkpoints, &activities).await?;
         let host = Self {
             desktop: Arc::new(DesktopControl::default()),
+            browser: Arc::new(BrowserHost::default()),
             state: Arc::new(Mutex::new(GatewayState {
                 store,
                 config,
@@ -735,6 +737,7 @@ impl GatewayHost {
             Arc::clone(&state.session_mutations),
             Arc::clone(&state.discovery_gate),
             Arc::clone(&self.desktop),
+            Arc::clone(&self.browser),
             Arc::clone(&state.provider_epoch),
             Arc::clone(&state.activities),
             Arc::clone(&self.work_activity),

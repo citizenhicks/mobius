@@ -10,7 +10,7 @@ use serde::Deserialize;
 use tokio::io::{AsyncWriteExt as _, ReadBuf};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio_tungstenite::WebSocketStream;
-use tokio_tungstenite::tungstenite::protocol::{Message, Role};
+use tokio_tungstenite::tungstenite::protocol::Role;
 
 pub(super) const MAX_PRE_AUTH_FRAME_BYTES: usize = 4 * 1024;
 
@@ -158,7 +158,7 @@ impl AsyncRead for PreAuthWebSocket {
                 buffer.put_slice(&[byte]);
                 return Poll::Ready(Ok(()));
             }
-            // The WebSocket is rebuilt with the 50 MiB limit after authentication; do not strand
+            // The encrypted record limit increases after authentication; do not strand
             // bytes from the next message in the old decoder while crossing that boundary.
             let mut byte = [0_u8; 1];
             let mut staged = ReadBuf::new(&mut byte);
@@ -222,7 +222,7 @@ impl Callback for WebSocketUpgradePolicy {
     fn on_request(
         self,
         request: &Request,
-        response: Response,
+        mut response: Response,
     ) -> std::result::Result<Response, ErrorResponse> {
         if request.uri().path_and_query().map(|value| value.as_str()) != Some("/") {
             return Err(websocket_rejection(StatusCode::NOT_FOUND));
@@ -235,6 +235,19 @@ impl Callback for WebSocketUpgradePolicy {
         {
             return Err(websocket_rejection(StatusCode::FORBIDDEN));
         }
+        let mut protocols = request.headers().get_all(SEC_WEBSOCKET_PROTOCOL).iter();
+        if protocols.next().and_then(|value| value.to_str().ok())
+            != Some(crate::channel::SUBPROTOCOL)
+            || protocols.next().is_some()
+        {
+            return Err(websocket_rejection(StatusCode::BAD_REQUEST));
+        }
+        response.headers_mut().insert(
+            SEC_WEBSOCKET_PROTOCOL,
+            crate::channel::SUBPROTOCOL
+                .parse()
+                .expect("static subprotocol is a header value"),
+        );
         Ok(response)
     }
 }
@@ -408,8 +421,12 @@ pub(super) async fn serve_websocket(
         auth_deadline,
     } = handshake;
     let config = WebSocketConfig::default()
-        .max_message_size(Some(MAX_PRE_AUTH_FRAME_BYTES))
-        .max_frame_size(Some(MAX_PRE_AUTH_FRAME_BYTES));
+        .max_message_size(Some(
+            MAX_PRE_AUTH_FRAME_BYTES + 4 + crate::channel::TAG_BYTES,
+        ))
+        .max_frame_size(Some(
+            MAX_PRE_AUTH_FRAME_BYTES + 4 + crate::channel::TAG_BYTES,
+        ));
     let mut websocket = tokio::time::timeout_at(
         auth_deadline,
         accept_hdr_async_with_config(
@@ -423,36 +440,20 @@ pub(super) async fn serve_websocket(
     .await
     .map_err(|_| Error::Unauthorized)?
     .map_err(websocket_error)?;
-    let payload = loop {
-        let message = tokio::time::timeout_at(auth_deadline, websocket.next())
-            .await
-            .map_err(|_| Error::Unauthorized)?
-            .ok_or(Error::Unauthorized)?
-            .map_err(websocket_error)?;
-        match message {
-            Message::Binary(payload) if (1..=MAX_PRE_AUTH_FRAME_BYTES).contains(&payload.len()) => {
-                break payload;
-            }
-            Message::Ping(_) | Message::Pong(_) => {}
-            Message::Close(_) => return Err(Error::Unauthorized),
-            Message::Binary(payload) => {
-                return Err(Error::Protocol(format!(
-                    "pre-authentication WebSocket message length must be 1–{MAX_PRE_AUTH_FRAME_BYTES} bytes, got {}",
-                    payload.len()
-                )));
-            }
-            Message::Text(_) | Message::Frame(_) => {
-                return Err(Error::Protocol(
-                    "WebSocket messages must be binary JSON frames".into(),
-                ));
-            }
-        }
-    };
+    let mut state = tokio::time::timeout_at(
+        auth_deadline,
+        crate::channel::server_handshake(&mut websocket, connection.auth.channel_handshake()?),
+    )
+    .await
+    .map_err(|_| Error::Unauthorized)??;
+    let payload = tokio::time::timeout_at(
+        auth_deadline,
+        crate::channel::read_authentication(&mut websocket, &mut state, MAX_PRE_AUTH_FRAME_BYTES),
+    )
+    .await
+    .map_err(|_| Error::Unauthorized)??;
 
     let (gateway_stream, mut bridge_stream) = tokio::io::duplex(WEBSOCKET_BRIDGE_BYTES);
-    let length = u32::try_from(payload.len())
-        .map_err(|_| Error::Protocol("WebSocket message is too large".into()))?;
-    bridge_stream.write_all(&length.to_be_bytes()).await?;
     bridge_stream.write_all(&payload).await?;
     let (authenticated_tx, authenticated_rx) = oneshot::channel();
     let gateway = serve_connection(
@@ -466,35 +467,27 @@ pub(super) async fn serve_websocket(
     let authentication_succeeded = tokio::select! {
         result = &mut gateway => {
             result?;
-            return framed_to_websocket(bridge_stream, websocket).await;
+            return crate::channel::bridge(websocket, state, bridge_stream).await;
         }
         result = &mut authenticated_rx => result.is_ok(),
     };
     if !authentication_succeeded {
         gateway.await?;
-        return framed_to_websocket(bridge_stream, websocket).await;
+        return crate::channel::bridge(websocket, state, bridge_stream).await;
     }
 
     let mut stream = websocket.into_inner();
     stream.complete();
     let config = WebSocketConfig::default()
-        .max_message_size(Some(MAX_FRAME_BYTES))
-        .max_frame_size(Some(MAX_FRAME_BYTES));
+        .max_message_size(Some(crate::channel::MAX_RECORD))
+        .max_frame_size(Some(crate::channel::MAX_RECORD));
     let websocket = WebSocketStream::from_raw_socket(stream, Role::Server, Some(config)).await;
-    let (outgoing, incoming) = websocket.split();
-    let (bridge_reader, bridge_writer) = tokio::io::split(bridge_stream);
-    let gateway_and_outgoing = async {
-        tokio::try_join!(&mut gateway, framed_to_websocket(bridge_reader, outgoing))?;
-        Ok(())
-    };
-    tokio::pin!(gateway_and_outgoing);
-    tokio::select! {
-        result = &mut gateway_and_outgoing => result,
-        result = websocket_to_framed(incoming, bridge_writer) => {
-            result?;
-            gateway_and_outgoing.await
-        }
-    }
+    let (served, bridged) = tokio::join!(
+        gateway,
+        crate::channel::bridge(websocket, state, bridge_stream)
+    );
+    served?;
+    bridged
 }
 
 async fn register_client_connection(
@@ -585,6 +578,7 @@ where
     let mut selected: Option<SelectedChat> = None;
     let mut voice = None;
     let mut desktop = None;
+    let mut browser = None;
     let session_files = host.session_file_store().await;
     let mut uploads: BTreeMap<(String, String), PendingSessionFileWrite> = BTreeMap::new();
     let mut pending_git = JoinSet::new();
@@ -605,8 +599,8 @@ where
                 None
             }
             incoming = read_frame::<ClientFrame>(&mut reader) => Some(incoming),
-            outgoing = crate::computer_runtime::desktop::next_update(&mut desktop) => {
-                crate::computer_runtime::desktop::write_update(&mut desktop, outgoing, &mut writer).await?;
+            outgoing = crate::computer_runtime::next_app_update(&mut desktop, &mut browser) => {
+                crate::computer_runtime::write_app_update(outgoing, &mut desktop, &mut browser, &mut writer).await?;
                 None
             }
             outgoing = super::voice::next_update(&mut voice) => {
@@ -688,6 +682,7 @@ where
                 uploads: &mut uploads,
                 voice: &mut voice,
                 desktop: &mut desktop,
+                browser: &mut browser,
             },
             &mut writer,
         )

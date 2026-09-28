@@ -84,6 +84,7 @@ pub(crate) enum PairingStatus {
 pub struct AuthStore {
     path: PathBuf,
     state: Mutex<AuthState>,
+    channel_identity: crate::channel::Identity,
 }
 
 impl AuthStore {
@@ -93,7 +94,12 @@ impl AuthStore {
     /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn initialize(path: impl Into<PathBuf>) -> Result<(Self, PairingGrant)> {
         let path = path.into();
-        let grant = new_pairing_grant()?;
+        fs::create_dir_all(
+            path.parent()
+                .ok_or_else(|| Error::Config("authentication path has no parent".into()))?,
+        )?;
+        let channel_identity = crate::channel::Identity::open(&path)?;
+        let grant = new_pairing_grant(&channel_identity)?;
         let state = AuthState {
             pending_pairing: Some(PendingPairing {
                 digest: digest(&grant.code),
@@ -106,6 +112,7 @@ impl AuthStore {
             Self {
                 path,
                 state: Mutex::new(state),
+                channel_identity,
             },
             grant,
         ))
@@ -123,9 +130,11 @@ impl AuthStore {
         }
         let state: AuthState = serde_json::from_slice(&contents)?;
         validate_auth_state(&state)?;
+        let channel_identity = crate::channel::Identity::open(&path)?;
         Ok(Self {
             path,
             state: Mutex::new(state),
+            channel_identity,
         })
     }
 
@@ -150,7 +159,7 @@ impl AuthStore {
             return Err(Error::Config("paired client limit reached".into()));
         }
 
-        let token = random_secret(2);
+        let token = self.channel_identity.credential(&random_secret(2));
         let client_id = pairing_client_id(code);
         let mut next = state.clone();
         next.pending_pairing = None;
@@ -194,7 +203,7 @@ impl AuthStore {
             return Err(Error::Unauthorized);
         };
 
-        let token = random_secret(2);
+        let token = self.channel_identity.credential(&random_secret(2));
         let mut next = state.clone();
         next.pending_pairing = None;
         let client = &mut next.clients[index];
@@ -208,7 +217,7 @@ impl AuthStore {
     }
 
     pub(crate) fn provision_local_client(&self) -> Result<IssuedToken> {
-        let token = random_secret(2);
+        let token = self.channel_identity.credential(&random_secret(2));
         let now = unix_timestamp()?;
         let mut state = self.lock_state()?;
         let mut next = state.clone();
@@ -244,7 +253,7 @@ impl AuthStore {
     /// Returns an error if validation or an operation required by this function fails.
     pub fn create_pairing_code(&self) -> Result<PairingGrant> {
         let mut state = self.lock_state()?;
-        let grant = new_pairing_grant()?;
+        let grant = new_pairing_grant(&self.channel_identity)?;
         let mut next = state.clone();
         next.pending_pairing = Some(PendingPairing {
             digest: digest(&grant.code),
@@ -354,6 +363,10 @@ impl AuthStore {
             .lock()
             .map_err(|_| Error::Config("authentication state lock is poisoned".into()))
     }
+
+    pub(crate) fn channel_handshake(&self) -> Result<snow::HandshakeState> {
+        self.channel_identity.responder()
+    }
 }
 
 fn validate_client_label(label: &str) -> Result<()> {
@@ -422,9 +435,9 @@ fn pairing_client_id(code: &str) -> String {
     Uuid::from_bytes(bytes).to_string()
 }
 
-fn new_pairing_grant() -> Result<PairingGrant> {
+fn new_pairing_grant(identity: &crate::channel::Identity) -> Result<PairingGrant> {
     Ok(PairingGrant {
-        code: random_secret(1),
+        code: identity.credential(&random_secret(1)),
         expires_at: unix_timestamp()?
             .checked_add(PAIRING_LIFETIME_SECONDS)
             .ok_or_else(|| Error::Config("pairing expiry overflow".into()))?,
@@ -729,5 +742,39 @@ mod tests {
             & 0o777;
 
         assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn adding_channel_identity_preserves_existing_authentication_state() {
+        let directory = tempfile::tempdir().expect("state directory");
+        let path = directory.path().join("auth.json");
+        let (auth, grant) = AuthStore::initialize(&path).expect("initialize auth");
+        let issued = auth.pair(&grant.code, "existing client").expect("pair");
+        let legacy_token = "existing-opaque-token";
+        let mut state = auth.lock_state().unwrap().clone();
+        state.clients[0].digest = digest(legacy_token);
+        save_auth_state(&path, &state, false).unwrap();
+        let original = fs::read(&path).unwrap();
+        fs::remove_file(path.with_extension("channel-key")).unwrap();
+        let reopened = AuthStore::open(&path).expect("open existing auth state");
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(
+            reopened.authenticate(legacy_token).unwrap().id,
+            issued.client_id
+        );
+        let grant = reopened.create_pairing_code().unwrap();
+        let key = crate::channel::credential_key(&grant.code).unwrap();
+        let paired = reopened.pair(&grant.code, "encrypted client").unwrap();
+        assert_eq!(crate::channel::credential_key(&paired.token).unwrap(), key);
+        let reopened = AuthStore::open(&path).unwrap();
+        assert_eq!(
+            crate::channel::credential_key(&reopened.create_pairing_code().unwrap().code).unwrap(),
+            key
+        );
+        reopened
+            .unpair_client(&issued.client_id, &paired.client_id)
+            .unwrap();
+        assert!(reopened.authenticate(&paired.token).is_err());
+        assert!(reopened.authenticate(legacy_token).is_ok());
     }
 }

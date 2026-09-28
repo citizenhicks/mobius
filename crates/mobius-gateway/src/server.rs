@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::Utc;
-use futures_util::StreamExt as _;
 use mobius::agent::validate_submission;
 use mobius::backend::session_files::{PendingSessionFileWrite, SessionFileStore};
 use mobius::protocol::Op;
@@ -30,7 +29,7 @@ use tokio_tungstenite::tungstenite::handshake::server::{
     Callback, ErrorResponse, Request, Response,
 };
 use tokio_tungstenite::tungstenite::http::StatusCode;
-use tokio_tungstenite::tungstenite::http::header::{HOST, ORIGIN};
+use tokio_tungstenite::tungstenite::http::header::{HOST, ORIGIN, SEC_WEBSOCKET_PROTOCOL};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 use crate::auth::{AuthStore, ClientIdentity, PairingGrant};
@@ -40,8 +39,7 @@ use crate::host::{GatewayHost, HostHandle, Rejection};
 use crate::wire::{
     ClientFrame, ClientKind, ClientMessage, ClientStatus, DirectoryEntry, DirectoryListing,
     FrameReader, GatewayNotification, MAX_FRAME_BYTES, ProfileSnapshot, ServerFrame, ServerMessage,
-    SharedFrame, framed_to_websocket, read_frame, read_frame_with_limit, validate_version,
-    websocket_error, websocket_to_framed, write_frame,
+    SharedFrame, read_frame, read_frame_with_limit, validate_version, websocket_error, write_frame,
 };
 use crate::{Error, Result};
 

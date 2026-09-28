@@ -1,6 +1,9 @@
 //! On-demand, owner-installed dependencies for the computer middleware.
 
+pub(crate) mod browser;
 pub(crate) mod desktop;
+
+use crate::wire::ServerMessage;
 
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
@@ -26,6 +29,34 @@ const PACKAGE: &str = include_str!("computer_runtime/package.json");
 const LOCKFILE: &str = include_str!("computer_runtime/package-lock.json");
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
 const MAX_DOWNLOAD_BYTES: usize = 128 * 1024 * 1024;
+
+/// What the local Mac app's desktop control or browser writes to its connection next.
+pub(crate) enum AppUpdate {
+    Desktop(Option<ServerMessage>),
+    Browser(Option<ServerMessage>),
+}
+
+pub(crate) async fn next_app_update(
+    desktop: &mut Option<desktop::DesktopConnection>,
+    browser: &mut Option<browser::BrowserConnection>,
+) -> AppUpdate {
+    tokio::select! {
+        message = desktop::next_update(desktop) => AppUpdate::Desktop(message),
+        message = browser::next_update(browser) => AppUpdate::Browser(message),
+    }
+}
+
+pub(crate) async fn write_app_update(
+    update: AppUpdate,
+    desktop: &mut Option<desktop::DesktopConnection>,
+    browser: &mut Option<browser::BrowserConnection>,
+    writer: &mut (impl tokio::io::AsyncWrite + Unpin),
+) -> Result<()> {
+    match update {
+        AppUpdate::Desktop(message) => desktop::write_update(desktop, message, writer).await,
+        AppUpdate::Browser(message) => browser::write_update(browser, message, writer).await,
+    }
+}
 
 pub(crate) async fn prepare(
     state_dir: &Path,

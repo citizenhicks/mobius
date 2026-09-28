@@ -276,6 +276,12 @@ pub trait SandboxBackend: Send + Sync {
         })
     }
 
+    /// Finds the page `session_id`'s agent may drive in a browser outside this backend,
+    /// as a DevTools endpoint, or `None` for the worker's own browser.
+    fn browser_page<'a>(&'a self, _session_id: &'a str) -> BoxFuture<'a, Option<String>> {
+        Box::pin(async { None })
+    }
+
     /// Reads a UTF-8 file under the requested isolation.
     fn read<'a>(
         &'a self,
@@ -476,6 +482,16 @@ impl Sandbox {
                 reset,
             )
             .await
+    }
+
+    /// The page a call's chat may drive in a browser outside the sandbox, as a DevTools
+    /// endpoint. That browser reaches the network from outside the sandbox, so only calls
+    /// allowed network access are lent one.
+    pub async fn browser_page(&self, permissions: &ToolPermissions) -> Option<String> {
+        if permissions.network_access != NetworkAccess::Allowed {
+            return None;
+        }
+        self.backend.browser_page(&permissions.session_id).await
     }
 
     pub(crate) async fn run_command(

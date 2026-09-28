@@ -33,6 +33,22 @@ compaction. Use var for bindings you may assign again. Each agent has its own
 interpreter, browser process, and context. There is no cua, nodeRepl, getAXState,
 or numbered accessibility index. Native Mac actions use desktop below.
 
+## The möbius app's browser
+
+When the möbius Mac app runs beside this gateway, getPage() returns this chat's tab
+in the app's own Chromium browser instead of a headless one. The user sees that tab
+beside the chat and may be signed in to sites there; act as their browser, not a
+scratch one. Call getPage() again at the start of each call rather than reusing a
+page from an earlier call: the app may have closed or replaced the tab.
+
+That page is the only one available: page.context().newPage(), closing the page,
+and reading or changing the profile's cookies are refused. Links that open a new
+tab open for the user; go to their href with page.goto() instead. The viewport
+follows the user's window, so take sizes from the latest screenshot. Only web
+addresses load (http, https, data and about:blank), never local files. Back and
+forward may restore a page from cache without a load event, so pass
+{waitUntil:'commit'} to page.goBack() and page.goForward().
+
 For a known destination, start with the user's URL and an explicit observation:
 
     var page = await getPage();

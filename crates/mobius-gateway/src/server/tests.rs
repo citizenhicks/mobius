@@ -1,3 +1,4 @@
+use futures_util::StreamExt as _;
 use mobius::backend::checkpoint::{Checkpoint, CheckpointStore as _, sqlite::SqliteCheckpoint};
 use mobius::protocol::{
     Event, EventMsg, MessageAuthor, MessageSubmission, Op, SessionFileReference, Submission,

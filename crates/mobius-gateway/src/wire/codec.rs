@@ -116,7 +116,11 @@ where
             let frame_end = 4 + length;
             if reader.buffer.len() >= frame_end {
                 let frame = serde_json::from_slice(&reader.buffer[4..frame_end])?;
-                reader.buffer.drain(..frame_end);
+                reader.buffer.clear();
+                // Reuse ordinary frames without pinning bulk-transfer memory for idle clients.
+                if reader.buffer.capacity() > 64 * 1024 {
+                    reader.buffer = Vec::new();
+                }
                 return Ok(Some(frame));
             }
             frame_end - reader.buffer.len()
@@ -170,82 +174,6 @@ pub(crate) async fn write_payload(
     Ok(())
 }
 
-pub(crate) async fn websocket_to_framed(
-    mut incoming: impl Stream<Item = std::result::Result<Message, WebSocketError>> + Unpin,
-    mut writer: impl AsyncWrite + Unpin,
-) -> Result<()> {
-    while let Some(message) = incoming.next().await {
-        match message.map_err(websocket_error)? {
-            Message::Binary(payload) if (1..=MAX_FRAME_BYTES).contains(&payload.len()) => {
-                let length = u32::try_from(payload.len())
-                    .map_err(|_| Error::Protocol("WebSocket message is too large".into()))?;
-                writer.write_all(&length.to_be_bytes()).await?;
-                writer.write_all(&payload).await?;
-            }
-            Message::Ping(_) | Message::Pong(_) => {}
-            Message::Close(_) => return Ok(()),
-            Message::Binary(payload) => {
-                return Err(Error::Protocol(format!(
-                    "WebSocket message length must be 1–{MAX_FRAME_BYTES} bytes, got {}",
-                    payload.len()
-                )));
-            }
-            Message::Text(_) | Message::Frame(_) => {
-                return Err(Error::Protocol(
-                    "WebSocket messages must be binary JSON frames".into(),
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-pub(crate) async fn framed_to_websocket(
-    mut reader: impl AsyncRead + Unpin,
-    mut outgoing: impl Sink<Message, Error = WebSocketError> + Unpin,
-) -> Result<()> {
-    loop {
-        let mut prefix = [0_u8; 4];
-        let first =
-            match tokio::time::timeout(WEBSOCKET_KEEPALIVE_INTERVAL, reader.read(&mut prefix[..1]))
-                .await
-            {
-                Ok(read) => read?,
-                Err(_) => {
-                    send_websocket(&mut outgoing, Message::Ping(Vec::new().into())).await?;
-                    continue;
-                }
-            };
-        if first == 0 {
-            return tokio::time::timeout(WRITE_TIMEOUT, outgoing.close())
-                .await
-                .map_err(|_| std::io::Error::from(std::io::ErrorKind::TimedOut))?
-                .map_err(websocket_error);
-        }
-        reader.read_exact(&mut prefix[1..]).await?;
-        let length = usize::try_from(u32::from_be_bytes(prefix))
-            .map_err(|_| Error::Protocol("frame length is unsupported".into()))?;
-        if length == 0 || length > MAX_FRAME_BYTES {
-            return Err(Error::Protocol(format!(
-                "frame length must be 1–{MAX_FRAME_BYTES} bytes"
-            )));
-        }
-        let mut payload = vec![0_u8; length];
-        reader.read_exact(&mut payload).await?;
-        send_websocket(&mut outgoing, Message::Binary(payload.into())).await?;
-    }
-}
-
-async fn send_websocket(
-    outgoing: &mut (impl Sink<Message, Error = WebSocketError> + Unpin),
-    message: Message,
-) -> Result<()> {
-    tokio::time::timeout(WRITE_TIMEOUT, outgoing.send(message))
-        .await
-        .map_err(|_| std::io::Error::from(std::io::ErrorKind::TimedOut))?
-        .map_err(websocket_error)
-}
-
 pub(crate) fn websocket_error(error: WebSocketError) -> Error {
     let kind = match error {
         WebSocketError::Io(error) => {
@@ -288,4 +216,31 @@ pub(crate) fn validate_session_id(session_id: &str) -> Result<()> {
         return Err(Error::Config("session ID must be 1–4096 bytes".into()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn completed_bulk_frames_do_not_pin_peak_memory_on_idle_connections() {
+        let payload = "x".repeat(MAX_FRAME_BYTES - 2);
+        let mut bytes = Vec::new();
+        write_frame(&mut bytes, &payload).await.unwrap();
+        write_frame(&mut bytes, &"next").await.unwrap();
+        let mut reader = FrameReader::new(bytes.as_slice());
+        assert_eq!(
+            read_frame::<String>(&mut reader).await.unwrap(),
+            Some(payload)
+        );
+        eprintln!(
+            "frame-reader retained bytes after 50 MiB frame: {}",
+            reader.buffer.capacity()
+        );
+        assert!(reader.buffer.capacity() <= 64 * 1024);
+        assert_eq!(
+            read_frame::<String>(&mut reader).await.unwrap().as_deref(),
+            Some("next")
+        );
+    }
 }

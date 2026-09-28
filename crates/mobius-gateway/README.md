@@ -81,6 +81,18 @@ pairs through either endpoint, `connect` returns and the gateway keeps running i
 the background. Run `mobius-gateway connect` later to advertise a fresh code while
 the gateway remains running.
 
+Every WebSocket connection requires the `mobius-noise-v1` subprotocol and an inner
+`Noise_NK_25519_ChaChaPoly_SHA256` channel. Pairing codes and device tokens contain
+the gateway public-key pin (`m1.<public-key>.<secret>`); the full credential is
+sent only after that pinned handshake succeeds. Pairing, commands, files, events,
+and authentication are encrypted between the client and gateway, including through
+a TLS-terminating relay. The relay still sees upgrade credentials and traffic metadata.
+The gateway's owner-only private identity file is a sibling of its authentication
+file with the `.channel-key` extension (`auth.channel-key` by default); keep it
+with gateway state. Existing `auth.json` credentials and revocations remain intact,
+but older WebSocket clients and credentials must be updated and paired again.
+Direct loopback TCP and direct TLS keep their existing transport.
+
 For that advanced option, enter the intended hostname and connector token.
 möbius starts the connector first and waits for pairing; you can then publish the
 hostname to `http://127.0.0.1:8741` in Cloudflare without the missing-route

@@ -67,6 +67,20 @@ pub enum ClientMessage {
         /// The response.
         response: Value,
     },
+    /// Offers, or withdraws, the local Mac app's browser to agents on this gateway.
+    SetBrowserRuntime {
+        /// The request identifier.
+        request_id: String,
+        /// Whether agents may drive pages in the app's browser.
+        enabled: bool,
+    },
+    /// Answers a [`ServerMessage::BrowserPageRequested`].
+    BrowserPageReply {
+        /// The request identifier.
+        request_id: String,
+        /// The page's DevTools endpoint, or `None` when the app has no page to lend.
+        endpoint: Option<String>,
+    },
     /// Selects the pair case.
     Pair {
         /// The code.
@@ -724,6 +738,13 @@ pub enum ServerMessage {
     DesktopControlEnded {
         /// The execution identifier.
         execution_id: String,
+    },
+    /// Asks the local Mac app for the page a chat's agent may drive in its browser.
+    BrowserPageRequested {
+        /// The request identifier.
+        request_id: String,
+        /// The chat whose agent drives the page.
+        session_id: String,
     },
     /// Selects the paired case.
     Paired {

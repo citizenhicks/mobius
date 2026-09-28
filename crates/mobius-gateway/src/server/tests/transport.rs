@@ -257,18 +257,6 @@ fn pre_auth_frames_reject_unknown_fields() {
     assert!(error.to_string().contains("unknown field `unexpected`"));
 }
 
-async fn next_websocket_frame(websocket: &mut WebSocketStream<TcpStream>) -> ServerFrame {
-    let Message::Binary(payload) = websocket
-        .next()
-        .await
-        .expect("gateway response")
-        .expect("read gateway response")
-    else {
-        panic!("gateway response must be binary");
-    };
-    serde_json::from_slice(&payload).expect("decode gateway frame")
-}
-
 fn append_masked_binary_frame(output: &mut Vec<u8>, payload: &[u8]) {
     output.push(0x82);
     if payload.len() <= 125 {
@@ -414,6 +402,7 @@ fn websocket_upgrade_accepts_the_cloudflare_host_with_standard_port() {
     let request = Request::builder()
         .uri("/")
         .header(HOST, "gateway.example:443")
+        .header(SEC_WEBSOCKET_PROTOCOL, crate::channel::SUBPROTOCOL)
         .body(())
         .expect("request");
 
@@ -422,7 +411,10 @@ fn websocket_upgrade_accepts_the_cloudflare_host_with_standard_port() {
     }
     .on_request(&request, Response::new(()));
 
-    assert!(accepted.is_ok());
+    assert_eq!(
+        accepted.unwrap().headers()[SEC_WEBSOCKET_PROTOCOL],
+        crate::channel::SUBPROTOCOL
+    );
 }
 
 #[tokio::test]
@@ -439,46 +431,72 @@ async fn websocket_preserves_a_pipelined_bulk_frame_across_authentication() {
     let serving = tokio::spawn(server.serve_until(async move {
         let _ = signal.await;
     }));
-    let mut stream = TcpStream::connect(listen).await.expect("connect gateway");
-    let mut pipelined = format!(
-        "GET / HTTP/1.1\r\nHost: {listen}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+    let mut request = format!("ws://{listen}").into_client_request().unwrap();
+    request.headers_mut().insert(
+        SEC_WEBSOCKET_PROTOCOL,
+        crate::channel::SUBPROTOCOL.parse().unwrap(),
+    );
+    let (mut websocket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    let mut state = crate::channel::client_handshake(&mut websocket, &grant.code)
+        .await
+        .unwrap();
+    let mut pairing = Vec::new();
+    write_frame(
+        &mut pairing,
+        &ClientFrame::new(ClientMessage::Pair {
+            code: grant.code,
+            client_label: "WebSocket test".into(),
+            client_kind: ClientKind::Ios,
+        }),
     )
-    .into_bytes();
-    let pairing = serde_json::to_vec(&ClientFrame::new(ClientMessage::Pair {
-        code: grant.code,
-        client_label: "WebSocket test".into(),
-        client_kind: ClientKind::Ios,
-    }))
-    .expect("encode pair frame");
-    append_masked_binary_frame(&mut pipelined, &pairing);
+    .await
+    .unwrap();
     let request_id = "post-auth-list";
-    let post_auth = serde_json::to_vec(&ClientFrame::new(ClientMessage::UploadSessionFileChunk {
-        request_id: request_id.into(),
-        session_id: "missing-session".into(),
-        upload_id: "missing-upload".into(),
-        offset: 0,
-        data: vec![0; MAX_PRE_AUTH_FRAME_BYTES],
-    }))
-    .expect("encode post-auth frame");
+    let mut post_auth = Vec::new();
+    write_frame(
+        &mut post_auth,
+        &ClientFrame::new(ClientMessage::UploadSessionFileChunk {
+            request_id: request_id.into(),
+            session_id: "missing-session".into(),
+            upload_id: "missing-upload".into(),
+            offset: 0,
+            data: vec![0; MAX_PRE_AUTH_FRAME_BYTES],
+        }),
+    )
+    .await
+    .unwrap();
     assert!(post_auth.len() > MAX_PRE_AUTH_FRAME_BYTES);
-    append_masked_binary_frame(&mut pipelined, &post_auth);
-    stream
+    let mut pipelined = Vec::new();
+    for plaintext in [pairing, post_auth] {
+        let mut encrypted = vec![0; plaintext.len() + crate::channel::TAG_BYTES];
+        let length = state.write_message(&plaintext, &mut encrypted).unwrap();
+        append_masked_binary_frame(&mut pipelined, &encrypted[..length]);
+    }
+    websocket
+        .get_mut()
         .write_all(&pipelined)
         .await
-        .expect("pipeline upgrade, pairing, and post-auth frames");
-    let mut response = Vec::new();
-    while !response.ends_with(b"\r\n\r\n") {
-        let mut byte = [0_u8; 1];
-        let read = stream.read(&mut byte).await.expect("read upgrade response");
-        assert_eq!(read, 1, "upgrade response ended early");
-        response.push(byte[0]);
-    }
-    assert!(response.starts_with(b"HTTP/1.1 101"));
-    let mut websocket = WebSocketStream::from_raw_socket(stream, Role::Client, None).await;
-    let paired = next_websocket_frame(&mut websocket).await;
-    let authenticated = next_websocket_frame(&mut websocket).await;
-    let ready = next_websocket_frame(&mut websocket).await;
-    let rejection = next_websocket_frame(&mut websocket).await;
+        .expect("pipeline encrypted pairing and post-auth records");
+    let (transport, stream) = tokio::io::duplex(16 * 1024);
+    let bridge = tokio::spawn(crate::channel::bridge(websocket, state, stream));
+    let mut reader = FrameReader::new(transport);
+    let paired = read_frame::<ServerFrame>(&mut reader)
+        .await
+        .unwrap()
+        .unwrap();
+    let authenticated = read_frame::<ServerFrame>(&mut reader)
+        .await
+        .unwrap()
+        .unwrap();
+    let ready = read_frame::<ServerFrame>(&mut reader)
+        .await
+        .unwrap()
+        .unwrap();
+    let rejection = read_frame::<ServerFrame>(&mut reader)
+        .await
+        .unwrap()
+        .unwrap();
 
     assert!(matches!(
         (
@@ -494,7 +512,7 @@ async fn websocket_preserves_a_pipelined_bulk_frame_across_authentication() {
             ServerMessage::Rejected { request_id: actual, .. }
         ) if actual == request_id
     ));
-    drop(websocket);
+    bridge.abort();
     shutdown.send(()).expect("stop gateway");
     serving.await.expect("gateway task").expect("gateway stop");
 }
@@ -553,7 +571,7 @@ async fn websocket_upgrade_and_authentication_share_one_deadline() {
     stream
         .write_all(
             format!(
-                "ET / HTTP/1.1\r\nHost: {listen}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+                "ET / HTTP/1.1\r\nHost: {listen}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: mobius-noise-v1\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
             )
             .as_bytes(),
         )

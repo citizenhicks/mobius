@@ -96,6 +96,8 @@ function emitImage(source, detail = 'auto') {
 }
 // A loopback DevTools port so a möbius app on this machine can watch and share the page.
 let devtools;
+// The page the Mac app lends this evaluation, as its endpoint, and the one `page` is on.
+let requested, lent;
 function freePort() {
   return new Promise((resolve, reject) => {
     const server = require('node:net').createServer();
@@ -103,15 +105,30 @@ function freePort() {
     server.listen(0, '127.0.0.1', () => { const {port} = server.address(); server.close(() => resolve(port)); });
   });
 }
+// Disconnects from a lent page, or closes the worker's own browser.
+async function release() {
+  const previous = connection;
+  connection = page = lent = devtools = undefined;
+  await previous?.close().catch(() => {});
+}
 async function getPage() {
+  if (page && (lent !== requested || !connection?.isConnected())) await release();
   if (!page) {
     const { chromium } = require('playwright');
-    // Without a loopback port (a sandbox without network) the browser still runs, unwatched.
-    const port = await freePort().catch(() => undefined);
-    connection = await chromium.launch(port ? {headless:true, args:['--remote-debugging-address=127.0.0.1', '--remote-debugging-port=' + port]} : {headless:true});
-    devtools = port && 'http://127.0.0.1:' + port;
-    const context = await connection.newContext({viewport:{width:1365,height:768}, deviceScaleFactor:1});
-    page = await context.newPage();
+    if (requested) {
+      // The chat's tab in the Mac app's browser: the user's profile, on the user's screen.
+      connection = await chromium.connectOverCDP(requested, {noDefaults:true, timeout:10000});
+      page = connection.contexts()[0]?.pages()[0];
+      if (!page) throw new Error('the page lent by the Mac app is unavailable');
+      lent = requested;
+    } else {
+      // Without a loopback port (a sandbox without network) the browser still runs, unwatched.
+      const port = await freePort().catch(() => undefined);
+      connection = await chromium.launch(port ? {headless:true, args:['--remote-debugging-address=127.0.0.1', '--remote-debugging-port=' + port]} : {headless:true});
+      devtools = port && 'http://127.0.0.1:' + port;
+      const context = await connection.newContext({viewport:{width:1365,height:768}, deviceScaleFactor:1});
+      page = await context.newPage();
+    }
     page.setDefaultTimeout(10000);
   }
   return page;
@@ -119,17 +136,19 @@ async function getPage() {
 function capturePage(current, timeout) {
   return current.screenshot({fullPage:false, scale:'css', timeout});
 }
-function emitScreenshot(bytes, current, limit = MAX_TEXT_BYTES - FAILURE_TEXT_BYTES) {
+// A lent page has no fixed viewport; its PNG header says how large the capture is.
+function emitScreenshot(bytes, limit = MAX_TEXT_BYTES - FAILURE_TEXT_BYTES) {
   const target = path.join(os.tmpdir(), 'screen-' + crypto.randomUUID() + '.png');
   fs.writeFileSync(target, bytes);
   try {
-    text('Viewport screenshot; one image pixel = one CSS pixel. Coordinates are viewport-relative. Size: ' + JSON.stringify(current.viewportSize()), limit);
+    const size = {width:bytes.readUInt32BE(16), height:bytes.readUInt32BE(20)};
+    text('Viewport screenshot; one image pixel = one CSS pixel. Coordinates are viewport-relative. Size: ' + JSON.stringify(size), limit);
     emitImage(target);
   } finally { fs.unlinkSync(target); }
 }
 async function screenshot() {
   const current = await getPage();
-  emitScreenshot(await capturePage(current), current);
+  emitScreenshot(await capturePage(current));
 }
 async function reportFailure(error, scope, interpreterState = 'retained') {
   if (desktopUsed) text('Mac desktop state is external to this interpreter. Inspect it before continuing; do not automatically repeat an action.', MAX_TEXT_BYTES);
@@ -169,7 +188,7 @@ async function reportFailure(error, scope, interpreterState = 'retained') {
         imageCount -= 1;
         text('One earlier image omitted to include the failure screenshot.', MAX_TEXT_BYTES);
       }
-      try { emitScreenshot(capture, current, MAX_TEXT_BYTES); }
+      try { emitScreenshot(capture, MAX_TEXT_BYTES); }
       catch (error) { text('Failure screenshot unavailable: ' + clipped(error, 300), MAX_TEXT_BYTES); }
     } else {
       text('Failure screenshot unavailable: ' + clipped(captureError ?? 'capture deadline expired', 300), MAX_TEXT_BYTES);
@@ -191,8 +210,10 @@ async function main() {
   if (!contextId) throw new Error('interpreter context unavailable');
   async function evaluate(payload) {
     const request = JSON.parse(payload.toString('utf8'));
-    if (typeof request.code !== 'string' || Buffer.byteLength(request.code) > 40000 || Object.keys(request).some(key=>key !== 'code')) throw new Error('invalid evaluation');
-    content = []; textBytes = 0; imageCount = 0; active = true; desktopUsed = false; nativeTask = undefined;
+    const browser = request.browser ?? undefined;
+    if (typeof request.code !== 'string' || Buffer.byteLength(request.code) > 40000 || Object.keys(request).some(key=>key !== 'code' && key !== 'browser')) throw new Error('invalid evaluation');
+    if (browser !== undefined && (typeof browser !== 'string' || !browser.startsWith('ws+unix:///'))) throw new Error('invalid lent browser');
+    content = []; textBytes = 0; imageCount = 0; active = true; desktopUsed = false; nativeTask = undefined; requested = browser;
     let is_error = false;
     try {
       const value = await inspector.post('Runtime.evaluate', {expression:request.code, contextId, awaitPromise:true, replMode:true, silent:true, objectGroup:'evaluation'});

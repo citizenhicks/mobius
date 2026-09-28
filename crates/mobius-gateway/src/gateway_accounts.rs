@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::env;
-use std::io::Write as _;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
@@ -14,18 +13,29 @@ use serde::{Deserialize, Serialize};
 const MAX_STORE_BYTES: usize = 64 * 1024;
 const MAX_ACCOUNTS: usize = 64;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct TokenStoreRecord {
     selected_endpoint: Option<String>,
     tokens: BTreeMap<String, String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 /// Data for gateway accounts.
 pub struct GatewayAccounts {
     path: PathBuf,
     record: TokenStoreRecord,
+}
+
+impl std::fmt::Debug for GatewayAccounts {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GatewayAccounts")
+            .field("path", &self.path)
+            .field("selected_endpoint", &self.record.selected_endpoint)
+            .field("account_count", &self.record.tokens.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl GatewayAccounts {
@@ -118,14 +128,7 @@ impl GatewayAccounts {
         }
         let parent = parent(&self.path)?;
         std::fs::create_dir_all(parent)?;
-        let parent_file = std::fs::File::open(parent)?;
-        let mut file = tempfile::NamedTempFile::new_in(parent)?;
-        secure(&file)?;
-        file.write_all(&contents)?;
-        file.as_file().sync_all()?;
-        file.persist(&self.path).map_err(|error| error.error)?;
-        parent_file.sync_all()?;
-        Ok(())
+        crate::publication::publish(&self.path, &contents, false)
     }
 
     fn load_from(path: PathBuf) -> Result<Self> {
@@ -376,6 +379,7 @@ mod tests {
             .add(&endpoint, "remote-token".into())
             .expect("remote account");
         accounts.save().expect("save accounts");
+        assert!(!format!("{accounts:?}").contains("remote-token"));
 
         let loaded = GatewayAccounts::load_from(path).expect("reload accounts");
 

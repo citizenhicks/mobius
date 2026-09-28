@@ -62,10 +62,29 @@ mobius
 ```
 
 `mobius pair` saves and selects the endpoint together with the token returned by the gateway; no
-environment variable is needed. A remote terminal opens an existing gateway chat or, on an empty
+environment variable is needed for self-hosted gateways. A remote terminal opens an existing gateway chat or, on an empty
 gateway, starts one in the gateway's current directory after Bot selection.
 If the gateway is already running, create another code with `/pair` from an authenticated terminal
 or **Gateway → Pair another device** in an Apple client.
+
+If your gateway's hosting service requires additional WebSocket admission, set both
+`MOBIUS_GATEWAY_BEARER_ENDPOINT` to its exact `wss://` endpoint and
+`MOBIUS_GATEWAY_BEARER_TOKEN` to the service-issued bearer. The CLI sends this credential only
+in that endpoint's WebSocket upgrade header, including pairing and reconnects. Selecting another
+gateway sends no admission credential. Neither value is saved with paired gateway credentials.
+`MOBIUS_GATEWAY_TOKEN` remains the separate per-device gateway token.
+
+WebSocket pairing and reconnects also establish an encrypted Noise channel pinned
+to the gateway key embedded in the pairing code or saved device token. Hosting
+relays can see the admission header and traffic metadata but cannot read gateway
+frames. Older WebSocket credentials require a fresh pairing code; there is no
+plaintext fallback. Direct TCP and TLS connections keep their existing transport.
+
+Obtain and renew the admission credential through your hosting service; the CLI does not sign
+in to the service or refresh its sessions. A service account session may authorize more than
+gateway access and expires independently of the paired device token. Use your own session, keep
+it in your secret environment rather than command arguments or URLs, do not share it as a pairing
+code, and clear `MOBIUS_GATEWAY_BEARER_TOKEN` after use.
 
 If local state already exists without a saved CLI token, stop the gateway and run the supervised
 pairing flow in another terminal:
