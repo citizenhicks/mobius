@@ -41,7 +41,7 @@ use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
     BotRecord, ClientMessage, GitDiffScope, ReadyPayload, ServerMessage, SessionActivityState,
-    SessionReadyPayload, SessionRecord, WorkspaceFileScope,
+    SessionReadyPayload, SessionRecord, WorkspaceFileScope, apply_session_changes,
 };
 use uuid::Uuid;
 
@@ -709,12 +709,15 @@ fn handle_server_message(
             return Some(FrontendExit::Reload);
         }
         ServerMessage::Ready { payload } => {
-            *gateway = payload;
+            gateway.update(payload);
             if let Err(error) = sync_session_info(state, session, gateway) {
                 state.push(error.to_string(), TranscriptTone::Error);
             }
         }
         ServerMessage::Sessions { sessions, .. } => gateway.sessions = sessions,
+        ServerMessage::SessionsChanged { sessions, .. } => {
+            apply_session_changes(&mut gateway.sessions, sessions)
+        }
         ServerMessage::BackgroundApprovals { approvals } => {
             gateway.background_approvals = approvals;
             state.background_approval_count = gateway.background_approvals.len();
@@ -2234,6 +2237,8 @@ mod tests {
                 max_session_bytes: 1,
                 max_upload_chunk_bytes: 1,
             },
+            revisions: Default::default(),
+            omitted: Default::default(),
         }
     }
 

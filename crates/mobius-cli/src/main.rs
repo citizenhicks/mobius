@@ -24,7 +24,7 @@ use mobius_gateway::gateway_accounts::{
 };
 use mobius_gateway::wire::{
     BotRecord, ClientKind, ClientMessage, ReadyPayload, ServerFrame, ServerMessage,
-    SessionActivityState, SessionReadyPayload, SessionRecord,
+    SessionActivityState, SessionReadyPayload, SessionRecord, apply_session_changes,
 };
 use tokio::io::AsyncReadExt as _;
 use tokio::process::{Child, Command};
@@ -299,7 +299,7 @@ async fn connect_gateway() -> Result<(GatewaySender, GatewayEvents, ReadyPayload
         }
     } else {
         match token {
-            Some(token) => GatewayClient::connect(&endpoint, token, ClientKind::Cli).await,
+            Some(token) => GatewayClient::connect(&endpoint, &token, ClientKind::Cli).await,
             None => Err(missing_token(&endpoint)),
         }
     };
@@ -764,8 +764,11 @@ async fn discard_session(
         }
         match message {
             ServerMessage::Accepted { request_id: actual } if actual == request_id => return Ok(()),
-            ServerMessage::Ready { payload } => *gateway = payload,
+            ServerMessage::Ready { payload } => gateway.update(payload),
             ServerMessage::Sessions { sessions, .. } => gateway.sessions = sessions,
+            ServerMessage::SessionsChanged { sessions, .. } => {
+                apply_session_changes(&mut gateway.sessions, sessions)
+            }
             message => events
                 .defer(ServerFrame { version, message })
                 .map_err(gateway_error)?,
@@ -816,8 +819,11 @@ async fn refresh_sessions(
                 gateway.sessions = sessions;
                 return Ok(());
             }
-            ServerMessage::Ready { payload } => *gateway = payload,
+            ServerMessage::Ready { payload } => gateway.update(payload),
             ServerMessage::Sessions { sessions, .. } => gateway.sessions = sessions,
+            ServerMessage::SessionsChanged { sessions, .. } => {
+                apply_session_changes(&mut gateway.sessions, sessions)
+            }
             message => events
                 .defer(ServerFrame { version, message })
                 .map_err(gateway_error)?,
@@ -888,8 +894,11 @@ async fn wait_session_opened(
                 request_id: actual,
                 payload,
             } if actual == request_id => return Ok(payload),
-            ServerMessage::Ready { payload } => *gateway = payload,
+            ServerMessage::Ready { payload } => gateway.update(payload),
             ServerMessage::Sessions { sessions, .. } => gateway.sessions = sessions,
+            ServerMessage::SessionsChanged { sessions, .. } => {
+                apply_session_changes(&mut gateway.sessions, sessions)
+            }
             message => events
                 .defer(ServerFrame { version, message })
                 .map_err(gateway_error)?,

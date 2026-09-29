@@ -1134,7 +1134,8 @@ async fn unpairing_disconnects_the_client_and_rejects_its_token() {
         .expect("device frame")
         .is_some()
     {}
-    let reconnect = GatewayClient::connect(&endpoint, device_identity.token, ClientKind::Ios).await;
+    let reconnect =
+        GatewayClient::connect(&endpoint, &device_identity.token, ClientKind::Ios).await;
 
     assert_eq!(
         (
@@ -1368,7 +1369,7 @@ async fn frontends_select_independent_chats_and_can_share_one_chat() {
     let (first, paired) = GatewayClient::pair(&endpoint, grant.code, "first", ClientKind::Cli)
         .await
         .expect("pair first frontend");
-    let second = GatewayClient::connect(&endpoint, paired.token, ClientKind::Macos)
+    let second = GatewayClient::connect(&endpoint, &paired.token, ClientKind::Macos)
         .await
         .expect("connect second frontend");
     let (first_sender, mut first_events) = first.into_parts();

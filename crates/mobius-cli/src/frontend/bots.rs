@@ -94,6 +94,8 @@ mod tests {
                 max_session_bytes: 0,
                 max_upload_chunk_bytes: 0,
             },
+            revisions: Default::default(),
+            omitted: Default::default(),
         }
     }
 

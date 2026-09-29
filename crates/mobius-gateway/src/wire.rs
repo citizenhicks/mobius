@@ -60,6 +60,8 @@ mod base64_bytes {
 pub const PROTOCOL_VERSION: u16 = 86;
 /// Maximum encoded JSON payload accepted in one frame.
 pub const MAX_FRAME_BYTES: usize = 50 * 1024 * 1024;
+/// Maximum encoded authentication frame, and the first encrypted WebSocket record.
+pub(crate) const MAX_PRE_AUTH_FRAME_BYTES: usize = 4 * 1024;
 const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[cfg(test)]

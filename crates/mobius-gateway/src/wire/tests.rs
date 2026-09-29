@@ -125,6 +125,7 @@ async fn framed_json_round_trip_preserves_the_versioned_message() {
     let expected = ClientFrame::new(ClientMessage::Authenticate {
         token: "secret".into(),
         client_kind: ClientKind::Cli,
+        catalog: Default::default(),
     });
     let (mut writer, reader) = duplex(1024);
     let mut reader = FrameReader::new(reader);
@@ -321,6 +322,7 @@ fn connection_handshakes_have_no_session_replay_cursor() {
         ClientMessage::Authenticate {
             token: "secret".into(),
             client_kind: ClientKind::Cli,
+            catalog: Default::default(),
         },
         ClientMessage::Pair {
             code: "pairing-code".into(),
@@ -1155,10 +1157,18 @@ fn gateway_ready_contains_no_selected_session() {
             }],
             max_active_sessions: 32,
             session_file_limits,
+            revisions: BTreeMap::new(),
+            omitted: BTreeSet::new(),
         },
     });
 
     let encoded = serde_json::to_value(frame).expect("encode gateway ready");
+    for field in ["revisions", "omitted"] {
+        assert!(
+            encoded["payload"].get(field).is_some(),
+            "{field} is required"
+        );
+    }
     assert_eq!(
         encoded["payload"]["gateway_version"],
         env!("CARGO_PKG_VERSION")
@@ -1425,4 +1435,53 @@ fn daily_usage_carries_its_provider_on_the_wire() {
 
     assert_eq!(encoded["provider"], "openai_socket");
     assert_eq!(decoded, usage);
+}
+
+#[test]
+fn ready_catalog_sections_round_trip_through_an_omitted_ready() {
+    let mut held: ReadyPayload = serde_json::from_value(serde_json::json!({
+        "gateway_version": "1", "machine_name": "mac", "sessions": [],
+        "bots": [{
+            "id": "bot", "handle": "mobius", "name": "Mobius", "description": "",
+            "tint": "blue", "config": {"revision": 1, "config": AgentComposition::default()},
+            "accepts_file_attachments": false, "routine_interaction_policy": "unattended"
+        }],
+        "background_approvals": [], "providers": [], "provider_instances": [],
+        "bot_defaults": null, "models": [], "model_providers": {"work/sol": "work"},
+        "middleware_features": [], "extensions": [], "contributions": [],
+        "max_active_sessions": 1,
+        "session_file_limits": mobius::backend::session_files::session_file_limits(),
+        "revisions": {}, "omitted": []
+    }))
+    .expect("ready payload");
+    let (bots, config) = (
+        held.revision(ReadySection::Bots),
+        held.revision(ReadySection::Config),
+    );
+    let mut omitted = held.blank();
+    omitted.omitted = BTreeSet::from([ReadySection::Bots, ReadySection::Config]);
+    omitted.restore_omitted(&mut held);
+    assert!(omitted.omitted.is_empty());
+    assert_eq!(omitted.revision(ReadySection::Bots), bots);
+    assert_eq!(omitted.revision(ReadySection::Config), config);
+    assert_eq!(omitted.bots.len(), 1);
+    assert!(held.bots.is_empty() && held.model_providers.is_empty());
+}
+
+#[test]
+fn session_deltas_name_unchanged_sessions_by_id() {
+    let encoded = serde_json::json!({
+        "version": PROTOCOL_VERSION,
+        "type": "sessions_changed",
+        "sessions": ["kept"],
+        "revision": "catalog"
+    });
+    let frame: ServerFrame = serde_json::from_value(encoded).expect("delta");
+    assert_eq!(
+        frame.message,
+        ServerMessage::SessionsChanged {
+            sessions: vec![SessionSlot::Unchanged("kept".into())],
+            revision: "catalog".into(),
+        }
+    );
 }

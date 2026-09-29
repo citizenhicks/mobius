@@ -154,6 +154,9 @@ async fn bot_catalog_broadcasts_do_not_reintroduce_a_deleted_bot() {
             id: bot.id.clone(),
             expected_revision: bot.config.revision + 1,
         },
+        ClientMessage::ListBots {
+            request_id: "after".into(),
+        },
     ] {
         write_frame(&mut writer, &ClientFrame::new(message))
             .await
@@ -193,7 +196,7 @@ async fn bot_catalog_broadcasts_do_not_reintroduce_a_deleted_bot() {
                         bots.iter().all(|candidate| candidate.id != bot.id),
                         "a stale catalog reintroduced the deleted Bot after its deletion response"
                     );
-                    if request_id.is_none() {
+                    if request_id.as_deref() == Some("after") {
                         break;
                     }
                 }

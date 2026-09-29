@@ -170,6 +170,30 @@ fn concurrent_bot_stores_refresh_the_catalog_before_reads_and_seed() {
 }
 
 #[test]
+fn reads_reuse_the_parsed_catalog_until_any_store_commits() {
+    let (root, store, _) = fixture();
+    let other = BotStore::open(&root.path().join("state")).expect("second store");
+    let parses = || CATALOG_PARSES.with(std::cell::Cell::get);
+    store.bots().expect("first read");
+    let before = parses();
+    for _ in 0..3 {
+        assert_eq!(store.bots().expect("cached read").len(), 1);
+        assert!(!store.has_pending_bot_deletion().expect("cached check"));
+    }
+    assert_eq!(parses(), before);
+
+    let created = other
+        .create_bot("elsewhere", "Another store", AgentComposition::default())
+        .expect("create from the other store");
+    assert!(
+        store.bot(&created.id).is_ok(),
+        "another connection's commit"
+    );
+    let own = create_bot(&store, "own");
+    assert!(store.bots().expect("own commit").contains(&own));
+}
+
+#[test]
 fn opening_bot_state_rejects_removed_automatic_approval_settings_without_rewrite() {
     let (root, store, _) = fixture();
     create_bot(&store, "second");

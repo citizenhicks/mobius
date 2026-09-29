@@ -7,7 +7,7 @@ use mobius_gateway::MAX_EXTENSION_SOURCE_BYTES as MAX_SOURCE_BYTES;
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
     ClientMessage, ExtensionHookRecord, ExtensionKind, ExtensionRecord, ReadyPayload, ServerFrame,
-    ServerMessage,
+    ServerMessage, apply_session_changes,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -382,7 +382,7 @@ pub(in crate::frontend) async fn run(
                         }
                         match message {
                         ServerMessage::Ready { payload } => {
-                            *gateway = payload;
+                            gateway.update(payload);
                             state.clamp_selection(gateway);
                         }
                         ServerMessage::GatewayConfigured { request_id, payload }
@@ -390,7 +390,7 @@ pub(in crate::frontend) async fn run(
                                 pending.request_id == request_id
                             }) =>
                         {
-                            *gateway = payload;
+                            gateway.update(payload);
                             state.clamp_selection(gateway);
                             state.complete();
                         }
@@ -403,6 +403,9 @@ pub(in crate::frontend) async fn run(
                             state.fail(message);
                         }
                         ServerMessage::Sessions { sessions, .. } => gateway.sessions = sessions,
+                        ServerMessage::SessionsChanged { sessions, .. } => {
+                            apply_session_changes(&mut gateway.sessions, sessions)
+                        }
                         message => events
                             .defer(ServerFrame { version, message })
                             .map_err(gateway_error)?,

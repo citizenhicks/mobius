@@ -109,17 +109,29 @@ impl BotStorage {
             .connection
             .lock()
             .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
-        connection
-            .query_row("SELECT state_json FROM catalog WHERE id = 1", [], |row| {
-                let catalog = row.get_ref(0)?.as_str()?;
-                Ok(if catalog.len() > super::MAX_STATE_BYTES as usize {
-                    Err(Error::Config("Bot state is too large".into()))
-                } else {
-                    Ok(catalog.to_owned())
-                })
-            })
-            .optional()?
-            .transpose()
+        read_catalog(&connection)
+    }
+
+    /// The catalog with the stamp it was read at, unless nothing committed since `stamp`.
+    pub(super) fn catalog_since(
+        &self,
+        stamp: Option<CatalogStamp>,
+    ) -> Result<Option<(CatalogStamp, Option<String>)>> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        // data_version moves on commits by other connections, total_changes on our own.
+        let current = CatalogStamp {
+            data_version: connection
+                .query_row("PRAGMA data_version", [], |row| row.get(0))
+                .map_err(Error::from)?,
+            own_changes: connection.total_changes(),
+        };
+        if stamp == Some(current) {
+            return Ok(None);
+        }
+        Ok(Some((current, read_catalog(&connection)?)))
     }
 
     pub(super) fn save_catalog(&self, state_json: &str) -> Result<()> {
@@ -377,6 +389,27 @@ impl BotStorage {
         transaction.commit().map_err(Error::from)?;
         Ok(result)
     }
+}
+
+/// When the Bot database was last read: every commit changes one of these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct CatalogStamp {
+    data_version: i64,
+    own_changes: u64,
+}
+
+fn read_catalog(connection: &Connection) -> Result<Option<String>> {
+    connection
+        .query_row("SELECT state_json FROM catalog WHERE id = 1", [], |row| {
+            let catalog = row.get_ref(0)?.as_str()?;
+            Ok(if catalog.len() > super::MAX_STATE_BYTES as usize {
+                Err(Error::Config("Bot state is too large".into()))
+            } else {
+                Ok(catalog.to_owned())
+            })
+        })
+        .optional()?
+        .transpose()
 }
 
 fn configure_connection(connection: &Connection) -> Result<()> {

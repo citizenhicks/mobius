@@ -26,8 +26,8 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 #[cfg(unix)]
 use crate::wire::read_frame_with_limit;
 use crate::wire::{
-    ClientFrame, ClientKind, ClientMessage, FrameReader, ServerFrame, ServerMessage, read_frame,
-    validate_version, websocket_error, write_frame,
+    CatalogHint, ClientFrame, ClientKind, ClientMessage, FrameReader, MAX_PRE_AUTH_FRAME_BYTES,
+    ServerFrame, ServerMessage, read_frame, validate_version, websocket_error, write_frame,
 };
 use crate::{Error, Result};
 
@@ -64,6 +64,15 @@ pub struct PairedClient {
     pub client_id: String,
     /// The token.
     pub token: String,
+}
+
+/// What a connection sends with its authentication.
+#[derive(Debug, Default)]
+pub struct ConnectOptions {
+    /// The catalog this client already holds, or does not need.
+    pub catalog: CatalogHint,
+    /// Requests sent right behind authentication; the gateway answers them after Ready.
+    pub pipelined: Vec<ClientMessage>,
 }
 
 /// Connected client before its command and event halves are separated.
@@ -208,6 +217,7 @@ impl Endpoint {
                     message: ClientMessage::Authenticate {
                         token: token.into(),
                         client_kind: ClientKind::GatewayDashboard,
+                        catalog: CatalogHint::default(),
                     },
                 },
             )
@@ -399,17 +409,54 @@ impl GatewayClient {
     /// Returns an error if the transport fails or returns invalid data.
     pub async fn connect(
         endpoint: &Endpoint,
-        token: impl Into<String>,
+        token: &str,
         client_kind: ClientKind,
     ) -> Result<Self> {
-        let token = token.into();
-        let transport = endpoint.connect(&token).await?;
+        Self::connect_with(endpoint, token, client_kind, &mut ConnectOptions::default()).await
+    }
+
+    /// [`Self::connect`] with a catalog hint and pipelined requests, which `options` holds
+    /// again afterwards, whether or not the connection succeeded.
+    /// # Errors
+    ///
+    /// Returns an error if the transport fails or returns invalid data.
+    pub async fn connect_with(
+        endpoint: &Endpoint,
+        token: &str,
+        client_kind: ClientKind,
+        options: &mut ConnectOptions,
+    ) -> Result<Self> {
+        // A WebSocket's first encrypted record, which may carry both, must stay small.
+        let pipelined_bytes = options.pipelined.iter().try_fold(0, |total, message| {
+            serde_json::to_vec(message).map(|encoded| total + encoded.len())
+        })?;
+        if pipelined_bytes > MAX_PRE_AUTH_FRAME_BYTES / 2 {
+            return Err(Error::Config(
+                "requests sent with authentication must stay under 2 KiB".into(),
+            ));
+        }
+        let transport = endpoint.connect(token).await?;
         let (reader, writer) = tokio::io::split(transport);
         let client = Self::from_parts(reader, writer);
-        client
+        let authentication = ClientFrame::new(ClientMessage::Authenticate {
+            // The owned wire message is the one copy; callers keep their token.
+            token: token.to_owned(),
+            client_kind,
+            catalog: std::mem::take(&mut options.catalog),
+        });
+        let pipelined: Vec<_> = std::mem::take(&mut options.pipelined)
+            .into_iter()
+            .map(ClientFrame::new)
+            .collect();
+        let written = client
             .sender
-            .write(ClientMessage::Authenticate { token, client_kind })
-            .await?;
+            .write_frames(&authentication, &pipelined)
+            .await;
+        if let ClientMessage::Authenticate { catalog, .. } = authentication.message {
+            options.catalog = catalog;
+        }
+        options.pipelined = pipelined.into_iter().map(|frame| frame.message).collect();
+        written?;
         client.expect_authenticated().await
     }
 
@@ -518,11 +565,19 @@ impl GatewaySender {
     }
 
     async fn write(&self, message: ClientMessage) -> Result<()> {
+        self.write_frames(&ClientFrame::new(message), &[]).await
+    }
+
+    /// Writes `first` and then `then` without another writer interleaving.
+    async fn write_frames(&self, first: &ClientFrame, then: &[ClientFrame]) -> Result<()> {
         let mut slot = self.writer.lock().await;
         let mut writer = slot.take().ok_or_else(|| {
             Error::Protocol("gateway writer is closed after a failed or cancelled write".into())
         })?;
-        write_frame(&mut writer, &ClientFrame::new(message)).await?;
+        write_frame(&mut writer, first).await?;
+        for frame in then {
+            write_frame(&mut writer, frame).await?;
+        }
         *slot = Some(writer);
         Ok(())
     }
@@ -740,6 +795,7 @@ mod tests {
             ClientMessage::Authenticate {
                 token: "secret".into(),
                 client_kind: ClientKind::Cli,
+                catalog: CatalogHint::default(),
             }
         );
     }

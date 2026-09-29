@@ -24,6 +24,7 @@ async fn queued_client_requests_do_not_starve_gateway_broadcasts() {
         &ClientFrame::new(ClientMessage::Authenticate {
             token: identity.token,
             client_kind: ClientKind::Cli,
+            catalog: Default::default(),
         }),
     )
     .await
@@ -99,6 +100,7 @@ async fn non_reading_client_releases_its_authenticated_connection_slot() {
         &ClientFrame::new(ClientMessage::Authenticate {
             token: identity.token,
             client_kind: ClientKind::Cli,
+            catalog: Default::default(),
         }),
     )
     .await

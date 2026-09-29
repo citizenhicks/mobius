@@ -12,7 +12,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::protocol::Role;
 
-pub(super) const MAX_PRE_AUTH_FRAME_BYTES: usize = 4 * 1024;
+pub(super) use crate::wire::MAX_PRE_AUTH_FRAME_BYTES;
 
 pub(super) struct ConnectionAdmission {
     pre_auth: Arc<Semaphore>,
@@ -89,6 +89,8 @@ enum PreAuthClientMessage {
     Authenticate {
         token: String,
         client_kind: ClientKind,
+        #[serde(default)]
+        catalog: CatalogHint,
     },
     #[serde(other)]
     Unsupported,
@@ -542,7 +544,7 @@ where
     let mut revocations = client_revocations.subscribe();
     let (reader, mut writer) = tokio::io::split(stream);
     let mut reader = FrameReader::new(reader);
-    let Some((client_id, client_kind, _authenticated_admission)) =
+    let Some((client_id, client_kind, _authenticated_admission, mut view)) =
         authenticate_connection(&mut reader, &mut writer, &auth, admission, auth_deadline).await?
     else {
         return Ok(());
@@ -570,9 +572,9 @@ where
         .ready()
         .await
         .map_err(|rejection| Error::Protocol(rejection.message))?;
-    write_frame(
+    view.write_catalog(
         &mut writer,
-        &ServerFrame::new(ServerMessage::Ready { payload: ready }),
+        ServerFrame::new(ServerMessage::Ready { payload: ready }),
     )
     .await?;
     let mut selected: Option<SelectedChat> = None;
@@ -624,7 +626,7 @@ where
                 None
             }
             outgoing = gateway_broadcasts.recv() => {
-                if !handle_gateway_broadcast(outgoing, &host, &disabled_notifications, &mut writer).await? {
+                if !handle_gateway_broadcast(outgoing, &host, &disabled_notifications, &mut view, &mut writer).await? {
                     return Ok(());
                 }
                 None
@@ -675,6 +677,7 @@ where
             &client,
             ConnectionSessionState {
                 disabled_notifications: &mut disabled_notifications,
+                view: &mut view,
                 selected: &mut selected,
                 git_diffs: &mut pending_git,
                 session_files: &session_files,
@@ -706,8 +709,8 @@ async fn authenticate_connection(
     auth: &AuthStore,
     admission: PreAuthConnectionAdmission,
     auth_deadline: Instant,
-) -> Result<Option<(String, ClientKind, OwnedSemaphorePermit)>> {
-    let first = tokio::time::timeout_at(
+) -> Result<Option<(String, ClientKind, OwnedSemaphorePermit, ClientView)>> {
+    let mut first = tokio::time::timeout_at(
         auth_deadline,
         read_frame_with_limit::<PreAuthClientFrame>(reader, MAX_PRE_AUTH_FRAME_BYTES),
     )
@@ -728,12 +731,21 @@ async fn authenticate_connection(
         .await?;
         return Ok(None);
     };
+    let view = ClientView::new(match &mut first.message {
+        PreAuthClientMessage::Authenticate { catalog, .. } => std::mem::take(catalog),
+        _ => CatalogHint::default(),
+    });
     let Some((client_id, client_kind)) = authenticate_client(first.message, auth, writer).await?
     else {
         return Ok(None);
     };
 
-    Ok(Some((client_id, client_kind, _authenticated_admission)))
+    Ok(Some((
+        client_id,
+        client_kind,
+        _authenticated_admission,
+        view,
+    )))
 }
 
 async fn authenticate_client(
@@ -756,7 +768,9 @@ async fn authenticate_client(
             auth.repair_pairing(&code, &replacing_token_digest, &client_label),
             client_kind,
         ),
-        PreAuthClientMessage::Authenticate { token, client_kind } => {
+        PreAuthClientMessage::Authenticate {
+            token, client_kind, ..
+        } => {
             return match auth.authenticate(&token) {
                 Ok(identity) => Ok(Some((identity.id, client_kind))),
                 Err(_) => {
@@ -896,6 +910,7 @@ fn profile_request(
 async fn write_gateway_broadcast(
     writer: &mut (impl AsyncWrite + Unpin),
     host: &GatewayHost,
+    view: &mut ClientView,
     mut frame: ServerFrame,
 ) -> Result<()> {
     // Queued catalogs can predate a mutation response on this connection.
@@ -905,18 +920,19 @@ async fn write_gateway_broadcast(
             .await
             .map_err(|rejection| Error::Protocol(rejection.message))?;
     }
-    write_frame(writer, &frame).await
+    view.write_broadcast(writer, frame).await
 }
 
 async fn handle_gateway_broadcast(
     outgoing: std::result::Result<ServerFrame, broadcast::error::RecvError>,
     host: &GatewayHost,
     disabled: &BTreeSet<GatewayNotification>,
+    view: &mut ClientView,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<bool> {
     match outgoing {
         Ok(frame) if notification_disabled(&frame.message, disabled) => Ok(true),
-        Ok(frame) => write_gateway_broadcast(writer, host, frame)
+        Ok(frame) => write_gateway_broadcast(writer, host, view, frame)
             .await
             .map(|()| true),
         Err(broadcast::error::RecvError::Lagged(_)) => {
@@ -924,9 +940,9 @@ async fn handle_gateway_broadcast(
                 .ready()
                 .await
                 .map_err(|rejection| Error::Protocol(rejection.message))?;
-            write_frame(
+            view.write_catalog(
                 writer,
-                &ServerFrame::new(ServerMessage::Ready { payload: ready }),
+                ServerFrame::new(ServerMessage::Ready { payload: ready }),
             )
             .await?;
             Ok(true)

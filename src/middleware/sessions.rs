@@ -54,11 +54,16 @@ mod text {
         pub(super) picker_fork_chat_from_message: String,
         pub(super) picker_resume_chat: String,
         pub(super) picker_user_message: String,
+        pub(super) render_list_chats: String,
+        pub(super) render_message_chat: String,
         pub(super) render_read_history: String,
         pub(super) render_search_history: String,
         pub(super) setting_page_size_description: String,
         pub(super) setting_page_size_label: String,
         pub(super) setting_page_size_step: i64,
+        pub(super) tool_list_chats_description: String,
+        pub(super) tool_message_chat_description: String,
+        pub(super) tool_message_chat_parameter_target_description: String,
         pub(super) tool_read_history_description: String,
         pub(super) tool_search_history_description: String,
         pub(super) tool_search_history_parameter_query_description: String,
@@ -87,6 +92,7 @@ const MAX_HISTORY_SCAN_CHARS: usize = 64_000;
 const HISTORY_CHUNK_CHARS: usize = 8_000;
 const HISTORY_EXCERPT_CHARS: usize = 600;
 const MAX_HISTORY_READ_CHARS: usize = 4_000;
+const MAX_HANDLE_TITLE_BYTES: usize = 64;
 
 /// Default number of chats loaded per catalog page.
 pub fn default_page_size() -> usize {
@@ -117,13 +123,77 @@ pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
         settings: &SETTINGS,
     });
 
+/// One open chat of an owner that can receive peer messages from its sibling chats.
+#[derive(Debug, PartialEq, Eq)]
+pub struct LiveChat {
+    /// The durable chat identifier.
+    pub session_id: String,
+    /// The user-visible chat title.
+    pub title: Option<String>,
+    /// The workspace label.
+    pub workspace: Option<String>,
+    /// Whether the chat has an active turn; an idle chat starts one for a message.
+    pub running: bool,
+}
+
+impl LiveChat {
+    /// Returns the peer identity recipients see; its `#id` addresses this chat.
+    #[must_use]
+    pub fn handle(&self) -> String {
+        let id = compact_id(&self.session_id);
+        match &self.title {
+            Some(title) => format!(
+                "{} #{id}",
+                &title[..title.floor_char_boundary(MAX_HANDLE_TITLE_BYTES)]
+            ),
+            None => format!("chat #{id}"),
+        }
+    }
+
+    /// Reports whether a `message_chat` target names this chat.
+    #[must_use]
+    pub fn is_target(&self, target: &str) -> bool {
+        let target = target.strip_prefix('#').unwrap_or(target);
+        target == self.session_id || target == compact_id(&self.session_id)
+    }
+}
+
+/// Host access to the other open chats of a chat's owner.
+pub trait LiveChats: Send + Sync {
+    /// Lists the owner's open chats other than `session_id`.
+    /// # Errors
+    ///
+    /// Returns an error if the host cannot read its open chats.
+    fn list<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<Vec<LiveChat>>>;
+
+    /// Delivers `text` from `session_id` as a peer message to one sibling chat.
+    /// # Errors
+    ///
+    /// Returns an error if `target` is not exactly one other open chat of the same
+    /// owner or that chat rejects the message.
+    fn send<'a>(
+        &'a self,
+        session_id: &'a str,
+        target: &'a str,
+        text: String,
+    ) -> BoxFuture<'a, Result<()>>;
+}
+
 /// Adds chat discovery and branching without changing the core loop.
 pub struct Sessions {
     page_size: usize,
     files: Option<crate::backend::session_files::SessionFileStore>,
+    live_chats: Option<Arc<dyn LiveChats>>,
 }
 
 impl Sessions {
+    /// Lets main chats list and message their owner's other open chats.
+    #[must_use]
+    pub fn live_chats(mut self, chats: Arc<dyn LiveChats>) -> Self {
+        self.live_chats = Some(chats);
+        self
+    }
+
     /// Injects durable media storage used when granting a fork its observations.
     #[must_use]
     pub fn session_files(mut self, files: crate::backend::session_files::SessionFileStore) -> Self {
@@ -144,6 +214,7 @@ impl Sessions {
         Ok(Self {
             page_size,
             files: None,
+            live_chats: None,
         })
     }
 }
@@ -153,6 +224,7 @@ impl Default for Sessions {
         Self {
             page_size: default_page_size(),
             files: None,
+            live_chats: None,
         }
     }
 }
@@ -169,7 +241,16 @@ impl Middleware for Sessions {
             owner_id: runtime.session_context.owner_id.clone(),
         });
         catalog.register(Arc::new(SearchHistory(Arc::clone(&history))))?;
-        catalog.register(Arc::new(ReadHistory(history)))
+        catalog.register(Arc::new(ReadHistory(Arc::clone(&history))))?;
+        let (Some(chats), crate::agent::AgentRole::Main) = (&self.live_chats, &runtime.role) else {
+            return Ok(());
+        };
+        let chats = Arc::new(OpenChats {
+            history,
+            chats: Arc::clone(chats),
+        });
+        catalog.register(Arc::new(ListChats(Arc::clone(&chats))))?;
+        catalog.register(Arc::new(MessageChat(chats)))
     }
 
     fn frontend(&self) -> FrontendContribution {
@@ -215,19 +296,27 @@ impl Middleware for Sessions {
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
         render_tool_event(
             event,
-            |name| matches!(name, "search_history" | "read_history"),
+            |name| {
+                matches!(
+                    name,
+                    "search_history" | "read_history" | "list_chats" | "message_chat"
+                )
+            },
             |name, arguments| super::tools::ToolHeading {
                 title: if matches!(event, EventMsg::ToolCallEnd(_)) {
                     name
                 } else {
                     match name {
                         "search_history" => text::DEFINITION.render_search_history.as_str(),
-                        _ => text::DEFINITION.render_read_history.as_str(),
+                        "read_history" => text::DEFINITION.render_read_history.as_str(),
+                        "list_chats" => text::DEFINITION.render_list_chats.as_str(),
+                        _ => text::DEFINITION.render_message_chat.as_str(),
                     }
                 }
                 .into(),
                 detail: arguments
                     .get("query")
+                    .or_else(|| arguments.get("target"))
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .into(),
@@ -318,6 +407,106 @@ struct History {
 
 struct SearchHistory(Arc<History>);
 struct ReadHistory(Arc<History>);
+
+struct OpenChats {
+    history: Arc<History>,
+    chats: Arc<dyn LiveChats>,
+}
+
+struct ListChats(Arc<OpenChats>);
+struct MessageChat(Arc<OpenChats>);
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MessageChatArgs {
+    target: String,
+    text: String,
+}
+
+impl Tool for ListChats {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "list_chats".into(),
+            description: text::DEFINITION.tool_list_chats_description.as_str().into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn exposure(&self) -> ToolExposure {
+        ToolExposure::Direct
+    }
+
+    fn execution_mode(&self) -> ExecutionMode {
+        ExecutionMode::Parallel
+    }
+
+    fn call<'a>(
+        &'a self,
+        _context: ToolContext,
+        _arguments: Value,
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+        Box::pin(async move {
+            let chats = self.0.chats.list(&self.0.history.session_id).await?;
+            let chats = chats
+                .iter()
+                .map(|chat| {
+                    serde_json::json!({
+                        "target": chat.session_id,
+                        "title": chat.title,
+                        "workspace": chat.workspace,
+                        "running": chat.running,
+                    })
+                })
+                .collect::<Vec<_>>();
+            Ok(serde_json::json!({ "chats": chats }).to_string().into())
+        })
+    }
+}
+
+impl Tool for MessageChat {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "message_chat".into(),
+            description: text::DEFINITION
+                .tool_message_chat_description
+                .as_str()
+                .into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "maxLength": 512,
+                        "description": text::DEFINITION.tool_message_chat_parameter_target_description.as_str()},
+                    "text": {"type": "string"}
+                },
+                "required": ["target", "text"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn exposure(&self) -> ToolExposure {
+        ToolExposure::Direct
+    }
+
+    fn call<'a>(
+        &'a self,
+        _context: ToolContext,
+        arguments: Value,
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+        Box::pin(async move {
+            let MessageChatArgs { target, text } = serde_json::from_value(arguments)?;
+            self.0
+                .chats
+                .send(&self.0.history.session_id, &target, text)
+                .await?;
+            Ok(String::new().into())
+        })
+    }
+}
 
 impl Tool for SearchHistory {
     fn definition(&self) -> ToolDefinition {
@@ -1183,8 +1372,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn history_tools_are_directly_available_for_the_required_owner() {
+    fn direct_tool_names(sessions: &Sessions, role: crate::agent::AgentRole) -> Vec<String> {
         let state = tempfile::tempdir().expect("state");
         let checkpoints: Arc<dyn crate::backend::checkpoint::CheckpointStore> = Arc::new(
             crate::backend::checkpoint::sqlite::SqliteCheckpoint::new(
@@ -1204,21 +1392,88 @@ mod tests {
                 ..crate::protocol::SessionContext::default()
             },
             metadata: std::collections::BTreeMap::new(),
-            role: crate::agent::AgentRole::Main,
+            role,
             frontend: Arc::new(|_| Ok(())),
         };
         let mut catalog = Catalog::default();
-        Sessions::default()
+        sessions
             .register(&mut catalog, &runtime)
             .expect("register session tools");
 
         catalog.finalize().expect("finalize tools");
-        let names = catalog
+        catalog
             .direct_definitions()
             .iter()
-            .map(|tool| tool.name.clone())
-            .collect::<Vec<_>>();
-        assert_eq!(names, ["read_history", "search_history"]);
+            .map(|tool| tool.name.as_str().into())
+            .collect()
+    }
+
+    #[test]
+    fn history_tools_are_directly_available_for_the_required_owner() {
+        assert_eq!(
+            direct_tool_names(&Sessions::default(), crate::agent::AgentRole::Main),
+            ["read_history", "search_history"]
+        );
+    }
+
+    struct NoChats;
+
+    impl LiveChats for NoChats {
+        fn list<'a>(&'a self, _session_id: &'a str) -> BoxFuture<'a, Result<Vec<LiveChat>>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn send<'a>(
+            &'a self,
+            _session_id: &'a str,
+            _target: &'a str,
+            _text: String,
+        ) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[test]
+    fn live_chat_tools_are_offered_only_to_main_chats_with_a_host() {
+        let sessions = Sessions::default().live_chats(Arc::new(NoChats));
+        let subagent = crate::agent::AgentRole::Subagent {
+            parent_session_id: "session".into(),
+            parent_turn_id: "turn".into(),
+        };
+
+        assert_eq!(
+            direct_tool_names(&sessions, crate::agent::AgentRole::Main),
+            [
+                "list_chats",
+                "message_chat",
+                "read_history",
+                "search_history"
+            ]
+        );
+        assert_eq!(
+            direct_tool_names(&sessions, subagent),
+            ["read_history", "search_history"]
+        );
+    }
+
+    #[test]
+    fn live_chat_handle_carries_the_id_it_answers_to() {
+        let mut chat = LiveChat {
+            session_id: "3f2a91c0-0000-4000-8000-000000000000".into(),
+            title: None,
+            workspace: None,
+            running: false,
+        };
+        assert_eq!(chat.handle(), "chat #3f2a91c0");
+        chat.title = Some(format!("Backend {}", "é".repeat(40)));
+        assert!(chat.handle().ends_with(" #3f2a91c0"));
+        assert!(chat.handle().len() <= MAX_HANDLE_TITLE_BYTES + " #3f2a91c0".len());
+
+        assert!(chat.is_target("#3f2a91c0"));
+        assert!(chat.is_target("3f2a91c0"));
+        assert!(chat.is_target("3f2a91c0-0000-4000-8000-000000000000"));
+        assert!(!chat.is_target("3f2a91c"));
+        assert!(!chat.is_target("#9b1c77d2"));
     }
 
     async fn save_history(

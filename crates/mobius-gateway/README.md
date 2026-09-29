@@ -229,6 +229,17 @@ restores them. Preferences last for that connection; initial and recovery `ready
 explicit responses, approvals, and session events remain mandatory. Provider command clients
 use these exclusions while awaiting their responses.
 
+`ready` and `gateway_configured` carry `revisions`, a content hash of each `config`, `bots`, and
+`sessions` section. Each connection receives only the sections it does not already hold: those
+equal to what it last received, or to the `known` revisions and `skip` list of the optional
+`catalog` hint in its `authenticate`, arrive empty and are named in `omitted`, so a client keeps
+its own copy of them. A Bot catalog broadcast the connection already holds is not repeated, and
+unsolicited session catalog updates arrive as `sessions_changed`: the whole ordered catalog,
+unchanged chats as bare IDs, with the new `revision`. `select_session` selects a chat for file,
+history, and workspace requests without replay or live events.
+`get_git_diff_totals` answers `git_diff_totals` with Git's own `--numstat` line counts
+(untracked files included for the unstaged scope), not the size-limited display diff.
+
 Full session request queues reject new external work with `server_busy` before accepting it;
 clients may retry that rejection with backoff. Internal shutdown, accounting, and routine
 delivery still wait for capacity. Each frame write has a 30-second deadline; failed or cancelled

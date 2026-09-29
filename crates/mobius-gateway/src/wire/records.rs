@@ -44,6 +44,179 @@ pub struct ReadyPayload {
     pub max_active_sessions: usize,
     /// The session file limits.
     pub session_file_limits: SessionFileLimits,
+    /// Content revision of each cacheable section.
+    pub revisions: BTreeMap<ReadySection, String>,
+    /// Sections sent empty because the client holds them at these revisions or skips them.
+    pub omitted: BTreeSet<ReadySection>,
+}
+
+impl ReadyPayload {
+    /// Exchanges one cacheable section with `other`.
+    pub fn swap_section(&mut self, other: &mut Self, section: ReadySection) {
+        use std::mem::swap;
+        match section {
+            ReadySection::Config => {
+                swap(&mut self.providers, &mut other.providers);
+                swap(&mut self.provider_instances, &mut other.provider_instances);
+                swap(&mut self.bot_defaults, &mut other.bot_defaults);
+                swap(&mut self.models, &mut other.models);
+                swap(&mut self.model_providers, &mut other.model_providers);
+                swap(
+                    &mut self.middleware_features,
+                    &mut other.middleware_features,
+                );
+                swap(&mut self.extensions, &mut other.extensions);
+                swap(&mut self.contributions, &mut other.contributions);
+            }
+            ReadySection::Bots => swap(&mut self.bots, &mut other.bots),
+            ReadySection::Sessions => swap(&mut self.sessions, &mut other.sessions),
+        }
+    }
+
+    /// Moves the sections the gateway omitted back in from the catalog the client holds.
+    pub fn restore_omitted(&mut self, held: &mut Self) {
+        for section in std::mem::take(&mut self.omitted) {
+            self.swap_section(held, section);
+        }
+    }
+
+    /// Replaces this held catalog with a newer Ready, keeping the sections it omitted.
+    pub fn update(&mut self, mut next: Self) {
+        next.restore_omitted(self);
+        *self = next;
+    }
+
+    /// Content revision of one section, comparable across connections to one gateway build.
+    #[must_use]
+    pub fn revision(&self, section: ReadySection) -> String {
+        match section {
+            ReadySection::Config => content_revision(&(
+                &self.providers,
+                &self.provider_instances,
+                &self.bot_defaults,
+                &self.models,
+                &self.model_providers,
+                &self.middleware_features,
+                &self.extensions,
+                &self.contributions,
+            )),
+            ReadySection::Bots => content_revision(&self.bots),
+            ReadySection::Sessions => content_revision(&self.sessions),
+        }
+    }
+
+    /// The same gateway identity with no catalog content.
+    pub(crate) fn blank(&self) -> Self {
+        Self {
+            gateway_version: String::new(),
+            machine_name: String::new(),
+            bots: Vec::new(),
+            sessions: Vec::new(),
+            background_approvals: Vec::new(),
+            providers: Vec::new(),
+            provider_instances: Vec::new(),
+            bot_defaults: None,
+            models: Vec::new(),
+            model_providers: BTreeMap::new(),
+            middleware_features: Vec::new(),
+            extensions: Vec::new(),
+            contributions: Vec::new(),
+            max_active_sessions: self.max_active_sessions,
+            session_file_limits: self.session_file_limits,
+            revisions: BTreeMap::new(),
+            omitted: BTreeSet::new(),
+        }
+    }
+}
+
+/// A stable digest of one catalog value's wire form.
+#[must_use]
+pub fn content_revision(value: &impl Serialize) -> String {
+    use sha2::Digest as _;
+    let mut hasher = sha2::Sha256::new();
+    // Serializing into a digest cannot fail for catalog records.
+    let _ = serde_json::to_writer(DigestWriter(&mut hasher), value);
+    hasher.finalize()[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+struct DigestWriter<'a>(&'a mut sha2::Sha256);
+
+impl std::io::Write for DigestWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        sha2::Digest::update(self.0, bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A cacheable part of the Ready catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadySection {
+    /// Providers, models, Bot defaults, middleware, extensions and contributions.
+    Config,
+    /// The Bot catalog.
+    Bots,
+    /// The visible session catalog.
+    Sessions,
+}
+
+/// Every section a Ready payload can omit.
+pub const READY_SECTIONS: [ReadySection; 3] = [
+    ReadySection::Config,
+    ReadySection::Bots,
+    ReadySection::Sessions,
+];
+
+/// What a client already holds of the Ready catalog, sent with `authenticate`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CatalogHint {
+    /// Sections the client holds, by the revision the gateway reported.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub known: BTreeMap<ReadySection, String>,
+    /// Sections this connection never needs, such as on a file-transfer connection.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub skip: BTreeSet<ReadySection>,
+}
+
+/// One position of the session catalog in a [`ServerMessage::SessionsChanged`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SessionSlot {
+    /// A session unchanged since the catalog this connection last received, by ID.
+    Unchanged(String),
+    /// A new or changed session.
+    Changed(Box<SessionRecord>),
+}
+
+/// Rebuilds the catalog `sessions` held from a [`ServerMessage::SessionsChanged`].
+pub fn apply_session_changes(sessions: &mut Vec<SessionRecord>, changes: Vec<SessionSlot>) {
+    let mut held: Vec<_> = std::mem::take(sessions).into_iter().map(Some).collect();
+    *sessions = changes
+        .into_iter()
+        .filter_map(|slot| match slot {
+            SessionSlot::Changed(session) => Some(*session),
+            SessionSlot::Unchanged(id) => held
+                .iter_mut()
+                .find(|held| held.as_ref().is_some_and(|held| held.session_id == id))
+                .and_then(Option::take),
+        })
+        .collect();
+}
+
+/// `+added −removed` lines of a Git diff, as Git's `--numstat` counts them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffTotals {
+    /// Added lines.
+    pub additions: u64,
+    /// Removed lines.
+    pub deletions: u64,
 }
 
 /// One hidden Bot conversation currently waiting for a human execution decision.

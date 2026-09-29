@@ -22,14 +22,13 @@ impl GatewayHost {
     pub(crate) async fn reconcile_pending_bot_deletion(
         &self,
     ) -> std::result::Result<(), Rejection> {
-        if self
+        if !self
             .state
             .lock()
             .await
             .bots
-            .pending_bot_deletion()
+            .has_pending_bot_deletion()
             .map_err(internal)?
-            .is_none()
         {
             return Ok(());
         }

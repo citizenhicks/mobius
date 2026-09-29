@@ -23,7 +23,7 @@ use mobius::middleware::image_generation::ImageGeneration;
 use mobius::middleware::instructions::Instructions;
 use mobius::middleware::messages::Messages;
 use mobius::middleware::scratchpad::{Scratchpad, ScratchpadStore};
-use mobius::middleware::sessions::Sessions;
+use mobius::middleware::sessions::{LiveChats, Sessions};
 use mobius::middleware::subagents::{SubagentLaunch, SubagentLauncher, Subagents};
 use mobius::middleware::tasks::Tasks;
 use mobius::middleware::tools::Tools;
@@ -190,6 +190,7 @@ pub(crate) async fn assemble(
     session_id: Option<String>,
     origin_label: &str,
     prepared: Arc<PreparedBot>,
+    live_chats: Option<Arc<dyn LiveChats>>,
 ) -> Result<BuiltAgent> {
     #[cfg(test)]
     store
@@ -218,6 +219,8 @@ pub(crate) async fn assemble(
         .map(|tls| tls.private_key.clone());
     let resources = Arc::clone(&prepared);
     let gateway_for_middleware = Arc::clone(&gateway);
+    // Hidden routine and channel chats may carry third-party input.
+    let live_chats = live_chats.filter(|_| chat.catalog_visible);
     let (
         gateway_sandbox,
         sandbox,
@@ -271,14 +274,24 @@ pub(crate) async fn assemble(
         } else {
             sandbox.attached_folders(workspace_path.clone(), attached_folders.clone())
         };
+        let extensions = extensions
+            .map(|extensions| {
+                activate_extensions(
+                    extensions,
+                    resolved_extensions,
+                    gateway_for_middleware,
+                    &workspace_path,
+                    backend,
+                )
+            })
+            .transpose()?;
         let middleware = build_middleware(
             &resources,
             &workspace_path,
-            gateway_for_middleware,
             scratchpad,
             session_files,
-            backend,
             extensions,
+            live_chats,
         )?;
         Ok((gateway_sandbox, Arc::new(sandbox), middleware))
     })
@@ -631,14 +644,12 @@ pub(crate) fn configured_compaction(settings: &MiddlewareConfig) -> Result<Compa
 fn build_middleware(
     prepared: &PreparedBot,
     workspace: &std::path::Path,
-    gateway: Arc<Mutex<GatewayConfig>>,
     scratchpad: ScratchpadStore,
     session_files: SessionFileStore,
-    backend: Arc<dyn SandboxBackend>,
     mut extensions: Option<Extensions>,
+    mut live_chats: Option<Arc<dyn LiveChats>>,
 ) -> Result<BuiltMiddleware> {
     let settings = &prepared.bot.config.config.middleware;
-    let resolved_extensions = &prepared.extensions;
     let mut entries: Vec<Arc<dyn Middleware>> = Vec::new();
     let mut subagent_template = None;
     let mut subagents = None;
@@ -662,15 +673,11 @@ fn build_middleware(
             BuiltinMiddleware::Scratchpad => Arc::new(
                 Scratchpad::new(scratchpad.clone()).agent_enabled(settings.enabled("scratchpad")),
             ),
-            BuiltinMiddleware::Extensions => Arc::new(activate_extensions(
+            BuiltinMiddleware::Extensions => Arc::new(
                 extensions
                     .take()
                     .ok_or_else(|| Error::Config("extensions were not discovered".into()))?,
-                resolved_extensions,
-                Arc::clone(&gateway),
-                workspace,
-                Arc::clone(&backend),
-            )?),
+            ),
             BuiltinMiddleware::Tasks => Arc::new(Tasks),
             BuiltinMiddleware::Subagents => {
                 let template = Arc::new(OnceLock::<AgentConfig>::new());
@@ -736,14 +743,18 @@ fn build_middleware(
                 .as_ref()
                 .map(Arc::clone)
                 .ok_or_else(|| Error::Config("compaction policy was not prepared".into()))?,
-            BuiltinMiddleware::Sessions => Arc::new(
-                Sessions::new(crate::middleware_manifest::usize_setting(
+            BuiltinMiddleware::Sessions => {
+                let sessions = Sessions::new(crate::middleware_manifest::usize_setting(
                     settings,
                     "sessions",
                     "page_size",
                 )?)?
-                .session_files(session_files.clone()),
-            ),
+                .session_files(session_files.clone());
+                Arc::new(match live_chats.take() {
+                    Some(chats) => sessions.live_chats(chats),
+                    None => sessions,
+                })
+            }
         };
         entries.push(middleware);
     }

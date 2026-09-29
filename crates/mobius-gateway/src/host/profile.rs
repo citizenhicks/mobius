@@ -1,11 +1,11 @@
 use super::*;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mobius::backend::model::provider::{ProviderAuth, provider};
 use mobius::backend::session_files::session_file_limits;
 
 use crate::config::{ConfigStore, GatewayConfig};
-use crate::wire::ProviderUsage;
+use crate::wire::{ProviderUsage, READY_SECTIONS};
 
 pub(super) async fn gateway_session_summaries(
     checkpoints: &Arc<dyn CheckpointStore>,
@@ -257,7 +257,7 @@ pub(super) async fn gateway_ready(
     let (sessions, background_approvals) = gateway_catalog(&state.checkpoints, &state.activities)
         .await
         .map_err(internal)?;
-    Ok(ReadyPayload {
+    let mut ready = ReadyPayload {
         gateway_version: env!("CARGO_PKG_VERSION").into(),
         machine_name: local_machine_name().map_err(internal)?,
         bots: state.bots.bots().map_err(internal)?,
@@ -273,7 +273,14 @@ pub(super) async fn gateway_ready(
         contributions,
         max_active_sessions: MAX_ACTIVE_SESSIONS,
         session_file_limits: session_file_limits(),
-    })
+        revisions: BTreeMap::new(),
+        omitted: BTreeSet::new(),
+    };
+    ready.revisions = READY_SECTIONS
+        .into_iter()
+        .map(|section| (section, ready.revision(section)))
+        .collect();
+    Ok(ready)
 }
 
 pub(super) fn local_machine_name() -> Result<String> {

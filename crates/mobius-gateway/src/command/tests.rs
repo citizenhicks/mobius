@@ -941,6 +941,7 @@ async fn report_gateway_version(
             ClientMessage::Authenticate {
                 token: "version-check-token".into(),
                 client_kind: ClientKind::GatewayDashboard,
+                catalog: Default::default(),
             }
         );
         if frame.version != protocol {

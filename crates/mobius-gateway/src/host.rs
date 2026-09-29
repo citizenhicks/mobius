@@ -5,6 +5,7 @@ mod deletion;
 mod extensions;
 mod files;
 mod git;
+mod live_chats;
 mod profile;
 mod providers;
 mod replay;
@@ -29,6 +30,7 @@ use mobius::backend::checkpoint::{
 use mobius::backend::model::ModelRouter;
 use mobius::backend::session_files::SessionFileStore;
 use mobius::middleware::scratchpad::ScratchpadStore;
+use mobius::middleware::sessions::LiveChats;
 use mobius::middleware::{FrontendExtensions, Middleware as _};
 use mobius::protocol::{
     Event, EventMsg, FrontendContribution, FrontendEvent, FrontendPreviewEvent, MessageAuthor,
@@ -70,8 +72,8 @@ use self::files::{
 };
 use self::git::{
     approve_credential as approve_git_credential_on_host, diff as workspace_git_diff,
-    probe_credential as probe_git_credential_on_host, status as git_status,
-    switch_branch as switch_workspace_branch,
+    diff_totals as workspace_git_diff_totals, probe_credential as probe_git_credential_on_host,
+    status as git_status, switch_branch as switch_workspace_branch,
 };
 use self::profile::*;
 use self::replay::*;
@@ -744,6 +746,7 @@ impl GatewayHost {
             self.events.clone(),
             starting.id.clone(),
             origin_label,
+            Arc::new(live_chats::GatewayLiveChats(Arc::downgrade(&self.state))),
         );
         drop(state);
         let host = start.await.map_err(internal)?;
@@ -1179,7 +1182,7 @@ fn stopped() -> Rejection {
 }
 
 fn reject_pending_bot_deletion(bots: &BotStore) -> std::result::Result<(), Rejection> {
-    if bots.pending_bot_deletion().map_err(internal)?.is_some() {
+    if bots.has_pending_bot_deletion().map_err(internal)? {
         return Err(Rejection {
             code: "bot_deletion_recovery",
             message: "finish Bot deletion recovery before changing gateway state".into(),

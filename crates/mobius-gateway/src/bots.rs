@@ -17,7 +17,7 @@ use mobius::protocol::MAX_MESSAGE_BYTES;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use self::storage::BotStorage;
+use self::storage::{BotStorage, CatalogStamp};
 use crate::config::validate_agent_composition;
 use crate::wire::{
     AgentComposition, BotRecord, ProviderTint, Routine, RoutineRun, RoutineRunStatus,
@@ -62,6 +62,8 @@ pub(crate) struct BotStore {
         std::collections::BTreeMap<String, std::sync::Arc<crate::assembly::PreparedBot>>,
     >,
     pub(crate) preparation_generation: std::sync::atomic::AtomicU64,
+    /// The last parsed catalog, reused until any connection commits.
+    cache: std::sync::Mutex<Option<(CatalogStamp, std::sync::Arc<BotState>)>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -346,6 +348,7 @@ impl BotStore {
             storage,
             prepared: tokio::sync::Mutex::default(),
             preparation_generation: std::sync::atomic::AtomicU64::default(),
+            cache: std::sync::Mutex::default(),
         };
         let state = store.fresh_state()?;
         if persisted && !state.bots.iter().any(|bot| bot.handle == MOBIUS_HANDLE) {
@@ -562,6 +565,10 @@ impl BotStore {
         Ok(self.fresh_state()?.pending_bot_deletion)
     }
 
+    pub(crate) fn has_pending_bot_deletion(&self) -> Result<bool> {
+        Ok(self.current_state()?.pending_bot_deletion.is_some())
+    }
+
     pub(crate) fn clear_bot_deletion(&self, bot_id: &str) -> Result<()> {
         let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
         state_lock.lock()?;
@@ -674,7 +681,7 @@ impl BotStore {
     }
 
     pub(crate) fn bots(&self) -> Result<Vec<BotRecord>> {
-        self.fresh_state()?
+        self.current_state()?
             .bots
             .iter()
             .map(StoredBot::record)
@@ -682,7 +689,7 @@ impl BotStore {
     }
 
     pub(crate) fn bot(&self, id: &str) -> Result<BotRecord> {
-        self.fresh_state()?
+        self.current_state()?
             .bots
             .iter()
             .find(|bot| bot.id == id)
@@ -769,7 +776,7 @@ impl BotStore {
     }
 
     pub(crate) fn next_routine_at(&self, now: i64) -> Result<Option<String>> {
-        self.fresh_state()?
+        self.current_state()?
             .routines
             .iter()
             .filter_map(|routine| routine.next_run_at(now))
@@ -783,7 +790,7 @@ impl BotStore {
     }
 
     pub(crate) fn has_active_routines(&self, now: i64) -> Result<bool> {
-        let state = self.fresh_state()?;
+        let state = self.current_state()?;
         Ok(state
             .routines
             .iter()
@@ -1251,15 +1258,40 @@ impl BotStore {
     }
 
     fn fresh_state(&self) -> Result<BotState> {
-        let state = self
-            .storage
-            .load_catalog()?
+        self.parse_state(self.storage.load_catalog()?)
+    }
+
+    /// The persisted catalog for reads, parsed again only after a commit.
+    fn current_state(&self) -> Result<std::sync::Arc<BotState>> {
+        let mut cache = self
+            .cache
+            .lock()
+            .map_err(|_| Error::Config("Bot catalog cache lock is poisoned".into()))?;
+        let stamp = cache.as_ref().map(|(stamp, _)| *stamp);
+        if let Some((stamp, contents)) = self.storage.catalog_since(stamp)? {
+            *cache = Some((stamp, std::sync::Arc::new(self.parse_state(contents)?)));
+        }
+        cache
+            .as_ref()
+            .map(|(_, state)| std::sync::Arc::clone(state))
+            .ok_or_else(|| Error::Config("Bot catalog is unavailable".into()))
+    }
+
+    fn parse_state(&self, contents: Option<String>) -> Result<BotState> {
+        #[cfg(test)]
+        CATALOG_PARSES.with(|count| count.set(count.get() + 1));
+        let state = contents
             .map(|contents| serde_json::from_str(&contents))
             .transpose()?
             .unwrap_or_default();
         validate_state(&state, &self.routines_dir)?;
         Ok(state)
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static CATALOG_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn validate_session_id(session_id: &str) -> Result<()> {

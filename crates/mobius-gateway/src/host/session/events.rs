@@ -27,6 +27,7 @@ impl HostState {
             _ => {}
         }
         let routine_completion = self.observe_routine_event(&event);
+        self.settle_peer_delivery(event);
         if let Some((active, status, message)) = routine_completion {
             self.bots.finish_run(active.run, status, message)?;
         }
@@ -44,6 +45,25 @@ impl HostState {
             }
         }
         Ok(())
+    }
+
+    /// Answers a peer sender with the agent's first outcome for its message.
+    fn settle_peer_delivery(&mut self, event: Event) {
+        let Some(reply) = event
+            .submission_id
+            .as_deref()
+            .and_then(|id| self.peer_deliveries.remove(id))
+        else {
+            return;
+        };
+        let _ = reply.send(match event.msg {
+            EventMsg::SubmissionRejected(rejected) => Err(Rejection {
+                code: "invalid_submission",
+                message: rejected.message,
+                fatal: false,
+            }),
+            _ => Ok(()),
+        });
     }
 
     pub(super) fn project_and_publish(

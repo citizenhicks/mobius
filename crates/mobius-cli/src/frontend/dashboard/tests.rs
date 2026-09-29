@@ -318,6 +318,8 @@ fn dashboard_state() -> super::state::DashboardState {
             contributions: Vec::new(),
             max_active_sessions: 0,
             session_file_limits: session_file_limits(),
+            revisions: Default::default(),
+            omitted: Default::default(),
         },
         clients: Vec::new(),
         current_client_id: None,

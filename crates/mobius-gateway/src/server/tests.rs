@@ -58,6 +58,7 @@ async fn configured_test_server(state_dir: PathBuf) -> (GatewayServer, PairingGr
 
 mod activity;
 mod bots;
+mod catalog;
 mod protocol;
 mod sessions;
 mod transport;
@@ -246,11 +247,17 @@ async fn wait_session_activity(
             } if actual == session_id => {
                 panic!("a nonselected chat event crossed the gateway-wide stream")
             }
-            ServerMessage::Sessions { sessions, .. } => {
+            ServerMessage::SessionsChanged { sessions, .. } => {
                 if let Some(activity) = sessions
                     .into_iter()
-                    .find(|session| session.session_id == session_id)
-                    .map(|session| session.activity)
+                    .find_map(|slot| match slot {
+                        crate::wire::SessionSlot::Changed(session)
+                            if session.session_id == session_id =>
+                        {
+                            Some(session.activity)
+                        }
+                        _ => None,
+                    })
                     .filter(|activity| activity.state == state)
                 {
                     return activity;

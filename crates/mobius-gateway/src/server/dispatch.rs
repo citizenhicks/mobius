@@ -6,7 +6,8 @@ use crate::wire::{GitDiffScope, WorkspaceFileScope};
 
 pub(super) struct SelectedChat {
     pub(super) host: HostHandle,
-    pub(super) broadcasts: broadcast::Receiver<SharedFrame>,
+    /// Live events, unless the chat was selected only for requests.
+    pub(super) broadcasts: Option<broadcast::Receiver<SharedFrame>>,
     pub(super) delivered_sequence: u64,
 }
 
@@ -22,6 +23,7 @@ const MAX_PENDING_GIT_DIFFS: usize = 4;
 
 pub(super) struct ConnectionSessionState<'a> {
     pub(super) disabled_notifications: &'a mut BTreeSet<GatewayNotification>,
+    pub(super) view: &'a mut ClientView,
     pub(super) selected: &'a mut Option<SelectedChat>,
     pub(super) git_diffs: &'a mut JoinSet<ServerMessage>,
     pub(super) session_files: &'a SessionFileStore,
@@ -35,14 +37,19 @@ pub(super) struct ConnectionSessionState<'a> {
 pub(super) async fn selected_broadcast(
     selected: &mut Option<SelectedChat>,
 ) -> std::result::Result<SharedFrame, broadcast::error::RecvError> {
-    let Some(active) = selected else {
+    let Some(SelectedChat {
+        broadcasts: Some(broadcasts),
+        delivered_sequence,
+        ..
+    }) = selected
+    else {
         return std::future::pending().await;
     };
     loop {
-        let frame = active.broadcasts.recv().await?;
+        let frame = broadcasts.recv().await?;
         let sequence = sequence(&frame);
-        if sequence.is_none_or(|value| value > active.delivered_sequence) {
-            active.delivered_sequence = sequence.unwrap_or(active.delivered_sequence);
+        if sequence.is_none_or(|value| value > *delivered_sequence) {
+            *delivered_sequence = sequence.unwrap_or(*delivered_sequence);
             return Ok(frame);
         }
     }
@@ -82,6 +89,30 @@ pub(super) async fn handle_message(
             *connection.disabled_notifications = disabled;
             return write_result(writer, request_id, Ok(())).await;
         }
+        ClientMessage::SelectSession {
+            request_id,
+            session_id,
+        } => {
+            return select_session(writer, connection.selected, request_id, session_id, gateway)
+                .await;
+        }
+        ClientMessage::GetGitDiffTotals {
+            request_id,
+            session_id,
+            scope,
+        } => {
+            return get_git_diff(
+                writer,
+                &mut connection,
+                GitDiffRequest {
+                    request_id,
+                    session_id,
+                    scope,
+                    totals: true,
+                },
+            )
+            .await;
+        }
         ClientMessage::Pair { .. }
         | ClientMessage::RepairPairing { .. }
         | ClientMessage::Authenticate { .. } => {
@@ -102,7 +133,7 @@ pub(super) async fn handle_message(
             client_id,
         } => return unpair_client(writer, request_id, client_id, auth, client, gateway).await,
         ClientMessage::ListSessions { request_id } => {
-            return list_sessions(writer, request_id, gateway).await;
+            return list_sessions(writer, connection.view, request_id, gateway).await;
         }
         ClientMessage::CreateSession {
             request_id,
@@ -207,12 +238,16 @@ pub(super) async fn handle_message(
             submission,
         } => return submit(writer, &connection, session_id, submission).await,
         ClientMessage::GetContributions { request_id } => {
-            return contribution_response(writer, request_id, gateway.contributions().await).await;
+            let contributions = gateway.contributions().await;
+            return contribution_response(writer, connection.view, request_id, contributions).await;
         }
         ClientMessage::SubmitContribution {
             request_id,
             operation,
-        } => return submit_contribution(writer, request_id, operation, gateway).await,
+        } => {
+            let contributions = gateway.submit_contribution(operation).await;
+            return contribution_response(writer, connection.view, request_id, contributions).await;
+        }
         ClientMessage::BeginSessionFileUpload {
             request_id,
             session_id,
@@ -298,16 +333,11 @@ pub(super) async fn handle_message(
             name,
             description,
         } => {
-            return write_bot_result(
-                writer,
-                request_id,
-                gateway.create_bot(&name, &description).await,
-                gateway,
-            )
-            .await;
+            let created = gateway.create_bot(&name, &description).await;
+            return write_bot_result(writer, connection.view, request_id, created, gateway).await;
         }
         ClientMessage::ListBots { request_id } => {
-            return list_bots(writer, request_id, gateway).await;
+            return write_bot_result(writer, connection.view, request_id, Ok(()), gateway).await;
         }
         ClientMessage::UpdateBot {
             request_id,
@@ -318,15 +348,10 @@ pub(super) async fn handle_message(
             tint,
             config,
         } => {
-            return write_bot_result(
-                writer,
-                request_id,
-                gateway
-                    .update_bot(&id, expected_revision, &name, &description, tint, config)
-                    .await,
-                gateway,
-            )
-            .await;
+            let updated = gateway
+                .update_bot(&id, expected_revision, &name, &description, tint, config)
+                .await;
+            return write_bot_result(writer, connection.view, request_id, updated, gateway).await;
         }
         ClientMessage::DeleteBot {
             request_id,
@@ -346,14 +371,10 @@ pub(super) async fn handle_message(
             expected_revision,
             config,
         } => {
-            return write_gateway_result(
-                writer,
-                request_id,
-                gateway
-                    .configure_bot_defaults(expected_revision, config)
-                    .await,
-            )
-            .await;
+            let configured = gateway
+                .configure_bot_defaults(expected_revision, config)
+                .await;
+            return write_gateway_result(writer, connection.view, request_id, configured).await;
         }
         ClientMessage::InstallExtension {
             request_id,
@@ -361,50 +382,38 @@ pub(super) async fn handle_message(
             reference,
             subdirectory,
         } => {
-            return write_gateway_result(
-                writer,
-                request_id,
-                gateway
-                    .install_extension(source, reference, subdirectory)
-                    .await,
-            )
-            .await;
+            let installed = gateway
+                .install_extension(source, reference, subdirectory)
+                .await;
+            return write_gateway_result(writer, connection.view, request_id, installed).await;
         }
         ClientMessage::UpdateExtension { request_id, id } => {
-            return write_gateway_result(writer, request_id, gateway.update_extension(id).await)
-                .await;
+            let updated = gateway.update_extension(id).await;
+            return write_gateway_result(writer, connection.view, request_id, updated).await;
         }
         ClientMessage::UninstallExtension { request_id, id } => {
-            return write_gateway_result(writer, request_id, gateway.uninstall_extension(id).await)
-                .await;
+            let uninstalled = gateway.uninstall_extension(id).await;
+            return write_gateway_result(writer, connection.view, request_id, uninstalled).await;
         }
         ClientMessage::TrustExtensionHooks {
             request_id,
             id,
             expected_digest,
         } => {
-            return write_gateway_result(
-                writer,
-                request_id,
-                gateway
-                    .set_extension_hooks_trusted(id, expected_digest, true)
-                    .await,
-            )
-            .await;
+            let trusted = gateway
+                .set_extension_hooks_trusted(id, expected_digest, true)
+                .await;
+            return write_gateway_result(writer, connection.view, request_id, trusted).await;
         }
         ClientMessage::RevokeExtensionHooksTrust {
             request_id,
             id,
             expected_digest,
         } => {
-            return write_gateway_result(
-                writer,
-                request_id,
-                gateway
-                    .set_extension_hooks_trusted(id, expected_digest, false)
-                    .await,
-            )
-            .await;
+            let revoked = gateway
+                .set_extension_hooks_trusted(id, expected_digest, false)
+                .await;
+            return write_gateway_result(writer, connection.view, request_id, revoked).await;
         }
         ClientMessage::ProbeGitCredential { request_id, target } => {
             return probe_git_credential(writer, request_id, target, gateway).await;
@@ -428,7 +437,19 @@ pub(super) async fn handle_message(
             request_id,
             session_id,
             scope,
-        } => return get_git_diff(writer, &mut connection, request_id, session_id, scope).await,
+        } => {
+            return get_git_diff(
+                writer,
+                &mut connection,
+                GitDiffRequest {
+                    request_id,
+                    session_id,
+                    scope,
+                    totals: false,
+                },
+            )
+            .await;
+        }
         ClientMessage::SwitchGitBranch {
             request_id,
             session_id,
@@ -530,25 +551,17 @@ pub(super) async fn handle_message(
             model_ids,
             reasoning_efforts,
         } => {
-            return write_gateway_result(
-                writer,
-                request_id,
-                gateway
-                    .register_provider(config, label, tint, model_ids, reasoning_efforts)
-                    .await,
-            )
-            .await;
+            let registered = gateway
+                .register_provider(config, label, tint, model_ids, reasoning_efforts)
+                .await;
+            return write_gateway_result(writer, connection.view, request_id, registered).await;
         }
         ClientMessage::RemoveProvider {
             request_id,
             instance,
         } => {
-            return write_gateway_result(
-                writer,
-                request_id,
-                gateway.remove_provider(instance).await,
-            )
-            .await;
+            let removed = gateway.remove_provider(instance).await;
+            return write_gateway_result(writer, connection.view, request_id, removed).await;
         }
         ClientMessage::CreatePairingCode { request_id } => {
             return create_pairing_code(writer, request_id, auth).await;
@@ -725,19 +738,14 @@ async fn unpair_client(
 
 async fn list_sessions(
     writer: &mut (impl AsyncWrite + Unpin),
+    view: &mut ClientView,
     request_id: String,
     gateway: &GatewayHost,
 ) -> Result<()> {
     match gateway.sessions().await {
         Ok(sessions) => {
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::Sessions {
-                    request_id: Some(request_id),
-                    sessions,
-                }),
-            )
-            .await
+            view.write_sessions(writer, Some(request_id), sessions)
+                .await
         }
         Err(rejection) => write_rejection(writer, request_id, rejection).await,
     }
@@ -806,6 +814,39 @@ async fn open_session(
     }
 }
 
+/// Selects a chat for requests only: no replay, no live events.
+async fn select_session(
+    writer: &mut (impl AsyncWrite + Unpin),
+    selected: &mut Option<SelectedChat>,
+    request_id: String,
+    session_id: String,
+    gateway: &GatewayHost,
+) -> Result<()> {
+    let opened = match gateway.open_session(&session_id).await {
+        Ok(host) => host.ready().await.map(|payload| (host, payload)),
+        Err(rejection) => Err(rejection),
+    };
+    let (host, payload) = match opened {
+        Ok(opened) => opened,
+        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
+    };
+    let delivered_sequence = payload.latest_sequence;
+    write_frame(
+        writer,
+        &ServerFrame::new(ServerMessage::SessionOpened {
+            request_id,
+            payload,
+        }),
+    )
+    .await?;
+    *selected = Some(SelectedChat {
+        host,
+        broadcasts: None,
+        delivered_sequence,
+    });
+    Ok(())
+}
+
 async fn get_session_history(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &ConnectionSessionState<'_>,
@@ -864,47 +905,20 @@ async fn set_session_pinned(
     .await
 }
 
-async fn list_bots(
+/// Answers a Bot request with the current Bot catalog.
+async fn write_bot_result<T>(
     writer: &mut (impl AsyncWrite + Unpin),
+    view: &mut ClientView,
     request_id: String,
+    result: std::result::Result<T, Rejection>,
     gateway: &GatewayHost,
 ) -> Result<()> {
-    match gateway.bots().await {
-        Ok(bots) => {
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::Bots {
-                    request_id: Some(request_id),
-                    bots,
-                }),
-            )
-            .await
-        }
-        Err(rejection) => write_rejection(writer, request_id, rejection).await,
-    }
-}
-
-async fn write_bot_result(
-    writer: &mut (impl AsyncWrite + Unpin),
-    request_id: String,
-    result: std::result::Result<crate::wire::BotRecord, Rejection>,
-    gateway: &GatewayHost,
-) -> Result<()> {
-    match result {
-        Ok(_) => {
-            let bots = match gateway.bots().await {
-                Ok(bots) => bots,
-                Err(rejection) => return write_rejection(writer, request_id, rejection).await,
-            };
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::Bots {
-                    request_id: Some(request_id),
-                    bots,
-                }),
-            )
-            .await
-        }
+    let bots = match result {
+        Ok(_) => gateway.bots().await,
+        Err(rejection) => Err(rejection),
+    };
+    match bots {
+        Ok(bots) => view.write_bots(writer, Some(request_id), bots).await,
         Err(rejection) => write_rejection(writer, request_id, rejection).await,
     }
 }
@@ -918,14 +932,10 @@ async fn write_bot_catalog_result(
     match result {
         Ok((bots, deleted_sessions)) => {
             forget_deleted_sessions(connection, &deleted_sessions);
-            write_frame(
-                writer,
-                &ServerFrame::new(ServerMessage::Bots {
-                    request_id: Some(request_id),
-                    bots,
-                }),
-            )
-            .await
+            connection
+                .view
+                .write_bots(writer, Some(request_id), bots)
+                .await
         }
         Err(rejection) => write_rejection(writer, request_id, rejection).await,
     }
@@ -1031,23 +1041,15 @@ async fn submit(
     write_result(writer, request_id, host.submit(submission).await).await
 }
 
-async fn submit_contribution(
-    writer: &mut (impl AsyncWrite + Unpin),
-    request_id: String,
-    operation: Op,
-    gateway: &GatewayHost,
-) -> Result<()> {
-    let result = gateway.submit_contribution(operation).await;
-    contribution_response(writer, request_id, result).await
-}
-
 async fn contribution_response(
     writer: &mut (impl AsyncWrite + Unpin),
+    view: &mut ClientView,
     request_id: String,
     result: std::result::Result<Vec<mobius::protocol::FrontendContribution>, Rejection>,
 ) -> Result<()> {
     match result {
         Ok(contributions) => {
+            view.forget(crate::wire::ReadySection::Config);
             write_frame(
                 writer,
                 &ServerFrame::new(ServerMessage::Contributions {
@@ -1401,13 +1403,25 @@ async fn generate_ssh_identity(
     }
 }
 
-async fn get_git_diff(
-    writer: &mut (impl AsyncWrite + Unpin),
-    connection: &mut ConnectionSessionState<'_>,
+struct GitDiffRequest {
     request_id: String,
     session_id: String,
     scope: GitDiffScope,
+    /// Answer with line totals instead of the diff text.
+    totals: bool,
+}
+
+async fn get_git_diff(
+    writer: &mut (impl AsyncWrite + Unpin),
+    connection: &mut ConnectionSessionState<'_>,
+    request: GitDiffRequest,
 ) -> Result<()> {
+    let GitDiffRequest {
+        request_id,
+        session_id,
+        scope,
+        totals,
+    } = request;
     let host = match require_selected(&*connection.selected, &session_id) {
         Ok(host) => host.clone(),
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
@@ -1426,6 +1440,23 @@ async fn get_git_diff(
     }
     // Owned by the connection: disconnecting aborts its outstanding Git reads.
     connection.git_diffs.spawn(async move {
+        let rejected = |request_id, rejection: Rejection| ServerMessage::Rejected {
+            request_id,
+            code: rejection.code.into(),
+            message: rejection.message,
+            fatal: rejection.fatal,
+        };
+        if totals {
+            return match host.git_diff_totals(scope).await {
+                Ok(totals) => ServerMessage::GitDiffTotals {
+                    request_id,
+                    session_id,
+                    scope,
+                    totals,
+                },
+                Err(rejection) => rejected(request_id, rejection),
+            };
+        }
         match host.git_diff(scope).await {
             Ok(diff) => ServerMessage::GitDiff {
                 request_id,
@@ -1433,12 +1464,7 @@ async fn get_git_diff(
                 scope,
                 diff,
             },
-            Err(rejection) => ServerMessage::Rejected {
-                request_id,
-                code: rejection.code.into(),
-                message: rejection.message,
-                fatal: rejection.fatal,
-            },
+            Err(rejection) => rejected(request_id, rejection),
         }
     });
     Ok(())

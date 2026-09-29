@@ -97,7 +97,7 @@ async fn runtime_shutdown_excludes_dashboard_observers_and_gates_new_native_conn
     assert!(before.0);
     assert_eq!(before.1, 0);
     assert_eq!(before, activity(&sender, &mut events).await);
-    let native = GatewayClient::connect(&endpoint, identity.token.clone(), ClientKind::Cli)
+    let native = GatewayClient::connect(&endpoint, &identity.token, ClientKind::Cli)
         .await
         .unwrap();
     let during = activity(&sender, &mut events).await;
@@ -124,13 +124,14 @@ async fn runtime_shutdown_excludes_dashboard_observers_and_gates_new_native_conn
         ServerMessage::IdleShutdownPrepared { prepared: true, .. }
     ));
     assert!(
-        GatewayClient::connect(&endpoint, identity.token.clone(), ClientKind::Cli)
+        GatewayClient::connect(&endpoint, &identity.token, ClientKind::Cli)
             .await
             .is_err()
     );
-    let dashboard = GatewayClient::connect(&endpoint, identity.token, ClientKind::GatewayDashboard)
-        .await
-        .unwrap();
+    let dashboard =
+        GatewayClient::connect(&endpoint, &identity.token, ClientKind::GatewayDashboard)
+            .await
+            .unwrap();
     let (controller, mut control_events) = dashboard.into_parts();
     wait_gateway_ready(&mut control_events).await;
     assert_eq!(

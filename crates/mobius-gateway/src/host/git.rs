@@ -8,7 +8,7 @@ use tokio::process::Command;
 use url::Url;
 
 use crate::sandbox::{GatewaySandbox, REPOSITORY_LOCAL_GIT_ENVIRONMENT};
-use crate::wire::{GitDiffScope, GitStatus, MAX_FRAME_BYTES};
+use crate::wire::{DiffTotals, GitDiffScope, GitStatus, MAX_FRAME_BYTES};
 
 use super::Rejection;
 
@@ -372,20 +372,39 @@ pub(super) async fn diff(
     workspace: &Path,
     scope: GitDiffScope,
 ) -> std::result::Result<String, Rejection> {
-    tokio::time::timeout(GIT_TIMEOUT, diff_inner(sandbox, workspace, scope))
+    let mut diff = tokio::time::timeout(GIT_TIMEOUT, diff_inner(sandbox, workspace, scope, false))
         .await
-        .map_err(|_| timeout())?
+        .map_err(|_| timeout())??;
+    truncate_diff(&mut diff, MAX_GIT_DIFF_BYTES);
+    Ok(String::from_utf8_lossy(&diff).into_owned())
 }
 
+/// Exact line totals from Git's own counts, independent of the display patch budget.
+pub(super) async fn diff_totals(
+    sandbox: &GatewaySandbox,
+    workspace: &Path,
+    scope: GitDiffScope,
+) -> std::result::Result<DiffTotals, Rejection> {
+    let numstat = tokio::time::timeout(GIT_TIMEOUT, diff_inner(sandbox, workspace, scope, true))
+        .await
+        .map_err(|_| timeout())??;
+    Ok(numstat_totals(&numstat))
+}
+
+/// Runs the scope's diff as a patch or, with `numstat`, as per-file line counts.
 async fn diff_inner(
     sandbox: &GatewaySandbox,
     workspace: &Path,
     scope: GitDiffScope,
-) -> std::result::Result<String, Rejection> {
+    numstat: bool,
+) -> std::result::Result<Vec<u8>, Rejection> {
+    const PATCH: [&str; 3] = ["--no-ext-diff", "--no-color", "--no-textconv"];
+    const NUMSTAT: [&str; 4] = ["--numstat", "--no-ext-diff", "--no-color", "--no-textconv"];
+    let flags: &[&str] = if numstat { &NUMSTAT } else { &PATCH };
     let repository = output(sandbox, &["rev-parse", "--is-inside-work-tree"]).await?;
     if repository.exit_code != 0 {
         if repository.stderr.contains("not a git repository") {
-            return Ok(String::new());
+            return Ok(Vec::new());
         }
         return Err(failure(
             "checking the Git workspace failed",
@@ -393,31 +412,16 @@ async fn diff_inner(
         ));
     }
     if repository.stdout != "true\n" {
-        return Ok(String::new());
+        return Ok(Vec::new());
     }
 
     let mut diff = match scope {
         GitDiffScope::Staged => successful_output(
-            output(
-                sandbox,
-                &[
-                    "diff",
-                    "--cached",
-                    "--no-ext-diff",
-                    "--no-color",
-                    "--no-textconv",
-                    "--",
-                ],
-            )
-            .await?,
+            output(sandbox, &[&["diff", "--cached"], flags, &["--"]].concat()).await?,
             "staged git diff failed",
         )?,
         GitDiffScope::Unstaged => successful_output(
-            output(
-                sandbox,
-                &["diff", "--no-ext-diff", "--no-color", "--no-textconv", "--"],
-            )
-            .await?,
+            output(sandbox, &[&["diff"], flags, &["--"]].concat()).await?,
             "unstaged git diff failed",
         )?,
         GitDiffScope::Committed => {
@@ -428,15 +432,7 @@ async fn diff_inner(
                 successful_output(
                     output(
                         sandbox,
-                        &[
-                            "show",
-                            "--format=",
-                            "--no-ext-diff",
-                            "--no-color",
-                            "--no-textconv",
-                            "HEAD",
-                            "--",
-                        ],
+                        &[&["show", "--format="], flags, &["HEAD", "--"]].concat(),
                     )
                     .await?,
                     "committed git diff failed",
@@ -446,17 +442,17 @@ async fn diff_inner(
     };
 
     if scope == GitDiffScope::Unstaged {
-        append_untracked(sandbox, workspace, &mut diff).await?;
+        append_untracked(sandbox, workspace, &mut diff, flags, numstat).await?;
     }
-
-    truncate_diff(&mut diff, MAX_GIT_DIFF_BYTES);
-    Ok(String::from_utf8_lossy(&diff).into_owned())
+    Ok(diff)
 }
 
 async fn append_untracked(
     sandbox: &GatewaySandbox,
     workspace: &Path,
     diff: &mut Vec<u8>,
+    flags: &[&str],
+    numstat: bool,
 ) -> std::result::Result<(), Rejection> {
     let untracked = successful_output(
         output(
@@ -470,7 +466,8 @@ async fn append_untracked(
         .split(|byte| *byte == 0)
         .filter(|path| !path.is_empty())
     {
-        if diff.len() >= MAX_GIT_DIFF_BYTES {
+        // Only the display patch has a budget; counts must cover every file.
+        if !numstat && diff.len() >= MAX_GIT_DIFF_BYTES {
             break;
         }
         let path = std::str::from_utf8(path).map_err(|_| invalid_path())?;
@@ -486,7 +483,7 @@ async fn append_untracked(
         if !metadata.file_type().is_file() {
             continue;
         }
-        let patch = untracked_diff(sandbox, path).await?;
+        let patch = untracked_diff(sandbox, path, flags).await?;
         if !is_binary_diff(&patch) {
             append_diff(diff, &patch);
         }
@@ -504,21 +501,10 @@ async fn output(
 async fn untracked_diff(
     sandbox: &GatewaySandbox,
     path: &str,
+    flags: &[&str],
 ) -> std::result::Result<Vec<u8>, Rejection> {
-    let output = output(
-        sandbox,
-        &[
-            "diff",
-            "--no-ext-diff",
-            "--no-color",
-            "--no-textconv",
-            "--no-index",
-            "--",
-            "/dev/null",
-            path,
-        ],
-    )
-    .await?;
+    let command = [&["diff"], flags, &["--no-index", "--", "/dev/null", path]].concat();
+    let output = output(sandbox, &command).await?;
     if matches!(output.exit_code, 0 | 1) {
         Ok(output.stdout.into_bytes())
     } else {
@@ -559,6 +545,22 @@ fn truncate_diff(diff: &mut Vec<u8>, max_bytes: usize) {
         .map_or(0, |index| index + 1);
     diff.truncate(cut);
     diff.extend_from_slice(TRUNCATION_NOTE);
+}
+
+/// Sums `added<TAB>deleted<TAB>path` lines; binary files report `-` and add nothing.
+fn numstat_totals(numstat: &[u8]) -> DiffTotals {
+    numstat
+        .split(|byte| *byte == b'\n')
+        .fold(DiffTotals::default(), |mut totals, line| {
+            let mut counts = line
+                .split(|byte| *byte == b'\t')
+                .map(|count| std::str::from_utf8(count).ok()?.parse::<u64>().ok());
+            if let (Some(Some(added)), Some(Some(deleted))) = (counts.next(), counts.next()) {
+                totals.additions += added;
+                totals.deletions += deleted;
+            }
+            totals
+        })
 }
 
 fn safe_path(path: &Path) -> bool {
@@ -844,6 +846,62 @@ mod tests {
                 && !unstaged.contains("ignored.txt")
                 && !unstaged.contains("binary.bin"),
             "unexpected scoped diffs:\nstaged:\n{staged}\nunstaged:\n{unstaged}"
+        );
+    }
+
+    #[tokio::test]
+    async fn diff_totals_are_gits_own_counts_for_every_scope() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        initialize_repository(workspace.path(), "main");
+        let (_state, sandbox) = test_sandbox(workspace.path());
+        let path = workspace.path();
+        // Content lines that look like patch headers are still changes.
+        std::fs::write(path.join("tracked.txt"), "--flag\n").expect("tracked");
+        run_git(path, &["add", "--", "tracked.txt"]);
+        run_git(path, &["commit", "--quiet", "-m", "flag"]);
+        std::fs::write(path.join("tracked.txt"), "++counter;\n").expect("change");
+        let unstaged = diff_totals(&sandbox, path, GitDiffScope::Unstaged)
+            .await
+            .expect("unstaged totals");
+        assert_eq!((unstaged.additions, unstaged.deletions), (1, 1));
+
+        // Untracked files count in full, past the display diff's size budget.
+        let lines = MAX_GIT_DIFF_BYTES / 800 + 1;
+        std::fs::write(
+            path.join("large.txt"),
+            format!("{}\n", "x".repeat(1000)).repeat(lines),
+        )
+        .expect("large untracked file");
+        std::fs::write(path.join("binary.bin"), [0, 1, 2]).expect("binary file");
+        let unstaged = diff_totals(&sandbox, path, GitDiffScope::Unstaged)
+            .await
+            .expect("unstaged totals");
+        assert_eq!(unstaged.additions, 1 + lines as u64);
+        assert!(
+            diff(&sandbox, path, GitDiffScope::Unstaged)
+                .await
+                .expect("display diff")
+                .ends_with("[diff truncated]\n"),
+            "the display diff stays within its budget"
+        );
+
+        run_git(path, &["add", "--", "tracked.txt"]);
+        let staged = diff_totals(&sandbox, path, GitDiffScope::Staged)
+            .await
+            .expect("staged totals");
+        assert_eq!((staged.additions, staged.deletions), (1, 1));
+        let committed = diff_totals(&sandbox, path, GitDiffScope::Committed)
+            .await
+            .expect("committed totals");
+        assert_eq!((committed.additions, committed.deletions), (1, 1));
+
+        let outside = tempfile::tempdir().expect("outside");
+        let (_outside_state, outside_sandbox) = test_sandbox(outside.path());
+        assert_eq!(
+            diff_totals(&outside_sandbox, outside.path(), GitDiffScope::Unstaged)
+                .await
+                .expect("no repository"),
+            DiffTotals::default()
         );
     }
 

@@ -537,6 +537,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
             Some("chat".into()),
             "test",
             Arc::clone(&prepared),
+            None,
         )
         .await
         .expect("assemble default recipe");
@@ -553,6 +554,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
             Some("sibling".into()),
             "test",
             Arc::clone(&prepared),
+            None,
         )
         .await
         .expect("assemble another chat from the same prepared Bot");
@@ -627,6 +629,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         Some("chat".into()),
         "test",
         Arc::clone(&prepared),
+        None,
     )
     .await
     .expect("assemble chat");

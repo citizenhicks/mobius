@@ -53,6 +53,23 @@ pub enum ClientMessage {
         /// Broadcasts to suppress until replaced or the connection closes.
         disabled: BTreeSet<GatewayNotification>,
     },
+    /// Selects a chat for file, history and workspace requests without replaying or
+    /// streaming its events; answered by `session_opened` alone.
+    SelectSession {
+        /// The request identifier.
+        request_id: String,
+        /// The session identifier.
+        session_id: String,
+    },
+    /// Asks for the line totals of a Git diff, as Git counts them.
+    GetGitDiffTotals {
+        /// The request identifier.
+        request_id: String,
+        /// The session identifier.
+        session_id: String,
+        /// The scope.
+        scope: GitDiffScope,
+    },
     /// Selects the set desktop runtime case.
     SetDesktopRuntime {
         /// The request identifier.
@@ -107,6 +124,9 @@ pub enum ClientMessage {
         token: String,
         /// The client kind.
         client_kind: ClientKind,
+        /// The catalog this client already holds, or does not need.
+        #[serde(default)]
+        catalog: CatalogHint,
     },
     /// Selects the list clients case.
     ListClients {
@@ -925,6 +945,14 @@ pub enum ServerMessage {
         /// The approvals.
         approvals: Vec<BackgroundApproval>,
     },
+    /// The whole visible session catalog, in order, relative to the catalog this
+    /// connection last received; unsolicited catalog updates arrive only in this form.
+    SessionsChanged {
+        /// Every session of the catalog, unchanged ones by ID.
+        sessions: Vec<SessionSlot>,
+        /// The new catalog's revision.
+        revision: String,
+    },
 
     /// Selects the bot sessions case.
     BotSessions {
@@ -1043,6 +1071,17 @@ pub enum ServerMessage {
         scope: GitDiffScope,
         /// The diff.
         diff: String,
+    },
+    /// Line totals of a Git diff.
+    GitDiffTotals {
+        /// The request identifier.
+        request_id: String,
+        /// The session identifier.
+        session_id: String,
+        /// The scope.
+        scope: GitDiffScope,
+        /// The totals.
+        totals: DiffTotals,
     },
     /// Selects the directories case.
     Directories {

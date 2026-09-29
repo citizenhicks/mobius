@@ -41,11 +41,13 @@ struct HostState {
     discovery_gate: Arc<Mutex<()>>,
     desktop: Arc<DesktopControl>,
     browser: Arc<BrowserHost>,
+    live_chats: Arc<dyn LiveChats>,
     provider_epoch: Arc<AtomicU64>,
     activities: SessionActivities,
     running: RunningAgent,
     pending_turns: usize,
     pending_messages: HashSet<String>,
+    peer_deliveries: HashMap<String, oneshot::Sender<std::result::Result<(), Rejection>>>,
     approval_active: bool,
     turn_error: Option<String>,
     last_assistant_text: Option<String>,
@@ -132,12 +134,20 @@ pub(super) enum HostCommand {
         last_sequence: Option<u64>,
         reply: oneshot::Sender<std::result::Result<HostSnapshot, Rejection>>,
     },
+    Ready {
+        reply: oneshot::Sender<std::result::Result<SessionReadyPayload, Rejection>>,
+    },
     HistoryPage {
         before_sequence: Option<u64>,
         reply: oneshot::Sender<std::result::Result<SessionHistoryPage, Rejection>>,
     },
     Submit {
         submission: Submission,
+        reply: oneshot::Sender<std::result::Result<(), Rejection>>,
+    },
+    DeliverPeer {
+        submission: Submission,
+        bot_id: String,
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
     },
     ReassignBot {
@@ -239,6 +249,7 @@ impl HostHandle {
         gateway_events: broadcast::Sender<ServerFrame>,
         session_id: String,
         origin_label: &str,
+        live_chats: Arc<dyn LiveChats>,
     ) -> Result<Self> {
         let running = start_agent(
             Arc::clone(&gateway),
@@ -256,6 +267,7 @@ impl HostHandle {
             origin_label,
             None,
             Arc::clone(&provider_epoch),
+            Arc::clone(&live_chats),
         )
         .await?;
         let alive = Arc::new(AtomicBool::new(true));
@@ -285,6 +297,7 @@ impl HostHandle {
             discovery_gate,
             desktop,
             browser,
+            live_chats,
             alive: Arc::clone(&alive),
             terminated: Arc::clone(&terminated),
             termination: Arc::clone(&termination),
@@ -294,6 +307,7 @@ impl HostHandle {
             running,
             pending_turns: usize::from(awaiting_approval),
             pending_messages: HashSet::new(),
+            peer_deliveries: HashMap::new(),
             approval_active: awaiting_approval,
             turn_error: None,
             last_assistant_text: None,
@@ -402,6 +416,13 @@ impl HostHandle {
         receive(receiver).await
     }
 
+    /// The chat's current state, without replay.
+    pub(crate) async fn ready(&self) -> std::result::Result<SessionReadyPayload, Rejection> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(HostCommand::Ready { reply }).await?;
+        receive(receiver).await
+    }
+
     pub(crate) async fn history_page(
         &self,
         before_sequence: Option<u64>,
@@ -424,6 +445,23 @@ impl HostHandle {
         receive(receiver).await
     }
 
+    /// Delivers a peer message only while this chat belongs to `bot_id`, and
+    /// answers once the agent has accepted or rejected it.
+    pub(super) async fn deliver_peer(
+        &self,
+        submission: Submission,
+        bot_id: String,
+    ) -> std::result::Result<(), Rejection> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(HostCommand::DeliverPeer {
+            submission,
+            bot_id,
+            reply,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
     pub(crate) async fn attach_folder(
         &self,
         folder: PathBuf,
@@ -438,10 +476,24 @@ impl HostHandle {
         &self,
         scope: GitDiffScope,
     ) -> std::result::Result<String, Rejection> {
+        let (sandbox, workspace) = self.git_workspace().await?;
+        workspace_git_diff(&sandbox, &workspace, scope).await
+    }
+
+    pub(crate) async fn git_diff_totals(
+        &self,
+        scope: GitDiffScope,
+    ) -> std::result::Result<crate::wire::DiffTotals, Rejection> {
+        let (sandbox, workspace) = self.git_workspace().await?;
+        workspace_git_diff_totals(&sandbox, &workspace, scope).await
+    }
+
+    async fn git_workspace(
+        &self,
+    ) -> std::result::Result<(Arc<GatewaySandbox>, PathBuf), Rejection> {
         let (reply, receiver) = oneshot::channel();
         self.send(HostCommand::GitWorkspace { reply }).await?;
-        let (sandbox, workspace) = receiver.await.map_err(|_| stopped())?;
-        workspace_git_diff(&sandbox, &workspace, scope).await
+        receiver.await.map_err(|_| stopped())
     }
 
     pub(crate) async fn workspace_files(
@@ -688,6 +740,7 @@ async fn start_agent(
     origin_label: &str,
     prepared: Option<Arc<crate::assembly::PreparedBot>>,
     provider_epoch: Arc<AtomicU64>,
+    live_chats: Arc<dyn LiveChats>,
 ) -> Result<RunningAgent> {
     let prepared = if let Some(prepared) = prepared {
         prepared
@@ -773,6 +826,7 @@ async fn start_agent(
         Some(session_id),
         origin_label,
         Arc::clone(&prepared),
+        Some(live_chats),
     )
     .await?;
     let session = agent.session().clone();

@@ -6,7 +6,7 @@ use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayClient, GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
     ClientKind, ClientMessage, ClientStatus, ReadyPayload, ServerFrame, ServerMessage,
-    SessionActivityState, SessionRecord,
+    SessionActivityState, SessionRecord, apply_session_changes,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -41,7 +41,7 @@ pub(super) async fn connect(
                 "this machine is not paired with {endpoint}; pair it before opening the gateway dashboard"
             ))
         })?;
-    let client = GatewayClient::connect(&endpoint, token, ClientKind::GatewayDashboard)
+    let client = GatewayClient::connect(&endpoint, &token, ClientKind::GatewayDashboard)
         .await
         .map_err(gateway_error)?;
     let (sender, mut events) = client.into_parts();
@@ -714,12 +714,16 @@ pub(super) async fn request_snapshot(sender: &GatewaySender) -> Result<()> {
 pub(super) fn handle_frame(state: &mut DashboardState, message: ServerMessage) -> Result<()> {
     match message {
         ServerMessage::Ready { payload } | ServerMessage::GatewayConfigured { payload, .. } => {
-            state.gateway = payload;
+            state.gateway.update(payload);
             sync_chat_selection(state);
             sync_bot_selection(state);
         }
         ServerMessage::Sessions { sessions, .. } => {
             state.gateway.sessions = sessions;
+            sync_chat_selection(state);
+        }
+        ServerMessage::SessionsChanged { sessions, .. } => {
+            apply_session_changes(&mut state.gateway.sessions, sessions);
             sync_chat_selection(state);
         }
         ServerMessage::Bots { bots, .. } => {

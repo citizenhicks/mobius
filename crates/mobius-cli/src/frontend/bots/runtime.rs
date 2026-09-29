@@ -2,7 +2,9 @@ use std::io;
 
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
-use mobius_gateway::wire::{ClientMessage, ReadyPayload, ServerFrame, ServerMessage};
+use mobius_gateway::wire::{
+    ClientMessage, ReadyPayload, ServerFrame, ServerMessage, apply_session_changes,
+};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::Event;
@@ -126,12 +128,13 @@ pub(super) fn handle_frame(
     let mut follow_up = FollowUp::None;
     let mut deferred = None;
     match message {
-        ServerMessage::Ready { payload } => *gateway = payload,
+        ServerMessage::Ready { payload } => gateway.update(payload),
         ServerMessage::GatewayConfigured {
             request_id,
             payload,
         } => {
-            *gateway = payload.clone();
+            // Deliberate copy: this screen applies it, and the flow that asked still gets the frame.
+            gateway.update(payload.clone());
             deferred = Some(ServerFrame::new(ServerMessage::GatewayConfigured {
                 request_id,
                 payload,
@@ -148,6 +151,9 @@ pub(super) fn handle_frame(
                     sessions,
                 }));
             }
+        }
+        ServerMessage::SessionsChanged { sessions, .. } => {
+            apply_session_changes(&mut gateway.sessions, sessions)
         }
         ServerMessage::Bots { request_id, bots } => {
             gateway.bots = bots.clone();

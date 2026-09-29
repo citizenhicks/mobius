@@ -519,6 +519,7 @@ async fn encrypted_relay_probe() {
             .send(ClientMessage::Authenticate {
                 token: token.clone(),
                 client_kind: ClientKind::Cli,
+                catalog: Default::default(),
             })
             .await;
         assert!(matches!(client.next().await, ServerMessage::Authenticated));

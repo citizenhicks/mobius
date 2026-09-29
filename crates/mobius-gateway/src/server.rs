@@ -3,6 +3,7 @@
 mod dispatch;
 mod responses;
 mod transport;
+mod view;
 mod voice;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -37,15 +38,17 @@ use crate::bots::BotStore;
 use crate::config::{ConfigStore, CredentialStore, GatewayConfig, TlsConfig};
 use crate::host::{GatewayHost, HostHandle, Rejection};
 use crate::wire::{
-    ClientFrame, ClientKind, ClientMessage, ClientStatus, DirectoryEntry, DirectoryListing,
-    FrameReader, GatewayNotification, MAX_FRAME_BYTES, ProfileSnapshot, ServerFrame, ServerMessage,
-    SharedFrame, read_frame, read_frame_with_limit, validate_version, websocket_error, write_frame,
+    CatalogHint, ClientFrame, ClientKind, ClientMessage, ClientStatus, DirectoryEntry,
+    DirectoryListing, FrameReader, GatewayNotification, MAX_FRAME_BYTES, ProfileSnapshot,
+    ServerFrame, ServerMessage, SharedFrame, read_frame, read_frame_with_limit, validate_version,
+    websocket_error, write_frame,
 };
 use crate::{Error, Result};
 
 use self::dispatch::*;
 use self::responses::*;
 use self::transport::*;
+use self::view::ClientView;
 
 const PRE_AUTH_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_AUTHENTICATED_CONNECTIONS: usize = 32;

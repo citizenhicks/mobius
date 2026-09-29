@@ -239,6 +239,9 @@ impl HostState {
             } => {
                 let _ = reply.send(self.snapshot_value(last_sequence).await);
             }
+            HostCommand::Ready { reply } => {
+                let _ = reply.send(self.ready().await.map_err(internal));
+            }
             HostCommand::HistoryPage {
                 before_sequence,
                 reply,
@@ -285,6 +288,34 @@ impl HostState {
                 }
                 .await;
                 let _ = reply.send(result);
+            }
+            HostCommand::DeliverPeer {
+                submission,
+                bot_id,
+                reply,
+            } => {
+                let id = submission.id.clone();
+                let routed = async {
+                    let _mutation = self.begin_session_mutation()?;
+                    self.bind_bot().await?;
+                    if self.spec.bot_id != bot_id {
+                        return Err(Rejection {
+                            code: "invalid_submission",
+                            message: "the chat now belongs to another Bot".into(),
+                            fatal: false,
+                        });
+                    }
+                    self.submit(submission)
+                }
+                .await;
+                match routed {
+                    Ok(()) => {
+                        self.peer_deliveries.insert(id, reply);
+                    }
+                    Err(rejection) => {
+                        let _ = reply.send(Err(rejection));
+                    }
+                }
             }
             HostCommand::ReassignBot { bot_id, reply } => {
                 let result = async {
@@ -683,6 +714,7 @@ impl HostState {
                 "mobius-gateway",
                 prepared,
                 Arc::clone(&self.provider_epoch),
+                Arc::clone(&self.live_chats),
             )
             .await
             {
@@ -704,6 +736,7 @@ impl HostState {
                         "mobius-gateway-rollback",
                         Some(old_prepared),
                         Arc::clone(&self.provider_epoch),
+                        Arc::clone(&self.live_chats),
                     )
                     .await;
                     let recovery = match recovery {

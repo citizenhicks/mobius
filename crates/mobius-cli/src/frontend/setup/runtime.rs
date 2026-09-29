@@ -65,14 +65,16 @@ pub(super) async fn edit(
                         })
                         .await
                         .map_err(gateway_error)?;
-                    *gateway = wait_gateway_configured(
-                        terminal,
-                        state,
-                        events,
-                        &request_id,
-                        "removing a provider",
-                    )
-                    .await?;
+                    gateway.update(
+                        wait_gateway_configured(
+                            terminal,
+                            state,
+                            events,
+                            &request_id,
+                            "removing a provider",
+                        )
+                        .await?,
+                    );
                     return Ok(false);
                 }
                 Flow::Finish => return Ok(true),
@@ -128,8 +130,10 @@ pub(super) async fn apply(
             "Updating the gateway model catalog…",
         );
         draw(terminal, state)?;
-        *gateway =
-            register_provider(terminal, state, sender, events, config.provider.clone()).await?;
+        // Deliberate copy: the registration message owns one, and `config` still needs its provider.
+        gateway.update(
+            register_provider(terminal, state, sender, events, config.provider.clone()).await?,
+        );
     }
     if config == bot.config.config {
         return Ok(());
@@ -157,8 +161,10 @@ pub(super) async fn apply_gateway(
             "Updating the gateway model catalog…",
         );
         draw(terminal, state)?;
-        *gateway =
-            register_provider(terminal, state, sender, events, config.provider.clone()).await?;
+        // Deliberate copy: the registration message owns one, and `config` still needs its provider.
+        gateway.update(
+            register_provider(terminal, state, sender, events, config.provider.clone()).await?,
+        );
     }
     let default = gateway
         .bot_defaults
@@ -172,8 +178,9 @@ pub(super) async fn apply_gateway(
         "Future Bots will start with this configuration…",
     );
     draw(terminal, state)?;
-    *gateway =
-        configure_bot_defaults(terminal, state, sender, events, default.revision, config).await?;
+    gateway.update(
+        configure_bot_defaults(terminal, state, sender, events, default.revision, config).await?,
+    );
     Ok(())
 }
 

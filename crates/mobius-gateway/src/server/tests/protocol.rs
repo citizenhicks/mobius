@@ -34,9 +34,7 @@ async fn notification_opt_out_preserves_approvals_and_explicit_catalog_requests(
     host.rename_session(&session_id, "updated").await.unwrap();
     loop {
         match next_gateway_message(&mut events).await {
-            ServerMessage::Sessions {
-                request_id: None, ..
-            } => panic!("suppressed broadcast"),
+            ServerMessage::SessionsChanged { .. } => panic!("suppressed broadcast"),
             ServerMessage::BackgroundApprovals { .. } => break,
             _ => {}
         }
@@ -79,10 +77,7 @@ async fn notification_opt_out_preserves_approvals_and_explicit_catalog_requests(
     loop {
         if matches!(
             next_gateway_message(&mut events).await,
-            ServerMessage::Sessions {
-                request_id: None,
-                ..
-            }
+            ServerMessage::SessionsChanged { .. }
         ) {
             break;
         }

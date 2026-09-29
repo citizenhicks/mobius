@@ -8,6 +8,7 @@ mod activity;
 mod bots;
 mod descriptors;
 mod lifecycle;
+mod live_chats;
 mod projection;
 mod replay;
 

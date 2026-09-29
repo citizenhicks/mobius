@@ -88,7 +88,7 @@ pub(super) async fn open_selected(
     .await?;
     *selected = Some(SelectedChat {
         host,
-        broadcasts,
+        broadcasts: Some(broadcasts),
         delivered_sequence,
     });
     Ok(())
@@ -160,14 +160,15 @@ pub(super) async fn write_result(
 
 pub(super) async fn write_gateway_result(
     writer: &mut (impl AsyncWrite + Unpin),
+    view: &mut ClientView,
     request_id: String,
     result: std::result::Result<crate::wire::ReadyPayload, Rejection>,
 ) -> Result<()> {
     match result {
         Ok(payload) => {
-            write_frame(
+            view.write_catalog(
                 writer,
-                &ServerFrame::new(ServerMessage::GatewayConfigured {
+                ServerFrame::new(ServerMessage::GatewayConfigured {
                     request_id,
                     payload,
                 }),
