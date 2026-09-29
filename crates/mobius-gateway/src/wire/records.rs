@@ -185,6 +185,14 @@ pub struct CatalogHint {
     pub skip: BTreeSet<ReadySection>,
 }
 
+impl CatalogHint {
+    /// A hint that names no section.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.known.is_empty() && self.skip.is_empty()
+    }
+}
+
 /// One position of the session catalog in a [`ServerMessage::SessionsChanged`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]

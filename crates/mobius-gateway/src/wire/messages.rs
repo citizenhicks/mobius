@@ -124,8 +124,9 @@ pub enum ClientMessage {
         token: String,
         /// The client kind.
         client_kind: ClientKind,
-        /// The catalog this client already holds, or does not need.
-        #[serde(default)]
+        /// The catalog this client already holds, or does not need. An empty hint is left
+        /// out, so the version check that replaces an older running gateway can reach it.
+        #[serde(default, skip_serializing_if = "CatalogHint::is_empty")]
         catalog: CatalogHint,
     },
     /// Selects the list clients case.

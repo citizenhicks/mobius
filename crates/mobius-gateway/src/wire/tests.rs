@@ -1485,3 +1485,24 @@ fn session_deltas_name_unchanged_sessions_by_id() {
         }
     );
 }
+
+#[test]
+fn an_empty_catalog_hint_is_left_out_of_authentication() {
+    let plain = serde_json::to_value(ClientFrame::new(ClientMessage::Authenticate {
+        token: "token".into(),
+        client_kind: ClientKind::GatewayDashboard,
+        catalog: CatalogHint::default(),
+    }))
+    .expect("authenticate");
+    assert_eq!(plain.get("catalog"), None, "{plain}");
+    let hinted = serde_json::to_value(ClientFrame::new(ClientMessage::Authenticate {
+        token: "token".into(),
+        client_kind: ClientKind::Macos,
+        catalog: CatalogHint {
+            skip: [ReadySection::Config].into(),
+            ..CatalogHint::default()
+        },
+    }))
+    .expect("authenticate");
+    assert_eq!(hinted["catalog"], serde_json::json!({"skip": ["config"]}));
+}
