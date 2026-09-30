@@ -249,6 +249,9 @@ impl Middleware for Messages {
         else {
             return None;
         };
+        if matches!(source, crate::protocol::MessageSource::Session { .. }) {
+            return None;
+        }
         Some(FrontendBlock {
             id: Some(format!(
                 "message_received:{}:{session_id}:{message_id}",
@@ -673,13 +676,13 @@ mod tests {
             staged[0].event.message().map(|message| message.delivery),
             Some(MessageDelivery::Steer)
         );
-        let block = Messages::default()
-            .render(&staged[0].event, "turn-1")
-            .expect("received activity");
-        assert_eq!(block.role, FrontendBlockRole::Activity);
-        assert_eq!(block.title, "Message received from @worker");
-        assert_eq!(block.text, peer.text);
-        assert_eq!(block.symbol, Some(FrontendSymbol::Chat));
+        assert!(
+            Messages::default()
+                .render(&staged[0].event, "turn-1")
+                .is_none(),
+            "peer messages use their typed message event, not an activity block"
+        );
+        assert_eq!(staged[0].event.message().unwrap().text, peer.text);
     }
 
     #[test]
@@ -717,6 +720,13 @@ mod tests {
                 .is_empty()
         );
         let report = stack.next_turn(&mut queued).expect("next").expect("report");
+        let block = Messages::default()
+            .render(&report.event, "report-turn")
+            .expect("external activity");
+        assert_eq!(block.role, FrontendBlockRole::Activity);
+        assert_eq!(block.title, "Message received from @monitor");
+        assert_eq!(block.text, source.text);
+        assert_eq!(block.symbol, Some(FrontendSymbol::Chat));
         assert!(matches!(report.event, EventMsg::Message(event) if event.author == source.author));
     }
 

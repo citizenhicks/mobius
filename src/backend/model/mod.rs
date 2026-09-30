@@ -1047,6 +1047,8 @@ pub fn user_message_with_attachments(
 #[serde(deny_unknown_fields)]
 struct MessageText {
     session: String,
+    session_turn: String,
+    session_steer: String,
     external: String,
 }
 
@@ -1070,8 +1072,16 @@ pub(crate) fn message_input(event: &MessageEvent) -> Result<Value> {
         MessageAuthor::User => user_message_with_attachments(&text, &event.attachments)?,
         MessageAuthor::Source { source, handle, .. } => {
             let instruction = match source {
-                MessageSource::Session { .. } => &MESSAGE_TEXT.session,
-                MessageSource::External { .. } => &MESSAGE_TEXT.external,
+                MessageSource::Session { .. } => format!(
+                    "{} {}",
+                    MESSAGE_TEXT.session,
+                    match event.delivery {
+                        crate::protocol::MessageDelivery::Turn
+                        | crate::protocol::MessageDelivery::Queue => &MESSAGE_TEXT.session_turn,
+                        crate::protocol::MessageDelivery::Steer => &MESSAGE_TEXT.session_steer,
+                    }
+                ),
+                MessageSource::External { .. } => MESSAGE_TEXT.external.clone(),
             };
             internal_user_message(
                 "message_advisory",

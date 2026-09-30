@@ -187,14 +187,36 @@ impl TuiState {
     }
 
     fn handle_message(&mut self, message: MessageEvent, submission_id: Option<String>) {
-        if !matches!(message.author, MessageAuthor::User) {
-            return;
-        }
-        self.remember_composer_input(message.text.clone());
-        let mut text = if message.text.is_empty() {
-            "›".to_string()
-        } else {
-            format!("› {}", message.text)
+        let (mut text, tone, submission_id) = match message.author {
+            MessageAuthor::User => {
+                self.remember_composer_input(message.text.clone());
+                (
+                    if message.text.is_empty() {
+                        "›".into()
+                    } else {
+                        format!("› {}", message.text)
+                    },
+                    TranscriptTone::User,
+                    submission_id,
+                )
+            }
+            MessageAuthor::Source {
+                message_id,
+                source: mobius::protocol::MessageSource::Session { session_id },
+                handle,
+                ..
+            } => (
+                format!("@{handle}\n{}", message.text),
+                TranscriptTone::Neutral,
+                Some(format!(
+                    "source:{}:{session_id}:{message_id}",
+                    session_id.len()
+                )),
+            ),
+            MessageAuthor::Source {
+                source: mobius::protocol::MessageSource::External { .. },
+                ..
+            } => return,
         };
         for attachment in &message.attachments {
             text.push_str(if text == "›" { " " } else { "\n  " });
@@ -208,10 +230,10 @@ impl TuiState {
                 },
                 &text,
                 false,
-                TranscriptTone::User,
+                tone,
             );
         } else {
-            self.push(text, TranscriptTone::User);
+            self.push(text, tone);
         }
     }
 

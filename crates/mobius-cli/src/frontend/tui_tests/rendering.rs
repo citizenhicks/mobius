@@ -577,12 +577,17 @@ fn sent_attachment_only_message_is_visible_in_the_transcript() {
 }
 
 #[test]
-fn peer_messages_use_activity_rows_in_live_history_and_preview_transcripts() {
+fn peer_messages_render_once_as_messages_in_live_history_and_preview_transcripts() {
     let messages = Messages::default();
     let text = "Check the protocol boundary\n  Preserve this detail.";
-    for (handle, symbol) in [
-        ("curie", None),
-        ("voice agent", Some(FrontendSymbol::Custom("voice".into()))),
+    for (handle, symbol, delivery) in [
+        ("curie", None, MessageDelivery::Turn),
+        (
+            "voice agent",
+            Some(FrontendSymbol::Custom("voice".into())),
+            MessageDelivery::Steer,
+        ),
+        ("queued agent", None, MessageDelivery::Queue),
     ] {
         let event = EventMsg::Message(MessageEvent {
             author: MessageAuthor::Source {
@@ -595,24 +600,18 @@ fn peer_messages_use_activity_rows_in_live_history_and_preview_transcripts() {
                 handle: handle.into(),
                 symbol,
             },
-            delivery: MessageDelivery::Steer,
+            delivery,
             text: text.into(),
             attachments: Vec::new(),
             reply: None,
             message_target: None,
         });
-        let block = messages.render(&event, "main").expect("peer activity");
-        let mut record = recorded(
-            event,
-            vec![RenderedBlock {
-                capability: messages.name().into(),
-                block,
-            }],
-            None,
-        );
+        assert!(messages.render(&event, "main").is_none());
+        let mut record = recorded(event, Vec::new(), None);
         record.event.submission_id = Some("submission".into());
 
         let mut live = state();
+        events::handle_gateway_event(&mut live, record.clone(), true);
         events::handle_gateway_event(&mut live, record.clone(), true);
         let mut history = state();
         events::handle_gateway_history(&mut history, vec![record.clone()]);
@@ -627,21 +626,17 @@ fn peer_messages_use_activity_rows_in_live_history_and_preview_transcripts() {
         }];
         events::handle_gateway_event(&mut preview, page, true);
 
-        let title = format!("Message received from @{handle}");
+        let visible = format!("@{handle}\n{text}");
         for transcript in [
             &live.transcript,
             &history.transcript,
             &snapshot(&preview).transcript,
         ] {
             assert_eq!(transcript.len(), 1);
-            let entry = transcript.front().expect("peer activity");
+            let entry = transcript.front().expect("peer message");
             assert_eq!(
                 (entry.title.as_deref(), entry.text.as_str(), entry.role),
-                (
-                    Some(title.as_str()),
-                    text,
-                    Some(FrontendBlockRole::Activity)
-                )
+                (None, visible.as_str(), None)
             );
             assert!(matches!(entry.tone, TranscriptTone::Neutral));
         }
@@ -650,6 +645,9 @@ fn peer_messages_use_activity_rows_in_live_history_and_preview_transcripts() {
                 .iter()
                 .all(|state| state.composer_history.is_empty())
         );
+        let rendered = rendered_text(&view::live_transcript_lines(&mut live, 0, 80));
+        assert_eq!(rendered.matches(handle).count(), 1);
+        assert!(rendered.contains(text));
     }
 }
 
