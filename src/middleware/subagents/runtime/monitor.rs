@@ -93,7 +93,7 @@ impl Shared {
                             .into_iter()
                             .filter(|report| message.as_deref() == Some(report.text.as_str()))
                             .filter_map(|report| match report.author {
-                                MessageAuthor::Peer { message_id, .. } => Some(message_id),
+                                MessageAuthor::Source { message_id, .. } => Some(message_id),
                                 MessageAuthor::User => None,
                             })
                             .collect()

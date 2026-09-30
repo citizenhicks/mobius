@@ -25,6 +25,10 @@ impl Tool for UsageTool {
         _arguments: Value,
     ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
+            assert_eq!(
+                context.call_id, "paid",
+                "dispatch retains the model's call identity"
+            );
             context.report_usage(crate::protocol::TokenUsage {
                 total_tokens: 7,
                 ..Default::default()
@@ -103,6 +107,7 @@ async fn paid_tool_usage_retains_the_execution_route() {
         &test_permissions(&[]),
         "turn",
         "image-route",
+        &crate::protocol::MessageAuthor::User,
     )
     .await
     .remove(0);
@@ -168,6 +173,7 @@ async fn each_call_receives_its_own_permissions() {
             &test_permissions(&["allowed"]),
             "turn",
             "test",
+            &crate::protocol::MessageAuthor::User
         )
         .await,
         vec![
@@ -221,7 +227,16 @@ async fn parallel_tool_panic_preserves_call_identity() {
     );
 
     assert_eq!(
-        execute_batch(&catalog, &calls, sandbox, &permissions, "turn", "test").await,
+        execute_batch(
+            &catalog,
+            &calls,
+            sandbox,
+            &permissions,
+            "turn",
+            "test",
+            &crate::protocol::MessageAuthor::User
+        )
+        .await,
         vec![ToolResult {
             call_id: "call-1".into(),
             name: "panicking".into(),
@@ -258,10 +273,18 @@ async fn approval_required_handler_cannot_run_without_exact_call_authority() {
         ["different-call".into()],
     );
 
-    let result = execute_batch(&catalog, &calls, sandbox, &permissions, "turn", "test")
-        .await
-        .pop()
-        .expect("tool result");
+    let result = execute_batch(
+        &catalog,
+        &calls,
+        sandbox,
+        &permissions,
+        "turn",
+        "test",
+        &crate::protocol::MessageAuthor::User,
+    )
+    .await
+    .pop()
+    .expect("tool result");
 
     assert_eq!(
         (

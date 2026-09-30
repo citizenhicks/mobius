@@ -8,7 +8,7 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use serde_json::Value;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::Error;
@@ -155,6 +155,13 @@ impl AgentConfig {
         self
     }
 
+    /// Replaces the effective middleware stack for this runtime.
+    #[must_use]
+    pub fn middleware(mut self, middleware: MiddlewareStack) -> Self {
+        self.middleware = middleware;
+        self
+    }
+
     /// Sets whether a newly created session appears in the session catalog.
     #[must_use]
     pub fn catalog_visible(mut self, visible: bool) -> Self {
@@ -263,6 +270,36 @@ pub struct AgentSender {
     ingress: Arc<SubmissionIngress>,
 }
 
+/// Durable outcome of admitting a message to its session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageAcceptance {
+    /// The message was committed to the durable input queue.
+    Accepted,
+    /// This session already admitted the submission ID, including before restart.
+    AlreadyAccepted,
+}
+
+/// Completion handle for a message's durable admission, separate from its turn.
+#[derive(Debug)]
+#[must_use = "wait for durable admission, or use AgentSender::send without an acknowledgment"]
+pub struct MessageAdmission {
+    receiver: oneshot::Receiver<Result<MessageAcceptance>>,
+}
+
+impl MessageAdmission {
+    /// Waits until the message is committed, rejected, or the runtime stops.
+    /// # Errors
+    ///
+    /// Returns an error when admission fails or the runtime stops before acknowledging it.
+    pub async fn wait(self) -> Result<MessageAcceptance> {
+        self.receiver
+            .await
+            .map_err(|_| Error::Stopped("agent stopped before message admission".into()))?
+    }
+}
+
+type AdmissionReply = oneshot::Sender<Result<MessageAcceptance>>;
+
 /// Non-owning command handle for middleware that must address its current agent.
 #[derive(Clone)]
 pub struct WeakAgentSender {
@@ -283,6 +320,27 @@ impl AgentSender {
     ///
     /// Returns an error if the transport fails or returns invalid data.
     pub fn send(&self, submission: Submission) -> Result<()> {
+        self.enqueue(submission, None)
+    }
+
+    /// Sends a message through the normal ingress and returns its durable admission handle.
+    ///
+    /// Acknowledgment covers input admission, not completion of the resulting turn.
+    /// # Errors
+    ///
+    /// Returns an error for non-message operations, invalid input, or a full or closed queue.
+    pub fn send_with_admission(&self, submission: Submission) -> Result<MessageAdmission> {
+        if !matches!(submission.op, Op::Message { .. }) {
+            return Err(Error::Config(
+                "admission acknowledgments require a message".into(),
+            ));
+        }
+        let (reply, receiver) = oneshot::channel();
+        self.enqueue(submission, Some(reply))?;
+        Ok(MessageAdmission { receiver })
+    }
+
+    fn enqueue(&self, submission: Submission, admission: Option<AdmissionReply>) -> Result<()> {
         validate_submission(&submission)?;
         let mut last_sequence = self
             .ingress
@@ -297,6 +355,7 @@ impl AgentSender {
             .try_send(SequencedSubmission {
                 sequence,
                 submission,
+                admission,
             })
             .map_err(|error| match error {
                 mpsc::error::TrySendError::Full(_) => {
@@ -339,6 +398,12 @@ struct SubmissionIngress {
 struct SequencedSubmission {
     sequence: u64,
     submission: Submission,
+    admission: Option<AdmissionReply>,
+}
+
+struct ReceivedSubmission {
+    submission: Submission,
+    admission: Option<AdmissionReply>,
 }
 
 struct SubmissionInbox {
@@ -348,10 +413,13 @@ struct SubmissionInbox {
 }
 
 impl SubmissionInbox {
-    async fn recv(&mut self) -> Option<Submission> {
+    async fn recv(&mut self) -> Option<ReceivedSubmission> {
         let queued = self.receiver.recv().await?;
         self.last_sequence = queued.sequence;
-        Some(queued.submission)
+        Some(ReceivedSubmission {
+            submission: queued.submission,
+            admission: queued.admission,
+        })
     }
 
     fn cutoff(&self) -> Result<u64> {
@@ -604,9 +672,14 @@ impl Runner {
                 };
                 submission
             };
+            let ReceivedSubmission {
+                submission,
+                admission,
+            } = submission;
             match submission.op {
                 Op::Message { message } => {
-                    self.route_idle_message(submission.id, message).await?;
+                    self.admit_idle_message(submission.id, message, admission)
+                        .await?;
                 }
                 Op::Interrupt { .. } => {
                     self.emit(

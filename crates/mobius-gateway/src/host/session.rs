@@ -42,12 +42,15 @@ struct HostState {
     desktop: Arc<DesktopControl>,
     browser: Arc<BrowserHost>,
     live_chats: Arc<dyn LiveChats>,
+    host_access: HostAccess,
     provider_epoch: Arc<AtomicU64>,
     activities: SessionActivities,
     running: RunningAgent,
     pending_turns: usize,
     pending_messages: HashSet<String>,
-    peer_deliveries: HashMap<String, oneshot::Sender<std::result::Result<(), Rejection>>>,
+    admissions: futures_util::stream::FuturesUnordered<
+        std::pin::Pin<Box<dyn std::future::Future<Output = SourceAdmission> + Send + Sync>>,
+    >,
     approval_active: bool,
     turn_error: Option<String>,
     last_assistant_text: Option<String>,
@@ -70,6 +73,13 @@ pub(super) struct LoadedReplay {
     pub(super) replay_bytes: usize,
     pub(super) next_before_sequence: Option<u64>,
     pub(super) widgets: SessionWidgets,
+}
+
+struct SourceAdmission {
+    id: String,
+    reserved: bool,
+    result: mobius::Result<mobius::agent::MessageAcceptance>,
+    reply: oneshot::Sender<std::result::Result<(), Rejection>>,
 }
 
 struct RunningAgent {
@@ -145,7 +155,7 @@ pub(super) enum HostCommand {
         submission: Submission,
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
     },
-    DeliverPeer {
+    DeliverSource {
         submission: Submission,
         bot_id: String,
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
@@ -159,7 +169,7 @@ pub(super) enum HostCommand {
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
     },
     GitWorkspace {
-        reply: oneshot::Sender<(Arc<GatewaySandbox>, PathBuf)>,
+        reply: oneshot::Sender<std::result::Result<(Arc<GatewaySandbox>, PathBuf), Rejection>>,
     },
     WorkspaceFiles {
         scope: WorkspaceFileScope,
@@ -250,6 +260,7 @@ impl HostHandle {
         session_id: String,
         origin_label: &str,
         live_chats: Arc<dyn LiveChats>,
+        host_access: HostAccess,
     ) -> Result<Self> {
         let running = start_agent(
             Arc::clone(&gateway),
@@ -268,6 +279,7 @@ impl HostHandle {
             None,
             Arc::clone(&provider_epoch),
             Arc::clone(&live_chats),
+            Arc::clone(&host_access),
         )
         .await?;
         let alive = Arc::new(AtomicBool::new(true));
@@ -298,6 +310,7 @@ impl HostHandle {
             desktop,
             browser,
             live_chats,
+            host_access,
             alive: Arc::clone(&alive),
             terminated: Arc::clone(&terminated),
             termination: Arc::clone(&termination),
@@ -307,7 +320,7 @@ impl HostHandle {
             running,
             pending_turns: usize::from(awaiting_approval),
             pending_messages: HashSet::new(),
-            peer_deliveries: HashMap::new(),
+            admissions: futures_util::stream::FuturesUnordered::new(),
             approval_active: awaiting_approval,
             turn_error: None,
             last_assistant_text: None,
@@ -323,6 +336,22 @@ impl HostHandle {
             gateway_events,
             idle_waiters: Vec::new(),
         };
+        if !state.spec.catalog_visible {
+            let checkpoint = state.checkpoints.load(&session_id).await?;
+            if let Some(active) = checkpoint.and_then(|checkpoint| checkpoint.active_execution)
+                && let Some(run) = state.bots.history(None)?.into_iter().find(|run| {
+                    run.status == RoutineRunStatus::Running
+                        && run.session_id.as_deref() == Some(session_id.as_str())
+                })
+            {
+                state.active_routine = Some(ActiveRoutine {
+                    run: state.bots.resume_run(&run.id)?,
+                    submission_id: active.submission_id,
+                    turn_id: Some(active.turn_id),
+                    failure: None,
+                });
+            }
+        }
         state.reconcile_loaded_startup().await?;
         tokio::spawn(state.run());
         Ok(Self {
@@ -445,15 +474,15 @@ impl HostHandle {
         receive(receiver).await
     }
 
-    /// Delivers a peer message only while this chat belongs to `bot_id`, and
+    /// Delivers a source message only while this chat belongs to `bot_id`, and
     /// answers once the agent has accepted or rejected it.
-    pub(super) async fn deliver_peer(
+    pub(super) async fn deliver_source(
         &self,
         submission: Submission,
         bot_id: String,
     ) -> std::result::Result<(), Rejection> {
         let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::DeliverPeer {
+        self.send(HostCommand::DeliverSource {
             submission,
             bot_id,
             reply,
@@ -493,7 +522,7 @@ impl HostHandle {
     ) -> std::result::Result<(Arc<GatewaySandbox>, PathBuf), Rejection> {
         let (reply, receiver) = oneshot::channel();
         self.send(HostCommand::GitWorkspace { reply }).await?;
-        receiver.await.map_err(|_| stopped())
+        receiver.await.map_err(|_| stopped())?
     }
 
     pub(crate) async fn workspace_files(
@@ -741,6 +770,7 @@ async fn start_agent(
     prepared: Option<Arc<crate::assembly::PreparedBot>>,
     provider_epoch: Arc<AtomicU64>,
     live_chats: Arc<dyn LiveChats>,
+    host_access: HostAccess,
 ) -> Result<RunningAgent> {
     let prepared = if let Some(prepared) = prepared {
         prepared
@@ -827,6 +857,7 @@ async fn start_agent(
         origin_label,
         Arc::clone(&prepared),
         Some(live_chats),
+        Some(host_access),
     )
     .await?;
     let session = agent.session().clone();

@@ -85,9 +85,14 @@ async fn submission_cutoff_excludes_later_messages() {
     let before = inbox.recv().await.expect("submission before cutoff");
 
     assert_eq!(inbox.last_sequence, cutoff);
-    assert_eq!(before.op, user_op("before"));
+    assert_eq!(before.submission.op, user_op("before"));
     assert_eq!(
-        inbox.recv().await.expect("submission after cutoff").op,
+        inbox
+            .recv()
+            .await
+            .expect("submission after cutoff")
+            .submission
+            .op,
         user_op("after")
     );
 }

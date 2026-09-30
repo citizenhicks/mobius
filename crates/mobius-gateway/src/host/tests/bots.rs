@@ -140,7 +140,7 @@ async fn reassigning_chat_preserves_history_and_binds_the_target_bot() {
             ChatSpec::from_metadata(&after.metadata, &bots, &root.path().join("state"), None)
                 .unwrap();
         assert_eq!(spec.bot_id, target.id);
-        assert_eq!(spec.workspace, workspace.canonicalize().unwrap());
+        assert_eq!(spec.workspace, Some(workspace.canonicalize().unwrap()));
         let catalog = gateway.sessions().await.unwrap();
         let record = catalog
             .iter()
@@ -255,9 +255,12 @@ async fn saving_bot_prepares_once_and_chats_bind_it_when_next_used() {
         gateway.update_bot(
             &bot.id,
             bot.config.revision,
-            "Renamed",
-            &bot.description,
-            tint,
+            crate::bots::BotIdentity {
+                name: "Renamed",
+                description: &bot.description,
+                tint,
+                shape: bot.shape,
+            },
             config,
         ),
     )
@@ -319,15 +322,18 @@ async fn session_owners_wait_for_the_cascade_gate() {
             .bots
             .create_routine(
                 &bot.id,
-                &workspace,
-                "wait for the cascade gate",
-                crate::wire::RoutineSchedule {
-                    kind: crate::wire::RoutineScheduleKind::Once,
-                    at: Some(Utc::now().timestamp() + 60),
-                    every_seconds: None,
-                    expression: None,
-                    time_zone: None,
-                },
+                &timer_definition(
+                    &workspace,
+                    "wait for the cascade gate",
+                    crate::wire::RoutineSchedule {
+                        kind: crate::wire::RoutineScheduleKind::Once,
+                        at: Some(Utc::now().timestamp() + 60),
+                        every_seconds: None,
+                        expression: None,
+                        time_zone: None,
+                    },
+                    None,
+                ),
                 None,
             )
             .expect("create routine")
@@ -358,7 +364,7 @@ async fn session_owners_wait_for_the_cascade_gate() {
     });
     let mut running_routine = tokio::spawn({
         let gateway = gateway.clone();
-        async move { gateway.run_routine(routine_id).await }
+        async move { start_routine(&gateway, &routine_id).await }
     });
 
     assert!(
@@ -410,22 +416,24 @@ async fn routine_sessions_stay_hidden() {
             .bots
             .create_routine(
                 &bot.id,
-                &workspace,
-                "test routine",
-                crate::wire::RoutineSchedule {
-                    kind: crate::wire::RoutineScheduleKind::Once,
-                    at: Some(Utc::now().timestamp() + 60),
-                    every_seconds: None,
-                    expression: None,
-                    time_zone: None,
-                },
+                &timer_definition(
+                    &workspace,
+                    "test routine",
+                    crate::wire::RoutineSchedule {
+                        kind: crate::wire::RoutineScheduleKind::Once,
+                        at: Some(Utc::now().timestamp() + 60),
+                        every_seconds: None,
+                        expression: None,
+                        time_zone: None,
+                    },
+                    None,
+                ),
                 None,
             )
             .expect("routine")
     };
 
-    gateway
-        .run_routine(routine.id.clone())
+    start_routine(&gateway, &routine.id)
         .await
         .expect("run routine");
     let (checkpoints, session_id) = {
@@ -490,15 +498,18 @@ async fn deleting_a_completed_routine_run_removes_its_session_data() {
     let routine = bots
         .create_routine(
             &bot.id,
-            &workspace,
-            "prepare report",
-            crate::wire::RoutineSchedule {
-                kind: crate::wire::RoutineScheduleKind::Once,
-                at: Some(Utc::now().timestamp() + 60),
-                every_seconds: None,
-                expression: None,
-                time_zone: None,
-            },
+            &timer_definition(
+                &workspace,
+                "prepare report",
+                crate::wire::RoutineSchedule {
+                    kind: crate::wire::RoutineScheduleKind::Once,
+                    at: Some(Utc::now().timestamp() + 60),
+                    every_seconds: None,
+                    expression: None,
+                    time_zone: None,
+                },
+                None,
+            ),
             None,
         )
         .expect("routine");
@@ -567,15 +578,18 @@ async fn bot_delete_preflight_preserves_sessions_when_instructions_are_invalid()
     let routine = bots
         .create_routine(
             &bot.id,
-            &workspace,
-            "retain on failed preflight",
-            crate::wire::RoutineSchedule {
-                kind: crate::wire::RoutineScheduleKind::Once,
-                at: Some(Utc::now().timestamp() + 60),
-                every_seconds: None,
-                expression: None,
-                time_zone: None,
-            },
+            &timer_definition(
+                &workspace,
+                "retain on failed preflight",
+                crate::wire::RoutineSchedule {
+                    kind: crate::wire::RoutineScheduleKind::Once,
+                    at: Some(Utc::now().timestamp() + 60),
+                    every_seconds: None,
+                    expression: None,
+                    time_zone: None,
+                },
+                None,
+            ),
             None,
         )
         .expect("create routine");
@@ -909,15 +923,18 @@ async fn deleting_a_bot_removes_owned_state() {
     let routine = bots
         .create_routine(
             &bot.id,
-            &workspace,
-            "delete routine state",
-            crate::wire::RoutineSchedule {
-                kind: crate::wire::RoutineScheduleKind::Once,
-                at: Some(Utc::now().timestamp() + 60),
-                every_seconds: None,
-                expression: None,
-                time_zone: None,
-            },
+            &timer_definition(
+                &workspace,
+                "delete routine state",
+                crate::wire::RoutineSchedule {
+                    kind: crate::wire::RoutineScheduleKind::Once,
+                    at: Some(Utc::now().timestamp() + 60),
+                    every_seconds: None,
+                    expression: None,
+                    time_zone: None,
+                },
+                None,
+            ),
             None,
         )
         .expect("create routine");
@@ -1015,15 +1032,18 @@ async fn routine_acceptance_keeps_the_gateway_registry_locked() {
         let routine = bots
             .create_routine(
                 &bot.id,
-                &workspace,
-                "test routine",
-                crate::wire::RoutineSchedule {
-                    kind: crate::wire::RoutineScheduleKind::Once,
-                    at: Some(Utc::now().timestamp() + 60),
-                    every_seconds: None,
-                    expression: None,
-                    time_zone: None,
-                },
+                &timer_definition(
+                    &workspace,
+                    "test routine",
+                    crate::wire::RoutineSchedule {
+                        kind: crate::wire::RoutineScheduleKind::Once,
+                        at: Some(Utc::now().timestamp() + 60),
+                        every_seconds: None,
+                        expression: None,
+                        time_zone: None,
+                    },
+                    None,
+                ),
                 None,
             )
             .expect("routine");
@@ -1118,15 +1138,18 @@ async fn routine_command_gate_rejection_terminalizes_the_run() {
             .bots
             .create_routine(
                 &bot.id,
-                &workspace,
-                "test routine",
-                crate::wire::RoutineSchedule {
-                    kind: crate::wire::RoutineScheduleKind::Once,
-                    at: Some(Utc::now().timestamp() + 60),
-                    every_seconds: None,
-                    expression: None,
-                    time_zone: None,
-                },
+                &timer_definition(
+                    &workspace,
+                    "test routine",
+                    crate::wire::RoutineSchedule {
+                        kind: crate::wire::RoutineScheduleKind::Once,
+                        at: Some(Utc::now().timestamp() + 60),
+                        every_seconds: None,
+                        expression: None,
+                        time_zone: None,
+                    },
+                    None,
+                ),
                 None,
             )
             .expect("routine");
@@ -1155,33 +1178,33 @@ async fn routine_command_gate_rejection_terminalizes_the_run() {
 }
 
 #[tokio::test]
-async fn due_routine_terminalizes_when_bot_deletion_recovery_is_pending() {
+async fn routine_command_rejects_before_reservation_when_bot_deletion_recovery_is_pending() {
     let (root, gateway, deleting_bot) = gateway_with_bot().await;
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("workspace");
-    let (bots, routine, run) = {
+    let (bots, routine) = {
         let state = gateway.state.lock().await;
         let worker = state.bots.mobius().expect("worker Bot");
         let routine = state
             .bots
             .create_routine(
                 &worker.id,
-                &workspace,
-                "test due routine",
-                crate::wire::RoutineSchedule {
-                    kind: crate::wire::RoutineScheduleKind::Once,
-                    at: Some(Utc::now().timestamp() + 60),
-                    every_seconds: None,
-                    expression: None,
-                    time_zone: None,
-                },
+                &timer_definition(
+                    &workspace,
+                    "test due routine",
+                    crate::wire::RoutineSchedule {
+                        kind: crate::wire::RoutineScheduleKind::Once,
+                        at: Some(Utc::now().timestamp() + 60),
+                        every_seconds: None,
+                        expression: None,
+                        time_zone: None,
+                    },
+                    None,
+                ),
                 None,
             )
             .expect("routine");
-        let BeginRun::Started(run) = state.bots.begin_run(&routine.id).expect("begin run") else {
-            panic!("routine must start");
-        };
-        (Arc::clone(&state.bots), routine, run)
+        (Arc::clone(&state.bots), routine)
     };
     let mut deletion = bots
         .prepare_bot_deletion(&deleting_bot.id, deleting_bot.config.revision)
@@ -1190,16 +1213,12 @@ async fn due_routine_terminalizes_when_bot_deletion_recovery_is_pending() {
         .expect("record recovery intent");
     drop(deletion);
 
-    let rejection = gateway
-        .run_due_routine(routine.id.clone(), run)
+    let rejection = start_routine(&gateway, &routine.id)
         .await
         .expect_err("pending recovery must reject the run");
 
     assert_eq!(rejection.code, "bot_deletion_recovery");
-    assert_eq!(
-        bots.history(Some(&routine.id)).expect("history")[0].status,
-        RoutineRunStatus::Skipped
-    );
+    assert!(bots.history(Some(&routine.id)).expect("history").is_empty());
 }
 
 #[tokio::test]
@@ -1213,15 +1232,18 @@ async fn stopped_host_terminalizes_a_queued_unconsumed_routine() {
             .bots
             .create_routine(
                 &bot.id,
-                &workspace,
-                "queued routine",
-                crate::wire::RoutineSchedule {
-                    kind: crate::wire::RoutineScheduleKind::Once,
-                    at: Some(Utc::now().timestamp() + 60),
-                    every_seconds: None,
-                    expression: None,
-                    time_zone: None,
-                },
+                &timer_definition(
+                    &workspace,
+                    "queued routine",
+                    crate::wire::RoutineSchedule {
+                        kind: crate::wire::RoutineScheduleKind::Once,
+                        at: Some(Utc::now().timestamp() + 60),
+                        every_seconds: None,
+                        expression: None,
+                        time_zone: None,
+                    },
+                    None,
+                ),
                 None,
             )
             .expect("routine");
@@ -1272,9 +1294,12 @@ async fn enabling_computer_control_requires_runtime_before_saving_a_bot_without_
         .update_bot(
             &bot.id,
             bot.config.revision,
-            &bot.name,
-            &bot.description,
-            bot.tint,
+            crate::bots::BotIdentity {
+                name: &bot.name,
+                description: &bot.description,
+                tint: bot.tint,
+                shape: bot.shape,
+            },
             config,
         )
         .await
@@ -1304,17 +1329,28 @@ async fn bot_presentation_edits_do_not_prepare_or_reassemble_chats() {
     let before = operations.counts();
     let before_sequence = host.snapshot(None).await.unwrap().ready.latest_sequence;
     let mut current = bot;
-    for (name, tint) in [
-        ("reviewer", crate::wire::ProviderTint::Purple),
-        ("renamed", crate::wire::ProviderTint::Purple),
+    for (name, tint, shape) in [
+        (
+            "reviewer",
+            crate::wire::ProviderTint::Purple,
+            crate::wire::BotShape::Star,
+        ),
+        (
+            "renamed",
+            crate::wire::ProviderTint::Purple,
+            crate::wire::BotShape::Star,
+        ),
     ] {
         current = gateway
             .update_bot(
                 &current.id,
                 current.config.revision,
-                name,
-                &current.description,
-                tint,
+                crate::bots::BotIdentity {
+                    name,
+                    description: &current.description,
+                    tint,
+                    shape,
+                },
                 current.config.config.clone(),
             )
             .await

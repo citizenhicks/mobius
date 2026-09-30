@@ -40,7 +40,7 @@ impl Runner {
         let mut hook_events = Vec::new();
         let hook_decision = {
             let mut context = PermissionRequestContext {
-                turn: self.runtime.turn_identity(turn_id),
+                turn: self.turn_identity(turn_id)?,
                 calls: &calls,
                 requested_call_ids: &request.call_ids,
                 reason: &request.reason,

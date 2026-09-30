@@ -48,7 +48,7 @@ mod event_journal;
 use self::event_journal::StreamMetricAccumulator;
 use self::event_journal::store_event;
 
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 const SCHEMA: &str = "
@@ -81,6 +81,11 @@ CREATE TABLE IF NOT EXISTS transcript_delta (
     created_at INTEGER NOT NULL DEFAULT (unixepoch()),
     PRIMARY KEY (session_id, sequence)
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS message_receipts (
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    submission_id TEXT NOT NULL,
+    PRIMARY KEY (session_id, submission_id)
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS execution_journal (
     session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     sequence INTEGER NOT NULL CHECK (sequence >= 0),
@@ -106,7 +111,7 @@ CREATE INDEX IF NOT EXISTS execution_journal_recent_idx
     ON execution_journal(started_at_ms DESC, session_id DESC, sequence DESC);
 CREATE INDEX IF NOT EXISTS event_journal_step_idx
     ON event_journal(session_id, model_step_id, event_kind);
-PRAGMA user_version = 10;
+PRAGMA user_version = 11;
 COMMIT;
 ";
 
@@ -196,6 +201,22 @@ impl SqliteCheckpoint {
 }
 
 impl CheckpointStore for SqliteCheckpoint {
+    fn message_accepted<'a>(
+        &'a self,
+        session_id: &'a str,
+        submission_id: &'a str,
+    ) -> BoxFuture<'a, Result<bool>> {
+        let session_id = session_id.to_owned();
+        let submission_id = submission_id.to_owned();
+        Box::pin(self.run(move |connection| {
+            Ok(connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM message_receipts WHERE session_id = ?1 AND submission_id = ?2)",
+                params![session_id, submission_id],
+                |row| row.get(0),
+            )?)
+        }))
+    }
+
     fn load<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<Option<Checkpoint>>> {
         let session_id = session_id.to_string();
         Box::pin(self.run(move |connection| {
@@ -416,18 +437,7 @@ impl CheckpointStore for SqliteCheckpoint {
                 rows.truncate(request.limit);
                 let events = rows
                     .into_iter()
-                    .map(|(sequence, recorded_at_ms, json, metrics_json)| {
-                        Ok(JournalEvent {
-                            sequence: u64::try_from(sequence).map_err(|_| {
-                                Error::Checkpoint(
-                                    "event journal row has a negative sequence".into(),
-                                )
-                            })?,
-                            recorded_at_ms,
-                            event: serde_json::from_str(&json)?,
-                            stream_metrics: serde_json::from_str(&metrics_json)?,
-                        })
-                    })
+                    .map(decode_journal_event)
                     .collect::<Result<Vec<_>>>()?;
                 let next_before_sequence = has_more
                     .then(|| events.last().map(|event| event.sequence))
@@ -439,6 +449,36 @@ impl CheckpointStore for SqliteCheckpoint {
                 })
             })
             .await
+        })
+    }
+
+    fn events_after<'a>(
+        &'a self,
+        session_id: &'a str,
+        after_sequence: u64,
+        limit: usize,
+    ) -> BoxFuture<'a, Result<Vec<JournalEvent>>> {
+        let session_id = session_id.to_owned();
+        Box::pin(async move {
+            if limit == 0 {
+                return Err(Error::Checkpoint(
+                    "event catch-up limit must be positive".into(),
+                ));
+            }
+            let after_sequence = i64::try_from(after_sequence)
+                .map_err(|_| Error::Checkpoint("event cursor exceeds SQLite INTEGER".into()))?;
+            let limit = i64::try_from(limit)
+                .map_err(|_| Error::Checkpoint("event limit exceeds SQLite INTEGER".into()))?;
+            self.run(move |connection| {
+                let mut statement = connection.prepare(
+                    "SELECT sequence, recorded_at_ms, event_json, stream_metrics_json FROM event_journal
+                     WHERE session_id = ?1 AND sequence > ?2 ORDER BY sequence ASC LIMIT ?3"
+                )?;
+                let rows = statement.query_map(params![session_id, after_sequence, limit], |row| Ok((
+                    row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?
+                )))?.collect::<std::result::Result<Vec<_>, _>>()?;
+                rows.into_iter().map(decode_journal_event).collect()
+            }).await
         })
     }
 
@@ -890,6 +930,12 @@ fn store_checkpoint(
             "checkpoint sequence did not advance".into(),
         ));
     }
+    for message in &checkpoint.pending_messages {
+        transaction.execute(
+            "INSERT OR IGNORE INTO message_receipts (session_id, submission_id) VALUES (?1, ?2)",
+            params![checkpoint.session_id, message.id],
+        )?;
+    }
     if let Some(transcript_json) = serialized.transcript {
         transaction.execute(
             "INSERT INTO transcript_delta (session_id, sequence, items_json)
@@ -1086,6 +1132,7 @@ fn validate_execution(checkpoint: &Checkpoint, execution: &ExecutionRecord) -> R
 }
 
 fn validate_execution_record(execution: &ExecutionRecord) -> Result<()> {
+    crate::protocol::validate_message_content(&execution.author, "execution origin", &[])?;
     if execution.session_id.trim().is_empty()
         || execution.submission_id.trim().is_empty()
         || execution.turn_id.trim().is_empty()
@@ -1136,6 +1183,18 @@ fn prepare_path(path: &Path) -> Result<()> {
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     }
     Ok(())
+}
+
+fn decode_journal_event(
+    (sequence, recorded_at_ms, json, metrics_json): (i64, i64, String, String),
+) -> Result<JournalEvent> {
+    Ok(JournalEvent {
+        sequence: u64::try_from(sequence)
+            .map_err(|_| Error::Checkpoint("event journal row has a negative sequence".into()))?,
+        recorded_at_ms,
+        event: serde_json::from_str(&json)?,
+        stream_metrics: serde_json::from_str(&metrics_json)?,
+    })
 }
 
 #[cfg(test)]

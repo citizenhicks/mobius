@@ -698,34 +698,54 @@ fn opening_a_session_owns_its_replay_cursor() {
 
 #[test]
 fn routine_management_is_bot_owned_and_structured() {
+    let definition = RoutineDefinition {
+        workspace: PathBuf::from("/srv/mobius/project"),
+        instructions: "Review pull requests".into(),
+        bindings: vec![RoutineBinding {
+            id: "daily".into(),
+            on: HookSelector::Schedule {
+                schedule: RoutineSchedule {
+                    kind: RoutineScheduleKind::Cron,
+                    at: None,
+                    every_seconds: None,
+                    expression: Some("0 9 * * *".into()),
+                    time_zone: Some("UTC".into()),
+                },
+                ends_at: None,
+            },
+            action: RoutineAction::Start,
+        }],
+    };
     let frames = [
         ClientMessage::ListRoutines {
             request_id: "list".into(),
             bot_id: Some("bot-a".into()),
         },
-        ClientMessage::UpdateRoutine {
-            request_id: "reschedule".into(),
-            id: "routine-a".into(),
+        ClientMessage::CreateRoutine {
+            request_id: "create".into(),
             bot_id: "bot-a".into(),
-            workspace: PathBuf::from("/srv/mobius/project"),
-            instructions: "Review pull requests".into(),
-            schedule: RoutineSchedule {
-                kind: RoutineScheduleKind::Cron,
-                at: None,
-                every_seconds: None,
-                expression: Some("0 9 * * *".into()),
-                time_zone: Some("UTC".into()),
+            definition: definition.clone(),
+        },
+        ClientMessage::RoutineCommand {
+            request_id: "reschedule".into(),
+            command: RoutineCommand {
+                routine_id: "routine-a".into(),
+                action: RoutineAction::Update { definition },
             },
-            ends_at: None,
-            enabled: true,
         },
-        ClientMessage::DeleteRoutine {
+        ClientMessage::RoutineCommand {
             request_id: "delete".into(),
-            id: "routine-a".into(),
+            command: RoutineCommand {
+                routine_id: "routine-a".into(),
+                action: RoutineAction::Delete,
+            },
         },
-        ClientMessage::RunRoutine {
+        ClientMessage::RoutineCommand {
             request_id: "run".into(),
-            id: "routine-a".into(),
+            command: RoutineCommand {
+                routine_id: "routine-a".into(),
+                action: RoutineAction::Start,
+            },
         },
         ClientMessage::ListRoutineHistory {
             request_id: "history".into(),
@@ -739,13 +759,24 @@ fn routine_management_is_bot_owned_and_structured() {
         .map(|frame| serde_json::to_value(frame).expect("encode routine operation"))
         .collect::<Vec<_>>();
 
+    for value in &encoded {
+        serde_json::from_value::<ClientFrame>(value.clone()).expect("decode routine operation");
+    }
+
     assert!(
         encoded
             .iter()
             .all(|value| value.get("session_id").is_none())
     );
-    assert_eq!(encoded[1]["schedule"]["kind"], "cron");
-    assert_eq!(encoded[1]["schedule"]["expression"], "0 9 * * *");
+    let binding = &encoded[1]["definition"]["bindings"][0];
+    assert_eq!(binding["on"]["type"], "schedule");
+    assert_eq!(binding["on"]["schedule"]["kind"], "cron");
+    assert_eq!(binding["on"]["schedule"]["expression"], "0 9 * * *");
+    assert_eq!(binding["action"]["type"], "start");
+    assert_eq!(encoded[2]["command"]["routine_id"], "routine-a");
+    assert_eq!(encoded[2]["command"]["action"]["type"], "update");
+    assert_eq!(encoded[3]["command"]["action"]["type"], "delete");
+    assert_eq!(encoded[4]["command"]["action"]["type"], "start");
 }
 
 #[test]
@@ -1442,8 +1473,8 @@ fn ready_catalog_sections_round_trip_through_an_omitted_ready() {
     let mut held: ReadyPayload = serde_json::from_value(serde_json::json!({
         "gateway_version": "1", "machine_name": "mac", "sessions": [],
         "bots": [{
-            "id": "bot", "handle": "mobius", "name": "Mobius", "description": "",
-            "tint": "blue", "config": {"revision": 1, "config": AgentComposition::default()},
+            "id": "bot", "conversation_session_id": "persistent-bot", "handle": "mobius", "name": "Mobius", "description": "",
+            "tint": "blue", "shape": "circle", "config": {"revision": 1, "config": AgentComposition::default()},
             "accepts_file_attachments": false, "routine_interaction_policy": "unattended"
         }],
         "background_approvals": [], "providers": [], "provider_instances": [],

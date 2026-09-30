@@ -100,11 +100,7 @@ impl Runner {
             let submitted = self
                 .config
                 .middleware
-                .message_submit(
-                    self.runtime.turn_identity(turn_id),
-                    &message,
-                    &mut hook_events,
-                )
+                .message_submit(self.turn_identity(turn_id)?, &message, &mut hook_events)
                 .await?;
             events.extend(hook_events.into_iter().map(|msg| Event {
                 submission_id: Some(message.submission_id.clone()),
@@ -229,7 +225,9 @@ impl Runner {
         let catalog = Arc::clone(&self.catalog);
         let runtime = Arc::clone(&self.runtime);
         let middleware = self.config.middleware.clone();
+        let author = self.active_author()?.clone();
         let prepare_model = middleware.prepare_model(ModelContext {
+            author: &author,
             model: &model,
             provider: &provider,
             session_id: &session_id,
@@ -957,7 +955,7 @@ impl Runner {
         let mut hook_events = Vec::new();
         let decision = {
             let mut context = StopContext {
-                turn: self.runtime.turn_identity(turn_id),
+                turn: self.turn_identity(turn_id)?,
                 role: &self.runtime.role,
                 stop_hook_active,
                 last_assistant_message: last_assistant_message.as_deref(),

@@ -146,7 +146,16 @@ fn spawn_test_batch(
     let sandbox = test_sandbox();
     let calls = finalize_and_bind(&mut catalog, &calls);
     tokio::spawn(async move {
-        execute_batch(&catalog, &calls, sandbox, &permissions, "turn", "test").await
+        execute_batch(
+            &catalog,
+            &calls,
+            sandbox,
+            &permissions,
+            "turn",
+            "test",
+            &crate::protocol::MessageAuthor::User,
+        )
+        .await
     })
 }
 

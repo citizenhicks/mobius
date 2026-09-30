@@ -218,6 +218,7 @@ fn hook_policy_decisions_are_monotonic_and_stop_continuation_is_bounded() {
     let mut permission_events = Vec::new();
     let mut permission = PermissionRequestContext {
         turn: TurnIdentity {
+            author: &crate::protocol::MessageAuthor::User,
             session_id: "session",
             turn_id: "turn",
             model: "model",
@@ -310,6 +311,7 @@ fn pre_tool_rewrite_rejects_invalid_calls_without_mutation() {
         let mut events = Vec::new();
         let error = PreToolUseContext {
             turn: TurnIdentity {
+                author: &crate::protocol::MessageAuthor::User,
                 session_id: "session",
                 turn_id: "turn",
                 model: "model",

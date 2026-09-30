@@ -1,6 +1,11 @@
 //! Gateway-owned Bot profiles, routines, run history, and schedule matching.
 
+mod events;
 mod storage;
+pub(crate) use events::{
+    MAX_HOOK_ANCESTRY, PendingHookAction, WebhookDelivery, WebhookRecord, event_selector,
+    report_text,
+};
 
 use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions, TryLockError};
@@ -20,12 +25,14 @@ use uuid::Uuid;
 use self::storage::{BotStorage, CatalogStamp};
 use crate::config::validate_agent_composition;
 use crate::wire::{
-    AgentComposition, BotRecord, ProviderTint, Routine, RoutineRun, RoutineRunStatus,
-    RoutineSchedule, RoutineScheduleKind, VersionedAgentConfig,
+    AgentComposition, BotAction, BotRecord, BotShape, BotSubscription, HookBinding, HookData,
+    HookEvent, HookKind, HookSelector, HookSource, ProviderTint, Routine, RoutineAction,
+    RoutineBinding, RoutineDefinition, RoutineRun, RoutineRunStatus, RoutineSchedule,
+    RoutineScheduleKind, VersionedAgentConfig,
 };
 use crate::{Error, Result};
 
-const STATE_VERSION: u32 = 6;
+const STATE_VERSION: u32 = 7;
 const STATE_FILE: &str = storage::STATE_FILE;
 const STATE_LOCK_FILE: &str = "bots-state.lock";
 const ROUTINES_DIR: &str = "routines";
@@ -53,6 +60,25 @@ const BOT_TINTS: [ProviderTint; 7] = [
     ProviderTint::Purple,
 ];
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BotText {
+    routine_report_instruction: String,
+}
+
+static TEXT: std::sync::LazyLock<BotText> = std::sync::LazyLock::new(|| {
+    toml::from_str(include_str!("bots.toml")).expect("bundled Bot text must be valid")
+});
+
+/// What a Bot update sets besides its agent configuration.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BotIdentity<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) description: &'a str,
+    pub(crate) tint: ProviderTint,
+    pub(crate) shape: BotShape,
+}
+
 /// Gateway-wide persistent Bot profiles, routines, and run history.
 pub(crate) struct BotStore {
     state_dir: PathBuf,
@@ -73,78 +99,107 @@ pub(crate) struct StoredRoutine {
     pub(crate) bot_id: String,
     pub(crate) workspace: PathBuf,
     pub(crate) instructions: PathBuf,
-    pub(crate) schedule: RoutineSchedule,
-    pub(crate) ends_at: Option<i64>,
+    pub(crate) bindings: Vec<StoredRoutineBinding>,
     pub(crate) enabled: bool,
-    pub(crate) next_run_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StoredRoutineBinding {
+    pub(crate) definition: RoutineBinding,
+    pub(crate) next_due_at: Option<i64>,
     pub(crate) last_matched_minute: Option<i64>,
 }
 
-impl StoredRoutine {
-    fn reset_next_run(&mut self, now: i64) -> Result<()> {
+impl StoredRoutineBinding {
+    fn new(definition: RoutineBinding, now: i64, resume: bool) -> Result<Self> {
+        let mut binding = Self {
+            definition,
+            next_due_at: None,
+            last_matched_minute: None,
+        };
+        binding.reset(now, resume)?;
+        Ok(binding)
+    }
+    fn reset(&mut self, now: i64, resume: bool) -> Result<()> {
         self.last_matched_minute = None;
-        self.next_run_at = match self.schedule.kind {
-            RoutineScheduleKind::Once => self.schedule.at,
-            RoutineScheduleKind::Interval => Some(
-                now.checked_add(
-                    i64::try_from(self.schedule.every_seconds.ok_or_else(|| {
-                        Error::Config("interval schedule is missing its interval".into())
-                    })?)
-                    .map_err(|_| Error::Config("interval schedule is too large".into()))?,
-                )
-                .ok_or_else(|| Error::Config("interval schedule overflows its timestamp".into()))?,
-            ),
-            RoutineScheduleKind::Cron => Some(next_cron_occurrence(&self.schedule, now, true)?),
+        self.next_due_at = match &self.definition.on {
+            HookSelector::Schedule { schedule, .. } => match schedule.kind {
+                RoutineScheduleKind::Once => schedule.at.filter(|at| !resume || *at > now),
+                RoutineScheduleKind::Interval => Some(
+                    now.checked_add(
+                        i64::try_from(schedule.every_seconds.ok_or_else(|| {
+                            Error::Config("interval schedule is missing its interval".into())
+                        })?)
+                        .map_err(|_| Error::Config("interval schedule is too large".into()))?,
+                    )
+                    .ok_or_else(|| {
+                        Error::Config("interval schedule overflows its timestamp".into())
+                    })?,
+                ),
+                RoutineScheduleKind::Cron => Some(next_cron_occurrence(schedule, now, !resume)?),
+            },
+            HookSelector::Event { .. } => None,
         };
         Ok(())
     }
-
-    fn advance_interval(&mut self, now: i64) -> Result<()> {
-        let every =
-            i64::try_from(self.schedule.every_seconds.ok_or_else(|| {
-                Error::Config("interval schedule is missing its interval".into())
-            })?)
-            .map_err(|_| Error::Config("interval schedule is too large".into()))?;
-        let next = self
-            .next_run_at
-            .ok_or_else(|| Error::Config("interval schedule has no next run".into()))?;
-        let missed = (now.saturating_sub(next) / every).saturating_add(1);
-        self.next_run_at = Some(
-            next.checked_add(every.saturating_mul(missed))
-                .ok_or_else(|| Error::Config("interval schedule overflows its timestamp".into()))?,
-        );
+    fn next_at(&self, now: i64) -> Option<i64> {
+        let HookSelector::Schedule { schedule, ends_at } = &self.definition.on else {
+            return None;
+        };
+        let next = if schedule.kind == RoutineScheduleKind::Cron {
+            self.next_due_at
+                .or_else(|| next_cron_occurrence(schedule, now, false).ok())
+        } else {
+            self.next_due_at
+        }?;
+        ends_at.map_or(Some(next), |end| (next <= end).then_some(next))
+    }
+    fn advance(&mut self, now: i64) -> Result<()> {
+        let HookSelector::Schedule { schedule, .. } = &self.definition.on else {
+            return Ok(());
+        };
+        self.last_matched_minute = Some(now.div_euclid(60));
+        self.next_due_at = match schedule.kind {
+            RoutineScheduleKind::Once => None,
+            RoutineScheduleKind::Cron => Some(next_cron_occurrence(schedule, now, false)?),
+            RoutineScheduleKind::Interval => {
+                let every = i64::try_from(
+                    schedule
+                        .every_seconds
+                        .ok_or_else(|| Error::Config("interval is missing".into()))?,
+                )
+                .map_err(|_| Error::Config("interval is too large".into()))?;
+                let next = self
+                    .next_due_at
+                    .ok_or_else(|| Error::Config("interval has no next occurrence".into()))?;
+                let missed = (now.saturating_sub(next) / every).saturating_add(1);
+                Some(
+                    next.checked_add(every.saturating_mul(missed))
+                        .ok_or_else(|| Error::Config("interval timestamp overflows".into()))?,
+                )
+            }
+        };
         Ok(())
     }
+}
 
+impl StoredRoutine {
     fn is_finished(&self, now: i64) -> bool {
-        match self.schedule.kind {
-            RoutineScheduleKind::Once => {
-                self.next_run_at.is_none()
-                    || self
-                        .ends_at
-                        .is_some_and(|ends_at| self.next_run_at.is_some_and(|next| next > ends_at))
-            }
-            RoutineScheduleKind::Interval => self
-                .ends_at
-                .is_some_and(|ends_at| self.next_run_at.is_none_or(|next| next > ends_at)),
-            RoutineScheduleKind::Cron => self
-                .ends_at
-                .is_some_and(|ends_at| ends_at.div_euclid(60) < now.div_euclid(60)),
-        }
+        !self.bindings.is_empty()
+            && self.bindings.iter().all(|binding| {
+                matches!(binding.definition.on, HookSelector::Schedule { .. })
+                    && binding.next_at(now).is_none()
+            })
     }
-
     fn next_run_at(&self, now: i64) -> Option<i64> {
-        if self.is_finished(now) || !self.enabled {
+        if !self.enabled {
             return None;
         }
-        if self.schedule.kind != RoutineScheduleKind::Cron {
-            return self.next_run_at;
-        }
-        let next = self
-            .next_run_at
-            .or_else(|| next_cron_occurrence(&self.schedule, now, false).ok())?;
-        self.ends_at
-            .map_or(Some(next), |ends_at| (next <= ends_at).then_some(next))
+        self.bindings
+            .iter()
+            .filter_map(|binding| binding.next_at(now))
+            .min()
     }
 }
 
@@ -197,13 +252,15 @@ fn next_cron_occurrence(
 /// One scheduler tick derived from a single locked catalog snapshot.
 pub(crate) struct RoutinePoll {
     pub(crate) active: bool,
-    pub(crate) due: Vec<(String, ActiveRoutineRun)>,
+    pub(crate) events: Vec<HookEvent>,
 }
 
 /// Result of reserving one task invocation.
 pub(crate) enum BeginRun {
     Started(ActiveRoutineRun),
     Skipped,
+    /// This command already reserved or skipped its invocation.
+    AlreadyRecorded,
 }
 
 /// A durable running invocation whose file lock is held until completion.
@@ -268,6 +325,9 @@ impl RoutineDeletion {
 }
 
 impl ActiveRoutineRun {
+    pub(crate) fn id(&self) -> &str {
+        &self.run_id
+    }
     pub(crate) fn session_id(&self) -> &str {
         &self.session_id
     }
@@ -290,6 +350,7 @@ struct StoredBot {
     name: String,
     description: String,
     tint: ProviderTint,
+    shape: BotShape,
     config: VersionedAgentConfig,
 }
 
@@ -298,11 +359,13 @@ impl StoredBot {
         let (accepts_file_attachments, routine_interaction_policy) =
             crate::assembly::bot_semantics(&self.config.config)?;
         Ok(BotRecord {
+            conversation_session_id: conversation_session_id(&self.id),
             id: self.id.clone(),
             handle: self.handle.clone(),
             name: self.name.clone(),
             description: self.description.clone(),
             tint: self.tint,
+            shape: self.shape,
             config: self.config.clone(),
             accepts_file_attachments,
             routine_interaction_policy,
@@ -319,6 +382,7 @@ impl From<&BotRecord> for StoredBot {
             name: bot.name.clone(),
             description: bot.description.clone(),
             tint: bot.tint,
+            shape: bot.shape,
             config: bot.config.clone(),
         }
     }
@@ -362,7 +426,6 @@ impl BotStore {
             .map(|bot| bot.id.clone())
             .collect::<BTreeSet<_>>();
         store.storage.validate_run_owners(&bot_ids)?;
-        store.storage.recover_interrupted_runs()?;
         Ok(store)
     }
 
@@ -385,6 +448,7 @@ impl BotStore {
             name: MOBIUS_NAME.into(),
             description: MOBIUS_DESCRIPTION.into(),
             tint: ProviderTint::default(),
+            shape: BotShape::Circle,
             config: VersionedAgentConfig {
                 revision: 1,
                 config,
@@ -410,12 +474,14 @@ impl BotStore {
             let id = Uuid::new_v4().to_string();
             let handle = next_handle(state, &name, &id);
             let tint = next_tint(state);
+            let shape = next_shape(state);
             let bot = StoredBot {
                 id,
                 handle,
                 name,
                 description,
                 tint,
+                shape,
                 config: VersionedAgentConfig {
                     revision: 1,
                     config,
@@ -431,11 +497,15 @@ impl BotStore {
         &self,
         id: &str,
         expected_revision: u64,
-        name: &str,
-        description: &str,
-        tint: ProviderTint,
+        identity: BotIdentity<'_>,
         config: AgentComposition,
     ) -> Result<BotRecord> {
+        let BotIdentity {
+            name,
+            description,
+            tint,
+            shape,
+        } = identity;
         let name = validate_name(name)?;
         let description = validate_description(description)?;
         validate_agent_composition(&config)?;
@@ -454,6 +524,7 @@ impl BotStore {
             bot.name = name;
             bot.description = description;
             bot.tint = tint;
+            bot.shape = shape;
             let config = VersionedAgentConfig {
                 revision: expected_revision
                     .checked_add(1)
@@ -671,7 +742,7 @@ impl BotStore {
         validate_state(&state, &self.routines_dir)?;
         let catalog = catalog_json(&state)?;
         self.storage
-            .delete_runs_and_save_catalog(&catalog, None, Some(&bot_id))?;
+            .delete_runs_and_save_catalog(&catalog, None, Some(&bot_id), None, None)?;
         drop(_routine_locks);
         drop(state_lock);
         for path in &instructions {
@@ -707,48 +778,92 @@ impl BotStore {
             .record()
     }
 
-    /// Writes and registers one Bot-owned routine.
+    /// Registers a definition and its consumers in the same durable transaction.
     pub(crate) fn create_routine(
         &self,
         bot_id: &str,
-        workspace: &Path,
-        instructions: &str,
-        schedule: RoutineSchedule,
-        ends_at: Option<i64>,
+        definition: &RoutineDefinition,
+        cause: Option<&HookEvent>,
     ) -> Result<StoredRoutine> {
-        let workspace = validate_workspace(workspace)?;
-        validate_instructions(instructions)?;
-        validate_schedule(&schedule, ends_at)?;
-        let instructions = instructions.trim();
+        validate_definition(definition, 0)?;
+        let workspace = validate_workspace(&definition.workspace)?;
         let path = self.new_instruction_path();
-        crate::publication::publish(&path, instructions.as_bytes(), true)?;
-        let result = self.update(|state| {
-            find_bot_mut(state, bot_id)?;
+        crate::publication::publish(&path, definition.instructions.trim().as_bytes(), true)?;
+        let result = (|| {
+            let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
+            state_lock.lock()?;
+            let mut state = self.fresh_state()?;
+            reject_bot_mutation_if_deleting(&state)?;
+            find_bot_mut(&mut state, bot_id)?;
             let now = Utc::now().timestamp();
-            let mut routine = StoredRoutine {
+            let routine = StoredRoutine {
                 id: Uuid::new_v4().to_string(),
                 bot_id: bot_id.into(),
                 workspace,
                 instructions: path.clone(),
-                schedule,
-                ends_at,
+                bindings: definition
+                    .bindings
+                    .iter()
+                    .cloned()
+                    .map(|binding| StoredRoutineBinding::new(binding, now, false))
+                    .collect::<Result<_>>()?,
                 enabled: true,
-                next_run_at: Some(now),
-                last_matched_minute: None,
             };
-            routine.reset_next_run(now)?;
             state.routines.push(routine.clone());
+            validate_state(&state, &self.routines_dir)?;
+            let event = events::caused_event(
+                Uuid::new_v4().to_string(),
+                bot_id.into(),
+                HookSource::Routine {
+                    routine_id: routine.id.clone(),
+                },
+                HookData::RoutineCreated {
+                    routine_id: routine.id.clone(),
+                },
+                now,
+                cause,
+            )?;
+            let subscriptions = [HookKind::RunFinished, HookKind::RunSkipped]
+                .into_iter()
+                .map(|kind| BotSubscription {
+                    bot_id: bot_id.into(),
+                    binding: HookBinding {
+                        id: format!(
+                            "report-{}-{}",
+                            routine.id,
+                            if kind == HookKind::RunFinished {
+                                "finished"
+                            } else {
+                                "skipped"
+                            }
+                        ),
+                        on: event_selector(
+                            HookSource::Routine {
+                                routine_id: routine.id.clone(),
+                            },
+                            kind,
+                        ),
+                        action: BotAction::Report {
+                            instruction: TEXT.routine_report_instruction.clone(),
+                        },
+                    },
+                    enabled: true,
+                })
+                .collect::<Vec<_>>();
+            self.storage.save_catalog_with_hooks(
+                &catalog_json(&state)?,
+                &state.routines,
+                &[event],
+                &subscriptions,
+                now,
+                None,
+            )?;
             Ok(routine)
-        });
-        match result {
-            Ok(routine) => Ok(routine),
-            Err(error) => match std::fs::remove_file(&path) {
-                Ok(()) => Err(error),
-                Err(rollback) => Err(Error::Config(format!(
-                    "{error}; removing the unregistered routine failed: {rollback}"
-                ))),
-            },
+        })();
+        if result.is_err() {
+            remove_if_present(&path)?;
         }
+        result
     }
 
     pub(crate) fn routine_records(&self, bot_id: Option<&str>, now: i64) -> Result<Vec<Routine>> {
@@ -798,25 +913,35 @@ impl BotStore {
             || self.storage.has_running_routines()?)
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "one routine replacement keeps its validated fields explicit"
-    )]
     pub(crate) fn update_routine(
         &self,
         id: &str,
-        bot_id: &str,
-        workspace: &Path,
-        instructions: &str,
-        schedule: RoutineSchedule,
-        ends_at: Option<i64>,
-        enabled: bool,
+        definition: &RoutineDefinition,
+        cause: Option<&HookEvent>,
+        accepted_action_id: Option<&str>,
     ) -> Result<StoredRoutine> {
-        self.bot(bot_id)?;
-        let workspace = validate_workspace(workspace)?;
-        validate_instructions(instructions)?;
-        validate_schedule(&schedule, ends_at)?;
-        let existing = self.routine(id)?;
+        validate_definition(definition, 0)?;
+        let workspace = validate_workspace(&definition.workspace)?;
+        let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
+        state_lock.lock()?;
+        let mut state = self.fresh_state()?;
+        reject_bot_mutation_if_deleting(&state)?;
+        let index = resolve_routine(&state.routines, id)?;
+        let existing = state.routines[index].clone();
+        let bindings = existing
+            .bindings
+            .iter()
+            .map(|binding| binding.definition.clone())
+            .collect::<Vec<_>>();
+        if existing.workspace == workspace
+            && self.read_routine_instructions(&existing)? == definition.instructions.trim()
+            && bindings == definition.bindings
+        {
+            if let Some(id) = accepted_action_id {
+                self.storage.action_accepted(id)?;
+            }
+            return Ok(existing);
+        }
         let Some(_lock) = self.try_routine_lock(&existing.id)? else {
             return Err(Error::Config(format!(
                 "routine {} is currently running",
@@ -824,32 +949,116 @@ impl BotStore {
             )));
         };
         let path = self.new_instruction_path();
-        crate::publication::publish(&path, instructions.trim().as_bytes(), true)?;
-        let result = self.update(|state| {
-            find_bot_mut(state, bot_id)?;
-            let index = resolve_routine(&state.routines, &existing.id)?;
+        crate::publication::publish(&path, definition.instructions.trim().as_bytes(), true)?;
+        let result = (|| {
+            let now = Utc::now().timestamp();
             let stored = &mut state.routines[index];
-            stored.bot_id = bot_id.into();
             stored.workspace = workspace;
-            stored.instructions.clone_from(&path);
-            stored.schedule = schedule;
-            stored.ends_at = ends_at;
-            stored.enabled = enabled;
-            stored.reset_next_run(Utc::now().timestamp())?;
-            Ok(state.routines[index].clone())
-        });
-        match result {
-            Ok(routine) => {
-                let _ = remove_if_present(&existing.instructions);
-                Ok(routine)
-            }
-            Err(error) => match remove_if_present(&path) {
-                Ok(()) => Err(error),
-                Err(cleanup) => Err(Error::Config(format!(
-                    "{error}; removing the unregistered routine instructions failed: {cleanup}"
-                ))),
-            },
+            stored.instructions = path.clone();
+            stored.bindings = definition
+                .bindings
+                .iter()
+                .map(|binding| {
+                    existing
+                        .bindings
+                        .iter()
+                        .find(|prior| prior.definition == *binding)
+                        .cloned()
+                        .map_or_else(
+                            || StoredRoutineBinding::new(binding.clone(), now, false),
+                            Ok,
+                        )
+                })
+                .collect::<Result<_>>()?;
+            let updated = stored.clone();
+            validate_state(&state, &self.routines_dir)?;
+            let event = events::caused_event(
+                Uuid::new_v4().to_string(),
+                updated.bot_id.clone(),
+                HookSource::Routine {
+                    routine_id: updated.id.clone(),
+                },
+                HookData::RoutineUpdated {
+                    routine_id: updated.id.clone(),
+                },
+                now,
+                cause,
+            )?;
+            self.storage.save_catalog_with_hooks(
+                &catalog_json(&state)?,
+                &state.routines,
+                &[event],
+                &[],
+                now,
+                accepted_action_id,
+            )?;
+            Ok(updated)
+        })();
+        if result.is_ok() {
+            let _ = remove_if_present(&existing.instructions);
+        } else {
+            remove_if_present(&path)?;
         }
+        result
+    }
+
+    /// Changes future admission without acquiring or interrupting an invocation lock.
+    pub(crate) fn set_routine_enabled(
+        &self,
+        id: &str,
+        enabled: bool,
+        cause: Option<&HookEvent>,
+        accepted_action_id: Option<&str>,
+    ) -> Result<StoredRoutine> {
+        let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
+        state_lock.lock()?;
+        let mut state = self.fresh_state()?;
+        reject_bot_mutation_if_deleting(&state)?;
+        let index = resolve_routine(&state.routines, id)?;
+        if state.routines[index].enabled == enabled {
+            if let Some(id) = accepted_action_id {
+                self.storage.action_accepted(id)?;
+            }
+            return Ok(state.routines[index].clone());
+        }
+        let now = Utc::now().timestamp();
+        let stored = &mut state.routines[index];
+        stored.enabled = enabled;
+        if enabled {
+            for binding in &mut stored.bindings {
+                binding.reset(now, true)?;
+            }
+        }
+        let updated = stored.clone();
+        validate_state(&state, &self.routines_dir)?;
+        let data = if enabled {
+            HookData::RoutineResumed {
+                routine_id: updated.id.clone(),
+            }
+        } else {
+            HookData::RoutinePaused {
+                routine_id: updated.id.clone(),
+            }
+        };
+        let event = events::caused_event(
+            Uuid::new_v4().to_string(),
+            updated.bot_id.clone(),
+            HookSource::Routine {
+                routine_id: updated.id.clone(),
+            },
+            data,
+            now,
+            cause,
+        )?;
+        self.storage.save_catalog_with_hooks(
+            &catalog_json(&state)?,
+            &state.routines,
+            &[event],
+            &[],
+            now,
+            accepted_action_id,
+        )?;
+        Ok(updated)
     }
 
     pub(crate) fn prepare_routine_deletion(&self, id: &str) -> Result<RoutineDeletion> {
@@ -880,7 +1089,12 @@ impl BotStore {
         })
     }
 
-    pub(crate) fn delete_routine(&self, deletion: RoutineDeletion) -> Result<StoredRoutine> {
+    pub(crate) fn delete_routine(
+        &self,
+        deletion: RoutineDeletion,
+        cause: Option<&HookEvent>,
+        accepted_action_id: Option<&str>,
+    ) -> Result<StoredRoutine> {
         let RoutineDeletion {
             routine_id,
             session_ids,
@@ -911,8 +1125,25 @@ impl BotStore {
         let deleted = state.routines.remove(index);
         validate_state(&state, &self.routines_dir)?;
         let catalog = catalog_json(&state)?;
-        self.storage
-            .delete_runs_and_save_catalog(&catalog, Some(&routine_id), None)?;
+        let event = events::caused_event(
+            Uuid::new_v4().to_string(),
+            deleted.bot_id.clone(),
+            HookSource::Routine {
+                routine_id: deleted.id.clone(),
+            },
+            HookData::RoutineDeleted {
+                routine_id: deleted.id.clone(),
+            },
+            Utc::now().timestamp(),
+            cause,
+        )?;
+        self.storage.delete_runs_and_save_catalog(
+            &catalog,
+            Some(&routine_id),
+            None,
+            Some(&event),
+            accepted_action_id,
+        )?;
         drop(_lock);
         drop(_state_lock);
         let _ = remove_if_present(&instructions);
@@ -942,8 +1173,11 @@ impl BotStore {
             bot_id: stored.bot_id.clone(),
             workspace: stored.workspace.clone(),
             instructions: self.read_routine_instructions(stored)?,
-            schedule: stored.schedule.clone(),
-            ends_at: stored.ends_at,
+            bindings: stored
+                .bindings
+                .iter()
+                .map(|binding| binding.definition.clone())
+                .collect(),
             enabled: stored.enabled,
             finished: stored.is_finished(now),
             next_run_at: stored.next_run_at(now),
@@ -983,13 +1217,7 @@ impl BotStore {
         Ok(input)
     }
 
-    /// Reserves due routines and records their invocations atomically.
-    #[cfg(test)]
-    pub(crate) fn take_due(&self, now: i64) -> Result<Vec<(String, ActiveRoutineRun)>> {
-        Ok(self.poll_due(now)?.due)
-    }
-
-    /// Observes routine activity and reserves due work from one state load.
+    /// Commits timer facts and advances dates; only the command handler reserves work.
     pub(crate) fn poll_due(&self, now: i64) -> Result<RoutinePoll> {
         let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
         state_lock.lock()?;
@@ -997,130 +1225,131 @@ impl BotStore {
         let active = state
             .routines
             .iter()
-            .any(|routine| routine.enabled && !routine.is_finished(now))
+            .any(|routine| routine.enabled && routine.next_run_at(now).is_some())
             || self.storage.has_running_routines()?;
         if state.pending_bot_deletion.is_some() {
             return Ok(RoutinePoll {
                 active,
-                due: Vec::new(),
+                events: Vec::new(),
             });
         }
-        let minute = now.div_euclid(60);
-        let mut runs = Vec::new();
-        let mut due = Vec::new();
-        let mut schedule_changed = false;
+        let mut events = Vec::new();
+        let mut changed = false;
         for routine in &mut state.routines {
-            if routine.enabled
-                && !routine.is_finished(now)
-                && routine.schedule.kind == RoutineScheduleKind::Cron
-            {
-                let stale = routine
-                    .next_run_at
-                    .is_some_and(|next| next.div_euclid(60) < minute);
-                if routine.next_run_at.is_none() || stale {
-                    routine.next_run_at = Some(next_cron_occurrence(&routine.schedule, now, true)?);
-                    schedule_changed = true;
+            if !routine.enabled {
+                continue;
+            }
+            for binding in &mut routine.bindings {
+                let HookSelector::Schedule { schedule, .. } = &binding.definition.on else {
+                    continue;
+                };
+                if schedule.kind == RoutineScheduleKind::Cron
+                    && binding
+                        .next_due_at
+                        .is_none_or(|next| next.div_euclid(60) < now.div_euclid(60))
+                {
+                    binding.next_due_at = Some(next_cron_occurrence(schedule, now, true)?);
+                    changed = true;
                 }
+                let Some(at) = binding.next_at(now) else {
+                    continue;
+                };
+                if at > now || binding.last_matched_minute == Some(now.div_euclid(60)) {
+                    continue;
+                }
+                let id = events::stable_id(
+                    "schedule",
+                    &format!("{}:{}", routine.id, binding.definition.id),
+                    &at.to_string(),
+                );
+                events.push(events::caused_event(
+                    id,
+                    routine.bot_id.clone(),
+                    HookSource::Schedule {
+                        routine_id: routine.id.clone(),
+                        binding_id: binding.definition.id.clone(),
+                    },
+                    HookData::ScheduleDue {
+                        binding_id: binding.definition.id.clone(),
+                    },
+                    now,
+                    None,
+                )?);
+                binding.advance(now)?;
+                changed = true;
             }
         }
-        for index in 0..state.routines.len() {
-            let routine = &state.routines[index];
-            if !routine.enabled || routine.is_finished(now) {
-                continue;
+        if changed {
+            validate_state(&state, &self.routines_dir)?;
+            self.storage.save_catalog_with_hooks(
+                &catalog_json(&state)?,
+                &state.routines,
+                &events,
+                &[],
+                now,
+                None,
+            )?;
+        }
+        Ok(RoutinePoll { active, events })
+    }
+
+    /// Starts through one command identity; retries reuse the durable reservation.
+    pub(crate) fn begin_run_with_cause(
+        &self,
+        id: &str,
+        command_id: &str,
+        cause: Option<&HookEvent>,
+    ) -> Result<BeginRun> {
+        self.begin_run_inner(id, command_id, cause, || {})
+    }
+    fn begin_run_inner(
+        &self,
+        id: &str,
+        command_id: &str,
+        cause: Option<&HookEvent>,
+        after_resolve: impl FnOnce(),
+    ) -> Result<BeginRun> {
+        let routine = self.stored_routine(id)?;
+        after_resolve();
+        let lock = self.try_routine_lock(&routine.id)?;
+        let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
+        state_lock.lock()?;
+        let state = self.fresh_state()?;
+        reject_bot_mutation_if_deleting(&state)?;
+        let routine = state
+            .routines
+            .iter()
+            .find(|stored| stored.id == routine.id)
+            .ok_or_else(|| Error::Config("routine was deleted".into()))?;
+        if let Some(run) = self.storage.command_run(command_id)? {
+            if run.routine_id != routine.id {
+                return Err(Error::Config(
+                    "routine command identity targets another routine".into(),
+                ));
             }
-            let should_run = routine.last_matched_minute != Some(minute)
-                && routine.next_run_at.is_some_and(|next| next <= now);
-            if !should_run {
-                continue;
+            return Ok(BeginRun::AlreadyRecorded);
+        }
+        if !routine.enabled {
+            return Err(Error::Config("routine is paused".into()));
+        }
+        let Some(lock) = lock else {
+            if !self.storage.has_running(&routine.id)? {
+                return Err(Error::Config("routine is currently being modified".into()));
             }
-            let routine = state.routines[index].clone();
-            {
-                let stored = &mut state.routines[index];
-                stored.last_matched_minute = Some(minute);
-                match stored.schedule.kind {
-                    RoutineScheduleKind::Once => stored.next_run_at = None,
-                    RoutineScheduleKind::Interval => stored.advance_interval(now)?,
-                    RoutineScheduleKind::Cron => {
-                        stored.next_run_at =
-                            Some(next_cron_occurrence(&stored.schedule, now, false)?);
-                    }
-                }
-                schedule_changed = true;
-            }
-            let run = match self.try_routine_lock(&routine.id)? {
-                Some(lock) => {
-                    let run = new_run(&routine, RoutineRunStatus::Running, None);
-                    due.push((
-                        routine.id,
-                        ActiveRoutineRun {
-                            run_id: run.id.clone(),
-                            session_id: run
-                                .session_id
-                                .clone()
-                                .expect("a running routine reserves its session ID"),
-                            _lock: lock,
-                        },
-                    ));
-                    run
-                }
-                None => new_run(
-                    &routine,
+            self.storage.insert_run_with_cause(
+                &new_run(
+                    routine,
                     RoutineRunStatus::Skipped,
                     Some("the previous invocation is still running".into()),
                 ),
-            };
-            runs.push(run);
-        }
-        if !runs.is_empty() {
-            validate_state(&state, &self.routines_dir)?;
-            let catalog = catalog_json(&state)?;
-            self.storage.save_catalog_and_runs(&catalog, &runs)?;
-        } else if schedule_changed {
-            validate_state(&state, &self.routines_dir)?;
-            self.save(&state)?;
-        }
-        Ok(RoutinePoll { active, due })
-    }
-
-    /// Starts an overlap-locked invocation or records an overlap skip.
-    pub(crate) fn begin_run(&self, id: &str) -> Result<BeginRun> {
-        self.begin_run_inner(id, || {})
-    }
-
-    fn begin_run_inner(&self, id: &str, after_resolve: impl FnOnce()) -> Result<BeginRun> {
-        let routine = self.stored_routine(id)?;
-        after_resolve();
-        let Some(lock) = self.try_routine_lock(&routine.id)? else {
-            let _file_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
-            _file_lock.lock()?;
-            let state = self.fresh_state()?;
-            if state.pending_bot_deletion.is_some() {
-                return Err(Error::Config(
-                    "Bot deletion recovery must finish before changing Bot state".into(),
-                ));
-            }
-            let routine = state
-                .routines
-                .iter()
-                .find(|stored| stored.id == routine.id)
-                .cloned()
-                .ok_or_else(|| Error::Config(format!("unknown routine `{}`", routine.id)))?;
-            if !self.storage.has_running(&routine.id)? {
-                return Err(Error::Config(format!(
-                    "routine {} is currently being modified",
-                    routine.id
-                )));
-            }
-            self.storage.insert_run(&new_run(
-                &routine,
-                RoutineRunStatus::Skipped,
-                Some("the previous invocation is still running".into()),
-            ))?;
+                command_id,
+                cause,
+            )?;
             return Ok(BeginRun::Skipped);
         };
-        let routine = self.stored_routine(&routine.id)?;
-        let run = new_run(&routine, RoutineRunStatus::Running, None);
-        self.insert_run(&run)?;
+        let run = new_run(routine, RoutineRunStatus::Running, None);
+        self.storage
+            .insert_run_with_cause(&run, command_id, cause)?;
         Ok(BeginRun::Started(ActiveRoutineRun {
             run_id: run.id,
             session_id: run
@@ -1128,6 +1357,21 @@ impl BotStore {
                 .expect("a running routine reserves its session ID"),
             _lock: lock,
         }))
+    }
+    #[cfg(test)]
+    pub(crate) fn begin_run(&self, id: &str) -> Result<BeginRun> {
+        self.begin_run_with_cause(id, &Uuid::new_v4().to_string(), None)
+    }
+    pub(crate) fn request_run_stop(
+        &self,
+        run_id: &str,
+        command_id: &str,
+        cause: Option<&HookEvent>,
+    ) -> Result<()> {
+        self.storage.request_run_stop(run_id, command_id, cause)
+    }
+    pub(crate) fn run_cancel_requested(&self, run_id: &str) -> Result<bool> {
+        self.storage.run_cancel_requested(run_id)
     }
 
     /// Completes a running invocation and releases its overlap lock.
@@ -1198,6 +1442,159 @@ impl BotStore {
         self.storage.delete_run(id)
     }
 
+    pub(crate) fn subscriptions(&self, bot_id: &str) -> Result<Vec<crate::wire::BotSubscription>> {
+        self.bot(bot_id)?;
+        self.storage.subscriptions(bot_id)
+    }
+    pub(crate) fn record_hook(&self, event: &HookEvent) -> Result<bool> {
+        self.storage.record_hook(event)
+    }
+    pub(crate) fn hook_event(&self, id: &str) -> Result<Option<HookEvent>> {
+        self.storage.hook_event(id)
+    }
+    pub(crate) fn unpublished_events(&self, limit: usize) -> Result<Vec<HookEvent>> {
+        self.storage.unpublished_events(limit)
+    }
+    pub(crate) fn event_published(&self, id: &str) -> Result<()> {
+        self.storage.event_published(id)
+    }
+    pub(crate) fn pending_actions(&self, now: i64, limit: usize) -> Result<Vec<PendingHookAction>> {
+        self.storage.pending_actions(now, limit)
+    }
+    pub(crate) fn has_monitored_sessions(&self) -> Result<bool> {
+        self.storage.has_monitored_sessions()
+    }
+    pub(crate) fn close_session_sources(&self, events: &[HookEvent]) -> Result<()> {
+        let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
+        state_lock.lock()?;
+        let mut state = self.fresh_state()?;
+        let ids = events
+            .iter()
+            .filter_map(|event| {
+                if let HookSource::Session { session_id } = &event.source {
+                    Some(session_id.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<BTreeSet<_>>();
+        for routine in &mut state.routines {
+            routine.bindings.retain(|binding| !matches!(&binding.definition.on,HookSelector::Event{source:HookSource::Session{session_id},..} if ids.contains(session_id.as_str())));
+        }
+        validate_state(&state, &self.routines_dir)?;
+        self.storage
+            .close_session_sources(events, &catalog_json(&state)?)
+    }
+    pub(crate) fn set_subscription(
+        &self,
+        subscription: &crate::wire::BotSubscription,
+        after_sequence: u64,
+        now: i64,
+    ) -> Result<()> {
+        let _state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
+        _state_lock.lock()?;
+        self.bot(&subscription.bot_id)?;
+        self.storage
+            .set_subscription(subscription, after_sequence, now)
+    }
+    pub(crate) fn advance_source_cursor(
+        &self,
+        session_id: &str,
+        bot_id: &str,
+        sequence: u64,
+    ) -> Result<()> {
+        self.storage
+            .advance_source_cursor(session_id, bot_id, sequence)
+    }
+    pub(crate) fn resume_run(&self, id: &str) -> Result<ActiveRoutineRun> {
+        let run = self.storage.run(id)?;
+        if run.status != RoutineRunStatus::Running {
+            return Err(Error::Config("only running routines can resume".into()));
+        }
+        let lock = self
+            .try_routine_lock(&run.routine_id)?
+            .ok_or_else(|| Error::Config("routine is already resident".into()))?;
+        Ok(ActiveRoutineRun {
+            run_id: run.id,
+            session_id: run
+                .session_id
+                .ok_or_else(|| Error::Config("running routine has no session".into()))?,
+            _lock: lock,
+        })
+    }
+    pub(crate) fn source_cursor(&self, session_id: &str) -> Result<u64> {
+        self.storage.source_cursor(session_id)
+    }
+    pub(crate) fn project_session(&self, event: &HookEvent, sequence: u64) -> Result<bool> {
+        self.storage.project_session(event, sequence)
+    }
+    pub(crate) fn action_pending(&self, id: &str) -> Result<bool> {
+        self.storage.action_pending(id)
+    }
+    pub(crate) fn action_accepted(&self, id: &str) -> Result<()> {
+        self.storage.action_accepted(id)
+    }
+    pub(crate) fn action_failed(&self, id: &str, error: &str, retry_at: Option<i64>) -> Result<()> {
+        self.storage.action_failed(id, error, retry_at)
+    }
+    pub(crate) fn has_pending_deliveries(&self) -> Result<bool> {
+        self.storage.has_pending_deliveries()
+    }
+    pub(crate) fn has_webhooks(&self) -> Result<bool> {
+        self.storage.has_webhooks()
+    }
+    pub(crate) fn webhooks(&self, bot_id: &str) -> Result<Vec<WebhookRecord>> {
+        self.bot(bot_id)?;
+        self.storage.webhooks(bot_id)
+    }
+    pub(crate) fn create_webhook(
+        &self,
+        bot_id: &str,
+        name: &str,
+        instruction: &str,
+        token_hash: [u8; 32],
+    ) -> Result<WebhookRecord> {
+        let _state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
+        _state_lock.lock()?;
+        self.bot(bot_id)?;
+        self.storage
+            .create_webhook(bot_id, name, instruction, token_hash)
+    }
+    pub(crate) fn configure_webhook(
+        &self,
+        bot_id: &str,
+        id: &str,
+        enabled: bool,
+        token_hash: Option<[u8; 32]>,
+    ) -> Result<()> {
+        let _state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
+        _state_lock.lock()?;
+        self.bot(bot_id)?;
+        self.storage
+            .configure_webhook(bot_id, id, enabled, token_hash)
+    }
+    pub(crate) fn delete_webhook(&self, bot_id: &str, id: &str) -> Result<()> {
+        let _state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
+        _state_lock.lock()?;
+        self.bot(bot_id)?;
+        self.storage.delete_webhook(bot_id, id)
+    }
+    pub(crate) fn accept_webhook(&self, delivery: &WebhookDelivery<'_>, now: i64) -> Result<bool> {
+        let _state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
+        _state_lock.lock()?;
+        reject_bot_mutation_if_deleting(&self.fresh_state()?)?;
+        self.storage.accept_webhook(delivery, now)
+    }
+    pub(crate) fn recover_run(
+        &self,
+        id: &str,
+        status: RoutineRunStatus,
+        finished_at: i64,
+        message: Option<String>,
+    ) -> Result<RoutineRun> {
+        self.storage.finish_run(id, status, finished_at, message)
+    }
+
     fn stored_routine(&self, id: &str) -> Result<StoredRoutine> {
         self.fresh_state()?
             .routines
@@ -1243,18 +1640,6 @@ impl BotStore {
 
     fn save(&self, state: &BotState) -> Result<()> {
         self.storage.save_catalog(&catalog_json(state)?)
-    }
-
-    fn insert_run(&self, run: &RoutineRun) -> Result<()> {
-        let _file_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
-        _file_lock.lock()?;
-        let state = self.fresh_state()?;
-        if state.pending_bot_deletion.is_some() {
-            return Err(Error::Config(
-                "Bot deletion recovery must finish before changing Bot state".into(),
-            ));
-        }
-        self.storage.insert_run(run)
     }
 
     fn fresh_state(&self) -> Result<BotState> {
@@ -1364,6 +1749,14 @@ fn next_tint(state: &BotState) -> ProviderTint {
         .unwrap_or(BOT_TINTS[state.bots.len() % BOT_TINTS.len()])
 }
 
+/// The first shape no Bot wears yet, then round again, as tints are handed out.
+fn next_shape(state: &BotState) -> BotShape {
+    BotShape::ALL
+        .into_iter()
+        .find(|shape| state.bots.iter().all(|bot| bot.shape != *shape))
+        .unwrap_or(BotShape::ALL[state.bots.len() % BotShape::ALL.len()])
+}
+
 fn validate_handle(handle: &str) -> Result<String> {
     let handle = handle.trim();
     if handle.is_empty()
@@ -1443,6 +1836,58 @@ fn validate_instructions(instructions: &str) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+pub(crate) fn validate_definition(definition: &RoutineDefinition, depth: usize) -> Result<()> {
+    validate_stored_workspace(&definition.workspace)?;
+    validate_instructions(&definition.instructions)?;
+    validate_bindings(&definition.bindings, depth)
+}
+fn validate_bindings(bindings: &[RoutineBinding], depth: usize) -> Result<()> {
+    if depth > 4 || bindings.len() > events::MAX_ROUTINE_BINDINGS {
+        return Err(Error::Config(
+            "routine bindings exceed their count or nesting bound".into(),
+        ));
+    }
+    let mut ids = BTreeSet::new();
+    for binding in bindings {
+        if binding.id.is_empty()
+            || binding.id.len() > 128
+            || binding.id.chars().any(char::is_control)
+            || !ids.insert(&binding.id)
+        {
+            return Err(Error::Config(
+                "routine binding identities must be distinct and contain 1 to 128 safe bytes"
+                    .into(),
+            ));
+        }
+        events::validate_selector(&binding.on)?;
+        if let HookSelector::Schedule { schedule, ends_at } = &binding.on {
+            validate_schedule(schedule, *ends_at)?;
+        }
+        validate_routine_action(&binding.action, depth)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_routine_action(action: &RoutineAction, depth: usize) -> Result<()> {
+    match action {
+        RoutineAction::Update { definition } => validate_definition(definition, depth + 1),
+        RoutineAction::Stop { run_id }
+            if run_id.trim().is_empty()
+                || run_id.len() > 256
+                || run_id.chars().any(char::is_control) =>
+        {
+            Err(Error::Config(
+                "stop action requires a safe invocation identity".into(),
+            ))
+        }
+        RoutineAction::Start
+        | RoutineAction::Stop { .. }
+        | RoutineAction::Pause
+        | RoutineAction::Resume
+        | RoutineAction::Delete => Ok(()),
+    }
 }
 
 fn validate_schedule(schedule: &RoutineSchedule, ends_at: Option<i64>) -> Result<()> {
@@ -1563,8 +2008,19 @@ fn validate_state(state: &BotState, routines_dir: &Path) -> Result<()> {
                 "persisted routine path is outside the private gateway routine directory".into(),
             ));
         }
-        validate_schedule(&routine.schedule, routine.ends_at)?;
-        if routine.next_run_at.is_some_and(|next| next <= 0) {
+        validate_bindings(
+            &routine
+                .bindings
+                .iter()
+                .map(|binding| binding.definition.clone())
+                .collect::<Vec<_>>(),
+            0,
+        )?;
+        if routine
+            .bindings
+            .iter()
+            .any(|binding| binding.next_due_at.is_some_and(|next| next <= 0))
+        {
             return Err(Error::Config("invalid persisted routine next run".into()));
         }
     }
@@ -1698,3 +2154,17 @@ fn same_file(_left: &std::fs::Metadata, _right: &std::fs::Metadata) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+/// One stable conversation identity per Bot.
+pub(crate) fn conversation_session_id(bot_id: &str) -> String {
+    format!("persistent-{bot_id}")
+}
+
+fn reject_bot_mutation_if_deleting(state: &BotState) -> Result<()> {
+    if state.pending_bot_deletion.is_some() {
+        return Err(Error::Config(
+            "Bot deletion recovery must finish before changing Bot work".into(),
+        ));
+    }
+    Ok(())
+}

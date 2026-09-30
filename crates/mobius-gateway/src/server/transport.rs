@@ -281,6 +281,42 @@ pub(super) struct ClientConnectionGuard {
     connections: Arc<ClientConnections>,
     key: (String, ClientKind),
     activity: Option<GatewayHost>,
+    bots: Arc<BotStore>,
+}
+
+fn native_client_present(entries: &BTreeMap<(String, ClientKind), usize>, client_id: &str) -> bool {
+    entries.iter().any(|((id, kind), count)| {
+        id == client_id && *kind != ClientKind::GatewayDashboard && *count > 0
+    })
+}
+
+fn record_client_presence(bots: &BotStore, client_id: &str, connected: bool) -> Result<()> {
+    use crate::wire::{HookData, HookEvent, HookSource};
+    let transition = uuid::Uuid::new_v4();
+    let occurred_at = Utc::now().timestamp();
+    for bot in bots.bots()? {
+        let data = if connected {
+            HookData::ClientConnected {
+                client_id: client_id.into(),
+            }
+        } else {
+            HookData::ClientDisconnected {
+                client_id: client_id.into(),
+            }
+        };
+        bots.record_hook(&HookEvent {
+            id: format!("client-{transition}-{}", bot.id),
+            source: HookSource::Client {
+                client_id: client_id.into(),
+            },
+            cause_id: None,
+            ancestry: Vec::new(),
+            bot_id: bot.id,
+            occurred_at,
+            data,
+        })?;
+    }
+    Ok(())
 }
 
 impl ClientConnections {
@@ -300,21 +336,31 @@ impl ClientConnections {
         self: &Arc<Self>,
         client_id: String,
         kind: ClientKind,
+        bots: Arc<BotStore>,
     ) -> Result<ClientConnectionGuard> {
         let key = (client_id, kind);
         let mut entries = self
             .entries
             .lock()
             .map_err(|_| Error::Config("client-connection lock is poisoned".into()))?;
+        let first_native =
+            kind != ClientKind::GatewayDashboard && !native_client_present(&entries, &key.0);
         let connections = entries.entry(key.clone()).or_default();
         *connections = connections
             .checked_add(1)
             .ok_or_else(|| Error::Config("client connection count overflow".into()))?;
+        if first_native && let Err(error) = record_client_presence(&bots, &key.0, true) {
+            eprintln!(
+                "client lifecycle persistence failed: {}",
+                connection_diagnostic(&error)
+            );
+        }
         drop(entries);
         Ok(ClientConnectionGuard {
             connections: Arc::clone(self),
             key,
             activity: None,
+            bots,
         })
     }
 
@@ -350,19 +396,39 @@ impl ClientConnections {
 
 impl Drop for ClientConnectionGuard {
     fn drop(&mut self) {
-        let Ok(mut entries) = self.connections.entries.lock() else {
-            return;
+        let close = || {
+            let Ok(mut entries) = self.connections.entries.lock() else {
+                return;
+            };
+            let Some(connections) = entries.get_mut(&self.key) else {
+                return;
+            };
+            if let Some(host) = &self.activity {
+                host.mark_runtime_activity();
+            }
+            if *connections > 1 {
+                *connections -= 1;
+            } else {
+                entries.remove(&self.key);
+            }
+            if self.key.1 != ClientKind::GatewayDashboard
+                && !native_client_present(&entries, &self.key.0)
+                && let Err(error) = record_client_presence(&self.bots, &self.key.0, false)
+            {
+                eprintln!(
+                    "client lifecycle persistence failed: {}",
+                    connection_diagnostic(&error)
+                );
+            }
         };
-        let Some(connections) = entries.get_mut(&self.key) else {
-            return;
-        };
-        if let Some(host) = &self.activity {
-            host.mark_runtime_activity();
-        }
-        if *connections > 1 {
-            *connections -= 1;
+        // Drop must commit the final presence fact before the guard disappears.
+        // A multithreaded runtime can hand its worker to another thread during SQLite I/O.
+        if tokio::runtime::Handle::try_current().is_ok_and(|handle| {
+            handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
+        }) {
+            tokio::task::block_in_place(close);
         } else {
-            entries.remove(&self.key);
+            close();
         }
     }
 }
@@ -397,6 +463,14 @@ pub(super) async fn serve_plaintext_connection(
     let read = tokio::time::timeout_at(auth_deadline, stream.peek(&mut first))
         .await
         .map_err(|_| Error::Unauthorized)??;
+    if read == 1 && first[0] == b'P' {
+        return super::webhooks::serve(
+            stream,
+            Arc::clone(&connection.bots),
+            expected_websocket_host.as_deref(),
+        )
+        .await;
+    }
     if read == 1 && first[0] == b'G' {
         serve_websocket(
             stream,
@@ -497,6 +571,7 @@ async fn register_client_connection(
     id: String,
     kind: ClientKind,
     host: &GatewayHost,
+    bots: &Arc<BotStore>,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<Option<ClientConnectionGuard>> {
     let admission = if kind == ClientKind::GatewayDashboard {
@@ -510,7 +585,11 @@ async fn register_client_connection(
             }
         }
     };
-    let mut connection = connections.register(id, kind)?;
+    let connections = Arc::clone(connections);
+    let bots = Arc::clone(bots);
+    let mut connection = tokio::task::spawn_blocking(move || connections.register(id, kind, bots))
+        .await
+        .map_err(|error| Error::Config(format!("client registration task failed: {error}")))??;
     if admission.is_some() {
         host.mark_runtime_activity();
         connection.activity = Some(host.clone());
@@ -558,6 +637,7 @@ where
         client_id.clone(),
         client_kind,
         &host,
+        &bots,
         &mut writer,
     )
     .await?

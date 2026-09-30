@@ -275,6 +275,7 @@ fn session_summary(
 
 fn execution_record(session_id: &str, turn_id: &str, started_at_ms: i64) -> ExecutionRecord {
     ExecutionRecord {
+        author: MessageAuthor::User,
         session_id: session_id.into(),
         submission_id: format!("submission-{turn_id}"),
         turn_id: turn_id.into(),

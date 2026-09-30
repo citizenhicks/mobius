@@ -12,7 +12,7 @@ use super::unknown_target;
 use crate::Error;
 use crate::Result;
 use crate::agent::AgentSender;
-use crate::protocol::{MessageSubmission, Op};
+use crate::protocol::{MessageSubmission, Submission};
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::time::Instant;
@@ -126,17 +126,16 @@ impl Shared {
                 .agents
                 .get(from)
                 .is_some_and(|entry| entry.parent == target);
+            let admission = sender.send_with_admission(Submission::message(message.clone()))?;
             if reports_to_parent {
-                sender.submit(Op::Message {
-                    message: message.clone(),
-                })?;
                 root.parent_reports
                     .entry(from.into())
                     .or_default()
                     .push(message);
-            } else {
-                sender.submit(Op::Message { message })?;
             }
+            drop(root);
+            drop(_writer);
+            admission.wait().await?;
             return Ok(None);
         }
         let mut root = root_slot.state.lock().await;
@@ -162,17 +161,16 @@ impl Shared {
                     .get(target)
                     .cloned()
                     .ok_or_else(|| Error::Stopped("agent runtime is unavailable".into()))?;
+                let admission = sender.send_with_admission(Submission::message(message.clone()))?;
                 if reports_to_parent {
-                    sender.submit(Op::Message {
-                        message: message.clone(),
-                    })?;
                     root.parent_reports
                         .entry(from.into())
                         .or_default()
                         .push(message);
-                } else {
-                    sender.submit(Op::Message { message })?;
                 }
+                drop(root);
+                drop(_writer);
+                admission.wait().await?;
                 Ok(None)
             }
             AgentStatus::Errored => Err(Error::Stopped(format!(

@@ -646,6 +646,7 @@ async fn zero_replay_mode_emits_uncertain_tool_recovery_as_individual_events() {
     target.session_context = test_session_context();
     target.model_route = Some("test".into());
     target.active_execution = Some(crate::backend::checkpoint::ActiveExecution {
+        author: crate::protocol::MessageAuthor::User,
         submission_id: "submission-1".into(),
         turn_id: "turn-1".into(),
         started_at_ms: 1,
@@ -765,6 +766,7 @@ async fn restart_resolves_a_durable_turn_completion_instead_of_aborting_it() {
     checkpoint.session_context = test_session_context();
     checkpoint.model_route = Some("test".into());
     checkpoint.active_execution = Some(crate::backend::checkpoint::ActiveExecution {
+        author: crate::protocol::MessageAuthor::User,
         submission_id: "submission-1".into(),
         turn_id: "turn-1".into(),
         started_at_ms: 1,
@@ -819,6 +821,7 @@ async fn restart_resumes_the_same_model_cursor() {
     checkpoint.session_context = test_session_context();
     checkpoint.model_route = Some("test".into());
     checkpoint.active_execution = Some(crate::backend::checkpoint::ActiveExecution {
+        author: crate::protocol::MessageAuthor::User,
         submission_id: "submission-1".into(),
         turn_id: "turn-1".into(),
         started_at_ms: 1,
@@ -887,6 +890,7 @@ async fn restart_closes_an_active_model_step_with_the_recovery_checkpoint() {
     checkpoint.session_context = test_session_context();
     checkpoint.model_route = Some("test".into());
     checkpoint.active_execution = Some(crate::backend::checkpoint::ActiveExecution {
+        author: crate::protocol::MessageAuthor::User,
         submission_id: "submission-1".into(),
         turn_id: "turn-1".into(),
         started_at_ms: 10,
@@ -949,6 +953,7 @@ async fn restart_recovers_streamed_calls_without_reexecuting_them() {
     checkpoint.session_context = test_session_context();
     checkpoint.model_route = Some("test".into());
     checkpoint.active_execution = Some(crate::backend::checkpoint::ActiveExecution {
+        author: crate::protocol::MessageAuthor::User,
         submission_id: "submission-1".into(),
         turn_id: "turn-1".into(),
         started_at_ms: 10,

@@ -187,10 +187,13 @@ fn progress_text(event: &EventMsg, voice_session_id: &str) -> Option<String> {
         EventMsg::Message(message) => {
             let author = match &message.author {
                 MessageAuthor::User => "User",
-                MessageAuthor::Peer { session_id, .. } if session_id == voice_session_id => {
+                MessageAuthor::Source {
+                    source: crate::protocol::MessageSource::Session { session_id },
+                    ..
+                } if session_id == voice_session_id => {
                     return None;
                 }
-                MessageAuthor::Peer { handle, .. } => handle,
+                MessageAuthor::Source { handle, .. } => handle,
             };
             Some(format!("{author}: {}", message.text))
         }
@@ -293,16 +296,20 @@ impl VoiceConversation {
             id: submission_id.clone(),
             op: Op::Message {
                 message: MessageSubmission {
-                    author: MessageAuthor::Peer {
+                    author: MessageAuthor::Source {
                         message_id: submission_id.clone(),
-                        session_id: self.session_id.clone(),
+                        source: crate::protocol::MessageSource::Session {
+                            session_id: self.session_id.clone(),
+                        },
+                        cause_id: None,
+                        ancestry: Vec::new(),
                         handle: format!("{} (voice)", self.bot_name),
                         symbol: Some(FrontendSymbol::Custom("voice".into())),
                     },
                     text,
                     attachments: Vec::new(),
                     reply: None,
-                    requested_delivery: None,
+                    requested_delivery: Some(crate::protocol::ActiveMessageDelivery::Steer),
                     target_turn_id: None,
                 },
             },
@@ -486,7 +493,11 @@ mod tests {
                 .contains("Do this")
         );
 
-        if let MessageAuthor::Peer { session_id, .. } = &mut message.author {
+        if let MessageAuthor::Source {
+            source: crate::protocol::MessageSource::Session { session_id },
+            ..
+        } = &mut message.author
+        {
             *session_id = "other-session".into();
         }
         for author in [message.author.clone(), MessageAuthor::User] {
@@ -520,9 +531,12 @@ mod tests {
         let Op::Message { message } = &submission.op else {
             panic!("normal message")
         };
-        assert_eq!(message.requested_delivery, None);
+        assert_eq!(
+            message.requested_delivery,
+            Some(crate::protocol::ActiveMessageDelivery::Steer)
+        );
         assert!(
-            matches!(&message.author, MessageAuthor::Peer { session_id, handle, symbol: Some(FrontendSymbol::Custom(symbol)), .. }
+            matches!(&message.author, MessageAuthor::Source { source: crate::protocol::MessageSource::Session { session_id }, handle, symbol: Some(FrontendSymbol::Custom(symbol)), .. }
             if session_id == "voice-session" && handle == "Builder (voice)" && symbol == "voice")
         );
         let started = EventMsg::TurnStarted(TurnStartedEvent {

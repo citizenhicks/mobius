@@ -264,6 +264,14 @@ async fn errored_subagent_preview_ends_with_its_terminal_message() {
 }
 
 impl CheckpointStore for BlockingRetryStore {
+    fn message_accepted<'a>(
+        &'a self,
+        _session_id: &'a str,
+        _submission_id: &'a str,
+    ) -> BoxFuture<'a, Result<bool>> {
+        Box::pin(async { Ok(false) })
+    }
+
     fn load<'a>(&'a self, _session_id: &'a str) -> BoxFuture<'a, Result<Option<Checkpoint>>> {
         Box::pin(async { Ok(None) })
     }
@@ -358,6 +366,14 @@ impl CheckpointStore for BlockingRetryStore {
 }
 
 impl CheckpointStore for FailOnceStore {
+    fn message_accepted<'a>(
+        &'a self,
+        _session_id: &'a str,
+        _submission_id: &'a str,
+    ) -> BoxFuture<'a, Result<bool>> {
+        Box::pin(async { Ok(false) })
+    }
+
     fn load<'a>(&'a self, _session_id: &'a str) -> BoxFuture<'a, Result<Option<Checkpoint>>> {
         Box::pin(async { Ok(None) })
     }
@@ -940,9 +956,13 @@ async fn running_parent_records_real_child_message_for_terminal_dedup() {
         .await
         .expect("attach parent agent");
     let message = crate::protocol::MessageSubmission {
-        author: crate::protocol::MessageAuthor::Peer {
+        author: crate::protocol::MessageAuthor::Source {
             message_id: "report-a".into(),
-            session_id: "child".into(),
+            source: crate::protocol::MessageSource::Session {
+                session_id: "child".into(),
+            },
+            cause_id: None,
+            ancestry: Vec::new(),
             handle: "child".into(),
             symbol: None,
         },

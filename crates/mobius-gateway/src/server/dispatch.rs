@@ -346,10 +346,21 @@ pub(super) async fn handle_message(
             name,
             description,
             tint,
+            shape,
             config,
         } => {
             let updated = gateway
-                .update_bot(&id, expected_revision, &name, &description, tint, config)
+                .update_bot(
+                    &id,
+                    expected_revision,
+                    crate::bots::BotIdentity {
+                        name: &name,
+                        description: &description,
+                        tint,
+                        shape,
+                    },
+                    config,
+                )
                 .await;
             return write_bot_result(writer, connection.view, request_id, updated, gateway).await;
         }
@@ -579,51 +590,29 @@ pub(super) async fn handle_message(
         ClientMessage::CreateRoutine {
             request_id,
             bot_id,
-            workspace,
-            instructions,
-            schedule,
-            ends_at,
+            definition,
         } => {
             return write_result(
                 writer,
                 request_id,
                 gateway
-                    .create_routine(&bot_id, &workspace, &instructions, schedule, ends_at)
-                    .await,
+                    .create_routine(&bot_id, &definition, None)
+                    .await
+                    .map(|_| ()),
             )
             .await;
         }
         ClientMessage::ListRoutines { request_id, bot_id } => {
             return list_routines(writer, request_id, bot_id, bots).await;
         }
-        ClientMessage::UpdateRoutine {
+        ClientMessage::RoutineCommand {
             request_id,
-            id,
-            bot_id,
-            workspace,
-            instructions,
-            schedule,
-            ends_at,
-            enabled,
+            command,
         } => {
             let result = gateway
-                .update_routine(
-                    &id,
-                    &bot_id,
-                    &workspace,
-                    &instructions,
-                    schedule,
-                    ends_at,
-                    enabled,
-                )
+                .execute_routine_command(&command, None, None, &request_id)
                 .await;
             return write_result(writer, request_id, result).await;
-        }
-        ClientMessage::DeleteRoutine { request_id, id } => {
-            return write_result(writer, request_id, gateway.delete_routine(&id).await).await;
-        }
-        ClientMessage::RunRoutine { request_id, id } => {
-            return write_result(writer, request_id, gateway.run_routine(id).await).await;
         }
         ClientMessage::ListRoutineHistory { request_id, id } => {
             return list_routine_history(writer, request_id, id, bots).await;
@@ -991,7 +980,7 @@ async fn submit(
     let user_message = match &submission.op {
         Op::Message { message } => match &message.author {
             MessageAuthor::User => Some(message),
-            MessageAuthor::Peer { .. } => {
+            MessageAuthor::Source { .. } => {
                 return write_rejection(
                     writer,
                     request_id,

@@ -3,10 +3,12 @@ use super::*;
 fn test_bot() -> crate::wire::BotRecord {
     crate::wire::BotRecord {
         id: "bot-fixture".into(),
+        conversation_session_id: "persistent-test".into(),
         handle: "fixture".into(),
         name: "Fixture".into(),
         description: "Own fixture work.".into(),
         tint: ProviderTint::default(),
+        shape: crate::wire::BotShape::Circle,
         config: VersionedAgentConfig {
             revision: 1,
             config: AgentComposition::default(),
@@ -892,10 +894,12 @@ fn saving_defaults_is_revisioned_and_does_not_change_existing_chat_specs() {
     let state = tempfile::tempdir().expect("state");
     let bot = crate::wire::BotRecord {
         id: "bot-fixture".into(),
+        conversation_session_id: "persistent-test".into(),
         handle: "fixture".into(),
         name: "Fixture".into(),
         description: "Own fixture work.".into(),
         tint: ProviderTint::default(),
+        shape: crate::wire::BotShape::Circle,
         config: registered.bot_defaults.clone().expect("Bot defaults"),
         accepts_file_attachments: false,
         routine_interaction_policy: RoutineInteractionPolicy::Unattended,
@@ -1011,11 +1015,11 @@ fn chats_keep_canonical_specs_for_different_worktrees() {
 
     assert_eq!(
         first_spec.workspace,
-        fs::canonicalize(first).expect("first")
+        Some(fs::canonicalize(first).expect("first"))
     );
     assert_eq!(
         second_spec.workspace,
-        fs::canonicalize(second).expect("second")
+        Some(fs::canonicalize(second).expect("second"))
     );
     assert_ne!(first_spec.workspace_info(), second_spec.workspace_info());
 }
@@ -1788,4 +1792,16 @@ async fn replacing_and_removing_credentials_revokes_resolved_routes() {
     let mut revoked = second.lifetime.revoked.unwrap();
     store.remove("openai_socket").unwrap();
     assert!(revoked.changed().await.is_err());
+}
+
+#[test]
+fn new_gateway_bot_defaults_use_full_access() {
+    assert_eq!(
+        AgentComposition::default()
+            .middleware
+            .setting("sandbox", "approval_policy"),
+        Some(&mobius::protocol::FrontendSettingValue::String(
+            "full_access".into()
+        ))
+    );
 }

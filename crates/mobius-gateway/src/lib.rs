@@ -14,6 +14,7 @@ mod extensions;
 pub mod gateway_accounts;
 mod host;
 mod middleware_manifest;
+mod persistent_chat;
 mod provider_catalog;
 mod publication;
 pub mod sandbox;

@@ -943,9 +943,13 @@ mod tests {
     #[test]
     fn compaction_preserves_active_message_metadata() {
         let peer = crate::backend::model::message_input(&crate::protocol::MessageEvent {
-            author: crate::protocol::MessageAuthor::Peer {
+            author: crate::protocol::MessageAuthor::Source {
                 message_id: "message".into(),
-                session_id: "peer".into(),
+                source: crate::protocol::MessageSource::Session {
+                    session_id: "peer".into(),
+                },
+                cause_id: None,
+                ancestry: Vec::new(),
                 handle: "worker".into(),
                 symbol: None,
             },
@@ -975,9 +979,13 @@ mod tests {
     #[test]
     fn compaction_rejects_lost_active_message_metadata() {
         let peer = crate::backend::model::message_input(&crate::protocol::MessageEvent {
-            author: crate::protocol::MessageAuthor::Peer {
+            author: crate::protocol::MessageAuthor::Source {
                 message_id: "message".into(),
-                session_id: "peer".into(),
+                source: crate::protocol::MessageSource::Session {
+                    session_id: "peer".into(),
+                },
+                cause_id: None,
+                ancestry: Vec::new(),
                 handle: "worker".into(),
                 symbol: None,
             },

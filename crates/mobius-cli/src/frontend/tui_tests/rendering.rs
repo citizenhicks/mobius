@@ -585,9 +585,13 @@ fn peer_messages_use_activity_rows_in_live_history_and_preview_transcripts() {
         ("voice agent", Some(FrontendSymbol::Custom("voice".into()))),
     ] {
         let event = EventMsg::Message(MessageEvent {
-            author: MessageAuthor::Peer {
+            author: MessageAuthor::Source {
                 message_id: "message".into(),
-                session_id: "session".into(),
+                source: mobius::protocol::MessageSource::Session {
+                    session_id: "session".into(),
+                },
+                cause_id: None,
+                ancestry: Vec::new(),
                 handle: handle.into(),
                 symbol,
             },

@@ -57,7 +57,7 @@ mod base64_bytes {
 }
 
 /// Current gateway protocol version.
-pub const PROTOCOL_VERSION: u16 = 86;
+pub const PROTOCOL_VERSION: u16 = 87;
 /// Maximum encoded JSON payload accepted in one frame.
 pub const MAX_FRAME_BYTES: usize = 50 * 1024 * 1024;
 /// Maximum encoded authentication frame, and the first encrypted WebSocket record.

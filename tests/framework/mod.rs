@@ -269,10 +269,26 @@ impl Model for GatedModel {
 #[derive(Default)]
 struct MemoryCheckpoints {
     sessions: Mutex<BTreeMap<String, Checkpoint>>,
+    receipts: Mutex<std::collections::BTreeSet<(String, String)>>,
     state: Mutex<BTreeMap<(String, String), Value>>,
 }
 
 impl CheckpointStore for MemoryCheckpoints {
+    fn message_accepted<'a>(
+        &'a self,
+        session_id: &'a str,
+        submission_id: &'a str,
+    ) -> BoxFuture<'a, Result<bool>> {
+        Box::pin(async move {
+            let _sessions = self.sessions.lock().expect("checkpoint store");
+            Ok(self
+                .receipts
+                .lock()
+                .expect("receipts")
+                .contains(&(session_id.into(), submission_id.into())))
+        })
+    }
+
     fn load<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<Option<Checkpoint>>> {
         Box::pin(async move {
             Ok(self
@@ -296,6 +312,10 @@ impl CheckpointStore for MemoryCheckpoints {
             for session_id in session_ids {
                 sessions.remove(session_id);
             }
+            self.receipts
+                .lock()
+                .expect("receipts")
+                .retain(|(session_id, _)| !session_ids.contains(session_id));
             Ok(true)
         })
     }
@@ -307,10 +327,14 @@ impl CheckpointStore for MemoryCheckpoints {
         _execution: Option<&'a ExecutionRecord>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            self.sessions
-                .lock()
-                .expect("checkpoint store")
-                .insert(checkpoint.session_id.clone(), checkpoint.clone());
+            let mut sessions = self.sessions.lock().expect("checkpoint store");
+            self.receipts.lock().expect("receipts").extend(
+                checkpoint
+                    .pending_messages
+                    .iter()
+                    .map(|message| (checkpoint.session_id.clone(), message.id().into())),
+            );
+            sessions.insert(checkpoint.session_id.clone(), checkpoint.clone());
             Ok(())
         })
     }

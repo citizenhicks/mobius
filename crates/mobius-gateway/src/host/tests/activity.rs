@@ -12,6 +12,7 @@ async fn runtime_activity_observes_hidden_execution_and_short_completed_work() {
     checkpoint.catalog_visible = false;
     checkpoint.sequence += 1;
     checkpoint.active_execution = Some(ActiveExecution {
+        author: mobius::protocol::MessageAuthor::User,
         submission_id: "hidden-work".into(),
         turn_id: "hidden-turn".into(),
         started_at_ms: 1,
@@ -67,15 +68,18 @@ async fn runtime_idle_shutdown_checks_reservations_revision_and_work_admission()
     let routine = bots
         .create_routine(
             &bot.id,
-            &workspace,
-            "Future work",
-            RoutineSchedule {
-                kind: RoutineScheduleKind::Once,
-                at: Some(Utc::now().timestamp() + 3600),
-                every_seconds: None,
-                expression: None,
-                time_zone: None,
-            },
+            &timer_definition(
+                &workspace,
+                "Future work",
+                RoutineSchedule {
+                    kind: RoutineScheduleKind::Once,
+                    at: Some(Utc::now().timestamp() + 3600),
+                    every_seconds: None,
+                    expression: None,
+                    time_zone: None,
+                },
+                None,
+            ),
             None,
         )
         .unwrap();
@@ -100,7 +104,15 @@ async fn runtime_idle_shutdown_checks_reservations_revision_and_work_admission()
     );
     bots.finish_run(run, RoutineRunStatus::Succeeded, None)
         .unwrap();
+    assert!(
+        !gateway.runtime_activity().await.unwrap().idle,
+        "a durable report is pending admission"
+    );
+    for delivery in bots.pending_actions(Utc::now().timestamp(), 100).unwrap() {
+        bots.action_accepted(&delivery.id).unwrap();
+    }
     let activity = gateway.runtime_activity().await.unwrap();
+    assert!(activity.idle);
     assert!(
         !gateway
             .prepare_idle_shutdown("stale", || Ok(0))
@@ -152,5 +164,25 @@ async fn runtime_idle_shutdown_checks_reservations_revision_and_work_admission()
         revision,
         gateway.runtime_activity().await.unwrap().activity_revision
     );
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
+async fn configured_webhook_keeps_inbound_delivery_reachable_during_idle_shutdown() {
+    let (_root, gateway, bot) = super::bots::gateway_with_bot().await;
+    let bots = Arc::clone(&gateway.state.lock().await.bots);
+    let source = bots
+        .create_webhook(&bot.id, "outage", "Report the outage.", [1; 32])
+        .unwrap();
+    let activity = gateway.runtime_activity().await.unwrap();
+    assert!(!activity.idle);
+    assert!(
+        !gateway
+            .prepare_idle_shutdown(&activity.activity_revision, || Ok(0))
+            .await
+            .unwrap()
+    );
+    bots.delete_webhook(&bot.id, &source.id).unwrap();
+    assert!(gateway.runtime_activity().await.unwrap().idle);
     gateway.shutdown().await;
 }

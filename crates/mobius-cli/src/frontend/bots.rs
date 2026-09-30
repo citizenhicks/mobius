@@ -102,10 +102,12 @@ mod tests {
     fn bot(id: &str) -> BotRecord {
         BotRecord {
             id: id.into(),
+            conversation_session_id: "bot-conversation-test".into(),
             handle: id.into(),
             name: id.into(),
             description: "description".into(),
             tint: ProviderTint::Teal,
+            shape: mobius_gateway::wire::BotShape::Circle,
             config: VersionedAgentConfig {
                 revision: 7,
                 config: AgentComposition::default(),
@@ -115,20 +117,83 @@ mod tests {
         }
     }
 
+    #[test]
+    fn main_bot_conversation_opens_its_advertised_identity_without_a_project() {
+        let gateway = gateway(vec![bot("bot-a")]);
+        let mut state = BotsState::new(&gateway, Some("bot-a"), None);
+        state.selected = 3;
+        assert!(
+            matches!(state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &gateway),
+            Action::OpenSession(id) if id == gateway.bots[0].conversation_session_id)
+        );
+    }
+
+    #[test]
+    fn lifecycle_invalidations_refresh_after_an_in_flight_request() {
+        use mobius_gateway::wire::{HookData, HookEvent, HookSource};
+        let mut gateway = gateway(vec![bot("bot-a")]);
+        let mut state = BotsState::new(&gateway, Some("bot-a"), None);
+        state.page = Page::Runs {
+            bot_id: "bot-a".into(),
+            routine_id: "routine-a".into(),
+        };
+        state.begin("load".into(), "Load", FollowUp::None);
+        let event = ServerMessage::HookEvent {
+            event: HookEvent {
+                id: "finished".into(),
+                bot_id: "bot-a".into(),
+                occurred_at: 1,
+                source: HookSource::Routine {
+                    routine_id: "routine-a".into(),
+                },
+                cause_id: None,
+                ancestry: Vec::new(),
+                data: HookData::RunFinished {
+                    routine_id: "routine-a".into(),
+                    run_id: "run-a".into(),
+                    status: RoutineRunStatus::Succeeded,
+                    session_id: None,
+                    reason: None,
+                },
+            },
+        };
+        assert!(matches!(
+            handle_frame(event, &mut gateway, &mut state),
+            (FollowUp::None, None)
+        ));
+        let (follow_up, deferred) = handle_frame(
+            ServerMessage::RoutineHistory {
+                request_id: "load".into(),
+                runs: Vec::new(),
+            },
+            &mut gateway,
+            &mut state,
+        );
+        assert!(matches!(follow_up, FollowUp::Runs(id) if id == "routine-a"));
+        assert!(deferred.is_none());
+        assert!(!state.lifecycle_refresh);
+    }
+
     fn routine(id: &str) -> Routine {
         Routine {
             id: id.into(),
             bot_id: "bot-a".into(),
             workspace: "/srv/project".into(),
             instructions: "inspect the project".into(),
-            schedule: RoutineSchedule {
-                kind: RoutineScheduleKind::Interval,
-                at: None,
-                every_seconds: Some(600),
-                expression: None,
-                time_zone: None,
-            },
-            ends_at: None,
+            bindings: vec![mobius_gateway::wire::RoutineBinding {
+                id: "timer-a".into(),
+                on: mobius_gateway::wire::HookSelector::Schedule {
+                    schedule: RoutineSchedule {
+                        kind: RoutineScheduleKind::Interval,
+                        at: None,
+                        every_seconds: Some(600),
+                        expression: None,
+                        time_zone: None,
+                    },
+                    ends_at: None,
+                },
+                action: mobius_gateway::wire::RoutineAction::Start,
+            }],
             enabled: true,
             finished: false,
             next_run_at: Some(1),
@@ -300,6 +365,7 @@ mod tests {
             description,
             expected_revision,
             tint,
+            shape,
             config,
             ..
         } = message(action)
@@ -310,6 +376,7 @@ mod tests {
         assert_eq!(description, "Reviews code");
         assert_eq!(expected_revision, 7);
         assert_eq!(tint, bot.tint);
+        assert_eq!(shape, bot.shape);
         let mut expected = bot.config.config;
         expected.system_prompt = "Be concise.\nCheck correctness.\nExplain risks.".into();
         assert_eq!(config, expected);
@@ -340,20 +407,76 @@ mod tests {
         create.instructions.value = "build it".into();
         assert!(matches!(
             message(create.action().expect("valid create")),
-            ClientMessage::CreateRoutine { bot_id, schedule, .. }
-                if bot_id == "bot-a" && schedule.every_seconds == Some(3600)
+            ClientMessage::CreateRoutine { bot_id, definition, .. }
+                if bot_id == "bot-a" && matches!(&definition.bindings[0].on,mobius_gateway::wire::HookSelector::Schedule{schedule,..} if schedule.every_seconds==Some(3600))
         ));
 
         let routine = routine("routine-a");
         let update = RoutineForm::update(&routine);
         assert!(matches!(
             message(update.action().expect("valid update")),
-            ClientMessage::UpdateRoutine { id, enabled: true, .. } if id == "routine-a"
+            ClientMessage::RoutineCommand {command:mobius_gateway::wire::RoutineCommand{routine_id,action:mobius_gateway::wire::RoutineAction::Update{..}},..} if routine_id=="routine-a"
         ));
         assert!(matches!(
             message(update_routine_action(&routine, false)),
-            ClientMessage::UpdateRoutine { enabled: false, .. }
+            ClientMessage::RoutineCommand {
+                command: mobius_gateway::wire::RoutineCommand {
+                    action: mobius_gateway::wire::RoutineAction::Pause,
+                    ..
+                },
+                ..
+            }
         ));
+    }
+
+    #[test]
+    fn editing_routine_content_preserves_event_bindings_and_other_timers() {
+        use mobius_gateway::wire::{
+            HookKind, HookSelector, HookSource, RoutineAction, RoutineBinding,
+        };
+        let event_binding = RoutineBinding {
+            id: "event-hook".into(),
+            on: HookSelector::Event {
+                source: HookSource::Session {
+                    session_id: "watched".into(),
+                },
+                kind: HookKind::SessionTurnFinished,
+                routine_outcome: None,
+                session_outcome: None,
+                custom_name: None,
+            },
+            action: RoutineAction::Start,
+        };
+        let mut routine = routine("routine-a");
+        let mut other_timer = routine.bindings[0].clone();
+        other_timer.id = "other-timer".into();
+        other_timer.action = RoutineAction::Pause;
+        routine
+            .bindings
+            .extend([event_binding.clone(), other_timer]);
+        let mut form = RoutineForm::update(&routine);
+        form.instructions.value = "updated content".into();
+        let ClientMessage::RoutineCommand { command, .. } = message(form.action().expect("update"))
+        else {
+            panic!("command")
+        };
+        let RoutineAction::Update { definition } = command.action else {
+            panic!("update")
+        };
+        assert_eq!(definition.bindings, routine.bindings);
+        assert_eq!(definition.instructions, "updated content");
+        routine.bindings = vec![event_binding];
+        let mut form = RoutineForm::update(&routine);
+        form.instructions.value = "event-only content".into();
+        let ClientMessage::RoutineCommand { command, .. } =
+            message(form.action().expect("event-only update"))
+        else {
+            panic!("command")
+        };
+        let RoutineAction::Update { definition } = command.action else {
+            panic!("update")
+        };
+        assert_eq!(definition.bindings, routine.bindings);
     }
 
     #[test]

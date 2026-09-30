@@ -48,7 +48,7 @@ impl Runner {
             return Ok(Some(ToolResult::error(call, error.to_string())));
         }
         let mut context = PreToolUseContext {
-            turn: self.runtime.turn_identity(turn_id),
+            turn: self.turn_identity(turn_id)?,
             events,
             tools: &self.catalog,
             call,
@@ -82,7 +82,7 @@ impl Runner {
                 continue;
             }
             let mut context = PostToolUseContext {
-                turn: self.runtime.turn_identity(turn_id),
+                turn: self.turn_identity(turn_id)?,
                 call,
                 events: &mut completion.events,
                 tools: &self.catalog,
@@ -142,6 +142,7 @@ impl Runner {
             });
         }
         let model_route = self.config.provider.clone();
+        let author = self.active_author()?.clone();
         let execution = execute_batch(
             &catalog,
             &bound_calls,
@@ -149,6 +150,7 @@ impl Runner {
             &permissions,
             turn_id,
             &model_route,
+            &author,
         );
         tokio::pin!(execution);
         let mut executed = false;

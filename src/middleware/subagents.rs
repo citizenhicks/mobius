@@ -813,7 +813,7 @@ impl Middleware for Subagents {
                 .iter()
                 .filter_map(message_metadata)
                 .filter_map(|message| match message.author {
-                    MessageAuthor::Peer { message_id, .. } => Some(message_id),
+                    MessageAuthor::Source { message_id, .. } => Some(message_id),
                     MessageAuthor::User => None,
                 })
                 .collect();

@@ -4,6 +4,42 @@ use mobius::backend::checkpoint::SessionSummary;
 use mobius::backend::session_files::SessionFileDeletion;
 
 use super::*;
+use crate::wire::{HookData, HookEvent, HookSource};
+
+const SESSION_HOOK_CLOSURES: &str = "session_hook_closures";
+
+// The checkpoint commit and Bot hook journal use separate databases. Retain the
+// exact closing facts before deletion so a crash between commits is recoverable.
+pub(super) async fn recover_session_hook_closures(state: &GatewayState) -> Result<()> {
+    let Some(value) = state
+        .checkpoints
+        .load_state("gateway", SESSION_HOOK_CLOSURES)
+        .await?
+    else {
+        return Ok(());
+    };
+    let pending: Vec<HookEvent> = serde_json::from_value(value)?;
+    let mut committed = Vec::new();
+    for event in pending {
+        let HookSource::Session { session_id } = &event.source else {
+            return Err(Error::Config("invalid session closing fact".into()));
+        };
+        if state
+            .checkpoints
+            .session_summary(session_id)
+            .await?
+            .is_none()
+        {
+            committed.push(event);
+        }
+    }
+    state.bots.close_session_sources(&committed)?;
+    state
+        .checkpoints
+        .save_state("gateway", SESSION_HOOK_CLOSURES, &serde_json::json!([]))
+        .await?;
+    Ok(())
+}
 
 impl GatewayHost {
     pub(super) fn cleanup_session_files(&self, mut deletion: SessionFileDeletion) {
@@ -193,6 +229,11 @@ impl GatewayHost {
         }) {
             return Err(unknown_session());
         }
+        for summary in &summaries {
+            if selected.contains(&summary.session_id) {
+                reject_persistent_session(summary)?;
+            }
+        }
         let selected_set = selected.iter().map(String::as_str).collect::<HashSet<_>>();
         let parents = summaries
             .iter()
@@ -381,6 +422,9 @@ pub(super) async fn remove_session_trees(
     if session_ids.is_empty() {
         return Ok(None);
     }
+    recover_session_hook_closures(state)
+        .await
+        .map_err(internal)?;
     let roots = if missing_roots_are_deleted {
         let mut existing = Vec::new();
         for root in roots {
@@ -398,6 +442,38 @@ pub(super) async fn remove_session_trees(
     } else {
         roots.to_vec()
     };
+    let mut closures = Vec::new();
+    for session_id in session_ids {
+        if let Some(summary) = state
+            .checkpoints
+            .session_summary(session_id)
+            .await
+            .map_err(internal)?
+        {
+            closures.push(HookEvent {
+                id: format!("deleted-{session_id}-{}", Uuid::new_v4()),
+                bot_id: summary.session_context.owner_id,
+                source: HookSource::Session {
+                    session_id: session_id.clone(),
+                },
+                data: HookData::SessionDeleted {
+                    session_id: session_id.clone(),
+                },
+                occurred_at: Utc::now().timestamp(),
+                cause_id: None,
+                ancestry: Vec::new(),
+            });
+        }
+    }
+    state
+        .checkpoints
+        .save_state(
+            "gateway",
+            SESSION_HOOK_CLOSURES,
+            &serde_json::to_value(&closures).map_err(internal)?,
+        )
+        .await
+        .map_err(internal)?;
     if !state
         .checkpoints
         .delete_sessions(&roots)
@@ -406,6 +482,9 @@ pub(super) async fn remove_session_trees(
     {
         return Err(unknown_session());
     }
+    recover_session_hook_closures(state)
+        .await
+        .map_err(internal)?;
 
     for id in session_ids {
         state.sessions.remove(id);

@@ -94,6 +94,21 @@ pub struct Submission {
     pub op: Op,
 }
 
+impl Submission {
+    /// Uses a source's stable message identity for durable admission and retries.
+    #[must_use]
+    pub fn message(message: MessageSubmission) -> Self {
+        let id = match &message.author {
+            MessageAuthor::Source { message_id, .. } => message_id.clone(),
+            MessageAuthor::User => uuid::Uuid::new_v4().to_string(),
+        };
+        Self {
+            id,
+            op: Op::Message { message },
+        }
+    }
+}
+
 /// Frontend-visible context for the session owner, workspace, and origin.
 ///
 /// These values are correlation metadata, not authentication or authorization.
@@ -260,24 +275,87 @@ impl ModelChoice {
     }
 }
 
-/// Who submitted one conversation message.
+/// A non-user message's neutral source, assigned by the trusted host.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MessageSource {
+    /// Another agent conversation, including a voice conversation.
+    Session {
+        /// The source session identifier.
+        session_id: String,
+    },
+    /// An event received from a host-owned integration or lifecycle subscription.
+    External {
+        /// The configured source identifier.
+        source_id: String,
+        /// The immutable event identifier within that source.
+        event_id: String,
+    },
+}
+
+impl MessageSource {
+    /// Returns the source's stable identifier, without treating external events as sessions.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Session { session_id } => session_id,
+            Self::External { source_id, .. } => source_id,
+        }
+    }
+}
+
+/// Who submitted one conversation message.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MessageAuthor {
     /// Selects the user case.
+    #[default]
     User,
-    /// Selects the peer case.
-    Peer {
+    /// Advisory context from a trusted host-attributed source.
+    Source {
         /// The message identifier.
         message_id: String,
-        /// The session identifier.
-        session_id: String,
+        /// The provenance of this message.
+        source: MessageSource,
+        /// Immediate causal parent carried through peer coordination.
+        cause_id: Option<String>,
+        /// Bounded causal ancestry established by the host.
+        ancestry: Vec<String>,
         /// The handle.
         handle: String,
         /// Optional semantic icon for the sending peer.
         #[serde(skip_serializing_if = "Option::is_none")]
         symbol: Option<FrontendSymbol>,
     },
+}
+
+impl MessageAuthor {
+    /// Retains source ancestry when an advisory turn coordinates with another session.
+    #[must_use]
+    pub fn causal_origin(&self) -> (Option<String>, Vec<String>) {
+        match self {
+            Self::User => (None, Vec::new()),
+            Self::Source {
+                message_id,
+                cause_id,
+                ancestry,
+                source,
+                ..
+            } => {
+                let mut ancestry = ancestry.clone();
+                let origin = cause_id.as_ref().or(match source {
+                    MessageSource::External { event_id, .. } => Some(event_id),
+                    MessageSource::Session { .. } => None,
+                });
+                for id in origin.into_iter().chain(std::iter::once(message_id)) {
+                    if !ancestry.contains(id) {
+                        ancestry.push(id.clone());
+                    }
+                }
+                (Some(message_id.clone()), ancestry)
+            }
+        }
+    }
 }
 
 /// Requested delivery for a message submitted while a turn is active.
@@ -373,24 +451,57 @@ pub(crate) fn validate_message_content(
         MessageAuthor::User if text.trim().is_empty() && attachments.is_empty() => {
             return Err(crate::Error::Config("user message cannot be empty".into()));
         }
-        MessageAuthor::Peer {
+        MessageAuthor::Source {
             message_id,
-            session_id,
+            source,
+            cause_id,
+            ancestry,
             handle,
             symbol,
         } => {
-            crate::validate_identifier("peer message ID", message_id, crate::MAX_IDENTIFIER_BYTES)?;
-            crate::validate_identifier("peer session ID", session_id, crate::MAX_IDENTIFIER_BYTES)?;
-            crate::validate_identifier("peer handle", handle, MAX_HANDLE_BYTES)?;
+            if ancestry.len() > 16
+                || ancestry
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    != ancestry.len()
+            {
+                return Err(crate::Error::Config(
+                    "source causal ancestry exceeds its bound or repeats an event".into(),
+                ));
+            }
+            for id in cause_id.iter().chain(ancestry.iter()) {
+                crate::validate_identifier("source cause ID", id, crate::MAX_IDENTIFIER_BYTES)?;
+            }
+            crate::validate_identifier(
+                "source message ID",
+                message_id,
+                crate::MAX_IDENTIFIER_BYTES,
+            )?;
+            crate::validate_identifier(
+                "message source ID",
+                source.id(),
+                crate::MAX_IDENTIFIER_BYTES,
+            )?;
+            if let MessageSource::External { event_id, .. } = source {
+                crate::validate_identifier(
+                    "source event ID",
+                    event_id,
+                    crate::MAX_IDENTIFIER_BYTES,
+                )?;
+            }
+            crate::validate_identifier("source handle", handle, MAX_HANDLE_BYTES)?;
             if let Some(symbol) = symbol {
-                crate::validate_identifier("peer symbol", symbol.as_str(), MAX_HANDLE_BYTES)?;
+                crate::validate_identifier("source symbol", symbol.as_str(), MAX_HANDLE_BYTES)?;
             }
             if text.trim().is_empty() {
-                return Err(crate::Error::Config("peer message cannot be empty".into()));
+                return Err(crate::Error::Config(
+                    "source message cannot be empty".into(),
+                ));
             }
             if !attachments.is_empty() {
                 return Err(crate::Error::Config(
-                    "peer messages cannot carry attachments".into(),
+                    "source messages cannot carry attachments".into(),
                 ));
             }
         }
@@ -1058,9 +1169,13 @@ mod tests {
     #[test]
     fn peer_message_symbol_is_optional_and_validated() {
         for (symbol, valid) in [(None, true), (Some("voice"), true), (Some(""), false)] {
-            let author = MessageAuthor::Peer {
+            let author = MessageAuthor::Source {
                 message_id: "message".into(),
-                session_id: "child".into(),
+                source: crate::protocol::MessageSource::Session {
+                    session_id: "child".into(),
+                },
+                cause_id: None,
+                ancestry: Vec::new(),
                 handle: "voice agent".into(),
                 symbol: symbol.map(|symbol| FrontendSymbol::Custom(symbol.into())),
             };

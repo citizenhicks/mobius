@@ -12,62 +12,199 @@ pub(super) async fn accept_routine_while_state_locked(
 }
 
 impl GatewayHost {
+    pub(crate) async fn bot_routine_snapshot(
+        &self,
+        bot_id: &str,
+    ) -> std::result::Result<serde_json::Value, Rejection> {
+        let _access = self.begin_mutation().await?;
+        let state = self.state.lock().await;
+        state.bots.bot(bot_id).map_err(invalid_bot)?;
+        let routines = state
+            .bots
+            .routine_records(Some(bot_id), Utc::now().timestamp())
+            .map_err(invalid_routine)?;
+        let runs = state
+            .bots
+            .history(None)
+            .map_err(internal)?
+            .into_iter()
+            .filter(|run| run.bot_id == bot_id)
+            .take(100)
+            .collect::<Vec<_>>();
+        Ok(serde_json::json!({"routines":routines,"recent_runs":runs}))
+    }
+
+    pub(crate) async fn routine_workspace(
+        &self,
+        bot_id: &str,
+        workspace: Option<&Path>,
+    ) -> std::result::Result<PathBuf, Rejection> {
+        let _access = self.begin_mutation().await?;
+        let state = self.state.lock().await;
+        let bot = state.bots.bot(bot_id).map_err(invalid_bot)?;
+        let tls = state
+            .config
+            .lock()
+            .map_err(|_| internal("configuration lock poisoned"))?
+            .tls
+            .clone();
+        match workspace {
+            Some(workspace) => crate::config::validate_chat_workspace(
+                workspace,
+                state.store.state_dir(),
+                tls.as_ref(),
+            )
+            .map_err(invalid_workspace),
+            None => ChatSpec::persistent(&bot)
+                .execution_root(state.store.state_dir(), tls.as_ref())
+                .map_err(invalid_workspace),
+        }
+    }
+
     pub(crate) async fn create_routine(
         &self,
         bot_id: &str,
-        workspace: &Path,
-        instructions: &str,
-        schedule: crate::wire::RoutineSchedule,
-        ends_at: Option<i64>,
-    ) -> std::result::Result<(), Rejection> {
+        definition: &crate::wire::RoutineDefinition,
+        cause: Option<&crate::wire::HookEvent>,
+    ) -> std::result::Result<crate::wire::Routine, Rejection> {
         let _mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
-        validate_bot_workspace(&state, bot_id, workspace)?;
+        validate_bot_workspace(&state, bot_id, &definition.workspace)?;
+        validate_routine_bindings(&state, bot_id, &definition.bindings).await?;
+        let routine = state
+            .bots
+            .create_routine(bot_id, definition, cause)
+            .map_err(invalid_routine)?;
         state
             .bots
-            .create_routine(bot_id, workspace, instructions, schedule, ends_at)
-            .map(|_| ())
+            .routine_record(&routine.id, Utc::now().timestamp())
             .map_err(invalid_routine)
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a routine replacement is one wire record"
-    )]
-    pub(crate) async fn update_routine(
+    pub(crate) async fn execute_routine_command(
         &self,
-        id: &str,
-        bot_id: &str,
-        workspace: &Path,
-        instructions: &str,
-        schedule: crate::wire::RoutineSchedule,
-        ends_at: Option<i64>,
-        enabled: bool,
+        command: &crate::wire::RoutineCommand,
+        owner_id: Option<&str>,
+        cause: Option<&crate::wire::HookEvent>,
+        command_id: &str,
     ) -> std::result::Result<(), Rejection> {
-        let _mutation = self.begin_mutation().await?;
-        let state = self.state.lock().await;
-        validate_bot_workspace(&state, bot_id, workspace)?;
-        state
-            .bots
-            .update_routine(
-                id,
-                bot_id,
-                workspace,
-                instructions,
-                schedule,
-                ends_at,
-                enabled,
-            )
-            .map(|_| ())
-            .map_err(invalid_routine)
+        use crate::wire::RoutineAction;
+        match &command.action {
+            RoutineAction::Start => {
+                self.start_routine_command(&command.routine_id, owner_id, cause, command_id)
+                    .await
+            }
+            RoutineAction::Stop { run_id } => {
+                let _mutation = self.begin_mutation().await?;
+                let (run, checkpoints) = {
+                    let state = self.state.lock().await;
+                    if !super::bot_events::command_pending(&state.bots, cause, command_id)? {
+                        return Ok(());
+                    }
+                    require_routine_owner(&state.bots, &command.routine_id, owner_id)?;
+                    let run = state.bots.run(run_id).map_err(invalid_routine)?;
+                    if run.routine_id != command.routine_id {
+                        return Err(invalid_routine("run does not belong to this routine"));
+                    }
+                    (run, Arc::clone(&state.checkpoints))
+                };
+                if run.status != RoutineRunStatus::Running {
+                    return Ok(());
+                }
+                let session_id = run
+                    .session_id
+                    .ok_or_else(|| invalid_routine("run has no session"))?;
+                let checkpoint = checkpoints
+                    .load(&session_id)
+                    .await
+                    .map_err(internal)?
+                    .ok_or_else(unknown_session)?;
+                let turn_id = checkpoint
+                    .active_execution
+                    .ok_or_else(|| Rejection {
+                        code: "agent_busy",
+                        message: "run admission has not started a turn yet; retry".into(),
+                        fatal: false,
+                    })?
+                    .turn_id;
+                self.state
+                    .lock()
+                    .await
+                    .bots
+                    .request_run_stop(run_id, command_id, cause)
+                    .map_err(internal)?;
+                drop(_mutation);
+                self.open_session(&session_id)
+                    .await?
+                    .submit(Submission {
+                        id: command_id.into(),
+                        op: Op::Interrupt { turn_id },
+                    })
+                    .await
+            }
+            RoutineAction::Pause | RoutineAction::Resume => {
+                let _mutation = self.begin_mutation().await?;
+                let state = self.state.lock().await;
+                if !super::bot_events::command_pending(&state.bots, cause, command_id)? {
+                    return Ok(());
+                }
+                require_routine_owner(&state.bots, &command.routine_id, owner_id)?;
+                state
+                    .bots
+                    .set_routine_enabled(
+                        &command.routine_id,
+                        matches!(command.action, RoutineAction::Resume),
+                        cause,
+                        cause.map(|_| command_id),
+                    )
+                    .map(|_| ())
+                    .map_err(invalid_routine)
+            }
+            RoutineAction::Update { definition } => {
+                let _mutation = self.begin_exclusive_mutation().await?;
+                let state = self.state.lock().await;
+                if !super::bot_events::command_pending(&state.bots, cause, command_id)? {
+                    return Ok(());
+                }
+                require_routine_owner(&state.bots, &command.routine_id, owner_id)?;
+                let bot_id = state
+                    .bots
+                    .routine(&command.routine_id)
+                    .map_err(invalid_routine)?
+                    .bot_id;
+                validate_bot_workspace(&state, &bot_id, &definition.workspace)?;
+                validate_routine_bindings(&state, &bot_id, &definition.bindings).await?;
+                state
+                    .bots
+                    .update_routine(
+                        &command.routine_id,
+                        definition,
+                        cause,
+                        cause.map(|_| command_id),
+                    )
+                    .map(|_| ())
+                    .map_err(invalid_routine)
+            }
+            RoutineAction::Delete => {
+                self.delete_routine(&command.routine_id, owner_id, cause, command_id)
+                    .await
+            }
+        }
     }
 
     pub(crate) async fn delete_routine(
         &self,
         routine_id: &str,
+        owner_id: Option<&str>,
+        cause: Option<&crate::wire::HookEvent>,
+        command_id: &str,
     ) -> std::result::Result<(), Rejection> {
         let _mutation = self.begin_exclusive_mutation().await?;
         let mut state = self.state.lock().await;
+        if !super::bot_events::command_pending(&state.bots, cause, command_id)? {
+            return Ok(());
+        }
+        require_routine_owner(&state.bots, routine_id, owner_id)?;
         let roots = state
             .bots
             .history(Some(routine_id))
@@ -96,7 +233,7 @@ impl GatewayHost {
         let (session_roots, session_ids) = session_trees(roots, &summaries);
         state
             .bots
-            .delete_routine(deletion)
+            .delete_routine(deletion, cause, cause.map(|_| command_id))
             .map_err(invalid_routine)?;
         let cleanup = remove_session_trees(
             &mut state,
@@ -124,15 +261,27 @@ impl GatewayHost {
         Ok(())
     }
 
-    pub(crate) async fn run_routine(
+    async fn start_routine_command(
         &self,
-        routine_id: String,
+        routine_id: &str,
+        owner_id: Option<&str>,
+        cause: Option<&crate::wire::HookEvent>,
+        command_id: &str,
     ) -> std::result::Result<(), Rejection> {
         self.work_activity.mark();
         let _mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
-        let run = match state.bots.begin_run(&routine_id).map_err(invalid_routine)? {
+        if !super::bot_events::command_pending(&state.bots, cause, command_id)? {
+            return Ok(());
+        }
+        require_routine_owner(&state.bots, routine_id, owner_id)?;
+        let run = match state
+            .bots
+            .begin_run_with_cause(routine_id, command_id, cause)
+            .map_err(invalid_routine)?
+        {
             BeginRun::Started(run) => run,
+            BeginRun::AlreadyRecorded => return Ok(()),
             BeginRun::Skipped => {
                 return Err(Rejection {
                     code: "routine_overlap",
@@ -142,34 +291,8 @@ impl GatewayHost {
             }
         };
         drop(_mutation);
-        self.run_routine_with_state(state, routine_id, run).await
-    }
-
-    pub(crate) async fn run_due_routine(
-        &self,
-        routine_id: String,
-        run: ActiveRoutineRun,
-    ) -> std::result::Result<(), Rejection> {
-        self.work_activity.mark();
-        let _mutation = match self.begin_mutation().await {
-            Ok(mutation) => mutation,
-            Err(rejection) => {
-                self.state
-                    .lock()
-                    .await
-                    .bots
-                    .finish_run(
-                        run,
-                        RoutineRunStatus::Skipped,
-                        Some(rejection.message.clone()),
-                    )
-                    .map_err(internal)?;
-                return Err(rejection);
-            }
-        };
-        let state = self.state.lock().await;
-        drop(_mutation);
-        self.run_routine_with_state(state, routine_id, run).await
+        self.run_routine_with_state(state, routine_id.into(), run)
+            .await
     }
 
     pub(crate) async fn routine_run_preview(
@@ -287,7 +410,7 @@ impl GatewayHost {
         let label = format!("routine · {}", routine.id.get(..8).unwrap_or(&routine.id));
         let host = match self
             .create_session_with_id(
-                &routine.workspace,
+                Some(&routine.workspace),
                 &routine.bot_id,
                 session_id.clone(),
                 false,
@@ -332,4 +455,31 @@ impl GatewayHost {
             }
         }
     }
+}
+
+fn require_routine_owner(
+    bots: &BotStore,
+    id: &str,
+    owner: Option<&str>,
+) -> std::result::Result<(), Rejection> {
+    if let Some(owner) = owner {
+        let routine = bots.routine(id).map_err(invalid_routine)?;
+        if routine.bot_id != owner {
+            return Err(unknown_session());
+        }
+    }
+    Ok(())
+}
+
+async fn validate_routine_bindings(
+    state: &GatewayState,
+    bot_id: &str,
+    bindings: &[crate::wire::RoutineBinding],
+) -> std::result::Result<(), Rejection> {
+    for binding in bindings {
+        if let crate::wire::HookSelector::Event { .. } = &binding.on {
+            super::bot_events::validate_selector(state, bot_id, &binding.on).await?;
+        }
+    }
+    Ok(())
 }

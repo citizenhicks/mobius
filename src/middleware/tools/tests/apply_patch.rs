@@ -100,6 +100,7 @@ async fn apply_patch_edits_an_absolute_workspace_path() {
         &permissions,
         "turn",
         "test",
+        &crate::protocol::MessageAuthor::User,
     )
     .await
     .pop()
@@ -142,6 +143,7 @@ async fn apply_patch_edits_an_absolute_workspace_path() {
         &permissions,
         "turn",
         "test",
+        &crate::protocol::MessageAuthor::User,
     )
     .await
     .pop()

@@ -27,7 +27,7 @@ use crate::protocol::ToolCall;
 
 pub mod sqlite;
 
-pub(crate) const CHECKPOINT_VERSION: u32 = 17;
+pub(crate) const CHECKPOINT_VERSION: u32 = 18;
 pub(crate) const MAX_QUEUED_MESSAGES: usize = 1_024;
 const TURN_PAGE_BATCH_SIZE: usize = 100;
 const MAX_QUEUED_OWNER_BYTES: usize = 256;
@@ -53,6 +53,8 @@ pub enum ExecutionPhase {
 pub struct ActiveExecution {
     /// The submission identifier.
     pub submission_id: String,
+    /// Trusted provenance of the message that initiated this execution.
+    pub author: crate::protocol::MessageAuthor,
     /// The turn identifier.
     pub turn_id: String,
     /// The started at milliseconds.
@@ -103,6 +105,8 @@ pub struct ExecutionRecord {
     pub session_id: String,
     /// The submission identifier.
     pub submission_id: String,
+    /// Trusted initiating message provenance retained after the turn ends.
+    pub author: MessageAuthor,
     /// The turn identifier.
     pub turn_id: String,
     /// The started at milliseconds.
@@ -515,6 +519,7 @@ impl Checkpoint {
         let record = ExecutionRecord {
             session_id: self.session_id.clone(),
             submission_id: active.submission_id.clone(),
+            author: active.author.clone(),
             turn_id: active.turn_id.clone(),
             started_at_ms: active.started_at_ms,
             finished_at_ms,
@@ -821,6 +826,16 @@ pub trait CheckpointStore: Send + Sync {
     /// Loads the latest checkpoint for a session.
     fn load<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<Option<Checkpoint>>>;
 
+    /// Returns whether this session durably admitted a message with the submission ID.
+    ///
+    /// Receipts survive queue consumption and must be written in the same transaction
+    /// as the checkpoint containing the admitted message.
+    fn message_accepted<'a>(
+        &'a self,
+        session_id: &'a str,
+        submission_id: &'a str,
+    ) -> BoxFuture<'a, Result<bool>>;
+
     /// Atomically deletes the selected sessions, their descendants, and session-scoped state.
     ///
     /// Returns `false` without deleting anything when any selected session is absent.
@@ -863,6 +878,20 @@ pub trait CheckpointStore: Send + Sync {
         session_id: &'a str,
         request: EventPageRequest,
     ) -> BoxFuture<'a, Result<EventPage>>;
+
+    /// Loads retained events after a durable cursor in ascending sequence order.
+    fn events_after<'a>(
+        &'a self,
+        _session_id: &'a str,
+        _after_sequence: u64,
+        _limit: usize,
+    ) -> BoxFuture<'a, Result<Vec<JournalEvent>>> {
+        Box::pin(async {
+            Err(Error::Checkpoint(
+                "this backend has no ordered event catch-up".into(),
+            ))
+        })
+    }
 
     /// Loads catalog metadata for one session without reading its checkpoint context.
     fn session_summary<'a>(

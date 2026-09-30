@@ -561,6 +561,6 @@ fn snapshot_preview_older_key_submits_the_retained_continuation() {
 
     assert_eq!(
         (rendered.contains("O older"), action, retained),
-        (true, UiAction::Submit(next.clone()), Some(&next))
+        (true, UiAction::submit(next.clone()), Some(&next))
     );
 }

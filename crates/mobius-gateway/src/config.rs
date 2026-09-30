@@ -134,7 +134,7 @@ pub(crate) struct ConfiguredProvider {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ChatSpec {
     version: u32,
-    pub(crate) workspace: PathBuf,
+    pub(crate) workspace: Option<PathBuf>,
     pub(crate) attached_folders: Vec<PathBuf>,
     pub(crate) bot_id: String,
     pub(crate) catalog_visible: bool,
@@ -144,7 +144,7 @@ pub(crate) struct ChatSpec {
 #[serde(deny_unknown_fields)]
 struct StoredChatSpec {
     version: u32,
-    workspace: PathBuf,
+    workspace: Option<PathBuf>,
     attached_folders: Vec<PathBuf>,
     bot_id: String,
 }
@@ -156,6 +156,14 @@ impl Default for AgentComposition {
             .default_model()
             .and_then(|id| provider.model(id))
             .expect("default model manifest");
+        let mut middleware = crate::middleware_manifest::default_config();
+        middleware.set_setting(
+            "sandbox",
+            "approval_policy",
+            Some(mobius::protocol::FrontendSettingValue::String(
+                "full_access".into(),
+            )),
+        );
         Self {
             provider: ProviderConfig {
                 instance: provider.id().into(),
@@ -170,7 +178,7 @@ impl Default for AgentComposition {
                     .expect("default provider web-search manifest"),
             },
             realtime_voice: None,
-            middleware: crate::middleware_manifest::default_config(),
+            middleware,
             extensions: BTreeSet::new(),
             system_prompt: DEFAULT_SYSTEM_PROMPT.into(),
             max_model_steps: DEFAULT_MAX_MODEL_STEPS as u64,
@@ -446,7 +454,7 @@ impl ChatSpec {
     ) -> Result<Self> {
         let spec = Self {
             version: CHAT_SPEC_VERSION,
-            workspace: validate_chat_workspace(workspace, state_dir, tls)?,
+            workspace: Some(validate_chat_workspace(workspace, state_dir, tls)?),
             attached_folders: Vec::new(),
             bot_id: bot.id.clone(),
             catalog_visible: true,
@@ -504,12 +512,38 @@ impl ChatSpec {
         )]))
     }
 
-    #[must_use]
-    pub(crate) fn workspace_info(&self) -> WorkspaceInfo {
-        WorkspaceInfo {
-            id: workspace_id(&self.workspace),
-            path: self.workspace.clone(),
+    pub(crate) fn persistent(bot: &crate::wire::BotRecord) -> Self {
+        Self {
+            version: CHAT_SPEC_VERSION,
+            workspace: None,
+            attached_folders: Vec::new(),
+            bot_id: bot.id.clone(),
+            catalog_visible: true,
         }
+    }
+
+    /// Private execution cwd, independent of the logical project shown to clients.
+    pub(crate) fn execution_root(
+        &self,
+        state_dir: &Path,
+        tls: Option<&TlsConfig>,
+    ) -> Result<PathBuf> {
+        if let Some(workspace) = &self.workspace {
+            return Ok(workspace.clone());
+        }
+        let root = state_dir.with_extension("workspaces").join(&self.bot_id);
+        fs::create_dir_all(&root)?;
+        #[cfg(unix)]
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
+        validate_chat_workspace(&root, state_dir, tls)
+    }
+
+    #[must_use]
+    pub(crate) fn workspace_info(&self) -> Option<WorkspaceInfo> {
+        self.workspace.as_ref().map(|path| WorkspaceInfo {
+            id: workspace_id(path),
+            path: path.clone(),
+        })
     }
 
     pub(crate) fn with_attached_folder(
@@ -518,8 +552,13 @@ impl ChatSpec {
         state_dir: &Path,
         tls: Option<&TlsConfig>,
     ) -> Result<Option<Self>> {
+        let workspace = self.workspace.as_ref().ok_or_else(|| {
+            Error::Config(
+                "Persistent Chat has no project; open a project chat to attach folders".into(),
+            )
+        })?;
         let folder = validate_chat_workspace(folder, state_dir, tls)?;
-        if folder == self.workspace || self.attached_folders.contains(&folder) {
+        if &folder == workspace || self.attached_folders.contains(&folder) {
             return Ok(None);
         }
         if self.attached_folders.len() == MAX_ATTACHED_FOLDERS {
@@ -543,10 +582,16 @@ impl ChatSpec {
         if self.bot_id.is_empty() {
             return Err(Error::Config("chat Bot ownership is invalid".into()));
         }
-        let workspace = validate_chat_workspace(&self.workspace, state_dir, tls)?;
-        if workspace != self.workspace {
+        if let Some(path) = &self.workspace {
+            let workspace = validate_chat_workspace(path, state_dir, tls)?;
+            if workspace != *path {
+                return Err(Error::Config(
+                    "chat workspace must use its canonical path".into(),
+                ));
+            }
+        } else if !self.attached_folders.is_empty() {
             return Err(Error::Config(
-                "chat workspace must use its canonical path".into(),
+                "project-free chats cannot attach folders".into(),
             ));
         }
         if self.attached_folders.len() > MAX_ATTACHED_FOLDERS {
@@ -554,7 +599,7 @@ impl ChatSpec {
                 "a chat cannot attach more than {MAX_ATTACHED_FOLDERS} folders"
             )));
         }
-        let mut folders = BTreeSet::from([&self.workspace]);
+        let mut folders = self.workspace.iter().collect::<BTreeSet<_>>();
         for attached in &self.attached_folders {
             let workspace = validate_chat_workspace(attached, state_dir, tls)?;
             if workspace != *attached {

@@ -1531,6 +1531,7 @@ printf '%s\n' '{"systemMessage":"PONYTAIL:FULL","hookSpecificOutput":{"hookEvent
         let mut events = Vec::new();
         let mut context = PermissionRequestContext {
             turn: TurnIdentity {
+                author: &crate::protocol::MessageAuthor::User,
                 session_id: "session",
                 turn_id: "turn",
                 model: "model",
@@ -1618,6 +1619,7 @@ printf '%s\n' '{"systemMessage":"PONYTAIL:FULL","hookSpecificOutput":{"hookEvent
         let mut events = Vec::new();
         let mut context = PreToolUseContext {
             turn: TurnIdentity {
+                author: &crate::protocol::MessageAuthor::User,
                 session_id: "session",
                 turn_id: "turn",
                 model: "model",

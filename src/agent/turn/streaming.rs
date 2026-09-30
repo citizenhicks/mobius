@@ -165,6 +165,7 @@ impl Runner {
         let submission_id = submission_id.to_owned();
         let turn_id = turn_id.to_owned();
         let model_route = self.config.provider.clone();
+        let author = self.active_author()?.clone();
         streamed.running.push_back(Box::pin(async move {
             let _read;
             let _write;
@@ -195,6 +196,7 @@ impl Runner {
                 &permissions,
                 &turn_id,
                 &model_route,
+                &author,
             )
             .await)
         }));

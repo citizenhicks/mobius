@@ -13,7 +13,7 @@ use super::{
 use crate::backend::model::ToolDefinition;
 use crate::middleware::tools::{HookIdentity, Tool, ToolContext};
 use crate::protocol::strip_attachment_references;
-use crate::protocol::{MessageAuthor, MessageSubmission, Op, is_internal_message};
+use crate::protocol::{MessageAuthor, MessageSubmission, Submission, is_internal_message};
 use crate::{BoxFuture, Error, Result};
 
 pub(super) struct SpawnAgent {
@@ -97,7 +97,16 @@ impl Tool for SpawnAgent {
             let session_id = Uuid::new_v4().to_string();
             let shared = Arc::clone(&self.shared);
             let scope = Arc::clone(&self.scope);
-            let submission = peer_submission(&scope.session_id, &scope.agent_path, text);
+            let submission = peer_submission(
+                &scope.session_id,
+                &scope.agent_path,
+                text,
+                &context.author,
+                &format!(
+                    "{}:{}:{}",
+                    scope.session_id, context.turn_id, context.call_id
+                ),
+            );
             supervise(async move {
                 shared
                     .reserve(
@@ -136,13 +145,6 @@ impl Tool for SpawnAgent {
                 if let Err(error) = shared
                     .attach(&scope.root_session_id, &path, sender.clone(), Some(model))
                     .await
-                    .and_then(|()| {
-                        sender
-                            .submit(Op::Message {
-                                message: submission,
-                            })
-                            .map(|_| ())
-                    })
                 {
                     return Err(cleanup_error(
                         error,
@@ -155,6 +157,12 @@ impl Tool for SpawnAgent {
                     path.clone(),
                     events,
                 ));
+                if let Err(error) = admit_message(&sender, submission).await {
+                    return Err(cleanup_error(
+                        error,
+                        shared.remove(&scope.root_session_id, &path).await,
+                    ));
+                }
                 Ok(serde_json::json!({"task_name": path}).to_string())
             })
             .await
@@ -206,6 +214,11 @@ impl Tool for SendMessage {
                 &self.scope.session_id,
                 &self.scope.agent_path,
                 validate_text(arguments.text)?,
+                &context.author,
+                &format!(
+                    "{}:{}:{}",
+                    self.scope.session_id, context.turn_id, context.call_id
+                ),
             );
             let shared = Arc::clone(&self.shared);
             let scope = Arc::clone(&self.scope);
@@ -259,7 +272,6 @@ impl Tool for SendMessage {
                 if let Err(error) = shared
                     .attach(&scope.root_session_id, &target, sender.clone(), model)
                     .await
-                    .and_then(|()| sender.submit(Op::Message { message }).map(|_| ()))
                 {
                     return Err(cleanup_error(
                         error,
@@ -272,8 +284,16 @@ impl Tool for SendMessage {
                     tokio::spawn(monitor_agent(
                         Arc::clone(&shared),
                         scope.root_session_id.clone(),
-                        target,
+                        target.clone(),
                         events,
+                    ));
+                }
+                if let Err(error) = admit_message(&sender, message).await {
+                    return Err(cleanup_error(
+                        error,
+                        shared
+                            .rollback(&scope.root_session_id, &target, previous)
+                            .await,
                     ));
                 }
                 Ok(String::new())
@@ -513,20 +533,46 @@ fn validate_text(text: String) -> Result<String> {
     Ok(text)
 }
 
-fn peer_submission(session_id: &str, agent_path: &str, text: String) -> MessageSubmission {
+fn peer_submission(
+    session_id: &str,
+    agent_path: &str,
+    text: String,
+    origin: &MessageAuthor,
+    command_id: &str,
+) -> MessageSubmission {
+    let (cause_id, ancestry) = origin.causal_origin();
     MessageSubmission {
-        author: MessageAuthor::Peer {
-            message_id: Uuid::new_v4().to_string(),
-            session_id: session_id.into(),
+        author: MessageAuthor::Source {
+            message_id: if command_id.is_empty() {
+                Uuid::new_v4().to_string()
+            } else {
+                command_id.into()
+            },
+            source: crate::protocol::MessageSource::Session {
+                session_id: session_id.into(),
+            },
+            cause_id,
+            ancestry,
             handle: agent_path.rsplit('/').next().unwrap_or(agent_path).into(),
             symbol: None,
         },
         text,
         attachments: Vec::new(),
         reply: None,
-        requested_delivery: None,
+        requested_delivery: Some(crate::protocol::ActiveMessageDelivery::Steer),
         target_turn_id: None,
     }
+}
+
+async fn admit_message(
+    sender: &crate::agent::AgentSender,
+    message: MessageSubmission,
+) -> Result<()> {
+    sender
+        .send_with_admission(Submission::message(message))?
+        .wait()
+        .await
+        .map(|_| ())
 }
 
 pub(super) fn cleanup_error(error: Error, cleanup: Result<()>) -> Error {
@@ -560,13 +606,15 @@ mod tests {
             "session-reviewer",
             "/root/team/reviewer",
             "Review the parser".into(),
+            &MessageAuthor::User,
+            "stable-call",
         );
 
         assert!(matches!(
             submission,
             MessageSubmission {
-                author: MessageAuthor::Peer {
-                    session_id,
+                author: MessageAuthor::Source {
+                    source: crate::protocol::MessageSource::Session { session_id },
                     handle,
                     ..
                 },
@@ -576,5 +624,84 @@ mod tests {
                 && handle == "reviewer"
                 && text == "Review the parser"
         ));
+    }
+
+    #[test]
+    fn peer_messages_keep_source_ancestry_and_stable_command_identity() {
+        let origin = MessageAuthor::Source {
+            message_id: "incoming-message".into(),
+            source: crate::protocol::MessageSource::External {
+                source_id: "routine".into(),
+                event_id: "source-event".into(),
+            },
+            cause_id: Some("source-event".into()),
+            ancestry: vec!["earlier-event".into()],
+            handle: "routine".into(),
+            symbol: None,
+        };
+        let first = peer_submission(
+            "sender-session",
+            "/root/reviewer",
+            "check it".into(),
+            &origin,
+            "stable-command",
+        );
+        let retry = peer_submission(
+            "sender-session",
+            "/root/reviewer",
+            "check it".into(),
+            &origin,
+            "stable-command",
+        );
+        assert_eq!(
+            Submission::message(first.clone()),
+            Submission::message(retry)
+        );
+        let MessageAuthor::Source {
+            message_id,
+            cause_id,
+            ancestry,
+            source,
+            ..
+        } = &first.author
+        else {
+            panic!("source")
+        };
+        assert_eq!(message_id, "stable-command");
+        assert_eq!(cause_id.as_deref(), Some("incoming-message"));
+        assert_eq!(
+            ancestry.as_slice(),
+            ["earlier-event", "source-event", "incoming-message"]
+        );
+        assert!(
+            matches!(source,crate::protocol::MessageSource::Session{session_id} if session_id=="sender-session")
+        );
+        crate::protocol::validate_message_content(&first.author, &first.text, &[])
+            .expect("valid causal message");
+    }
+
+    #[test]
+    fn peer_only_loops_reach_the_same_admission_bound_without_silently_trimming() {
+        let mut origin = MessageAuthor::User;
+        for depth in 0..=16 {
+            let next = peer_submission(
+                "sender-session",
+                "/root/reviewer",
+                "check it".into(),
+                &origin,
+                &format!("command-{depth}"),
+            );
+            crate::protocol::validate_message_content(&next.author, &next.text, &[])
+                .expect("within bound");
+            origin = next.author;
+        }
+        let next = peer_submission(
+            "sender-session",
+            "/root/reviewer",
+            "check it".into(),
+            &origin,
+            "too-deep",
+        );
+        assert!(crate::protocol::validate_message_content(&next.author, &next.text, &[]).is_err());
     }
 }

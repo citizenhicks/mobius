@@ -10,8 +10,8 @@ use super::unix_timestamp_ms;
 use crate::backend::checkpoint::{ActiveExecution, ExecutionOutcome, ExecutionPhase};
 use crate::middleware::{PreparedMessage, TurnEndContext};
 use crate::protocol::{
-    ErrorEvent, Event, EventMsg, MessageTarget, TokenCountEvent, TokenUsage, TokenUsageInfo,
-    TurnAbortedEvent, TurnCompleteEvent, TurnStartedEvent,
+    ErrorEvent, Event, EventMsg, MessageAuthor, MessageTarget, TokenCountEvent, TokenUsage,
+    TokenUsageInfo, TurnAbortedEvent, TurnCompleteEvent, TurnStartedEvent,
 };
 use crate::{Error, Result};
 
@@ -21,6 +21,21 @@ pub(super) struct SubmissionDrain {
 }
 
 impl Runner {
+    pub(super) fn turn_identity<'a>(
+        &'a self,
+        turn_id: &'a str,
+    ) -> Result<crate::middleware::TurnIdentity<'a>> {
+        Ok(self.runtime.turn_identity(turn_id, self.active_author()?))
+    }
+
+    pub(super) fn active_author(&self) -> Result<&MessageAuthor> {
+        self.state
+            .active_execution
+            .as_ref()
+            .map(|execution| &execution.author)
+            .ok_or_else(|| Error::Checkpoint("active turn has no initiating message".into()))
+    }
+
     pub(super) async fn stop_resumed_turn_at_session_start(&mut self) -> Result<()> {
         let Some(reason) = self.pending_session_start_stop.take() else {
             return Ok(());
@@ -92,13 +107,17 @@ impl Runner {
         mut message: PreparedMessage,
     ) -> Result<()> {
         let submission_id = message.submission_id.clone();
+        let author = match &message.event {
+            EventMsg::Message(event) => event.author.clone(),
+            _ => return Err(Error::Checkpoint("prepared message has no author".into())),
+        };
         let turn_id = Uuid::new_v4().to_string();
         let mut hook_messages = Vec::new();
         let submitted = self
             .config
             .middleware
             .message_submit(
-                self.runtime.turn_identity(&turn_id),
+                self.runtime.turn_identity(&turn_id, &author),
                 &message,
                 &mut hook_messages,
             )
@@ -108,7 +127,7 @@ impl Runner {
             self.config
                 .middleware
                 .consume_next_turn(&mut pending_messages, &submission_id)?;
-            self.begin_turn(&submission_id, turn_id.clone())?;
+            self.begin_turn(&submission_id, turn_id.clone(), author)?;
             let previous_pending_messages =
                 std::mem::replace(&mut self.state.pending_messages, pending_messages);
             let mut events = vec![turn_event(
@@ -182,7 +201,7 @@ impl Runner {
         self.config
             .middleware
             .consume_next_turn(&mut pending_messages, &submission_id)?;
-        self.begin_turn(&submission_id, turn_id.clone())?;
+        self.begin_turn(&submission_id, turn_id.clone(), author)?;
         let previous_pending_messages =
             std::mem::replace(&mut self.state.pending_messages, pending_messages);
         let context_len = self.state.context.len();
@@ -206,7 +225,12 @@ impl Runner {
         self.continue_turn(inbox, submission_id, turn_id).await
     }
 
-    fn begin_turn(&mut self, submission_id: &str, turn_id: String) -> Result<()> {
+    fn begin_turn(
+        &mut self,
+        submission_id: &str,
+        turn_id: String,
+        author: MessageAuthor,
+    ) -> Result<()> {
         if self.state.active_execution.is_some() {
             return Err(Error::Checkpoint(
                 "cannot start a turn while another execution is active".into(),
@@ -214,6 +238,7 @@ impl Runner {
         }
         self.state.active_execution = Some(ActiveExecution {
             submission_id: submission_id.into(),
+            author,
             turn_id,
             started_at_ms: unix_timestamp_ms()?,
             model_calls: 0,

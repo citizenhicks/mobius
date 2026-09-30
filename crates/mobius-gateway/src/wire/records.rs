@@ -252,7 +252,7 @@ pub struct SessionReadyPayload {
     /// The next before sequence.
     pub next_before_sequence: Option<u64>,
     /// The workspace.
-    pub workspace: WorkspaceInfo,
+    pub workspace: Option<WorkspaceInfo>,
     /// The attached folders.
     pub attached_folders: Vec<PathBuf>,
     /// The git.
@@ -609,6 +609,39 @@ pub enum ProviderTint {
     Purple,
     /// Selects the white case.
     White,
+}
+
+/// The silhouette of a Bot's face.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BotShape {
+    /// Selects the circle case.
+    Circle,
+    /// Selects the squircle case.
+    Squircle,
+    /// Selects the triangle case.
+    Triangle,
+    /// Selects the diamond case.
+    Diamond,
+    /// Selects the hexagon case.
+    Hexagon,
+    /// Selects the star case.
+    Star,
+    /// Selects the flower case.
+    Flower,
+}
+
+impl BotShape {
+    /// Every shape, in the order pickers show them.
+    pub const ALL: [Self; 7] = [
+        Self::Circle,
+        Self::Squircle,
+        Self::Triangle,
+        Self::Diamond,
+        Self::Hexagon,
+        Self::Star,
+        Self::Flower,
+    ];
 }
 
 /// One durable setup of a provider. Several may share one `provider`.
@@ -995,6 +1028,8 @@ pub struct DailyUsage {
 /// One durable Bot profile.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BotRecord {
+    /// Canonical project-free conversation, opened through the ordinary session API.
+    pub conversation_session_id: String,
     /// The identifier.
     pub id: String,
     /// The handle.
@@ -1005,6 +1040,8 @@ pub struct BotRecord {
     pub description: String,
     /// The tint.
     pub tint: ProviderTint,
+    /// The face's silhouette.
+    pub shape: BotShape,
     /// The config.
     pub config: VersionedAgentConfig,
     /// The accepts file attachments.
@@ -1034,10 +1071,8 @@ pub struct Routine {
     pub workspace: PathBuf,
     /// The instructions.
     pub instructions: String,
-    /// The schedule.
-    pub schedule: RoutineSchedule,
-    /// The ends at.
-    pub ends_at: Option<i64>,
+    /// User-authored event and timer bindings.
+    pub bindings: Vec<RoutineBinding>,
     /// The enabled.
     pub enabled: bool,
     /// The finished.
@@ -1120,4 +1155,383 @@ pub enum RoutineRunStatus {
     Failed,
     /// Selects the skipped case.
     Skipped,
+    /// The user stopped the invocation.
+    Cancelled,
+}
+
+/// Editable routine content and its user-authorized bindings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoutineDefinition {
+    /// Explicit execution workspace.
+    pub workspace: PathBuf,
+    /// Saved task instructions.
+    pub instructions: String,
+    /// Event and timer triggers with exact actions.
+    pub bindings: Vec<RoutineBinding>,
+}
+
+/// One user-authored trigger on its containing routine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HookBinding<A> {
+    /// Stable binding identity within the routine.
+    pub id: String,
+    /// Exact event or timer trigger.
+    pub on: HookSelector,
+    /// Action on this routine.
+    pub action: A,
+}
+
+/// A trigger whose action addresses its containing routine.
+pub type RoutineBinding = HookBinding<RoutineAction>;
+
+/// Typed actions shared by reporting and control subscriptions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BotAction {
+    /// Deliver the saved reporting mandate to the Bot conversation.
+    Report {
+        /// User-authored mandate.
+        instruction: String,
+    },
+    /// Invoke the ordinary routine command handler.
+    Routine {
+        /// Addressed command.
+        command: RoutineCommand,
+    },
+    /// Submit an ordinary message or interrupt to an owned session.
+    Session {
+        /// Owned destination.
+        session_id: String,
+        /// Existing core operation.
+        op: Box<mobius::protocol::Op>,
+    },
+}
+
+/// Finite commands shared by UI, tools, timers and event bindings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RoutineAction {
+    /// Start one invocation.
+    Start,
+    /// Stop only the identified invocation.
+    Stop {
+        /// Invocation identity.
+        run_id: String,
+    },
+    /// Disable future starts without stopping an active run.
+    Pause,
+    /// Enable future starts from the current time.
+    Resume,
+    /// Delete this routine through the ordinary cleanup path.
+    Delete,
+    /// Replace the editable definition.
+    Update {
+        /// Validated replacement.
+        definition: RoutineDefinition,
+    },
+}
+
+/// A command addressed to one routine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoutineCommand {
+    /// Target routine identity.
+    pub routine_id: String,
+    /// Typed action.
+    pub action: RoutineAction,
+}
+
+/// Gateway-established origin of a committed hook event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HookSource {
+    /// A Bot command.
+    Bot {
+        /// Owner identity.
+        bot_id: String,
+    },
+    /// An owned routine.
+    Routine {
+        /// Routine identity.
+        routine_id: String,
+    },
+    /// An owned session.
+    Session {
+        /// Session identity.
+        session_id: String,
+    },
+    /// A timer on an owned routine.
+    Schedule {
+        /// Routine identity.
+        routine_id: String,
+        /// Binding identity.
+        binding_id: String,
+    },
+    /// A gateway lifecycle operation.
+    Gateway,
+    /// An authenticated client.
+    Client {
+        /// Paired client identity.
+        client_id: String,
+    },
+    /// A configured external source.
+    Custom {
+        /// Configured source identity.
+        source_id: String,
+    },
+}
+
+/// Exact trigger shared by routine bindings and reporting consumers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HookSelector {
+    /// The existing schedule model, owned by this binding.
+    Schedule {
+        /// Timer rule.
+        schedule: RoutineSchedule,
+        /// Optional cutoff.
+        ends_at: Option<i64>,
+    },
+    /// An exact source and typed boundary, with applicable outcome filters.
+    Event {
+        /// Source identity.
+        source: HookSource,
+        /// Boundary.
+        kind: HookKind,
+        /// Optional terminal routine outcome.
+        routine_outcome: Option<RoutineRunStatus>,
+        /// Optional terminal session outcome.
+        session_outcome: Option<mobius::backend::checkpoint::ExecutionOutcome>,
+        /// Optional custom event name.
+        custom_name: Option<String>,
+    },
+}
+
+/// Finite lifecycle boundaries; source payloads cannot introduce commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HookKind {
+    /// Routine registered.
+    RoutineCreated,
+    /// Routine definition replaced.
+    RoutineUpdated,
+    /// Routine disabled.
+    RoutinePaused,
+    /// Routine enabled.
+    RoutineResumed,
+    /// Routine removed.
+    RoutineDeleted,
+    /// Invocation reserved.
+    RunStarted,
+    /// Invocation completed, failed or was cancelled.
+    RunFinished,
+    /// Invocation skipped before starting.
+    RunSkipped,
+    /// A binding's timer became due.
+    ScheduleDue,
+    /// Session created.
+    SessionCreated,
+    /// A turn began.
+    SessionTurnStarted,
+    /// A turn reached a durable outcome.
+    SessionTurnFinished,
+    /// A turn awaits a human decision.
+    SessionApproval,
+    /// Session deleted.
+    SessionDeleted,
+    /// Session owner changed.
+    SessionOwnerChanged,
+    /// Client authenticated.
+    ClientConnected,
+    /// Client disconnected.
+    ClientDisconnected,
+    /// Configured source accepted an event.
+    CustomReceived,
+}
+
+/// One durable gateway event used by all hook consumers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HookEvent {
+    /// Stable event identity.
+    pub id: String,
+    /// Authenticated or internally established source.
+    pub source: HookSource,
+    /// Immediate causing event, if any.
+    pub cause_id: Option<String>,
+    /// Bounded prior event chain used to prevent feedback.
+    pub ancestry: Vec<String>,
+    /// Owning Bot.
+    pub bot_id: String,
+    /// Unix timestamp in seconds.
+    pub occurred_at: i64,
+    /// Small typed lifecycle fact.
+    pub data: HookData,
+}
+
+/// Typed event facts, without executable source-provided instructions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HookData {
+    /// Routine registered.
+    RoutineCreated {
+        /// Routine identity.
+        routine_id: String,
+    },
+    /// Routine definition changed.
+    RoutineUpdated {
+        /// Routine identity.
+        routine_id: String,
+    },
+    /// Routine disabled.
+    RoutinePaused {
+        /// Routine identity.
+        routine_id: String,
+    },
+    /// Routine enabled.
+    RoutineResumed {
+        /// Routine identity.
+        routine_id: String,
+    },
+    /// Routine removed.
+    RoutineDeleted {
+        /// Routine identity.
+        routine_id: String,
+    },
+    /// Invocation reserved.
+    RunStarted {
+        /// Routine identity.
+        routine_id: String,
+        /// Invocation identity.
+        run_id: String,
+        /// Execution transcript.
+        session_id: Option<String>,
+    },
+    /// Invocation completed, failed or was cancelled.
+    RunFinished {
+        /// Routine identity.
+        routine_id: String,
+        /// Invocation identity.
+        run_id: String,
+        /// Terminal outcome.
+        status: RoutineRunStatus,
+        /// Execution transcript.
+        session_id: Option<String>,
+        /// Failure or cancellation reason.
+        reason: Option<String>,
+    },
+    /// An overlapping or unavailable invocation was skipped.
+    RunSkipped {
+        /// Routine identity.
+        routine_id: String,
+        /// Skipped invocation identity.
+        run_id: String,
+        /// Saved reason.
+        reason: String,
+    },
+    /// A binding's timer became due.
+    ScheduleDue {
+        /// Binding identity.
+        binding_id: String,
+    },
+    /// A session was created.
+    SessionCreated {
+        /// Session identity.
+        session_id: String,
+    },
+    /// A session turn began.
+    SessionTurnStarted {
+        /// Session identity.
+        session_id: String,
+        /// Turn identity.
+        turn_id: String,
+    },
+    /// A session turn reached its committed outcome.
+    SessionTurnFinished {
+        /// Session identity.
+        session_id: String,
+        /// Turn identity.
+        turn_id: String,
+        /// Core execution outcome.
+        outcome: mobius::backend::checkpoint::ExecutionOutcome,
+    },
+    /// A session awaits an execution decision.
+    SessionApproval {
+        /// Session identity.
+        session_id: String,
+        /// Turn identity.
+        turn_id: String,
+        /// Approval identity.
+        request_id: String,
+    },
+    /// Session removed.
+    SessionDeleted {
+        /// Session identity.
+        session_id: String,
+    },
+    /// Session transferred to another Bot.
+    SessionOwnerChanged {
+        /// Session identity.
+        session_id: String,
+        /// Previous Bot identity.
+        previous_bot_id: String,
+    },
+    /// Paired client authenticated.
+    ClientConnected {
+        /// Paired client identity.
+        client_id: String,
+    },
+    /// Paired client disconnected.
+    ClientDisconnected {
+        /// Paired client identity.
+        client_id: String,
+    },
+    /// An authenticated configured source accepted a JSON event.
+    CustomReceived {
+        /// Configured event name.
+        name: String,
+        /// Bounded untrusted JSON evidence.
+        data: serde_json::Value,
+    },
+}
+
+impl HookData {
+    /// The selector boundary for this fact.
+    #[must_use]
+    pub fn kind(&self) -> HookKind {
+        match self {
+            Self::RoutineCreated { .. } => HookKind::RoutineCreated,
+            Self::RoutineUpdated { .. } => HookKind::RoutineUpdated,
+            Self::RoutinePaused { .. } => HookKind::RoutinePaused,
+            Self::RoutineResumed { .. } => HookKind::RoutineResumed,
+            Self::RoutineDeleted { .. } => HookKind::RoutineDeleted,
+            Self::RunStarted { .. } => HookKind::RunStarted,
+            Self::RunFinished { .. } => HookKind::RunFinished,
+            Self::RunSkipped { .. } => HookKind::RunSkipped,
+            Self::ScheduleDue { .. } => HookKind::ScheduleDue,
+            Self::SessionCreated { .. } => HookKind::SessionCreated,
+            Self::SessionTurnStarted { .. } => HookKind::SessionTurnStarted,
+            Self::SessionTurnFinished { .. } => HookKind::SessionTurnFinished,
+            Self::SessionApproval { .. } => HookKind::SessionApproval,
+            Self::SessionDeleted { .. } => HookKind::SessionDeleted,
+            Self::SessionOwnerChanged { .. } => HookKind::SessionOwnerChanged,
+            Self::ClientConnected { .. } => HookKind::ClientConnected,
+            Self::ClientDisconnected { .. } => HookKind::ClientDisconnected,
+            Self::CustomReceived { .. } => HookKind::CustomReceived,
+        }
+    }
+}
+
+/// User-authored reporting consumer of the same typed hook stream.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BotSubscription {
+    /// Owning Bot.
+    pub bot_id: String,
+    /// Exact trigger and its saved action.
+    pub binding: HookBinding<BotAction>,
+    /// Whether future matching facts should report.
+    pub enabled: bool,
 }

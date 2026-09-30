@@ -33,15 +33,17 @@ async fn runtime_start_quiesced_holds_due_routines_before_first_poll() {
     let routine = bots
         .create_routine(
             &bot.id,
-            &workspace,
-            "due work",
-            crate::wire::RoutineSchedule {
-                kind: crate::wire::RoutineScheduleKind::Once,
-                at: Some(Utc::now().timestamp() - 1),
-                every_seconds: None,
-                expression: None,
-                time_zone: None,
-            },
+            &timer_definition(
+                &workspace,
+                "due work",
+                crate::wire::RoutineSchedule {
+                    kind: crate::wire::RoutineScheduleKind::Once,
+                    at: Some(Utc::now().timestamp() - 1),
+                    every_seconds: None,
+                    expression: None,
+                    time_zone: None,
+                },
+            ),
             None,
         )
         .unwrap();
@@ -55,7 +57,12 @@ async fn runtime_start_quiesced_holds_due_routines_before_first_poll() {
     ready.await.unwrap();
     tokio::time::advance(ROUTINE_TICK).await;
     tokio::task::yield_now().await;
-    assert!(bots.routine(&routine.id).unwrap().next_run_at.is_some());
+    assert!(
+        bots.routine_record(&routine.id, Utc::now().timestamp())
+            .unwrap()
+            .next_run_at
+            .is_some()
+    );
     assert!(!bots.has_running_routines().unwrap());
     assert!(
         host.ready().await.is_ok(),
@@ -64,7 +71,12 @@ async fn runtime_start_quiesced_holds_due_routines_before_first_poll() {
     host.cancel_idle_shutdown().await;
     tokio::time::advance(ROUTINE_TICK).await;
     tokio::task::yield_now().await;
-    assert!(bots.routine(&routine.id).unwrap().next_run_at.is_none());
+    assert!(
+        bots.routine_record(&routine.id, Utc::now().timestamp())
+            .unwrap()
+            .next_run_at
+            .is_none()
+    );
     shutdown.send(()).unwrap();
     serving.await.unwrap().unwrap();
 }

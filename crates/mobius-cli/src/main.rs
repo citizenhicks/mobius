@@ -251,23 +251,15 @@ async fn connect(
                 let session = open_session(&sender, &mut events, &mut gateway, session_id).await?;
                 (session, None)
             } else {
-                let bot_id = gateway
+                let session_id = gateway
                     .bots
                     .iter()
                     .find(|bot| bot.handle == "mobius")
                     .or_else(|| gateway.bots.first())
-                    .map(|bot| bot.id.clone())
+                    .map(|bot| bot.conversation_session_id.clone())
                     .ok_or_else(|| Error::Config("create a Bot before starting a chat".into()))?;
-                let session = create_session(
-                    &sender,
-                    &mut events,
-                    &mut gateway,
-                    PathBuf::from("."),
-                    bot_id,
-                )
-                .await?;
-                let disposable_session = Some(session.session.session_id.clone());
-                (session, disposable_session)
+                let session = open_session(&sender, &mut events, &mut gateway, session_id).await?;
+                (session, None)
             }
         }
     };
@@ -1073,10 +1065,12 @@ mod tests {
     fn explicit_bot_handle_resolves_to_its_stable_id() {
         let bots = [BotRecord {
             id: "bot-1".into(),
+            conversation_session_id: "bot-conversation-test".into(),
             handle: "builder".into(),
             name: "Builder".into(),
             description: "Own build work.".into(),
             tint: Default::default(),
+            shape: mobius_gateway::wire::BotShape::Circle,
             config: mobius_gateway::wire::VersionedAgentConfig {
                 revision: 1,
                 config: mobius_gateway::wire::AgentComposition::default(),

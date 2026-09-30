@@ -242,7 +242,7 @@ impl TryFrom<DurableQueuedMessage> for PreparedMessage {
         let input = message_input(&event)?;
         let title_seed = matches!(
             event.author,
-            MessageAuthor::User | MessageAuthor::Peer { .. }
+            MessageAuthor::User | MessageAuthor::Source { .. }
         )
         .then(|| event.text.trim().to_string())
         .filter(|title| !title.is_empty());
@@ -282,12 +282,17 @@ pub struct RuntimeContext {
 }
 
 impl RuntimeContext {
-    pub(crate) fn turn_identity<'a>(&'a self, turn_id: &'a str) -> TurnIdentity<'a> {
+    pub(crate) fn turn_identity<'a>(
+        &'a self,
+        turn_id: &'a str,
+        author: &'a MessageAuthor,
+    ) -> TurnIdentity<'a> {
         TurnIdentity {
             session_id: &self.session_id,
             turn_id,
             model: &self.model,
             approval_policy: self.approval_policy,
+            author,
         }
     }
 }
@@ -295,6 +300,8 @@ impl RuntimeContext {
 /// Stable facts shared by hooks that run within one active turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TurnIdentity<'a> {
+    /// Trusted provenance of the message that initiated the turn.
+    pub author: &'a MessageAuthor,
     /// The session identifier.
     pub session_id: &'a str,
     /// The turn identifier.
@@ -409,6 +416,8 @@ pub(crate) struct MessageSubmitResult {
 
 /// Mutable state exposed immediately before a model request.
 pub struct ModelContext<'a> {
+    /// Trusted provenance of the message that initiated the active turn.
+    pub author: &'a MessageAuthor,
     /// The model.
     pub model: &'a ModelRouter,
     /// The provider.
@@ -629,6 +638,8 @@ impl ModelContext<'_> {
 
 /// Request-only model input exposed after every durable `PreModel` hook.
 pub struct ModelRequestContext<'a> {
+    /// Trusted provenance of the message that initiated the active turn.
+    pub author: &'a MessageAuthor,
     /// The role.
     pub role: &'a AgentRole,
     /// The model.
@@ -1032,6 +1043,7 @@ mod tests {
         let role = AgentRole::Main;
         let router = ModelRouter::new("test", Arc::new(NoModel));
         let mut context = ModelRequestContext {
+            author: &MessageAuthor::User,
             role: &role,
             model: &router,
             provider: "test",

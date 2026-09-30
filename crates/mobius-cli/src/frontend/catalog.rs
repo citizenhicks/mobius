@@ -20,7 +20,7 @@ pub(crate) struct UiCatalog {
     references: Vec<UiReference>,
     reference_triggers: Vec<char>,
     widgets: Vec<(String, FrontendWidget)>,
-    workspace: PathBuf,
+    workspace: Option<PathBuf>,
     workspace_references: Vec<UiReference>,
 }
 
@@ -46,6 +46,7 @@ enum CommandHandler {
     GatewaySettings,
     Extensions,
     Bot,
+    Conversation,
     Workspace,
     Login,
     Pair,
@@ -84,11 +85,12 @@ pub(crate) struct CommandContext<'a> {
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum CommandAction {
-    Submit(Op),
+    Submit(Box<Op>),
     Gateway(GatewayAction),
     GatewaySettings,
     Extensions,
     Bots,
+    Conversation,
     Setup {
         mode: SetupMode,
         provider: Option<String>,
@@ -97,7 +99,7 @@ pub(crate) enum CommandAction {
     Print(String),
     Exit,
     ChooseBot {
-        workspace: PathBuf,
+        workspace: Option<PathBuf>,
         clear: bool,
     },
     Events,
@@ -123,8 +125,25 @@ pub(crate) enum GatewayAction {
 }
 
 impl UiCatalog {
-    pub(crate) fn build(contributions: &[FrontendContribution], workspace: &Path) -> Result<Self> {
+    pub(crate) fn build(
+        contributions: &[FrontendContribution],
+        workspace: Option<&Path>,
+    ) -> Result<Self> {
         let mut commands = cli_commands();
+        if workspace.is_none() {
+            commands.retain(|command| {
+                !matches!(
+                    command.handler,
+                    CommandHandler::Clear
+                        | CommandHandler::Rename
+                        | CommandHandler::Reassign
+                        | CommandHandler::Attach
+                        | CommandHandler::Delete
+                        | CommandHandler::Diff
+                        | CommandHandler::Branch
+                )
+            });
+        }
         let mut references = Vec::new();
         let mut widgets = Vec::new();
 
@@ -165,7 +184,7 @@ impl UiCatalog {
             references,
             reference_triggers,
             widgets,
-            workspace: workspace.to_path_buf(),
+            workspace: workspace.map(Path::to_path_buf),
             workspace_references: Vec::new(),
         })
     }
@@ -188,8 +207,8 @@ impl UiCatalog {
             .map(|(capability, widget)| (capability.as_str(), widget))
     }
 
-    pub(crate) fn workspace(&self) -> &Path {
-        &self.workspace
+    pub(crate) fn workspace(&self) -> Option<&Path> {
+        self.workspace.as_deref()
     }
 
     pub(crate) fn command_suggestions(&self, input: &str, cursor: usize) -> Option<Vec<MenuItem>> {
@@ -313,9 +332,11 @@ impl UiCatalog {
             CommandHandler::Extensions => command.usage(),
             CommandHandler::Bot if arguments.is_empty() => CommandAction::Bots,
             CommandHandler::Bot => command.usage(),
+            CommandHandler::Conversation if arguments.is_empty() => CommandAction::Conversation,
+            CommandHandler::Conversation => command.usage(),
             CommandHandler::Workspace if arguments.is_empty() => command.usage(),
             CommandHandler::Workspace => CommandAction::ChooseBot {
-                workspace: PathBuf::from(arguments),
+                workspace: Some(PathBuf::from(arguments)),
                 clear: false,
             },
             CommandHandler::Login if arguments.split_whitespace().count() <= 1 => {
@@ -379,20 +400,20 @@ impl UiCatalog {
             CommandHandler::Interrupt => context.active_turn.map_or_else(
                 || CommandAction::Print("no active turn to interrupt".into()),
                 |turn_id| {
-                    CommandAction::Submit(Op::Interrupt {
+                    CommandAction::Submit(Box::new(Op::Interrupt {
                         turn_id: turn_id.to_string(),
-                    })
+                    }))
                 },
             ),
             CommandHandler::Exit => CommandAction::Exit,
             CommandHandler::Capability { capability } => {
-                CommandAction::Submit(Op::CapabilityCommand {
+                CommandAction::Submit(Box::new(Op::CapabilityCommand {
                     capability: capability.clone(),
                     command: command.name.clone(),
                     arguments: arguments.to_string(),
                     input: None,
                     target: None,
-                })
+                }))
             }
         })
     }
@@ -468,6 +489,12 @@ fn cli_commands() -> Vec<UiCommand> {
             "install, update, trust, or remove extensions",
             true,
             CommandHandler::Extensions,
+        ),
+        command(
+            "conversation",
+            "open this Bot conversation",
+            false,
+            CommandHandler::Conversation,
         ),
         UiCommand {
             name: "bot".into(),
@@ -652,6 +679,37 @@ mod tests {
     use super::*;
     use mobius::protocol::FrontendCommand;
     use mobius::protocol::FrontendReference;
+
+    #[test]
+    fn bot_conversation_commands_have_no_implied_workspace() {
+        let catalog = UiCatalog::build(&[], None).expect("catalog");
+        let context = CommandContext {
+            active_turn: None,
+            status: "idle",
+        };
+        assert!(catalog.workspace().is_none());
+        assert_eq!(
+            catalog.dispatch("/conversation", context),
+            Some(CommandAction::Conversation)
+        );
+        assert_eq!(
+            catalog.dispatch("/new", context),
+            Some(CommandAction::ChooseBot {
+                workspace: None,
+                clear: false
+            })
+        );
+        for name in ["clear", "delete", "reassign", "attach", "diff", "branch"] {
+            assert!(!catalog.commands.iter().any(|command| command.name == name));
+        }
+        assert_eq!(
+            catalog.dispatch("/workspace /srv/project", context),
+            Some(CommandAction::ChooseBot {
+                workspace: Some("/srv/project".into()),
+                clear: false
+            })
+        );
+    }
     fn contribution(command: &str) -> FrontendContribution {
         FrontendContribution {
             capability: "test".into(),
@@ -671,7 +729,7 @@ mod tests {
     #[test]
     fn bare_login_and_bot_commands_open_setup() {
         let workspace = tempfile::tempdir().expect("workspace");
-        let catalog = UiCatalog::build(&[], workspace.path()).expect("catalog");
+        let catalog = UiCatalog::build(&[], Some(workspace.path())).expect("catalog");
         let context = CommandContext {
             active_turn: None,
             status: "idle",
@@ -701,7 +759,7 @@ mod tests {
     #[test]
     fn bare_gateway_command_opens_gateway_settings() {
         let workspace = tempfile::tempdir().expect("workspace");
-        let catalog = UiCatalog::build(&[], workspace.path()).expect("catalog");
+        let catalog = UiCatalog::build(&[], Some(workspace.path())).expect("catalog");
 
         assert_eq!(
             catalog.dispatch(
@@ -718,7 +776,7 @@ mod tests {
     #[test]
     fn session_commands_use_existing_gateway_operations() {
         let workspace = tempfile::tempdir().expect("workspace");
-        let catalog = UiCatalog::build(&[], workspace.path()).expect("catalog");
+        let catalog = UiCatalog::build(&[], Some(workspace.path())).expect("catalog");
         let context = CommandContext {
             active_turn: None,
             status: "idle",
@@ -753,7 +811,7 @@ mod tests {
     #[test]
     fn extensions_command_opens_the_gateway_catalog_only_when_idle() {
         let workspace = tempfile::tempdir().expect("workspace");
-        let catalog = UiCatalog::build(&[], workspace.path()).expect("catalog");
+        let catalog = UiCatalog::build(&[], Some(workspace.path())).expect("catalog");
         let idle = CommandContext {
             active_turn: None,
             status: "idle",
@@ -785,20 +843,24 @@ mod tests {
         let mut review = contribution("review");
         review.capability = "review".into();
         review.commands[0].requires_idle = false;
-        let catalog = UiCatalog::build(&[review], workspace.path()).expect("catalog");
+        let catalog = UiCatalog::build(&[review], Some(workspace.path())).expect("catalog");
         let context = CommandContext {
             active_turn: Some("turn"),
             status: "working",
         };
 
+        let Some(CommandAction::Submit(op)) = catalog.dispatch("/review pull requests", context)
+        else {
+            panic!("capability command");
+        };
         assert!(matches!(
-            catalog.dispatch("/review pull requests", context),
-            Some(CommandAction::Submit(Op::CapabilityCommand {
+            *op,
+            Op::CapabilityCommand {
                 capability,
                 command,
                 arguments,
                 ..
-            })) if capability == "review"
+            } if capability == "review"
                 && command == "review"
                 && arguments == "pull requests"
         ));
@@ -807,7 +869,7 @@ mod tests {
     #[test]
     fn rejects_middleware_command_collisions_with_the_shell() {
         let workspace = tempfile::tempdir().expect("workspace");
-        let error = match UiCatalog::build(&[contribution("exit")], workspace.path()) {
+        let error = match UiCatalog::build(&[contribution("exit")], Some(workspace.path())) {
             Ok(_) => panic!("duplicate command"),
             Err(error) => error,
         };
@@ -821,8 +883,8 @@ mod tests {
     #[test]
     fn composer_hint_is_independent_of_capability_commands() {
         let workspace = tempfile::tempdir().expect("workspace");
-        let bare = UiCatalog::build(&[], workspace.path()).expect("bare catalog");
-        let sessions = UiCatalog::build(&[contribution("resume")], workspace.path())
+        let bare = UiCatalog::build(&[], Some(workspace.path())).expect("bare catalog");
+        let sessions = UiCatalog::build(&[contribution("resume")], Some(workspace.path()))
             .expect("sessions catalog");
 
         assert!(!bare.composer_hint().contains("/resume"));
@@ -841,7 +903,8 @@ mod tests {
         });
 
         let mut catalog =
-            UiCatalog::build(&[inspect, contribution("audit")], workspace.path()).expect("catalog");
+            UiCatalog::build(&[inspect, contribution("audit")], Some(workspace.path()))
+                .expect("catalog");
         catalog.set_workspace_paths(["source file.rs".into()]);
         let commands = catalog.menu();
         let references = catalog.reference_suggestions('@', "");

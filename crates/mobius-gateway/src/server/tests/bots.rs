@@ -147,6 +147,7 @@ async fn bot_catalog_broadcasts_do_not_reintroduce_a_deleted_bot() {
             name: "Renamed".into(),
             description: bot.description,
             tint: bot.tint,
+            shape: bot.shape,
             config: bot.config.config,
         },
         ClientMessage::DeleteBot {

@@ -200,7 +200,7 @@ impl SessionCatalog {
                         .then_with(|| right.sequence.cmp(&left.sequence))
                         .then_with(|| right.session_id.cmp(&left.session_id))
                 });
-                snapshot.sessions.truncate(SESSION_PAGE_SIZE);
+                retain_catalog_page(&mut snapshot.sessions);
                 sort_sessions(&mut snapshot.sessions);
             }
         }
@@ -222,7 +222,7 @@ async fn filtered_session_catalog(
 ) -> Result<Vec<SessionRecord>> {
     let mut cursor = None;
     let mut sessions = Vec::new();
-    while sessions.len() < SESSION_PAGE_SIZE {
+    loop {
         let page = checkpoints
             .list_sessions_page(SessionPageRequest {
                 owner_id: match filter {
@@ -233,27 +233,48 @@ async fn filtered_session_catalog(
                 limit: SESSION_PAGE_SIZE,
             })
             .await?;
-        sessions.extend(page.sessions.into_iter().filter(|session| {
-            match filter {
-                CatalogFilter::Visible => {
-                    session.catalog_visible
-                        && !metadata
-                            .get(&session.session_id)
-                            .is_some_and(|item| item.hidden)
-                }
-                CatalogFilter::HiddenBot(bot_id) => {
-                    session.session_context.owner_id == bot_id
-                        && session.parent_session_id.is_none()
-                        && !session.catalog_visible
+        let ordinary_count = sessions
+            .iter()
+            .filter(|session: &&SessionSummary| {
+                session.session_id
+                    != crate::bots::conversation_session_id(&session.session_context.owner_id)
+            })
+            .count();
+        let mut available = SESSION_PAGE_SIZE.saturating_sub(ordinary_count);
+        sessions.extend(page.sessions.into_iter().filter(|session| match filter {
+            CatalogFilter::Visible => {
+                let persistent = session.session_id
+                    == crate::bots::conversation_session_id(&session.session_context.owner_id);
+                let listed = session.catalog_visible
+                    && !metadata
+                        .get(&session.session_id)
+                        .is_some_and(|item| item.hidden);
+                if listed && (persistent || available > 0) {
+                    if !persistent {
+                        available -= 1;
+                    }
+                    true
+                } else {
+                    false
                 }
             }
+            CatalogFilter::HiddenBot(bot_id) => {
+                session.session_context.owner_id == bot_id
+                    && session.parent_session_id.is_none()
+                    && !session.catalog_visible
+            }
         }));
+        if matches!(filter, CatalogFilter::HiddenBot(_)) && sessions.len() >= SESSION_PAGE_SIZE {
+            break;
+        }
         let Some(next) = page.next_cursor else {
             break;
         };
         cursor = Some(next);
     }
-    sessions.truncate(SESSION_PAGE_SIZE);
+    if matches!(filter, CatalogFilter::HiddenBot(_)) {
+        sessions.truncate(SESSION_PAGE_SIZE);
+    }
     let mut sessions = sessions
         .into_iter()
         .map(|summary| {
@@ -343,6 +364,19 @@ pub(super) fn validate_session_title(title: &str) -> std::result::Result<&str, R
     Ok(title)
 }
 
+fn retain_catalog_page(sessions: &mut Vec<SessionRecord>) {
+    let mut ordinary = 0;
+    sessions.retain(|session| {
+        if session.session_id
+            == crate::bots::conversation_session_id(&session.session_context.owner_id)
+        {
+            return true;
+        }
+        ordinary += 1;
+        ordinary <= SESSION_PAGE_SIZE
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use mobius::backend::checkpoint::{
@@ -387,6 +421,14 @@ mod tests {
     }
 
     impl CheckpointStore for CountedStore {
+        fn message_accepted<'a>(
+            &'a self,
+            session_id: &'a str,
+            submission_id: &'a str,
+        ) -> BoxFuture<'a, mobius::Result<bool>> {
+            self.inner.message_accepted(session_id, submission_id)
+        }
+
         fn load<'a>(&'a self, id: &'a str) -> BoxFuture<'a, mobius::Result<Option<Checkpoint>>> {
             self.inner.load(id)
         }
@@ -639,6 +681,7 @@ mod tests {
             checkpoint.catalog_visible = visible;
             checkpoint.session_context.owner_id = "bot-a".into();
             checkpoint.active_execution = Some(ActiveExecution {
+                author: mobius::protocol::MessageAuthor::User,
                 submission_id: "submission".into(),
                 turn_id: "turn".into(),
                 started_at_ms: 1_000,

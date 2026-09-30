@@ -3,7 +3,8 @@
 `mobius-gateway` is the headless möbius runtime. One process owns machine
 credentials, usage, durable Bot profiles, Bot routines, and chats
 while hosting up to 32 independent conversations. Every conversation belongs
-to exactly one Bot and owns only its canonical workspace and transcript; the
+to exactly one Bot. Project chats own their canonical workspace and transcript; each Bot also
+has one persistent conversation without a project workspace. The
 Bot owns its model, reasoning, capabilities, approval policy, extensions, and
 prompt. The terminal, iPhone, and iPad clients can independently open different
 conversations or subscribe to the same one.
@@ -12,8 +13,11 @@ the ordered middleware catalog plus integer and select control schemas, so termi
 clients render new middleware and settings without capability-specific code. New Bots enable
 attachments, artifacts, context offloading, compaction, scratchpad, and subagents by default;
 tasks, workspace instructions, and extensions start disabled. Context offloading masks successful
-tool output after a 50,000-token trailing window. The gateway always installs sandboxing,
-workspace tools, turn steering, and durable sessions.
+tool output after a 50,000-token trailing window. Project chats install sandboxing and workspace
+tools; all chats use turn steering and durable sessions. Only the canonical Bot conversation
+installs the mandatory Persistent Chat middleware and its routine, session, subscription and
+webhook management tools. Routine runs, forks and subagents cannot inherit that middleware.
+New gateways use Full Access as their Bot-creation default; saved policies remain explicit.
 
 Compaction exposes an Automatic or Handoff policy in the same settings UI. Automatic uses the
 provider compaction endpoint when available and otherwise summarizes. Handoff exposes

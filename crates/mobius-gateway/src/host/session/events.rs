@@ -27,8 +27,12 @@ impl HostState {
             _ => {}
         }
         let routine_completion = self.observe_routine_event(&event);
-        self.settle_peer_delivery(event);
-        if let Some((active, status, message)) = routine_completion {
+        if let Some((active, mut status, message)) = routine_completion {
+            if matches!(event.msg, EventMsg::TurnAborted(_))
+                && self.bots.run_cancel_requested(active.run.id())?
+            {
+                status = RoutineRunStatus::Cancelled;
+            }
             self.bots.finish_run(active.run, status, message)?;
         }
         if let Some(activity) = next_activity {
@@ -45,25 +49,6 @@ impl HostState {
             }
         }
         Ok(())
-    }
-
-    /// Answers a peer sender with the agent's first outcome for its message.
-    fn settle_peer_delivery(&mut self, event: Event) {
-        let Some(reply) = event
-            .submission_id
-            .as_deref()
-            .and_then(|id| self.peer_deliveries.remove(id))
-        else {
-            return;
-        };
-        let _ = reply.send(match event.msg {
-            EventMsg::SubmissionRejected(rejected) => Err(Rejection {
-                code: "invalid_submission",
-                message: rejected.message,
-                fatal: false,
-            }),
-            _ => Ok(()),
-        });
     }
 
     pub(super) fn project_and_publish(
@@ -200,7 +185,11 @@ impl HostState {
             next_before_sequence: self.next_before_sequence,
             workspace: self.spec.workspace_info(),
             attached_folders: self.spec.attached_folders.clone(),
-            git: git_status(&self.running.gateway_sandbox).await,
+            git: if self.spec.workspace.is_some() {
+                git_status(&self.running.gateway_sandbox).await
+            } else {
+                None
+            },
             session: self.running.session.clone(),
             contributions: self.running.frontend.contributions().to_vec(),
             widgets: self
@@ -386,7 +375,10 @@ impl HostState {
     }
 
     pub(super) fn is_idle(&self) -> bool {
-        self.pending_turns == 0 && !self.approval_active && self.active_routine.is_none()
+        self.pending_turns == 0
+            && self.admissions.is_empty()
+            && !self.approval_active
+            && self.active_routine.is_none()
     }
 }
 
@@ -484,9 +476,13 @@ mod accounting_tests {
 
     fn message(delivery: MessageDelivery) -> EventMsg {
         EventMsg::Message(MessageEvent {
-            author: MessageAuthor::Peer {
+            author: MessageAuthor::Source {
+                cause_id: None,
+                ancestry: Vec::new(),
                 message_id: "message-1".into(),
-                session_id: "reviewer".into(),
+                source: mobius::protocol::MessageSource::Session {
+                    session_id: "reviewer".into(),
+                },
                 handle: "reviewer".into(),
                 symbol: None,
             },

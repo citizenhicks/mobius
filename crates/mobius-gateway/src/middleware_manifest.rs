@@ -25,6 +25,7 @@ pub(crate) enum BuiltinMiddleware {
     ComputerControl,
     Scratchpad,
     Sessions,
+    PersistentChat,
 }
 
 pub(crate) struct MiddlewareRegistration {
@@ -32,7 +33,7 @@ pub(crate) struct MiddlewareRegistration {
     pub(crate) manifest: &'static MiddlewareManifest,
 }
 
-pub(crate) static MIDDLEWARE: std::sync::LazyLock<[MiddlewareRegistration; 15]> =
+pub(crate) static MIDDLEWARE: std::sync::LazyLock<[MiddlewareRegistration; 16]> =
     std::sync::LazyLock::new(|| {
         [
             MiddlewareRegistration {
@@ -90,6 +91,10 @@ pub(crate) static MIDDLEWARE: std::sync::LazyLock<[MiddlewareRegistration; 15]> 
             MiddlewareRegistration {
                 kind: BuiltinMiddleware::Scratchpad,
                 manifest: &mobius::middleware::scratchpad::MANIFEST,
+            },
+            MiddlewareRegistration {
+                kind: BuiltinMiddleware::PersistentChat,
+                manifest: &crate::persistent_chat::MANIFEST,
             },
             MiddlewareRegistration {
                 kind: BuiltinMiddleware::Sessions,
@@ -313,7 +318,13 @@ mod tests {
                 .filter(|feature| feature.required)
                 .map(|feature| feature.id.as_str())
                 .collect::<BTreeSet<_>>(),
-            BTreeSet::from(["messages", "sandbox", "sessions", "tools"])
+            BTreeSet::from([
+                "messages",
+                "persistent_chat",
+                "sandbox",
+                "sessions",
+                "tools"
+            ])
         );
 
         let mut invalid = config;

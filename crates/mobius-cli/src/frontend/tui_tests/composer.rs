@@ -17,7 +17,7 @@ fn composer_dispatches_commands_and_active_turn_steering() {
 
     assert_eq!(
         working.submit_input(&catalog),
-        UiAction::Submit(Op::Message {
+        UiAction::submit(Op::Message {
             message: MessageSubmission {
                 author: MessageAuthor::User,
                 text: "change direction".into(),
@@ -51,7 +51,7 @@ fn alt_enter_uses_the_opposite_active_delivery() {
 
         assert_eq!(
             state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT), &catalog,),
-            UiAction::Submit(Op::Message {
+            UiAction::submit(Op::Message {
                 message: MessageSubmission {
                     author: MessageAuthor::User,
                     text: "follow up".into(),
@@ -79,11 +79,11 @@ fn new_and_clear_keep_distinct_terminal_semantics() {
         (new.submit_input(&catalog), clear.submit_input(&catalog)),
         (
             UiAction::ChooseBot {
-                workspace: catalog.workspace().to_path_buf(),
+                workspace: catalog.workspace().map(std::path::Path::to_path_buf),
                 clear: false,
             },
             UiAction::ChooseBot {
-                workspace: catalog.workspace().to_path_buf(),
+                workspace: catalog.workspace().map(std::path::Path::to_path_buf),
                 clear: true,
             }
         )
@@ -107,10 +107,10 @@ fn composer_targets_interrupt_at_the_active_turn() {
     assert_eq!(
         (slash_action, escape_action),
         (
-            UiAction::Submit(Op::Interrupt {
+            UiAction::submit(Op::Interrupt {
                 turn_id: "turn-1".into()
             }),
-            UiAction::Submit(Op::Interrupt {
+            UiAction::submit(Op::Interrupt {
                 turn_id: "turn-1".into()
             })
         )
@@ -131,7 +131,7 @@ fn interrupt_keys_keep_the_active_draft() {
 
         assert_eq!(
             state.handle_key(key, &catalog),
-            UiAction::Submit(Op::Interrupt {
+            UiAction::submit(Op::Interrupt {
                 turn_id: "turn".into(),
             })
         );
@@ -273,7 +273,7 @@ fn generic_picker_submits_the_selected_operation() {
 
     assert_eq!(
         state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &catalog),
-        UiAction::Submit(Op::ResumeSession {
+        UiAction::submit(Op::ResumeSession {
             session_id: "second".into(),
         })
     );
@@ -312,7 +312,7 @@ fn picker_filters_before_selecting() {
 
     assert_eq!(
         state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &catalog),
-        UiAction::Submit(Op::ResumeSession {
+        UiAction::submit(Op::ResumeSession {
             session_id: "beta".into(),
         })
     );
@@ -421,10 +421,12 @@ fn bot_picker_creates_the_chat_for_the_selected_bot() {
     let bots = [
         mobius_gateway::wire::BotRecord {
             id: "bot-a".into(),
+            conversation_session_id: "bot-conversation-test".into(),
             handle: "ada".into(),
             name: "Ada".into(),
             description: "Own analysis.".into(),
             tint: Default::default(),
+            shape: mobius_gateway::wire::BotShape::Circle,
             config: mobius_gateway::wire::VersionedAgentConfig {
                 revision: 1,
                 config: mobius_gateway::wire::AgentComposition::default(),
@@ -434,10 +436,12 @@ fn bot_picker_creates_the_chat_for_the_selected_bot() {
         },
         mobius_gateway::wire::BotRecord {
             id: "bot-b".into(),
+            conversation_session_id: "bot-conversation-test".into(),
             handle: "grace".into(),
             name: "Grace".into(),
             description: "Own implementation.".into(),
             tint: Default::default(),
+            shape: mobius_gateway::wire::BotShape::Circle,
             config: mobius_gateway::wire::VersionedAgentConfig {
                 revision: 1,
                 config: mobius_gateway::wire::AgentComposition::default(),
@@ -448,7 +452,7 @@ fn bot_picker_creates_the_chat_for_the_selected_bot() {
     ];
     let workspace = std::path::PathBuf::from("/srv/project");
     let mut state = state();
-    state.open_bot_picker(&bots, workspace.clone(), "bot-b", false);
+    state.open_bot_picker(&bots, Some(workspace.clone()), "bot-b", false);
 
     assert_eq!(
         state.handle_key(
@@ -501,7 +505,7 @@ fn navigation_only_capability_has_a_popup_surface() {
             widgets: vec![widget.clone()],
             references: Vec::new(),
         }],
-        std::path::Path::new("/missing-mobius-test-workspace"),
+        Some(std::path::Path::new("/missing-mobius-test-workspace")),
     )
     .expect("scratchpad catalog");
     let mut state = state();
@@ -511,7 +515,7 @@ fn navigation_only_capability_has_a_popup_surface() {
     state.input = "/scratchpad".into();
     state.cursor = state.input.len();
 
-    assert_eq!(state.submit_input(&catalog), UiAction::Submit(refresh));
+    assert_eq!(state.submit_input(&catalog), UiAction::submit(refresh));
     assert!(state.capability_overlay.is_some());
 }
 
@@ -594,7 +598,7 @@ fn bare_capability_command_opens_all_of_its_popup_surfaces() {
             widgets: vec![global.clone(), session.clone()],
             references: Vec::new(),
         }],
-        std::path::Path::new("/missing-mobius-test-workspace"),
+        Some(std::path::Path::new("/missing-mobius-test-workspace")),
     )
     .expect("scratchpad catalog");
     let mut state = state();
@@ -607,7 +611,7 @@ fn bare_capability_command_opens_all_of_its_popup_surfaces() {
 
     assert_eq!(
         state.submit_input(&catalog),
-        UiAction::Submit(refresh.clone())
+        UiAction::submit(refresh.clone())
     );
     assert!(state.capability_overlay.is_some());
 
@@ -627,11 +631,11 @@ fn bare_capability_command_opens_all_of_its_popup_surfaces() {
 
     assert_eq!(
         state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &catalog),
-        UiAction::Submit(refresh.clone())
+        UiAction::submit(refresh.clone())
     );
     assert_eq!(
         state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &catalog),
-        UiAction::Submit(global_action)
+        UiAction::submit(global_action)
     );
     assert_eq!(
         state.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &catalog),
@@ -643,11 +647,11 @@ fn bare_capability_command_opens_all_of_its_popup_surfaces() {
     );
     assert_eq!(
         state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &catalog),
-        UiAction::Submit(refresh)
+        UiAction::submit(refresh)
     );
     assert_eq!(
         state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &catalog),
-        UiAction::Submit(session_action)
+        UiAction::submit(session_action)
     );
 }
 
@@ -821,7 +825,7 @@ fn approval_preserves_an_in_progress_draft() {
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             &default_catalog()
         ),
-        UiAction::Submit(Op::ExecApproval {
+        UiAction::submit(Op::ExecApproval {
             id: "approval".into(),
             decision: ReviewDecision::Approved,
         })
@@ -869,7 +873,7 @@ fn each_approval_choice_waits_for_enter() {
         );
         assert_eq!(
             state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &catalog),
-            UiAction::Submit(Op::ExecApproval {
+            UiAction::submit(Op::ExecApproval {
                 id: "approval".into(),
                 decision,
             })
@@ -899,7 +903,7 @@ fn ctrl_c_aborts_approval_and_restores_draft() {
             KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
             &catalog
         ),
-        UiAction::Submit(Op::ExecApproval {
+        UiAction::submit(Op::ExecApproval {
             id: "approval".into(),
             decision: ReviewDecision::Abort,
         })
@@ -930,7 +934,7 @@ fn attachment_only_submission_is_a_user_turn() {
 
     assert_eq!(
         state.submit_input(&default_catalog()),
-        UiAction::Submit(Op::Message {
+        UiAction::submit(Op::Message {
             message: MessageSubmission {
                 author: MessageAuthor::User,
                 text: String::new(),
@@ -1045,7 +1049,7 @@ fn queued_approvals_keep_the_draft_until_the_last_decision() {
                 KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
                 &default_catalog()
             ),
-            UiAction::Submit(Op::ExecApproval {
+            UiAction::submit(Op::ExecApproval {
                 id: format!("approval-{suffix}"),
                 decision: ReviewDecision::Approved,
             }),

@@ -107,7 +107,11 @@ fn render_form(frame: &mut ratatui::Frame<'_>, area: Rect, form: &Form) {
                 form_line("Workspace", &form.workspace.value, form.row == 0),
                 form_line("Instructions", &form.instructions.value, form.row == 1),
                 choice_line(
-                    &format!("Schedule · {}", schedule_kind_label(form.schedule_kind)),
+                    &if form.schedule_enabled {
+                        format!("Schedule · {}", schedule_kind_label(form.schedule_kind))
+                    } else {
+                        "Event bindings · edit a timer to add scheduling".into()
+                    },
                     form.row == 2,
                 ),
                 form_line(
@@ -122,16 +126,6 @@ fn render_form(frame: &mut ratatui::Frame<'_>, area: Rect, form: &Form) {
                     form.row == 5,
                 ),
             ];
-            if form.is_update() {
-                lines.push(choice_line(
-                    if form.enabled {
-                        "[x] Enabled"
-                    } else {
-                        "[ ] Enabled"
-                    },
-                    form.row == 6,
-                ));
-            }
             lines.push(choice_line("Save routine", form.row == save_row));
             let field_error = [
                 &form.workspace,
@@ -304,6 +298,7 @@ fn render_bot(
         BotRow::Identity => Line::from(" Identity & system prompt"),
         BotRow::Model => Line::from(" Model & reasoning"),
         BotRow::Capabilities => Line::from(" Capabilities"),
+        BotRow::Conversation => Line::from(" Bot conversation"),
         BotRow::Conversations => Line::from(format!(" Conversations · {chats}")),
         BotRow::Routines => Line::from(format!(" Routines · {routines}")),
     });

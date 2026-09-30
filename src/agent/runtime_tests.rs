@@ -208,16 +208,20 @@ fn peer_op(
 ) -> Op {
     Op::Message {
         message: MessageSubmission {
-            author: MessageAuthor::Peer {
+            author: MessageAuthor::Source {
                 message_id: message_id.into(),
-                session_id: session_id.into(),
+                source: crate::protocol::MessageSource::Session {
+                    session_id: session_id.into(),
+                },
+                cause_id: None,
+                ancestry: Vec::new(),
                 handle: handle.into(),
                 symbol: None,
             },
             text: text.into(),
             attachments: Vec::new(),
             reply: None,
-            requested_delivery: None,
+            requested_delivery: Some(crate::protocol::ActiveMessageDelivery::Steer),
             target_turn_id: None,
         },
     }
@@ -754,6 +758,8 @@ fn config_with_metadata_probe(
     }
 }
 
+#[path = "runtime_tests/admission.rs"]
+mod admission;
 #[path = "runtime_tests/configuration.rs"]
 mod configuration;
 #[path = "runtime_tests/input_validation.rs"]

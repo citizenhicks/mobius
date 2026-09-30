@@ -48,20 +48,21 @@ const WORD_SEPARATORS: &str = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
 pub(super) enum UiAction {
     None,
     PasteClipboard,
-    Submit(Op),
+    Submit(Box<Op>),
     Resume(String),
     Gateway(GatewayAction),
     Download(SessionFileReference),
     GatewaySettings,
     Extensions,
     Bots,
+    Conversation,
     Setup {
         mode: SetupMode,
         provider: Option<String>,
     },
     Exit,
     ChooseBot {
-        workspace: PathBuf,
+        workspace: Option<PathBuf>,
         clear: bool,
     },
     CreateSession {
@@ -76,6 +77,12 @@ pub(super) enum UiAction {
     ConfirmDeleteFile(SessionFileReference),
     Queued,
     LoadEarlierHistory,
+}
+
+impl UiAction {
+    pub(super) fn submit(op: Op) -> Self {
+        Self::Submit(Box::new(op))
+    }
 }
 
 impl TuiState {
@@ -144,7 +151,7 @@ impl TuiState {
             }
             KeyCode::Esc if self.approval().is_some() => {
                 let id = self.take_approval().expect("approval checked");
-                UiAction::Submit(Op::ExecApproval {
+                UiAction::submit(Op::ExecApproval {
                     id,
                     decision: ReviewDecision::Abort,
                 })
@@ -161,7 +168,7 @@ impl TuiState {
                 .active_turn()
                 .map(str::to_owned)
                 .map_or(UiAction::None, |turn_id| {
-                    UiAction::Submit(Op::Interrupt { turn_id })
+                    UiAction::submit(Op::Interrupt { turn_id })
                 }),
             KeyCode::Esc => UiAction::None,
             KeyCode::Backspace => {
@@ -223,7 +230,7 @@ impl TuiState {
             return UiAction::None;
         }
         if let Some(id) = self.take_approval() {
-            return UiAction::Submit(Op::ExecApproval {
+            return UiAction::submit(Op::ExecApproval {
                 id,
                 decision: ReviewDecision::Abort,
             });
@@ -231,7 +238,7 @@ impl TuiState {
         self.active_turn()
             .filter(|_| self.is_working())
             .map_or(UiAction::Exit, |turn_id| {
-                UiAction::Submit(Op::Interrupt {
+                UiAction::submit(Op::Interrupt {
                     turn_id: turn_id.to_owned(),
                 })
             })
@@ -338,7 +345,7 @@ impl TuiState {
                     };
                     snapshot.next.clone()
                 })
-                .map_or(UiAction::None, UiAction::Submit);
+                .map_or(UiAction::None, UiAction::submit);
         }
         let preview = self.preview.as_mut().expect("preview checked");
         if let PreviewContent::Diff(browser) = &mut preview.content {
@@ -479,7 +486,7 @@ impl TuiState {
     pub(super) fn open_bot_picker(
         &mut self,
         bots: &[BotRecord],
-        workspace: PathBuf,
+        workspace: Option<PathBuf>,
         current_bot_id: &str,
         clear: bool,
     ) {
@@ -498,11 +505,14 @@ impl TuiState {
                     description: terminal_text(&bot.name),
                     detail: terminal_text(&bot.config.config.provider.model),
                     shows_detail: true,
-                    action: super::PickerAction::CreateSession {
-                        workspace: workspace.clone(),
-                        bot_id: bot.id.clone(),
-                        clear,
-                    },
+                    action: workspace.as_ref().map_or_else(
+                        || super::PickerAction::Resume(bot.conversation_session_id.clone()),
+                        |workspace| super::PickerAction::CreateSession {
+                            workspace: workspace.clone(),
+                            bot_id: bot.id.clone(),
+                            clear,
+                        },
+                    ),
                     secondary: None,
                 })
                 .collect(),
@@ -721,7 +731,7 @@ impl TuiState {
             return UiAction::None;
         };
         if overlay.is_editing() {
-            return handle_action_input_key(overlay, key).map_or(UiAction::None, UiAction::Submit);
+            return handle_action_input_key(overlay, key).map_or(UiAction::None, UiAction::submit);
         }
         let action_list_open = matches!(
             overlay
@@ -739,14 +749,14 @@ impl TuiState {
             KeyCode::Enter | KeyCode::Right => {
                 return activate_overlay(overlay)
                     .and_then(|op| prepare_overlay_operation(overlay, op))
-                    .map_or(UiAction::None, UiAction::Submit);
+                    .map_or(UiAction::None, UiAction::submit);
             }
             KeyCode::Char('a') => {
                 return overlay
                     .open_widget()
                     .and_then(|widget| widget.action.clone())
                     .and_then(|op| prepare_overlay_operation(overlay, op))
-                    .map_or(UiAction::None, UiAction::Submit);
+                    .map_or(UiAction::None, UiAction::submit);
             }
             _ => {}
         }
@@ -992,7 +1002,7 @@ impl TuiState {
             return UiAction::None;
         }
         if let Some(id) = self.take_approval() {
-            return UiAction::Submit(Op::ExecApproval {
+            return UiAction::submit(Op::ExecApproval {
                 id,
                 decision: approval_decision(line.trim()),
             });
@@ -1045,7 +1055,7 @@ impl TuiState {
                             Some(crate::frontend::dashboard::CapabilityOverlay::from_widgets(
                                 capability, keyed,
                             ));
-                        return UiAction::Submit(action);
+                        return UiAction::submit(action);
                     }
                     UiAction::Submit(op)
                 }
@@ -1053,6 +1063,7 @@ impl TuiState {
                 CommandAction::GatewaySettings => UiAction::GatewaySettings,
                 CommandAction::Extensions => UiAction::Extensions,
                 CommandAction::Bots => UiAction::Bots,
+                CommandAction::Conversation => UiAction::Conversation,
                 CommandAction::Setup { mode, provider } => UiAction::Setup { mode, provider },
                 CommandAction::ShowMenu => {
                     self.push(catalog.menu(), TranscriptTone::Neutral);
@@ -1090,7 +1101,7 @@ impl TuiState {
                 target_turn_id: self.composer_target_turn().map(str::to_owned),
             },
         };
-        UiAction::Submit(op)
+        UiAction::submit(op)
     }
 
     fn capability_popup_for(&self, op: &Op) -> Option<(String, Vec<FrontendWidget>, Op)> {

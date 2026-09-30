@@ -377,6 +377,8 @@ pub enum ClientMessage {
         description: String,
         /// The tint.
         tint: ProviderTint,
+        /// The face's silhouette.
+        shape: BotShape,
         /// The config.
         config: AgentComposition,
     },
@@ -605,60 +607,28 @@ pub enum ClientMessage {
         /// The include provider usage.
         include_provider_usage: bool,
     },
-    /// Selects the create routine case.
+    /// Create a validated routine definition.
     CreateRoutine {
-        /// The request identifier.
+        /// Request identity.
         request_id: String,
-        /// The bot identifier.
+        /// Owning Bot.
         bot_id: String,
-        /// The workspace.
-        workspace: PathBuf,
-        /// The instructions.
-        instructions: String,
-        /// The schedule.
-        schedule: RoutineSchedule,
-        /// The ends at.
-        ends_at: Option<i64>,
+        /// Editable content and exact bindings.
+        definition: RoutineDefinition,
     },
-    /// Selects the list routines case.
+    /// List the current routine definitions.
     ListRoutines {
-        /// The request identifier.
+        /// Request identity.
         request_id: String,
-        /// The bot identifier.
+        /// Optional owning Bot.
         bot_id: Option<String>,
     },
-    /// Selects the update routine case.
-    UpdateRoutine {
-        /// The request identifier.
+    /// Apply the same typed command used by timers and hooks.
+    RoutineCommand {
+        /// Request and command identity.
         request_id: String,
-        /// The identifier.
-        id: String,
-        /// The bot identifier.
-        bot_id: String,
-        /// The workspace.
-        workspace: PathBuf,
-        /// The instructions.
-        instructions: String,
-        /// The schedule.
-        schedule: RoutineSchedule,
-        /// The ends at.
-        ends_at: Option<i64>,
-        /// The enabled.
-        enabled: bool,
-    },
-    /// Selects the delete routine case.
-    DeleteRoutine {
-        /// The request identifier.
-        request_id: String,
-        /// The identifier.
-        id: String,
-    },
-    /// Selects the run routine case.
-    RunRoutine {
-        /// The request identifier.
-        request_id: String,
-        /// The identifier.
-        id: String,
+        /// Target and action.
+        command: super::RoutineCommand,
     },
     /// Selects the list routine history case.
     ListRoutineHistory {
@@ -722,6 +692,11 @@ impl ServerFrame {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ServerMessage {
+    /// A committed source changed; clients refresh their existing snapshots.
+    HookEvent {
+        /// Committed typed lifecycle fact.
+        event: super::HookEvent,
+    },
     /// Result of conditionally closing work admission for an external shutdown.
     IdleShutdownPrepared {
         /// The request identifier.

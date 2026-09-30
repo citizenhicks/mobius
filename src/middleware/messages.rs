@@ -203,11 +203,6 @@ impl Messages {
                 Ok(QueuedMessageBoundary::Turn)
             };
         };
-        if matches!(context.message.author, MessageAuthor::Peer { .. }) {
-            return Ok(QueuedMessageBoundary::Steer {
-                turn_id: turn_id.into(),
-            });
-        }
         if let Some(target) = &context.message.target_turn_id
             && target != turn_id
         {
@@ -244,11 +239,12 @@ impl Middleware for Messages {
         let EventMsg::Message(message) = event else {
             return None;
         };
-        let MessageAuthor::Peer {
+        let MessageAuthor::Source {
             message_id,
-            session_id,
+            source,
             handle,
             symbol,
+            ..
         } = &message.author
         else {
             return None;
@@ -256,7 +252,8 @@ impl Middleware for Messages {
         Some(FrontendBlock {
             id: Some(format!(
                 "message_received:{}:{session_id}:{message_id}",
-                session_id.len()
+                source.id().len(),
+                session_id = source.id()
             )),
             group: None,
             update: FrontendBlockUpdate::Replace,
@@ -636,22 +633,26 @@ mod tests {
     }
 
     #[test]
-    fn active_peer_always_steers_as_non_authoritative_input() {
+    fn explicitly_steered_source_remains_non_authoritative_input() {
         let stack = MiddlewareStack::new(vec![Arc::new(
             Messages::new(4, ActiveMessageDelivery::Queue).expect("messages"),
         )])
         .expect("stack");
         let peer = MessageSubmission {
-            author: MessageAuthor::Peer {
+            author: MessageAuthor::Source {
                 message_id: "board-1".into(),
-                session_id: "peer-1".into(),
+                source: crate::protocol::MessageSource::Session {
+                    session_id: "peer-1".into(),
+                },
+                cause_id: None,
+                ancestry: Vec::new(),
                 handle: "worker".into(),
                 symbol: None,
             },
             text: "Review this.\n\nKeep the validation.\n".into(),
             attachments: Vec::new(),
             reply: None,
-            requested_delivery: Some(ActiveMessageDelivery::Queue),
+            requested_delivery: Some(ActiveMessageDelivery::Steer),
             target_turn_id: None,
         };
         let mut queued = Vec::new();
@@ -679,6 +680,44 @@ mod tests {
         assert_eq!(block.title, "Message received from @worker");
         assert_eq!(block.text, peer.text);
         assert_eq!(block.symbol, Some(FrontendSymbol::Chat));
+    }
+
+    #[test]
+    fn queued_external_event_waits_for_its_own_turn() {
+        let stack = MiddlewareStack::new(vec![Arc::new(Messages::default())]).expect("stack");
+        let source = MessageSubmission {
+            author: MessageAuthor::Source {
+                message_id: "report".into(),
+                source: crate::protocol::MessageSource::External {
+                    source_id: "routine".into(),
+                    event_id: "completed".into(),
+                },
+                cause_id: None,
+                ancestry: Vec::new(),
+                handle: "monitor".into(),
+                symbol: None,
+            },
+            text: "Monitoring completed.".into(),
+            attachments: Vec::new(),
+            reply: None,
+            requested_delivery: Some(ActiveMessageDelivery::Queue),
+            target_turn_id: None,
+        };
+        let mut queued = Vec::new();
+        assert_eq!(
+            route(&stack, &mut queued, &source, Some("user-turn")),
+            SubmissionResult::Accepted {
+                input_changed: false
+            }
+        );
+        assert!(
+            stack
+                .stage_model_messages(&mut queued, "user-turn")
+                .expect("stage")
+                .is_empty()
+        );
+        let report = stack.next_turn(&mut queued).expect("next").expect("report");
+        assert!(matches!(report.event, EventMsg::Message(event) if event.author == source.author));
     }
 
     #[test]

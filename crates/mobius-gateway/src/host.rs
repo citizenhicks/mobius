@@ -1,5 +1,6 @@
 //! Per-chat agent ownership, event sequencing, replay, and authenticated operations.
 
+mod bot_events;
 mod catalog;
 mod deletion;
 mod extensions;
@@ -141,6 +142,7 @@ struct GatewayState {
     provider_epoch: Arc<AtomicU64>,
     activities: SessionActivities,
     provider_login: Arc<StdMutex<providers::ProviderLogins>>,
+    webhook_base_url: Option<String>,
     sessions: HashMap<String, HostHandle>,
     starting_sessions: Arc<StdMutex<HashMap<String, String>>>,
     idle_cleanup_tasks: Vec<JoinHandle<()>>,
@@ -183,7 +185,32 @@ pub(crate) struct Rejection {
     pub(crate) fatal: bool,
 }
 
+pub(crate) type HostAccess = Arc<dyn Fn() -> Result<GatewayHost> + Send + Sync>;
+
 impl GatewayHost {
+    fn access(&self) -> HostAccess {
+        let state = Arc::downgrade(&self.state);
+        let desktop = Arc::clone(&self.desktop);
+        let browser = Arc::clone(&self.browser);
+        let capacity_gate = Arc::clone(&self.capacity_gate);
+        let events = self.events.clone();
+        let work_activity = Arc::clone(&self.work_activity);
+        let idle_shutdown = Arc::clone(&self.idle_shutdown);
+        Arc::new(move || {
+            Ok(Self {
+                state: state
+                    .upgrade()
+                    .ok_or_else(|| Error::Config("gateway stopped".into()))?,
+                desktop: Arc::clone(&desktop),
+                browser: Arc::clone(&browser),
+                capacity_gate: Arc::clone(&capacity_gate),
+                events: events.clone(),
+                work_activity: Arc::clone(&work_activity),
+                idle_shutdown: Arc::clone(&idle_shutdown),
+            })
+        })
+    }
+
     pub(crate) async fn start(
         store: ConfigStore,
         config: GatewayConfig,
@@ -239,6 +266,7 @@ impl GatewayHost {
                 provider_epoch: Arc::new(AtomicU64::new(0)),
                 activities,
                 provider_login: Arc::new(StdMutex::new(providers::ProviderLogins::default())),
+                webhook_base_url: None,
                 sessions: HashMap::new(),
                 starting_sessions: Arc::default(),
                 idle_cleanup_tasks: Vec::new(),
@@ -252,9 +280,14 @@ impl GatewayHost {
             }),
             idle_shutdown: Arc::default(),
         };
+        {
+            let state = host.state.lock().await;
+            deletion::recover_session_hook_closures(&state).await?;
+        }
         host.reconcile_pending_bot_deletion()
             .await
             .map_err(|rejection| Error::Config(rejection.message))?;
+        host.recover_routine_outcomes().await?;
         let files = host.state.lock().await.session_files.clone();
         let events = host.events.clone();
         tokio::spawn(async move {
@@ -299,7 +332,10 @@ impl GatewayHost {
             .lock()
             .map_err(|_| internal("session startup lock is poisoned"))?
             .is_empty();
-        let mut idle = !starting && !state.bots.has_running_routines().map_err(internal)?;
+        let mut idle = !starting
+            && !state.bots.has_running_routines().map_err(internal)?
+            && !state.bots.has_pending_deliveries().map_err(internal)?
+            && !state.bots.has_webhooks().map_err(internal)?;
         for session in state.sessions.values() {
             if session.inner.alive.load(Ordering::Acquire) && !session.runtime_is_idle().await? {
                 idle = false;
@@ -545,9 +581,7 @@ impl GatewayHost {
         &self,
         id: &str,
         expected_revision: u64,
-        name: &str,
-        description: &str,
-        tint: crate::wire::ProviderTint,
+        identity: crate::bots::BotIdentity<'_>,
         config: AgentComposition,
     ) -> std::result::Result<crate::wire::BotRecord, Rejection> {
         let (store, runtime_changed) = {
@@ -567,7 +601,7 @@ impl GatewayHost {
             }
             (
                 state.store.clone(),
-                previous.description != description || previous.config.config != config,
+                previous.description != identity.description || previous.config.config != config,
             )
         };
         // Installation can take minutes. Do not hold gateway locks or save the Bot yet.
@@ -582,7 +616,7 @@ impl GatewayHost {
         let previous = state.bots.bot(id).map_err(invalid_bot)?;
         let prepared = if runtime_changed {
             let mut candidate = previous.clone();
-            candidate.description = description.into();
+            candidate.description = identity.description.into();
             candidate.config.config = config.clone();
             let gateway = state
                 .config
@@ -606,7 +640,7 @@ impl GatewayHost {
         };
         let bot = state
             .bots
-            .update_bot(id, expected_revision, name, description, tint, config)
+            .update_bot(id, expected_revision, identity, config)
             .map_err(invalid_bot)?;
         if let Some(mut prepared) = prepared {
             prepared.bot = bot.clone();
@@ -646,7 +680,7 @@ impl GatewayHost {
         bot_id: &str,
     ) -> std::result::Result<HostHandle, Rejection> {
         self.create_session_with_id(
-            workspace,
+            Some(workspace),
             bot_id,
             Uuid::new_v4().to_string(),
             true,
@@ -675,7 +709,7 @@ impl GatewayHost {
 
     async fn create_session_with_id(
         &self,
-        workspace: &Path,
+        workspace: Option<&Path>,
         bot_id: &str,
         session_id: String,
         catalog_visible: bool,
@@ -692,26 +726,32 @@ impl GatewayHost {
             .clone();
         let bot = state.bots.bot(bot_id).map_err(invalid_bot)?;
         let state_dir = state.store.state_dir().to_path_buf();
-        let workspace = workspace.to_path_buf();
+        let workspace = workspace.map(Path::to_path_buf);
         drop(state);
-        let mut spec = tokio::task::spawn_blocking(move || {
-            ChatSpec::for_bot(&workspace, &bot, &state_dir, tls.as_ref())
+        let mut spec = tokio::task::spawn_blocking(move || match workspace {
+            Some(workspace) => ChatSpec::for_bot(&workspace, &bot, &state_dir, tls.as_ref()),
+            None => Ok(ChatSpec::persistent(&bot)),
         })
         .await
         .map_err(internal)?
         .map_err(invalid_workspace)?;
         spec.catalog_visible = catalog_visible;
         let capacity = self.ensure_capacity().await?;
-        let starting = self
-            .state
-            .lock()
-            .await
-            .reserve_start(&session_id, &spec.bot_id)?;
-        drop(capacity);
+        let state = self.state.lock().await;
+        if let Some(host) = state
+            .sessions
+            .get(&session_id)
+            .filter(|host| host.is_alive())
+        {
+            return Ok(host.clone());
+        }
+        let starting = state.reserve_start(&session_id, &spec.bot_id)?;
+        drop(state);
         drop(mutation);
         let host = self
             .start_reserved_session(spec, starting, origin_label, true)
             .await?;
+        drop(capacity);
         if catalog_visible {
             self.broadcast_sessions().await?;
         }
@@ -746,7 +786,11 @@ impl GatewayHost {
             self.events.clone(),
             starting.id.clone(),
             origin_label,
-            Arc::new(live_chats::GatewayLiveChats(Arc::downgrade(&self.state))),
+            Arc::new(live_chats::GatewayLiveChats(
+                Arc::downgrade(&self.state),
+                self.access(),
+            )),
+            self.access(),
         );
         drop(state);
         let host = start.await.map_err(internal)?;
@@ -815,11 +859,19 @@ impl GatewayHost {
                 state.store.state_dir().to_path_buf(),
             )
         };
-        let checkpoint = checkpoints
-            .load(session_id)
-            .await
-            .map_err(internal)?
-            .ok_or_else(unknown_session)?;
+        let Some(checkpoint) = checkpoints.load(session_id).await.map_err(internal)? else {
+            let bot = bots
+                .bots()
+                .map_err(internal)?
+                .into_iter()
+                .find(|bot| bot.conversation_session_id == session_id)
+                .ok_or_else(unknown_session)?;
+            drop(mutation);
+            let host = self
+                .create_session_with_id(None, &bot.id, session_id.into(), true, "persistent chat")
+                .await?;
+            return Ok((host, false));
+        };
         let tls = config
             .lock()
             .map_err(|_| internal("gateway configuration lock is poisoned"))?
@@ -837,10 +889,12 @@ impl GatewayHost {
             return Err(invalid_session_bot());
         }
         let workspace = spec.workspace_info();
-        let workspace_label = workspace.path.display().to_string();
-        if checkpoint.session_context.workspace_id.as_deref() != Some(workspace.id.as_str())
-            || checkpoint.session_context.workspace_label.as_deref()
-                != Some(workspace_label.as_str())
+        let workspace_label = workspace
+            .as_ref()
+            .map(|workspace| workspace.path.display().to_string());
+        if checkpoint.session_context.workspace_id.as_deref()
+            != workspace.as_ref().map(|workspace| workspace.id.as_str())
+            || checkpoint.session_context.workspace_label.as_deref() != workspace_label.as_deref()
         {
             return Err(invalid_session_workspace());
         }
@@ -854,11 +908,11 @@ impl GatewayHost {
         state.sessions.remove(session_id);
         let starting = state.reserve_start(session_id, &checkpoint.session_context.owner_id)?;
         drop(state);
-        drop(capacity);
         drop(mutation);
         let host = self
             .start_reserved_session(spec, starting, "mobius-gateway", cache)
             .await?;
+        drop(capacity);
         Ok((host, !cache))
     }
 
@@ -873,7 +927,8 @@ impl GatewayHost {
             state.bots.bot(bot_id).map_err(internal)?;
             Arc::clone(&state.checkpoints)
         };
-        require_catalog_session(&checkpoints, session_id).await?;
+        let summary = require_catalog_session(&checkpoints, session_id).await?;
+        reject_persistent_session(&summary)?;
         drop(_mutation);
         let (host, _) = self.open_session_with_cache(session_id, true).await?;
         host.reassign_bot(bot_id.to_owned()).await?;
@@ -886,6 +941,9 @@ impl GatewayHost {
         title: &str,
     ) -> std::result::Result<(), Rejection> {
         let _mutation = self.begin_mutation().await?;
+        let checkpoints = Arc::clone(&self.state.lock().await.checkpoints);
+        let summary = require_catalog_session(&checkpoints, session_id).await?;
+        reject_persistent_session(&summary)?;
         let title = validate_session_title(title)?;
         self.update_session_metadata(session_id, |metadata| metadata.title = Some(title.into()))
             .await
@@ -1251,17 +1309,17 @@ fn unknown_session() -> Rejection {
 async fn require_catalog_session(
     checkpoints: &Arc<dyn CheckpointStore>,
     session_id: &str,
-) -> std::result::Result<(), Rejection> {
+) -> std::result::Result<SessionSummary, Rejection> {
     validate_session_id(session_id).map_err(|_| invalid_session_id())?;
     let checkpoint = checkpoints
-        .load(session_id)
+        .session_summary(session_id)
         .await
         .map_err(internal)?
         .ok_or_else(unknown_session)?;
     if !checkpoint.catalog_visible {
         return Err(unknown_session());
     }
-    Ok(())
+    Ok(checkpoint)
 }
 
 fn invalid_session_id() -> Rejection {
@@ -1301,3 +1359,15 @@ fn scratchpad_error(error: mobius::Error) -> Rejection {
 
 #[cfg(test)]
 mod tests;
+
+fn reject_persistent_session(summary: &SessionSummary) -> std::result::Result<(), Rejection> {
+    if summary.session_id == crate::bots::conversation_session_id(&summary.session_context.owner_id)
+    {
+        return Err(Rejection {
+            code: "persistent_chat",
+            message: "this conversation belongs permanently to its Bot".into(),
+            fatal: false,
+        });
+    }
+    Ok(())
+}

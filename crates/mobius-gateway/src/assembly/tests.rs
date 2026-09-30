@@ -538,6 +538,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
             "test",
             Arc::clone(&prepared),
             None,
+            None,
         )
         .await
         .expect("assemble default recipe");
@@ -554,6 +555,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
             Some("sibling".into()),
             "test",
             Arc::clone(&prepared),
+            None,
             None,
         )
         .await
@@ -595,9 +597,12 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         .update_bot(
             &original_bot.id,
             1,
-            "Fixture",
-            "Own updated fixture work.",
-            crate::wire::ProviderTint::Teal,
+            crate::bots::BotIdentity {
+                name: "Fixture",
+                description: "Own updated fixture work.",
+                tint: crate::wire::ProviderTint::Teal,
+                shape: crate::wire::BotShape::Circle,
+            },
             composition,
         )
         .expect("updated Bot");
@@ -629,6 +634,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         Some("chat".into()),
         "test",
         Arc::clone(&prepared),
+        None,
         None,
     )
     .await

@@ -62,8 +62,9 @@ mobius
 ```
 
 `mobius pair` saves and selects the endpoint together with the token returned by the gateway; no
-environment variable is needed for self-hosted gateways. A remote terminal opens an existing gateway chat or, on an empty
-gateway, starts one in the gateway's current directory after Bot selection.
+environment variable is needed for self-hosted gateways. A remote terminal opens an existing
+gateway chat or, on an empty gateway, the selected Bot's persistent conversation. It has no
+project workspace. `/new` or `/workspace <gateway-path>` selects a project chat explicitly.
 If the gateway is already running, create another code with `/pair` from an authenticated terminal
 or **Gateway → Pair another device** in an Apple client.
 

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use super::*;
+use crate::wire::RoutineCommand;
 
 fn unseeded_fixture() -> (tempfile::TempDir, BotStore, PathBuf) {
     let root = tempfile::tempdir().expect("root");
@@ -61,6 +62,94 @@ fn interval(every_seconds: u64) -> RoutineSchedule {
     }
 }
 
+impl BotStore {
+    fn create_scheduled(
+        &self,
+        bot_id: &str,
+        workspace: &Path,
+        instructions: &str,
+        schedule: RoutineSchedule,
+        ends_at: Option<i64>,
+    ) -> Result<StoredRoutine> {
+        self.create_routine(
+            bot_id,
+            &scheduled_definition(workspace, instructions, schedule, ends_at),
+            None,
+        )
+    }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "existing fixture fields are translated into the shared typed definition and pause command"
+    )]
+    fn update_scheduled(
+        &self,
+        id: &str,
+        bot_id: &str,
+        workspace: &Path,
+        instructions: &str,
+        schedule: RoutineSchedule,
+        ends_at: Option<i64>,
+        enabled: bool,
+    ) -> Result<StoredRoutine> {
+        if self.routine(id)?.bot_id != bot_id {
+            return Err(Error::Config(
+                "routine owner changes require an explicit owner command".into(),
+            ));
+        }
+        self.update_routine(
+            id,
+            &scheduled_definition(workspace, instructions, schedule, ends_at),
+            None,
+            None,
+        )?;
+        self.set_routine_enabled(id, enabled, None, None)
+    }
+    fn take_due(&self, now: i64) -> Result<Vec<(String, ActiveRoutineRun)>> {
+        self.poll_due(now)?;
+        let mut runs = Vec::new();
+        for pending in self.pending_actions(now, 1000)? {
+            let BotAction::Routine { command } = &pending.action else {
+                continue;
+            };
+            if command.action != RoutineAction::Start {
+                continue;
+            }
+            match self.begin_run_with_cause(
+                &command.routine_id,
+                &pending.id,
+                Some(&pending.event),
+            )? {
+                BeginRun::Started(run) => runs.push((command.routine_id.clone(), run)),
+                BeginRun::Skipped | BeginRun::AlreadyRecorded => {}
+            }
+            self.action_accepted(&pending.id)?;
+        }
+        Ok(runs)
+    }
+}
+fn scheduled_definition(
+    workspace: &Path,
+    instructions: &str,
+    schedule: RoutineSchedule,
+    ends_at: Option<i64>,
+) -> RoutineDefinition {
+    RoutineDefinition {
+        workspace: workspace.to_path_buf(),
+        instructions: instructions.into(),
+        bindings: vec![RoutineBinding {
+            id: Uuid::new_v4().to_string(),
+            on: HookSelector::Schedule { schedule, ends_at },
+            action: RoutineAction::Start,
+        }],
+    }
+}
+fn schedule_of(routine: &StoredRoutine) -> RoutineSchedule {
+    let HookSelector::Schedule { schedule, .. } = &routine.bindings[0].definition.on else {
+        panic!("scheduled fixture");
+    };
+    schedule.clone()
+}
+
 fn finish_due(store: &BotStore, now: i64) -> Vec<String> {
     let due = store.take_due(now).expect("due routines");
     let ids = due.iter().map(|(id, _)| id.clone()).collect();
@@ -70,6 +159,199 @@ fn finish_due(store: &BotStore, now: i64) -> Vec<String> {
             .expect("finish due run");
     }
     ids
+}
+
+#[test]
+fn clock_records_only_due_facts_and_start_commands_deduplicate_after_completion() {
+    let (_root, store, workspace) = fixture();
+    let bot = create_bot(&store, "clock");
+    let now = Utc::now().timestamp();
+    let routine = store
+        .create_scheduled(&bot.id, &workspace, "check the service", once(now), None)
+        .expect("routine");
+    let poll = store.poll_due(now).expect("clock");
+    assert_eq!(poll.events.len(), 1);
+    assert!(
+        store
+            .history(None)
+            .expect("no clock reservation")
+            .is_empty()
+    );
+    assert!(store.poll_due(now).expect("no replay").events.is_empty());
+    let action = store
+        .pending_actions(now, 10)
+        .expect("start command")
+        .into_iter()
+        .find(|pending| matches!(pending.action, BotAction::Routine { .. }))
+        .expect("start");
+    let BeginRun::Started(run) = store
+        .begin_run_with_cause(&routine.id, &action.id, Some(&action.event))
+        .expect("start")
+    else {
+        panic!("expected run")
+    };
+    assert!(matches!(
+        store
+            .begin_run_with_cause(&routine.id, &action.id, Some(&action.event))
+            .expect("retry while active"),
+        BeginRun::AlreadyRecorded
+    ));
+    store
+        .finish_run(run, RoutineRunStatus::Succeeded, None)
+        .expect("finish");
+    assert!(matches!(
+        store
+            .begin_run_with_cause(&routine.id, &action.id, Some(&action.event))
+            .expect("retry after finish"),
+        BeginRun::AlreadyRecorded
+    ));
+    assert_eq!(store.history(None).expect("one invocation").len(), 1);
+}
+
+#[test]
+fn pause_changes_start_eligibility_without_interrupting_run_or_disabling_resume_hook() {
+    let (_root, store, workspace) = fixture();
+    let bot = create_bot(&store, "pausable");
+    let now = Utc::now().timestamp();
+    let mut definition = scheduled_definition(&workspace, "check it", interval(60), None);
+    definition.bindings.push(RoutineBinding {
+        id: "resume".into(),
+        on: event_selector(
+            HookSource::Session {
+                session_id: "watched".into(),
+            },
+            HookKind::SessionTurnFinished,
+        ),
+        action: RoutineAction::Resume,
+    });
+    let routine = store
+        .create_routine(&bot.id, &definition, None)
+        .expect("routine");
+    let BeginRun::Started(active) = store.begin_run(&routine.id).expect("start") else {
+        panic!("expected run")
+    };
+    store
+        .set_routine_enabled(&routine.id, false, None, None)
+        .expect("pause during run");
+    assert_eq!(
+        store.run(active.id()).expect("still active").status,
+        RoutineRunStatus::Running
+    );
+    assert!(
+        store
+            .begin_run(&routine.id)
+            .err()
+            .expect("paused")
+            .to_string()
+            .contains("paused")
+    );
+    assert!(
+        store
+            .poll_due(now + 600)
+            .expect("paused clock")
+            .events
+            .is_empty()
+    );
+    let event = HookEvent {
+        id: "finished-session".into(),
+        source: HookSource::Session {
+            session_id: "watched".into(),
+        },
+        cause_id: None,
+        ancestry: Vec::new(),
+        bot_id: bot.id.clone(),
+        occurred_at: now,
+        data: HookData::SessionTurnFinished {
+            session_id: "watched".into(),
+            turn_id: "turn".into(),
+            outcome: mobius::backend::checkpoint::ExecutionOutcome::Completed,
+        },
+    };
+    store.record_hook(&event).expect("event while paused");
+    let pending=store.pending_actions(now,10).expect("resume consumer").into_iter().find(|pending|matches!(&pending.action,BotAction::Routine{command} if command.action==RoutineAction::Resume)).expect("resume action");
+    let resumed = store
+        .set_routine_enabled(&routine.id, true, Some(&pending.event), Some(&pending.id))
+        .expect("resume");
+    assert!(
+        !store
+            .action_pending(&pending.id)
+            .expect("ack with mutation")
+    );
+    assert!(resumed.bindings[0].next_due_at.expect("future timer") > now);
+    store
+        .finish_run(active, RoutineRunStatus::Succeeded, None)
+        .expect("finish prior invocation");
+}
+
+#[test]
+fn no_op_definitions_and_pause_commands_emit_no_extra_fact_and_ack_hooks() {
+    let (_root, store, workspace) = fixture();
+    let bot = create_bot(&store, "noop");
+    let now = Utc::now().timestamp();
+    let definition = scheduled_definition(&workspace, "instructions", interval(60), None);
+    let routine = store
+        .create_routine(&bot.id, &definition, None)
+        .expect("routine");
+    let before = store.unpublished_events(100).expect("created").len();
+    store
+        .update_routine(&routine.id, &definition, None, None)
+        .expect("unchanged definition");
+    store
+        .set_routine_enabled(&routine.id, true, None, None)
+        .expect("already resumed");
+    assert_eq!(
+        store.unpublished_events(100).expect("no facts").len(),
+        before
+    );
+    let subscription = BotSubscription {
+        bot_id: bot.id.clone(),
+        binding: HookBinding {
+            id: "resume-hook".into(),
+            on: event_selector(
+                HookSource::Bot {
+                    bot_id: bot.id.clone(),
+                },
+                HookKind::CustomReceived,
+            ),
+            action: BotAction::Routine {
+                command: RoutineCommand {
+                    routine_id: routine.id.clone(),
+                    action: RoutineAction::Resume,
+                },
+            },
+        },
+        enabled: true,
+    };
+    store
+        .set_subscription(&subscription, 0, now)
+        .expect("consumer");
+    let event = HookEvent {
+        id: "resume-input".into(),
+        source: HookSource::Bot {
+            bot_id: bot.id.clone(),
+        },
+        cause_id: None,
+        ancestry: Vec::new(),
+        bot_id: bot.id.clone(),
+        occurred_at: now,
+        data: HookData::CustomReceived {
+            name: "resume".into(),
+            data: serde_json::json!({}),
+        },
+    };
+    store.record_hook(&event).expect("input");
+    let pending = store.pending_actions(now, 10).expect("command").remove(0);
+    store
+        .set_routine_enabled(&routine.id, true, Some(&pending.event), Some(&pending.id))
+        .expect("no op acceptance");
+    assert!(!store.action_pending(&pending.id).expect("accepted"));
+    assert_eq!(
+        store
+            .unpublished_events(100)
+            .expect("only input added")
+            .len(),
+        before + 1
+    );
 }
 
 #[test]
@@ -93,6 +375,7 @@ fn fresh_state_seeds_one_mobius_bot_whose_handle_survives_rename() {
             bot.name.as_str(),
             bot.description.as_str(),
             bot.tint,
+            bot.shape,
             bot.config.revision,
         ),
         (
@@ -100,6 +383,7 @@ fn fresh_state_seeds_one_mobius_bot_whose_handle_survives_rename() {
             "Mobius",
             MOBIUS_DESCRIPTION,
             ProviderTint::Blue,
+            BotShape::Circle,
             1,
         )
     );
@@ -108,9 +392,12 @@ fn fresh_state_seeds_one_mobius_bot_whose_handle_survives_rename() {
         .update_bot(
             &bot.id,
             bot.config.revision,
-            "My assistant",
-            &bot.description,
-            bot.tint,
+            BotIdentity {
+                name: "My assistant",
+                description: &bot.description,
+                tint: bot.tint,
+                shape: bot.shape,
+            },
             bot.config.config.clone(),
         )
         .expect("rename built-in Bot");
@@ -244,7 +531,7 @@ fn bot_deletion_removes_owned_routines_history_and_scripts() {
     let (root, store, workspace) = fixture();
     let bot = create_bot(&store, "retired");
     let routine = store
-        .create_routine(
+        .create_scheduled(
             &bot.id,
             &workspace,
             "retire owned state",
@@ -277,12 +564,12 @@ fn bot_deletion_removes_owned_routines_history_and_scripts() {
 }
 
 #[test]
-fn deleting_a_reassigned_routines_new_owner_preserves_earlier_history() {
+fn definition_updates_preserve_owner_and_earlier_history() {
     let (root, store, workspace) = fixture();
     let original = create_bot(&store, "original");
-    let replacement = create_bot(&store, "replacement");
+
     let routine = store
-        .create_routine(&original.id, &workspace, "work", interval(60), None)
+        .create_scheduled(&original.id, &workspace, "work", interval(60), None)
         .expect("routine");
     let BeginRun::Started(active) = store.begin_run(&routine.id).expect("start") else {
         panic!("run must start");
@@ -291,20 +578,17 @@ fn deleting_a_reassigned_routines_new_owner_preserves_earlier_history() {
         .finish_run(active, RoutineRunStatus::Succeeded, None)
         .expect("finish");
     store
-        .update_routine(
+        .update_scheduled(
             &routine.id,
-            &replacement.id,
+            &original.id,
             &workspace,
-            "reassigned work",
-            routine.schedule,
+            "updated work",
+            schedule_of(&routine),
             None,
             true,
         )
-        .expect("reassign routine");
-    let deletion = store
-        .prepare_bot_deletion(&replacement.id, replacement.config.revision)
-        .expect("prepare new owner deletion");
-    store.delete_bot(deletion).expect("delete new owner");
+        .expect("update definition");
+    assert_eq!(store.routine(&routine.id).unwrap().bot_id, original.id);
     drop(store);
 
     let reopened = BotStore::open(&root.path().join("state")).expect("reopen");
@@ -321,7 +605,7 @@ fn bot_deletion_refuses_to_orphan_instruction_files() {
     let (_root, store, workspace) = fixture();
     let bot = create_bot(&store, "blocked_cleanup");
     let routine = store
-        .create_routine(
+        .create_scheduled(
             &bot.id,
             &workspace,
             "keep owned state",
@@ -348,7 +632,7 @@ fn bot_deletion_rejects_a_running_routine_before_mutation() {
     let (_root, store, workspace) = fixture();
     let bot = create_bot(&store, "busy");
     let routine = store
-        .create_routine(
+        .create_scheduled(
             &bot.id,
             &workspace,
             "stay active",
@@ -387,7 +671,7 @@ async fn routine_creation_cannot_commit_after_its_bot_is_deleted() {
         let store = Arc::clone(&store);
         let bot_id = bot.id.clone();
         move || {
-            store.create_routine(
+            store.create_scheduled(
                 &bot_id,
                 &workspace,
                 "must not outlive its Bot",
@@ -438,9 +722,12 @@ fn bot_profile_update_preserves_identity_and_persists_exact_revision() {
         .update_bot(
             &created.id,
             1,
-            "Code reviewer",
-            "Review code carefully.",
-            ProviderTint::Purple,
+            BotIdentity {
+                name: "Code reviewer",
+                description: "Review code carefully.",
+                tint: ProviderTint::Purple,
+                shape: BotShape::Star,
+            },
             config,
         )
         .expect("update Bot");
@@ -449,8 +736,16 @@ fn bot_profile_update_preserves_identity_and_persists_exact_revision() {
     assert_eq!(updated.handle, "code-reviewer");
     assert_eq!(updated.name, "Code reviewer");
     assert_eq!(updated.config.revision, 2);
+    assert_eq!(updated.shape, BotShape::Star);
     let reopened = BotStore::open(&root.path().join("state")).expect("reopen");
     assert_eq!(reopened.bot(&created.id).expect("stored Bot"), updated);
+}
+
+#[test]
+fn new_bots_wear_the_first_shape_no_bot_has() {
+    let (_root, store, _) = fixture();
+    let shapes = ["first", "second"].map(|handle| create_bot(&store, handle).shape);
+    assert_eq!(shapes, [BotShape::Squircle, BotShape::Triangle]);
 }
 
 #[test]
@@ -518,9 +813,12 @@ fn bot_rename_derives_unique_handles_without_colliding_with_itself() {
             .update_bot(
                 &bot.id,
                 bot.config.revision,
-                name,
-                "Own renamed work.",
-                ProviderTint::Teal,
+                BotIdentity {
+                    name,
+                    description: "Own renamed work.",
+                    tint: ProviderTint::Teal,
+                    shape: bot.shape,
+                },
                 bot.config.config,
             )
             .expect("rename Bot");
@@ -542,9 +840,12 @@ fn updating_bot_without_renaming_preserves_its_suffixed_handle() {
         .update_bot(
             &duplicate.id,
             duplicate.config.revision,
-            &duplicate.name,
-            "Changed description, not name.",
-            duplicate.tint,
+            BotIdentity {
+                name: &duplicate.name,
+                description: "Changed description, not name.",
+                tint: duplicate.tint,
+                shape: duplicate.shape,
+            },
             duplicate.config.config,
         )
         .expect("update profile");
@@ -557,7 +858,7 @@ fn running_routine_reserves_its_fresh_session_before_execution() {
     let (_root, store, workspace) = fixture();
     let bot = create_bot(&store, "operator");
     let routine = store
-        .create_routine(
+        .create_scheduled(
             &bot.id,
             &workspace,
             "prepare report",
@@ -587,7 +888,7 @@ fn active_routine_run_cannot_be_deleted() {
     let (_root, store, workspace) = fixture();
     let bot = create_bot(&store, "operator");
     let routine = store
-        .create_routine(
+        .create_scheduled(
             &bot.id,
             &workspace,
             "prepare report",
@@ -616,7 +917,7 @@ fn unrelated_run_finishes_while_bot_deletion_recovery_is_pending() {
     let deleting = create_bot(&store, "deleting");
     let worker = create_bot(&store, "worker");
     let routine = store
-        .create_routine(
+        .create_scheduled(
             &worker.id,
             &workspace,
             "finish existing work",
@@ -656,7 +957,7 @@ fn due_routines_idle_while_bot_deletion_recovery_is_pending() {
     let worker = create_bot(&store, "worker");
     let now = Utc::now().timestamp();
     store
-        .create_routine(&worker.id, &workspace, "wait for recovery", once(now), None)
+        .create_scheduled(&worker.id, &workspace, "wait for recovery", once(now), None)
         .expect("routine");
     let mut deletion = store
         .prepare_bot_deletion(&deleting.id, deleting.config.revision)
@@ -698,9 +999,8 @@ fn routine_lock_releases_even_with_an_inherited_descriptor() {
 fn routine_start_reloads_an_update_that_wins_before_its_lock() {
     let (_root, store, workspace) = fixture();
     let original_bot = create_bot(&store, "original");
-    let updated_bot = create_bot(&store, "updated");
     let routine = store
-        .create_routine(
+        .create_scheduled(
             &original_bot.id,
             &workspace,
             "original instructions",
@@ -710,14 +1010,14 @@ fn routine_start_reloads_an_update_that_wins_before_its_lock() {
         .expect("routine");
 
     let BeginRun::Started(active) = store
-        .begin_run_inner(&routine.id, || {
+        .begin_run_inner(&routine.id, &Uuid::new_v4().to_string(), None, || {
             store
-                .update_routine(
+                .update_scheduled(
                     &routine.id,
-                    &updated_bot.id,
+                    &original_bot.id,
                     &workspace,
                     "updated instructions",
-                    routine.schedule.clone(),
+                    schedule_of(&routine),
                     None,
                     true,
                 )
@@ -729,7 +1029,14 @@ fn routine_start_reloads_an_update_that_wins_before_its_lock() {
     };
 
     let run = store.run(&active.run_id).expect("running invocation");
-    assert_eq!(run.bot_id, updated_bot.id);
+    assert_eq!(run.bot_id, original_bot.id);
+    assert!(
+        store
+            .routine_input(&routine.id)
+            .expect("updated instructions")
+            .1
+            .contains("updated instructions")
+    );
     store
         .finish_run(active, RoutineRunStatus::Succeeded, None)
         .expect("finish invocation");
@@ -740,7 +1047,7 @@ fn routine_start_rejects_a_delete_that_wins_before_its_lock() {
     let (_root, store, workspace) = fixture();
     let bot = create_bot(&store, "deleted");
     let routine = store
-        .create_routine(
+        .create_scheduled(
             &bot.id,
             &workspace,
             "delete before start",
@@ -750,16 +1057,18 @@ fn routine_start_rejects_a_delete_that_wins_before_its_lock() {
         .expect("routine");
 
     let error = store
-        .begin_run_inner(&routine.id, || {
+        .begin_run_inner(&routine.id, &Uuid::new_v4().to_string(), None, || {
             let deletion = store
                 .prepare_routine_deletion(&routine.id)
                 .expect("prepare interleaved delete");
-            store.delete_routine(deletion).expect("interleaved delete");
+            store
+                .delete_routine(deletion, None, None)
+                .expect("interleaved delete");
         })
         .err()
         .expect("deleted routine must not start");
 
-    assert!(error.to_string().contains("unknown routine"));
+    assert!(error.to_string().contains("routine was deleted"));
     assert!(store.history(None).expect("history").is_empty());
 }
 
@@ -769,7 +1078,7 @@ fn routine_start_does_not_record_an_update_lock_as_an_overlap() {
     let original_bot = create_bot(&store, "locked_original");
     let updated_bot = create_bot(&store, "locked_updated");
     let routine = store
-        .create_routine(
+        .create_scheduled(
             &original_bot.id,
             &workspace,
             "update while locked",
@@ -780,7 +1089,7 @@ fn routine_start_does_not_record_an_update_lock_as_an_overlap() {
     let held_lock = std::cell::RefCell::new(None);
 
     let error = store
-        .begin_run_inner(&routine.id, || {
+        .begin_run_inner(&routine.id, &Uuid::new_v4().to_string(), None, || {
             let lock = store
                 .try_routine_lock(&routine.id)
                 .expect("routine lock")
@@ -810,7 +1119,7 @@ fn routine_start_does_not_orphan_history_behind_a_delete_lock() {
     let (_root, store, workspace) = fixture();
     let bot = create_bot(&store, "locked_delete");
     let routine = store
-        .create_routine(
+        .create_scheduled(
             &bot.id,
             &workspace,
             "delete while locked",
@@ -821,7 +1130,7 @@ fn routine_start_does_not_orphan_history_behind_a_delete_lock() {
     let held_lock = std::cell::RefCell::new(None);
 
     let error = store
-        .begin_run_inner(&routine.id, || {
+        .begin_run_inner(&routine.id, &Uuid::new_v4().to_string(), None, || {
             let lock = store
                 .try_routine_lock(&routine.id)
                 .expect("routine lock")
@@ -838,7 +1147,7 @@ fn routine_start_does_not_orphan_history_behind_a_delete_lock() {
         .err()
         .expect("deleted routine must not append history");
 
-    assert!(error.to_string().contains("unknown routine"));
+    assert!(error.to_string().contains("routine was deleted"));
     assert!(store.history(None).expect("history").is_empty());
 }
 
@@ -850,7 +1159,7 @@ fn due_routines_are_bot_owned_and_deduplicated_by_local_minute() {
     let local = Utc.timestamp_opt(now, 0).single().expect("time");
     let expression = format!("{} {} * * *", local.minute(), local.hour());
     let routine = store
-        .create_routine(
+        .create_scheduled(
             &bot.id,
             &workspace,
             "daily report",
@@ -877,7 +1186,7 @@ fn routine_rejects_unknown_bot_and_malformed_schedule() {
     let (_root, store, workspace) = fixture();
     assert!(
         store
-            .create_routine(
+            .create_scheduled(
                 "missing",
                 &workspace,
                 "work",
@@ -889,7 +1198,7 @@ fn routine_rejects_unknown_bot_and_malformed_schedule() {
     let bot = create_bot(&store, "routine_bot");
     assert!(
         store
-            .create_routine(&bot.id, &workspace, "work", cron("0 9 * *", "UTC"), None,)
+            .create_scheduled(&bot.id, &workspace, "work", cron("0 9 * *", "UTC"), None,)
             .is_err()
     );
 }
@@ -899,7 +1208,7 @@ fn routine_input_wraps_raw_instructions_within_the_message_limit() {
     let (_root, store, workspace) = fixture();
     let bot = create_bot(&store, "routine_input");
     let routine = store
-        .create_routine(
+        .create_scheduled(
             &bot.id,
             &workspace,
             "inspect cache behavior",
@@ -913,7 +1222,7 @@ fn routine_input_wraps_raw_instructions_within_the_message_limit() {
         .expect("routine record");
     let oversized = "x".repeat(MAX_ROUTINE_INSTRUCTIONS_BYTES + 1);
     let oversized_rejected = store
-        .create_routine(
+        .create_scheduled(
             &bot.id,
             &workspace,
             &oversized,
@@ -938,7 +1247,7 @@ fn routine_update_atomically_swaps_its_instruction_snapshot() {
     let (root, store, workspace) = fixture();
     let bot = create_bot(&store, "writer");
     let routine = store
-        .create_routine(
+        .create_scheduled(
             &bot.id,
             &workspace,
             "old instructions",
@@ -949,7 +1258,7 @@ fn routine_update_atomically_swaps_its_instruction_snapshot() {
     let old_path = routine.instructions.clone();
 
     let updated = store
-        .update_routine(
+        .update_scheduled(
             &routine.id,
             &bot.id,
             &workspace,
@@ -970,7 +1279,14 @@ fn routine_update_atomically_swaps_its_instruction_snapshot() {
         .routine_record(&routine.id, Utc::now().timestamp())
         .expect("routine record");
     assert_eq!(record.bot_id, updated.bot_id);
-    assert_eq!(record.schedule, updated.schedule);
+    assert_eq!(
+        record.bindings,
+        updated
+            .bindings
+            .iter()
+            .map(|binding| binding.definition.clone())
+            .collect::<Vec<_>>()
+    );
     assert_eq!(record.instructions, "new instructions");
     let reopened = BotStore::open(&root.path().join("state")).expect("reopen");
     assert_eq!(
@@ -984,7 +1300,7 @@ fn routine_delete_refuses_to_orphan_instruction_files() {
     let (_root, store, workspace) = fixture();
     let bot = create_bot(&store, "cleaner");
     let routine = store
-        .create_routine(
+        .create_scheduled(
             &bot.id,
             &workspace,
             "remove me",
@@ -1019,7 +1335,7 @@ fn missing_routine_workspace_does_not_block_reopen_or_unrelated_bot_writes() {
     let (root, store, workspace) = fixture();
     let bot = create_bot(&store, "traveler");
     let routine = store
-        .create_routine(
+        .create_scheduled(
             &bot.id,
             &workspace,
             "work elsewhere",
@@ -1040,7 +1356,7 @@ fn missing_routine_workspace_does_not_block_reopen_or_unrelated_bot_writes() {
     create_bot(&reopened, "still_usable");
     assert!(
         reopened
-            .update_routine(
+            .update_scheduled(
                 &routine.id,
                 &bot.id,
                 &workspace,
@@ -1059,7 +1375,7 @@ fn managed_instructions_cannot_be_replaced_with_an_outside_symlink() {
     let (root, store, workspace) = fixture();
     let bot = create_bot(&store, "symlink_guard");
     let routine = store
-        .create_routine(
+        .create_scheduled(
             &bot.id,
             &workspace,
             "inside",
@@ -1080,7 +1396,7 @@ fn missing_instruction_contents_fail_closed() {
     let (_root, store, workspace) = fixture();
     let bot = create_bot(&store, "missing_input");
     let routine = store
-        .create_routine(
+        .create_scheduled(
             &bot.id,
             &workspace,
             "inside",
@@ -1098,7 +1414,7 @@ fn routines_and_history_persist_with_bot_ownership() {
     let (root, store, workspace) = fixture();
     let bot = create_bot(&store, "persistent");
     let routine = store
-        .create_routine(
+        .create_scheduled(
             &bot.id,
             &workspace,
             "do work",
@@ -1133,10 +1449,10 @@ fn once_and_interval_schedules_advance_without_replay_storms() {
     let bot = create_bot(&store, "cadence");
     let now = 1_000;
     let once_routine = store
-        .create_routine(&bot.id, &workspace, "once", once(now - 1), None)
+        .create_scheduled(&bot.id, &workspace, "once", once(now - 1), None)
         .expect("once routine");
     let interval_routine = store
-        .create_routine(&bot.id, &workspace, "interval", interval(60), None)
+        .create_scheduled(&bot.id, &workspace, "interval", interval(60), None)
         .expect("interval routine");
     let mut state = store.fresh_state().expect("state");
     state
@@ -1144,7 +1460,8 @@ fn once_and_interval_schedules_advance_without_replay_storms() {
         .iter_mut()
         .find(|routine| routine.id == interval_routine.id)
         .expect("stored interval")
-        .next_run_at = Some(now - 1);
+        .bindings[0]
+        .next_due_at = Some(now - 1);
     store.save(&state).expect("persist interval");
 
     assert_eq!(
@@ -1162,7 +1479,8 @@ fn once_and_interval_schedules_advance_without_replay_storms() {
         store
             .routine(&interval_routine.id)
             .expect("interval")
-            .next_run_at,
+            .bindings[0]
+            .next_due_at,
         Some(1_059)
     );
 }
@@ -1172,7 +1490,7 @@ fn bounded_interval_runs_its_last_due_occurrence() {
     let (_root, store, workspace) = fixture();
     let bot = create_bot(&store, "bounded");
     let routine = store
-        .create_routine(&bot.id, &workspace, "last run", interval(60), Some(1_000))
+        .create_scheduled(&bot.id, &workspace, "last run", interval(60), Some(1_000))
         .expect("bounded routine");
     let mut state = store.fresh_state().expect("state");
     state
@@ -1180,7 +1498,8 @@ fn bounded_interval_runs_its_last_due_occurrence() {
         .iter_mut()
         .find(|stored| stored.id == routine.id)
         .expect("stored routine")
-        .next_run_at = Some(1_000);
+        .bindings[0]
+        .next_due_at = Some(1_000);
     store.save(&state).expect("persist routine");
 
     let due = finish_due(&store, 1_007);
@@ -1199,7 +1518,7 @@ fn cron_next_occurrence_uses_iana_timezone_across_dst() {
     let (_root, store, workspace) = fixture();
     let bot = create_bot(&store, "dst");
     let routine = store
-        .create_routine(
+        .create_scheduled(
             &bot.id,
             &workspace,
             "cross DST",
@@ -1219,7 +1538,7 @@ fn cron_next_occurrence_uses_iana_timezone_across_dst() {
         .timestamp();
 
     assert_eq!(
-        next_cron_occurrence(&routine.schedule, now, false).expect("next cron occurrence"),
+        next_cron_occurrence(&schedule_of(&routine), now, false).expect("next cron occurrence"),
         expected
     );
 }
@@ -1229,7 +1548,7 @@ fn reopening_during_dst_fallback_does_not_replay_an_ambiguous_cron_time() {
     let (root, store, workspace) = fixture();
     let bot = create_bot(&store, "dst_restart");
     let routine = store
-        .create_routine(
+        .create_scheduled(
             &bot.id,
             &workspace,
             "cross fallback",
@@ -1258,13 +1577,13 @@ fn reopening_during_dst_fallback_does_not_replay_an_ambiguous_cron_time() {
         .iter_mut()
         .find(|stored| stored.id == routine.id)
         .expect("stored routine");
-    stored.next_run_at = Some(stale);
-    stored.last_matched_minute = None;
+    stored.bindings[0].next_due_at = Some(stale);
+    stored.bindings[0].last_matched_minute = None;
     store.save(&state).expect("persist stale cron cursor");
     drop(store);
 
     let reopened = BotStore::open(&root.path().join("state")).expect("reopen Bot store");
-    assert!(reopened.poll_due(now).expect("poll due").due.is_empty());
+    assert!(reopened.poll_due(now).expect("poll due").events.is_empty());
     assert_eq!(
         reopened
             .routine_record(&routine.id, now)
@@ -1279,7 +1598,7 @@ fn reopening_does_not_dispatch_a_missed_cron_minute() {
     let (root, store, workspace) = fixture();
     let bot = create_bot(&store, "missed_cron");
     let routine = store
-        .create_routine(
+        .create_scheduled(
             &bot.id,
             &workspace,
             "do not backfill",
@@ -1308,13 +1627,13 @@ fn reopening_does_not_dispatch_a_missed_cron_minute() {
         .iter_mut()
         .find(|stored| stored.id == routine.id)
         .expect("stored routine");
-    stored.next_run_at = Some(stale);
-    stored.last_matched_minute = None;
+    stored.bindings[0].next_due_at = Some(stale);
+    stored.bindings[0].last_matched_minute = None;
     store.save(&state).expect("persist stale cron cursor");
     drop(store);
 
     let reopened = BotStore::open(&root.path().join("state")).expect("reopen Bot store");
-    assert!(reopened.poll_due(now).expect("poll due").due.is_empty());
+    assert!(reopened.poll_due(now).expect("poll due").events.is_empty());
     assert_eq!(
         reopened
             .routine_record(&routine.id, now)
@@ -1329,7 +1648,7 @@ fn run_history_exceeds_one_megabyte_without_evicting_sessions() {
     let (root, store, workspace) = fixture();
     let bot = create_bot(&store, "long_history");
     let routine = store
-        .create_routine(
+        .create_scheduled(
             &bot.id,
             &workspace,
             "keep every run",
@@ -1368,7 +1687,9 @@ fn run_history_exceeds_one_megabyte_without_evicting_sessions() {
     let deletion = reopened
         .prepare_routine_deletion(&routine.id)
         .expect("prepare routine deletion");
-    reopened.delete_routine(deletion).expect("delete routine");
+    reopened
+        .delete_routine(deletion, None, None)
+        .expect("delete routine");
     drop(reopened);
 
     let reopened = BotStore::open(&root.path().join("state")).expect("reopen after deletion");
@@ -1377,11 +1698,11 @@ fn run_history_exceeds_one_megabyte_without_evicting_sessions() {
 }
 
 #[test]
-fn reopening_marks_running_run_failed_and_retains_its_session() {
+fn reopening_retains_running_run_for_gateway_reconciliation() {
     let (root, store, workspace) = fixture();
     let bot = create_bot(&store, "recovery");
     let routine = store
-        .create_routine(
+        .create_scheduled(
             &bot.id,
             &workspace,
             "recover me",
@@ -1398,11 +1719,8 @@ fn reopening_marks_running_run_failed_and_retains_its_session() {
 
     let reopened = BotStore::open(&root.path().join("state")).expect("reopen");
     let recovered = reopened.history(Some(&routine.id)).expect("history");
-    assert_eq!(recovered[0].status, RoutineRunStatus::Failed);
-    assert_eq!(
-        recovered[0].message.as_deref(),
-        Some("the gateway stopped before this run completed")
-    );
+    assert_eq!(recovered[0].status, RoutineRunStatus::Running);
+    assert!(recovered[0].message.is_none());
     assert_eq!(
         recovered[0].session_id.as_deref(),
         Some(session_id.as_str())
@@ -1420,11 +1738,22 @@ fn persisted_routine_paths_must_stay_in_the_private_directory() {
         bot_id: bot.id,
         workspace: std::fs::canonicalize(workspace).expect("workspace"),
         instructions: root.path().join("outside.md"),
-        schedule: cron("0 9 * * *", "UTC"),
-        ends_at: None,
+        bindings: vec![
+            StoredRoutineBinding::new(
+                RoutineBinding {
+                    id: Uuid::new_v4().to_string(),
+                    on: HookSelector::Schedule {
+                        schedule: cron("0 9 * * *", "UTC"),
+                        ends_at: None,
+                    },
+                    action: RoutineAction::Start,
+                },
+                Utc::now().timestamp(),
+                false,
+            )
+            .unwrap(),
+        ],
         enabled: true,
-        next_run_at: None,
-        last_matched_minute: None,
     });
 
     assert!(

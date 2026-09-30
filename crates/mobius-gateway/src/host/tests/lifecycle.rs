@@ -171,6 +171,14 @@ impl BlockingStateStore {
 }
 
 impl CheckpointStore for BlockingStateStore {
+    fn message_accepted<'a>(
+        &'a self,
+        session_id: &'a str,
+        submission_id: &'a str,
+    ) -> mobius::BoxFuture<'a, mobius::Result<bool>> {
+        self.inner.message_accepted(session_id, submission_id)
+    }
+
     fn load<'a>(
         &'a self,
         session_id: &'a str,

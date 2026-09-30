@@ -129,7 +129,7 @@ impl StreamedStepPhases {
 
 #[derive(Clone)]
 enum PickerAction {
-    Submit(Op),
+    Submit(Box<Op>),
     Resume(String),
     Gateway(GatewayAction),
     Download(SessionFileReference),
@@ -157,7 +157,7 @@ impl From<FrontendPickerOption> for PickerOption {
             description: option.description,
             detail: option.detail,
             shows_detail: option.shows_detail,
-            action: PickerAction::Submit(option.op),
+            action: PickerAction::Submit(Box::new(option.op)),
             secondary: None,
         }
     }
@@ -408,7 +408,7 @@ struct TuiState {
 impl TuiState {
     fn new(
         catalog: &UiCatalog,
-        cwd: std::path::PathBuf,
+        cwd: Option<std::path::PathBuf>,
         mut model: ModelInfo,
         model_route: String,
         agent_summary: String,
@@ -445,7 +445,10 @@ impl TuiState {
             turn_started_at: None,
             usage: UsageStatus::default(),
             context_limit: None,
-            cwd: terminal_text(&cwd.display().to_string()),
+            cwd: cwd.map_or_else(
+                || "Bot conversation".into(),
+                |cwd| terminal_text(&cwd.display().to_string()),
+            ),
             model,
             model_route,
             agent_summary,

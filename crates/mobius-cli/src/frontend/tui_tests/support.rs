@@ -95,7 +95,7 @@ pub(super) fn preview_continuation(arguments: &str) -> Op {
 }
 
 pub(super) fn catalog(workspace: &std::path::Path) -> UiCatalog {
-    UiCatalog::build(&[], workspace).expect("UI catalog")
+    UiCatalog::build(&[], Some(workspace)).expect("UI catalog")
 }
 
 pub(super) fn default_catalog() -> UiCatalog {
@@ -105,7 +105,7 @@ pub(super) fn default_catalog() -> UiCatalog {
 pub(super) fn state() -> TuiState {
     TuiState::new(
         &default_catalog(),
-        "/work/mobius".into(),
+        Some("/work/mobius".into()),
         ModelInfo {
             model: "kimi-k3".into(),
             reasoning_effort: Some("high".into()),

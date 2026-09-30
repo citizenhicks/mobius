@@ -120,6 +120,10 @@ pub enum ToolExposure {
 
 /// Dependencies available only to terminal tool handlers.
 pub struct ToolContext {
+    /// Stable provider call identity used by durable command handlers.
+    pub call_id: String,
+    /// Trusted provenance of the message that initiated this tool's turn.
+    pub author: crate::protocol::MessageAuthor,
     /// The sandbox.
     pub sandbox: Arc<Sandbox>,
     /// The permissions.
@@ -138,6 +142,8 @@ impl ToolContext {
         turn_id: impl Into<String>,
     ) -> Self {
         Self {
+            call_id: String::new(),
+            author: crate::protocol::MessageAuthor::User,
             sandbox,
             permissions,
             turn_id: turn_id.into(),
@@ -149,6 +155,16 @@ impl ToolContext {
 
     pub(crate) fn with_model_route(mut self, route: &str) -> Self {
         self.model_route = route.into();
+        self
+    }
+
+    pub(crate) fn with_author(mut self, author: &crate::protocol::MessageAuthor) -> Self {
+        self.author = author.clone();
+        self
+    }
+
+    pub(crate) fn with_call_id(mut self, call_id: &str) -> Self {
+        self.call_id = call_id.into();
         self
     }
 
@@ -985,6 +1001,7 @@ pub(crate) async fn execute_batch(
     permissions: &SandboxPermissions,
     turn_id: &str,
     model_route: &str,
+    author: &crate::protocol::MessageAuthor,
 ) -> Vec<ToolResult> {
     let mut results = Vec::with_capacity(calls.len());
     let mut index = 0;
@@ -997,7 +1014,15 @@ pub(crate) async fn execute_batch(
             // ModelOutput validation bounds every batch to 128 calls.
             results.extend(
                 join_all(calls[index..end].iter().cloned().map(|call| {
-                    execute_call(catalog, call, &sandbox, permissions, turn_id, model_route)
+                    execute_call(
+                        catalog,
+                        call,
+                        &sandbox,
+                        permissions,
+                        turn_id,
+                        model_route,
+                        author,
+                    )
                 }))
                 .await,
             );
@@ -1011,6 +1036,7 @@ pub(crate) async fn execute_batch(
                     permissions,
                     turn_id,
                     model_route,
+                    author,
                 )
                 .await,
             );
@@ -1031,6 +1057,7 @@ pub(crate) async fn execute_call(
     permissions: &SandboxPermissions,
     turn_id: &str,
     model_route: &str,
+    author: &crate::protocol::MessageAuthor,
 ) -> ToolResult {
     let BoundToolCall {
         call,
@@ -1042,7 +1069,9 @@ pub(crate) async fn execute_call(
         permissions.for_call(&call.call_id),
         turn_id,
     )
-    .with_model_route(model_route);
+    .with_model_route(model_route)
+    .with_call_id(&call.call_id)
+    .with_author(author);
     let pending_input = context.input.clone();
     let pending_usage = context.usage.clone();
     let Some(tool) = catalog.get(&call.name) else {

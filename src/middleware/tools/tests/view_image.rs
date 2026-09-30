@@ -44,6 +44,7 @@ async fn ordered_images_are_durable_and_reinspectable_after_source_deletion() {
         &test_permissions(&[]),
         "turn",
         "test",
+        &crate::protocol::MessageAuthor::User,
     )
     .await
     .remove(0);
@@ -92,6 +93,7 @@ async fn ordered_images_are_durable_and_reinspectable_after_source_deletion() {
         &test_permissions(&[]),
         "turn",
         "test",
+        &crate::protocol::MessageAuthor::User,
     )
     .await
     .remove(0);
@@ -103,9 +105,17 @@ async fn ordered_images_are_durable_and_reinspectable_after_source_deletion() {
         crate::backend::sandbox::NetworkAccess::Denied,
         Vec::new(),
     );
-    let result = execute_batch(&catalog, &[call], sandbox, &other_session, "turn", "test")
-        .await
-        .remove(0);
+    let result = execute_batch(
+        &catalog,
+        &[call],
+        sandbox,
+        &other_session,
+        "turn",
+        "test",
+        &crate::protocol::MessageAuthor::User,
+    )
+    .await
+    .remove(0);
     assert!(
         result.is_error,
         "a shared handler must use the calling session's authority"

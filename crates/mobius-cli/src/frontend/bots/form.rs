@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use mobius::protocol::MAX_MESSAGE_BYTES;
 use mobius_gateway::bots::{MAX_BOT_DESCRIPTION_BYTES, MAX_BOT_NAME_BYTES};
 use mobius_gateway::wire::{
-    BotRecord, ClientMessage, ReadyPayload, Routine, RoutineSchedule, RoutineScheduleKind,
+    BotRecord, ClientMessage, HookSelector, ReadyPayload, Routine, RoutineAction, RoutineBinding,
+    RoutineCommand, RoutineDefinition, RoutineSchedule, RoutineScheduleKind,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -109,64 +110,90 @@ pub(super) enum RoutineFormMode {
 
 pub(super) struct RoutineForm {
     pub(super) mode: RoutineFormMode,
-    pub(super) bot_id: String,
     pub(super) workspace: TextForm,
     pub(super) instructions: TextForm,
     pub(super) schedule_kind: RoutineScheduleKind,
     pub(super) schedule_value: TextForm,
     pub(super) time_zone: TextForm,
     pub(super) ends_at: TextForm,
-    pub(super) enabled: bool,
+    pub(super) schedule_enabled: bool,
+    bindings: Vec<RoutineBinding>,
+    timer_binding_id: String,
     pub(super) row: usize,
     pub(super) error: Option<String>,
 }
 
 impl RoutineForm {
+    pub(super) fn is_update(&self) -> bool {
+        matches!(self.mode, RoutineFormMode::Update(_))
+    }
+
     pub(super) fn create(bot_id: String) -> Self {
         Self {
             mode: RoutineFormMode::Create(bot_id.clone()),
-            bot_id,
             workspace: TextForm::new("", MAX_MESSAGE_BYTES),
             instructions: TextForm::multiline("", MAX_MESSAGE_BYTES),
             schedule_kind: RoutineScheduleKind::Interval,
             schedule_value: TextForm::new("3600", MAX_MESSAGE_BYTES),
             time_zone: TextForm::new("UTC", MAX_MESSAGE_BYTES),
             ends_at: TextForm::new("", MAX_MESSAGE_BYTES),
-            enabled: true,
+            schedule_enabled: true,
+            bindings: Vec::new(),
+            timer_binding_id: uuid::Uuid::new_v4().to_string(),
             row: 0,
             error: None,
         }
     }
 
     pub(super) fn update(routine: &Routine) -> Self {
-        let schedule_value = match routine.schedule.kind {
-            RoutineScheduleKind::Once => routine.schedule.at.map(|value| value.to_string()),
-            RoutineScheduleKind::Interval => routine
-                .schedule
-                .every_seconds
-                .map(|value| value.to_string()),
-            RoutineScheduleKind::Cron => routine.schedule.expression.clone(),
+        let timer = routine.bindings.iter().find(|binding| {
+            matches!(binding.on, HookSelector::Schedule { .. })
+                && binding.action == RoutineAction::Start
+        });
+        let (schedule, ends_at) = timer
+            .and_then(|binding| {
+                if let HookSelector::Schedule { schedule, ends_at } = &binding.on {
+                    Some((schedule.clone(), *ends_at))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or((
+                RoutineSchedule {
+                    kind: RoutineScheduleKind::Interval,
+                    at: None,
+                    every_seconds: Some(3600),
+                    expression: None,
+                    time_zone: None,
+                },
+                None,
+            ));
+        let schedule_value = match schedule.kind {
+            RoutineScheduleKind::Once => schedule.at.map(|value| value.to_string()),
+            RoutineScheduleKind::Interval => schedule.every_seconds.map(|value| value.to_string()),
+            RoutineScheduleKind::Cron => schedule.expression.clone(),
         }
         .unwrap_or_default();
         Self {
             mode: RoutineFormMode::Update(routine.id.clone()),
-            bot_id: routine.bot_id.clone(),
             workspace: TextForm::new(routine.workspace.display().to_string(), MAX_MESSAGE_BYTES),
             instructions: TextForm::multiline(&routine.instructions, MAX_MESSAGE_BYTES),
-            schedule_kind: routine.schedule.kind,
+            schedule_kind: schedule.kind,
             schedule_value: TextForm::new(schedule_value, MAX_MESSAGE_BYTES),
             time_zone: TextForm::new(
-                routine.schedule.time_zone.as_deref().unwrap_or("UTC"),
+                schedule.time_zone.as_deref().unwrap_or("UTC"),
                 MAX_MESSAGE_BYTES,
             ),
             ends_at: TextForm::new(
-                routine
-                    .ends_at
-                    .map(|value| value.to_string())
-                    .unwrap_or_default(),
+                ends_at.map(|value| value.to_string()).unwrap_or_default(),
                 MAX_MESSAGE_BYTES,
             ),
-            enabled: routine.enabled,
+            schedule_enabled: timer.is_some(),
+            bindings: routine.bindings.clone(),
+            timer_binding_id: timer.map_or_else(
+                || uuid::Uuid::new_v4().to_string(),
+                |binding| binding.id.clone(),
+            ),
             row: 0,
             error: None,
         }
@@ -285,6 +312,7 @@ impl BotForm {
                         name,
                         description,
                         tint: bot.tint,
+                        shape: bot.shape,
                         config,
                     },
                 ))
@@ -294,12 +322,8 @@ impl BotForm {
 }
 
 impl RoutineForm {
-    pub(super) fn is_update(&self) -> bool {
-        matches!(self.mode, RoutineFormMode::Update(_))
-    }
-
     fn row_count(&self) -> usize {
-        if self.is_update() { 8 } else { 7 }
+        7
     }
 
     pub(super) fn save_row(&self) -> usize {
@@ -314,14 +338,8 @@ impl RoutineForm {
             KeyCode::Left if self.row == 2 => self.change_schedule(-1),
             KeyCode::Right if self.row == 2 => self.change_schedule(1),
             KeyCode::Char(' ') if self.row == 2 => self.change_schedule(1),
-            KeyCode::Char(' ') if self.is_update() && self.row == 6 => {
-                self.enabled = !self.enabled;
-            }
             KeyCode::Enter if self.row == self.save_row() => return self.submit(),
             KeyCode::Enter if self.row == 2 => self.change_schedule(1),
-            KeyCode::Enter if self.is_update() && self.row == 6 => {
-                self.enabled = !self.enabled;
-            }
             KeyCode::Enter => self.row += 1,
             KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 return self.submit();
@@ -353,6 +371,9 @@ impl RoutineForm {
     }
 
     fn selected_text_field(&mut self) -> Option<&mut TextForm> {
+        if matches!(self.row, 3..=5) {
+            self.schedule_enabled = true;
+        }
         match self.row {
             0 => Some(&mut self.workspace),
             1 => Some(&mut self.instructions),
@@ -364,6 +385,7 @@ impl RoutineForm {
     }
 
     fn change_schedule(&mut self, delta: isize) {
+        self.schedule_enabled = true;
         self.schedule_kind = match (schedule_index(self.schedule_kind) + delta).rem_euclid(3) {
             0 => RoutineScheduleKind::Once,
             1 => RoutineScheduleKind::Interval,
@@ -394,42 +416,51 @@ impl RoutineForm {
         if self.instructions.value.trim().is_empty() {
             return Err("Routine instructions are required.".into());
         }
-        let schedule = self.schedule()?;
-        let ends_at = optional_i64(&self.ends_at.value, "end time")?;
-        if ends_at.is_some_and(|value| value <= 0) {
-            return Err("Routine end time must be a positive Unix timestamp.".into());
-        }
-        let bot_id = self.bot_id.clone();
-        let workspace = PathBuf::from(workspace);
-        let instructions = self.instructions.value.clone();
-        match &self.mode {
-            RoutineFormMode::Create(form_bot_id) => {
-                debug_assert_eq!(&bot_id, form_bot_id);
-                Ok(request_action(
-                    "Create routine",
-                    FollowUp::Routines,
-                    |request_id| ClientMessage::CreateRoutine {
-                        request_id,
-                        bot_id,
-                        workspace,
-                        instructions,
-                        schedule,
-                        ends_at,
-                    },
-                ))
+        let mut bindings = self.bindings.clone();
+        if self.schedule_enabled {
+            let schedule = self.schedule()?;
+            let ends_at = optional_i64(&self.ends_at.value, "end time")?;
+            if ends_at.is_some_and(|value| value <= 0) {
+                return Err("Routine end time must be a positive Unix timestamp.".into());
             }
+            let binding = RoutineBinding {
+                id: self.timer_binding_id.clone(),
+                on: HookSelector::Schedule { schedule, ends_at },
+                action: RoutineAction::Start,
+            };
+            if let Some(existing) = bindings
+                .iter_mut()
+                .find(|existing| existing.id == binding.id)
+            {
+                *existing = binding;
+            } else {
+                bindings.push(binding);
+            }
+        }
+        let definition = RoutineDefinition {
+            workspace: PathBuf::from(workspace),
+            instructions: self.instructions.value.clone(),
+            bindings,
+        };
+        match &self.mode {
+            RoutineFormMode::Create(bot_id) => Ok(request_action(
+                "Create routine",
+                FollowUp::Routines,
+                |request_id| ClientMessage::CreateRoutine {
+                    request_id,
+                    bot_id: bot_id.clone(),
+                    definition,
+                },
+            )),
             RoutineFormMode::Update(id) => Ok(request_action(
                 "Update routine",
                 FollowUp::Routines,
-                |request_id| ClientMessage::UpdateRoutine {
+                |request_id| ClientMessage::RoutineCommand {
                     request_id,
-                    id: id.clone(),
-                    bot_id,
-                    workspace,
-                    instructions,
-                    schedule,
-                    ends_at,
-                    enabled: self.enabled,
+                    command: RoutineCommand {
+                        routine_id: id.clone(),
+                        action: RoutineAction::Update { definition },
+                    },
                 },
             )),
         }

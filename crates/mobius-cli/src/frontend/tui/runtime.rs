@@ -102,7 +102,7 @@ pub(in crate::frontend) async fn run(
     let session_id = session.session.session_id.clone();
     let mut state = TuiState::new(
         &catalog,
-        catalog.workspace().to_path_buf(),
+        catalog.workspace().map(std::path::Path::to_path_buf),
         ModelInfo::default(),
         String::new(),
         String::new(),
@@ -112,7 +112,10 @@ pub(in crate::frontend) async fn run(
         choose_bot(
             gateway,
             session,
-            session.workspace.path.clone(),
+            session
+                .workspace
+                .as_ref()
+                .map(|workspace| workspace.path.clone()),
             false,
             &mut state,
         );
@@ -130,7 +133,9 @@ pub(in crate::frontend) async fn run(
     let mut pending_session_creation = None;
     let mut clipboard_preparation = None;
     let mut workspace_reference_open = false;
-    request_workspace_inventory(&sender, &session_id, &mut state).await;
+    if session.workspace.is_some() {
+        request_workspace_inventory(&sender, &session_id, &mut state).await;
+    }
     state.git_diff_refresh = session.git.is_some();
     request_git_summary(&sender, &session_id, &mut state).await;
 
@@ -214,12 +219,9 @@ pub(in crate::frontend) async fn run(
                     exit = next_exit;
                     break 'ui;
                 }
-                let reference_open = !state.reference_menu_dismissed
-                    && super::references::active_reference_token(&state.input, state.cursor, '@').is_some();
-                if events_open && reference_open && !workspace_reference_open {
-                    request_workspace_inventory(&sender, &session_id, &mut state).await;
-                }
-                workspace_reference_open = reference_open;
+                request_open_reference_inventory(
+                    &sender, session, events_open, &mut workspace_reference_open, &mut state,
+                ).await;
             }
             result = async {
                 clipboard_preparation
@@ -263,6 +265,21 @@ pub(in crate::frontend) async fn run(
     Ok((exit, sender, events))
 }
 
+async fn request_open_reference_inventory(
+    sender: &GatewaySender,
+    session: &SessionReadyPayload,
+    events_open: bool,
+    was_open: &mut bool,
+    state: &mut TuiState,
+) {
+    let reference_open = !state.reference_menu_dismissed
+        && super::references::active_reference_token(&state.input, state.cursor, '@').is_some();
+    if session.workspace.is_some() && events_open && reference_open && !*was_open {
+        request_workspace_inventory(sender, &session.session.session_id, state).await;
+    }
+    *was_open = reference_open;
+}
+
 async fn refresh_workspace(
     sender: &GatewaySender,
     message: &ServerMessage,
@@ -284,7 +301,10 @@ async fn refresh_workspace(
         state.reference_cache = None;
         return true;
     }
-    if live && refresh_workspace_inventory(message, session_id, reference_open) {
+    if session.workspace.is_some()
+        && live
+        && refresh_workspace_inventory(message, session_id, reference_open)
+    {
         request_workspace_inventory(sender, session_id, state).await;
     }
     state.git_diff_refresh |= live
@@ -399,7 +419,7 @@ async fn handle_terminal_input(
                 *pending_session_creation =
                     create_session(sender, workspace, bot_id, clear, state).await;
             }
-            UiAction::Submit(op) => send_and_report(sender, session_id, op, state, draft).await,
+            UiAction::Submit(op) => send_and_report(sender, session_id, *op, state, draft).await,
             UiAction::Resume(session_id) => return Ok(Some(FrontendExit::Resume(session_id))),
             UiAction::Gateway(action) => {
                 send_gateway_action(sender, session_id, action, state).await
@@ -409,6 +429,12 @@ async fn handle_terminal_input(
             }
             UiAction::Events => {
                 state.open_background_approvals(&gateway.background_approvals, &gateway.bots);
+            }
+            UiAction::Conversation => {
+                let bot = session_bot(gateway, session)?;
+                return Ok(Some(FrontendExit::Resume(
+                    bot.conversation_session_id.clone(),
+                )));
             }
             UiAction::ReassignBot => {
                 state.open_reassign_bot_picker(&gateway.bots, &session.session.context.owner_id);
@@ -539,7 +565,7 @@ fn matches_pending_session_creation(
 fn choose_bot(
     gateway: &ReadyPayload,
     session: &SessionReadyPayload,
-    workspace: std::path::PathBuf,
+    workspace: Option<std::path::PathBuf>,
     clear: bool,
     state: &mut TuiState,
 ) {
@@ -677,7 +703,10 @@ fn handle_server_message(
                 &mut record.event.msg,
                 &gateway.sessions,
                 &gateway.bots,
-                &session.workspace.id,
+                session
+                    .workspace
+                    .as_ref()
+                    .map(|workspace| workspace.id.as_str()),
             );
             // The snapshot already contains current activity through this sequence.
             let live = record.sequence > session.latest_sequence;
@@ -699,7 +728,10 @@ fn handle_server_message(
                     &mut record.event.msg,
                     &gateway.sessions,
                     &gateway.bots,
-                    &session.workspace.id,
+                    session
+                        .workspace
+                        .as_ref()
+                        .map(|workspace| workspace.id.as_str()),
                 );
             }
             handle_gateway_history(state, records);
@@ -729,7 +761,7 @@ fn handle_server_message(
             }
         }
         ServerMessage::SessionChanged { payload } if payload.session.session_id == session_id => {
-            if payload.workspace.id == session.workspace.id
+            if payload.workspace == session.workspace
                 && payload.contributions == session.contributions
             {
                 if let Err(error) = refresh_session(state, session, payload, gateway) {
@@ -1353,11 +1385,11 @@ async fn run_setup(
     gateway: &mut ReadyPayload,
     session: &mut SessionReadyPayload,
 ) -> (Result<()>, bool) {
-    let workspace = session.workspace.id.clone();
+    let workspace = session.workspace.clone();
     let selected = session.session.session_id.clone();
     let contributions = session.contributions.clone();
     let result = setup::run(terminal, mode, provider, sender, events, gateway, session).await;
-    let changed = session.workspace.id != workspace
+    let changed = session.workspace != workspace
         || session.session.session_id != selected
         || session.contributions != contributions;
     (result, changed)
@@ -1417,7 +1449,7 @@ fn enrich_resume_picker(
     event: &mut EventMsg,
     sessions: &[SessionRecord],
     bots: &[BotRecord],
-    current_workspace_id: &str,
+    current_workspace_id: Option<&str>,
 ) {
     let EventMsg::Frontend(FrontendEvent::Picker { options, .. }) = event else {
         return;
@@ -1437,14 +1469,16 @@ fn enrich_resume_picker(
         }
         let mut details = vec![session_status(session).into()];
         details.push(
-            if session.session_context.workspace_id.as_deref() == Some(current_workspace_id) {
+            if current_workspace_id.is_some()
+                && session.session_context.workspace_id.as_deref() == current_workspace_id
+            {
                 "this workspace"
             } else {
                 session
                     .session_context
                     .workspace_label
                     .as_deref()
-                    .unwrap_or("other workspace")
+                    .unwrap_or("Bot conversation")
             }
             .into(),
         );
@@ -1565,7 +1599,10 @@ fn agent_summary(gateway: &ReadyPayload, session: &SessionReadyPayload, bot: &Bo
             format!("{counts} · ")
         },
         session.tool_count,
-        super::terminal_text(&session.workspace.path.display().to_string()),
+        session.workspace.as_ref().map_or_else(
+            || "Bot conversation".into(),
+            |workspace| super::terminal_text(&workspace.path.display().to_string())
+        ),
     )
 }
 
@@ -1869,10 +1906,10 @@ mod tests {
         };
         let mut session = session_payload("session-current");
         let mut gateway = ready_payload();
-        let catalog = UiCatalog::build(&[], std::path::Path::new("/tmp")).expect("catalog");
+        let catalog = UiCatalog::build(&[], Some(std::path::Path::new("/tmp"))).expect("catalog");
         let mut state = TuiState::new(
             &catalog,
-            "/tmp".into(),
+            Some("/tmp".into()),
             ModelInfo::default(),
             String::new(),
             String::new(),
@@ -1901,10 +1938,10 @@ mod tests {
     #[test]
     fn session_snapshot_restores_current_work_and_approval() {
         use mobius::protocol::{ExecApprovalRequestEvent, TurnCompleteEvent};
-        let catalog = UiCatalog::build(&[], std::path::Path::new("/tmp")).unwrap();
+        let catalog = UiCatalog::build(&[], Some(std::path::Path::new("/tmp"))).unwrap();
         let mut state = TuiState::new(
             &catalog,
-            "/tmp".into(),
+            Some("/tmp".into()),
             ModelInfo::default(),
             String::new(),
             String::new(),
@@ -2174,10 +2211,10 @@ mod tests {
             latest_sequence: 0,
             next_before_sequence: None,
             attached_folders: Vec::new(),
-            workspace: WorkspaceInfo {
+            workspace: Some(WorkspaceInfo {
                 id: "workspace".into(),
                 path: "/tmp".into(),
-            },
+            }),
             git: None,
             session: SessionConfiguredEvent {
                 session_id: session_id.into(),
@@ -2208,10 +2245,12 @@ mod tests {
             machine_name: String::new(),
             bots: vec![BotRecord {
                 id: "bot-a".into(),
+                conversation_session_id: "bot-conversation-test".into(),
                 handle: "ada".into(),
                 name: "Ada".into(),
                 description: String::new(),
                 tint: Default::default(),
+                shape: mobius_gateway::wire::BotShape::Circle,
                 config: VersionedAgentConfig {
                     revision: 1,
                     config: Default::default(),
@@ -2281,10 +2320,12 @@ mod tests {
         }];
         let bots = [BotRecord {
             id: "bot-a".into(),
+            conversation_session_id: "bot-conversation-test".into(),
             handle: "curie".into(),
             name: "Curie".into(),
             description: "Own research.".into(),
             tint: Default::default(),
+            shape: mobius_gateway::wire::BotShape::Circle,
             config: VersionedAgentConfig {
                 revision: 1,
                 config: Default::default(),
@@ -2292,7 +2333,7 @@ mod tests {
             accepts_file_attachments: false,
             routine_interaction_policy: RoutineInteractionPolicy::Unattended,
         }];
-        enrich_resume_picker(&mut event, &sessions, &bots, "workspace-a");
+        enrich_resume_picker(&mut event, &sessions, &bots, Some("workspace-a"));
 
         let EventMsg::Frontend(FrontendEvent::Picker { options, .. }) = event else {
             panic!("resume picker");

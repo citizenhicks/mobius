@@ -3,7 +3,7 @@ use std::io;
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
-    ClientMessage, ReadyPayload, ServerFrame, ServerMessage, apply_session_changes,
+    ClientMessage, HookSource, ReadyPayload, ServerFrame, ServerMessage, apply_session_changes,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -12,7 +12,7 @@ use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
 use super::render::render;
-use super::state::BotsState;
+use super::state::{BotsState, Page};
 use super::{Action, FollowUp};
 use crate::frontend::setup;
 use crate::frontend::terminal::{INPUT_POLL, MAX_INPUT_BATCH, poll_event};
@@ -128,6 +128,14 @@ pub(super) fn handle_frame(
     let mut follow_up = FollowUp::None;
     let mut deferred = None;
     match message {
+        ServerMessage::HookEvent { event }
+            if matches!(
+                event.source,
+                HookSource::Routine { .. } | HookSource::Schedule { .. }
+            ) =>
+        {
+            state.lifecycle_refresh = true;
+        }
         ServerMessage::Ready { payload } => gateway.update(payload),
         ServerMessage::GatewayConfigured {
             request_id,
@@ -195,6 +203,15 @@ pub(super) fn handle_frame(
             ..
         } if pending_matches(state, &request_id) => state.fail(message),
         message => deferred = Some(ServerFrame::new(message)),
+    }
+    if state.pending.is_none() && state.lifecycle_refresh {
+        state.lifecycle_refresh = false;
+        follow_up = match &state.page {
+            Page::Runs { routine_id, .. } | Page::Run { routine_id, .. } => {
+                FollowUp::Runs(routine_id.clone())
+            }
+            _ => FollowUp::Routines,
+        };
     }
     (follow_up, deferred)
 }

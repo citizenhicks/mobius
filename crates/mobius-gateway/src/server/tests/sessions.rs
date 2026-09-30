@@ -988,20 +988,32 @@ async fn paired_client_deletes_routine_sessions_with_the_routine() {
     let routine = bots
         .create_routine(
             &bot_id,
-            &workspace,
-            "produce a report",
-            crate::wire::RoutineSchedule {
-                kind: crate::wire::RoutineScheduleKind::Interval,
-                at: None,
-                every_seconds: Some(600),
-                expression: None,
-                time_zone: None,
-            },
+            &timer_definition(
+                &workspace,
+                "produce a report",
+                crate::wire::RoutineSchedule {
+                    kind: crate::wire::RoutineScheduleKind::Interval,
+                    at: None,
+                    every_seconds: Some(600),
+                    expression: None,
+                    time_zone: None,
+                },
+            ),
             None,
         )
         .expect("create routine");
 
-    let _ = host.run_routine(routine.id.clone()).await;
+    let _ = host
+        .execute_routine_command(
+            &crate::wire::RoutineCommand {
+                routine_id: routine.id.clone(),
+                action: crate::wire::RoutineAction::Start,
+            },
+            None,
+            None,
+            "produce-report",
+        )
+        .await;
     let execution_session_id = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if let Some(run) = bots
@@ -1036,9 +1048,12 @@ async fn paired_client_deletes_routine_sessions_with_the_routine() {
             .is_some()
     );
     sender
-        .send(ClientMessage::DeleteRoutine {
+        .send(ClientMessage::RoutineCommand {
             request_id: "delete-routine".into(),
-            id: routine.id.clone(),
+            command: crate::wire::RoutineCommand {
+                routine_id: routine.id.clone(),
+                action: crate::wire::RoutineAction::Delete,
+            },
         })
         .await
         .expect("delete routine");
@@ -1174,25 +1189,31 @@ async fn running_one_shot_routine_disables_inactivity_shutdown() {
         )
         .expect("Bot");
     let now = Utc::now().timestamp();
-    bots.create_routine(
-        &bot.id,
-        &workspace,
-        "hold the gateway open",
-        crate::wire::RoutineSchedule {
-            kind: crate::wire::RoutineScheduleKind::Once,
-            at: Some(now - 1),
-            every_seconds: None,
-            expression: None,
-            time_zone: None,
-        },
-        None,
-    )
-    .expect("one-shot routine");
-    let (_, active_run) = bots
-        .take_due(now)
-        .expect("due routines")
-        .pop()
-        .expect("due one-shot");
+    let routine = bots
+        .create_routine(
+            &bot.id,
+            &timer_definition(
+                &workspace,
+                "hold the gateway open",
+                crate::wire::RoutineSchedule {
+                    kind: crate::wire::RoutineScheduleKind::Once,
+                    at: Some(now - 1),
+                    every_seconds: None,
+                    expression: None,
+                    time_zone: None,
+                },
+            ),
+            None,
+        )
+        .expect("one-shot routine");
+    let due = bots.poll_due(now).expect("due routines");
+    let cause = due.events.first().expect("due one-shot event");
+    let crate::bots::BeginRun::Started(active_run) = bots
+        .begin_run_with_cause(&routine.id, "keepalive-start", Some(cause))
+        .expect("start one-shot")
+    else {
+        panic!("one-shot starts");
+    };
     let (shutdown, signal) = tokio::sync::oneshot::channel();
     let serving = tokio::spawn(server.serve_until_inactive(
         async move {
@@ -1288,15 +1309,17 @@ async fn shutdown_stops_a_blocked_routine_and_fails_its_durable_run() {
     let routine = bots
         .create_routine(
             &bot.id,
-            &workspace,
-            "wait for shutdown",
-            crate::wire::RoutineSchedule {
-                kind: crate::wire::RoutineScheduleKind::Once,
-                at: Some(now - 1),
-                every_seconds: None,
-                expression: None,
-                time_zone: None,
-            },
+            &timer_definition(
+                &workspace,
+                "wait for shutdown",
+                crate::wire::RoutineSchedule {
+                    kind: crate::wire::RoutineScheduleKind::Once,
+                    at: Some(now - 1),
+                    every_seconds: None,
+                    expression: None,
+                    time_zone: None,
+                },
+            ),
             None,
         )
         .expect("routine");

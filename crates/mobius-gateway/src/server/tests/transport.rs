@@ -318,6 +318,8 @@ async fn pre_auth_reader_rejects_an_oversized_frame_from_its_prefix() {
 
 #[test]
 fn client_inventory_aggregates_connections_and_keeps_inactive_devices() {
+    let root = tempfile::tempdir().unwrap();
+    let bots = Arc::new(BotStore::open(root.path()).unwrap());
     let clients = Arc::new(ClientConnections::default());
     let identity = ClientIdentity {
         id: "client-a".into(),
@@ -325,13 +327,17 @@ fn client_inventory_aggregates_connections_and_keeps_inactive_devices() {
     };
     let paired = [identity.clone()];
     let first = clients
-        .register(identity.id.clone(), ClientKind::Macos)
+        .register(identity.id.clone(), ClientKind::Macos, Arc::clone(&bots))
         .expect("first connection");
     let _dashboard = clients
-        .register(identity.id.clone(), ClientKind::GatewayDashboard)
+        .register(
+            identity.id.clone(),
+            ClientKind::GatewayDashboard,
+            Arc::clone(&bots),
+        )
         .expect("dashboard connection");
     let second = clients
-        .register(identity.id, ClientKind::Macos)
+        .register(identity.id, ClientKind::Macos, bots)
         .expect("second connection");
 
     let two = clients.snapshot(&paired).expect("two connections")[0].connections;
@@ -350,6 +356,85 @@ fn client_inventory_aggregates_connections_and_keeps_inactive_devices() {
         (two, one, inactive.connections, inactive.kinds),
         (2, 1, 0, Vec::new())
     );
+}
+
+#[test]
+fn client_presence_hooks_follow_first_and_last_native_socket_and_survive_restart() {
+    use crate::wire::{AgentComposition, HookData, HookSource, VersionedAgentConfig};
+
+    let root = tempfile::tempdir().unwrap();
+    let bots = Arc::new(BotStore::open(root.path()).unwrap());
+    let first_bot = bots
+        .seed_default(&VersionedAgentConfig {
+            revision: 1,
+            config: AgentComposition::default(),
+        })
+        .unwrap()
+        .unwrap();
+    let second_bot = bots
+        .create_bot(
+            "Helper",
+            "Own client lifecycle checks.",
+            AgentComposition::default(),
+        )
+        .unwrap();
+    let clients = Arc::new(ClientConnections::default());
+    let events = || bots.unpublished_events(100).unwrap();
+    let dashboard = clients
+        .register(
+            "client-a".into(),
+            ClientKind::GatewayDashboard,
+            Arc::clone(&bots),
+        )
+        .unwrap();
+    assert!(events().is_empty());
+    let first = clients
+        .register("client-a".into(), ClientKind::Macos, Arc::clone(&bots))
+        .unwrap();
+    assert_eq!(events().len(), 2);
+    let second = clients
+        .register("client-a".into(), ClientKind::Ios, Arc::clone(&bots))
+        .unwrap();
+    drop(first);
+    assert_eq!(
+        events().len(),
+        2,
+        "another native kind keeps the client connected"
+    );
+    drop(second);
+    let disconnected = events();
+    assert_eq!(disconnected.len(), 4);
+    for bot in [&first_bot, &second_bot] {
+        let owned: Vec<_> = disconnected
+            .iter()
+            .filter(|event| event.bot_id == bot.id)
+            .collect();
+        assert_eq!(owned.len(), 2);
+        assert!(matches!(owned[0].data, HookData::ClientConnected { .. }));
+        assert!(matches!(owned[1].data, HookData::ClientDisconnected { .. }));
+        assert!(owned.iter().all(|event| event.source
+            == HookSource::Client {
+                client_id: "client-a".into()
+            }
+            && event.cause_id.is_none()
+            && event.ancestry.is_empty()));
+    }
+    drop(dashboard);
+    assert_eq!(
+        events().len(),
+        4,
+        "dashboard disconnect is not native presence"
+    );
+    let reconnect = clients
+        .register("client-a".into(), ClientKind::Macos, Arc::clone(&bots))
+        .unwrap();
+    assert_eq!(events().len(), 6, "a later connection is a new transition");
+    drop(reconnect);
+    let ids: std::collections::BTreeSet<_> =
+        events().iter().map(|event| event.id.clone()).collect();
+    assert_eq!(ids.len(), 8);
+    let restarted = BotStore::open(root.path()).unwrap();
+    assert_eq!(restarted.unpublished_events(100).unwrap().len(), 8);
 }
 
 #[test]

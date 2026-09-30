@@ -437,6 +437,7 @@ mod tests {
             &permissions,
             "turn-a",
             "test",
+            &crate::protocol::MessageAuthor::User,
         )
         .await
         .pop()
@@ -530,10 +531,18 @@ mod tests {
                 &searchable,
             )
             .expect("bind clear");
-        let result = execute_batch(&catalog, &[clear], sandbox, &permissions, "turn-a", "test")
-            .await
-            .pop()
-            .expect("clear result");
+        let result = execute_batch(
+            &catalog,
+            &[clear],
+            sandbox,
+            &permissions,
+            "turn-a",
+            "test",
+            &crate::protocol::MessageAuthor::User,
+        )
+        .await
+        .pop()
+        .expect("clear result");
         assert!(!result.is_error, "{}", result.output.text());
         assert!(matches!(
             frontend_events.lock().expect("events").last(),

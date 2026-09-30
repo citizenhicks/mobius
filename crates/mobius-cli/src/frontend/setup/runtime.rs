@@ -256,6 +256,7 @@ pub(super) async fn update_bot(
             name: bot.name.clone(),
             description: bot.description.clone(),
             tint: bot.tint,
+            shape: bot.shape,
             config,
         })
         .await

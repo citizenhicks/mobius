@@ -1,6 +1,15 @@
 use super::*;
+use futures_util::StreamExt as _;
 
 impl HostState {
+    fn project(&self) -> std::result::Result<&Path, Rejection> {
+        self.spec.workspace.as_deref().ok_or_else(|| Rejection {
+            code: "no_workspace",
+            message: "Persistent Chat has no project workspace".into(),
+            fatal: false,
+        })
+    }
+
     fn begin_session_mutation(
         &self,
     ) -> std::result::Result<tokio::sync::OwnedRwLockReadGuard<()>, Rejection> {
@@ -73,6 +82,16 @@ impl HostState {
     pub(super) async fn run(mut self) {
         loop {
             tokio::select! {
+                Some(admission) = self.admissions.next(), if !self.admissions.is_empty() => {
+                    if !matches!(admission.result, Ok(mobius::agent::MessageAcceptance::Accepted))
+                        && admission.reserved && self.pending_messages.remove(&admission.id) {
+                        self.pending_turns = self.pending_turns.saturating_sub(1);
+                    }
+                    let _ = admission.reply.send(admission.result.map(|_| ()).map_err(source_rejection));
+                    if self.is_idle() {
+                        for waiter in self.idle_waiters.drain(..) { let _ = waiter.send(()); }
+                    }
+                }
                 command = self.commands.recv() => {
                     let Some(command) = command else { break };
                     if !Box::pin(self.handle(command)).await { break; }
@@ -121,6 +140,9 @@ impl HostState {
                 message: rejection.message,
                 fatal: false,
             });
+        }
+        if self.approval_active {
+            drop(self.active_routine.take());
         }
         if let Err(error) = fail_active_routine(
             &self.bots,
@@ -289,34 +311,11 @@ impl HostState {
                 .await;
                 let _ = reply.send(result);
             }
-            HostCommand::DeliverPeer {
+            HostCommand::DeliverSource {
                 submission,
                 bot_id,
                 reply,
-            } => {
-                let id = submission.id.clone();
-                let routed = async {
-                    let _mutation = self.begin_session_mutation()?;
-                    self.bind_bot().await?;
-                    if self.spec.bot_id != bot_id {
-                        return Err(Rejection {
-                            code: "invalid_submission",
-                            message: "the chat now belongs to another Bot".into(),
-                            fatal: false,
-                        });
-                    }
-                    self.submit(submission)
-                }
-                .await;
-                match routed {
-                    Ok(()) => {
-                        self.peer_deliveries.insert(id, reply);
-                    }
-                    Err(rejection) => {
-                        let _ = reply.send(Err(rejection));
-                    }
-                }
-            }
+            } => self.accept_source(submission, bot_id, reply).await,
             HostCommand::ReassignBot { bot_id, reply } => {
                 let result = async {
                     let _mutation = self.begin_session_mutation()?;
@@ -325,8 +324,17 @@ impl HostState {
                         return Ok(());
                     }
                     let mut next = self.spec.clone();
+                    let previous_bot_id = next.bot_id.clone();
                     next.bot_id = bot_id;
-                    self.replace_running(next, None).await
+                    self.replace_running(next, None).await?;
+                    super::super::bot_events::close_reassigned_source(
+                        &self.checkpoints,
+                        &self.bots,
+                        &self.running.session_id,
+                        &previous_bot_id,
+                    )
+                    .await
+                    .map_err(internal)
                 }
                 .await;
                 let _ = reply.send(result);
@@ -336,21 +344,21 @@ impl HostState {
                 let _ = reply.send(result);
             }
             HostCommand::GitWorkspace { reply } => {
-                // Snapshot the workspace; the caller runs Git without blocking the agent inbox.
-                let _ = reply.send((
-                    Arc::clone(&self.running.gateway_sandbox),
-                    self.spec.workspace.clone(),
-                ));
+                let result = self.project().map(|workspace| {
+                    (
+                        Arc::clone(&self.running.gateway_sandbox),
+                        workspace.to_owned(),
+                    )
+                });
+                let _ = reply.send(result);
             }
             HostCommand::WorkspaceFiles { scope, reply } => {
-                let _ = reply.send(
-                    list_workspace_files(
-                        &self.running.gateway_sandbox,
-                        &self.spec.workspace,
-                        scope,
-                    )
-                    .await,
-                );
+                let result = async {
+                    let workspace = self.project()?;
+                    list_workspace_files(&self.running.gateway_sandbox, workspace, scope).await
+                }
+                .await;
+                let _ = reply.send(result);
             }
             HostCommand::ReadWorkspaceFile {
                 path,
@@ -358,10 +366,13 @@ impl HostState {
                 max_bytes,
                 reply,
             } => {
-                let _ = reply.send(
+                let result = async {
+                    self.project()?;
                     read_workspace_file(&self.running.gateway_sandbox, &path, offset, max_bytes)
-                        .await,
-                );
+                        .await
+                }
+                .await;
+                let _ = reply.send(result);
             }
             HostCommand::WriteWorkspaceFile {
                 path,
@@ -371,6 +382,7 @@ impl HostState {
                 let result = async {
                     self.require_idle()?;
                     let _mutation = self.begin_session_mutation()?;
+                    self.project()?;
                     write_workspace_file(&self.running.gateway_sandbox, &path, &content).await
                 }
                 .await;
@@ -379,6 +391,7 @@ impl HostState {
             HostCommand::SwitchGitBranch { branch, reply } => {
                 let result = async {
                     let _mutation = self.begin_session_mutation()?;
+                    self.project()?;
                     self.switch_git_branch(&branch).await
                 }
                 .await;
@@ -432,6 +445,74 @@ impl HostState {
             HostCommand::Shutdown => return false,
         }
         true
+    }
+
+    async fn accept_source(
+        &mut self,
+        mut submission: Submission,
+        bot_id: String,
+        reply: oneshot::Sender<std::result::Result<(), Rejection>>,
+    ) {
+        if !matches!(submission.op, Op::Message { .. }) {
+            let result = async {
+                let _mutation = self.begin_session_mutation()?;
+                self.bind_bot().await?;
+                if self.spec.bot_id != bot_id {
+                    return Err(invalid_config("the chat now belongs to another Bot"));
+                }
+                if !matches!(submission.op, Op::Interrupt { .. }) {
+                    return Err(invalid_config(
+                        "source commands support only message and interrupt",
+                    ));
+                }
+                self.submit(submission)
+            }
+            .await;
+            let _ = reply.send(result);
+            return;
+        }
+        if self.running.session_id == crate::bots::conversation_session_id(&self.spec.bot_id)
+            && let Op::Message { message } = &mut submission.op
+        {
+            message.requested_delivery = Some(mobius::protocol::ActiveMessageDelivery::Queue);
+        }
+        let result = async {
+            let _mutation = self.begin_session_mutation()?;
+            self.bind_bot().await?;
+            if self.spec.bot_id != bot_id {
+                return Err(Rejection {
+                    code: "invalid_submission",
+                    message: "the chat now belongs to another Bot".into(),
+                    fatal: false,
+                });
+            }
+            self.running
+                .sender
+                .as_ref()
+                .ok_or_else(stopped)?
+                .send_with_admission(submission.clone())
+                .map_err(internal)
+        }
+        .await;
+        match result {
+            Ok(admission) => {
+                let id = submission.id;
+                let reserved = self.pending_messages.insert(id.clone());
+                self.pending_turns += usize::from(reserved);
+                self.work_activity.mark();
+                self.admissions.push(Box::pin(async move {
+                    SourceAdmission {
+                        id,
+                        reserved,
+                        result: admission.wait().await,
+                        reply,
+                    }
+                }));
+            }
+            Err(error) => {
+                let _ = reply.send(Err(error));
+            }
+        }
     }
 
     pub(super) async fn snapshot_value(
@@ -715,6 +796,7 @@ impl HostState {
                 prepared,
                 Arc::clone(&self.provider_epoch),
                 Arc::clone(&self.live_chats),
+                Arc::clone(&self.host_access),
             )
             .await
             {
@@ -737,6 +819,7 @@ impl HostState {
                         Some(old_prepared),
                         Arc::clone(&self.provider_epoch),
                         Arc::clone(&self.live_chats),
+                        Arc::clone(&self.host_access),
                     )
                     .await;
                     let recovery = match recovery {
@@ -804,4 +887,22 @@ pub(in crate::host) fn fail_queued_routine_commands(
         let _ = reply.send(Err(rejection));
     }
     first_error
+}
+
+fn source_rejection(error: mobius::Error) -> Rejection {
+    let code = match &error {
+        mobius::Error::Busy(_) => "agent_busy",
+        mobius::Error::Stopped(_) => "agent_stopped",
+        mobius::Error::Checkpoint(_) | mobius::Error::Sqlite(_) => "gateway_error",
+        _ => "invalid_submission",
+    };
+    let message = match error {
+        mobius::Error::Config(message) => message,
+        error => error.to_string(),
+    };
+    Rejection {
+        code,
+        message,
+        fatal: false,
+    }
 }

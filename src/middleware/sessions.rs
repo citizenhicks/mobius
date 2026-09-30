@@ -176,6 +176,8 @@ pub trait LiveChats: Send + Sync {
         session_id: &'a str,
         target: &'a str,
         text: String,
+        initiating_author: &'a crate::protocol::MessageAuthor,
+        command_id: &'a str,
     ) -> BoxFuture<'a, Result<()>>;
 }
 
@@ -494,14 +496,20 @@ impl Tool for MessageChat {
 
     fn call<'a>(
         &'a self,
-        _context: ToolContext,
+        context: ToolContext,
         arguments: Value,
     ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let MessageChatArgs { target, text } = serde_json::from_value(arguments)?;
             self.0
                 .chats
-                .send(&self.0.history.session_id, &target, text)
+                .send(
+                    &self.0.history.session_id,
+                    &target,
+                    text,
+                    &context.author,
+                    &context.call_id,
+                )
                 .await?;
             Ok(String::new().into())
         })
@@ -899,11 +907,9 @@ fn history_text(item: &Value) -> Option<(&'static str, String)> {
     if let Some(message) = crate::protocol::message_metadata(item) {
         return Some(match message.author {
             crate::protocol::MessageAuthor::User => ("user", message.text),
-            crate::protocol::MessageAuthor::Peer {
-                session_id, handle, ..
-            } => (
+            crate::protocol::MessageAuthor::Source { source, handle, .. } => (
                 "assistant",
-                format!("@{handle} ({session_id}): {}", message.text),
+                format!("@{handle} ({}): {}", source.id(), message.text),
             ),
         });
     }
@@ -1349,9 +1355,13 @@ mod tests {
     #[test]
     fn history_preserves_peer_identity_as_assistant_evidence() {
         let item = crate::backend::model::message_input(&crate::protocol::MessageEvent {
-            author: crate::protocol::MessageAuthor::Peer {
+            author: crate::protocol::MessageAuthor::Source {
                 message_id: "message-1".into(),
-                session_id: "session-reviewer".into(),
+                source: crate::protocol::MessageSource::Session {
+                    session_id: "session-reviewer".into(),
+                },
+                cause_id: None,
+                ancestry: Vec::new(),
                 handle: "reviewer".into(),
                 symbol: None,
             },
@@ -1428,6 +1438,8 @@ mod tests {
             _session_id: &'a str,
             _target: &'a str,
             _text: String,
+            _initiating_author: &'a crate::protocol::MessageAuthor,
+            _command_id: &'a str,
         ) -> BoxFuture<'a, Result<()>> {
             Box::pin(async { Ok(()) })
         }

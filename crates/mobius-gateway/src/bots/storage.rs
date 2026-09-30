@@ -11,7 +11,7 @@ use crate::{Error, Result};
 
 pub(super) const STATE_FILE: &str = "bots.sqlite3";
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 5;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SCHEMA: &str = "
 BEGIN IMMEDIATE;
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS routine_runs (
     started_at INTEGER NOT NULL,
     finished_at INTEGER,
     status TEXT NOT NULL CHECK (
-        status IN ('running', 'succeeded', 'failed', 'skipped')
+        status IN ('running', 'succeeded', 'failed', 'skipped', 'cancelled')
     ),
     session_id TEXT,
     message TEXT,
@@ -40,13 +40,72 @@ CREATE INDEX IF NOT EXISTS routine_runs_bot_recent
     ON routine_runs(bot_id, ordinal DESC);
 CREATE INDEX IF NOT EXISTS routine_runs_active
     ON routine_runs(routine_id) WHERE status = 'running';
-PRAGMA user_version = 3;
+CREATE TABLE IF NOT EXISTS hook_bindings (
+    bot_id TEXT NOT NULL,
+    id TEXT NOT NULL,
+    routine_id TEXT,
+    selector_json TEXT NOT NULL,
+    action_json TEXT NOT NULL,
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    after_sequence INTEGER NOT NULL CHECK (after_sequence >= 0),
+    starts_at INTEGER NOT NULL,
+    PRIMARY KEY (bot_id, id)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS hook_events (
+    id TEXT PRIMARY KEY,
+    bot_id TEXT NOT NULL,
+    source_json TEXT NOT NULL,
+    occurred_at INTEGER NOT NULL,
+    event_json TEXT NOT NULL
+    , published INTEGER NOT NULL DEFAULT 0 CHECK (published IN (0, 1))
+);
+CREATE TABLE IF NOT EXISTS hook_outbox (
+    id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL REFERENCES hook_events(id) ON DELETE CASCADE,
+    binding_id TEXT NOT NULL,
+    bot_id TEXT NOT NULL,
+    action_json TEXT NOT NULL,
+    retry_at INTEGER,
+    accepted INTEGER NOT NULL DEFAULT 0 CHECK (accepted IN (0, 1)),
+    last_error TEXT
+);
+CREATE INDEX IF NOT EXISTS hook_outbox_due ON hook_outbox(retry_at) WHERE accepted = 0;
+CREATE TABLE IF NOT EXISTS routine_commands (
+    command_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES routine_runs(id) ON DELETE CASCADE,
+    cause_json TEXT
+);
+CREATE TABLE IF NOT EXISTS routine_stop_requests (
+    run_id TEXT PRIMARY KEY REFERENCES routine_runs(id) ON DELETE CASCADE,
+    command_id TEXT NOT NULL UNIQUE,
+    cause_json TEXT
+);
+CREATE TABLE IF NOT EXISTS bot_session_cursors (
+    session_id TEXT PRIMARY KEY,
+    bot_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL CHECK (sequence >= 0)
+);
+CREATE TABLE IF NOT EXISTS bot_webhooks (
+    id TEXT PRIMARY KEY,
+    bot_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    token_hash BLOB NOT NULL CHECK (length(token_hash) = 32)
+);
+CREATE TABLE IF NOT EXISTS bot_webhook_receipts (
+    source_id TEXT NOT NULL REFERENCES bot_webhooks(id) ON DELETE CASCADE,
+    delivery_id TEXT NOT NULL,
+    body_digest BLOB NOT NULL CHECK (length(body_digest) = 32),
+    event_id TEXT NOT NULL REFERENCES hook_events(id) ON DELETE CASCADE,
+    PRIMARY KEY (source_id, delivery_id)
+) WITHOUT ROWID;
+PRAGMA user_version = 5;
 COMMIT;
 ";
 
 pub(super) struct BotStorage {
     path: PathBuf,
-    connection: Mutex<Connection>,
+    pub(super) connection: Mutex<Connection>,
 }
 
 impl BotStorage {
@@ -138,6 +197,7 @@ impl BotStorage {
         self.transaction(|transaction| save_catalog_row(transaction, state_json))
     }
 
+    #[cfg(test)]
     pub(super) fn save_catalog_and_runs(
         &self,
         state_json: &str,
@@ -157,9 +217,12 @@ impl BotStorage {
         state_json: &str,
         routine_id: Option<&str>,
         bot_id: Option<&str>,
+        event: Option<&crate::wire::HookEvent>,
+        accepted_action_id: Option<&str>,
     ) -> Result<()> {
         debug_assert!(routine_id.is_some() ^ bot_id.is_some());
         self.transaction(|transaction| {
+            super::events::accept_action(transaction, accepted_action_id)?;
             if let Some(routine_id) = routine_id {
                 transaction
                     .execute(
@@ -172,12 +235,103 @@ impl BotStorage {
                     .execute("DELETE FROM routine_runs WHERE bot_id = ?1", [bot_id])
                     .map_err(Error::from)?;
             }
-            save_catalog_row(transaction, state_json)
+            if let Some(routine_id) = routine_id {
+                let source = serde_json::to_string(&crate::wire::HookSource::Routine {
+                    routine_id: routine_id.into(),
+                })?;
+                transaction.execute(
+                    "DELETE FROM hook_bindings WHERE routine_id = ?1",
+                    [routine_id],
+                )?;
+                transaction.execute("DELETE FROM hook_outbox WHERE accepted=0 AND event_id IN(SELECT id FROM hook_events WHERE source_json=?1)", [&source])?;
+            } else if let Some(bot_id) = bot_id {
+                for table in [
+                    "hook_bindings",
+                    "hook_events",
+                    "bot_webhooks",
+                    "bot_session_cursors",
+                ] {
+                    transaction
+                        .execute(&format!("DELETE FROM {table} WHERE bot_id = ?1"), [bot_id])?;
+                }
+            }
+            save_catalog_row(transaction, state_json)?;
+            if let Some(event) = event {super::events::record_event(transaction,event,None)?;}
+            Ok(())
         })
     }
 
-    pub(super) fn insert_run(&self, run: &RoutineRun) -> Result<()> {
-        self.transaction(|transaction| insert_run(transaction, run))
+    pub(super) fn command_run(&self, command_id: &str) -> Result<Option<RoutineRun>> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        let run_id = connection
+            .query_row(
+                "SELECT run_id FROM routine_commands WHERE command_id = ?1",
+                [command_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        run_id
+            .map(|id| {
+                query_run(&connection, &id)?
+                    .ok_or_else(|| Error::Config("routine command receipt has no run".into()))
+            })
+            .transpose()
+    }
+
+    pub(super) fn insert_run_with_cause(
+        &self,
+        run: &RoutineRun,
+        command_id: &str,
+        cause: Option<&crate::wire::HookEvent>,
+    ) -> Result<()> {
+        self.transaction(|transaction| {
+            insert_run_row(transaction, run)?;
+            transaction.execute(
+                "INSERT INTO routine_commands(command_id,run_id,cause_json) VALUES(?1,?2,?3)",
+                params![
+                    command_id,
+                    run.id,
+                    cause.map(serde_json::to_string).transpose()?
+                ],
+            )?;
+            if cause.is_some() {
+                super::events::accept_action(transaction, Some(command_id))?;
+            }
+            super::events::record_run(transaction, run)
+        })
+    }
+
+    pub(super) fn request_run_stop(
+        &self,
+        run_id: &str,
+        command_id: &str,
+        cause: Option<&crate::wire::HookEvent>,
+    ) -> Result<()> {
+        self.transaction(|transaction| {
+            if let Some(previous) = transaction.query_row("SELECT run_id FROM routine_stop_requests WHERE command_id = ?1", [command_id], |row| row.get::<_,String>(0)).optional()? {
+                if previous != run_id {return Err(Error::Config("stop command identity targets another run".into()));}
+                return Ok(());
+            }
+            let run = query_run(transaction, run_id)?.ok_or_else(||Error::Config("unknown routine run".into()))?;
+            if run.status != RoutineRunStatus::Running {return Err(Error::Config("only an active invocation can be stopped".into()));}
+            transaction.execute("INSERT INTO routine_stop_requests(run_id,command_id,cause_json) VALUES(?1,?2,?3) ON CONFLICT(run_id) DO NOTHING",params![run_id,command_id,cause.map(serde_json::to_string).transpose()?])?;
+            Ok(())
+        })
+    }
+
+    pub(super) fn run_cancel_requested(&self, run_id: &str) -> Result<bool> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        Ok(connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM routine_stop_requests WHERE run_id=?1)",
+            [run_id],
+            |row| row.get(0),
+        )?)
     }
 
     pub(super) fn has_running(&self, routine_id: &str) -> Result<bool> {
@@ -265,20 +419,27 @@ impl BotStorage {
         message: Option<String>,
     ) -> Result<RoutineRun> {
         self.transaction(|transaction| {
-            let changed = transaction
-                .execute(
-                    "UPDATE routine_runs
-                     SET finished_at = ?1, status = ?2, message = ?3
-                     WHERE id = ?4",
-                    params![finished_at, status_text(status), message, id],
-                )
-                .map_err(Error::from)?;
-            if changed == 0 {
-                return Err(Error::Config(format!("unknown routine run `{id}`")));
+            let mut run = query_run(transaction, id)?
+                .ok_or_else(|| Error::Config(format!("unknown routine run `{id}`")))?;
+            if status == RoutineRunStatus::Running {
+                return Err(Error::Config("cannot finish a run with running status".into()));
             }
-            query_run(transaction, id)?
-                .ok_or_else(|| Error::Config(format!("unknown routine run `{id}`")))
-                .and_then(|run| validate_run(&run).map(|()| run))
+            if run.status != RoutineRunStatus::Running {
+                if run.status == status && run.message == message {
+                    return Ok(run);
+                }
+                return Err(Error::Config("routine run already has a different terminal result".into()));
+            }
+            run.status = status;
+            run.finished_at = Some(finished_at);
+            run.message = message;
+            validate_run(&run)?;
+            transaction.execute(
+                "UPDATE routine_runs SET finished_at = ?1, status = ?2, message = ?3 WHERE id = ?4 AND status = 'running'",
+                params![finished_at, status_text(status), run.message, id],
+            )?;
+            super::events::record_run(transaction, &run)?;
+            Ok(run)
         })
     }
 
@@ -357,23 +518,7 @@ impl BotStorage {
         })
     }
 
-    pub(super) fn recover_interrupted_runs(&self) -> Result<bool> {
-        let now = chrono::Utc::now().timestamp();
-        self.transaction(|transaction| {
-            let changed = transaction
-                .execute(
-                    "UPDATE routine_runs
-                     SET status = 'failed', finished_at = ?1,
-                         message = 'the gateway stopped before this run completed'
-                     WHERE status = 'running'",
-                    [now],
-                )
-                .map_err(Error::from)?;
-            Ok(changed != 0)
-        })
-    }
-
-    fn transaction<T>(
+    pub(super) fn transaction<T>(
         &self,
         operation: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
@@ -442,7 +587,10 @@ fn protect_database_files(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn save_catalog_row(transaction: &rusqlite::Transaction<'_>, state_json: &str) -> Result<()> {
+pub(super) fn save_catalog_row(
+    transaction: &rusqlite::Transaction<'_>,
+    state_json: &str,
+) -> Result<()> {
     transaction
         .execute(
             "INSERT INTO catalog (id, state_json) VALUES (1, ?1)
@@ -453,7 +601,13 @@ fn save_catalog_row(transaction: &rusqlite::Transaction<'_>, state_json: &str) -
     Ok(())
 }
 
+#[cfg(test)]
 fn insert_run(transaction: &rusqlite::Transaction<'_>, run: &RoutineRun) -> Result<()> {
+    insert_run_row(transaction, run)?;
+    super::events::record_run(transaction, run)
+}
+
+fn insert_run_row(transaction: &rusqlite::Transaction<'_>, run: &RoutineRun) -> Result<()> {
     validate_run(run)?;
     transaction
         .execute(
@@ -495,6 +649,7 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RoutineRun> {
         "succeeded" => RoutineRunStatus::Succeeded,
         "failed" => RoutineRunStatus::Failed,
         "skipped" => RoutineRunStatus::Skipped,
+        "cancelled" => RoutineRunStatus::Cancelled,
         _ => return Err(rusqlite::Error::InvalidQuery),
     };
     Ok(RoutineRun {
@@ -537,12 +692,13 @@ fn validate_run(run: &RoutineRun) -> Result<()> {
     Ok(())
 }
 
-const fn status_text(status: RoutineRunStatus) -> &'static str {
+pub(super) const fn status_text(status: RoutineRunStatus) -> &'static str {
     match status {
         RoutineRunStatus::Running => "running",
         RoutineRunStatus::Succeeded => "succeeded",
         RoutineRunStatus::Failed => "failed",
         RoutineRunStatus::Skipped => "skipped",
+        RoutineRunStatus::Cancelled => "cancelled",
     }
 }
 

@@ -1,5 +1,6 @@
 use mobius_gateway::wire::{
-    ClientMessage, ReadyPayload, Routine, RoutineRun, RoutineRunPreview, RoutineRunStatus,
+    ClientMessage, ReadyPayload, Routine, RoutineAction, RoutineCommand, RoutineRun,
+    RoutineRunPreview, RoutineRunStatus,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
@@ -24,14 +25,16 @@ pub(super) enum BotRow {
     Identity,
     Model,
     Capabilities,
+    Conversation,
     Conversations,
     Routines,
 }
 
-pub(super) const BOT_ROWS: [BotRow; 5] = [
+pub(super) const BOT_ROWS: [BotRow; 6] = [
     BotRow::Identity,
     BotRow::Model,
     BotRow::Capabilities,
+    BotRow::Conversation,
     BotRow::Conversations,
     BotRow::Routines,
 ];
@@ -73,6 +76,7 @@ pub(super) struct Notice {
 }
 
 pub(super) struct BotsState {
+    pub(super) lifecycle_refresh: bool,
     pub(super) page: Page,
     pub(super) selected: usize,
     pub(super) protected_bot_id: Option<String>,
@@ -94,6 +98,7 @@ impl BotsState {
             .filter(|id| gateway.bots.iter().any(|bot| bot.id == *id))
             .map_or(Page::Root, |id| Page::Bot(id.into()));
         Self {
+            lifecycle_refresh: false,
             page,
             selected: 0,
             protected_bot_id: protected_bot_id.map(str::to_owned),
@@ -287,6 +292,13 @@ impl BotsState {
                 bot_id: id,
                 mode: SetupMode::Bot,
             },
+            BotRow::Conversation => gateway
+                .bots
+                .iter()
+                .find(|bot| bot.id == id)
+                .map_or(Action::None, |bot| {
+                    Action::OpenSession(bot.conversation_session_id.clone())
+                }),
             BotRow::Conversations => {
                 self.page = Page::Conversations(id);
                 self.selected = 0;
@@ -329,9 +341,12 @@ impl BotsState {
             }
             KeyCode::Char(' ') => update_routine_action(&routine, !routine.enabled),
             KeyCode::Char('r') => request_action("Run routine", FollowUp::Routines, |request_id| {
-                ClientMessage::RunRoutine {
+                ClientMessage::RoutineCommand {
                     request_id,
-                    id: routine.id,
+                    command: RoutineCommand {
+                        routine_id: routine.id,
+                        action: RoutineAction::Start,
+                    },
                 }
             }),
             KeyCode::Delete | KeyCode::Char('x') => {
@@ -374,9 +389,12 @@ impl BotsState {
         }
         if key.code == KeyCode::Char('r') {
             return request_action("Run routine", FollowUp::Routines, |request_id| {
-                ClientMessage::RunRoutine {
+                ClientMessage::RoutineCommand {
                     request_id,
-                    id: routine.id,
+                    command: RoutineCommand {
+                        routine_id: routine.id,
+                        action: RoutineAction::Start,
+                    },
                 }
             });
         }
@@ -390,9 +408,12 @@ impl BotsState {
             }
             RoutineRow::Toggle => update_routine_action(&routine, !routine.enabled),
             RoutineRow::Run => request_action("Run routine", FollowUp::Routines, |request_id| {
-                ClientMessage::RunRoutine {
+                ClientMessage::RoutineCommand {
                     request_id,
-                    id: routine.id,
+                    command: RoutineCommand {
+                        routine_id: routine.id,
+                        action: RoutineAction::Start,
+                    },
                 }
             }),
             RoutineRow::History => {
@@ -465,7 +486,13 @@ impl BotsState {
                     }
                     Confirmation::Routine { id, .. } => {
                         request_action("Delete routine", FollowUp::Routines, |request_id| {
-                            ClientMessage::DeleteRoutine { request_id, id }
+                            ClientMessage::RoutineCommand {
+                                request_id,
+                                command: RoutineCommand {
+                                    routine_id: id,
+                                    action: RoutineAction::Delete,
+                                },
+                            }
                         })
                     }
                     Confirmation::Run { id, routine_id, .. } => request_action(
@@ -564,23 +591,25 @@ impl BotsState {
 }
 pub(super) fn update_routine_action(routine: &Routine, enabled: bool) -> Action {
     let id = routine.id.clone();
-    let bot_id = routine.bot_id.clone();
-    let workspace = routine.workspace.clone();
-    let instructions = routine.instructions.clone();
-    let schedule = routine.schedule.clone();
-    let ends_at = routine.ends_at;
-    request_action("Update routine", FollowUp::Routines, |request_id| {
-        ClientMessage::UpdateRoutine {
+    request_action(
+        if enabled {
+            "Resume routine"
+        } else {
+            "Pause routine"
+        },
+        FollowUp::Routines,
+        |request_id| ClientMessage::RoutineCommand {
             request_id,
-            id,
-            bot_id,
-            workspace,
-            instructions,
-            schedule,
-            ends_at,
-            enabled,
-        }
-    })
+            command: RoutineCommand {
+                routine_id: id,
+                action: if enabled {
+                    RoutineAction::Resume
+                } else {
+                    RoutineAction::Pause
+                },
+            },
+        },
+    )
 }
 
 pub(super) fn runs_for_routine<'a>(
@@ -605,6 +634,7 @@ const fn run_status(status: RoutineRunStatus) -> &'static str {
         RoutineRunStatus::Succeeded => "succeeded",
         RoutineRunStatus::Failed => "failed",
         RoutineRunStatus::Skipped => "skipped",
+        RoutineRunStatus::Cancelled => "cancelled",
     }
 }
 pub(super) fn sessions_for_bot<'a>(

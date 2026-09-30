@@ -712,6 +712,7 @@ impl MiddlewareStack {
             return Ok(None);
         }
         let mut request_context = ModelRequestContext {
+            author: context.author,
             role: &context.runtime.role,
             model: context.model,
             provider: context.provider,

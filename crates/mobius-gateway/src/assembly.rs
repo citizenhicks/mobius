@@ -82,6 +82,11 @@ pub(crate) struct PreparedBot {
 }
 
 impl PreparedBot {
+    #[cfg(test)]
+    pub(crate) fn test_models(&mut self, models: Arc<ModelRouter>) {
+        self.models = models;
+    }
+
     pub(crate) fn matches_runtime(&self, bot: &crate::wire::BotRecord) -> bool {
         !self.stale.load(std::sync::atomic::Ordering::Acquire)
             && self.bot.description == bot.description
@@ -168,7 +173,7 @@ pub(crate) struct BuiltAgent {
 }
 
 struct BuiltMiddleware {
-    stack: MiddlewareStack,
+    entries: Vec<Arc<dyn Middleware>>,
     subagent_template: Option<Arc<OnceLock<AgentConfig>>>,
     subagents: Option<Arc<Subagents>>,
 }
@@ -191,6 +196,7 @@ pub(crate) async fn assemble(
     origin_label: &str,
     prepared: Arc<PreparedBot>,
     live_chats: Option<Arc<dyn LiveChats>>,
+    host_access: Option<crate::host::HostAccess>,
 ) -> Result<BuiltAgent> {
     #[cfg(test)]
     store
@@ -209,7 +215,8 @@ pub(crate) async fn assemble(
     let model_providers = prepared.model_providers.clone();
     let approval_policy = prepared.approval_policy;
     let settings = prepared.bot.config.config.middleware.clone();
-    let workspace_path = chat.workspace.clone();
+    let workspace_path = chat.execution_root(store.state_dir(), gateway_config.tls.as_ref())?;
+    let project = chat.workspace.is_some();
     let attached_folders = chat.attached_folders.clone();
     let state_dir = store.state_dir().to_path_buf();
     let computer_runtime = prepared.computer_runtime.clone();
@@ -225,7 +232,7 @@ pub(crate) async fn assemble(
         gateway_sandbox,
         sandbox,
         BuiltMiddleware {
-            stack: middleware,
+            mut entries,
             subagent_template: template,
             subagents,
         },
@@ -292,6 +299,7 @@ pub(crate) async fn assemble(
             session_files,
             extensions,
             live_chats,
+            project,
         )?;
         Ok((gateway_sandbox, Arc::new(sandbox), middleware))
     })
@@ -316,7 +324,7 @@ pub(crate) async fn assemble(
         models,
         Arc::clone(&sandbox),
         checkpoints,
-        middleware,
+        MiddlewareStack::new(entries.clone())?,
         system_prompt,
     )
     .context_window(context_window)
@@ -334,11 +342,19 @@ pub(crate) async fn assemble(
     .session_context(SessionContext {
         owner_id: chat.bot_id.clone(),
         user_name: local_user_name(),
-        workspace_id: Some(workspace.id),
-        workspace_label: Some(workspace.path.display().to_string()),
+        workspace_id: workspace.as_ref().map(|workspace| workspace.id.clone()),
+        workspace_label: workspace
+            .as_ref()
+            .map(|workspace| workspace.path.display().to_string()),
         origin_label: Some(origin_label.into()),
         ..SessionContext::default()
     });
+    let persistent = session_id.as_deref() == Some(prepared.bot.conversation_session_id.as_str());
+    if persistent && (project || !chat.catalog_visible) {
+        return Err(Error::Config(
+            "Persistent Chat must be visible and project-free".into(),
+        ));
+    }
     if let Some(session_id) = session_id {
         agent_config = agent_config.session_id(session_id);
     }
@@ -346,6 +362,14 @@ pub(crate) async fn assemble(
         template
             .set(agent_config.clone())
             .map_err(|_| Error::Config("subagent launcher was initialized twice".into()))?;
+    }
+    if persistent {
+        entries.push(Arc::new(crate::persistent_chat::PersistentChat::new(
+            prepared.bot.id.clone(),
+            host_access
+                .ok_or_else(|| Error::Config("Persistent Chat requires the gateway".into()))?,
+        )));
+        agent_config = agent_config.middleware(MiddlewareStack::new(entries)?);
     }
     let agent = create_agent(agent_config).await?;
     let model_router = agent.model_router();
@@ -648,6 +672,7 @@ fn build_middleware(
     session_files: SessionFileStore,
     mut extensions: Option<Extensions>,
     mut live_chats: Option<Arc<dyn LiveChats>>,
+    project: bool,
 ) -> Result<BuiltMiddleware> {
     let settings = &prepared.bot.config.config.middleware;
     let mut entries: Vec<Arc<dyn Middleware>> = Vec::new();
@@ -659,16 +684,26 @@ fn build_middleware(
             || matches!(feature.kind, BuiltinMiddleware::Scratchpad)
     }) {
         let middleware: Arc<dyn Middleware> = match feature.kind {
-            BuiltinMiddleware::Sandbox => continue,
+            BuiltinMiddleware::Sandbox | BuiltinMiddleware::PersistentChat => continue,
             BuiltinMiddleware::Attachments => {
-                Arc::new(Attachments::new(session_files.clone()).with_workspace(workspace)?)
+                let attachments = Attachments::new(session_files.clone());
+                Arc::new(if project {
+                    attachments.with_workspace(workspace)?
+                } else {
+                    attachments
+                })
             }
             BuiltinMiddleware::Artifacts => Arc::new(Artifacts::new(session_files.clone())),
             BuiltinMiddleware::ImageGeneration => Arc::new(ImageGeneration::new(
                 Arc::clone(&prepared.models),
                 session_files.clone(),
             )),
-            BuiltinMiddleware::Tools => Arc::new(Tools::coding(session_files.clone())),
+            BuiltinMiddleware::Tools => Arc::new(if project {
+                Tools::coding(session_files.clone())
+            } else {
+                Tools::new(Vec::new())
+            }),
+            BuiltinMiddleware::Instructions if !project => continue,
             BuiltinMiddleware::Instructions => Arc::new(Instructions::discover(workspace)?),
             BuiltinMiddleware::Scratchpad => Arc::new(
                 Scratchpad::new(scratchpad.clone()).agent_enabled(settings.enabled("scratchpad")),
@@ -759,7 +794,7 @@ fn build_middleware(
         entries.push(middleware);
     }
     Ok(BuiltMiddleware {
-        stack: MiddlewareStack::new(entries)?,
+        entries,
         subagent_template,
         subagents,
     })

@@ -95,8 +95,11 @@ pub async fn run(
     gateway_endpoint: String,
     choose_initial_bot: bool,
 ) -> Result<(FrontendExit, GatewaySender, GatewayEvents)> {
-    let workspace = session.workspace.path.clone();
-    let catalog = catalog::UiCatalog::build(&session.contributions, &workspace)?;
+    let workspace = session
+        .workspace
+        .as_ref()
+        .map(|workspace| workspace.path.as_path());
+    let catalog = catalog::UiCatalog::build(&session.contributions, workspace)?;
     tui::runtime::run(
         sender,
         events,

@@ -25,7 +25,7 @@ async fn open_chats_of_one_bot_list_and_message_each_other() {
         .unwrap();
     let hidden = gateway
         .create_session_with_id(
-            &workspace,
+            Some(workspace.as_path()),
             &bot.id,
             Uuid::new_v4().to_string(),
             false,
@@ -42,7 +42,8 @@ async fn open_chats_of_one_bot_list_and_message_each_other() {
         .rename_session(sibling.session_id(), "Backend API")
         .await
         .unwrap();
-    let chats = crate::host::live_chats::GatewayLiveChats(Arc::downgrade(&gateway.state));
+    let chats =
+        crate::host::live_chats::GatewayLiveChats(Arc::downgrade(&gateway.state), gateway.access());
 
     let listed = chats.list(sender.session_id()).await.unwrap();
     assert_eq!(
@@ -58,7 +59,13 @@ async fn open_chats_of_one_bot_list_and_message_each_other() {
     );
     assert!(
         chats
-            .send(sender.session_id(), foreign.session_id(), "Hi".into())
+            .send(
+                sender.session_id(),
+                foreign.session_id(),
+                "Hi".into(),
+                &MessageAuthor::User,
+                "foreign"
+            )
             .await
             .is_err()
     );
@@ -69,6 +76,8 @@ async fn open_chats_of_one_bot_list_and_message_each_other() {
             sender.session_id(),
             &target,
             "The API now returns ids.".into(),
+            &MessageAuthor::User,
+            "peer-message",
         )
         .await
         .unwrap();
@@ -80,7 +89,7 @@ async fn open_chats_of_one_bot_list_and_message_each_other() {
         EventMsg::Message(message) if message.text == "The API now returns ids."
             && matches!(
                 &message.author,
-                MessageAuthor::Peer { session_id, handle: sent, .. }
+                MessageAuthor::Source { source: mobius::protocol::MessageSource::Session { session_id }, handle: sent, .. }
                     if session_id == sender.session_id() && *sent == handle
             )
     )));
@@ -111,9 +120,13 @@ async fn peer_delivery_needs_the_current_bot_and_reports_the_agents_rejection() 
         id: Uuid::new_v4().to_string(),
         op: Op::Message {
             message: MessageSubmission {
-                author: MessageAuthor::Peer {
+                author: MessageAuthor::Source {
+                    cause_id: None,
+                    ancestry: Vec::new(),
                     message_id: Uuid::new_v4().to_string(),
-                    session_id: "sender".into(),
+                    source: mobius::protocol::MessageSource::Session {
+                        session_id: "sender".into(),
+                    },
                     handle: "chat #sender".into(),
                     symbol: None,
                 },
@@ -126,10 +139,10 @@ async fn peer_delivery_needs_the_current_bot_and_reports_the_agents_rejection() 
         },
     };
 
-    let reassigned = target.deliver_peer(peer(None), bot.id).await.unwrap_err();
+    let reassigned = target.deliver_source(peer(None), bot.id).await.unwrap_err();
     assert_eq!(reassigned.message, "the chat now belongs to another Bot");
     let rejected = target
-        .deliver_peer(peer(Some("stale-turn")), other_bot.id)
+        .deliver_source(peer(Some("stale-turn")), other_bot.id)
         .await
         .unwrap_err();
     assert_eq!(rejected.message, "message targeted a stale turn");

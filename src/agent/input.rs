@@ -22,6 +22,7 @@ use super::EventRecorder;
 use super::Runner;
 use super::SubmissionInbox;
 use super::send_event;
+use super::{AdmissionReply, MessageAcceptance, ReceivedSubmission};
 
 const REPLY_EVENT_PAGE_SIZE: usize = 256;
 const INVALID_REPLY_TARGET: &str = "reply target is not a safe durable message in this chat";
@@ -54,6 +55,7 @@ struct ActiveChange {
 
 enum UncommittedRoute {
     Continue,
+    Rejected(String),
     Changed(ActiveChange),
     Interrupted {
         submission_id: String,
@@ -62,6 +64,11 @@ enum UncommittedRoute {
         submission_id: String,
         decision: ReviewDecision,
     },
+}
+
+enum AdmissionOutcome {
+    Accepted,
+    Rejected(String),
 }
 
 struct ActiveTurnRouter<'a> {
@@ -76,11 +83,35 @@ struct ActiveTurnRouter<'a> {
 }
 
 impl Runner {
-    pub(super) async fn route_idle_message(
+    pub(super) async fn admit_idle_message(
         &mut self,
         submission_id: String,
         message: MessageSubmission,
+        admission: Option<AdmissionReply>,
     ) -> Result<()> {
+        if self.message_accepted(&submission_id).await? {
+            if let Some(reply) = admission {
+                let _ = reply.send(Ok(MessageAcceptance::AlreadyAccepted));
+            }
+            return Ok(());
+        }
+        let result = self.route_idle_message(submission_id, message).await;
+        finish_admission(admission, result.as_ref());
+        result.map(|_| ())
+    }
+
+    async fn message_accepted(&self, submission_id: &str) -> Result<bool> {
+        self.config
+            .checkpoints
+            .message_accepted(&self.config.session_id, submission_id)
+            .await
+    }
+
+    async fn route_idle_message(
+        &mut self,
+        submission_id: String,
+        message: MessageSubmission,
+    ) -> Result<AdmissionOutcome> {
         if let Some(message) = validate_message_reply(
             self.config.checkpoints.as_ref(),
             &self.config.session_id,
@@ -89,7 +120,7 @@ impl Runner {
         .await?
         {
             reject(&self.events, submission_id, message).await?;
-            return Ok(());
+            return Ok(AdmissionOutcome::Rejected(message.into()));
         }
         let mut pending_messages = self.state.pending_messages.clone();
         let mut messages = Vec::new();
@@ -103,7 +134,7 @@ impl Runner {
                 queued_messages: MessageQueue::new(&mut pending_messages),
                 events: &mut messages,
             })?;
-        if let Some(change) = route_submission_result(
+        match route_submission_result(
             &self.events,
             submission_id,
             result,
@@ -112,9 +143,15 @@ impl Runner {
         )
         .await?
         {
-            self.persist_submission_change(change).await?;
+            UncommittedRoute::Changed(change) => {
+                self.persist_submission_change(change).await?;
+                Ok(AdmissionOutcome::Accepted)
+            }
+            UncommittedRoute::Rejected(message) => Ok(AdmissionOutcome::Rejected(message)),
+            _ => Ok(AdmissionOutcome::Rejected(
+                "message was handled without durable admission".into(),
+            )),
         }
-        Ok(())
     }
 
     pub(super) async fn wait_active<F, T>(
@@ -188,10 +225,37 @@ impl Runner {
 
     pub(super) async fn route_active_submission(
         &mut self,
-        submission: Submission,
+        received: ReceivedSubmission,
         turn_id: &str,
         expected_approval: Option<&str>,
     ) -> Result<ActiveRoute> {
+        let ReceivedSubmission {
+            submission,
+            admission,
+        } = received;
+        if matches!(submission.op, Op::Message { .. })
+            && self.message_accepted(&submission.id).await?
+        {
+            if let Some(reply) = admission {
+                let _ = reply.send(Ok(MessageAcceptance::AlreadyAccepted));
+            }
+            return Ok(ActiveRoute::Continue {
+                input_changed: false,
+            });
+        }
+        let result = self
+            .route_active_submission_inner(submission, turn_id, expected_approval)
+            .await;
+        finish_admission(admission, result.as_ref().map(|(_, outcome)| outcome));
+        result.map(|(route, _)| route)
+    }
+
+    async fn route_active_submission_inner(
+        &mut self,
+        submission: Submission,
+        turn_id: &str,
+        expected_approval: Option<&str>,
+    ) -> Result<(ActiveRoute, AdmissionOutcome)> {
         if let Op::Message { message } = &submission.op
             && let Some(rejection) = validate_message_reply(
                 self.config.checkpoints.as_ref(),
@@ -201,9 +265,12 @@ impl Runner {
             .await?
         {
             reject(&self.events, submission.id, rejection).await?;
-            return Ok(ActiveRoute::Continue {
-                input_changed: false,
-            });
+            return Ok((
+                ActiveRoute::Continue {
+                    input_changed: false,
+                },
+                AdmissionOutcome::Rejected(rejection.into()),
+            ));
         }
         let route = (ActiveTurnRouter {
             checkpoints: self.config.checkpoints.as_ref(),
@@ -221,23 +288,54 @@ impl Runner {
             UncommittedRoute::Changed(change) => {
                 let input_changed = change.input_changed;
                 self.persist_submission_change(change).await?;
-                Ok(ActiveRoute::Continue { input_changed })
+                Ok((
+                    ActiveRoute::Continue { input_changed },
+                    AdmissionOutcome::Accepted,
+                ))
             }
-            UncommittedRoute::Continue => Ok(ActiveRoute::Continue {
-                input_changed: false,
-            }),
-            UncommittedRoute::Interrupted { submission_id } => {
-                Ok(ActiveRoute::Interrupted { submission_id })
-            }
+            UncommittedRoute::Continue => Ok((
+                ActiveRoute::Continue {
+                    input_changed: false,
+                },
+                AdmissionOutcome::Rejected("message was handled without durable admission".into()),
+            )),
+            UncommittedRoute::Rejected(message) => Ok((
+                ActiveRoute::Continue {
+                    input_changed: false,
+                },
+                AdmissionOutcome::Rejected(message),
+            )),
+            UncommittedRoute::Interrupted { submission_id } => Ok((
+                ActiveRoute::Interrupted { submission_id },
+                AdmissionOutcome::Rejected("operation is not a message".into()),
+            )),
             UncommittedRoute::Approval {
                 submission_id,
                 decision,
-            } => Ok(ActiveRoute::Approval {
-                submission_id,
-                decision,
-            }),
+            } => Ok((
+                ActiveRoute::Approval {
+                    submission_id,
+                    decision,
+                },
+                AdmissionOutcome::Rejected("operation is not a message".into()),
+            )),
         }
     }
+}
+
+fn finish_admission(
+    admission: Option<AdmissionReply>,
+    result: std::result::Result<&AdmissionOutcome, &Error>,
+) {
+    let Some(reply) = admission else {
+        return;
+    };
+    let accepted = match result {
+        Ok(AdmissionOutcome::Accepted) => Ok(MessageAcceptance::Accepted),
+        Ok(AdmissionOutcome::Rejected(message)) => Err(Error::Config(message.clone())),
+        Err(error) => Err(Error::Checkpoint(error.to_string())),
+    };
+    let _ = reply.send(accepted);
 }
 
 async fn validate_message_reply(
@@ -302,11 +400,7 @@ impl ActiveTurnRouter<'_> {
                     queued_messages: MessageQueue::new(&mut pending_messages),
                     events: &mut messages,
                 })?;
-                Ok(
-                    route_submission_result(self.events, id, result, pending_messages, messages)
-                        .await?
-                        .map_or(UncommittedRoute::Continue, UncommittedRoute::Changed),
-                )
+                route_submission_result(self.events, id, result, pending_messages, messages).await
             }
             Op::Interrupt { turn_id } if turn_id == self.turn_id => {
                 Ok(UncommittedRoute::Interrupted { submission_id: id })
@@ -370,11 +464,7 @@ impl ActiveTurnRouter<'_> {
                     .await?;
                     return Ok(UncommittedRoute::Continue);
                 };
-                Ok(
-                    route_submission_result(self.events, id, result, pending_messages, messages)
-                        .await?
-                        .map_or(UncommittedRoute::Continue, UncommittedRoute::Changed),
-                )
+                route_submission_result(self.events, id, result, pending_messages, messages).await
             }
             Op::SetModel { .. } | Op::ResumeSession { .. } => {
                 warn(
@@ -395,17 +485,19 @@ async fn route_submission_result(
     result: SubmissionResult,
     pending_messages: Vec<QueuedMessage>,
     messages: Vec<EventMsg>,
-) -> Result<Option<ActiveChange>> {
+) -> Result<UncommittedRoute> {
     match result {
-        SubmissionResult::Accepted { input_changed } => Ok(Some(ActiveChange {
-            submission_id,
-            pending_messages,
-            events: messages,
-            input_changed,
-        })),
+        SubmissionResult::Accepted { input_changed } => {
+            Ok(UncommittedRoute::Changed(ActiveChange {
+                submission_id,
+                pending_messages,
+                events: messages,
+                input_changed,
+            }))
+        }
         SubmissionResult::Handled => {
             send_messages(events, &submission_id, messages).await?;
-            Ok(None)
+            Ok(UncommittedRoute::Continue)
         }
         SubmissionResult::Rejected(message) => {
             send_messages(events, &submission_id, messages).await?;
@@ -413,11 +505,13 @@ async fn route_submission_result(
                 events,
                 Event {
                     submission_id: Some(submission_id),
-                    msg: EventMsg::SubmissionRejected(SubmissionRejectedEvent { message }),
+                    msg: EventMsg::SubmissionRejected(SubmissionRejectedEvent {
+                        message: message.clone(),
+                    }),
                 },
             )
             .await?;
-            Ok(None)
+            Ok(UncommittedRoute::Rejected(message))
         }
     }
 }
