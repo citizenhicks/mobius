@@ -82,6 +82,11 @@ impl BotStorage {
         now: i64,
     ) -> Result<()> {
         validate_bot_binding(&subscription.binding)?;
+        if let BotAction::Routine { command } = &subscription.binding.action
+            && let crate::wire::RoutineAction::Update { definition } = &command.action
+        {
+            super::validate_input_definition(definition)?;
+        }
         if matches!(subscription.binding.on, HookSelector::Schedule { .. }) {
             return Err(Error::Config(
                 "timer selectors belong to routine bindings".into(),

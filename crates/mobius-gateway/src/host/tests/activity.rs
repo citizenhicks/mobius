@@ -1,5 +1,8 @@
 use super::*;
-use crate::wire::{RoutineSchedule, RoutineScheduleKind};
+use crate::wire::{
+    BotAction, BotSubscription, HookBinding, HookKind, HookSource, RoutineSchedule,
+    RoutineScheduleKind,
+};
 
 #[tokio::test]
 async fn runtime_activity_observes_hidden_execution_and_short_completed_work() {
@@ -95,6 +98,25 @@ async fn runtime_idle_shutdown_checks_reservations_revision_and_work_admission()
         gateway.runtime_activity().await.unwrap().idle,
         "future schedules are not work"
     );
+    gateway
+        .set_bot_subscription(BotSubscription {
+            bot_id: bot.id.clone(),
+            enabled: true,
+            binding: HookBinding {
+                id: "requested-report".into(),
+                on: crate::bots::event_selector(
+                    HookSource::Routine {
+                        routine_id: routine.id.clone(),
+                    },
+                    HookKind::RunFinished,
+                ),
+                action: BotAction::Report {
+                    instruction: "Tell me when this work finishes.".into(),
+                },
+            },
+        })
+        .await
+        .unwrap();
     let BeginRun::Started(run) = bots.begin_run(&routine.id).unwrap() else {
         panic!("run reserved")
     };

@@ -279,12 +279,12 @@ impl ModelChoice {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MessageSource {
-    /// Another agent conversation, including a voice conversation.
+    /// Coordination from another conversation within the recipient's existing permissions.
     Session {
         /// The source session identifier.
         session_id: String,
     },
-    /// An event received from a host-owned integration or lifecycle subscription.
+    /// Advisory evidence from a host-owned integration or lifecycle subscription.
     External {
         /// The configured source identifier.
         source_id: String,
@@ -311,7 +311,7 @@ pub enum MessageAuthor {
     /// Selects the user case.
     #[default]
     User,
-    /// Advisory context from a trusted host-attributed source.
+    /// A message from a trusted host-attributed source, without new user authority.
     Source {
         /// The message identifier.
         message_id: String,
@@ -330,7 +330,7 @@ pub enum MessageAuthor {
 }
 
 impl MessageAuthor {
-    /// Retains source ancestry when an advisory turn coordinates with another session.
+    /// Retains source ancestry when a source turn coordinates with another session.
     #[must_use]
     pub fn causal_origin(&self) -> (Option<String>, Vec<String>) {
         match self {

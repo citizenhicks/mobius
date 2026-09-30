@@ -25,6 +25,9 @@ struct Definition {
     set_subscription: String,
     create_webhook: String,
     configure_webhook: String,
+    schedule_at: String,
+    schedule_interval: String,
+    schedule_ends_at: String,
 }
 static TEXT: std::sync::LazyLock<Definition> = std::sync::LazyLock::new(|| {
     toml::from_str(include_str!("persistent_chat.toml"))
@@ -373,8 +376,8 @@ fn tool_error(error: crate::Error) -> mobius::Error {
 fn hook_definitions() -> Value {
     json!({
         "schedule":{"oneOf":[
-            {"type":"object","properties":{"kind":{"const":"once"},"at":{"type":"integer"}},"required":["kind","at"],"additionalProperties":false},
-            {"type":"object","properties":{"kind":{"const":"interval"},"every_seconds":{"type":"integer"}},"required":["kind","every_seconds"],"additionalProperties":false},
+            {"type":"object","properties":{"kind":{"const":"once"},"at":{"type":"integer","minimum":1,"maximum":crate::bots::MAX_SCHEDULE_TIMESTAMP,"description":TEXT.schedule_at}},"required":["kind","at"],"additionalProperties":false},
+            {"type":"object","properties":{"kind":{"const":"interval"},"every_seconds":{"type":"integer","minimum":60,"description":TEXT.schedule_interval}},"required":["kind","every_seconds"],"additionalProperties":false},
             {"type":"object","properties":{"kind":{"const":"cron"},"expression":{"type":"string"},"time_zone":{"type":"string"}},"required":["kind","expression","time_zone"],"additionalProperties":false}
         ]},
         "source":{"oneOf":[
@@ -382,7 +385,7 @@ fn hook_definitions() -> Value {
             {"type":"object","properties":{"type":{"const":"gateway"}},"required":["type"],"additionalProperties":false}
         ]},
         "selector":{"oneOf":[
-            {"type":"object","properties":{"type":{"const":"schedule"},"schedule":{"$ref":"#/$defs/schedule"},"ends_at":{"type":["integer","null"]}},"required":["type","schedule"],"additionalProperties":false},
+            {"type":"object","properties":{"type":{"const":"schedule"},"schedule":{"$ref":"#/$defs/schedule"},"ends_at":{"type":["integer","null"],"minimum":1,"maximum":crate::bots::MAX_SCHEDULE_TIMESTAMP,"description":TEXT.schedule_ends_at}},"required":["type","schedule"],"additionalProperties":false},
             {"type":"object","properties":{"type":{"const":"event"},"source":{"$ref":"#/$defs/source"},"kind":{"enum":["routine_created","routine_updated","routine_paused","routine_resumed","routine_deleted","run_started","run_finished","run_skipped","session_created","session_turn_started","session_turn_finished","session_approval","session_deleted","session_owner_changed","client_connected","client_disconnected","custom_received"]},"routine_outcome":{"enum":["succeeded","failed","cancelled",null]},"session_outcome":{"enum":["completed","aborted","failed",null]},"custom_name":{"type":["string","null"]}},"required":["type","source","kind"],"additionalProperties":false}
         ]},
         "definition":{"type":"object","properties":{"workspace":{"type":"string"},"instructions":{"type":"string"},"bindings":{"type":"array","items":{"$ref":"#/$defs/routine_binding"}}},"required":["workspace","instructions","bindings"],"additionalProperties":false},

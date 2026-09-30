@@ -37,7 +37,15 @@ impl GatewayHost {
                         "session hook messages cannot attach files or target transcript replies",
                     ));
                 }
-                message.author = source_author(command_id, cause, session_id);
+                let sender = crate::bots::conversation_session_id(bot_id);
+                message.author = source_author(
+                    command_id,
+                    cause,
+                    MessageSource::Session {
+                        session_id: sender.clone(),
+                    },
+                    format!("chat #{sender}"),
+                );
                 message.requested_delivery = Some(ActiveMessageDelivery::Queue);
             }
             Op::Interrupt { .. } => {}
@@ -368,7 +376,15 @@ impl GatewayHost {
                         id: pending.id.clone(),
                         op: Op::Message {
                             message: MessageSubmission {
-                                author: source_author(&pending.id, Some(&pending.event), "hook"),
+                                author: source_author(
+                                    &pending.id,
+                                    Some(&pending.event),
+                                    MessageSource::External {
+                                        source_id: "hook".into(),
+                                        event_id: pending.event.id.clone(),
+                                    },
+                                    "source report".into(),
+                                ),
                                 text,
                                 attachments: Vec::new(),
                                 reply: None,
@@ -534,7 +550,12 @@ async fn require_session_target(
     }
     Ok(())
 }
-fn source_author(command_id: &str, cause: Option<&HookEvent>, source_id: &str) -> MessageAuthor {
+fn source_author(
+    command_id: &str,
+    cause: Option<&HookEvent>,
+    source: MessageSource,
+    handle: String,
+) -> MessageAuthor {
     MessageAuthor::Source {
         cause_id: cause.map(|event| event.id.clone()),
         ancestry: cause.map_or_else(Vec::new, |event| {
@@ -543,11 +564,8 @@ fn source_author(command_id: &str, cause: Option<&HookEvent>, source_id: &str) -
             chain
         }),
         message_id: command_id.into(),
-        source: MessageSource::External {
-            source_id: source_id.into(),
-            event_id: cause.map_or(command_id, |event| event.id.as_str()).into(),
-        },
-        handle: "source report".into(),
+        source,
+        handle,
         symbol: None,
     }
 }

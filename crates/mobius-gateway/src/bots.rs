@@ -2,9 +2,10 @@
 
 mod events;
 mod storage;
+#[cfg(test)]
+pub(crate) use events::event_selector;
 pub(crate) use events::{
-    MAX_HOOK_ANCESTRY, PendingHookAction, WebhookDelivery, WebhookRecord, event_selector,
-    report_text,
+    MAX_HOOK_ANCESTRY, PendingHookAction, WebhookDelivery, WebhookRecord, report_text,
 };
 
 use std::collections::BTreeSet;
@@ -25,10 +26,9 @@ use uuid::Uuid;
 use self::storage::{BotStorage, CatalogStamp};
 use crate::config::validate_agent_composition;
 use crate::wire::{
-    AgentComposition, BotAction, BotRecord, BotShape, BotSubscription, HookBinding, HookData,
-    HookEvent, HookKind, HookSelector, HookSource, ProviderTint, Routine, RoutineAction,
-    RoutineBinding, RoutineDefinition, RoutineRun, RoutineRunStatus, RoutineSchedule,
-    RoutineScheduleKind, VersionedAgentConfig,
+    AgentComposition, BotRecord, BotShape, HookData, HookEvent, HookSelector, HookSource,
+    ProviderTint, Routine, RoutineAction, RoutineBinding, RoutineDefinition, RoutineRun,
+    RoutineRunStatus, RoutineSchedule, RoutineScheduleKind, VersionedAgentConfig,
 };
 use crate::{Error, Result};
 
@@ -41,6 +41,8 @@ const ROUTINE_SUBMISSION_PREFIX: &str =
 const MAX_ROUTINE_INSTRUCTIONS_BYTES: usize =
     MAX_MESSAGE_BYTES - ROUTINE_SUBMISSION_PREFIX.len() - 2;
 const MAX_STATE_BYTES: u64 = 1024 * 1024;
+// Last Unix second in RFC 3339's four-digit calendar year range.
+pub(crate) const MAX_SCHEDULE_TIMESTAMP: i64 = 253_402_300_799;
 const MAX_HANDLE_BYTES: usize = 64;
 /// Maximum UTF-8 byte length of a Bot display name.
 pub const MAX_BOT_NAME_BYTES: usize = 128;
@@ -59,16 +61,6 @@ const BOT_TINTS: [ProviderTint; 7] = [
     ProviderTint::Red,
     ProviderTint::Purple,
 ];
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BotText {
-    routine_report_instruction: String,
-}
-
-static TEXT: std::sync::LazyLock<BotText> = std::sync::LazyLock::new(|| {
-    toml::from_str(include_str!("bots.toml")).expect("bundled Bot text must be valid")
-});
 
 /// What a Bot update sets besides its agent configuration.
 #[derive(Clone, Copy, Debug)]
@@ -785,7 +777,7 @@ impl BotStore {
         definition: &RoutineDefinition,
         cause: Option<&HookEvent>,
     ) -> Result<StoredRoutine> {
-        validate_definition(definition, 0)?;
+        validate_input_definition(definition)?;
         let workspace = validate_workspace(&definition.workspace)?;
         let path = self.new_instruction_path();
         crate::publication::publish(&path, definition.instructions.trim().as_bytes(), true)?;
@@ -823,38 +815,11 @@ impl BotStore {
                 now,
                 cause,
             )?;
-            let subscriptions = [HookKind::RunFinished, HookKind::RunSkipped]
-                .into_iter()
-                .map(|kind| BotSubscription {
-                    bot_id: bot_id.into(),
-                    binding: HookBinding {
-                        id: format!(
-                            "report-{}-{}",
-                            routine.id,
-                            if kind == HookKind::RunFinished {
-                                "finished"
-                            } else {
-                                "skipped"
-                            }
-                        ),
-                        on: event_selector(
-                            HookSource::Routine {
-                                routine_id: routine.id.clone(),
-                            },
-                            kind,
-                        ),
-                        action: BotAction::Report {
-                            instruction: TEXT.routine_report_instruction.clone(),
-                        },
-                    },
-                    enabled: true,
-                })
-                .collect::<Vec<_>>();
             self.storage.save_catalog_with_hooks(
                 &catalog_json(&state)?,
                 &state.routines,
                 &[event],
-                &subscriptions,
+                &[],
                 now,
                 None,
             )?;
@@ -920,7 +885,7 @@ impl BotStore {
         cause: Option<&HookEvent>,
         accepted_action_id: Option<&str>,
     ) -> Result<StoredRoutine> {
-        validate_definition(definition, 0)?;
+        validate_input_definition(definition)?;
         let workspace = validate_workspace(&definition.workspace)?;
         let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
         state_lock.lock()?;
@@ -1843,6 +1808,28 @@ pub(crate) fn validate_definition(definition: &RoutineDefinition, depth: usize) 
     validate_instructions(&definition.instructions)?;
     validate_bindings(&definition.bindings, depth)
 }
+
+pub(crate) fn validate_input_definition(definition: &RoutineDefinition) -> Result<()> {
+    validate_definition(definition, 0)?;
+    for binding in &definition.bindings {
+        if let HookSelector::Schedule { schedule, ends_at } = &binding.on
+            && schedule
+                .at
+                .into_iter()
+                .chain(*ends_at)
+                .any(|timestamp| !(1..=MAX_SCHEDULE_TIMESTAMP).contains(&timestamp))
+        {
+            return Err(Error::Config(
+                "schedule timestamps must be Unix epoch seconds through year 9999, not milliseconds".into(),
+            ));
+        }
+        if let RoutineAction::Update { definition } = &binding.action {
+            validate_input_definition(definition)?;
+        }
+    }
+    Ok(())
+}
+
 fn validate_bindings(bindings: &[RoutineBinding], depth: usize) -> Result<()> {
     if depth > 4 || bindings.len() > events::MAX_ROUTINE_BINDINGS {
         return Err(Error::Config(

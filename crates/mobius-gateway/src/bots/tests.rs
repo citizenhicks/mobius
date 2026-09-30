@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::*;
-use crate::wire::RoutineCommand;
+use crate::wire::{BotAction, BotSubscription, HookBinding, HookKind, RoutineCommand};
 
 fn unseeded_fixture() -> (tempfile::TempDir, BotStore, PathBuf) {
     let root = tempfile::tempdir().expect("root");
@@ -1200,6 +1200,122 @@ fn routine_rejects_unknown_bot_and_malformed_schedule() {
         store
             .create_scheduled(&bot.id, &workspace, "work", cron("0 9 * *", "UTC"), None,)
             .is_err()
+    );
+}
+
+#[test]
+fn new_schedule_inputs_reject_milliseconds_without_breaking_stored_timestamps() {
+    let (root, store, workspace) = fixture();
+    let bot = create_bot(&store, "seconds");
+    let now = Utc::now().timestamp();
+    let bad = scheduled_definition(&workspace, "work", once(now * 1000), None);
+    assert!(
+        store
+            .create_routine(&bot.id, &bad, None)
+            .unwrap_err()
+            .to_string()
+            .contains("Unix epoch seconds")
+    );
+    let routine = store
+        .create_scheduled(&bot.id, &workspace, "work", once(now), None)
+        .unwrap();
+    assert!(store.update_routine(&routine.id, &bad, None, None).is_err());
+    assert_eq!(
+        schedule_of(&store.routine(&routine.id).unwrap()).at,
+        Some(now)
+    );
+    let subscription = BotSubscription {
+        bot_id: bot.id.clone(),
+        enabled: true,
+        binding: HookBinding {
+            id: "bad-update".into(),
+            on: event_selector(
+                HookSource::Bot {
+                    bot_id: bot.id.clone(),
+                },
+                HookKind::CustomReceived,
+            ),
+            action: BotAction::Routine {
+                command: RoutineCommand {
+                    routine_id: routine.id.clone(),
+                    action: RoutineAction::Update { definition: bad },
+                },
+            },
+        },
+    };
+    assert!(store.set_subscription(&subscription, 0, now).is_err());
+
+    // Previously accepted state remains readable; it is never silently converted.
+    let mut state = store.fresh_state().unwrap();
+    let stored = state
+        .routines
+        .iter_mut()
+        .find(|stored| stored.id == routine.id)
+        .unwrap();
+    let HookSelector::Schedule { schedule, .. } = &mut stored.bindings[0].definition.on else {
+        panic!("schedule")
+    };
+    schedule.at = Some(now * 1000);
+    stored.bindings[0].next_due_at = Some(now * 1000);
+    store.save(&state).unwrap();
+    drop(store);
+    let reopened = BotStore::open(&root.path().join("state")).unwrap();
+    assert_eq!(
+        schedule_of(&reopened.routine(&routine.id).unwrap()).at,
+        Some(now * 1000)
+    );
+}
+
+#[test]
+fn routine_completion_only_queues_reports_when_the_user_subscribes() {
+    let (_root, store, workspace) = fixture();
+    let bot = create_bot(&store, "reporting");
+    let now = Utc::now().timestamp();
+    let routine = store
+        .create_scheduled(&bot.id, &workspace, "work", once(now), None)
+        .unwrap();
+    assert!(store.subscriptions(&bot.id).unwrap().is_empty());
+    let BeginRun::Started(run) = store.begin_run(&routine.id).unwrap() else {
+        panic!("run")
+    };
+    store
+        .finish_run(run, RoutineRunStatus::Succeeded, None)
+        .unwrap();
+    assert!(store.pending_actions(now + 60, 10).unwrap().is_empty());
+    assert_eq!(store.history(Some(&routine.id)).unwrap().len(), 1);
+
+    store
+        .set_subscription(
+            &BotSubscription {
+                bot_id: bot.id.clone(),
+                enabled: true,
+                binding: HookBinding {
+                    id: "requested-report".into(),
+                    on: event_selector(
+                        HookSource::Routine {
+                            routine_id: routine.id.clone(),
+                        },
+                        HookKind::RunFinished,
+                    ),
+                    action: BotAction::Report {
+                        instruction: "Tell me the result".into(),
+                    },
+                },
+            },
+            0,
+            now,
+        )
+        .unwrap();
+    let BeginRun::Started(run) = store.begin_run(&routine.id).unwrap() else {
+        panic!("run")
+    };
+    store
+        .finish_run(run, RoutineRunStatus::Succeeded, None)
+        .unwrap();
+    let pending = store.pending_actions(now + 60, 10).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert!(
+        matches!(&pending[0].action, BotAction::Report { instruction } if instruction == "Tell me the result")
     );
 }
 
