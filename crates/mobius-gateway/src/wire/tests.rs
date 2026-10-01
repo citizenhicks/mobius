@@ -312,8 +312,75 @@ async fn websocket_diagnostics_preserve_safe_metadata_not_peer_details() {
         ),
     ] {
         let error = websocket_error(error);
-        assert!(matches!(error, Error::Protocol(message) if message == expected));
+        assert_eq!(
+            error.to_string(),
+            format!("gateway protocol error: {expected}")
+        );
+        assert!(!format!("{error:?}").contains(details));
     }
+}
+
+#[test]
+fn websocket_upgrade_retains_the_server_retry_delay() {
+    use tokio_tungstenite::tungstenite::http::Response;
+
+    for (hint, seconds) in [("1", 1), (" 5\t", 5), ("001", 1), ("4294967295", u32::MAX)] {
+        let response = Response::builder()
+            .status(503)
+            .header("Retry-After", hint)
+            .header("x-peer-details", "private-peer-data")
+            .body(Some(b"private-peer-data".to_vec()))
+            .unwrap();
+        let error = websocket_error(WebSocketError::Http(Box::new(response)));
+        assert!(
+            matches!(error, Error::WebSocketUpgrade { status: 503, retry_after: Some(delay) } if delay == Duration::from_secs(u64::from(seconds)))
+        );
+        assert!(!format!("{error:?}").contains("private-peer-data"));
+    }
+}
+
+#[test]
+fn websocket_upgrade_rejects_missing_or_invalid_retry_delays() {
+    use tokio_tungstenite::tungstenite::http::Response;
+
+    for hint in [
+        None,
+        Some(""),
+        Some(" "),
+        Some("0"),
+        Some("-1"),
+        Some("+1"),
+        Some("1.5"),
+        Some("1, 2"),
+        Some("4294967296"),
+        Some("Wed, 01 Oct 2026 12:00:00 GMT"),
+    ] {
+        let mut response = Response::builder().status(503);
+        if let Some(hint) = hint {
+            response = response.header("Retry-After", hint);
+        }
+        let error = websocket_error(WebSocketError::Http(Box::new(response.body(None).unwrap())));
+        assert!(matches!(
+            error,
+            Error::WebSocketUpgrade {
+                status: 503,
+                retry_after: None
+            }
+        ));
+    }
+    let response = Response::builder()
+        .status(503)
+        .header("Retry-After", "1")
+        .header("Retry-After", "2")
+        .body(None)
+        .unwrap();
+    assert!(matches!(
+        websocket_error(WebSocketError::Http(Box::new(response))),
+        Error::WebSocketUpgrade {
+            status: 503,
+            retry_after: None
+        }
+    ));
 }
 
 #[test]

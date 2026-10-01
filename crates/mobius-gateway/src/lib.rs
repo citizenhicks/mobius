@@ -32,6 +32,14 @@ pub enum Error {
     #[error("gateway protocol error: {0}")]
     /// Selects the protocol case.
     Protocol(String),
+    #[error("gateway protocol error: WebSocket handshake failed: HTTP {status}")]
+    /// A rejected WebSocket upgrade, retaining only safe HTTP retry metadata.
+    WebSocketUpgrade {
+        /// HTTP status returned by the gateway service.
+        status: u16,
+        /// A single positive delta-seconds Retry-After value, when valid.
+        retry_after: Option<std::time::Duration>,
+    },
     #[error("gateway authentication failed")]
     /// Selects the unauthorized case.
     Unauthorized,

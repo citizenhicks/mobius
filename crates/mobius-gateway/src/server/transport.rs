@@ -443,7 +443,7 @@ pub(super) fn connection_diagnostic(error: &Error) -> String {
             error.column()
         ),
         Error::Config(_) => "configuration".into(),
-        Error::Protocol(_) => "protocol".into(),
+        Error::Protocol(_) | Error::WebSocketUpgrade { .. } => "protocol".into(),
         Error::Unauthorized => "authentication".into(),
         Error::Mobius(_) => "agent".into(),
         Error::Sqlite(_) => "storage".into(),

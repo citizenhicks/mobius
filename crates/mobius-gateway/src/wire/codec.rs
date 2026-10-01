@@ -180,10 +180,10 @@ pub(crate) fn websocket_error(error: WebSocketError) -> Error {
             return Error::Protocol(format!("WebSocket I/O failure: {:?}", error.kind()));
         }
         WebSocketError::Http(response) => {
-            return Error::Protocol(format!(
-                "WebSocket handshake failed: HTTP {}",
-                response.status().as_u16()
-            ));
+            return Error::WebSocketUpgrade {
+                status: response.status().as_u16(),
+                retry_after: retry_after(response.headers()),
+            };
         }
         WebSocketError::ConnectionClosed | WebSocketError::AlreadyClosed => "closed",
         WebSocketError::Tls(_) => "TLS",
@@ -196,6 +196,24 @@ pub(crate) fn websocket_error(error: WebSocketError) -> Error {
         WebSocketError::HttpFormat(_) => "HTTP format",
     };
     Error::Protocol(format!("WebSocket {kind} failure"))
+}
+
+fn retry_after(headers: &tokio_tungstenite::tungstenite::http::HeaderMap) -> Option<Duration> {
+    let values = headers.get_all("retry-after");
+    if values.iter().count() != 1 {
+        return None;
+    }
+    let value = values
+        .iter()
+        .next()?
+        .to_str()
+        .ok()?
+        .trim_matches([' ', '\t']);
+    if !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let seconds = value.parse::<u32>().ok()?;
+    (seconds > 0).then(|| Duration::from_secs(u64::from(seconds)))
 }
 
 /// Rejects frames from incompatible clients before interpreting their message.
