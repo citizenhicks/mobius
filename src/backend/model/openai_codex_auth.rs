@@ -50,8 +50,8 @@ use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
 
-// Match the Codex release that introduced GPT-6 Sol and Luna.
-const CODEX_COMPAT_VERSION: &str = "0.156.0";
+// Match the Codex release that introduced GPT-6.1 Sol.
+const CODEX_COMPAT_VERSION: &str = "0.159.1";
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
 const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";

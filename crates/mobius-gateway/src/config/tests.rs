@@ -1298,7 +1298,7 @@ fn realtime_voice_selection_uses_the_provider_catalog_and_persists() {
         let mut config = AgentComposition::default();
         config.provider.provider = provider_id.into();
         config.provider.instance = provider_id.into();
-        config.provider.model = "gpt-6-sol".into();
+        config.provider.model = "gpt-6.1-sol".into();
         config.provider.base_url = provider(provider_id)
             .expect("provider")
             .default_base_url()

@@ -27,6 +27,30 @@ fn load_register_provider_test_client(endpoint: &Endpoint) -> Result<Option<Stri
         .map(|(_, token)| token.clone()))
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_background_gateway_path_preserves_custom_priority_and_supports_gui_launches() {
+    for (inherited, expected) in [
+        (
+            None,
+            "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin",
+        ),
+        (
+            Some("/usr/bin:/bin:/usr/sbin:/sbin"),
+            "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin",
+        ),
+        (
+            Some("/custom/node/bin:/usr/bin:/opt/homebrew/bin"),
+            "/custom/node/bin:/usr/bin:/opt/homebrew/bin:/opt/homebrew/bin:/usr/local/bin",
+        ),
+    ] {
+        assert_eq!(
+            macos_gateway_path(inherited.map(std::ffi::OsStr::new)),
+            OsString::from(expected)
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn reset_gateway_state_removes_an_empty_directory() {

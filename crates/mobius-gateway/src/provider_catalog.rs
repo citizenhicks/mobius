@@ -367,7 +367,7 @@ mod tests {
             selection: ProviderConfig {
                 instance: "openai_socket".into(),
                 provider: "openai_socket".into(),
-                model: "gpt-6-sol".into(),
+                model: "gpt-6.1-sol".into(),
                 reasoning_effort: Some("max".into()),
                 ..crate::wire::AgentComposition::default().provider
             },
@@ -404,7 +404,7 @@ mod tests {
         assert_eq!(status.provider, "openai_socket");
         assert_eq!(status.label, "OpenAI");
         assert_eq!(status.symbol, FrontendSymbol::Custom("chat_gpt".into()));
-        assert_eq!(status.models[0].id, "gpt-6-sol");
+        assert_eq!(status.models[0].id, "gpt-6.1-sol");
         assert_eq!(status.tool_discovery, ToolDiscoveryMode::Native);
         assert_eq!(status.models[0].tool_discovery, ToolDiscoveryMode::Native);
         assert_eq!(status.default_api_key_env, None);

@@ -44,13 +44,16 @@ fn base_url_rejects_serializable_secret_locations() {
 fn only_the_first_party_endpoint_reports_known_openai_pricing() {
     let usage = TokenUsage {
         input_tokens: 100_000,
-        total_tokens: 100_000,
+        cached_input_tokens: 40_000,
+        cache_write_input_tokens: 10_000,
+        output_tokens: 5_000,
+        total_tokens: 105_000,
         ..TokenUsage::default()
     };
     for (model, cost) in [
-        ("gpt-6-luna", 10_000),
-        ("gpt-6-sol", 200_000),
-        ("gpt-6-astra", 1_000_000),
+        ("gpt-6-luna", 9_150),
+        ("gpt-6.1-sol", 179_000),
+        ("gpt-6-astra", 915_000),
     ] {
         let official = OpenAi::new("test-key", "https://api.openai.com:443/v1/", model)
             .expect("official provider");

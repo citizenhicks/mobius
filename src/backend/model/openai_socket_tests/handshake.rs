@@ -40,7 +40,7 @@ async fn native_root_keeps_capabilities_and_websocket_denials_do_not_fallback() 
                 .into_data(),
         )
         .expect("JSON");
-        assert_eq!(request["model"], "gpt-6-sol");
+        assert_eq!(request["model"], "gpt-6.1-sol");
         socket.send(Message::text(serde_json::json!({"type":"error","status":402,"error":{"code":"insufficient_balance","message":"Balance exhausted"}}).to_string())).await.expect("denial");
         assert!(
             timeout(Duration::from_millis(30), listener.accept())
@@ -53,7 +53,7 @@ async fn native_root_keeps_capabilities_and_websocket_denials_do_not_fallback() 
             credential: super::super::super::provider::ProviderCredential::ApiKey(
                 "proxy-token".into(),
             ),
-            model: "gpt-6-sol".into(),
+            model: "gpt-6.1-sol".into(),
             base_url: Some(format!("http://{address}/api/native/v1/")),
             reasoning_effort: None,
             web_search: HostedWebSearch::Off,
@@ -104,7 +104,7 @@ async fn native_http_fallback_preserves_root_and_payment_denial() {
     let provider = OpenAiSocket::with_client(
         "proxy-token",
         &format!("http://{address}/api/native/v1/"),
-        "gpt-6-sol",
+        "gpt-6.1-sol",
         reqwest::Client::new(),
     )
     .expect("provider");

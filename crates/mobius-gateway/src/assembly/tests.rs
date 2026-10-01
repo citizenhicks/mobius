@@ -387,7 +387,7 @@ fn custom_selection_without_reasoning_uses_the_first_configured_effort() {
 fn custom_openai_roots_require_endpoint_bound_stored_credentials() {
     for (provider_id, model) in [
         ("responses", "custom-model"),
-        ("openai_socket", "gpt-6-sol"),
+        ("openai_socket", "gpt-6.1-sol"),
     ] {
         let root = tempfile::tempdir().expect("root");
         let state = root.path().join("state");

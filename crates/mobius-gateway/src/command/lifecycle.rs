@@ -156,6 +156,11 @@ pub(super) async fn start_background_gateway(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::from(log.reopen()?));
+    #[cfg(target_os = "macos")]
+    command.env(
+        "PATH",
+        macos_gateway_path(std::env::var_os("PATH").as_deref()),
+    );
     command.as_std_mut().process_group(0);
 
     let mut child = command.spawn()?;
@@ -216,6 +221,16 @@ pub(super) async fn start_background_gateway(
             () = tokio::time::sleep(BACKGROUND_START_POLL_INTERVAL) => {}
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn macos_gateway_path(inherited: Option<&std::ffi::OsStr>) -> OsString {
+    // Finder-launched apps omit Homebrew; retain the user's existing tool priority.
+    let mut path = inherited
+        .unwrap_or(std::ffi::OsStr::new("/usr/bin:/bin:/usr/sbin:/sbin"))
+        .to_os_string();
+    path.push(":/opt/homebrew/bin:/usr/local/bin");
+    path
 }
 
 #[cfg(unix)]

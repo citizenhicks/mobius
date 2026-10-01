@@ -571,10 +571,10 @@ fn filters_and_explicit_bot_source_cross_bot_binding_share_one_outbox() {
 #[test]
 fn authenticated_webhook_acceptance_is_durable_idempotent_and_revocable() {
     let (root, storage) = fixture();
-    let now = chrono::Utc::now().timestamp();
     let record = storage
         .create_webhook("bot-a", "outage", "Tell me about the outage.", [7; 32])
         .expect("source");
+    let now = chrono::Utc::now().timestamp();
     let delivery = WebhookDelivery {
         source_id: &record.id,
         token_hash: [7; 32],

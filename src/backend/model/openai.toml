@@ -1,18 +1,13 @@
 # Provider-owned model catalog and token prices.
-default_model = "gpt-6-sol"
+default_model = "gpt-6.1-sol"
 
 [[models]]
-id = "gpt-6-sol"
-label = "6 Sol"
+id = "gpt-6.1-sol"
+label = "6.1 Sol"
 description = "Complex coding and agentic workflows"
 default_reasoning = "medium"
 context_window = 1050000
 tool_discovery = "native"
-
-[[models.reasoning]]
-id = "none"
-label = "None"
-description = "Skip reasoning for the lowest latency"
 
 [[models.reasoning]]
 id = "low"
@@ -43,7 +38,7 @@ description = "Maximum reasoning for the hardest work"
 effective_from = 0
 [models.pricing.rates]
 input_microusd_per_million = 2000000
-cached_input_microusd_per_million = 200000
+cached_input_microusd_per_million = 100000
 cache_write_input_microusd_per_million = 2500000
 output_microusd_per_million = 10000000
 [models.pricing.rates.long_context]
