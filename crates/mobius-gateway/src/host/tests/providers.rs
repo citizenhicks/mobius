@@ -376,10 +376,20 @@ async fn credential_endpoints_are_validated_and_persisted() {
         )
         .await
         .expect("store custom credential");
-    let error = gateway
+    gateway
         .set_credential(
             "openai_socket".into(),
             "openai_socket".into(),
+            "native-secret".into(),
+            Some(custom_endpoint.into()),
+            None,
+        )
+        .await
+        .expect("native root credential");
+    let error = gateway
+        .set_credential(
+            "openai_codex".into(),
+            "openai_codex".into(),
             "fixed-secret".into(),
             Some(custom_endpoint.into()),
             None,
@@ -405,10 +415,10 @@ async fn credential_endpoints_are_validated_and_persisted() {
     assert!(error.message.contains("fixed API endpoint"));
     assert_eq!(
         credentials
-            .get("openai_socket", "openai_socket", None)
-            .expect("fixed credential")
+            .get("openai_socket", "openai_socket", Some(custom_endpoint))
+            .expect("native credential")
             .map(|credential| credential.api_key),
-        None
+        Some("native-secret".into())
     );
 }
 

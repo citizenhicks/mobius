@@ -1474,14 +1474,15 @@ async fn native_images_use_json_for_generation_and_multipart_for_public_edits() 
         }
         requests
     });
-    let mut provider = OpenAi::with_client(
+    let provider = OpenAi::with_client(
         Some("test-key".into()),
-        format!("http://{address}"),
+        format!("http://{address}/api/native/v1/"),
         "chat-model",
         reqwest::Client::new(),
     )
     .expect("provider")
-    .with_image_api(Some(&IMAGE_APIS["codex"]));
+    .with_native_openai_api()
+    .expect("native API");
     let generated = provider
         .generate_image(ImageGenerationRequest {
             model: "gpt-image-2.5-sunburst",
@@ -1493,7 +1494,6 @@ async fn native_images_use_json_for_generation_and_multipart_for_public_edits() 
         .expect("image");
     assert_eq!(generated.media_type, "image/png");
     assert_eq!(generated.usage.expect("usage").total_tokens, 5);
-    provider.image_api = Some(&IMAGE_APIS["openai"]);
     let source = base64::engine::general_purpose::STANDARD
         .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/sZkAAAAASUVORK5CYII=")
         .expect("source image");
@@ -1512,12 +1512,12 @@ async fn native_images_use_json_for_generation_and_multipart_for_public_edits() 
         .expect("edited image");
     let requests = server.await.expect("server");
     let generation = String::from_utf8_lossy(&requests[0]);
-    assert!(generation.starts_with("POST /images/generations HTTP/1.1"));
+    assert!(generation.starts_with("POST /api/native/v1/images/generations HTTP/1.1"));
     assert!(generation.contains("Bearer test-key"));
     assert!(generation.contains("\"model\":\"gpt-image-2.5-sunburst\""));
     assert!(generation.contains("\"size\":\"1024x1024\""));
     let edit = String::from_utf8_lossy(&requests[1]);
-    assert!(edit.starts_with("POST /images/edits HTTP/1.1"));
+    assert!(edit.starts_with("POST /api/native/v1/images/edits HTTP/1.1"));
     assert!(edit.contains("Bearer test-key"));
     assert!(edit.contains("multipart/form-data; boundary="));
     assert!(edit.contains("name=\"image[]\"; filename=\"reference-0.png\""));

@@ -247,6 +247,7 @@ fn provider_status(definition: &ProviderDefinition) -> ProviderStatus {
         model_ids_configurable: definition.models().is_empty(),
         auth,
         default_base_url: definition.default_base_url().map(str::to_string),
+        native_custom_endpoints: definition.native_custom_endpoints(),
         default_api_key_env,
         models: definition
             .models()
@@ -323,6 +324,16 @@ mod tests {
     #[test]
     fn provider_status_advertises_the_transport_voice_catalog() {
         let status = provider_status(provider("openai_socket").expect("provider"));
+        assert!(
+            !status
+                .realtime_voices(Some("https://proxy.example/api/native/v1"))
+                .is_empty()
+        );
+        assert!(
+            provider_status(provider("responses").expect("provider"))
+                .realtime_voices(Some("https://proxy.example/api/native/v1"))
+                .is_empty()
+        );
         assert_eq!(
             status.realtime_voices.first().map(String::as_str),
             Some("marin")
@@ -383,10 +394,12 @@ mod tests {
         assert_eq!(status.models[0].id, "gpt-6-sol");
         assert_eq!(status.tool_discovery, ToolDiscoveryMode::Native);
         assert_eq!(status.models[0].tool_discovery, ToolDiscoveryMode::Native);
+        assert_eq!(status.default_api_key_env, None);
         assert_eq!(
-            status.default_api_key_env.as_deref(),
-            Some("OPENAI_API_KEY")
+            status.default_base_url.as_deref(),
+            Some("https://api.openai.com/v1")
         );
+        assert!(status.native_custom_endpoints);
         assert_eq!(
             status.models[0].default_reasoning.as_deref(),
             Some("medium")
@@ -399,8 +412,12 @@ mod tests {
         );
         assert_eq!(status.web_search[0].symbol, None);
         assert_eq!(status.web_search[0].tone, FrontendTone::Neutral);
+    }
 
+    #[test]
+    fn compatible_provider_status_uses_manifest_defaults() {
         let custom = provider_status(provider("responses").expect("provider"));
+        assert!(!custom.native_custom_endpoints);
         assert!(custom.models.is_empty());
         assert!(custom.model_ids_configurable);
         assert_eq!(

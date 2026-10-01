@@ -395,6 +395,7 @@ pub struct ProviderDefinition {
     tool_discovery: ToolDiscoveryMode,
     custom_endpoint_tool_discovery: Option<ToolDiscoveryMode>,
     default_base_url: Option<&'static str>,
+    native_custom_endpoints: bool,
     credentialless_endpoints: bool,
     builder: ProviderBuilder,
 }
@@ -430,6 +431,7 @@ impl ProviderDefinition {
             tool_discovery: ToolDiscoveryMode::Rebuild,
             custom_endpoint_tool_discovery: None,
             default_base_url: None,
+            native_custom_endpoints: false,
             credentialless_endpoints: false,
             builder,
         }
@@ -457,6 +459,19 @@ impl ProviderDefinition {
     pub(crate) const fn with_base_url(mut self, default_base_url: &'static str) -> Self {
         self.default_base_url = Some(default_base_url);
         self
+    }
+
+    /// Custom roots for this provider implement its native API, including images and voice.
+    pub(crate) const fn with_native_base_url(mut self, default_base_url: &'static str) -> Self {
+        self.default_base_url = Some(default_base_url);
+        self.native_custom_endpoints = true;
+        self
+    }
+
+    /// Reports whether custom roots retain this provider's native capabilities.
+    #[must_use]
+    pub const fn native_custom_endpoints(&self) -> bool {
+        self.native_custom_endpoints
     }
 
     #[must_use]
@@ -536,7 +551,8 @@ impl ProviderDefinition {
     pub fn supports(&self, capability: ModelCapability, base_url: Option<&str>) -> bool {
         match capability {
             ModelCapability::ImageGeneration => {
-                self.supports_image_generation && self.uses_default_endpoint(base_url)
+                self.supports_image_generation
+                    && (self.native_custom_endpoints || self.uses_default_endpoint(base_url))
             }
             ModelCapability::RealtimeVoice => !self.realtime_voices(base_url).is_empty(),
         }
@@ -545,7 +561,7 @@ impl ProviderDefinition {
     /// Returns supported voices, with the default first, for this provider endpoint.
     #[must_use]
     pub fn realtime_voices(&self, base_url: Option<&str>) -> &'static [&'static str] {
-        if self.uses_default_endpoint(base_url) {
+        if self.native_custom_endpoints || self.uses_default_endpoint(base_url) {
             self.realtime_voices
         } else {
             &[]
@@ -930,6 +946,30 @@ mod tests {
 
     #[test]
     fn provider_capabilities_scope_voice_to_native_endpoints() {
+        let native = provider("openai_socket").expect("native provider");
+        native
+            .validate_base_url(Some("https://proxy.example/api/native/v1"))
+            .expect("native root");
+        assert!(native.native_custom_endpoints());
+        assert!(native.supports(
+            ModelCapability::ImageGeneration,
+            Some("https://proxy.example/api/native/v1")
+        ));
+        assert!(native.supports(
+            ModelCapability::RealtimeVoice,
+            Some("https://proxy.example/api/native/v1")
+        ));
+        assert!(
+            !provider("openai_codex")
+                .expect("Codex")
+                .native_custom_endpoints()
+        );
+        assert!(
+            provider("openai_codex")
+                .expect("Codex")
+                .validate_base_url(Some("https://proxy.example/v1"))
+                .is_err()
+        );
         assert!(
             provider("responses")
                 .expect("voice provider")

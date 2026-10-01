@@ -82,7 +82,6 @@ mod manifest {
 }
 
 const OPENAI_HTTP_URL: &str = "https://api.openai.com/v1";
-const OPENAI_SOCKET_URL: &str = "wss://api.openai.com/v1/responses";
 const MAX_SESSION_ENTRIES: usize = 128;
 const COMPACTION_STREAM_RETRY_LIMIT: usize = 2;
 const COMPACTION_RETRY_BASE_DELAY: Duration = Duration::from_millis(200);
@@ -119,11 +118,17 @@ impl OpenAiSocket {
     ///
     /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Result<Self> {
-        Self::with_client(api_key, model, super::transport::streaming_client()?)
+        Self::with_client(
+            api_key,
+            OPENAI_HTTP_URL,
+            model,
+            super::transport::streaming_client()?,
+        )
     }
 
     fn with_client(
         api_key: impl Into<String>,
+        base_url: &str,
         model: impl Into<String>,
         client: reqwest::Client,
     ) -> Result<Self> {
@@ -132,14 +137,27 @@ impl OpenAiSocket {
         if api_key.trim().is_empty() {
             return Err(Error::Config("OPENAI_API_KEY is empty".into()));
         }
-        Self::with_authorization(
+        super::provider::validate_base_url(base_url)?;
+        let mut socket_url =
+            reqwest::Url::parse(&format!("{}/responses", base_url.trim_end_matches('/')))
+                .map_err(|_| Error::Config("invalid OpenAI endpoint".into()))?;
+        let scheme = if socket_url.scheme() == "https" {
+            "wss"
+        } else {
+            "ws"
+        };
+        socket_url
+            .set_scheme(scheme)
+            .map_err(|_| Error::Config("invalid OpenAI socket scheme".into()))?;
+        let mut provider = Self::with_authorization(
             Arc::new(ApiKeyAuthorization::new(api_key)),
-            OPENAI_HTTP_URL,
-            OPENAI_SOCKET_URL,
+            base_url,
+            socket_url.as_str(),
             model,
             client,
-        )
-        .map(Self::with_explicit_prompt_cache)
+        )?;
+        provider.http = provider.http.with_native_openai_api()?;
+        Ok(provider.with_explicit_prompt_cache())
     }
 
     pub(super) fn with_authorization(
@@ -727,6 +745,7 @@ pub(super) fn provider() -> ProviderDefinition {
     .with_image_input()
     .with_image_generation()
     .with_realtime_voices(super::realtime::VOICES)
+    .with_native_base_url(OPENAI_HTTP_URL)
     .with_tool_discovery(
         manifest::TOOL_DISCOVERY,
         manifest::CUSTOM_ENDPOINT_TOOL_DISCOVERY,
@@ -735,7 +754,8 @@ pub(super) fn provider() -> ProviderDefinition {
 
 fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
     let api_key = config.credential.into_api_key("openai_socket")?;
-    let provider = OpenAiSocket::with_client(api_key, config.model, config.http)?;
+    let base_url = config.base_url.as_deref().unwrap_or(OPENAI_HTTP_URL);
+    let provider = OpenAiSocket::with_client(api_key, base_url, config.model, config.http)?;
     let provider = match config.reasoning_effort {
         Some(effort) => provider.with_reasoning_effort(effort)?,
         None => provider,

@@ -110,6 +110,8 @@ more Bots and change their models and capabilities later.
 Built-in providers include **OpenAI, Codex, Anthropic, DeepSeek, Kimi, and OpenRouter**, plus
 configurable endpoints that implement the OpenAI Responses API. Authentication and available
 features depend on the provider. Use `/login` to configure one and `/bot` to edit your Bot.
+The OpenAI provider also accepts a native API root for a proxy implementing Responses,
+images, and Live voice. Its credential is bound to the configured root.
 
 On Linux, protected command execution requires **Bubblewrap**. Default Quick Connect uses
 `cloudflared`, which is included in the downloadable archives.

@@ -574,6 +574,8 @@ pub struct ProviderStatus {
     pub auth: ProviderAuthKind,
     /// The default base URL.
     pub default_base_url: Option<String>,
+    /// Custom roots implement this provider's native image and voice APIs.
+    pub native_custom_endpoints: bool,
     /// The default API key env.
     pub default_api_key_env: Option<String>,
     /// The models.
@@ -697,10 +699,12 @@ impl ProviderStatus {
     #[must_use]
     /// Returns the realtime voices.
     pub fn realtime_voices(&self, base_url: Option<&str>) -> &[String] {
-        if mobius::backend::model::provider::uses_default_endpoint(
-            self.default_base_url.as_deref(),
-            base_url,
-        ) {
+        if self.native_custom_endpoints
+            || mobius::backend::model::provider::uses_default_endpoint(
+                self.default_base_url.as_deref(),
+                base_url,
+            )
+        {
             &self.realtime_voices
         } else {
             &[]

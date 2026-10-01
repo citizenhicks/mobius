@@ -12,7 +12,7 @@ User turns can authorize management. Gateway-authored Source turns can inspect h
 
 ## One hook and command mechanism
 
-`HookEvent` is a fact. `BotAction` is the saved command issued by a matched `HookBinding`. Both carry stable identity and gateway-established origin; events carry time, cause and bounded causal ancestry. Native clients use gateway protocol 87. There is no second automation transcript, agent registry or scheduler.
+`HookEvent` is a fact. `BotAction` is the saved command issued by a matched `HookBinding`. Both carry stable identity and gateway-established origin; events carry time, cause and bounded causal ancestry. Native clients use gateway protocol 88. There is no second automation transcript, agent registry or scheduler.
 
 ```mermaid
 flowchart LR

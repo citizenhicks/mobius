@@ -384,63 +384,86 @@ fn custom_selection_without_reasoning_uses_the_first_configured_effort() {
 }
 
 #[test]
-fn custom_responses_requires_an_endpoint_bound_stored_credential() {
-    let root = tempfile::tempdir().expect("root");
-    let state = root.path().join("state");
-    let (store, _) = ConfigStore::initialize(
-        state,
-        "127.0.0.1:8741".parse().expect("listen address"),
-        None,
-    )
-    .expect("config");
-    let credentials = CredentialStore::open(store.credentials_path()).expect("credential store");
-    let selection = ProviderConfig {
-        instance: "responses".into(),
-        provider: "responses".into(),
-        model: "custom-model".into(),
-        base_url: Some("https://example.com/v1".into()),
-        endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
-        reasoning_effort: None,
-        web_search: HostedWebSearch::Off,
-    };
-
-    let error = resolve_credential(
-        "responses",
-        provider("responses").expect("provider"),
-        selection.base_url.as_deref(),
-        &store,
-        &credentials,
-    )
-    .err()
-    .expect("custom provider must require stored credentials");
-
-    assert!(
-        error
-            .to_string()
-            .contains("set a credential for `responses`")
-    );
-
-    credentials
-        .set(
-            "responses",
-            "responses",
-            "official-secret",
-            Some("https://api.openai.com/v1"),
+fn custom_openai_roots_require_endpoint_bound_stored_credentials() {
+    for (provider_id, model) in [
+        ("responses", "custom-model"),
+        ("openai_socket", "gpt-6-sol"),
+    ] {
+        let root = tempfile::tempdir().expect("root");
+        let state = root.path().join("state");
+        let (store, _) = ConfigStore::initialize(
+            state,
+            "127.0.0.1:8741".parse().expect("listen address"),
             None,
         )
-        .expect("store endpoint-bound credential");
-    assert!(
-        resolve_credential(
-            "responses",
-            provider("responses").expect("provider"),
+        .expect("config");
+        let credentials =
+            CredentialStore::open(store.credentials_path()).expect("credential store");
+        let selection = ProviderConfig {
+            instance: provider_id.into(),
+            provider: provider_id.into(),
+            model: model.into(),
+            base_url: Some("https://example.com/v1".into()),
+            endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
+            reasoning_effort: None,
+            web_search: HostedWebSearch::Off,
+        };
+
+        let error = resolve_credential(
+            provider_id,
+            provider(provider_id).expect("provider"),
             selection.base_url.as_deref(),
             &store,
             &credentials,
         )
-        .is_err()
-    );
-}
+        .err()
+        .expect("custom provider must require stored credentials");
 
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("set a credential for `{provider_id}`"))
+        );
+
+        credentials
+            .set(
+                provider_id,
+                provider_id,
+                "official-secret",
+                Some("https://api.openai.com/v1"),
+                None,
+            )
+            .expect("store endpoint-bound credential");
+        assert!(
+            resolve_credential(
+                provider_id,
+                provider(provider_id).expect("provider"),
+                selection.base_url.as_deref(),
+                &store,
+                &credentials,
+            )
+            .is_err()
+        );
+        credentials
+            .set(
+                provider_id,
+                provider_id,
+                "endpoint-token",
+                selection.base_url.as_deref(),
+                None,
+            )
+            .expect("endpoint credential");
+        let (credential, _) = resolve_credential(
+            provider_id,
+            provider(provider_id).expect("provider"),
+            selection.base_url.as_deref(),
+            &store,
+            &credentials,
+        )
+        .expect("resolve endpoint credential");
+        assert!(matches!(credential, ProviderCredential::ApiKey(key) if key == "endpoint-token"));
+    }
+}
 #[tokio::test]
 async fn updating_the_bot_recipe_preserves_capability_metadata() {
     let root = tempfile::tempdir().expect("root");
@@ -472,7 +495,13 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
     let credentials =
         Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
     credentials
-        .set("openai_socket", "openai_socket", "test-token", None, None)
+        .set(
+            "openai_socket",
+            "openai_socket",
+            "test-token",
+            Some("https://api.openai.com/v1"),
+            None,
+        )
         .expect("test provider credential");
     let checkpoints: Arc<dyn CheckpointStore> =
         Arc::new(SqliteCheckpoint::new(store.checkpoints_path()).expect("checkpoints"));

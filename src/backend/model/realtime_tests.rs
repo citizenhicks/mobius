@@ -55,16 +55,16 @@ impl OpenAiAuthorization for Auth {
 
 async fn transport(api: VoiceApi) -> (RealtimeTransport, TcpListener) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base = format!("http://{}/v1/realtime", listener.local_addr().unwrap());
-    let mut calls_url = Url::parse(&if api == VoiceApi::Codex {
-        format!("{base}/calls")
-    } else {
-        base.replace("/realtime", "/live/sessions")
-    })
-    .unwrap();
-    if api == VoiceApi::Codex {
-        calls_url.set_query(Some("intent=quicksilver&architecture=avas"));
+    if api == VoiceApi::OpenAi {
+        let base = format!("http://{}/api/native/v1/", listener.local_addr().unwrap());
+        return (
+            RealtimeTransport::new_openai(&base, Arc::new(Auth::default())).unwrap(),
+            listener,
+        );
     }
+    let base = format!("http://{}/v1/realtime", listener.local_addr().unwrap());
+    let mut calls_url = Url::parse(&format!("{base}/calls")).unwrap();
+    calls_url.set_query(Some("intent=quicksilver&architecture=avas"));
     (
         RealtimeTransport {
             api,
@@ -74,12 +74,7 @@ async fn transport(api: VoiceApi) -> (RealtimeTransport, TcpListener) {
                 .unwrap(),
             auth: Arc::new(Auth::default()),
             calls_url,
-            api_url: Url::parse(&if api == VoiceApi::Codex {
-                base.replace("/realtime", "/live")
-            } else {
-                base.replace("/realtime", "/live/sessions")
-            })
-            .unwrap(),
+            api_url: Url::parse(&base.replace("/realtime", "/live")).unwrap(),
         },
         listener,
     )
@@ -105,7 +100,10 @@ impl tokio_tungstenite::tungstenite::handshake::server::Callback for InspectUpgr
             assert_eq!(request.headers()["openai-alpha"], "quicksilver=v2");
             assert_eq!(request.headers()["x-session-id"], "session-1");
         } else {
-            assert_eq!(request.uri().path(), "/v1/live/sessions/live_test/attach");
+            assert_eq!(
+                request.uri().path(),
+                "/api/native/v1/live/sessions/live_test/attach"
+            );
             assert_eq!(request.uri().query(), None);
             assert!(!request.headers().contains_key("openai-alpha"));
         }
@@ -240,7 +238,7 @@ async fn stalled_sideband_handshake_times_out_and_hangs_up() {
         sideband_ready.send(()).unwrap();
         let (mut hangup, _) = listener.accept().await.unwrap();
         let (headers, _) = read_request(&mut hangup).await;
-        assert!(headers.starts_with("post /v1/live/sessions/live_timeout/hangup "));
+        assert!(headers.starts_with("post /api/native/v1/live/sessions/live_timeout/hangup "));
         respond(&mut hangup, "200 OK", "", "").await;
         drop(sideband);
     });
@@ -290,7 +288,7 @@ async fn live_and_codex_wire_contracts_delegate_once_reply_and_close() {
                 )
                 .await;
             } else {
-                assert!(headers.starts_with("post /v1/live/sessions "));
+                assert!(headers.starts_with("post /api/native/v1/live/sessions "));
                 assert_eq!(body["transport"], json!({"type":"webrtc","sdp":SDP}));
                 assert_eq!(body["session"]["model"], "gpt-live-1");
                 assert_eq!(body["session"]["audio"]["output"]["voice"], "quartz");
@@ -370,7 +368,7 @@ async fn live_and_codex_wire_contracts_delegate_once_reply_and_close() {
             let (headers, _) = read_request(&mut http).await;
             assert!(headers.starts_with(match api {
                 VoiceApi::Codex => "post /v1/realtime/calls/rtc_test/hangup ",
-                VoiceApi::OpenAi => "post /v1/live/sessions/live_test/hangup ",
+                VoiceApi::OpenAi => "post /api/native/v1/live/sessions/live_test/hangup ",
             }));
             assert!(headers.contains("authorization: bearer secret\r\n"));
             respond(&mut http, "200 OK", "", "").await;
@@ -577,7 +575,10 @@ async fn public_session_identity_is_validated_and_invalid_sdp_hangs_up() {
             if id == "live_invalid_sdp" {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let (headers, _) = read_request(&mut socket).await;
-                assert!(headers.starts_with("post /v1/live/sessions/live_invalid_sdp/hangup "));
+                assert!(
+                    headers
+                        .starts_with("post /api/native/v1/live/sessions/live_invalid_sdp/hangup ")
+                );
                 respond(&mut socket, "200 OK", "", "").await;
             } else {
                 assert!(
@@ -642,7 +643,7 @@ async fn dropping_call_during_sideband_setup_hangs_up_allocated_call() {
         connecting.send(()).unwrap();
         let (mut hangup, _) = listener.accept().await.unwrap();
         let (headers, _) = read_request(&mut hangup).await;
-        assert!(headers.starts_with("post /v1/live/sessions/live_cancel/hangup "));
+        assert!(headers.starts_with("post /api/native/v1/live/sessions/live_cancel/hangup "));
         respond(&mut hangup, "200 OK", "", "").await;
         drop(socket);
     });
@@ -703,7 +704,7 @@ async fn sideband_access_rejection_hangs_up_the_allocated_call() {
         drop(socket);
         let (mut socket, _) = listener.accept().await.unwrap();
         let (headers, _) = read_request(&mut socket).await;
-        assert!(headers.starts_with("post /v1/live/sessions/live_denied/hangup "));
+        assert!(headers.starts_with("post /api/native/v1/live/sessions/live_denied/hangup "));
         respond(&mut socket, "200 OK", "", "").await;
     });
     let mut call = transport.start(request()).await.unwrap();
@@ -744,6 +745,18 @@ fn custom_endpoints_do_not_advertise_or_dispatch_realtime_voice() {
             .realtime_voices(Some("http://localhost:11434/v1"))
             .is_empty()
     );
+}
+
+#[test]
+fn live_payment_error_preserves_status_without_retry() {
+    let mut turns = VoiceTurns::default();
+    let error = turns.observe(VoiceApi::OpenAi, &json!({"type":"error","status":402,"error":{"code":"insufficient_balance","message":"Balance exhausted"}})).expect_err("denial");
+    let Error::Provider(error) = error else {
+        panic!("provider error")
+    };
+    assert_eq!(error.status(), Some(402));
+    assert_eq!(error.to_string(), "Balance exhausted");
+    assert!(!error.is_retryable());
 }
 
 #[tokio::test]

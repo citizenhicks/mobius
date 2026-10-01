@@ -175,13 +175,27 @@ pub(super) struct RealtimeTransport {
 }
 
 impl RealtimeTransport {
-    pub(super) fn new(api: VoiceApi, auth: Arc<dyn OpenAiAuthorization>) -> Result<Self> {
-        let calls_url = match api {
-            VoiceApi::OpenAi => "https://api.openai.com/v1/live/sessions",
-            VoiceApi::Codex => {
-                "https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas"
-            }
-        };
+    pub(super) fn new_openai(base_url: &str, auth: Arc<dyn OpenAiAuthorization>) -> Result<Self> {
+        super::provider::validate_base_url(base_url)?;
+        let endpoint = format!("{}/live/sessions", base_url.trim_end_matches('/'));
+        Self::with_endpoints(VoiceApi::OpenAi, auth, &endpoint, &endpoint)
+    }
+
+    pub(super) fn new_codex(auth: Arc<dyn OpenAiAuthorization>) -> Result<Self> {
+        Self::with_endpoints(
+            VoiceApi::Codex,
+            auth,
+            "https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas",
+            "https://api.openai.com/v1/live",
+        )
+    }
+
+    fn with_endpoints(
+        api: VoiceApi,
+        auth: Arc<dyn OpenAiAuthorization>,
+        calls_url: &str,
+        api_url: &str,
+    ) -> Result<Self> {
         Ok(Self {
             api,
             // Voice credentials must never follow a provider redirect.
@@ -192,11 +206,7 @@ impl RealtimeTransport {
             auth,
             calls_url: Url::parse(calls_url)
                 .map_err(|_| invalid("invalid voice calls endpoint"))?,
-            api_url: Url::parse(match api {
-                VoiceApi::OpenAi => "https://api.openai.com/v1/live/sessions",
-                VoiceApi::Codex => "https://api.openai.com/v1/live",
-            })
-            .map_err(|_| invalid("invalid voice sideband endpoint"))?,
+            api_url: Url::parse(api_url).map_err(|_| invalid("invalid voice sideband endpoint"))?,
         })
     }
 
@@ -732,7 +742,9 @@ impl VoiceTurns {
             }
         }
         if matches!(event["type"].as_str(), Some("error")) {
-            return Err(invalid(&super::openai::response_error(event)));
+            return Err(Error::Provider(super::openai::response_provider_error(
+                event, None,
+            )));
         }
         match api {
             VoiceApi::OpenAi => self.observe_live(event, &mut events)?,

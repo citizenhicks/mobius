@@ -33,7 +33,7 @@ use super::provider::ProviderBuildConfig;
 use super::provider::ProviderDefinition;
 use super::provider::uses_default_endpoint;
 use super::provider::validate_base_url;
-use super::realtime::{RealtimeTransport, VoiceApi};
+use super::realtime::RealtimeTransport;
 use super::transport::SseDecoder;
 use super::transport::frame_data;
 use super::transport::read_limited;
@@ -98,6 +98,7 @@ pub struct OpenAi {
     auth: Option<Arc<dyn OpenAiAuthorization>>,
     realtime: Option<RealtimeTransport>,
     base_url: String,
+    native_api: bool,
     model: String,
     reasoning_effort: Option<String>,
     reasoning_summary: bool,
@@ -157,21 +158,21 @@ impl OpenAi {
         if model.trim().is_empty() {
             return Err(Error::Config("OPENAI_MODEL is empty".into()));
         }
-        let realtime = if uses_default_endpoint(Some(DEFAULT_BASE_URL), Some(&base_url)) {
+        let native_api = uses_default_endpoint(Some(DEFAULT_BASE_URL), Some(&base_url));
+        let realtime = if native_api {
             auth.as_ref()
-                .map(|auth| RealtimeTransport::new(VoiceApi::OpenAi, Arc::clone(auth)))
+                .map(|auth| RealtimeTransport::new_openai(&base_url, Arc::clone(auth)))
                 .transpose()?
         } else {
             None
         };
-        let image_api = (auth.is_some()
-            && uses_default_endpoint(Some(DEFAULT_BASE_URL), Some(&base_url)))
-        .then_some(&IMAGE_APIS["openai"]);
+        let image_api = (auth.is_some() && native_api).then_some(&IMAGE_APIS["openai"]);
         Ok(Self {
             client,
             auth,
             realtime,
             base_url,
+            native_api,
             model,
             reasoning_effort: None,
             reasoning_summary: false,
@@ -189,7 +190,21 @@ impl OpenAi {
             .auth
             .as_ref()
             .ok_or_else(|| Error::Config("Codex voice requires authorization".into()))?;
-        self.realtime = Some(RealtimeTransport::new(VoiceApi::Codex, Arc::clone(auth))?);
+        self.realtime = Some(RealtimeTransport::new_codex(Arc::clone(auth))?);
+        Ok(self)
+    }
+
+    pub(super) fn with_native_openai_api(mut self) -> Result<Self> {
+        let auth = self
+            .auth
+            .as_ref()
+            .ok_or_else(|| Error::Config("native OpenAI API requires authorization".into()))?;
+        self.realtime = Some(RealtimeTransport::new_openai(
+            &self.base_url,
+            Arc::clone(auth),
+        )?);
+        self.image_api = Some(&IMAGE_APIS["openai"]);
+        self.native_api = true;
         Ok(self)
     }
 
@@ -366,7 +381,7 @@ impl OpenAi {
                 self.decode_response(response, deferred_tools).map(Some)
             }
             Some("error" | "response.failed" | "response.incomplete") => {
-                Err(Error::Provider(response_error(event).into()))
+                Err(Error::Provider(response_provider_error(event, None)))
             }
             _ => Ok(None),
         }
@@ -621,7 +636,7 @@ impl Model for OpenAi {
     }
 
     fn pricing(&self) -> Option<ModelPricing> {
-        uses_default_endpoint(Some(DEFAULT_BASE_URL), Some(&self.base_url))
+        self.native_api
             .then(|| CATALOG.pricing(&self.model))
             .flatten()
     }
@@ -1173,4 +1188,17 @@ pub(super) fn response_error(event: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or("response failed")
         .to_string()
+}
+
+pub(super) fn response_provider_error(event: &Value, retry_after: Option<String>) -> ProviderError {
+    let message = response_error(event);
+    match event
+        .get("status")
+        .and_then(Value::as_u64)
+        .and_then(|status| u16::try_from(status).ok())
+        .filter(|status| (400..=599).contains(status))
+    {
+        Some(status) => ProviderError::http(message, status, retry_after),
+        None => ProviderError::new(message),
+    }
 }

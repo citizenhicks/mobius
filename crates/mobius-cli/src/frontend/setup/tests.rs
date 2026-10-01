@@ -42,8 +42,8 @@ fn status(provider: &str) -> ProviderStatus {
         ),
         "openai_socket" => (
             ProviderAuthKind::ApiKey,
+            Some("https://api.openai.com/v1".into()),
             None,
-            Some("OPENAI_API_KEY".into()),
             vec![model("gpt-6-sol", "Sol", Some("medium"))],
             vec![
                 search(HostedWebSearch::Off),
@@ -55,6 +55,7 @@ fn status(provider: &str) -> ProviderStatus {
     };
     let model_ids_configurable = models.is_empty();
     ProviderStatus {
+        native_custom_endpoints: provider == "openai_socket",
         provider: provider.into(),
         label: provider.into(),
         symbol: FrontendSymbol::Storage,
@@ -131,9 +132,7 @@ fn state(mode: SetupMode, provider: &str, configured: bool) -> SetupState {
             .reasoning_effort
             .clone_from(&model.default_reasoning);
     }
-    if statuses[0].configurable_base_url() {
-        original.provider.base_url = statuses[0].default_base_url.clone();
-    }
+    original.provider.base_url = statuses[0].default_base_url.clone();
     let instances = vec![ProviderInstance {
         label: provider.into(),
         tint: Default::default(),
@@ -1243,7 +1242,7 @@ fn setup_rejects_active_provider_values_outside_the_manifest() {
             instance: "openai_socket".into(),
             provider: "openai_socket".into(),
             model: "missing".into(),
-            base_url: None,
+            base_url: Some("https://api.openai.com/v1".into()),
             endpoint_auth: ProviderEndpointAuth::ProviderDefault,
             reasoning_effort: None,
             web_search: HostedWebSearch::Off,
@@ -1273,7 +1272,7 @@ fn setup_rejects_active_provider_values_outside_the_manifest() {
             instance: "openai_socket".into(),
             provider: "openai_socket".into(),
             model: "gpt-6-sol".into(),
-            base_url: None,
+            base_url: Some("https://api.openai.com/v1".into()),
             endpoint_auth: ProviderEndpointAuth::ProviderDefault,
             reasoning_effort: Some("missing".into()),
             web_search: HostedWebSearch::Off,

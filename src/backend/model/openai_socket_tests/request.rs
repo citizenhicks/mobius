@@ -120,6 +120,23 @@ fn generic_processing_error_is_a_retryable_stream_failure() {
 }
 
 #[test]
+fn payment_denials_override_stream_recovery_hints() {
+    for code in ["rate_limit_exceeded", "previous_response_not_found"] {
+        let event = serde_json::json!({
+            "type": "error",
+            "status": 402,
+            "error": {"code": code, "message": "Balance exhausted"}
+        });
+        let Err(Error::Provider(error)) = failed_exchange(&event, false) else {
+            panic!("expected payment denial");
+        };
+        assert_eq!(error.status(), Some(402));
+        assert!(!error.is_retryable());
+        assert!(!error.is_stream_interrupted());
+    }
+}
+
+#[test]
 fn stream_failures_do_not_enable_http_fallback() {
     let mut state = SocketState {
         connection: None,

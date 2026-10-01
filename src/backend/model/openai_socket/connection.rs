@@ -347,11 +347,14 @@ fn websocket_connect_error(error: WebSocketError) -> Error {
             .get(tokio_tungstenite::tungstenite::http::header::RETRY_AFTER)
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
-        return Error::Provider(ProviderError::http(
-            format!("WebSocket HTTP {status}"),
-            status.as_u16(),
-            retry_after,
-        ));
+        let body = response.body().as_deref().unwrap_or_default();
+        let body = &body[..body.len().min(super::super::transport::MAX_ERROR_BYTES)];
+        let message = if body.is_empty() {
+            format!("WebSocket HTTP {status}")
+        } else {
+            format!("WebSocket HTTP {status}: {}", String::from_utf8_lossy(body))
+        };
+        return Error::Provider(ProviderError::http(message, status.as_u16(), retry_after));
     }
     Error::Provider(ProviderError::stream_interrupted(None))
 }
@@ -488,6 +491,11 @@ pub(super) fn failed_exchange(event: &Value, output_delivered: bool) -> Result<E
     let code = response_error_code(event);
     let message = response_error(event);
     let retry_after = response_retry_after(event);
+    if event.get("status").and_then(Value::as_u64) == Some(402) {
+        return Err(Error::Provider(
+            super::super::openai::response_provider_error(event, retry_after),
+        ));
+    }
     match code {
         Some("previous_response_not_found") => {
             log_interruption("response", "previous response unavailable");
@@ -501,7 +509,9 @@ pub(super) fn failed_exchange(event: &Value, output_delivered: bool) -> Result<E
             log_interruption("response", "provider requested retry");
             Ok(Exchange::Retry { retry_after })
         }
-        _ => Err(Error::Provider(message.into())),
+        _ => Err(Error::Provider(
+            super::super::openai::response_provider_error(event, retry_after),
+        )),
     }
 }
 

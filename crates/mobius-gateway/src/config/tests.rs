@@ -546,7 +546,7 @@ fn credentialless_endpoint_rejects_secret_bearing_url_components() {
 }
 
 #[test]
-fn credentialless_endpoint_requires_a_configurable_provider() {
+fn credentialless_endpoint_requires_provider_opt_in() {
     let selection = ProviderConfig {
         instance: "openai_socket".into(),
         provider: "openai_socket".into(),
@@ -566,9 +566,13 @@ fn credentialless_endpoint_requires_a_configurable_provider() {
             vec![selection.model],
             Vec::new(),
         )
-        .expect_err("a fixed-endpoint provider cannot take a credentialless endpoint");
+        .expect_err("native OpenAI endpoints require credentials");
 
-    assert!(error.to_string().contains("fixed API endpoint"));
+    assert!(
+        error
+            .to_string()
+            .contains("does not support credentialless")
+    );
 }
 
 #[test]
@@ -1756,18 +1760,31 @@ fn initialization_does_not_repermission_an_existing_directory() {
 async fn replacing_and_removing_credentials_revokes_resolved_routes() {
     let directory = tempfile::tempdir().unwrap();
     let store = CredentialStore::open(directory.path().join("credentials.json")).unwrap();
+    let base_url = Some("https://api.openai.com/v1");
     store
-        .set("openai_socket", "openai_socket", "secret-one", None, None)
+        .set(
+            "openai_socket",
+            "openai_socket",
+            "secret-one",
+            base_url,
+            None,
+        )
         .unwrap();
     let mut first = store
-        .get("openai_socket", "openai_socket", None)
+        .get("openai_socket", "openai_socket", base_url)
         .unwrap()
         .unwrap()
         .lifetime
         .revoked
         .unwrap();
     store
-        .set("openai_socket", "openai_socket", "secret-one", None, None)
+        .set(
+            "openai_socket",
+            "openai_socket",
+            "secret-one",
+            base_url,
+            None,
+        )
         .unwrap();
     assert!(!first.has_changed().unwrap());
     store
@@ -1775,13 +1792,13 @@ async fn replacing_and_removing_credentials_revokes_resolved_routes() {
             "openai_socket",
             "openai_socket",
             "secret-two",
-            None,
+            base_url,
             Some(2_000_000_000),
         )
         .unwrap();
     assert!(first.changed().await.is_err());
     let second = store
-        .get("openai_socket", "openai_socket", None)
+        .get("openai_socket", "openai_socket", base_url)
         .unwrap()
         .unwrap();
     assert_eq!(second.api_key, "secret-two");
