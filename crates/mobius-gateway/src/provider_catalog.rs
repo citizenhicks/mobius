@@ -73,6 +73,19 @@ pub(crate) fn configured_model_choices(
         .collect())
 }
 
+pub(crate) fn configured_model_catalog(gateway: &GatewayConfig) -> Result<Vec<ModelChoice>> {
+    let mut models = Vec::new();
+    for configured in gateway.configured_providers.values() {
+        let definition = provider(&configured.selection.provider)?;
+        models.extend(
+            catalog_routes(definition, configured, &configured.selection)
+                .into_iter()
+                .map(|route| route.choice),
+        );
+    }
+    Ok(models)
+}
+
 pub(crate) fn configured_model_providers(
     gateway: &GatewayConfig,
     store: &ConfigStore,

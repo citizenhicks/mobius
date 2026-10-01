@@ -1,0 +1,1 @@
+Saved Bot model routes validate against the configured catalog at startup, allowing Cloud to reinstall an expired or revoked provider credential. Saved routes stay intact; model advertisement and live configuration validation still require credentials. Gateway protocol 88 is unchanged.

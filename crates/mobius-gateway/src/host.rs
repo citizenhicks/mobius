@@ -50,7 +50,8 @@ use crate::config::{
 };
 use crate::extensions::ExtensionStore;
 use crate::provider_catalog::{
-    configured_model_choices, configured_model_routes, provider_instances, provider_statuses,
+    configured_model_catalog, configured_model_choices, configured_model_routes,
+    provider_instances, provider_statuses,
 };
 use crate::sandbox::GatewaySandbox;
 use crate::wire::{
@@ -226,7 +227,7 @@ impl GatewayHost {
         if let Some(default) = &config.bot_defaults {
             extensions.resolve(&config, &default.config.extensions)?;
         }
-        let models = configured_model_choices(&config, &store, &credentials)?;
+        let models = configured_model_catalog(&config)?;
         for bot in bots.bots()? {
             crate::config::validate_bot_compatibility(&config, &bot.config.config, &models)?;
             extensions.resolve(&config, &bot.config.config.extensions)?;
