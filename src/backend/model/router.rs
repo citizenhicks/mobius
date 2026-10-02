@@ -121,7 +121,6 @@ impl ModelRouter {
     }
 
     /// Returns the selectable routes in frontend display order.
-    #[must_use]
     pub fn choices(
         &self,
     ) -> impl DoubleEndedIterator<Item = &ModelChoice> + ExactSizeIterator + Clone {
