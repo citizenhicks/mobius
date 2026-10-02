@@ -64,6 +64,7 @@ mod text {
         pub(super) tool_list_chats_description: String,
         pub(super) tool_message_chat_description: String,
         pub(super) tool_message_chat_parameter_target_description: String,
+        pub(super) tool_message_chat_parameter_workspace_description: String,
         pub(super) tool_read_history_description: String,
         pub(super) tool_search_history_description: String,
         pub(super) tool_search_history_parameter_query_description: String,
@@ -134,6 +135,8 @@ pub struct LiveChat {
     pub workspace: Option<String>,
     /// Whether the chat has an active turn; an idle chat starts one for a message.
     pub running: bool,
+    /// Active turn identity, used to interrupt only that turn.
+    pub turn_id: Option<String>,
 }
 
 impl LiveChat {
@@ -158,7 +161,15 @@ impl LiveChat {
     }
 }
 
-/// Host access to the other open chats of a chat's owner.
+/// Destination for an existing chat command or a new project's first message.
+pub enum ChatTarget<'a> {
+    /// One existing chat identified by its session ID or sender handle.
+    Existing(&'a str),
+    /// A new chat in an existing workspace directory.
+    Workspace(&'a std::path::Path),
+}
+
+/// Host access to the other chats of a chat's owner.
 pub trait LiveChats: Send + Sync {
     /// Lists the owner's open chats other than `session_id`.
     /// # Errors
@@ -166,19 +177,19 @@ pub trait LiveChats: Send + Sync {
     /// Returns an error if the host cannot read its open chats.
     fn list<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<Vec<LiveChat>>>;
 
-    /// Delivers `text` from `session_id` as a peer message to one sibling chat.
+    /// Delivers a message or interrupt, returning the destination's session ID.
     /// # Errors
     ///
-    /// Returns an error if `target` is not exactly one other open chat of the same
-    /// owner or that chat rejects the message.
+    /// Returns an error if the target, operation, or workspace is invalid, the
+    /// initiating turn cannot authorize it, or the destination rejects it.
     fn send<'a>(
         &'a self,
         session_id: &'a str,
-        target: &'a str,
-        text: String,
+        target: ChatTarget<'a>,
+        op: Op,
         initiating_author: &'a crate::protocol::MessageAuthor,
         command_id: &'a str,
-    ) -> BoxFuture<'a, Result<()>>;
+    ) -> BoxFuture<'a, Result<String>>;
 }
 
 /// Adds chat discovery and branching without changing the core loop.
@@ -421,8 +432,47 @@ struct MessageChat(Arc<OpenChats>);
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MessageChatArgs {
-    target: String,
-    text: String,
+    target: Option<String>,
+    workspace: Option<std::path::PathBuf>,
+    text: Option<String>,
+    delivery: Option<crate::protocol::ActiveMessageDelivery>,
+    interrupt_turn_id: Option<String>,
+}
+
+impl MessageChatArgs {
+    fn command(&self) -> Result<(ChatTarget<'_>, Op)> {
+        let target = match (self.target.as_deref(), self.workspace.as_deref()) {
+            (Some(target), None) => ChatTarget::Existing(target),
+            (None, Some(workspace)) => ChatTarget::Workspace(workspace),
+            _ => {
+                return Err(Error::Tool(
+                    "provide exactly one of target or workspace".into(),
+                ));
+            }
+        };
+        let op = match (&self.text, &self.interrupt_turn_id, self.delivery) {
+            (Some(text), None, delivery) => Op::Message {
+                message: crate::protocol::MessageSubmission {
+                    author: crate::protocol::MessageAuthor::User,
+                    text: text.clone(),
+                    attachments: Vec::new(),
+                    reply: None,
+                    requested_delivery: Some(
+                        delivery.unwrap_or(crate::protocol::ActiveMessageDelivery::Steer),
+                    ),
+                    target_turn_id: None,
+                },
+            },
+            (None, Some(turn_id), None) if self.workspace.is_none() => Op::Interrupt {
+                turn_id: turn_id.clone(),
+            },
+            _ => return Err(Error::Tool(
+                "provide text with optional delivery, or interrupt_turn_id with an existing target"
+                    .into(),
+            )),
+        };
+        Ok((target, op))
+    }
 }
 
 impl Tool for ListChats {
@@ -461,6 +511,7 @@ impl Tool for ListChats {
                         "title": chat.title,
                         "workspace": chat.workspace,
                         "running": chat.running,
+                        "turn_id": chat.turn_id,
                     })
                 })
                 .collect::<Vec<_>>();
@@ -482,9 +533,17 @@ impl Tool for MessageChat {
                 "properties": {
                     "target": {"type": "string", "maxLength": 512,
                         "description": text::DEFINITION.tool_message_chat_parameter_target_description.as_str()},
-                    "text": {"type": "string"}
+                    "workspace": {"type": "string", "minLength": 1,
+                        "description": text::DEFINITION.tool_message_chat_parameter_workspace_description.as_str()},
+                    "text": {"type": "string", "minLength": 1},
+                    "delivery": {"type": "string", "enum": ["queue", "steer"]},
+                    "interrupt_turn_id": {"type": "string", "minLength": 1}
                 },
-                "required": ["target", "text"],
+                "oneOf": [
+                    {"required": ["target", "text"], "not": {"anyOf": [{"required": ["workspace"]}, {"required": ["interrupt_turn_id"]}]}},
+                    {"required": ["workspace", "text"], "not": {"anyOf": [{"required": ["target"]}, {"required": ["interrupt_turn_id"]}]}},
+                    {"required": ["target", "interrupt_turn_id"], "not": {"anyOf": [{"required": ["workspace"]}, {"required": ["text"]}, {"required": ["delivery"]}]}}
+                ],
                 "additionalProperties": false
             }),
         }
@@ -500,18 +559,20 @@ impl Tool for MessageChat {
         arguments: Value,
     ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
-            let MessageChatArgs { target, text } = serde_json::from_value(arguments)?;
-            self.0
+            let args: MessageChatArgs = serde_json::from_value(arguments)?;
+            let (target, op) = args.command()?;
+            let target = self
+                .0
                 .chats
                 .send(
                     &self.0.history.session_id,
-                    &target,
-                    text,
+                    target,
+                    op,
                     &context.author,
                     &context.call_id,
                 )
                 .await?;
-            Ok(String::new().into())
+            Ok(serde_json::json!({"target": target}).to_string().into())
         })
     }
 }
@@ -1428,6 +1489,29 @@ mod tests {
 
     struct NoChats;
 
+    #[test]
+    fn chat_commands_require_one_destination_and_one_operation() {
+        for arguments in [
+            serde_json::json!({"target":"chat", "text":"Continue"}),
+            serde_json::json!({"workspace":"/project", "text":"Start", "delivery":"queue"}),
+            serde_json::json!({"target":"chat", "interrupt_turn_id":"turn"}),
+        ] {
+            let args: MessageChatArgs = serde_json::from_value(arguments).unwrap();
+            assert!(args.command().is_ok());
+        }
+        for arguments in [
+            serde_json::json!({"text":"Missing destination"}),
+            serde_json::json!({"target":"chat", "workspace":"/project", "text":"Ambiguous"}),
+            serde_json::json!({"target":"chat"}),
+            serde_json::json!({"target":"chat", "text":"Ambiguous", "interrupt_turn_id":"turn"}),
+            serde_json::json!({"workspace":"/project", "interrupt_turn_id":"turn"}),
+            serde_json::json!({"target":"chat", "interrupt_turn_id":"turn", "delivery":"queue"}),
+        ] {
+            let args: MessageChatArgs = serde_json::from_value(arguments).unwrap();
+            assert!(args.command().is_err());
+        }
+    }
+
     impl LiveChats for NoChats {
         fn list<'a>(&'a self, _session_id: &'a str) -> BoxFuture<'a, Result<Vec<LiveChat>>> {
             Box::pin(async { Ok(Vec::new()) })
@@ -1436,12 +1520,12 @@ mod tests {
         fn send<'a>(
             &'a self,
             _session_id: &'a str,
-            _target: &'a str,
-            _text: String,
+            _target: ChatTarget<'a>,
+            _op: Op,
             _initiating_author: &'a crate::protocol::MessageAuthor,
             _command_id: &'a str,
-        ) -> BoxFuture<'a, Result<()>> {
-            Box::pin(async { Ok(()) })
+        ) -> BoxFuture<'a, Result<String>> {
+            Box::pin(async { Ok("target".into()) })
         }
     }
 
@@ -1475,6 +1559,7 @@ mod tests {
             title: None,
             workspace: None,
             running: false,
+            turn_id: None,
         };
         assert_eq!(chat.handle(), "chat #3f2a91c0");
         chat.title = Some(format!("Backend {}", "é".repeat(40)));

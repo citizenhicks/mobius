@@ -1,9 +1,7 @@
 //! Durable typed hooks and their user-authored consumers in the Bot database.
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
-use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use subtle::ConstantTimeEq as _;
 
 use super::StoredRoutine;
 use super::storage::{BotStorage, save_catalog_row};
@@ -24,24 +22,6 @@ pub(crate) struct PendingHookAction {
     pub(crate) id: String,
     pub(crate) event: HookEvent,
     pub(crate) action: BotAction,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct WebhookRecord {
-    pub(crate) id: String,
-    pub(crate) bot_id: String,
-    pub(crate) name: String,
-    pub(crate) enabled: bool,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct WebhookDelivery<'a> {
-    pub(crate) source_id: &'a str,
-    pub(crate) token_hash: [u8; 32],
-    pub(crate) delivery_id: &'a str,
-    pub(crate) body_digest: [u8; 32],
-    pub(crate) body: &'a str,
-    pub(crate) timestamp: i64,
 }
 
 impl BotStorage {
@@ -307,122 +287,9 @@ impl BotStorage {
             save_catalog_row(tx, state_json)
         })
     }
-    pub(super) fn has_webhooks(&self) -> Result<bool> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
-        Ok(connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM bot_webhooks WHERE enabled=1)",
-            [],
-            |row| row.get(0),
-        )?)
-    }
-    pub(super) fn create_webhook(
-        &self,
-        bot_id: &str,
-        name: &str,
-        instruction: &str,
-        token_hash: [u8; 32],
-    ) -> Result<WebhookRecord> {
-        if name.trim().is_empty() || name.len() > 128 {
-            return Err(Error::Config(
-                "webhook name must contain 1 to 128 bytes".into(),
-            ));
-        }
-        let record = WebhookRecord {
-            id: uuid::Uuid::new_v4().to_string(),
-            bot_id: bot_id.into(),
-            name: name.into(),
-            enabled: true,
-        };
-        let binding = HookBinding {
-            id: format!("webhook-{}", record.id),
-            on: event_selector(
-                HookSource::Custom {
-                    source_id: record.id.clone(),
-                },
-                HookKind::CustomReceived,
-            ),
-            action: BotAction::Report {
-                instruction: instruction.into(),
-            },
-        };
-        validate_bot_binding(&binding)?;
-        self.transaction(|tx| {
-            tx.execute(
-                "INSERT INTO bot_webhooks(id,bot_id,name,enabled,token_hash) VALUES(?1,?2,?3,1,?4)",
-                params![record.id, bot_id, name, token_hash.as_slice()],
-            )?;
-            save_binding(
-                tx,
-                bot_id,
-                None,
-                &binding,
-                true,
-                0,
-                chrono::Utc::now().timestamp(),
-            )
-        })?;
-        Ok(record)
-    }
-    pub(super) fn webhooks(&self, bot_id: &str) -> Result<Vec<WebhookRecord>> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
-        let mut query = connection
-            .prepare("SELECT id,name,enabled FROM bot_webhooks WHERE bot_id=?1 ORDER BY name,id")?;
-        Ok(query
-            .query_map([bot_id], |row| {
-                Ok(WebhookRecord {
-                    id: row.get(0)?,
-                    bot_id: bot_id.into(),
-                    name: row.get(1)?,
-                    enabled: row.get(2)?,
-                })
-            })?
-            .collect::<std::result::Result<_, _>>()?)
-    }
-    pub(super) fn configure_webhook(
-        &self,
-        bot_id: &str,
-        id: &str,
-        enabled: bool,
-        token_hash: Option<[u8; 32]>,
-    ) -> Result<()> {
-        self.transaction(|tx| {
-            let changed=tx.execute("UPDATE bot_webhooks SET enabled=?1,token_hash=COALESCE(?2,token_hash) WHERE bot_id=?3 AND id=?4",params![enabled,token_hash.map(|hash|hash.to_vec()),bot_id,id])?;
-            if changed==0 {return Err(Error::Config("unknown webhook source".into()));}
-            tx.execute("UPDATE hook_bindings SET enabled=?1, starts_at=CASE WHEN enabled=0 AND ?1=1 THEN ?2 ELSE starts_at END WHERE bot_id=?3 AND json_extract(selector_json,'$.source.type')='custom' AND json_extract(selector_json,'$.source.source_id')=?4",params![enabled,chrono::Utc::now().timestamp(),bot_id,id])?;
-            if !enabled {cancel_source_pending(tx,&HookSource::Custom{source_id:id.into()})?;}Ok(())
-        })
-    }
-    pub(super) fn delete_webhook(&self, bot_id: &str, id: &str) -> Result<()> {
-        self.transaction(|tx| {
-            tx.execute("DELETE FROM hook_bindings WHERE bot_id=?1 AND json_extract(selector_json,'$.source.type')='custom' AND json_extract(selector_json,'$.source.source_id')=?2",params![bot_id,id])?;
-            tx.execute("DELETE FROM hook_events WHERE bot_id=?1 AND source_json=?2",params![bot_id,serde_json::to_string(&HookSource::Custom{source_id:id.into()})?])?;
-            if tx.execute("DELETE FROM bot_webhooks WHERE bot_id=?1 AND id=?2",params![bot_id,id])?==0 {return Err(Error::Config("unknown webhook source".into()));}Ok(())
-        })
-    }
-    pub(super) fn accept_webhook(&self, delivery: &WebhookDelivery<'_>, now: i64) -> Result<bool> {
-        if now.abs_diff(delivery.timestamp) > 300 {
-            return Err(Error::Unauthorized);
-        }
-        self.transaction(|tx| {
-            let source=tx.query_row("SELECT bot_id,name,enabled,token_hash FROM bot_webhooks WHERE id=?1",[delivery.source_id],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,bool>(2)?,row.get::<_,Vec<u8>>(3)?))).optional()?.ok_or(Error::Unauthorized)?;
-            if !source.2||source.3.as_slice().ct_eq(delivery.token_hash.as_slice()).unwrap_u8()!=1 {return Err(Error::Unauthorized);}
-            validate_id(delivery.delivery_id)?;
-            if delivery.body.len()>mobius::protocol::MAX_MESSAGE_BYTES/2 {return Err(Error::Config("webhook body is too large".into()));}
-            let data:serde_json::Value=serde_json::from_str(delivery.body)?;
-            if let Some(digest)=tx.query_row("SELECT body_digest FROM bot_webhook_receipts WHERE source_id=?1 AND delivery_id=?2",params![delivery.source_id,delivery.delivery_id],|row|row.get::<_,Vec<u8>>(0)).optional()? {if digest.as_slice()==delivery.body_digest {return Ok(false);}return Err(Error::Config("webhook delivery ID has conflicting content".into()));}
-            let event=HookEvent{id:stable_id("hook",delivery.source_id,delivery.delivery_id),bot_id:source.0,source:HookSource::Custom{source_id:delivery.source_id.into()},cause_id:None,ancestry:Vec::new(),occurred_at:now,data:HookData::CustomReceived{name:source.1,data}};
-            record_event(tx,&event,None)?;
-            tx.execute("INSERT INTO bot_webhook_receipts(source_id,delivery_id,body_digest,event_id) VALUES(?1,?2,?3,?4)",params![delivery.source_id,delivery.delivery_id,delivery.body_digest.as_slice(),event.id])?;Ok(true)
-        })
-    }
 }
 
+#[cfg(test)]
 pub(crate) fn event_selector(source: HookSource, kind: HookKind) -> HookSelector {
     HookSelector::Event {
         source,
@@ -827,7 +694,6 @@ fn validate_source(source: &HookSource) -> Result<()> {
             validate_id(binding_id)
         }
         HookSource::Client { client_id } => validate_id(client_id),
-        HookSource::Custom { source_id } => validate_id(source_id),
         HookSource::Gateway => Ok(()),
     }
 }

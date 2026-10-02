@@ -188,23 +188,3 @@ async fn runtime_idle_shutdown_checks_reservations_revision_and_work_admission()
     );
     gateway.shutdown().await;
 }
-
-#[tokio::test]
-async fn configured_webhook_keeps_inbound_delivery_reachable_during_idle_shutdown() {
-    let (_root, gateway, bot) = super::bots::gateway_with_bot().await;
-    let bots = Arc::clone(&gateway.state.lock().await.bots);
-    let source = bots
-        .create_webhook(&bot.id, "outage", "Report the outage.", [1; 32])
-        .unwrap();
-    let activity = gateway.runtime_activity().await.unwrap();
-    assert!(!activity.idle);
-    assert!(
-        !gateway
-            .prepare_idle_shutdown(&activity.activity_revision, || Ok(0))
-            .await
-            .unwrap()
-    );
-    bots.delete_webhook(&bot.id, &source.id).unwrap();
-    assert!(gateway.runtime_activity().await.unwrap().idle);
-    gateway.shutdown().await;
-}

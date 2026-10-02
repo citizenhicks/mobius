@@ -1,6 +1,20 @@
-use mobius::middleware::sessions::LiveChats;
+use mobius::middleware::sessions::{ChatTarget, LiveChats};
+use mobius::protocol::ActiveMessageDelivery;
 
 use super::*;
+
+fn message(text: &str, delivery: Option<ActiveMessageDelivery>) -> Op {
+    Op::Message {
+        message: MessageSubmission {
+            author: MessageAuthor::User,
+            text: text.into(),
+            attachments: Vec::new(),
+            reply: None,
+            requested_delivery: delivery,
+            target_turn_id: None,
+        },
+    }
+}
 
 #[tokio::test]
 async fn open_chats_of_one_bot_list_and_message_each_other() {
@@ -61,8 +75,8 @@ async fn open_chats_of_one_bot_list_and_message_each_other() {
         chats
             .send(
                 sender.session_id(),
-                foreign.session_id(),
-                "Hi".into(),
+                ChatTarget::Existing(foreign.session_id()),
+                message("Hi", None),
                 &MessageAuthor::User,
                 "foreign"
             )
@@ -74,8 +88,8 @@ async fn open_chats_of_one_bot_list_and_message_each_other() {
     chats
         .send(
             sender.session_id(),
-            &target,
-            "The API now returns ids.".into(),
+            ChatTarget::Existing(&target),
+            message("The API now returns ids.", None),
             &MessageAuthor::User,
             "peer-message",
         )
@@ -97,6 +111,192 @@ async fn open_chats_of_one_bot_list_and_message_each_other() {
 }
 
 #[tokio::test]
+async fn message_chat_creates_an_owned_project_chat_after_validating_the_message() {
+    let (root, gateway, bot) = super::bots::gateway_with_bot().await;
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let sender = gateway
+        .open_session(&bot.conversation_session_id)
+        .await
+        .unwrap();
+    let chats =
+        crate::host::live_chats::GatewayLiveChats(Arc::downgrade(&gateway.state), gateway.access());
+    let source = MessageAuthor::Source {
+        message_id: "report".into(),
+        source: mobius::protocol::MessageSource::Session {
+            session_id: sender.session_id().into(),
+        },
+        cause_id: None,
+        ancestry: Vec::new(),
+        handle: "source report".into(),
+        symbol: None,
+    };
+    for (text, author) in [("", &MessageAuthor::User), ("New work", &source)] {
+        assert!(
+            chats
+                .send(
+                    sender.session_id(),
+                    ChatTarget::Workspace(&workspace),
+                    message(text, None),
+                    author,
+                    "rejected-create",
+                )
+                .await
+                .is_err()
+        );
+    }
+    assert!(chats.list(sender.session_id()).await.unwrap().is_empty());
+
+    let target_id = chats
+        .send(
+            sender.session_id(),
+            ChatTarget::Workspace(&workspace),
+            message("Inspect this project", None),
+            &MessageAuthor::User,
+            "create-chat",
+        )
+        .await
+        .unwrap();
+    assert!(Uuid::parse_str(&target_id).is_ok());
+    let target = gateway.open_session(&target_id).await.unwrap();
+    target.wait_idle().await;
+    assert_eq!(target.bot_id().await.unwrap(), bot.id);
+    assert_eq!(
+        target.ready().await.unwrap().workspace.unwrap().path,
+        workspace.canonicalize().unwrap()
+    );
+    assert!(
+        target
+            .history_page(None)
+            .await
+            .unwrap()
+            .records
+            .iter()
+            .any(|record| matches!(
+                &record.event.msg,
+                EventMsg::Message(message) if message.text == "Inspect this project"
+                    && matches!(
+                        &message.author,
+                        MessageAuthor::Source {
+                            source: mobius::protocol::MessageSource::Session { session_id }, ..
+                        } if session_id == sender.session_id()
+                    )
+            ))
+    );
+    assert_eq!(
+        chats.list(sender.session_id()).await.unwrap()[0].session_id,
+        target_id
+    );
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
+async fn message_chat_honors_delivery_and_interrupts_the_selected_turn() {
+    let (root, gateway, bot) = super::bots::gateway_with_bot().await;
+    let model = Arc::new(super::hooks::CaptureModel::default());
+    super::hooks::install_model(&gateway, &bot, Arc::clone(&model)).await;
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let sender = gateway
+        .open_session(&bot.conversation_session_id)
+        .await
+        .unwrap();
+    let target = gateway.create_session(&workspace, &bot.id).await.unwrap();
+    target
+        .submit(Submission {
+            id: "active-work".into(),
+            op: message("Start working", None),
+        })
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), model.entered.notified())
+        .await
+        .unwrap();
+    let chats =
+        crate::host::live_chats::GatewayLiveChats(Arc::downgrade(&gateway.state), gateway.access());
+    let listed = chats.list(sender.session_id()).await.unwrap();
+    let turn_id = listed
+        .iter()
+        .find(|chat| chat.session_id == target.session_id())
+        .unwrap()
+        .turn_id
+        .clone()
+        .unwrap();
+    for (text, delivery) in [
+        ("Queue this", ActiveMessageDelivery::Queue),
+        ("Steer this", ActiveMessageDelivery::Steer),
+    ] {
+        assert_eq!(
+            chats
+                .send(
+                    sender.session_id(),
+                    ChatTarget::Existing(target.session_id()),
+                    message(text, Some(delivery)),
+                    &MessageAuthor::User,
+                    delivery.id(),
+                )
+                .await
+                .unwrap(),
+            target.session_id()
+        );
+    }
+    gateway
+        .execute_session_command(
+            target.session_id(),
+            message("Saved steering", Some(ActiveMessageDelivery::Steer)),
+            &bot.id,
+            None,
+            "saved-steer",
+        )
+        .await
+        .unwrap();
+    let checkpoints = Arc::clone(&gateway.state.lock().await.checkpoints);
+    let checkpoint = checkpoints
+        .load(target.session_id())
+        .await
+        .unwrap()
+        .unwrap();
+    let pending = serde_json::to_value(checkpoint.pending_messages).unwrap();
+    assert_eq!(pending[0]["boundary"]["type"], "queue");
+    assert_eq!(pending[1]["boundary"]["type"], "steer");
+    assert_eq!(pending[1]["boundary"]["turn_id"], turn_id);
+    assert_eq!(pending[2]["boundary"]["type"], "steer");
+
+    chats
+        .send(
+            sender.session_id(),
+            ChatTarget::Existing(target.session_id()),
+            Op::Interrupt {
+                turn_id: turn_id.clone(),
+            },
+            &MessageAuthor::User,
+            "stop-active-work",
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), target.wait_idle())
+        .await
+        .unwrap();
+    assert!(
+        checkpoints
+            .execution_page(
+                target.session_id(),
+                mobius::backend::checkpoint::ExecutionPageRequest {
+                    before_sequence: None,
+                    limit: 10,
+                },
+            )
+            .await
+            .unwrap()
+            .executions
+            .iter()
+            .any(|execution| execution.turn_id == turn_id
+                && execution.outcome == mobius::backend::checkpoint::ExecutionOutcome::Aborted)
+    );
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
 async fn session_commands_and_chat_messages_preserve_sender_and_hook_ancestry() {
     let (root, gateway, bot) = super::bots::gateway_with_bot().await;
     let workspace = root.path().join("workspace");
@@ -106,20 +306,10 @@ async fn session_commands_and_chat_messages_preserve_sender_and_hook_ancestry() 
         .await
         .unwrap();
     let target = gateway.create_session(&workspace, &bot.id).await.unwrap();
-    let message = |text: &str| Op::Message {
-        message: MessageSubmission {
-            author: MessageAuthor::User,
-            text: text.into(),
-            attachments: Vec::new(),
-            reply: None,
-            requested_delivery: None,
-            target_turn_id: None,
-        },
-    };
     gateway
         .execute_session_command(
             target.session_id(),
-            message("Direct test"),
+            message("Direct test", None),
             &bot.id,
             None,
             "direct",
@@ -145,8 +335,8 @@ async fn session_commands_and_chat_messages_preserve_sender_and_hook_ancestry() 
     chats
         .send(
             sender.session_id(),
-            target.session_id(),
-            "Peer test".into(),
+            ChatTarget::Existing(target.session_id()),
+            message("Peer test", None),
             &origin,
             "peer",
         )
@@ -169,7 +359,7 @@ async fn session_commands_and_chat_messages_preserve_sender_and_hook_ancestry() 
                 ),
                 action: crate::wire::BotAction::Session {
                     session_id: target.session_id().into(),
-                    op: Box::new(message("Saved test")),
+                    op: Box::new(message("Saved test", None)),
                 },
             },
         })

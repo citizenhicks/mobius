@@ -463,14 +463,6 @@ pub(super) async fn serve_plaintext_connection(
     let read = tokio::time::timeout_at(auth_deadline, stream.peek(&mut first))
         .await
         .map_err(|_| Error::Unauthorized)??;
-    if read == 1 && first[0] == b'P' {
-        return super::webhooks::serve(
-            stream,
-            Arc::clone(&connection.bots),
-            expected_websocket_host.as_deref(),
-        )
-        .await;
-    }
     if read == 1 && first[0] == b'G' {
         serve_websocket(
             stream,

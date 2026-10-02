@@ -4,8 +4,8 @@ use std::sync::{Arc, Weak};
 
 use mobius::BoxFuture;
 use mobius::agent::validate_submission;
-use mobius::middleware::sessions::{LiveChat, LiveChats};
-use mobius::protocol::{MessageAuthor, MessageSubmission, Op, Submission};
+use mobius::middleware::sessions::{ChatTarget, LiveChat, LiveChats};
+use mobius::protocol::{ActiveMessageDelivery, MessageAuthor, Op, Submission};
 use tokio::sync::Mutex;
 
 use super::catalog::load_session_metadata;
@@ -95,6 +95,10 @@ impl GatewayLiveChats {
                         .activities
                         .get(&summary.session_id)
                         .is_some_and(|activity| activity.state != SessionActivityState::Idle),
+                    turn_id: catalog
+                        .activities
+                        .get(&summary.session_id)
+                        .and_then(|activity| activity.turn_id.clone()),
                     title,
                     workspace: summary.session_context.workspace_label,
                     session_id: summary.session_id,
@@ -108,6 +112,10 @@ impl GatewayLiveChats {
                 workspace: sender.session_context.workspace_label,
                 session_id: sender.session_id,
                 running: true,
+                turn_id: catalog
+                    .activities
+                    .get(session_id)
+                    .and_then(|activity| activity.turn_id.clone()),
             },
             bot_id: sender.session_context.owner_id,
             chats,
@@ -126,68 +134,94 @@ impl LiveChats for GatewayLiveChats {
     fn send<'a>(
         &'a self,
         session_id: &'a str,
-        target: &'a str,
-        text: String,
+        target: ChatTarget<'a>,
+        mut op: Op,
         initiating_author: &'a MessageAuthor,
         command_id: &'a str,
-    ) -> BoxFuture<'a, mobius::Result<()>> {
+    ) -> BoxFuture<'a, mobius::Result<String>> {
         Box::pin(async move {
             let OpenChats {
                 sender,
                 bot_id,
                 chats,
             } = self.open(session_id).await?;
-            let mut matches = chats.into_iter().filter(|open| open.chat.is_target(target));
-            let host = match (matches.next(), matches.next()) {
-                (Some(open), None) => match open.host {
-                    Some(host) => host,
-                    None => (self.1)()
-                        .map_err(|error| mobius::Error::Tool(error.to_string()))?
-                        .open_session(&open.chat.session_id)
-                        .await
-                        .map_err(|error| mobius::Error::Tool(error.message))?,
-                },
-                (Some(_), Some(_)) => {
-                    return Err(mobius::Error::Tool(
-                        "target names more than one chat; use its full session ID".into(),
-                    ));
-                }
-                (None, _) => {
-                    return Err(mobius::Error::Tool(
-                        "target is not another available chat of this Bot; call list_chats".into(),
-                    ));
-                }
-            };
             let id = format!("peer-{session_id}-{command_id}");
-            let (cause_id, ancestry) = initiating_author.causal_origin();
-            let handle = sender.handle();
-            let submission = Submission {
-                id: id.to_string(),
-                op: Op::Message {
-                    message: MessageSubmission {
-                        author: MessageAuthor::Source {
-                            cause_id,
-                            ancestry,
-                            message_id: id.to_string(),
-                            source: mobius::protocol::MessageSource::Session {
-                                session_id: sender.session_id,
-                            },
-                            handle,
-                            symbol: None,
+            if (matches!(target, ChatTarget::Workspace(_)) || matches!(op, Op::Interrupt { .. }))
+                && !matches!(initiating_author, MessageAuthor::User)
+            {
+                return Err(mobius::Error::Tool(
+                    "creating or interrupting a chat requires a user turn".into(),
+                ));
+            }
+            match &mut op {
+                Op::Message { message } => {
+                    if !message.attachments.is_empty() || message.reply.is_some() {
+                        return Err(mobius::Error::Tool(
+                            "chat messages cannot attach files or target transcript replies".into(),
+                        ));
+                    }
+                    let (cause_id, ancestry) = initiating_author.causal_origin();
+                    message.author = MessageAuthor::Source {
+                        cause_id,
+                        ancestry,
+                        message_id: id.clone(),
+                        source: mobius::protocol::MessageSource::Session {
+                            session_id: sender.session_id.clone(),
                         },
-                        text,
-                        attachments: Vec::new(),
-                        reply: None,
-                        requested_delivery: Some(mobius::protocol::ActiveMessageDelivery::Steer),
-                        target_turn_id: None,
-                    },
-                },
-            };
+                        handle: sender.handle(),
+                        symbol: None,
+                    };
+                    message
+                        .requested_delivery
+                        .get_or_insert(ActiveMessageDelivery::Steer);
+                }
+                Op::Interrupt { .. } if matches!(target, ChatTarget::Existing(_)) => {}
+                _ => {
+                    return Err(mobius::Error::Tool(
+                        "chat commands support messages, or interrupts to an existing target"
+                            .into(),
+                    ));
+                }
+            }
+            let submission = Submission { id, op };
             validate_submission(&submission)?;
+            let host = match target {
+                ChatTarget::Workspace(workspace) => (self.1)()
+                    .map_err(|error| mobius::Error::Tool(error.to_string()))?
+                    .create_session(workspace, &bot_id)
+                    .await
+                    .map_err(|error| mobius::Error::Tool(error.message))?,
+                ChatTarget::Existing(target) => {
+                    let mut matches = chats.into_iter().filter(|open| open.chat.is_target(target));
+                    match (matches.next(), matches.next()) {
+                        (Some(open), None) => match open.host {
+                            Some(host) => host,
+                            None => (self.1)()
+                                .map_err(|error| mobius::Error::Tool(error.to_string()))?
+                                .open_session(&open.chat.session_id)
+                                .await
+                                .map_err(|error| mobius::Error::Tool(error.message))?,
+                        },
+                        (Some(_), Some(_)) => {
+                            return Err(mobius::Error::Tool(
+                                "target names more than one chat; use its full session ID".into(),
+                            ));
+                        }
+                        (None, _) => {
+                            return Err(mobius::Error::Tool(
+                                "target is not another available chat of this Bot; call list_chats"
+                                    .into(),
+                            ));
+                        }
+                    }
+                }
+            };
+            let target = host.session_id().to_owned();
             // The recipient re-checks ownership in its own command order.
             host.deliver_source(submission, bot_id)
                 .await
-                .map_err(|rejection| mobius::Error::Tool(rejection.message))
+                .map_err(|rejection| mobius::Error::Tool(rejection.message))?;
+            Ok(target)
         })
     }
 }

@@ -4,9 +4,7 @@ mod events;
 mod storage;
 #[cfg(test)]
 pub(crate) use events::event_selector;
-pub(crate) use events::{
-    MAX_HOOK_ANCESTRY, PendingHookAction, WebhookDelivery, WebhookRecord, report_text,
-};
+pub(crate) use events::{MAX_HOOK_ANCESTRY, PendingHookAction, report_text};
 
 use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions, TryLockError};
@@ -1504,51 +1502,6 @@ impl BotStore {
     }
     pub(crate) fn has_pending_deliveries(&self) -> Result<bool> {
         self.storage.has_pending_deliveries()
-    }
-    pub(crate) fn has_webhooks(&self) -> Result<bool> {
-        self.storage.has_webhooks()
-    }
-    pub(crate) fn webhooks(&self, bot_id: &str) -> Result<Vec<WebhookRecord>> {
-        self.bot(bot_id)?;
-        self.storage.webhooks(bot_id)
-    }
-    pub(crate) fn create_webhook(
-        &self,
-        bot_id: &str,
-        name: &str,
-        instruction: &str,
-        token_hash: [u8; 32],
-    ) -> Result<WebhookRecord> {
-        let _state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
-        _state_lock.lock()?;
-        self.bot(bot_id)?;
-        self.storage
-            .create_webhook(bot_id, name, instruction, token_hash)
-    }
-    pub(crate) fn configure_webhook(
-        &self,
-        bot_id: &str,
-        id: &str,
-        enabled: bool,
-        token_hash: Option<[u8; 32]>,
-    ) -> Result<()> {
-        let _state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
-        _state_lock.lock()?;
-        self.bot(bot_id)?;
-        self.storage
-            .configure_webhook(bot_id, id, enabled, token_hash)
-    }
-    pub(crate) fn delete_webhook(&self, bot_id: &str, id: &str) -> Result<()> {
-        let _state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
-        _state_lock.lock()?;
-        self.bot(bot_id)?;
-        self.storage.delete_webhook(bot_id, id)
-    }
-    pub(crate) fn accept_webhook(&self, delivery: &WebhookDelivery<'_>, now: i64) -> Result<bool> {
-        let _state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
-        _state_lock.lock()?;
-        reject_bot_mutation_if_deleting(&self.fresh_state()?)?;
-        self.storage.accept_webhook(delivery, now)
     }
     pub(crate) fn recover_run(
         &self,

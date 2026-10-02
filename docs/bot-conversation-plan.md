@@ -6,7 +6,9 @@ Implemented for core/gateway/CLI 0.16.0, desktop 0.3.0 and iOS 0.10.0.
 
 Each Bot exposes one deterministic `conversation_session_id`. The gateway lazily opens it through the existing session host, agent admission, checkpoint, transcript, replay and client selection paths. It has no logical project workspace. Its private execution directory sits outside protected gateway state and is not exposed as a project. Project instructions, coding tools and workspace operations are absent; stored attachments and ordinary history remain available. Generic session rename, hide, reassignment and deletion cannot replace this canonical conversation. Bot deletion owns its cascade.
 
-One mandatory gateway middleware, `persistent_chat`, owns the main-chat instructions and nine tools: routine listing/scheduling/commands, session commands, subscription listing/editing, custom event emission and webhook creation/configuration. Its TOML owns editable text. Assembly includes it only for the canonical main chat and captures the ordinary child template before installing it. Ordinary chats, forks, routine runs and subagents cannot enable it through Bot settings.
+One mandatory gateway middleware, `persistent_chat`, owns the main-chat instructions and six tools: routine listing/scheduling/commands, subscription listing/editing and internal custom event emission. Its TOML owns editable text. Assembly includes it only for the canonical main chat and captures the ordinary child template before installing it. Ordinary chats, forks, routine runs and subagents cannot enable it through Bot settings.
+
+Shared `message_chat` handles queued or steering messages and interruption of a selected turn. A workspace instead of a target creates a new project chat and delivers its first task. `list_chats` exposes active turn IDs. Creation and interruption require a user-authored turn; source reports retain only existing coordination permissions. Saved session hooks reuse the ordinary message/interrupt protocol and default to queued delivery.
 
 User turns can authorize management. Gateway-authored Source turns can inspect history and summarize results, but cannot create routines, modify subscriptions or send new work. The initiating author survives checkpoints, execution history, restart and compaction. Tool exposure and actual execution both enforce this rule; prompt text is not the authority boundary.
 
@@ -20,7 +22,7 @@ flowchart LR
     Session[Committed session journal] --> Event
     Routine[Committed routine lifecycle] --> Event
     Client[Native client presence] --> Event
-    Webhook[Authenticated custom input] --> Event
+    Bot[Internal custom event] --> Event
     Event --> Binding[Match saved binding]
     Binding --> Command[Existing routine / session command handler]
     User[Direct user command] --> Command
@@ -37,7 +39,7 @@ flowchart LR
 | Clock | `schedule.due`, addressed to the exact owning routine and binding |
 | Session | `session.created`, `session.turn.started`, `session.turn.finished` with the existing execution outcome, `session.approval`, `session.deleted`, `session.owner_changed` |
 | Client | `client.connected`, `client.disconnected`, aggregated across the native client's sockets |
-| Custom source | `custom.received`, with a bounded JSON payload and authenticated Bot or webhook source |
+| Bot custom input | `custom.received`, with a bounded JSON payload and gateway-established Bot source |
 
 A routine owns `RoutineDefinition { workspace, instructions, bindings }`. The standalone schedule field has been removed. Each binding selects a typed event and issues a typed command against its owning routine. Direct user requests, timers and matched hooks all enter the same routine command handler:
 
@@ -60,7 +62,7 @@ Each accepted Source submission receives a checkpoint-owned durable receipt in t
 
 Actions are deduplicated by event and binding identity. Causal ancestry is bounded at 16; terminal facts at the bound remain publishable but cannot authorize another action. Revisited causes and no-op state changes suppress cycles. Binding edits, disablement, deletion and source ownership changes revoke unaccepted actions. The gateway rechecks ownership and saved authorization at actual admission, using the existing mutation lease.
 
-External webhook requests use the existing HTTP listener, a dedicated hashed bearer token, bounded headers/body/deadline, stable delivery identity, timestamp tolerance and exact body digest. Only custom input accepts arbitrary JSON. Authentication and typed validation precede persistence. Built-in lifecycle facts cannot be forged through webhook or Bot input.
+Only Bot custom input accepts arbitrary bounded JSON. Typed validation precedes persistence. Built-in lifecycle facts cannot be forged through Bot input.
 
 New event-worker SQLite work runs on the blocking pool while retaining admission guards through caller cancellation. Client presence persists in first/last socket order before registration or drop completes. Existing synchronous Bot storage remains the owner; no storage adapter was added.
 
@@ -72,10 +74,10 @@ New gateway/Bot profiles default to Full Access. Existing explicit profiles keep
 
 ## Gaps against the requested foundation
 
-The requested shared typed event/binding/command foundation is implemented for routines, sessions, native clients, Bot custom input and configured webhooks. The original separate clock-to-run path and peer-only message provenance have been consolidated. Source-triggered reporting is deliberately read/report-only; saved typed actions carry the user's earlier mandate.
+The requested shared typed event/binding/command foundation is implemented for routines, sessions, native clients and Bot custom input. The original separate clock-to-run path and peer-only message provenance have been consolidated. Source-triggered reporting is deliberately read/report-only; saved typed actions carry the user's earlier mandate.
 
-The existing Cloud public gateway relay accepts native encrypted WebSocket connections only. External HTTP hooks work through a configured standalone gateway listener/tunnel; Cloud's public HTTP webhook relay is still a transport integration gap. Cloud APNs delivery continues to derive session notifications from the existing durable catalog/attention projection; the shared typed hook stream is available, but this release does not replace that notification transport with a second durable hook replay API.
+Cloud APNs delivery continues to derive session notifications from the existing durable catalog/attention projection; the shared typed hook stream is available, but this release does not replace that notification transport with a second durable hook replay API.
 
 Execution suspension is not provided: pause controls future routine starts, and stop interrupts a specific invocation. Durable hook replay is gateway-owned; clients consume typed invalidation plus ordinary chat replay rather than a second client event-history API. No wildcard selectors, arbitrary command graphs or projectless parallel agent runtime were added.
 
-This release changes strict persisted schemas: Bot SQLite 3→5/catalog 6→7, core SQLite 10→11/checkpoint 17→18, and gateway ChatSpec 14→15. Runtime compatibility/migration code remains absent. Existing cloud state is converted by a separate stopped-service operator script with verified private backups before 0.16.0 startup.
+This release changes strict persisted schemas: Bot SQLite 3→6/catalog 6→7, core SQLite 10→11/checkpoint 17→18, and gateway ChatSpec 14→15. Runtime compatibility/migration code remains absent. Existing cloud state is converted by a separate stopped-service operator script with verified private backups before 0.16.0 startup.

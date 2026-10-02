@@ -7,9 +7,9 @@ use mobius::backend::model::{Model, ModelEventSink, ModelOutput, ModelRequest};
 use mobius::protocol::{ActiveMessageDelivery, MessageSource, ToolDiscoveryMode};
 
 #[derive(Default)]
-struct CaptureModel {
-    entered: tokio::sync::Notify,
-    release: tokio::sync::Notify,
+pub(super) struct CaptureModel {
+    pub(super) entered: tokio::sync::Notify,
+    pub(super) release: tokio::sync::Notify,
     calls: AtomicU64,
     tools: StdMutex<Vec<Vec<String>>>,
 }
@@ -47,7 +47,7 @@ impl Model for CaptureModel {
     }
 }
 
-async fn install_model(
+pub(super) async fn install_model(
     gateway: &GatewayHost,
     bot: &crate::wire::BotRecord,
     model: Arc<CaptureModel>,

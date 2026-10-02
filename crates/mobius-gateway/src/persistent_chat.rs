@@ -19,12 +19,9 @@ struct Definition {
     list_routines: String,
     schedule_routine: String,
     routine_command: String,
-    session_command: String,
     emit_hook: String,
     list_subscriptions: String,
     set_subscription: String,
-    create_webhook: String,
-    configure_webhook: String,
     schedule_at: String,
     schedule_interval: String,
     schedule_ends_at: String,
@@ -123,20 +120,14 @@ enum Action {
     Command,
     Reporting,
     Subscribe,
-    CreateWebhook,
-    ConfigureWebhook,
-    Session,
     Emit,
 }
-const ACTIONS: [Action; 9] = [
+const ACTIONS: [Action; 6] = [
     Action::List,
     Action::Create,
     Action::Command,
     Action::Reporting,
     Action::Subscribe,
-    Action::CreateWebhook,
-    Action::ConfigureWebhook,
-    Action::Session,
     Action::Emit,
 ];
 struct RoutineTool {
@@ -172,24 +163,6 @@ impl Tool for RoutineTool {
                 &TEXT.set_subscription,
                 json!({"binding":{"$ref":"#/$defs/bot_binding"},"enabled":{"type":"boolean"}}),
                 vec!["binding", "enabled"],
-            ),
-            Action::CreateWebhook => (
-                "create_webhook",
-                &TEXT.create_webhook,
-                json!({"name":{"type":"string"},"instruction":{"type":"string"}}),
-                vec!["name", "instruction"],
-            ),
-            Action::ConfigureWebhook => (
-                "configure_webhook",
-                &TEXT.configure_webhook,
-                json!({"id":{"type":"string"},"enabled":{"type":"boolean"},"rotate_token":{"type":"boolean"},"delete":{"type":"boolean"}}),
-                vec!["id", "enabled"],
-            ),
-            Action::Session => (
-                "session_command",
-                &TEXT.session_command,
-                json!({"session_id":{"type":"string"},"op":{"$ref":"#/$defs/session_op"}}),
-                vec!["session_id", "op"],
             ),
             Action::Emit => (
                 "emit_hook",
@@ -273,37 +246,6 @@ impl Tool for RoutineTool {
                     .map_err(rejected)?;
                     json!({"saved":true})
                 }
-                Action::CreateWebhook => {
-                    let args: WebhookArgs = serde_json::from_value(arguments)?;
-                    host.create_bot_webhook(&self.bot_id, &args.name, &args.instruction)
-                        .await
-                        .map_err(rejected)?
-                }
-                Action::ConfigureWebhook => {
-                    let args: ConfigureWebhookArgs = serde_json::from_value(arguments)?;
-                    host.configure_bot_webhook(
-                        &self.bot_id,
-                        &args.id,
-                        args.enabled,
-                        args.rotate_token,
-                        args.delete,
-                    )
-                    .await
-                    .map_err(rejected)?
-                }
-                Action::Session => {
-                    let args: SessionArgs = serde_json::from_value(arguments)?;
-                    host.execute_session_command(
-                        &args.session_id,
-                        args.op,
-                        &self.bot_id,
-                        None,
-                        &context.call_id,
-                    )
-                    .await
-                    .map_err(rejected)?;
-                    json!({"accepted":context.call_id})
-                }
                 Action::Emit => {
                     let args: EmitArgs = serde_json::from_value(arguments)?;
                     serde_json::to_value(
@@ -340,28 +282,6 @@ struct SubscriptionArgs {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct WebhookArgs {
-    name: String,
-    instruction: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ConfigureWebhookArgs {
-    id: String,
-    enabled: bool,
-    #[serde(default)]
-    rotate_token: bool,
-    #[serde(default)]
-    delete: bool,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SessionArgs {
-    session_id: String,
-    op: mobius::protocol::Op,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct EmitArgs {
     name: String,
     data: Value,
@@ -381,7 +301,7 @@ fn hook_definitions() -> Value {
             {"type":"object","properties":{"kind":{"const":"cron"},"expression":{"type":"string"},"time_zone":{"type":"string"}},"required":["kind","expression","time_zone"],"additionalProperties":false}
         ]},
         "source":{"oneOf":[
-            source_schema("routine","routine_id"),source_schema("session","session_id"),source_schema("custom","source_id"),source_schema("bot","bot_id"),source_schema("client","client_id"),
+            source_schema("routine","routine_id"),source_schema("session","session_id"),source_schema("bot","bot_id"),source_schema("client","client_id"),
             {"type":"object","properties":{"type":{"const":"gateway"}},"required":["type"],"additionalProperties":false}
         ]},
         "selector":{"oneOf":[
@@ -426,7 +346,6 @@ mod tests {
         for (kind, field) in [
             ("routine", "routine_id"),
             ("session", "session_id"),
-            ("custom", "source_id"),
             ("bot", "bot_id"),
             ("client", "client_id"),
         ] {

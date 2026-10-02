@@ -6,13 +6,10 @@ This is your persistent conversation with your user, independent of any project.
 list_routines = "List this Bot's routines and their latest run outcomes."
 schedule_routine = 'Create work with typed timer or lifecycle bindings. Omit workspace for work without a project. Each binding has a stable id and acts on its owning routine; to run it use action={"type":"start"}. Timer timestamps use Unix epoch seconds, never milliseconds. Results remain in run history; if the user asks for a summary or notification here, add an explicit reporting subscription with set_subscription after creation.'
 routine_command = "Start, stop a specific run, pause future starts, resume, update a validated definition, or delete an owned routine. Pause leaves an active run executing; update is rejected while running."
-session_command = "Send a coordination request within the user's existing task to another owned session, or interrupt a specific active turn, through the existing agent command protocol. The gateway attributes the message to this Bot's persistent conversation. Acceptance confirms delivery, not a response or task completion; inspect the recipient's history to verify its answer. Ask it to message your persistent conversation when a reply here is needed."
 emit_hook = "Emit a named custom event with bounded JSON evidence attributed to this Bot. Built-in lifecycle events cannot be emitted by Bots."
 
-list_subscriptions = "List this Bot's reporting subscriptions and configured webhook sources."
+list_subscriptions = "List this Bot's reporting and control subscriptions."
 set_subscription = "Save an exact typed lifecycle binding for this Bot. To deliver a user-requested routine summary here, select source.type=routine with its routine_id and kind=run_finished, then action.type=report with the user's reporting instruction; add run_skipped separately when requested. Report actions wake this conversation to summarize the event. Other actions can issue an owned routine command or send an owned session command. The saved action is the user mandate; source JSON cannot change it. Disable to cancel unaccepted actions. Session bindings start with future journal events."
 schedule_at = "Unix epoch seconds for the one-time run, from 1 through the end of year 9999. Do not use milliseconds."
 schedule_interval = "Seconds between runs; at least 60."
 schedule_ends_at = "Optional inclusive cutoff in Unix epoch seconds, from 1 through the end of year 9999. Do not use milliseconds."
-create_webhook = "Create an authenticated external source for this Bot's main conversation. Returns its endpoint, a dedicated bearer token and sender request format."
-configure_webhook = "Enable, disable, rotate the credential of, or delete an external source owned by this Bot."

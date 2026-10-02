@@ -1280,11 +1280,6 @@ pub enum HookSource {
         /// Paired client identity.
         client_id: String,
     },
-    /// A configured external source.
-    Custom {
-        /// Configured source identity.
-        source_id: String,
-    },
 }
 
 /// Exact trigger shared by routine bindings and reporting consumers.
@@ -1351,7 +1346,7 @@ pub enum HookKind {
     ClientConnected,
     /// Client disconnected.
     ClientDisconnected,
-    /// Configured source accepted an event.
+    /// A Bot emitted a named event.
     CustomReceived,
 }
 
@@ -1492,9 +1487,9 @@ pub enum HookData {
         /// Paired client identity.
         client_id: String,
     },
-    /// An authenticated configured source accepted a JSON event.
+    /// A Bot emitted a named JSON event.
     CustomReceived {
-        /// Configured event name.
+        /// User-selected event name.
         name: String,
         /// Bounded untrusted JSON evidence.
         data: serde_json::Value,

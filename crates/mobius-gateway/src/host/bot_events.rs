@@ -46,7 +46,9 @@ impl GatewayHost {
                     },
                     format!("chat #{sender}"),
                 );
-                message.requested_delivery = Some(ActiveMessageDelivery::Queue);
+                message
+                    .requested_delivery
+                    .get_or_insert(ActiveMessageDelivery::Queue);
             }
             Op::Interrupt { .. } => {}
             _ => {
@@ -115,93 +117,8 @@ impl GatewayHost {
         let _access = self.begin_mutation().await?;
         let state = self.state.lock().await;
         Ok(
-            serde_json::json!({"subscriptions":state.bots.subscriptions(bot_id).map_err(invalid_bot)?, "webhooks":state.bots.webhooks(bot_id).map_err(invalid_bot)?}),
+            serde_json::json!({"subscriptions":state.bots.subscriptions(bot_id).map_err(invalid_bot)?}),
         )
-    }
-
-    pub(crate) async fn set_webhook_endpoint(&self, public_hostname: Option<&str>) -> Result<()> {
-        let mut state = self.state.lock().await;
-        let config = state
-            .config
-            .lock()
-            .map_err(|_| Error::Config("configuration lock poisoned".into()))?;
-        let endpoint = public_hostname
-            .map(|host| format!("https://{host}"))
-            .or_else(|| {
-                (!config.listen.ip().is_unspecified()).then(|| {
-                    format!(
-                        "{}://{}",
-                        if config.tls.is_some() {
-                            "https"
-                        } else {
-                            "http"
-                        },
-                        config.listen
-                    )
-                })
-            });
-        drop(config);
-        state.webhook_base_url = endpoint;
-        Ok(())
-    }
-
-    pub(crate) async fn create_bot_webhook(
-        &self,
-        bot_id: &str,
-        name: &str,
-        instruction: &str,
-    ) -> std::result::Result<serde_json::Value, Rejection> {
-        use sha2::Digest as _;
-        let _mutation = self.begin_mutation().await?;
-        let state = self.state.lock().await;
-        let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-        let record = state
-            .bots
-            .create_webhook(
-                bot_id,
-                name,
-                instruction,
-                sha2::Sha256::digest(token.as_bytes()).into(),
-            )
-            .map_err(invalid_config)?;
-        let path = format!("/webhooks/{}", record.id);
-        Ok(
-            serde_json::json!({"source":record,"url":state.webhook_base_url.as_ref().map(|base|format!("{base}{path}")),"path":path,"bearer_token":token,"headers":{"X-Mobius-Delivery-Id":"unique stable ID per event","X-Mobius-Timestamp":"current Unix seconds","Content-Type":"application/json"},"body":{"text":"bounded outage or log report"}}),
-        )
-    }
-
-    pub(crate) async fn configure_bot_webhook(
-        &self,
-        bot_id: &str,
-        id: &str,
-        enabled: bool,
-        rotate_token: bool,
-        delete: bool,
-    ) -> std::result::Result<serde_json::Value, Rejection> {
-        use sha2::Digest as _;
-        let _mutation = self.begin_exclusive_mutation().await?;
-        let state = self.state.lock().await;
-        if delete {
-            state
-                .bots
-                .delete_webhook(bot_id, id)
-                .map_err(invalid_config)?;
-            return Ok(serde_json::json!({"deleted":id}));
-        }
-        let token =
-            rotate_token.then(|| format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple()));
-        state
-            .bots
-            .configure_webhook(
-                bot_id,
-                id,
-                enabled,
-                token
-                    .as_ref()
-                    .map(|token| sha2::Sha256::digest(token.as_bytes()).into()),
-            )
-            .map_err(invalid_config)?;
-        Ok(serde_json::json!({"id":id,"enabled":enabled,"bearer_token":token}))
     }
 
     pub(super) async fn recover_routine_outcomes(&self) -> Result<()> {
@@ -460,18 +377,6 @@ pub(super) async fn validate_selector(
                 .await
                 .map_err(internal)
                 .map(|page| page.latest_sequence)
-        }
-        HookSource::Custom { source_id } => {
-            if !state
-                .bots
-                .webhooks(bot_id)
-                .map_err(invalid_bot)?
-                .iter()
-                .any(|source| source.id == *source_id)
-            {
-                return Err(unknown_session());
-            }
-            Ok(0)
         }
         HookSource::Bot { bot_id: source } => {
             state.bots.bot(source).map_err(invalid_bot)?;

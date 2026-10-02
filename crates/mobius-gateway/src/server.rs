@@ -5,7 +5,6 @@ mod responses;
 mod transport;
 mod view;
 mod voice;
-mod webhooks;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -238,9 +237,6 @@ impl GatewayServer {
         websocket_host: Option<String>,
     ) -> Result<()> {
         self.config.validate()?;
-        self.host
-            .set_webhook_endpoint(websocket_host.as_deref())
-            .await?;
         let tls = self.config.tls.as_ref().map(tls_acceptor).transpose()?;
         if tls.is_none() && !self.listener.local_addr()?.ip().is_loopback() {
             return Err(Error::Config(
@@ -255,7 +251,6 @@ impl GatewayServer {
         let (client_revocations, _) = broadcast::channel(MAX_CONNECTIONS);
         let mut has_active_routines = self.bots.has_active_routines(Utc::now().timestamp())?
             || self.bots.has_pending_deliveries()?
-            || self.bots.has_webhooks()?
             || self.bots.has_monitored_sessions()?;
         let inactivity = tokio::time::sleep(inactivity_timeout);
         tokio::pin!(inactivity);
@@ -290,7 +285,7 @@ impl GatewayServer {
                     let Ok(_admission) = self.host.begin_mutation().await else { continue; };
                     let now = Utc::now().timestamp();
                     let poll = self.bots.poll_due(now)?;
-                    let routines_active = poll.active || self.bots.has_pending_deliveries()? || self.bots.has_webhooks()? || self.bots.has_monitored_sessions()?;
+                    let routines_active = poll.active || self.bots.has_pending_deliveries()? || self.bots.has_monitored_sessions()?;
                     if has_active_routines && !routines_active && connections.is_empty() {
                         inactivity.as_mut().reset(tokio::time::Instant::now() + inactivity_timeout);
                     }
@@ -310,7 +305,7 @@ impl GatewayServer {
                 Some(_) = connections.join_next(), if !connections.is_empty() => {
                     if connections.is_empty() {
                         has_active_routines =
-                            self.bots.has_active_routines(Utc::now().timestamp())? || self.bots.has_pending_deliveries()? || self.bots.has_webhooks()? || self.bots.has_monitored_sessions()?;
+                            self.bots.has_active_routines(Utc::now().timestamp())? || self.bots.has_pending_deliveries()? || self.bots.has_monitored_sessions()?;
                         if !has_active_routines {
                             inactivity.as_mut().reset(tokio::time::Instant::now() + inactivity_timeout);
                         }
@@ -362,7 +357,7 @@ impl GatewayServer {
                                     return;
                                 }
                             };
-                            webhooks::serve_tls(stream, connection, auth_deadline).await
+                            serve_connection(stream, connection, auth_deadline, None).await
                         } else {
                             serve_plaintext_connection(
                                 stream,
@@ -380,7 +375,7 @@ impl GatewayServer {
                     });
                 }
                 () = &mut inactivity, if connections.is_empty() && !has_active_routines => {
-                    has_active_routines = self.bots.has_active_routines(Utc::now().timestamp())? || self.bots.has_pending_deliveries()? || self.bots.has_webhooks()? || self.bots.has_monitored_sessions()?;
+                    has_active_routines = self.bots.has_active_routines(Utc::now().timestamp())? || self.bots.has_pending_deliveries()? || self.bots.has_monitored_sessions()?;
                     if !has_active_routines {
                         break Ok(());
                     }

@@ -15,8 +15,11 @@ attachments, artifacts, context offloading, compaction, scratchpad, and subagent
 tasks, workspace instructions, and extensions start disabled. Context offloading masks successful
 tool output after a 50,000-token trailing window. Project chats install sandboxing and workspace
 tools; all chats use turn steering and durable sessions. Only the canonical Bot conversation
-installs the mandatory Persistent Chat middleware and its routine, session, subscription and
-webhook management tools. Routine runs, forks and subagents cannot inherit that middleware.
+installs the mandatory Persistent Chat middleware and its routine, subscription and internal
+event tools. Routine runs, forks and subagents cannot inherit that middleware.
+The shared `message_chat` tool sends queued or steering messages, interrupts a selected turn,
+or creates a new project chat when given a workspace and its first task. `list_chats` includes
+the active turn ID for interruption. Saved session hooks use the same message/interrupt protocol.
 New gateways use Full Access as their Bot-creation default; saved policies remain explicit.
 
 Compaction exposes an Automatic or Handoff policy in the same settings UI. Automatic uses the

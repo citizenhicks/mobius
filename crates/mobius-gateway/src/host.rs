@@ -143,7 +143,6 @@ struct GatewayState {
     provider_epoch: Arc<AtomicU64>,
     activities: SessionActivities,
     provider_login: Arc<StdMutex<providers::ProviderLogins>>,
-    webhook_base_url: Option<String>,
     sessions: HashMap<String, HostHandle>,
     starting_sessions: Arc<StdMutex<HashMap<String, String>>>,
     idle_cleanup_tasks: Vec<JoinHandle<()>>,
@@ -267,7 +266,6 @@ impl GatewayHost {
                 provider_epoch: Arc::new(AtomicU64::new(0)),
                 activities,
                 provider_login: Arc::new(StdMutex::new(providers::ProviderLogins::default())),
-                webhook_base_url: None,
                 sessions: HashMap::new(),
                 starting_sessions: Arc::default(),
                 idle_cleanup_tasks: Vec::new(),
@@ -335,8 +333,7 @@ impl GatewayHost {
             .is_empty();
         let mut idle = !starting
             && !state.bots.has_running_routines().map_err(internal)?
-            && !state.bots.has_pending_deliveries().map_err(internal)?
-            && !state.bots.has_webhooks().map_err(internal)?;
+            && !state.bots.has_pending_deliveries().map_err(internal)?;
         for session in state.sessions.values() {
             if session.inner.alive.load(Ordering::Acquire) && !session.runtime_is_idle().await? {
                 idle = false;
