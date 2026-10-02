@@ -14,7 +14,7 @@ use super::{
     SessionStartSource, ToolExposureContext,
 };
 use crate::backend::model::{ToolDefinition, internal_user_message};
-use crate::backend::sandbox::{MAX_BINARY_FILE_BYTES, WorkerCommand};
+use crate::backend::sandbox::{MAX_BINARY_FILE_BYTES, NetworkAccess, SandboxMode, WorkerCommand};
 use crate::backend::session_files::SessionFileStore;
 use crate::protocol::{
     ContentPart, EventMsg, FrontendBlock, FrontendBlockFormat, FrontendBlockRole,
@@ -298,10 +298,18 @@ impl Tool for Evaluate {
                     "computer code or timeout exceeds its limit".into(),
                 ));
             }
-            // A page lent by the Mac app's browser stands in for the worker's own.
-            let browser = context.sandbox.browser_page(&context.permissions).await;
+            let desktop = if context.permissions.sandbox_mode() == SandboxMode::DangerFullAccess
+                && context.permissions.network_access() == NetworkAccess::Allowed
+            {
+                context
+                    .sandbox
+                    .desktop_browser_page(&context.permissions)
+                    .await?
+            } else {
+                None
+            };
             let request =
-                serde_json::to_vec(&serde_json::json!({"code": args.code, "browser": browser}))?;
+                serde_json::to_vec(&serde_json::json!({"code": args.code, "desktop": desktop}))?;
             let mut evaluation = EvaluationGuard(Some(self));
             let output = context
                 .sandbox
@@ -484,8 +492,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_worker_is_told_whether_a_browser_page_is_lent() {
-        let workspace = tempfile::tempdir().expect("workspace");
+    async fn browser_selection_requires_full_access_network_and_gateway_availability() {
         let state = tempfile::tempdir().expect("state");
         // Echoes the evaluation request back as the observation's text.
         let echo = "import sys,struct,json; n=struct.unpack('>I',sys.stdin.buffer.read(4))[0]; request=sys.stdin.buffer.read(n).decode(); data=json.dumps({'content':[{'type':'text','text':request}],'is_error':False}).encode(); sys.stdout.buffer.write(struct.pack('>I',len(data))+data); sys.stdout.buffer.flush()";
@@ -499,33 +506,110 @@ mod tests {
             frontend: Arc::new(|_| Ok(())),
             browser: std::sync::Mutex::new(None),
         };
-        let sandbox = Arc::new(Sandbox::new(
-            Arc::new(LocalSandbox::new(workspace.path()).expect("sandbox")),
-            ApprovalPolicy::Ask,
-        ));
-        let permissions = SandboxPermissions::restore(
-            "session",
-            SandboxMode::WorkspaceWrite,
-            NetworkAccess::Allowed,
-            ["call".into()],
-        )
-        .for_call("call");
-        let result = tool
-            .call(
-                ToolContext::new(sandbox, permissions, "turn"),
-                serde_json::json!({"code":"await getPage()"}),
-            )
-            .await
-            .expect("echoed request");
-        let request: Value = serde_json::from_str(&result.content.text()).expect("request JSON");
-        assert_eq!(request["code"], "await getPage()");
-        // A local sandbox lends no page, so the worker runs its own browser.
-        assert_eq!(request["browser"], Value::Null);
-        assert!(
-            request
-                .as_object()
-                .is_some_and(|request| request.contains_key("browser"))
-        );
+        use crate::backend::sandbox::{
+            CommandMode, CommandOutput, CommandOutputSink, DesktopBrowserPage, SandboxBackend,
+            WorkerProcess,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct AvailableBrowser {
+            requested: Arc<AtomicUsize>,
+            available: bool,
+        }
+        impl SandboxBackend for AvailableBrowser {
+            fn desktop_browser_page<'a>(
+                &'a self,
+                _: &'a str,
+            ) -> BoxFuture<'a, Result<Option<DesktopBrowserPage>>> {
+                self.requested.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async {
+                    Ok(self.available.then(|| DesktopBrowserPage {
+                        endpoint: "http://127.0.0.1:9222".into(),
+                        target_id: Some("assigned".into()),
+                    }))
+                })
+            }
+            fn start_worker(
+                &self,
+                command: &WorkerCommand,
+                _: SandboxMode,
+                _: NetworkAccess,
+            ) -> Result<WorkerProcess> {
+                WorkerProcess::spawn(
+                    tokio::process::Command::new(&command.executable).args(&command.arguments),
+                )
+            }
+            fn read<'a>(&'a self, _: &'a str, _: SandboxMode) -> BoxFuture<'a, Result<String>> {
+                Box::pin(async { unreachable!() })
+            }
+            fn read_bytes<'a>(
+                &'a self,
+                _: &'a str,
+                _: usize,
+                _: SandboxMode,
+            ) -> BoxFuture<'a, Result<Vec<u8>>> {
+                Box::pin(async { unreachable!() })
+            }
+            fn write<'a>(
+                &'a self,
+                _: &'a str,
+                _: &'a str,
+                _: SandboxMode,
+            ) -> BoxFuture<'a, Result<()>> {
+                Box::pin(async { unreachable!() })
+            }
+            fn execute<'a>(
+                &'a self,
+                _: &'a str,
+                _: SandboxMode,
+                _: NetworkAccess,
+                _: CommandMode,
+                _: CommandOutputSink,
+            ) -> BoxFuture<'a, Result<CommandOutput>> {
+                Box::pin(async { unreachable!() })
+            }
+        }
+        let requested = Arc::new(AtomicUsize::new(0));
+        for available in [false, true] {
+            let sandbox = Arc::new(Sandbox::new(
+                Arc::new(AvailableBrowser {
+                    requested: requested.clone(),
+                    available,
+                }),
+                ApprovalPolicy::Ask,
+            ));
+            for mode in [SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess] {
+                for network in [NetworkAccess::Denied, NetworkAccess::Allowed] {
+                    let permissions =
+                        SandboxPermissions::restore("session", mode, network, ["call".into()])
+                            .for_call("call");
+                    let before = requested.load(Ordering::SeqCst);
+                    let result = tool
+                        .call(
+                            ToolContext::new(sandbox.clone(), permissions, "turn"),
+                            serde_json::json!({"code":"await getPage()", "reset":true}),
+                        )
+                        .await
+                        .expect("echoed request");
+                    let request: Value =
+                        serde_json::from_str(&result.content.text()).expect("request JSON");
+                    assert_eq!(request["code"], "await getPage()");
+                    let eligible =
+                        mode == SandboxMode::DangerFullAccess && network == NetworkAccess::Allowed;
+                    assert_eq!(
+                        requested.load(Ordering::SeqCst) - before,
+                        usize::from(eligible)
+                    );
+                    assert_eq!(!request["desktop"].is_null(), eligible && available);
+                    if eligible && available {
+                        assert_eq!(request["desktop"]["target_id"], "assigned");
+                    }
+                }
+            }
+            sandbox
+                .session_end("session")
+                .await
+                .expect("worker cleanup");
+        }
     }
 
     #[tokio::test]

@@ -232,6 +232,14 @@ impl CommandOutputSink {
 /// dropping a future must not leave unmanaged commands running. [`Sandbox`]
 /// owns approval and background-command tracking, not arbitrary backend cleanup.
 pub trait SandboxBackend: Send + Sync {
+    /// Checks whether this execution environment is accepting work.
+    /// # Errors
+    ///
+    /// Returns an error while the backend has suspended execution.
+    fn check_execution(&self) -> Result<()> {
+        Ok(())
+    }
+
     /// Creates an independent temporary area and execution lifetime for a child agent.
     /// # Errors
     ///
@@ -268,6 +276,7 @@ pub trait SandboxBackend: Send + Sync {
         &'a self,
         _session_id: &'a str,
         _sandbox_mode: SandboxMode,
+        _network_access: NetworkAccess,
     ) -> BoxFuture<'a, Result<tokio::io::DuplexStream>> {
         Box::pin(async {
             Err(Error::Sandbox(
@@ -276,10 +285,15 @@ pub trait SandboxBackend: Send + Sync {
         })
     }
 
-    /// Finds the page `session_id`'s agent may drive in a browser outside this backend,
-    /// as a DevTools endpoint, or `None` for the worker's own browser.
-    fn browser_page<'a>(&'a self, _session_id: &'a str) -> BoxFuture<'a, Option<String>> {
-        Box::pin(async { None })
+    /// Finds the gateway-owned browser page assigned to this execution, if available.
+    /// # Errors
+    ///
+    /// Returns an error if the backend cannot assign a page or has suspended execution.
+    fn desktop_browser_page<'a>(
+        &'a self,
+        _session_id: &'a str,
+    ) -> BoxFuture<'a, Result<Option<DesktopBrowserPage>>> {
+        Box::pin(async { Ok(None) })
     }
 
     /// Reads a UTF-8 file under the requested isolation.
@@ -329,6 +343,16 @@ pub trait SandboxBackend: Send + Sync {
     ) -> BoxFuture<'a, Result<Option<CommandOutput>>> {
         Box::pin(async { Ok(None) })
     }
+}
+
+/// A browser owned outside the worker and its assigned page.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DesktopBrowserPage {
+    /// A loopback browser endpoint or a scoped local Unix page endpoint.
+    pub endpoint: String,
+    /// The exact remote page target; local Unix endpoints expose one page only.
+    pub target_id: Option<String>,
 }
 
 /// Approval-owning boundary around one execution backend.
@@ -472,6 +496,7 @@ impl Sandbox {
         timeout: std::time::Duration,
         reset: bool,
     ) -> Result<Vec<u8>> {
+        self.backend.check_execution()?;
         self.workers
             .evaluate(
                 self.backend.as_ref(),
@@ -484,14 +509,18 @@ impl Sandbox {
             .await
     }
 
-    /// The page a call's chat may drive in a browser outside the sandbox, as a DevTools
-    /// endpoint. That browser reaches the network from outside the sandbox, so only calls
-    /// allowed network access are lent one.
-    pub async fn browser_page(&self, permissions: &ToolPermissions) -> Option<String> {
-        if permissions.network_access != NetworkAccess::Allowed {
-            return None;
-        }
-        self.backend.browser_page(&permissions.session_id).await
+    /// The gateway-owned browser page assigned to this call's execution, if available.
+    /// # Errors
+    ///
+    /// Returns an error if the backend cannot assign a page or has suspended execution.
+    pub async fn desktop_browser_page(
+        &self,
+        permissions: &ToolPermissions,
+    ) -> Result<Option<DesktopBrowserPage>> {
+        self.backend.check_execution()?;
+        self.backend
+            .desktop_browser_page(&permissions.session_id)
+            .await
     }
 
     pub(crate) async fn run_command(
@@ -696,6 +725,14 @@ pub struct ToolPermissions {
 }
 
 impl ToolPermissions {
+    pub(crate) fn sandbox_mode(&self) -> SandboxMode {
+        self.sandbox_mode
+    }
+
+    pub(crate) fn network_access(&self) -> NetworkAccess {
+        self.network_access
+    }
+
     pub(crate) fn session_id(&self) -> &str {
         &self.session_id
     }

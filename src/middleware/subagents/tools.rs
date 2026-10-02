@@ -108,6 +108,7 @@ impl Tool for SpawnAgent {
                 ),
             );
             supervise(async move {
+                let lifetime = shared.track_execution(&scope.root_session_id).await?;
                 shared
                     .reserve(
                         &scope.root_session_id,
@@ -146,6 +147,9 @@ impl Tool for SpawnAgent {
                     .attach(&scope.root_session_id, &path, sender.clone(), Some(model))
                     .await
                 {
+                    drop(sender);
+                    let mut events = events;
+                    while events.recv().await.is_some() {}
                     return Err(cleanup_error(
                         error,
                         shared.remove(&scope.root_session_id, &path).await,
@@ -156,6 +160,7 @@ impl Tool for SpawnAgent {
                     scope.root_session_id.clone(),
                     path.clone(),
                     events,
+                    lifetime,
                 ));
                 if let Err(error) = admit_message(&sender, submission).await {
                     return Err(cleanup_error(
@@ -225,6 +230,7 @@ impl Tool for SendMessage {
             let target = arguments.target;
             let turn_id = context.turn_id;
             supervise(async move {
+                let lifetime = shared.track_execution(&scope.root_session_id).await?;
                 let wake = shared
                     .send_message(
                         &scope.root_session_id,
@@ -273,6 +279,10 @@ impl Tool for SendMessage {
                     .attach(&scope.root_session_id, &target, sender.clone(), model)
                     .await
                 {
+                    drop(sender);
+                    if let Some(mut events) = events {
+                        while events.recv().await.is_some() {}
+                    }
                     return Err(cleanup_error(
                         error,
                         shared
@@ -286,6 +296,7 @@ impl Tool for SendMessage {
                         scope.root_session_id.clone(),
                         target.clone(),
                         events,
+                        lifetime,
                     ));
                 }
                 if let Err(error) = admit_message(&sender, message).await {

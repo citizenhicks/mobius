@@ -116,7 +116,11 @@ impl WorkerProcess {
             }
             if host.is_none() {
                 match backend
-                    .worker_connection(&permissions.session_id, permissions.sandbox_mode)
+                    .worker_connection(
+                        &permissions.session_id,
+                        permissions.sandbox_mode,
+                        permissions.network_access,
+                    )
                     .await
                 {
                     Ok(connection) => host = Some(connection),
@@ -379,6 +383,7 @@ mod tests {
             &'a self,
             _: &'a str,
             mode: SandboxMode,
+            _: NetworkAccess,
         ) -> BoxFuture<'a, Result<tokio::io::DuplexStream>> {
             Box::pin(async move {
                 if mode != SandboxMode::DangerFullAccess {
@@ -401,10 +406,6 @@ mod tests {
                 });
                 Ok(worker)
             })
-        }
-
-        fn browser_page<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Option<String>> {
-            Box::pin(async { Some("ws+unix:///lent.sock:/token".into()) })
         }
 
         fn read<'a>(&'a self, _: &'a str, _: SandboxMode) -> BoxFuture<'a, Result<String>> {
@@ -443,24 +444,6 @@ mod tests {
             _: NetworkAccess,
         ) -> Result<WorkerProcess> {
             WorkerProcess::spawn(Command::new(&spec.executable).args(&spec.arguments))
-        }
-    }
-
-    #[tokio::test]
-    async fn a_lent_browser_page_needs_network_access() {
-        let sandbox = Sandbox::new(Arc::new(TestBackend), ApprovalPolicy::Ask);
-        for (network, lent) in [
-            (NetworkAccess::Allowed, true),
-            (NetworkAccess::Denied, false),
-        ] {
-            let permissions = SandboxPermissions::restore(
-                "session",
-                SandboxMode::WorkspaceWrite,
-                network,
-                ["call".into()],
-            )
-            .for_call("call");
-            assert_eq!(sandbox.browser_page(&permissions).await.is_some(), lent);
         }
     }
 

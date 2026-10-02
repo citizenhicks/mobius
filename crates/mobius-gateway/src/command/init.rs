@@ -76,6 +76,20 @@ pub(super) fn reset_bot_defaults(state_dir: PathBuf) -> Result<()> {
     }
 }
 
+pub(super) fn set_desktop(state_dir: PathBuf, enabled: bool) -> Result<()> {
+    let (store, mut config) = ConfigStore::open(state_dir)?;
+    let _startup = StartupGuard::create(store.state_dir())?;
+    ensure_gateway_stopped(&store, &config)?;
+    config.desktop_enabled = enabled;
+    config.validate()?;
+    for bot in crate::bots::BotStore::open(store.state_dir())?.bots()? {
+        crate::config::validate_desktop_bot_policy(&config, &bot.config.config)?;
+    }
+    store.save(&config)?;
+    println!("gateway desktop enabled: {enabled}");
+    Ok(())
+}
+
 pub(super) fn direct_loopback_endpoint(config: &GatewayConfig) -> Result<Endpoint> {
     if !config.listen.ip().is_loopback() || config.tls.is_some() || config.cloudflare.is_some() {
         return Err(Error::Config(

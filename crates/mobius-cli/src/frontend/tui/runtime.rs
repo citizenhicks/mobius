@@ -2243,6 +2243,7 @@ mod tests {
         ReadyPayload {
             gateway_version: env!("CARGO_PKG_VERSION").into(),
             machine_name: String::new(),
+            computer_view: mobius_gateway::wire::ComputerView::Unavailable,
             bots: vec![BotRecord {
                 id: "bot-a".into(),
                 conversation_session_id: "bot-conversation-test".into(),

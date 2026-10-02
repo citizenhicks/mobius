@@ -33,14 +33,7 @@ function nativeCall(action, args = {}) {
   if (!active) throw new Error('Desktop actions require an active evaluation');
   if (nativePending) throw new Error('Await each desktop action before starting another');
   desktopUsed = true;
-  const payload = Buffer.from(JSON.stringify({...args, action}));
-  if (payload.length > MAX_FRAME) throw new Error('Desktop request exceeds its limit');
-  nativeTask = new Promise((resolve, reject) => {
-    nativePending = {resolve, reject};
-    writeFrame(payload, HOST_REQUEST);
-  }).then(reply => {
-    if (reply.error) throw new Error(reply.error);
-    const result = reply.result;
+  nativeTask = hostCall({...args, action}).then(result => {
     if (action === 'screenshot') {
       if (typeof result?.png !== 'string') throw new Error('Desktop screenshot is missing');
       const bytes = Buffer.from(result.png, 'base64');
@@ -56,6 +49,18 @@ function nativeCall(action, args = {}) {
   // The evaluation also waits for a caller that forgot to await its last native action.
   nativeTask.catch(()=>{});
   return nativeTask;
+}
+function hostCall(request) {
+  if (nativePending) throw new Error('Await each host request before starting another');
+  const payload = Buffer.from(JSON.stringify(request));
+  if (payload.length > MAX_FRAME) throw new Error('Desktop request exceeds its limit');
+  return new Promise((resolve, reject) => {
+    nativePending = {resolve, reject};
+    writeFrame(payload, HOST_REQUEST);
+  }).then(reply => {
+    if (reply.error) throw new Error(reply.error);
+    return reply.result;
+  });
 }
 const desktop = Object.freeze({
   apps: () => nativeCall('apps'),
@@ -96,8 +101,19 @@ function emitImage(source, detail = 'auto') {
 }
 // A loopback DevTools port so a möbius app on this machine can watch and share the page.
 let devtools;
-// The page the Mac app lends this evaluation, as its endpoint, and the one `page` is on.
-let requested, lent;
+let requested, attached, observed = false;
+function browserKey(value) { return value && value.endpoint + '/' + value.target_id; }
+function validateDesktop(value) {
+  if (!value || typeof value.endpoint !== 'string' || Object.keys(value).some(key => key !== 'endpoint' && key !== 'target_id')) throw new Error('invalid gateway browser page');
+  if (value.endpoint.startsWith('ws+unix://')) {
+    const match = /^ws\+unix:\/\/(\/[^\s:?#%\\]+\/browser\.sock):\/([a-fA-F0-9]{32})$/.exec(value.endpoint);
+    if (!match || value.endpoint.length > 4096 || match[1].split('/').some(part => part === '.' || part === '..') || value.target_id != null) throw new Error('invalid gateway browser endpoint');
+    return;
+  }
+  if (typeof value.target_id !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(value.target_id)) throw new Error('invalid gateway browser page');
+  const endpoint = new URL(value.endpoint);
+  if (endpoint.protocol !== 'http:' || endpoint.hostname !== '127.0.0.1' || !endpoint.port || endpoint.username || endpoint.password || endpoint.pathname !== '/' || endpoint.search || endpoint.hash) throw new Error('invalid gateway browser endpoint');
+}
 function freePort() {
   return new Promise((resolve, reject) => {
     const server = require('node:net').createServer();
@@ -105,38 +121,57 @@ function freePort() {
     server.listen(0, '127.0.0.1', () => { const {port} = server.address(); server.close(() => resolve(port)); });
   });
 }
-// Disconnects from a lent page, or closes the worker's own browser.
+// Disconnects from the gateway browser, or closes the worker's own browser.
 async function release() {
   const previous = connection;
-  connection = page = lent = devtools = undefined;
+  connection = page = attached = devtools = undefined;
+  observed = false;
   await previous?.close().catch(() => {});
 }
 async function getPage() {
-  if (page && (lent !== requested || !connection?.isConnected())) await release();
+  if (page && (browserKey(attached) !== browserKey(requested) || page.isClosed() || !connection?.isConnected())) await release();
   if (!page) {
-    const { chromium } = require('playwright');
-    if (requested) {
-      // The chat's tab in the Mac app's browser: the user's profile, on the user's screen.
-      connection = await chromium.connectOverCDP(requested, {noDefaults:true, timeout:10000});
-      page = connection.contexts()[0]?.pages()[0];
-      if (!page) throw new Error('the page lent by the Mac app is unavailable');
-      lent = requested;
-    } else {
-      // Without a loopback port (a sandbox without network) the browser still runs, unwatched.
-      const port = await freePort().catch(() => undefined);
-      connection = await chromium.launch(port ? {headless:true, args:['--remote-debugging-address=127.0.0.1', '--remote-debugging-port=' + port]} : {headless:true});
-      devtools = port && 'http://127.0.0.1:' + port;
-      const context = await connection.newContext({viewport:{width:1365,height:768}, deviceScaleFactor:1});
-      page = await context.newPage();
+    try {
+      const { chromium } = require('playwright');
+      if (requested) {
+        connection = await chromium.connectOverCDP(requested.endpoint, {noDefaults:true, timeout:10000});
+        if (requested.target_id == null) {
+          const pages = connection.contexts().flatMap(context => context.pages());
+          if (pages.length !== 1) throw new Error('the scoped local browser must expose exactly one page');
+          page = pages[0];
+        } else for (const context of connection.contexts()) {
+          for (const candidate of context.pages()) {
+            const session = await context.newCDPSession(candidate);
+            try {
+              const {targetInfo} = await session.send('Target.getTargetInfo');
+              if (targetInfo.targetId === requested.target_id) page = candidate;
+            } finally { await session.detach(); }
+            if (page) break;
+          }
+          if (page) break;
+        }
+        if (!page) throw new Error('the gateway-assigned browser page is unavailable');
+        attached = requested;
+      } else {
+        // Without a loopback port (a sandbox without network) the browser still runs, unwatched.
+        const port = await freePort().catch(() => undefined);
+        connection = await chromium.launch(port ? {headless:true, args:['--remote-debugging-address=127.0.0.1', '--remote-debugging-port=' + port]} : {headless:true});
+        devtools = port && 'http://127.0.0.1:' + port;
+        const context = await connection.newContext({viewport:{width:1365,height:768}, deviceScaleFactor:1});
+        page = await context.newPage();
+      }
+      page.setDefaultTimeout(10000);
+    } catch (error) {
+      await release();
+      throw error;
     }
-    page.setDefaultTimeout(10000);
   }
   return page;
 }
 function capturePage(current, timeout) {
   return current.screenshot({fullPage:false, scale:'css', timeout});
 }
-// A lent page has no fixed viewport; its PNG header says how large the capture is.
+// A headed page has no fixed viewport; its PNG header says how large the capture is.
 function emitScreenshot(bytes, limit = MAX_TEXT_BYTES - FAILURE_TEXT_BYTES) {
   const target = path.join(os.tmpdir(), 'screen-' + crypto.randomUUID() + '.png');
   fs.writeFileSync(target, bytes);
@@ -210,20 +245,29 @@ async function main() {
   if (!contextId) throw new Error('interpreter context unavailable');
   async function evaluate(payload) {
     const request = JSON.parse(payload.toString('utf8'));
-    const browser = request.browser ?? undefined;
-    if (typeof request.code !== 'string' || Buffer.byteLength(request.code) > 40000 || Object.keys(request).some(key=>key !== 'code' && key !== 'browser')) throw new Error('invalid evaluation');
-    if (browser !== undefined && (typeof browser !== 'string' || !browser.startsWith('ws+unix:///'))) throw new Error('invalid lent browser');
+    const browser = request.desktop ?? undefined;
+    if (typeof request.code !== 'string' || Buffer.byteLength(request.code) > 40000 || Object.keys(request).some(key=>key !== 'code' && key !== 'desktop')) throw new Error('invalid evaluation');
+    if (browser !== undefined) validateDesktop(browser);
     content = []; textBytes = 0; imageCount = 0; active = true; desktopUsed = false; nativeTask = undefined; requested = browser;
     let is_error = false;
     try {
-      const value = await inspector.post('Runtime.evaluate', {expression:request.code, contextId, awaitPromise:true, replMode:true, silent:true, objectGroup:'evaluation'});
-      if (nativePending) {
-        if (value.exceptionDetails) await nativeTask.catch(()=>{});
-        else await nativeTask;
+      if (requested) {
+        requested = await hostCall({op:'begin_browser'});
+        validateDesktop(requested);
+        const current = await getPage();
+        if (requested.target_id != null) await current.bringToFront();
+        if (!observed) {
+          text('Submitted code was not executed. The gateway browser may contain saved logins or changes made by the user. Inspect this fresh observation before acting.');
+          text('URL: ' + current.url());
+          text(await current.locator('body').ariaSnapshot());
+          await screenshot();
+          observed = true;
+        } else {
+          await runCode(request.code);
+        }
+      } else {
+        await runCode(request.code);
       }
-      is_error = Boolean(value.exceptionDetails);
-      if (is_error) await reportFailure(value.exceptionDetails.exception ?? value.result, scope);
-      else if (value.result.type !== 'undefined') text(value.result.description ?? String(value.result.value));
     } catch (error) {
       is_error = true;
       await reportFailure(error, scope);
@@ -235,6 +279,17 @@ async function main() {
     const response = Buffer.from(JSON.stringify(live ? {content,is_error,devtools:live} : {content,is_error}));
     if (response.length > MAX_FRAME) throw new Error('response frame exceeds limit');
     writeFrame(response);
+
+    async function runCode(code) {
+      const value = await inspector.post('Runtime.evaluate', {expression:code, contextId, awaitPromise:true, replMode:true, silent:true, objectGroup:'evaluation'});
+      if (nativePending) {
+        if (value.exceptionDetails) await nativeTask.catch(()=>{});
+        else await nativeTask;
+      }
+      is_error = Boolean(value.exceptionDetails);
+      if (is_error) await reportFailure(value.exceptionDetails.exception ?? value.result, scope);
+      else if (value.result.type !== 'undefined') text(value.result.description ?? String(value.result.value));
+    }
   }
   let buffer = Buffer.alloc(0), evaluation, chunks = [], chunkBytes = 0;
   for await (const chunk of process.stdin) {

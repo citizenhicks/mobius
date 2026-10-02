@@ -138,6 +138,7 @@ pub async fn run_cli(
         Command::Init(options) => initialize(options),
         Command::Bootstrap { state_dir } => initialize_bootstrap(state_dir, save_local_client),
         Command::ResetBotDefaults { state_dir } => reset_bot_defaults(state_dir),
+        Command::SetDesktop { state_dir, enabled } => set_desktop(state_dir, enabled),
         Command::PairingCode { state_dir } => pairing_code(state_dir, load_local_client).await,
         Command::ClearProviderCredential {
             state_dir,

@@ -1,6 +1,4 @@
-//! The local Mac app's browser, lent to agents one chat page at a time. The app offers it
-//! over its authenticated connection; a computer-control call asks for its chat's page,
-//! and the worker then drives that page through the returned endpoint.
+//! The gateway's per-chat browser assignment rendered by the local Mac app.
 
 use std::{
     collections::HashMap,
@@ -29,8 +27,8 @@ struct App {
     pending: HashMap<Uuid, oneshot::Sender<Option<String>>>,
 }
 
-/// The lending app's connection: requests to write to it. Dropping it withdraws the
-/// browser and answers waiting calls with none.
+/// The renderer connection. Dropping it withdraws the browser and answers waiting
+/// calls with none.
 pub(crate) struct BrowserConnection {
     host: Arc<BrowserHost>,
     id: Uuid,
@@ -42,7 +40,7 @@ impl BrowserHost {
         self.app.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Lends the browser of the app on this connection; a newer connection replaces it.
+    /// Registers this renderer; a newer connection replaces it.
     pub(crate) fn attach(self: &Arc<Self>) -> BrowserConnection {
         let id = Uuid::new_v4();
         let (outgoing, receiver) = mpsc::channel(MAX_PENDING_PAGES);
@@ -58,8 +56,8 @@ impl BrowserHost {
         }
     }
 
-    /// The endpoint of the page `session_id`'s agent may drive, when an app lends one.
-    pub(crate) async fn page(&self, session_id: &str) -> Option<String> {
+    /// Requests the renderer's assigned page for this chat.
+    pub(crate) async fn page(&self, session_id: &str, foreground: bool) -> Option<String> {
         let request = Uuid::new_v4();
         let (reply, answer) = oneshot::channel();
         {
@@ -74,6 +72,7 @@ impl BrowserHost {
                 .try_send(ServerMessage::BrowserPageRequested {
                     request_id: request.to_string(),
                     session_id: session_id.to_owned(),
+                    foreground,
                 })
                 .ok()?;
             app.pending.insert(request, reply);
@@ -101,7 +100,7 @@ impl BrowserConnection {
             .filter(|app| app.id == self.id)
             .and_then(|app| app.pending.remove(&request))
             .ok_or_else(stale)?;
-        let _ = reply.send(endpoint.filter(|endpoint| lent_endpoint(endpoint)));
+        let _ = reply.send(endpoint.filter(|endpoint| scoped_endpoint(endpoint)));
         Ok(())
     }
 }
@@ -115,9 +114,29 @@ impl Drop for BrowserConnection {
     }
 }
 
-/// Only a page on a local Unix socket is lent: the app's browser never listens on a port.
-fn lent_endpoint(endpoint: &str) -> bool {
-    endpoint.starts_with("ws+unix:///") && !endpoint.contains(char::is_whitespace)
+/// Only a scoped page on a local Unix socket is accepted; no debugging port is exposed.
+fn scoped_endpoint(endpoint: &str) -> bool {
+    let Some((socket, token)) = endpoint
+        .strip_prefix("ws+unix://")
+        .and_then(|value| value.rsplit_once(":/"))
+    else {
+        return false;
+    };
+    let path = std::path::Path::new(socket);
+    endpoint.len() <= 4096
+        && !endpoint.contains(char::is_whitespace)
+        && !socket.contains([':', '?', '#', '%', '\\'])
+        && !socket.split('/').any(|part| part == "." || part == "..")
+        && path.is_absolute()
+        && path.file_name().is_some_and(|name| name == "browser.sock")
+        && path.components().all(|component| {
+            matches!(
+                component,
+                std::path::Component::RootDir | std::path::Component::Normal(_)
+            )
+        })
+        && token.len() == 32
+        && token.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 pub(crate) async fn next_update(
@@ -151,6 +170,7 @@ pub(crate) async fn handle_message(
     connection: &mut Option<BrowserConnection>,
     local: bool,
     client_kind: crate::wire::ClientKind,
+    available: bool,
     writer: &mut (impl tokio::io::AsyncWrite + Unpin),
 ) -> crate::Result<()> {
     use crate::wire::{ClientMessage, ServerFrame, write_frame};
@@ -159,12 +179,13 @@ pub(crate) async fn handle_message(
             request_id,
             enabled,
         } => {
-            let result = if !(cfg!(target_os = "macos")
+            let result = if !(available
+                && cfg!(target_os = "macos")
                 && local
                 && client_kind == crate::wire::ClientKind::Macos)
             {
                 Err(Error::Sandbox(
-                    "only the local Mac app can lend its browser".into(),
+                    "only the local Mac app can register its browser renderer".into(),
                 ))
             } else {
                 *connection = enabled.then(|| host.attach());
@@ -178,7 +199,9 @@ pub(crate) async fn handle_message(
         } => {
             let result = connection
                 .as_ref()
-                .ok_or_else(|| Error::Sandbox("this connection lends no browser".into()))
+                .ok_or_else(|| {
+                    Error::Sandbox("this connection has no registered browser renderer".into())
+                })
                 .and_then(|connection| connection.reply(&request_id, endpoint));
             // A reply answers its request; only a stray one is worth a response.
             if result.is_ok() {

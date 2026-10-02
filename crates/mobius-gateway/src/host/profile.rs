@@ -259,6 +259,13 @@ pub(super) async fn gateway_ready(
         .map_err(internal)?;
     let mut ready = ReadyPayload {
         gateway_version: env!("CARGO_PKG_VERSION").into(),
+        computer_view: if !state.config.desktop_enabled {
+            crate::wire::ComputerView::Unavailable
+        } else if cfg!(target_os = "linux") {
+            crate::wire::ComputerView::RemoteDesktop
+        } else {
+            crate::wire::ComputerView::EmbeddedBrowser
+        },
         machine_name: local_machine_name().map_err(internal)?,
         bots: state.bots.bots().map_err(internal)?,
         sessions,

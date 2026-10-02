@@ -89,6 +89,7 @@ impl HostState {
                     }
                     let _ = admission.reply.send(admission.result.map(|_| ()).map_err(source_rejection));
                     if self.is_idle() {
+                        self.running.gateway_sandbox.release_desktop_use().await;
                         for waiter in self.idle_waiters.drain(..) { let _ = waiter.send(()); }
                     }
                 }
@@ -790,7 +791,7 @@ impl HostState {
                 self.session_files.clone(),
                 Arc::clone(&self.discovery_gate),
                 Arc::clone(&self.desktop),
-                Arc::clone(&self.browser),
+                Arc::clone(&self.remote_desktop),
                 session_id,
                 "mobius-gateway",
                 prepared,
@@ -813,7 +814,7 @@ impl HostState {
                         self.session_files.clone(),
                         Arc::clone(&self.discovery_gate),
                         Arc::clone(&self.desktop),
-                        Arc::clone(&self.browser),
+                        Arc::clone(&self.remote_desktop),
                         self.running.session_id.clone(),
                         "mobius-gateway-rollback",
                         Some(old_prepared),

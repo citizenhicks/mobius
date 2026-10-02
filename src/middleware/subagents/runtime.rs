@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -49,6 +50,22 @@ pub(super) struct Shared {
 struct RootSlot {
     state: Mutex<Root>,
     writer: Mutex<()>,
+    closing: AtomicBool,
+    executions: Mutex<Vec<Arc<Execution>>>,
+}
+
+struct Execution {
+    finished: AtomicBool,
+    changed: Notify,
+}
+
+pub(super) struct ExecutionGuard(Arc<Execution>);
+
+impl Drop for ExecutionGuard {
+    fn drop(&mut self) {
+        self.0.finished.store(true, Ordering::Release);
+        self.0.changed.notify_one();
+    }
 }
 
 #[derive(Clone)]
@@ -189,6 +206,8 @@ impl Shared {
             Arc::new(RootSlot {
                 state: Mutex::new(root),
                 writer: Mutex::new(()),
+                closing: AtomicBool::new(false),
+                executions: Mutex::default(),
             })
         });
         Ok(())
@@ -200,6 +219,7 @@ impl Shared {
             self.changed.notify_waiters();
             return Ok(());
         };
+        root.closing.store(true, Ordering::Release);
         let _writer = root.writer.lock().await;
         let result = self
             .commit_locked_root(
@@ -231,11 +251,38 @@ impl Shared {
             roots.remove(root_id);
         }
         drop(roots);
+        root.state.lock().await.senders.clear();
+        drop(_writer);
+        let executions = std::mem::take(&mut *root.executions.lock().await);
+        for execution in executions {
+            loop {
+                let changed = execution.changed.notified();
+                if execution.finished.load(Ordering::Acquire) {
+                    break;
+                }
+                changed.await;
+            }
+        }
         self.changed.notify_waiters();
         match result {
             Ok(_) | Err(Error::Unknown(_)) => Ok(()),
             Err(error) => Err(error),
         }
+    }
+
+    pub(super) async fn track_execution(&self, root_id: &str) -> Result<ExecutionGuard> {
+        let root = self.root(root_id).await?;
+        let mut executions = root.executions.lock().await;
+        if root.closing.load(Ordering::Acquire) {
+            return Err(Error::Config("the parent agent is stopping".into()));
+        }
+        executions.retain(|execution| !execution.finished.load(Ordering::Acquire));
+        let execution = Arc::new(Execution {
+            finished: AtomicBool::new(false),
+            changed: Notify::new(),
+        });
+        executions.push(Arc::clone(&execution));
+        Ok(ExecutionGuard(execution))
     }
 
     pub(super) async fn has_active_children(&self, root_id: &str) -> Result<bool> {

@@ -56,8 +56,43 @@ mod base64_bytes {
     }
 }
 
+mod desktop_bytes {
+    use base64::Engine as _;
+    use serde::{Deserialize as _, Deserializer, Serializer};
+
+    pub(super) fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        super::base64_bytes::serialize(bytes, serializer)
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        if encoded.len() > super::MAX_DESKTOP_CHUNK_BYTES.div_ceil(3) * 4 {
+            return Err(serde::de::Error::custom(
+                "desktop data exceeds its chunk limit",
+            ));
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(serde::de::Error::custom)?;
+        if bytes.is_empty() || bytes.len() > super::MAX_DESKTOP_CHUNK_BYTES {
+            return Err(serde::de::Error::custom(
+                "desktop data must be 1–16384 bytes",
+            ));
+        }
+        Ok(bytes)
+    }
+}
+
 /// Current gateway protocol version.
-pub const PROTOCOL_VERSION: u16 = 88;
+pub const PROTOCOL_VERSION: u16 = 89;
+/// Maximum raw RFB payload in one desktop data frame.
+pub const MAX_DESKTOP_CHUNK_BYTES: usize = 16 * 1024;
 /// Maximum encoded JSON payload accepted in one frame.
 pub const MAX_FRAME_BYTES: usize = 50 * 1024 * 1024;
 /// Maximum encoded authentication frame, and the first encrypted WebSocket record.

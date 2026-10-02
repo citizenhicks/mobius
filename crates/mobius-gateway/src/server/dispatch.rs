@@ -13,25 +13,33 @@ pub(super) struct SelectedChat {
 
 pub(super) struct AuthenticatedClient<'a> {
     pub(super) local: bool,
+    pub(super) access_lease: Option<AccessLease>,
+    pub(super) bots: &'a BotStore,
+    pub(super) auth: &'a AuthStore,
+    pub(super) desktop_transport: bool,
+    pub(super) connection_id: Uuid,
     pub(super) kind: ClientKind,
     pub(super) id: &'a str,
     pub(super) connections: &'a ClientConnections,
     pub(super) revocations: &'a broadcast::Sender<String>,
 }
 
-const MAX_PENDING_GIT_DIFFS: usize = 4;
+pub(super) const MAX_PENDING_REQUESTS: usize = 4;
 
 pub(super) struct ConnectionSessionState<'a> {
     pub(super) disabled_notifications: &'a mut BTreeSet<GatewayNotification>,
     pub(super) view: &'a mut ClientView,
     pub(super) selected: &'a mut Option<SelectedChat>,
-    pub(super) git_diffs: &'a mut JoinSet<ServerMessage>,
+    pub(super) requests: &'a mut JoinSet<ServerMessage>,
     pub(super) session_files: &'a SessionFileStore,
     pub(super) bots: &'a BotStore,
     pub(super) uploads: &'a mut BTreeMap<(String, String), PendingSessionFileWrite>,
     pub(super) voice: &'a mut Option<super::voice::ConnectionVoice>,
-    pub(super) desktop: &'a mut Option<crate::computer_runtime::desktop::DesktopConnection>,
     pub(super) browser: &'a mut Option<crate::computer_runtime::browser::BrowserConnection>,
+    pub(super) desktop: &'a mut Option<crate::computer_runtime::desktop::DesktopConnection>,
+    pub(super) remote_desktop:
+        &'a mut Option<crate::computer_runtime::remote_desktop::DesktopStream>,
+    pub(super) pending_desktop_control: &'a mut Option<super::desktop::PendingControl>,
 }
 
 pub(super) async fn selected_broadcast(
@@ -66,6 +74,11 @@ pub(super) async fn handle_message(
 ) -> Result<()> {
     let Some(message) =
         handle_runtime_message(message, gateway, client.connections, writer).await?
+    else {
+        return Ok(());
+    };
+    let Some(message) =
+        super::desktop::handle_message(message, gateway, client, &mut connection, writer).await?
     else {
         return Ok(());
     };
@@ -179,7 +192,7 @@ pub(super) async fn handle_message(
         } => {
             return get_session_history(
                 writer,
-                &connection,
+                &mut connection,
                 request_id,
                 session_id,
                 before_sequence,
@@ -236,7 +249,7 @@ pub(super) async fn handle_message(
         ClientMessage::Submit {
             session_id,
             submission,
-        } => return submit(writer, &connection, session_id, submission).await,
+        } => return submit(writer, &mut connection, session_id, submission).await,
         ClientMessage::GetContributions { request_id } => {
             let contributions = gateway.contributions().await;
             return contribution_response(writer, connection.view, request_id, contributions).await;
@@ -309,7 +322,7 @@ pub(super) async fn handle_message(
         ClientMessage::ListSessionFiles {
             request_id,
             session_id,
-        } => return list_session_files(writer, &connection, request_id, session_id).await,
+        } => return list_session_files(writer, &mut connection, request_id, session_id).await,
         ClientMessage::ReadSessionFile {
             request_id,
             session_id,
@@ -319,7 +332,7 @@ pub(super) async fn handle_message(
         } => {
             return read_session_file(
                 writer,
-                &connection,
+                &mut connection,
                 request_id,
                 session_id,
                 file_id,
@@ -466,14 +479,16 @@ pub(super) async fn handle_message(
             session_id,
             branch,
         } => {
-            return switch_git_branch(writer, &connection, request_id, session_id, branch).await;
+            return switch_git_branch(writer, &mut connection, request_id, session_id, branch)
+                .await;
         }
         ClientMessage::ListWorkspaceFiles {
             request_id,
             session_id,
             scope,
         } => {
-            return list_workspace_files(writer, &connection, request_id, session_id, scope).await;
+            return list_workspace_files(writer, &mut connection, request_id, session_id, scope)
+                .await;
         }
         ClientMessage::ReadWorkspaceFile {
             request_id,
@@ -484,7 +499,7 @@ pub(super) async fn handle_message(
         } => {
             return read_workspace_file(
                 writer,
-                &connection,
+                &mut connection,
                 request_id,
                 session_id,
                 path,
@@ -501,7 +516,7 @@ pub(super) async fn handle_message(
         } => {
             return write_workspace_file(
                 writer,
-                &connection,
+                &mut connection,
                 request_id,
                 session_id,
                 path,
@@ -627,6 +642,18 @@ pub(super) async fn handle_message(
         } => {
             get_routine_run_preview(writer, request_id, id, before_sequence, gateway).await?;
         }
+        ClientMessage::SetBrowserRuntime { .. } | ClientMessage::BrowserPageReply { .. } => {
+            return crate::computer_runtime::browser::handle_message(
+                message,
+                &gateway.remote_desktop.browser,
+                connection.browser,
+                client.local,
+                client.kind,
+                gateway.remote_desktop.browser_available(),
+                writer,
+            )
+            .await;
+        }
         ClientMessage::SetDesktopRuntime { .. } | ClientMessage::DesktopControlReply { .. } => {
             return crate::computer_runtime::desktop::handle_message(
                 message,
@@ -638,16 +665,11 @@ pub(super) async fn handle_message(
             )
             .await;
         }
-        ClientMessage::SetBrowserRuntime { .. } | ClientMessage::BrowserPageReply { .. } => {
-            return crate::computer_runtime::browser::handle_message(
-                message,
-                &gateway.browser,
-                connection.browser,
-                client.local,
-                client.kind,
-                writer,
-            )
-            .await;
+        ClientMessage::OpenComputer { .. }
+        | ClientMessage::SetDesktopStream { .. }
+        | ClientMessage::DesktopData { .. }
+        | ClientMessage::SetDesktopControl { .. } => {
+            unreachable!("desktop messages were handled above")
         }
         ClientMessage::StartRealtimeVoice { .. } | ClientMessage::EndRealtimeVoice { .. } => {
             unreachable!("voice messages are handled before general dispatch")
@@ -838,7 +860,7 @@ async fn select_session(
 
 async fn get_session_history(
     writer: &mut (impl AsyncWrite + Unpin),
-    connection: &ConnectionSessionState<'_>,
+    connection: &mut ConnectionSessionState<'_>,
     request_id: String,
     session_id: String,
     before_sequence: Option<u64>,
@@ -968,7 +990,7 @@ fn forget_deleted_sessions(connection: &mut ConnectionSessionState<'_>, deleted:
 
 async fn submit(
     writer: &mut (impl AsyncWrite + Unpin),
-    connection: &ConnectionSessionState<'_>,
+    connection: &mut ConnectionSessionState<'_>,
     session_id: String,
     submission: Submission,
 ) -> Result<()> {
@@ -1244,7 +1266,7 @@ fn require_readable_files(
 
 async fn list_session_files(
     writer: &mut (impl AsyncWrite + Unpin),
-    connection: &ConnectionSessionState<'_>,
+    connection: &mut ConnectionSessionState<'_>,
     request_id: String,
     session_id: String,
 ) -> Result<()> {
@@ -1269,7 +1291,7 @@ async fn list_session_files(
 
 async fn read_session_file(
     writer: &mut (impl AsyncWrite + Unpin),
-    connection: &ConnectionSessionState<'_>,
+    connection: &mut ConnectionSessionState<'_>,
     request_id: String,
     session_id: String,
     file_id: String,
@@ -1415,7 +1437,7 @@ async fn get_git_diff(
         Ok(host) => host.clone(),
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
-    if connection.git_diffs.len() >= MAX_PENDING_GIT_DIFFS {
+    if connection.requests.len() >= MAX_PENDING_REQUESTS {
         return write_rejection(
             writer,
             request_id,
@@ -1428,7 +1450,7 @@ async fn get_git_diff(
         .await;
     }
     // Owned by the connection: disconnecting aborts its outstanding Git reads.
-    connection.git_diffs.spawn(async move {
+    connection.requests.spawn(async move {
         let rejected = |request_id, rejection: Rejection| ServerMessage::Rejected {
             request_id,
             code: rejection.code.into(),
@@ -1461,7 +1483,7 @@ async fn get_git_diff(
 
 async fn switch_git_branch(
     writer: &mut (impl AsyncWrite + Unpin),
-    connection: &ConnectionSessionState<'_>,
+    connection: &mut ConnectionSessionState<'_>,
     request_id: String,
     session_id: String,
     branch: String,
@@ -1475,7 +1497,7 @@ async fn switch_git_branch(
 
 async fn list_workspace_files(
     writer: &mut (impl AsyncWrite + Unpin),
-    connection: &ConnectionSessionState<'_>,
+    connection: &mut ConnectionSessionState<'_>,
     request_id: String,
     session_id: String,
     scope: WorkspaceFileScope,
@@ -1503,7 +1525,7 @@ async fn list_workspace_files(
 
 async fn read_workspace_file(
     writer: &mut (impl AsyncWrite + Unpin),
-    connection: &ConnectionSessionState<'_>,
+    connection: &mut ConnectionSessionState<'_>,
     request_id: String,
     session_id: String,
     path: String,
@@ -1538,7 +1560,7 @@ async fn read_workspace_file(
 
 async fn write_workspace_file(
     writer: &mut (impl AsyncWrite + Unpin),
-    connection: &ConnectionSessionState<'_>,
+    connection: &mut ConnectionSessionState<'_>,
     request_id: String,
     session_id: String,
     path: String,

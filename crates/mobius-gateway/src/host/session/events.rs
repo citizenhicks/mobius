@@ -43,6 +43,9 @@ impl HostState {
         }
 
         let became_idle = self.pending_turns == 0 && was_active;
+        if self.is_idle() {
+            self.running.gateway_sandbox.release_desktop_use().await;
+        }
         if became_idle && !self.approval_active && self.active_routine.is_none() {
             for waiter in self.idle_waiters.drain(..) {
                 let _ = waiter.send(());

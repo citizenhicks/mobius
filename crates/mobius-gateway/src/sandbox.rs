@@ -81,10 +81,11 @@ fn provider_credential_environment() -> impl Iterator<Item = &'static str> {
 
 /// Workspace backend that protects gateway state outside full-access commands.
 pub struct GatewaySandbox {
-    delegate: LocalSandbox,
-    full_access_delegate: LocalSandbox,
+    delegate: std::sync::Arc<LocalSandbox>,
+    full_access_delegate: std::sync::Arc<LocalSandbox>,
     desktop: Option<std::sync::Arc<crate::computer_runtime::desktop::DesktopControl>>,
-    browser: Option<std::sync::Arc<crate::computer_runtime::browser::BrowserHost>>,
+    remote_desktop: Option<std::sync::Arc<crate::computer_runtime::remote_desktop::RemoteDesktop>>,
+    desktop_use: tokio::sync::Mutex<Option<crate::computer_runtime::remote_desktop::DesktopUse>>,
 }
 
 impl GatewaySandbox {
@@ -142,10 +143,11 @@ impl GatewaySandbox {
             full_access_delegate = full_access_delegate.deny_environment(environment);
         }
         Ok(Self {
-            delegate,
-            full_access_delegate,
+            delegate: std::sync::Arc::new(delegate),
+            full_access_delegate: std::sync::Arc::new(full_access_delegate),
             desktop: None,
-            browser: None,
+            remote_desktop: None,
+            desktop_use: tokio::sync::Mutex::new(None),
         })
     }
 
@@ -157,15 +159,75 @@ impl GatewaySandbox {
         self
     }
 
-    pub(crate) fn with_browser(
+    pub(crate) fn with_remote_desktop(
         mut self,
-        browser: std::sync::Arc<crate::computer_runtime::browser::BrowserHost>,
+        remote_desktop: std::sync::Arc<crate::computer_runtime::remote_desktop::RemoteDesktop>,
     ) -> Self {
-        self.browser = Some(browser);
+        self.remote_desktop = Some(remote_desktop);
         self
     }
 
-    fn command_delegate(&self, sandbox_mode: SandboxMode) -> &LocalSandbox {
+    fn check_execution(&self) -> Result<()> {
+        if let Some(desktop) = &self.remote_desktop {
+            desktop.check_execution()?;
+        }
+        Ok(())
+    }
+
+    async fn use_desktop(&self) {
+        if let Some(remote) = self
+            .remote_desktop
+            .as_ref()
+            .filter(|remote| remote.available())
+        {
+            let mut desktop_use = self.desktop_use.lock().await;
+            if desktop_use.is_none() {
+                *desktop_use = Some(remote.acquire_use().await);
+            }
+        }
+    }
+
+    pub(crate) async fn release_desktop_use(&self) {
+        self.desktop_use.lock().await.take();
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn retain_desktop_use_for_test(&self) {
+        let remote = self.remote_desktop.as_ref().expect("desktop owner");
+        *self.desktop_use.lock().await = Some(remote.acquire_use().await);
+    }
+
+    fn isolated_backend(&self) -> Result<Self> {
+        self.check_execution()?;
+        let delegate = self.delegate.isolated_execution()?;
+        let full_access_delegate = self
+            .full_access_delegate
+            .isolated_execution()?
+            .share_temporary_directory(&delegate)?;
+        Ok(Self {
+            delegate: std::sync::Arc::new(delegate),
+            full_access_delegate: std::sync::Arc::new(full_access_delegate),
+            desktop: self.desktop.clone(),
+            remote_desktop: self.remote_desktop.as_ref().map(std::sync::Arc::clone),
+            desktop_use: tokio::sync::Mutex::new(None),
+        })
+    }
+
+    async fn execution_lease(&self) -> Result<Option<tokio::sync::OwnedRwLockReadGuard<()>>> {
+        match &self.remote_desktop {
+            Some(desktop) => desktop.execution_lease().await.map(Some),
+            None => Ok(None),
+        }
+    }
+
+    async fn execution_cancelled(&self) {
+        match &self.remote_desktop {
+            Some(desktop) => desktop.execution_cancelled().await,
+            None => std::future::pending().await,
+        }
+    }
+
+    fn command_delegate(&self, sandbox_mode: SandboxMode) -> &std::sync::Arc<LocalSandbox> {
         match sandbox_mode {
             SandboxMode::WorkspaceWrite => &self.delegate,
             SandboxMode::DangerFullAccess => &self.full_access_delegate,
@@ -176,9 +238,13 @@ impl GatewaySandbox {
         mut self,
         roots: impl IntoIterator<Item = PathBuf>,
     ) -> Result<Self> {
+        let mut delegate = std::sync::Arc::try_unwrap(self.delegate).map_err(|_| {
+            Error::Config("sandbox roots must be configured before execution".into())
+        })?;
         for root in roots {
-            self.delegate = self.delegate.allow_read_root(root)?;
+            delegate = delegate.allow_read_root(root)?;
         }
+        self.delegate = std::sync::Arc::new(delegate);
         Ok(self)
     }
 
@@ -186,23 +252,29 @@ impl GatewaySandbox {
         mut self,
         roots: impl IntoIterator<Item = PathBuf>,
     ) -> Result<Self> {
+        let mut delegate = std::sync::Arc::try_unwrap(self.delegate).map_err(|_| {
+            Error::Config("sandbox roots must be configured before execution".into())
+        })?;
         for root in roots {
-            self.delegate = self.delegate.allow_workspace_root(root)?;
+            delegate = delegate.allow_workspace_root(root)?;
         }
+        self.delegate = std::sync::Arc::new(delegate);
         Ok(self)
     }
 
     pub(crate) async fn execute_git(&self, args: &[&str]) -> Result<CommandOutput> {
+        let _execution = self.execution_lease().await?;
         let mut arguments = GIT_ARGUMENTS.to_vec();
         arguments.extend_from_slice(args);
-        self.delegate
-            .execute_read_only_with_environment_removals(
+        tokio::select! {
+            _ = self.execution_cancelled() => Err(execution_held()),
+            result = self.delegate.execute_read_only_with_environment_removals(
                 "git",
                 &arguments,
                 &GIT_ENVIRONMENT,
                 &REPOSITORY_LOCAL_GIT_ENVIRONMENT,
-            )
-            .await
+            ) => result,
+        }
     }
 
     pub(crate) async fn read_workspace_range(
@@ -211,10 +283,19 @@ impl GatewaySandbox {
         offset: u64,
         max_bytes: usize,
     ) -> Result<(Vec<u8>, Option<u64>)> {
-        self.delegate.read_range(path, offset, max_bytes).await
+        let execution = self.execution_lease().await?;
+        let delegate = std::sync::Arc::clone(&self.delegate);
+        let path = path.to_owned();
+        tokio::spawn(async move {
+            let _execution = execution;
+            delegate.read_range(&path, offset, max_bytes).await
+        })
+        .await
+        .map_err(|error| Error::Sandbox(format!("file reader failed: {error}")))?
     }
 
     pub(crate) async fn switch_git_branch(&self, branch: &str) -> Result<CommandOutput> {
+        let _execution = self.execution_lease().await?;
         let mut arguments = GIT_ARGUMENTS.to_vec();
         arguments.extend_from_slice(&[
             "switch",
@@ -223,32 +304,55 @@ impl GatewaySandbox {
             "--",
             branch,
         ]);
-        self.delegate
-            .execute_git_mutation_with_environment_removals(
+        tokio::select! {
+            _ = self.execution_cancelled() => Err(execution_held()),
+            result = self.delegate.execute_git_mutation_with_environment_removals(
                 &arguments,
                 &GIT_ENVIRONMENT,
                 &REPOSITORY_LOCAL_GIT_ENVIRONMENT,
-            )
-            .await
+            ) => result,
+        }
     }
 }
 
+fn execution_held() -> Error {
+    Error::Sandbox("execution is held while the user controls the desktop".into())
+}
+
 impl SandboxBackend for GatewaySandbox {
+    fn check_execution(&self) -> Result<()> {
+        Self::check_execution(self)
+    }
+
     fn worker_connection<'a>(
         &'a self,
         session_id: &'a str,
         sandbox_mode: SandboxMode,
+        network_access: NetworkAccess,
     ) -> BoxFuture<'a, Result<tokio::io::DuplexStream>> {
         Box::pin(async move {
-            if !cfg!(target_os = "macos") {
-                return Err(Error::Sandbox(
-                    "native desktop control is only available on macOS".into(),
-                ));
-            }
+            self.check_execution()?;
             if sandbox_mode != SandboxMode::DangerFullAccess {
                 return Err(Error::Sandbox(
-                    "Mac desktop control requires the Bot's Full access sandbox policy".into(),
+                    "desktop control requires the Bot's Full access sandbox policy".into(),
                 ));
+            }
+            if network_access == NetworkAccess::Allowed
+                && let Some(remote) = self
+                    .remote_desktop
+                    .as_ref()
+                    .filter(|remote| remote.browser_available())
+            {
+                self.use_desktop().await;
+                let native = self.desktop.as_ref().map_or_else(
+                    || {
+                        std::sync::Arc::new(
+                            crate::computer_runtime::desktop::DesktopControl::default(),
+                        )
+                    },
+                    std::sync::Arc::clone,
+                );
+                return remote.connect(session_id, native);
             }
             self.desktop
                 .as_ref()
@@ -257,11 +361,19 @@ impl SandboxBackend for GatewaySandbox {
         })
     }
 
-    fn browser_page<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Option<String>> {
+    fn desktop_browser_page<'a>(
+        &'a self,
+        session_id: &'a str,
+    ) -> BoxFuture<'a, Result<Option<mobius::backend::sandbox::DesktopBrowserPage>>> {
         Box::pin(async move {
-            match &self.browser {
-                Some(browser) => browser.page(session_id).await,
-                None => None,
+            self.check_execution()?;
+            self.use_desktop().await;
+            match &self.remote_desktop {
+                Some(remote) => remote
+                    .page(session_id)
+                    .await
+                    .map_err(|error| Error::Sandbox(error.to_string())),
+                None => Ok(None),
             }
         })
     }
@@ -272,22 +384,13 @@ impl SandboxBackend for GatewaySandbox {
         sandbox_mode: SandboxMode,
         network_access: NetworkAccess,
     ) -> Result<mobius::backend::sandbox::WorkerProcess> {
+        self.check_execution()?;
         self.command_delegate(sandbox_mode)
             .start_worker(command, sandbox_mode, network_access)
     }
 
     fn isolated_execution(&self) -> Result<std::sync::Arc<dyn SandboxBackend>> {
-        let delegate = self.delegate.isolated_execution()?;
-        let full_access_delegate = self
-            .full_access_delegate
-            .isolated_execution()?
-            .share_temporary_directory(&delegate)?;
-        Ok(std::sync::Arc::new(Self {
-            delegate,
-            full_access_delegate,
-            desktop: self.desktop.clone(),
-            browser: self.browser.as_ref().map(std::sync::Arc::clone),
-        }))
+        Ok(std::sync::Arc::new(self.isolated_backend()?))
     }
 
     fn temporary_directory(&self) -> Option<PathBuf> {
@@ -299,7 +402,17 @@ impl SandboxBackend for GatewaySandbox {
         path: &'a str,
         sandbox_mode: SandboxMode,
     ) -> BoxFuture<'a, Result<String>> {
-        self.command_delegate(sandbox_mode).read(path, sandbox_mode)
+        Box::pin(async move {
+            let execution = self.execution_lease().await?;
+            let delegate = std::sync::Arc::clone(self.command_delegate(sandbox_mode));
+            let path = path.to_owned();
+            tokio::spawn(async move {
+                let _execution = execution;
+                delegate.read(&path, sandbox_mode).await
+            })
+            .await
+            .map_err(|error| Error::Sandbox(format!("file reader failed: {error}")))?
+        })
     }
 
     fn read_bytes<'a>(
@@ -308,8 +421,17 @@ impl SandboxBackend for GatewaySandbox {
         max_bytes: usize,
         sandbox_mode: SandboxMode,
     ) -> BoxFuture<'a, Result<Vec<u8>>> {
-        self.command_delegate(sandbox_mode)
-            .read_bytes(path, max_bytes, sandbox_mode)
+        Box::pin(async move {
+            let execution = self.execution_lease().await?;
+            let delegate = std::sync::Arc::clone(self.command_delegate(sandbox_mode));
+            let path = path.to_owned();
+            tokio::spawn(async move {
+                let _execution = execution;
+                delegate.read_bytes(&path, max_bytes, sandbox_mode).await
+            })
+            .await
+            .map_err(|error| Error::Sandbox(format!("file reader failed: {error}")))?
+        })
     }
 
     fn write<'a>(
@@ -318,8 +440,18 @@ impl SandboxBackend for GatewaySandbox {
         content: &'a str,
         sandbox_mode: SandboxMode,
     ) -> BoxFuture<'a, Result<()>> {
-        self.command_delegate(sandbox_mode)
-            .write(path, content, sandbox_mode)
+        Box::pin(async move {
+            let execution = self.execution_lease().await?;
+            let delegate = std::sync::Arc::clone(self.command_delegate(sandbox_mode));
+            let path = path.to_owned();
+            let content = content.to_owned();
+            tokio::spawn(async move {
+                let _execution = execution;
+                delegate.write(&path, &content, sandbox_mode).await
+            })
+            .await
+            .map_err(|error| Error::Sandbox(format!("file writer failed: {error}")))?
+        })
     }
 
     fn execute<'a>(
@@ -330,13 +462,13 @@ impl SandboxBackend for GatewaySandbox {
         mode: CommandMode,
         output: CommandOutputSink,
     ) -> BoxFuture<'a, Result<CommandOutput>> {
-        self.command_delegate(sandbox_mode).execute(
-            script,
-            sandbox_mode,
-            network_access,
-            mode,
-            output,
-        )
+        Box::pin(async move {
+            let _execution = self.execution_lease().await?;
+            tokio::select! {
+                _ = self.execution_cancelled() => Err(execution_held()),
+                result = self.command_delegate(sandbox_mode).execute(script, sandbox_mode, network_access, mode, output) => result,
+            }
+        })
     }
 
     fn execute_authorized<'a>(
@@ -348,14 +480,20 @@ impl SandboxBackend for GatewaySandbox {
         output: CommandOutputSink,
         authorization: &'a CommandAuthorization,
     ) -> BoxFuture<'a, Result<Option<CommandOutput>>> {
-        self.command_delegate(sandbox_mode).execute_authorized(
-            script,
-            sandbox_mode,
-            network_access,
-            mode,
-            output,
-            authorization,
-        )
+        Box::pin(async move {
+            let _execution = self.execution_lease().await?;
+            tokio::select! {
+                _ = self.execution_cancelled() => Err(execution_held()),
+                result = self.command_delegate(sandbox_mode).execute_authorized(
+                    script,
+                    sandbox_mode,
+                    network_access,
+                    mode,
+                    output,
+                    authorization,
+                ) => result,
+            }
+        })
     }
 }
 
@@ -368,6 +506,30 @@ mod tests {
     const WORKSPACE_GIT_TEST_CHILD: &str = "MOBIUS_GATEWAY_WORKSPACE_GIT_TEST_CHILD";
     const WORKSPACE_GIT_TEST_NAME: &str =
         "sandbox::tests::workspace_git_inherits_home_config_and_ignores_repository_redirects";
+
+    #[tokio::test]
+    async fn isolated_backend_keeps_its_own_desktop_use_until_the_last_cleanup_reference_drops() {
+        let workspace = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let remote = std::sync::Arc::new(
+            crate::computer_runtime::remote_desktop::RemoteDesktop::new(state.path(), true),
+        );
+        let root =
+            GatewaySandbox::new(workspace.path(), state.path(), None, Duration::from_secs(5))
+                .unwrap()
+                .with_remote_desktop(std::sync::Arc::clone(&remote));
+        root.retain_desktop_use_for_test().await;
+        let child = std::sync::Arc::new(root.isolated_backend().unwrap());
+        assert!(child.desktop_use.lock().await.is_none());
+        child.retain_desktop_use_for_test().await;
+        assert_eq!(remote.consumer_count(), 2);
+        root.release_desktop_use().await;
+        let cleanup = std::sync::Arc::clone(&child);
+        drop(child);
+        assert_eq!(remote.consumer_count(), 1);
+        drop(cleanup);
+        assert_eq!(remote.consumer_count(), 0);
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

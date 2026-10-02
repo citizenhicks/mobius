@@ -39,7 +39,8 @@ pub use self::store::{
 pub use self::validation::validate_agent_composition;
 use self::validation::*;
 pub(crate) use self::validation::{
-    effective_reasoning_effort, model_route_id, validate_bot_compatibility,
+    configured_approval_policy, effective_reasoning_effort, model_route_id,
+    validate_bot_compatibility, validate_desktop_bot_policy,
 };
 pub(crate) use self::workspace::{
     create_workspace_directory, local_user_name, validate_chat_workspace, workspace_id,
@@ -112,6 +113,9 @@ pub struct GatewayConfig {
     pub tls: Option<TlsConfig>,
     /// The cloudflare.
     pub cloudflare: Option<CloudflareConfig>,
+    /// Own a persistent headed browser and, on Linux, a private virtual desktop.
+    #[serde(default)]
+    pub desktop_enabled: bool,
     /// The bot defaults.
     pub bot_defaults: Option<VersionedAgentConfig>,
     pub(crate) configured_providers: BTreeMap<String, ConfiguredProvider>,
@@ -197,6 +201,7 @@ impl GatewayConfig {
             listen,
             tls,
             cloudflare: None,
+            desktop_enabled: false,
             bot_defaults: None,
             configured_providers: BTreeMap::new(),
             installed_extensions: BTreeMap::new(),
@@ -418,6 +423,7 @@ impl GatewayConfig {
         crate::extensions::validate_installed(&self.installed_extensions)?;
         validate_custom_model_route_count(&self.configured_providers)?;
         if let Some(default) = &self.bot_defaults {
+            validate_desktop_bot_policy(self, &default.config)?;
             if default.revision == 0 {
                 return Err(Error::Config(
                     "configuration revision must be positive".into(),

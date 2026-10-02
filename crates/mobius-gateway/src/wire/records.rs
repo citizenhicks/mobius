@@ -11,6 +11,18 @@ pub enum GatewayNotification {
     Bots,
 }
 
+/// The computer view this connection can open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerView {
+    /// No interactive computer view is available.
+    Unavailable,
+    /// The local app renders the gateway's assigned browser page.
+    EmbeddedBrowser,
+    /// The gateway serves its desktop through an authenticated stream.
+    RemoteDesktop,
+}
+
 /// Gateway-wide frontend-safe state sent after authentication.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReadyPayload {
@@ -18,6 +30,8 @@ pub struct ReadyPayload {
     pub gateway_version: String,
     /// The machine name.
     pub machine_name: String,
+    /// The interactive computer view available to this connection.
+    pub computer_view: ComputerView,
     /// The bots.
     pub bots: Vec<BotRecord>,
     /// The sessions.
@@ -110,6 +124,7 @@ impl ReadyPayload {
         Self {
             gateway_version: String::new(),
             machine_name: String::new(),
+            computer_view: self.computer_view,
             bots: Vec::new(),
             sessions: Vec::new(),
             background_approvals: Vec::new(),

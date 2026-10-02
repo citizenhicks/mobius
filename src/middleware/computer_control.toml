@@ -1,11 +1,11 @@
 default_enabled = false
-browser_label = "Browser"
-browser_title = "Agent browser"
-browser_notice = "The agent's browser is running. Watch it from möbius on the computer running this gateway."
+browser_label = "Computer"
+browser_title = "Bot's computer"
+browser_notice = "The Bot's browser is running. Open its computer in möbius to watch or interact."
 manifest_label = "Computer control"
 manifest_description = "Operate a browser and supported native apps with persistent JavaScript and image observations"
-prompt = "Computer control is available. Read {documentation} before using computer_control. Browser state and JavaScript variables survive context compaction. Action failures can retain interpreter state; follow the reported state. An overall evaluation deadline, cancellation, or runtime restart loses interpreter state and may leave an action completed; never repeat it automatically. Child agents have independent browser contexts."
-resume_notice = "This session's execution lifetime restarted. The previous computer interpreter and private temporary files are gone. Prior actions may have completed. Start a fresh browser context and inspect before acting; recorded observations remain accessible by file_id."
+prompt = "Computer control is available. Read {documentation} before using computer_control. Browser state and JavaScript variables survive context compaction. Action failures can retain interpreter state; follow the reported state. An overall evaluation deadline, cancellation, or runtime restart loses interpreter state and may leave an action completed; never repeat it automatically. Each agent has its own interpreter. Gateway-coordinated headed browser tabs share one persistent profile and serialize foreground use; the first evaluation after startup or takeover observes without executing submitted code."
+resume_notice = "This session's execution lifetime restarted. The previous computer interpreter and private temporary files are gone. Prior actions may have completed. Call computer_control for a fresh observation before acting; the gateway-owned browser and its saved logins may still be present; recorded observations remain accessible by file_id."
 
 [tool]
 name = "computer_control"
@@ -22,7 +22,7 @@ maxLength = 40000
 
 [tool.parameters.properties.reset]
 type = "boolean"
-description = "Discard the interpreter and create a new browser context before this evaluation."
+description = "Discard the interpreter before this evaluation. A gateway-owned browser stays open; its first evaluation is observation-only."
 
 [tool.parameters.properties.timeout_ms]
 type = "integer"

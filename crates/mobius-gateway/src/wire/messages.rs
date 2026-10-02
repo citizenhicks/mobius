@@ -46,6 +46,35 @@ impl ClientFrame {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]
 pub enum ClientMessage {
+    /// Opens the gateway-owned computer and foregrounds the chat's assigned tab.
+    OpenComputer {
+        /// The request identifier.
+        request_id: String,
+        /// The chat whose assigned browser tab to show.
+        session_id: String,
+    },
+    /// Opens or closes this authenticated connection's remote desktop stream.
+    SetDesktopStream {
+        /// The request identifier.
+        request_id: String,
+        /// Whether to stream the desktop.
+        enabled: bool,
+    },
+    /// Ordered RFB bytes for this connection's desktop stream.
+    DesktopData {
+        /// The raw RFB data, limited to [`MAX_DESKTOP_CHUNK_BYTES`].
+        #[serde(with = "desktop_bytes")]
+        data: Vec<u8>,
+    },
+    /// Requests or releases the gateway's human desktop lease.
+    SetDesktopControl {
+        /// The request identifier.
+        request_id: String,
+        /// Whether to take control.
+        enabled: bool,
+        /// The chat whose computer view requested control.
+        session_id: Option<String>,
+    },
     /// Replaces this connection's optional notification exclusions.
     SetNotifications {
         /// The request identifier.
@@ -70,6 +99,20 @@ pub enum ClientMessage {
         /// The scope.
         scope: GitDiffScope,
     },
+    /// Registers the local Mac renderer for gateway-assigned browser pages.
+    SetBrowserRuntime {
+        /// The request identifier.
+        request_id: String,
+        /// Whether the renderer is available.
+        enabled: bool,
+    },
+    /// Supplies the scoped Unix endpoint of an assigned local browser page.
+    BrowserPageReply {
+        /// The gateway's page request identifier.
+        request_id: String,
+        /// The endpoint, or none if the renderer cannot provide the page.
+        endpoint: Option<String>,
+    },
     /// Selects the set desktop runtime case.
     SetDesktopRuntime {
         /// The request identifier.
@@ -83,20 +126,6 @@ pub enum ClientMessage {
         request_id: String,
         /// The response.
         response: Value,
-    },
-    /// Offers, or withdraws, the local Mac app's browser to agents on this gateway.
-    SetBrowserRuntime {
-        /// The request identifier.
-        request_id: String,
-        /// Whether agents may drive pages in the app's browser.
-        enabled: bool,
-    },
-    /// Answers a [`ServerMessage::BrowserPageRequested`].
-    BrowserPageReply {
-        /// The request identifier.
-        request_id: String,
-        /// The page's DevTools endpoint, or `None` when the app has no page to lend.
-        endpoint: Option<String>,
     },
     /// Selects the pair case.
     Pair {
@@ -692,6 +721,37 @@ impl ServerFrame {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ServerMessage {
+    /// Acknowledges showing the gateway-owned computer.
+    ComputerOpened {
+        /// The request identifier.
+        request_id: String,
+        /// The chat whose browser tab was shown.
+        session_id: String,
+    },
+    /// Acknowledges opening or closing this connection's desktop stream.
+    DesktopStreamState {
+        /// The request identifier.
+        request_id: String,
+        /// Whether the stream is open.
+        enabled: bool,
+    },
+    /// Ordered RFB bytes from the gateway desktop.
+    DesktopData {
+        /// The raw RFB data, limited to [`MAX_DESKTOP_CHUNK_BYTES`].
+        #[serde(with = "desktop_bytes")]
+        data: Vec<u8>,
+    },
+    /// The gateway's current desktop lease, relative to this connection.
+    DesktopControlState {
+        /// The acknowledged request, or absent for a broadcast update.
+        request_id: Option<String>,
+        /// Whether execution is held for pending or granted human control.
+        enabled: bool,
+        /// Whether this connection owns control.
+        is_owner: bool,
+        /// The controlling chat, or the latest agent chat when watching.
+        session_id: Option<String>,
+    },
     /// A committed source changed; clients refresh their existing snapshots.
     HookEvent {
         /// Committed typed lifecycle fact.
@@ -719,6 +779,15 @@ pub enum ServerMessage {
         /// Earliest enabled routine deadline as an RFC 3339 timestamp, if any.
         next_routine_at: Option<String>,
     },
+    /// Requests the local renderer's assigned page for one chat.
+    BrowserPageRequested {
+        /// The request identifier.
+        request_id: String,
+        /// The chat identifier.
+        session_id: String,
+        /// Whether the human explicitly asked to activate this page.
+        foreground: bool,
+    },
     /// Selects the desktop control requested case.
     DesktopControlRequested {
         /// The request identifier.
@@ -734,13 +803,6 @@ pub enum ServerMessage {
     DesktopControlEnded {
         /// The execution identifier.
         execution_id: String,
-    },
-    /// Asks the local Mac app for the page a chat's agent may drive in its browser.
-    BrowserPageRequested {
-        /// The request identifier.
-        request_id: String,
-        /// The chat whose agent drives the page.
-        session_id: String,
     },
     /// Selects the paired case.
     Paired {

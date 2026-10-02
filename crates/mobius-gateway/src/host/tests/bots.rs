@@ -242,6 +242,7 @@ async fn saving_bot_prepares_once_and_chats_bind_it_when_next_used() {
             termination: Arc::new(tokio::sync::Notify::new()),
             session_mutations: Arc::new(tokio::sync::RwLock::new(())),
             realtime_voice: Arc::new(tokio::sync::Mutex::new(())),
+            gateway_sandbox: std::sync::Weak::new(),
         }),
     };
     gateway
@@ -1087,6 +1088,7 @@ async fn routine_acceptance_keeps_the_gateway_registry_locked() {
             termination: Arc::new(tokio::sync::Notify::new()),
             session_mutations: Arc::new(tokio::sync::RwLock::new(())),
             realtime_voice: Arc::new(tokio::sync::Mutex::new(())),
+            gateway_sandbox: std::sync::Weak::new(),
         }),
     };
     let mut state = gateway.state.lock().await;

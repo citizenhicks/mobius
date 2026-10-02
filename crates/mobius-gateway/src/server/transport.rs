@@ -26,6 +26,7 @@ pub(super) struct PreAuthConnectionAdmission {
 
 pub(super) struct ConnectionContext {
     pub(super) local: bool,
+    pub(super) desktop_transport: bool,
     pub(super) auth: Arc<AuthStore>,
     pub(super) host: GatewayHost,
     pub(super) bots: Arc<BotStore>,
@@ -484,6 +485,7 @@ pub(super) async fn serve_websocket(
     handshake: PlaintextHandshake,
 ) -> Result<()> {
     connection.local = false;
+    connection.desktop_transport = true;
     let PlaintextHandshake {
         expected_websocket_host,
         auth_deadline,
@@ -569,7 +571,7 @@ async fn register_client_connection(
     let admission = if kind == ClientKind::GatewayDashboard {
         None
     } else {
-        match host.begin_mutation().await {
+        match host.begin_access().await {
             Ok(admission) => Some(admission),
             Err(rejection) => {
                 write_server_error(writer, rejection.code, rejection.message, false).await?;
@@ -601,6 +603,7 @@ where
 {
     let ConnectionContext {
         local,
+        desktop_transport,
         auth,
         host,
         bots,
@@ -612,10 +615,10 @@ where
     if access_lease.is_some_and(AccessLease::expired) {
         return Ok(());
     }
-    let mut revocations = client_revocations.subscribe();
+    let revocations = client_revocations.subscribe();
     let (reader, mut writer) = tokio::io::split(stream);
     let mut reader = FrameReader::new(reader);
-    let Some((client_id, client_kind, _authenticated_admission, mut view)) =
+    let Some((client_id, client_kind, _authenticated_admission, view)) =
         authenticate_connection(&mut reader, &mut writer, &auth, admission, auth_deadline).await?
     else {
         return Ok(());
@@ -639,7 +642,42 @@ where
     let _ = authentication_complete.map(|complete| complete.send(()));
 
     write_frame(&mut writer, &ServerFrame::new(ServerMessage::Authenticated)).await?;
+    serve_authenticated_connection(
+        reader,
+        writer,
+        &host,
+        AuthenticatedClient {
+            local,
+            desktop_transport,
+            connection_id: Uuid::new_v4(),
+            access_lease,
+            kind: client_kind,
+            id: &client_id,
+            connections: &client_connections,
+            revocations: &client_revocations,
+            bots: &bots,
+            auth: &auth,
+        },
+        view,
+        revocations,
+    )
+    .await
+}
+
+async fn serve_authenticated_connection(
+    mut reader: FrameReader<impl AsyncRead + Unpin>,
+    mut writer: impl AsyncWrite + Unpin,
+    host: &GatewayHost,
+    client: AuthenticatedClient<'_>,
+    mut view: ClientView,
+    mut revocations: broadcast::Receiver<String>,
+) -> Result<()> {
+    let client_id = client.id;
+    let bots = client.bots;
     let mut gateway_broadcasts = host.subscribe();
+    let mut desktop_changes = host.remote_desktop.subscribe();
+    view.desktop_transport = client.desktop_transport;
+    view.local = client.local;
     let ready = host
         .ready()
         .await
@@ -649,25 +687,30 @@ where
         ServerFrame::new(ServerMessage::Ready { payload: ready }),
     )
     .await?;
+    if client.desktop_transport && host.remote_desktop.available() {
+        super::desktop::write_control_state(host, client.connection_id, None, &mut writer).await?;
+    }
     let mut selected: Option<SelectedChat> = None;
     let mut voice = None;
     let mut desktop = None;
     let mut browser = None;
+    let mut remote_desktop = None;
+    let mut pending_desktop_control = None;
     let session_files = host.session_file_store().await;
     let mut uploads: BTreeMap<(String, String), PendingSessionFileWrite> = BTreeMap::new();
-    let mut pending_git = JoinSet::new();
+    let mut pending_requests = JoinSet::new();
     let mut pending_profile = None;
     let mut queued_profile_request = None;
     let mut disabled_notifications = BTreeSet::new();
 
     loop {
         // Check revocation before fairly polling ordinary input and output.
-        if connection_revoked(&mut revocations, &client_id) {
+        if connection_revoked(&mut revocations, client_id) {
             return Ok(());
         }
         let incoming = tokio::select! {
             revoked = revocations.recv() => {
-                if !matches!(revoked, Ok(revoked) if revoked != client_id) {
+                if client_revoked(revoked, client_id) {
                     return Ok(());
                 }
                 None
@@ -677,6 +720,10 @@ where
                 crate::computer_runtime::write_app_update(outgoing, &mut desktop, &mut browser, &mut writer).await?;
                 None
             }
+            outgoing = super::desktop::next_update(&mut remote_desktop, &mut desktop_changes, &mut pending_desktop_control) => {
+                super::desktop::write_update(outgoing, host, &client, &mut pending_requests, &mut writer).await?;
+                None
+            }
             outgoing = super::voice::next_update(&mut voice) => {
                 super::voice::write_update(&mut voice, outgoing, &mut writer).await?;
                 None
@@ -684,7 +731,7 @@ where
             profile = next_profile(&mut pending_profile) => {
                 complete_profile_request(
                     profile,
-                    &host,
+                    host,
                     &mut pending_profile,
                     &mut queued_profile_request,
                     &mut writer,
@@ -692,21 +739,16 @@ where
                 .await?;
                 None
             }
-            Some(message) = pending_git.join_next() => {
-                let message = message.map_err(|error| Error::Protocol(format!("Git diff task failed: {error}")))?;
-                write_frame(&mut writer, &ServerFrame::new(message)).await?;
+            Some(message) = pending_requests.join_next() => {
+                write_request_result(message, &mut writer).await?;
                 None
             }
             outgoing = gateway_broadcasts.recv() => {
-                if !handle_gateway_broadcast(outgoing, &host, &disabled_notifications, &mut view, &mut writer).await? {
-                    return Ok(());
-                }
+                handle_gateway_broadcast(outgoing, host, &disabled_notifications, &mut view, &mut writer).await?;
                 None
             }
             outgoing = selected_broadcast(&mut selected) => {
-                if !handle_selected_broadcast(outgoing, &mut writer).await? {
-                    return Ok(());
-                }
+                handle_selected_broadcast(outgoing, &mut selected, &mut writer).await?;
                 None
             }
         };
@@ -716,53 +758,72 @@ where
         let Some(frame) = incoming? else {
             return Ok(());
         };
-        if access_lease.is_some_and(AccessLease::expired) {
-            return Ok(());
-        }
-        if let Err(error) = validate_version(frame.version) {
-            write_server_error(&mut writer, "protocol_version", error.to_string(), true).await?;
-            return Ok(());
-        }
-        let Some(message) = handle_profile_message(
-            frame.message,
-            &host,
+        if !dispatch_authenticated_frame(
+            frame,
+            &client,
+            host,
+            ConnectionSessionState {
+                disabled_notifications: &mut disabled_notifications,
+                view: &mut view,
+                selected: &mut selected,
+                requests: &mut pending_requests,
+                session_files: &session_files,
+                bots,
+                uploads: &mut uploads,
+                voice: &mut voice,
+                desktop: &mut desktop,
+                browser: &mut browser,
+                remote_desktop: &mut remote_desktop,
+                pending_desktop_control: &mut pending_desktop_control,
+            },
             &mut pending_profile,
             &mut queued_profile_request,
             &mut writer,
         )
         .await?
-        else {
-            continue;
-        };
-        let client = AuthenticatedClient {
-            local,
-            kind: client_kind,
-            id: &client_id,
-            connections: &client_connections,
-            revocations: &client_revocations,
-        };
+        {
+            return Ok(());
+        }
+    }
+}
+
+async fn dispatch_authenticated_frame(
+    frame: ClientFrame,
+    client: &AuthenticatedClient<'_>,
+    host: &GatewayHost,
+    connection: ConnectionSessionState<'_>,
+    pending_profile: &mut Option<PendingProfile>,
+    queued_profile_request: &mut Option<(String, bool)>,
+    writer: &mut (impl AsyncWrite + Unpin),
+) -> Result<bool> {
+    if client.access_lease.is_some_and(AccessLease::expired) {
+        return Ok(false);
+    }
+    if let Err(error) = validate_version(frame.version) {
+        write_server_error(writer, "protocol_version", error.to_string(), true).await?;
+        return Ok(false);
+    }
+    if let Some(message) = handle_profile_message(
+        frame.message,
+        host,
+        pending_profile,
+        queued_profile_request,
+        writer,
+    )
+    .await?
+    {
         handle_message(
             message,
-            &auth,
-            &host,
-            &bots,
-            &client,
-            ConnectionSessionState {
-                disabled_notifications: &mut disabled_notifications,
-                view: &mut view,
-                selected: &mut selected,
-                git_diffs: &mut pending_git,
-                session_files: &session_files,
-                bots: &bots,
-                uploads: &mut uploads,
-                voice: &mut voice,
-                desktop: &mut desktop,
-                browser: &mut browser,
-            },
-            &mut writer,
+            client.auth,
+            host,
+            client.bots,
+            client,
+            connection,
+            writer,
         )
         .await?;
     }
+    Ok(true)
 }
 
 fn connection_revoked(revocations: &mut broadcast::Receiver<String>, client_id: &str) -> bool {
@@ -773,6 +834,13 @@ fn connection_revoked(revocations: &mut broadcast::Receiver<String>, client_id: 
             _ => return true,
         }
     }
+}
+
+fn client_revoked(
+    result: std::result::Result<String, broadcast::error::RecvError>,
+    client_id: &str,
+) -> bool {
+    !matches!(result, Ok(revoked) if revoked != client_id)
 }
 
 async fn authenticate_connection(
@@ -1001,12 +1069,10 @@ async fn handle_gateway_broadcast(
     disabled: &BTreeSet<GatewayNotification>,
     view: &mut ClientView,
     writer: &mut (impl AsyncWrite + Unpin),
-) -> Result<bool> {
+) -> Result<()> {
     match outgoing {
-        Ok(frame) if notification_disabled(&frame.message, disabled) => Ok(true),
-        Ok(frame) => write_gateway_broadcast(writer, host, view, frame)
-            .await
-            .map(|()| true),
+        Ok(frame) if notification_disabled(&frame.message, disabled) => Ok(()),
+        Ok(frame) => write_gateway_broadcast(writer, host, view, frame).await,
         Err(broadcast::error::RecvError::Lagged(_)) => {
             let ready = host
                 .ready()
@@ -1017,9 +1083,11 @@ async fn handle_gateway_broadcast(
                 ServerFrame::new(ServerMessage::Ready { payload: ready }),
             )
             .await?;
-            Ok(true)
+            Ok(())
         }
-        Err(broadcast::error::RecvError::Closed) => Ok(false),
+        Err(broadcast::error::RecvError::Closed) => {
+            Err(Error::Protocol("gateway event stream ended".into()))
+        }
     }
 }
 
@@ -1041,10 +1109,11 @@ fn notification_disabled(
 
 async fn handle_selected_broadcast(
     outgoing: std::result::Result<SharedFrame, broadcast::error::RecvError>,
+    selected: &mut Option<SelectedChat>,
     writer: &mut (impl AsyncWrite + Unpin),
-) -> Result<bool> {
+) -> Result<()> {
     match outgoing {
-        Ok(frame) => frame.write(writer).await.map(|()| true),
+        Ok(frame) => frame.write(writer).await,
         Err(broadcast::error::RecvError::Lagged(_)) => {
             write_server_error(
                 writer,
@@ -1053,9 +1122,27 @@ async fn handle_selected_broadcast(
                 true,
             )
             .await?;
-            Ok(false)
+            Err(Error::Protocol(
+                "client fell behind the event stream".into(),
+            ))
         }
-        Err(broadcast::error::RecvError::Closed) => Ok(false),
+        Err(broadcast::error::RecvError::Closed) => {
+            *selected = None;
+            Ok(())
+        }
+    }
+}
+
+async fn write_request_result(
+    result: std::result::Result<ServerMessage, tokio::task::JoinError>,
+    writer: &mut (impl AsyncWrite + Unpin),
+) -> Result<()> {
+    match result {
+        Ok(message) => write_frame(writer, &ServerFrame::new(message)).await,
+        Err(error) if error.is_cancelled() => Ok(()),
+        Err(error) => Err(Error::Protocol(format!(
+            "connection request task failed: {error}"
+        ))),
     }
 }
 

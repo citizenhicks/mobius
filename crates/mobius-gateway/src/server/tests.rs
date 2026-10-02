@@ -59,6 +59,7 @@ async fn configured_test_server(state_dir: PathBuf) -> (GatewayServer, PairingGr
 mod activity;
 mod bots;
 mod catalog;
+mod desktop;
 mod protocol;
 mod sessions;
 mod transport;

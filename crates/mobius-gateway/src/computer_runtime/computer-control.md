@@ -7,14 +7,15 @@ description: Operate and verify browser UI or native Mac apps through computer_c
 
 Use computer_control for browser and native Mac UI actions. Prefer an available connector, API,
 CLI, or dedicated skill when it directly serves the user's request. Follow an
-explicit request to use the browser. This runtime provides a session-owned
-Chromium browser and, when enabled in the local Mac app, native desktop control.
+explicit request to use the browser. This runtime selects a gateway-coordinated headed browser when Full access and
+network access are available, otherwise a worker-owned headless browser. Native
+Mac desktop control remains available when enabled in the local Mac app.
 
 ## Entry point and state
 
 Call computer_control with JavaScript in code. Optional timeout_ms applies to the
 whole evaluation; optional reset discards the current interpreter before running
-code. Use the tool schema for accepted limits. Do not reset between ordinary calls.
+code. Reset never erases or closes the gateway-owned browser profile. Use the tool schema for accepted limits. Do not reset between ordinary calls.
 
 The available globals are:
 
@@ -30,26 +31,35 @@ The available globals are:
 
 Top-level await and JavaScript variables persist across calls and context
 compaction. Use var for bindings you may assign again. Each agent has its own
-interpreter, browser process, and context. There is no cua, nodeRepl, getAXState,
+interpreter. Gateway-coordinated headed browsers have one persistent profile shared by Full-access
+agents, with a gateway-assigned tab for each execution. Headless workers have their
+own browser process and context. There is no cua, nodeRepl, getAXState,
 or numbered accessibility index. Native Mac actions use desktop below.
 
-## The möbius app's browser
+## The gateway's browser
 
-When the möbius Mac app runs beside this gateway, getPage() returns this chat's tab
-in the app's own Chromium browser instead of a headless one. The user sees that tab
-beside the chat and may be signed in to sites there; act as their browser, not a
-scratch one. Call getPage() again at the start of each call rather than reusing a
-page from an earlier call: the app may have closed or replaced the tab.
+The computer-control middleware selects the browser from permissions and gateway
+availability. On a Mac the gateway assigns the existing in-app CEF tab; on a
+remote Linux desktop gateway the apps show the browser through noVNC. The gateway
+coordinates its lifetime, so interrupting an agent does not close it or discard logins.
 
-That page is the only one available: page.context().newPage(), closing the page,
-and reading or changing the profile's cookies are refused. Links that open a new
-tab open for the user; go to their href with page.goto() instead. The viewport
-follows the user's window, so take sizes from the latest screenshot. Only web
-addresses load (http, https, data and about:blank), never local files. Back and
-forward may restore a page from cache without a load event, so pass
-{waitUntil:'commit'} to page.goBack() and page.goForward().
+The first evaluation after interpreter startup or takeover is observation-only.
+Submitted code is not executed. Read the returned screenshot and accessibility
+snapshot, then submit the next action. Never replay an uncertain earlier action.
 
-For a known destination, start with the user's URL and an explicit observation:
+Call getPage() at the start of each browser interaction. It returns the assigned
+tab, never an arbitrary first tab. The shared profile may contain the user's saved
+logins. Keep the assigned tab open, inspect its current state, and do not change
+another chat's tabs. The gateway serializes desktop evaluations because headed
+Chromium renders the foreground tab. While the user has control, all gateway
+sandbox execution is paused. After control returns, start from the fresh observation.
+
+Log in through the normal browser UI. Passwords and verification codes work;
+remote passkeys and Touch ID forwarding are unsupported in this pilot. Browser settings
+manage saved passwords and site data. There is no separate export, seed, or Forget
+store. The profile stays on this gateway and is excluded from portable backups.
+
+For a known destination, after the initial observation:
 
     var page = await getPage();
     await page.goto('https://example.com');
@@ -113,8 +123,10 @@ or unsupported capability.
 
 ## Tabs and image observations
 
-Use page.context().pages() to inspect this session's tabs and page.context().newPage()
-when the task needs another tab. Keep the default page open. screenshot() always
+The gateway browser's context includes other chats' tabs. Use only the assigned
+page returned by getPage(); do not create, close, or drive other chats' tabs. In a
+worker-owned headless browser, page.context().newPage() may create a task tab. Keep
+the default page open. screenshot() always
 captures the default page, even if a variable refers to another tab. For another
 page or a custom capture, save its image and emit that path:
 
@@ -137,8 +149,8 @@ recorded session files survive interpreter loss.
 
 Native control requires möbius-app's Allow Mac control switch,
 Accessibility and Screen Recording permissions, and the Bot's Full access sandbox
-policy. It controls the real, unlocked Mac desktop. The browser above remains a
-separate session browser. Linux and headless cloud gateways provide browser control only.
+policy. It controls the real, unlocked Mac desktop. The browser above is gateway-owned when available. Linux gateways in this pilot
+provide browser control only.
 
 Start by observing installed running apps and inspecting the relevant process:
 

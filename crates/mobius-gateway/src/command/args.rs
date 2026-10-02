@@ -41,6 +41,11 @@ enum GatewaySubcommand {
     Bootstrap,
     /// Restore the default Bot configuration.
     ResetBotDefaults,
+    /// Enable or disable the gateway-owned desktop while the gateway is stopped.
+    SetDesktop {
+        #[arg(long, action = ArgAction::Set)]
+        enabled: bool,
+    },
     /// Issue a one-time pairing code as JSON.
     PairingCode {
         /// Emit machine-readable JSON.
@@ -192,6 +197,10 @@ pub(super) enum Command {
     ResetBotDefaults {
         state_dir: PathBuf,
     },
+    SetDesktop {
+        state_dir: PathBuf,
+        enabled: bool,
+    },
     PairingCode {
         state_dir: PathBuf,
     },
@@ -293,6 +302,9 @@ impl GatewayCli {
             Some(GatewaySubcommand::Bootstrap) => Ok(Command::Bootstrap { state_dir }),
             Some(GatewaySubcommand::ResetBotDefaults) => {
                 Ok(Command::ResetBotDefaults { state_dir })
+            }
+            Some(GatewaySubcommand::SetDesktop { enabled }) => {
+                Ok(Command::SetDesktop { state_dir, enabled })
             }
             Some(GatewaySubcommand::PairingCode { json: _ }) => {
                 Ok(Command::PairingCode { state_dir })

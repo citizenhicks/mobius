@@ -2,6 +2,7 @@
 
 pub(crate) mod browser;
 pub(crate) mod desktop;
+pub(crate) mod remote_desktop;
 
 use crate::wire::ServerMessage;
 
@@ -30,7 +31,6 @@ const LOCKFILE: &str = include_str!("computer_runtime/package-lock.json");
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
 const MAX_DOWNLOAD_BYTES: usize = 128 * 1024 * 1024;
 
-/// What the local Mac app's desktop control or browser writes to its connection next.
 pub(crate) enum AppUpdate {
     Desktop(Option<ServerMessage>),
     Browser(Option<ServerMessage>),
@@ -65,10 +65,14 @@ pub(crate) async fn prepare(
     if !settings.enabled("computer_control") {
         return Ok(None);
     }
+    prepare_desktop(state_dir).await.map(Some)
+}
+
+pub(crate) async fn prepare_desktop(state_dir: &Path) -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("MOBIUS_COMPUTER_RUNTIME") {
         let path = PathBuf::from(path);
         validate(&path)?;
-        return Ok(Some(fs::canonicalize(path)?));
+        return Ok(fs::canonicalize(path)?);
     }
     let path = managed_directory(state_dir);
     install(&path).await.map_err(|error| {
@@ -76,7 +80,7 @@ pub(crate) async fn prepare(
             "Computer control setup failed: {error}. Try enabling Computer control again."
         ))
     })?;
-    Ok(Some(fs::canonicalize(path)?))
+    Ok(fs::canonicalize(path)?)
 }
 
 pub(crate) fn managed_directory(state_dir: &Path) -> PathBuf {
@@ -87,7 +91,9 @@ pub(crate) fn managed_directory(state_dir: &Path) -> PathBuf {
     name.push("-runtimes");
     let revision = format!(
         "{:x}",
-        Sha256::digest(format!("{NODE_VERSION}{LOCKFILE}{WORKER}{DOCUMENTATION}"))
+        Sha256::digest(format!(
+            "headed-v1{NODE_VERSION}{LOCKFILE}{WORKER}{DOCUMENTATION}"
+        ))
     );
     state_dir
         .with_file_name(name)
@@ -220,10 +226,10 @@ async fn populate(path: &Path) -> Result<()> {
     let mut browser = Command::new(path.join("node"));
     browser
         .arg(path.join("node_modules/playwright/cli.js"))
-        .args(["install", "--only-shell", "chromium"]);
+        .args(["install", "chromium"]);
     run(browser, path).await?;
     let mut verify = Command::new(path.join("node"));
-    verify.args(["-e", "(async()=>{const b=await require('playwright').chromium.launch({headless:true}); await b.close()})().catch(e=>{console.error(e.message);process.exitCode=1})"]);
+    verify.args(["-e", "(async()=>{const {chromium}=require('playwright'); require('node:fs').accessSync(chromium.executablePath(),require('node:fs').constants.X_OK); const b=await chromium.launch({headless:true}); await b.close()})().catch(e=>{console.error(e.message);process.exitCode=1})"]);
     run(verify, path).await?;
     fs::remove_dir_all(path.join(".home"))?;
     fs::remove_dir_all(path.join(".tmp"))?;

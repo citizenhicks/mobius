@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { createConnection, createServer } from "node:net";
 const COMPUTER_WORKER = readFileSync(new URL("worker.cjs", import.meta.url), "utf8");
 
 type Part = { type: "text"; text: string } | { type: "image"; path: string; detail: string };
 type Observation = { content: Part[]; is_error: boolean; devtools?: string };
-type Evaluate = (code: string, browser?: string) => Promise<Observation>;
+type DesktopPage = { endpoint: string; target_id: string | null };
+type Evaluate = (code: string, desktop?: DesktopPage) => Promise<Observation>;
 const runtime = process.env.MOBIUS_COMPUTER_RUNTIME;
 
 async function withWorker(signal: AbortSignal, run: (evaluate: Evaluate, directory: string) => Promise<void>, host?: (request: any) => unknown) {
@@ -34,8 +34,8 @@ async function withWorker(signal: AbortSignal, run: (evaluate: Evaluate, directo
   signal.addEventListener("abort", kill, { once: true });
   const output = child.stdout[Symbol.asyncIterator]();
   let buffer = Buffer.alloc(0);
-  async function evaluate(code: string, browser?: string): Promise<Observation> {
-    const payload = Buffer.from(JSON.stringify({ code, browser }));
+  async function evaluate(code: string, desktop?: DesktopPage): Promise<Observation> {
+    const payload = Buffer.from(JSON.stringify({ code, desktop }));
     const header = Buffer.alloc(4);
     header.writeUInt32BE(payload.length);
     child.stdin.write(Buffer.concat([header, payload]));
@@ -189,43 +189,103 @@ test("large native replies preserve every screenshot byte across pipe chunks and
   }, () => ({ result: { screenshotId: "observed", png: png.toString("base64") } }));
 });
 
-test("a page lent by the Mac app is driven in place, then released without closing it", { skip: !runtime, timeout: 30000 }, async t => {
-  // A Chromium on a Unix socket stands in for the app's page endpoint.
+test("gateway pages are assigned, observed before acting, and retained after worker disconnect", { skip: !runtime, timeout: 30000 }, async t => {
   process.env.PLAYWRIGHT_BROWSERS_PATH ??= join(runtime!, "browsers");
   const { chromium } = createRequire(join(runtime!, "node_modules/"))("playwright");
-  const directory = await mkdtemp(join(tmpdir(), "mobius-lent-"));
-  const app = await chromium.launchPersistentContext(join(directory, "profile"), { headless: true, args: ["--remote-debugging-port=0"] });
-  const [port, path] = (await readFile(join(directory, "profile", "DevToolsActivePort"), "utf8")).trim().split("\n");
-  const socket = join(directory, "lent.sock");
-  const server = createServer(client => {
-    const upstream = createConnection(Number(port), "127.0.0.1");
-    client.pipe(upstream).pipe(client);
-    client.on("error", () => upstream.destroy());
-    upstream.on("error", () => client.destroy());
-  });
-  await new Promise<void>(resolve => server.listen(socket, resolve));
-  const lent = `ws+unix://${socket}:${path}`;
+  const directory = await mkdtemp(join(tmpdir(), "mobius-gateway-browser-"));
+  const browser = await chromium.launchPersistentContext(join(directory, "profile"), { headless: true, args: ["--remote-debugging-port=0"] });
+  const [port] = (await readFile(join(directory, "profile", "DevToolsActivePort"), "utf8")).trim().split("\n");
+  const other = browser.pages()[0];
+  await other.setContent('<title>Other chat</title>');
+  const assigned = await browser.newPage();
+  await assigned.setContent('<h1>Saved login</h1>');
+  const cdp = await browser.newCDPSession(assigned);
+  const { targetInfo } = await cdp.send('Target.getTargetInfo');
+  await cdp.detach();
+  const desktop = { endpoint: `http://127.0.0.1:${port}`, target_id: targetInfo.targetId };
+  let binding = desktop;
+  let leaseRequests = 0;
+  const host = request => {
+    assert.deepEqual(request, { op: 'begin_browser' });
+    leaseRequests++;
+    return { result: binding };
+  };
   try {
     await withWorker(t.signal, async evaluate => {
-      const driven = await evaluate("var page = await getPage(); await page.setContent('<title>Lent</title>'); await screenshot(); console.log(await page.title())", lent);
+      const first = await evaluate("throw new Error('must not run')", desktop);
+      assert.equal(first.is_error, false, text(first));
+      assert.match(text(first), /Submitted code was not executed/);
+      assert.match(text(first), /Saved login/);
+      assert.equal(images(first).length, 1);
+      const driven = await evaluate("var page = await getPage(); await page.setContent('<title>Assigned</title>'); console.log(await page.title())", { ...desktop });
       assert.equal(driven.is_error, false, text(driven));
-      assert.match(text(driven), /Lent/);
-      assert.match(text(driven), /Size: \{"width":\d+,"height":\d+\}/);
-      assert.equal(driven.devtools, undefined, "a lent page is already on the user's screen");
-      assert.equal(await app.pages()[0].title(), "Lent");
-      const rejected = await evaluate("0", "ws://127.0.0.1:9222/devtools/browser/x").catch(error => error);
-      assert.ok(rejected instanceof Error, "only Unix socket endpoints are accepted");
-    });
+      assert.equal(text(driven), 'Assigned');
+      assert.equal(await assigned.title(), 'Assigned');
+      assert.equal(await other.title(), 'Other chat', 'never select the first page');
+      assert.equal(leaseRequests, 2, 'every desktop evaluation acquires the host lease');
+    }, host);
+    assert.equal(await assigned.title(), 'Assigned', 'worker exit does not close the owned page');
     await withWorker(t.signal, async evaluate => {
-      await evaluate("await getPage()", lent);
+      binding = { ...desktop, target_id: 'missing-target' };
+      const unavailable = await evaluate("throw new Error('must not run')", binding);
+      assert.equal(unavailable.is_error, true);
+      assert.match(text(unavailable), /gateway-assigned browser page is unavailable/);
+      assert.match(text(unavailable), /Browser state: not started/);
+      binding = desktop;
+      const recovered = await evaluate("throw new Error('must not replay')", desktop);
+      assert.equal(recovered.is_error, false, text(recovered));
+      assert.match(text(recovered), /Submitted code was not executed/);
+      assert.equal(await assigned.title(), 'Assigned');
+    }, host);
+    await withWorker(t.signal, async evaluate => {
+      const resumed = await evaluate("throw new Error('must not replay after takeover')", desktop);
+      assert.equal(resumed.is_error, false, text(resumed));
+      assert.match(text(resumed), /Submitted code was not executed/);
       const own = await evaluate("var page = await getPage(); await page.setContent('<title>Own</title>');");
       assert.equal(own.is_error, false, text(own));
       assert.match(own.devtools!, /^http:\/\/127\.0\.0\.1:/);
-      assert.equal(await app.pages()[0].title(), "Lent", "releasing the lent page left it open");
-    });
+      assert.equal(await assigned.title(), 'Assigned');
+    }, host);
   } finally {
-    server.close();
-    await app.close();
+    await browser.close();
     await rm(directory, { recursive: true });
+  }
+});
+
+
+test("a scoped local browser exposes one page without stealing focus", { timeout: 10000 }, async ({ signal }) => {
+  const desktop = { endpoint: "ws+unix:///tmp/browser.sock:/0123456789abcdef0123456789abcdef", target_id: null };
+  for (const count of [1, 2]) {
+    await withWorker(signal, async (evaluate, directory) => {
+      const module = join(directory, "node_modules", "playwright");
+      await mkdir(module, { recursive: true });
+      await writeFile(join(module, "index.js"), `
+        let connected = true;
+        const page = {
+          isClosed: () => false, setDefaultTimeout() {}, url: () => 'https://assigned.local/',
+          bringToFront() { throw new Error('local page stole focus'); },
+          locator: () => ({ ariaSnapshot: async () => '- document: assigned page' }),
+          screenshot: async () => Buffer.from('89504e470d0a1a0a0000000d494844520000000100000001', 'hex'),
+        };
+        exports.chromium = { connectOverCDP: async (endpoint, options) => {
+          if (endpoint !== ${JSON.stringify(desktop.endpoint)} || options.noDefaults !== true) throw new Error('wrong local attachment');
+          return { contexts: () => [{ pages: () => Array(${count}).fill(page) }], isConnected: () => connected, close: async () => { connected = false; } };
+        } };
+      `);
+      const first = await evaluate("globalThis.changed = true", desktop);
+      if (count === 2) {
+        assert.equal(first.is_error, true);
+        assert.match(text(first), /exactly one page/);
+        return;
+      }
+      assert.equal(first.is_error, false);
+      assert.match(text(first), /Submitted code was not executed/);
+      const second = await evaluate("globalThis.changed ?? 'untouched'", desktop);
+      assert.equal(second.is_error, false);
+      assert.match(text(second), /untouched/);
+    }, request => {
+      assert.deepEqual(request, { op: "begin_browser" });
+      return { result: desktop };
+    });
   }
 });

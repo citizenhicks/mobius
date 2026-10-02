@@ -305,6 +305,7 @@ fn dashboard_state() -> super::state::DashboardState {
         gateway: ReadyPayload {
             gateway_version: env!("CARGO_PKG_VERSION").into(),
             machine_name: String::new(),
+            computer_view: mobius_gateway::wire::ComputerView::Unavailable,
             bots: Vec::new(),
             sessions: Vec::new(),
             background_approvals: Vec::new(),

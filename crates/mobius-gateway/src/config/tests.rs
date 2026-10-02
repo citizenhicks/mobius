@@ -31,6 +31,37 @@ fn gateway_config_is_machine_scoped() {
 }
 
 #[test]
+fn desktop_policy_admits_full_access_and_denied_network_only() {
+    let mut gateway = GatewayConfig::new(DEFAULT_LISTEN, None).unwrap();
+    let mut composition = AgentComposition::default();
+    for (policy, admitted) in [
+        ("ask", false),
+        ("allow_network", false),
+        ("full_access", true),
+        ("allow", true),
+    ] {
+        composition.middleware.set_setting(
+            "sandbox",
+            "approval_policy",
+            Some(mobius::protocol::FrontendSettingValue::String(
+                policy.into(),
+            )),
+        );
+        gateway.desktop_enabled = false;
+        assert!(
+            validate_desktop_bot_policy(&gateway, &composition).is_ok(),
+            "{policy}"
+        );
+        gateway.desktop_enabled = true;
+        assert_eq!(
+            validate_desktop_bot_policy(&gateway, &composition).is_ok(),
+            admitted,
+            "{policy}"
+        );
+    }
+}
+
+#[test]
 fn cloudflare_config_normalizes_a_dns_hostname() {
     let config = CloudflareConfig::named("  mobius.example.com ").expect("Cloudflare config");
 

@@ -110,7 +110,11 @@ async fn workspace_policy_cannot_reach_the_native_runtime() {
     .with_desktop(Arc::new(DesktopControl::default()));
     assert!(
         sandbox
-            .worker_connection("session", SandboxMode::WorkspaceWrite)
+            .worker_connection(
+                "session",
+                SandboxMode::WorkspaceWrite,
+                mobius::backend::sandbox::NetworkAccess::Allowed
+            )
             .await
             .is_err()
     );

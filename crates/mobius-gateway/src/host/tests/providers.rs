@@ -212,6 +212,7 @@ async fn provider_removal_does_not_contact_resident_chat_actors() {
                 termination: Arc::new(tokio::sync::Notify::new()),
                 session_mutations: Arc::new(tokio::sync::RwLock::new(())),
                 realtime_voice: Arc::new(tokio::sync::Mutex::new(())),
+                gateway_sandbox: std::sync::Weak::new(),
             }),
         },
     );
@@ -1036,6 +1037,7 @@ async fn stale_provider_login_success_does_not_refresh_sessions_or_release_anoth
                 termination: Arc::new(tokio::sync::Notify::new()),
                 session_mutations: Arc::new(tokio::sync::RwLock::new(())),
                 realtime_voice: Arc::new(tokio::sync::Mutex::new(())),
+                gateway_sandbox: std::sync::Weak::new(),
             }),
         },
     );

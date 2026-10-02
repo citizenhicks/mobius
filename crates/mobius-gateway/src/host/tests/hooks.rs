@@ -12,8 +12,15 @@ pub(super) struct CaptureModel {
     pub(super) release: tokio::sync::Notify,
     calls: AtomicU64,
     tools: StdMutex<Vec<Vec<String>>>,
+    block_all: bool,
 }
 impl Model for CaptureModel {
+    fn supports_image_input(&self) -> bool {
+        true
+    }
+    fn supports_tool_image_input(&self) -> bool {
+        true
+    }
     fn tool_discovery(&self) -> ToolDiscoveryMode {
         ToolDiscoveryMode::Native
     }
@@ -32,7 +39,7 @@ impl Model for CaptureModel {
         );
         let first = self.calls.fetch_add(1, Ordering::Relaxed) == 0;
         Box::pin(async move {
-            if first {
+            if first || self.block_all {
                 self.entered.notify_one();
                 self.release.notified().await;
             }
@@ -107,6 +114,109 @@ fn user_submission(id: &str, text: &str) -> Submission {
             },
         },
     }
+}
+
+#[tokio::test]
+async fn queued_turns_retain_desktop_use_until_idle_and_duplicate_admission_releases_it() {
+    let (_root, gateway, bot) = gateway_with_bot().await;
+    let model = Arc::new(CaptureModel {
+        block_all: true,
+        ..CaptureModel::default()
+    });
+    install_model(&gateway, &bot, Arc::clone(&model)).await;
+    let main = gateway
+        .open_session(&bot.conversation_session_id)
+        .await
+        .unwrap();
+    let sandbox = main.inner.gateway_sandbox.upgrade().unwrap();
+    main.submit(user_submission("first", "Inspect the desktop"))
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), model.entered.notified())
+        .await
+        .unwrap();
+    sandbox.retain_desktop_use_for_test().await;
+    let queued = Submission {
+        id: "queued-desktop".into(),
+        op: Op::Message {
+            message: MessageSubmission {
+                author: MessageAuthor::Source {
+                    message_id: "queued-desktop".into(),
+                    source: MessageSource::Session {
+                        session_id: "owned-session".into(),
+                    },
+                    cause_id: None,
+                    ancestry: Vec::new(),
+                    handle: "other chat".into(),
+                    symbol: None,
+                },
+                text: "Continue working with the desktop".into(),
+                attachments: Vec::new(),
+                reply: None,
+                requested_delivery: Some(ActiveMessageDelivery::Queue),
+                target_turn_id: None,
+            },
+        },
+    };
+    main.deliver_source(queued.clone(), bot.id.clone())
+        .await
+        .unwrap();
+    model.release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(5), model.entered.notified())
+        .await
+        .unwrap();
+    assert_eq!(gateway.remote_desktop.consumer_count(), 1);
+    model.release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(5), main.wait_idle())
+        .await
+        .unwrap();
+    assert_eq!(gateway.remote_desktop.consumer_count(), 0);
+
+    // Already-accepted admission has no new turn-completion event to release a use.
+    sandbox.retain_desktop_use_for_test().await;
+    main.deliver_source(queued, bot.id.clone()).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), main.wait_idle())
+        .await
+        .unwrap();
+    assert_eq!(gateway.remote_desktop.consumer_count(), 0);
+    assert_eq!(model.calls.load(Ordering::Relaxed), 2);
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
+async fn project_free_chats_expose_reads_without_coding_mutations() {
+    let (_root, gateway, bot) = gateway_with_bot().await;
+    let model = Arc::new(CaptureModel::default());
+    model.release.notify_one();
+    install_model(&gateway, &bot, Arc::clone(&model)).await;
+    let main = gateway
+        .open_session(&bot.conversation_session_id)
+        .await
+        .unwrap();
+    let ordinary = gateway
+        .create_session_with_id(None, &bot.id, Uuid::new_v4().to_string(), true, "test")
+        .await
+        .unwrap();
+    for (chat, persistent) in [(main, true), (ordinary, false)] {
+        assert!(chat.ready().await.unwrap().workspace.is_none());
+        chat.submit(user_submission("read", "Read the computer-control guide"))
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), chat.wait_idle())
+            .await
+            .unwrap();
+        let tools = model.tools.lock().unwrap().last().unwrap().clone();
+        assert!(tools.iter().any(|tool| tool == "read_file"));
+        assert!(tools.iter().any(|tool| tool == "view_image"));
+        assert_eq!(
+            tools.iter().any(|tool| tool == "schedule_routine"),
+            persistent
+        );
+        for mutation in ["write_file", "apply_patch", "bash", "manage_command"] {
+            assert!(!tools.iter().any(|tool| tool == mutation));
+        }
+    }
+    gateway.shutdown().await;
 }
 
 fn subscription(bot_id: &str, session_id: &str, kind: HookKind, id: &str) -> BotSubscription {

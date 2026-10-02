@@ -7,6 +7,7 @@ async fn queued_client_requests_do_not_starve_gateway_broadcasts() {
     let identity = server.auth.pair(&grant.code, "busy client").unwrap();
     let (revocations, _) = broadcast::channel(1);
     let connection = ConnectionContext {
+        desktop_transport: false,
         local: true,
         auth: Arc::clone(&server.auth),
         host: server.host.clone(),
@@ -79,6 +80,7 @@ async fn non_reading_client_releases_its_authenticated_connection_slot() {
     let admission = ConnectionAdmission::new(1, 1);
     let (revocations, _) = broadcast::channel(1);
     let connection = ConnectionContext {
+        desktop_transport: false,
         local: true,
         auth: Arc::clone(&server.auth),
         host: server.host.clone(),
@@ -632,6 +634,7 @@ async fn websocket_upgrade_and_authentication_share_one_deadline() {
         serve_plaintext_connection(
             stream,
             ConnectionContext {
+                desktop_transport: false,
                 local: true,
                 auth,
                 host,

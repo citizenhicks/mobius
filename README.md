@@ -212,7 +212,22 @@ activation, mouse input, and keyboard input. Enable **Allow Mac control** in the
 desktop app, grant macOS Accessibility and Screen Recording permissions, and select
 the Bot's **Full access** sandbox policy. Stop, disconnect, or an inactive desktop
 session revokes control. The gateway remains the sole agent and approval owner.
-Headless cloud gateways keep browser control only.
+Linux desktop gateways use a gateway-owned headed Chromium with noVNC, a native
+status bar, wallpaper, and Chrome, Terminal, and Files launchers. Enable it while stopped with
+`mobius-gateway set-desktop --enabled true`. Such gateways accept Full-access Bots
+and no-network Bots, but refuse restricted Bots with network access because the
+shared browser holds saved logins. On macOS the gateway allocates the existing
+in-app CEF tab through its scoped browser broker. Otherwise computer control uses worker-owned
+headless Chromium. The computer-control middleware makes this selection; the
+gateway owns remote browser processes and coordinates page allocation, foreground
+use and takeover. The apps expose one **Bot's computer** action for the selected view.
+
+The Mac and iOS apps watch Linux desktops over a second authenticated encrypted
+connection. Taking control pauses and drains all sandbox execution on the gateway.
+The next evaluation after startup or takeover observes without executing submitted
+code. The Chromium profile retains saved logins and is excluded from portable
+backups. Passwords and verification codes work; passkeys and Touch ID forwarding
+are unsupported in this pilot.
 
 Browser state survives compaction. An overall evaluation deadline, cancellation,
 reset, or runtime restart loses interpreter state. Action timeouts can retain state;

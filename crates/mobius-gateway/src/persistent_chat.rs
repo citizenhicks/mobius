@@ -99,6 +99,8 @@ impl Middleware for PersistentChat {
                 && !matches!(
                     context.call().name.as_str(),
                     "tools_search"
+                        | "read_file"
+                        | "view_image"
                         | "list_subscriptions"
                         | "list_routines"
                         | "list_chats"

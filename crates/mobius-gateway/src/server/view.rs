@@ -10,6 +10,8 @@ use crate::wire::{
 };
 
 pub(super) struct ClientView {
+    pub(super) desktop_transport: bool,
+    pub(super) local: bool,
     skip: BTreeSet<ReadySection>,
     /// Revision of each section as this client last received it.
     held: BTreeMap<ReadySection, String>,
@@ -20,6 +22,8 @@ pub(super) struct ClientView {
 impl ClientView {
     pub(super) fn new(CatalogHint { known, skip }: CatalogHint) -> Self {
         Self {
+            desktop_transport: false,
+            local: false,
             skip,
             held: known,
             sessions: None,
@@ -42,6 +46,17 @@ impl ClientView {
         else {
             return write_frame(writer, &frame).await;
         };
+        if matches!(
+            payload.computer_view,
+            crate::wire::ComputerView::RemoteDesktop
+        ) && !self.desktop_transport
+            || matches!(
+                payload.computer_view,
+                crate::wire::ComputerView::EmbeddedBrowser
+            ) && !self.local
+        {
+            payload.computer_view = crate::wire::ComputerView::Unavailable;
+        }
         let mut spare = payload.blank();
         for section in READY_SECTIONS {
             let revision = payload.revisions.get(&section);

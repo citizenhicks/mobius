@@ -1317,6 +1317,15 @@ impl Tools {
         Self { tools }
     }
 
+    /// Creates the ordinary read-only file and image tools.
+    #[must_use]
+    pub fn reading(files: crate::backend::session_files::SessionFileStore) -> Self {
+        Self::new(vec![
+            Arc::new(ReadFile),
+            Arc::new(ViewImage { store: files }),
+        ])
+    }
+
     /// Creates the default file and command tools.
     #[must_use]
     pub fn coding(files: crate::backend::session_files::SessionFileStore) -> Self {

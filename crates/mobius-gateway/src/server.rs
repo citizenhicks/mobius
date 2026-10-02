@@ -1,5 +1,6 @@
 //! Authenticated raw, WebSocket-loopback, and TLS gateway listeners.
 
+mod desktop;
 mod dispatch;
 mod responses;
 mod transport;
@@ -32,6 +33,7 @@ use tokio_tungstenite::tungstenite::handshake::server::{
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::http::header::{HOST, ORIGIN, SEC_WEBSOCKET_PROTOCOL};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+use uuid::Uuid;
 
 use crate::auth::{AuthStore, ClientIdentity, PairingGrant};
 use crate::bots::BotStore;
@@ -332,6 +334,7 @@ impl GatewayServer {
                         let auth_deadline = Instant::now() + PRE_AUTH_TIMEOUT;
                         let connection = ConnectionContext {
                             local: peer.ip().is_loopback(),
+                            desktop_transport: tls.is_some(),
                             auth,
                             host,
                             bots,

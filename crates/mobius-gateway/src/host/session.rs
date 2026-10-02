@@ -22,6 +22,8 @@ pub(super) struct HostInner {
     pub(super) termination: Arc<tokio::sync::Notify>,
     pub(super) session_mutations: Arc<RwLock<()>>,
     pub(super) realtime_voice: Arc<Mutex<()>>,
+    #[cfg(test)]
+    pub(super) gateway_sandbox: std::sync::Weak<GatewaySandbox>,
 }
 
 struct HostState {
@@ -40,7 +42,7 @@ struct HostState {
     session_mutations: Arc<RwLock<()>>,
     discovery_gate: Arc<Mutex<()>>,
     desktop: Arc<DesktopControl>,
-    browser: Arc<BrowserHost>,
+    remote_desktop: Arc<RemoteDesktop>,
     live_chats: Arc<dyn LiveChats>,
     host_access: HostAccess,
     provider_epoch: Arc<AtomicU64>,
@@ -252,7 +254,7 @@ impl HostHandle {
         session_mutations: Arc<RwLock<()>>,
         discovery_gate: Arc<Mutex<()>>,
         desktop: Arc<DesktopControl>,
-        browser: Arc<BrowserHost>,
+        remote_desktop: Arc<RemoteDesktop>,
         provider_epoch: Arc<AtomicU64>,
         activities: SessionActivities,
         work_activity: Arc<WorkActivity>,
@@ -273,7 +275,7 @@ impl HostHandle {
             session_files.clone(),
             Arc::clone(&discovery_gate),
             Arc::clone(&desktop),
-            Arc::clone(&browser),
+            Arc::clone(&remote_desktop),
             session_id.clone(),
             origin_label,
             None,
@@ -308,7 +310,7 @@ impl HostHandle {
             session_files,
             discovery_gate,
             desktop,
-            browser,
+            remote_desktop,
             live_chats,
             host_access,
             alive: Arc::clone(&alive),
@@ -353,6 +355,8 @@ impl HostHandle {
             }
         }
         state.reconcile_loaded_startup().await?;
+        #[cfg(test)]
+        let gateway_sandbox = Arc::downgrade(&state.running.gateway_sandbox);
         tokio::spawn(state.run());
         Ok(Self {
             inner: Arc::new(HostInner {
@@ -364,6 +368,8 @@ impl HostHandle {
                 termination,
                 session_mutations,
                 realtime_voice: Arc::new(Mutex::new(())),
+                #[cfg(test)]
+                gateway_sandbox,
             }),
         })
     }
@@ -764,7 +770,7 @@ async fn start_agent(
     session_files: SessionFileStore,
     discovery_gate: Arc<Mutex<()>>,
     desktop: Arc<DesktopControl>,
-    browser: Arc<BrowserHost>,
+    remote_desktop: Arc<RemoteDesktop>,
     session_id: String,
     origin_label: &str,
     prepared: Option<Arc<crate::assembly::PreparedBot>>,
@@ -852,7 +858,7 @@ async fn start_agent(
         session_files,
         discovery_gate,
         desktop,
-        browser,
+        remote_desktop,
         Some(session_id),
         origin_label,
         Arc::clone(&prepared),

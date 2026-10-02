@@ -75,6 +75,7 @@ mod tests {
         ReadyPayload {
             gateway_version: env!("CARGO_PKG_VERSION").into(),
             machine_name: "test".into(),
+            computer_view: mobius_gateway::wire::ComputerView::Unavailable,
             bots,
             sessions: Vec::new(),
             background_approvals: Vec::new(),

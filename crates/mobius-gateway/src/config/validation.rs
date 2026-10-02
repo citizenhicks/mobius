@@ -7,6 +7,7 @@ pub(crate) fn validate_bot_compatibility(
     models: &[mobius::protocol::ModelChoice],
 ) -> Result<()> {
     validate_agent_composition(config)?;
+    validate_desktop_bot_policy(gateway, config)?;
     gateway.validate_provider_selection(&config.provider)?;
     let selection = &config.provider;
     let configured = gateway
@@ -24,6 +25,36 @@ pub(crate) fn validate_bot_compatibility(
             Error::Config("active model route is not in the configured catalog".into())
         })?;
     crate::middleware_manifest::validate_choices(&config.middleware, models, &selected.choice)?;
+    Ok(())
+}
+
+pub(crate) fn configured_approval_policy(
+    settings: &crate::wire::MiddlewareConfig,
+) -> Result<mobius::backend::sandbox::ApprovalPolicy> {
+    crate::middleware_manifest::string_setting(settings, "sandbox", "approval_policy")?
+        .ok_or_else(|| {
+            Error::Config("missing middleware setting `sandbox.approval_policy`".into())
+        })?
+        .parse()
+        .map_err(Error::from)
+}
+
+pub(crate) fn validate_desktop_bot_policy(
+    gateway: &GatewayConfig,
+    config: &AgentComposition,
+) -> Result<()> {
+    use mobius::backend::sandbox::ApprovalPolicy;
+
+    if gateway.desktop_enabled
+        && matches!(
+            configured_approval_policy(&config.middleware)?,
+            ApprovalPolicy::Ask | ApprovalPolicy::AllowNetwork
+        )
+    {
+        return Err(Error::Config(
+            "desktop gateways require Full access or no network; restricted execution with network access can reach the shared browser".into(),
+        ));
+    }
     Ok(())
 }
 

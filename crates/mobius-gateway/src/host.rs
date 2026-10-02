@@ -3,6 +3,7 @@
 mod bot_events;
 mod catalog;
 mod deletion;
+mod desktop;
 mod extensions;
 mod files;
 mod git;
@@ -43,7 +44,7 @@ use uuid::Uuid;
 
 use crate::assembly::{BuiltAgent, assemble};
 use crate::bots::{ActiveRoutineRun, BeginRun, BotStore};
-use crate::computer_runtime::{browser::BrowserHost, desktop::DesktopControl};
+use crate::computer_runtime::{desktop::DesktopControl, remote_desktop::RemoteDesktop};
 use crate::config::{
     ChatSpec, ConfigStore, CredentialStore, GatewayConfig,
     create_workspace_directory as create_workspace_directory_on_disk,
@@ -99,7 +100,7 @@ type SessionActivities = Arc<Mutex<catalog::SessionCatalog>>;
 #[derive(Clone)]
 pub(crate) struct GatewayHost {
     pub(crate) desktop: Arc<DesktopControl>,
-    pub(crate) browser: Arc<BrowserHost>,
+    pub(crate) remote_desktop: Arc<RemoteDesktop>,
     state: Arc<Mutex<GatewayState>>,
     capacity_gate: Arc<Mutex<()>>,
     events: broadcast::Sender<ServerFrame>,
@@ -191,7 +192,7 @@ impl GatewayHost {
     fn access(&self) -> HostAccess {
         let state = Arc::downgrade(&self.state);
         let desktop = Arc::clone(&self.desktop);
-        let browser = Arc::clone(&self.browser);
+        let remote_desktop = Arc::clone(&self.remote_desktop);
         let capacity_gate = Arc::clone(&self.capacity_gate);
         let events = self.events.clone();
         let work_activity = Arc::clone(&self.work_activity);
@@ -202,7 +203,7 @@ impl GatewayHost {
                     .upgrade()
                     .ok_or_else(|| Error::Config("gateway stopped".into()))?,
                 desktop: Arc::clone(&desktop),
-                browser: Arc::clone(&browser),
+                remote_desktop: Arc::clone(&remote_desktop),
                 capacity_gate: Arc::clone(&capacity_gate),
                 events: events.clone(),
                 work_activity: Arc::clone(&work_activity),
@@ -242,13 +243,17 @@ impl GatewayHost {
             Arc::new(SqliteCheckpoint::new(store.checkpoints_path())?);
         let scratchpad = ScratchpadStore::new(Arc::clone(&checkpoints));
         let session_files = SessionFileStore::new(store.state_dir());
+        let remote_desktop = Arc::new(RemoteDesktop::new(
+            store.state_dir(),
+            config.desktop_enabled,
+        ));
         let config = Arc::new(StdMutex::new(config));
         let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
         let activities = Arc::new(Mutex::new(catalog::SessionCatalog::default()));
         restore_pending_approval_activities(&checkpoints, &activities).await?;
         let host = Self {
             desktop: Arc::new(DesktopControl::default()),
-            browser: Arc::new(BrowserHost::default()),
+            remote_desktop,
             state: Arc::new(Mutex::new(GatewayState {
                 store,
                 config,
@@ -319,6 +324,7 @@ impl GatewayHost {
         for host in residents {
             host.shutdown().await;
         }
+        self.remote_desktop.shutdown().await;
     }
 
     pub(crate) async fn runtime_activity(&self) -> std::result::Result<RuntimeActivity, Rejection> {
@@ -408,6 +414,20 @@ impl GatewayHost {
     pub(crate) async fn begin_mutation(
         &self,
     ) -> std::result::Result<tokio::sync::OwnedRwLockReadGuard<()>, Rejection> {
+        self.remote_desktop
+            .check_execution()
+            .map_err(invalid_config)?;
+        let access = self.begin_access().await?;
+        self.remote_desktop
+            .check_execution()
+            .map_err(invalid_config)?;
+        Ok(access)
+    }
+
+    // Observers still obey idle shutdown and deletion admission while execution is held.
+    pub(crate) async fn begin_access(
+        &self,
+    ) -> std::result::Result<tokio::sync::OwnedRwLockReadGuard<()>, Rejection> {
         let shutdown = self.idle_shutdown.lock().await;
         if shutdown.is_some() {
             return Err(Rejection {
@@ -471,7 +491,7 @@ impl GatewayHost {
             None
         } else {
             self.reconcile_pending_bot_deletion().await?;
-            Some(self.begin_mutation().await?)
+            Some(self.begin_access().await?)
         };
         let snapshot = self.state.lock().await.ready_snapshot()?;
         gateway_ready(&snapshot).await
@@ -777,7 +797,7 @@ impl GatewayHost {
             Arc::clone(&state.session_mutations),
             Arc::clone(&state.discovery_gate),
             Arc::clone(&self.desktop),
-            Arc::clone(&self.browser),
+            Arc::clone(&self.remote_desktop),
             Arc::clone(&state.provider_epoch),
             Arc::clone(&state.activities),
             Arc::clone(&self.work_activity),
@@ -792,6 +812,10 @@ impl GatewayHost {
         );
         drop(state);
         let host = start.await.map_err(internal)?;
+        if let Err(error) = self.remote_desktop.check_execution() {
+            host.shutdown().await;
+            return Err(invalid_config(error));
+        }
         let mut state = self.state.lock().await;
         if cache {
             state.sessions.insert(starting.id.clone(), host.clone());
@@ -1171,6 +1195,9 @@ impl GatewayHost {
         &self,
     ) -> std::result::Result<tokio::sync::OwnedMutexGuard<()>, Rejection> {
         let capacity = Arc::clone(&self.capacity_gate).lock_owned().await;
+        self.remote_desktop
+            .check_execution()
+            .map_err(invalid_config)?;
         for attempt in 0..2 {
             let candidates = {
                 let state = self.state.lock().await;

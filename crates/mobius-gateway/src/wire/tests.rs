@@ -1231,6 +1231,7 @@ fn gateway_ready_contains_no_selected_session() {
         payload: ReadyPayload {
             gateway_version: env!("CARGO_PKG_VERSION").into(),
             machine_name: "snowwhite.local".into(),
+            computer_view: ComputerView::Unavailable,
             bots: Vec::new(),
             sessions: Vec::new(),
             background_approvals: Vec::new(),
@@ -1538,7 +1539,7 @@ fn daily_usage_carries_its_provider_on_the_wire() {
 #[test]
 fn ready_catalog_sections_round_trip_through_an_omitted_ready() {
     let mut held: ReadyPayload = serde_json::from_value(serde_json::json!({
-        "gateway_version": "1", "machine_name": "mac", "sessions": [],
+        "gateway_version": "1", "machine_name": "mac", "computer_view": "embedded_browser", "sessions": [],
         "bots": [{
             "id": "bot", "conversation_session_id": "persistent-bot", "handle": "mobius", "name": "Mobius", "description": "",
             "tint": "blue", "shape": "circle", "config": {"revision": 1, "config": AgentComposition::default()},
@@ -1560,6 +1561,7 @@ fn ready_catalog_sections_round_trip_through_an_omitted_ready() {
     omitted.omitted = BTreeSet::from([ReadySection::Bots, ReadySection::Config]);
     omitted.restore_omitted(&mut held);
     assert!(omitted.omitted.is_empty());
+    assert_eq!(omitted.computer_view, ComputerView::EmbeddedBrowser);
     assert_eq!(omitted.revision(ReadySection::Bots), bots);
     assert_eq!(omitted.revision(ReadySection::Config), config);
     assert_eq!(omitted.bots.len(), 1);
@@ -1603,4 +1605,41 @@ fn an_empty_catalog_hint_is_left_out_of_authentication() {
     }))
     .expect("authenticate");
     assert_eq!(hinted["catalog"], serde_json::json!({"skip": ["config"]}));
+}
+
+#[test]
+fn desktop_chunks_are_base64_and_bounded_in_both_directions() {
+    use base64::Engine as _;
+    let bytes = vec![0, 255, 4, 5, 6];
+    let client = ClientFrame::new(ClientMessage::DesktopData {
+        data: bytes.clone(),
+    });
+    let encoded = serde_json::to_value(&client).expect("encode RFB bytes");
+    assert_eq!(encoded["data"], "AP8EBQY=");
+    assert_eq!(
+        serde_json::from_value::<ClientFrame>(encoded.clone()).unwrap(),
+        client
+    );
+    let server = ServerFrame::new(ServerMessage::DesktopData { data: bytes });
+    assert_eq!(
+        serde_json::from_value::<ServerFrame>(encoded.clone()).unwrap(),
+        server
+    );
+    for size in [0, MAX_DESKTOP_CHUNK_BYTES + 1] {
+        let mut oversized = encoded.clone();
+        oversized["data"] = base64::engine::general_purpose::STANDARD
+            .encode(vec![0; size])
+            .into();
+        assert!(serde_json::from_value::<ClientFrame>(oversized.clone()).is_err());
+        assert!(serde_json::from_value::<ServerFrame>(oversized).is_err());
+    }
+    let control = ClientFrame::new(ClientMessage::SetDesktopControl {
+        request_id: "take-over".into(),
+        enabled: true,
+        session_id: Some("chat".into()),
+    });
+    assert_eq!(
+        serde_json::from_value::<ClientFrame>(serde_json::to_value(&control).unwrap()).unwrap(),
+        control
+    );
 }

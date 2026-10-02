@@ -188,13 +188,28 @@ pub(in crate::middleware::subagents) async fn monitor_agent(
     root_id: String,
     path: String,
     mut events: AgentEvents,
+    lifetime: super::ExecutionGuard,
+) -> Result<()> {
+    let _lifetime = lifetime;
+    let result = monitor_events(&shared, &root_id, &path, &mut events).await;
+    // A final turn event precedes session_end. Keep the lifetime until worker and
+    // background-command teardown closes the event channel.
+    while events.recv().await.is_some() {}
+    result
+}
+
+async fn monitor_events(
+    shared: &Shared,
+    root_id: &str,
+    path: &str,
+    events: &mut AgentEvents,
 ) -> Result<()> {
     let mut last_message = None;
     while let Some(event) = events.recv().await {
         let update = match event.msg {
             EventMsg::TurnStarted(turn) => {
                 last_message = None;
-                shared.turn_started(&root_id, &path, turn.turn_id).await
+                shared.turn_started(root_id, path, turn.turn_id).await
             }
             EventMsg::AssistantMessage(message) => {
                 let message = message
@@ -209,15 +224,15 @@ pub(in crate::middleware::subagents) async fn monitor_agent(
                     Ok(())
                 } else {
                     last_message = Some(message.clone());
-                    shared.message(&root_id, &path, message).await
+                    shared.message(root_id, path, message).await
                 }
             }
             EventMsg::ExecApprovalRequest(request) => {
                 async {
                     shared
-                        .approval_pending(&root_id, &path, request.turn_id)
+                        .approval_pending(root_id, path, request.turn_id)
                         .await?;
-                    let sender = shared.sender(&root_id, &path).await?;
+                    let sender = shared.sender(root_id, path).await?;
                     sender
                         .submit(Op::ExecApproval {
                             id: request.id,
@@ -232,30 +247,30 @@ pub(in crate::middleware::subagents) async fn monitor_agent(
             EventMsg::TurnComplete(_) => {
                 let message = last_message.clone();
                 return shared
-                    .finished(&root_id, &path, AgentStatus::Completed, message)
+                    .finished(root_id, path, AgentStatus::Completed, message)
                     .await;
             }
             EventMsg::TurnAborted(turn) => {
                 return shared
-                    .finished(&root_id, &path, AgentStatus::Interrupted, Some(turn.reason))
+                    .finished(root_id, path, AgentStatus::Interrupted, Some(turn.reason))
                     .await;
             }
             EventMsg::Error(error) => {
                 return shared
-                    .finished(&root_id, &path, AgentStatus::Errored, Some(error.message))
+                    .finished(root_id, path, AgentStatus::Errored, Some(error.message))
                     .await;
             }
             _ => Ok(()),
         };
         if let Err(error) = update {
-            return shared.fail_monitor(&root_id, &path, error).await;
+            return shared.fail_monitor(root_id, path, error).await;
         }
     }
-    if shared.active(&root_id, &path).await {
+    if shared.active(root_id, path).await {
         shared
             .finished(
-                &root_id,
-                &path,
+                root_id,
+                path,
                 AgentStatus::Errored,
                 Some("agent disconnected".into()),
             )

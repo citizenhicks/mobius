@@ -167,6 +167,7 @@ async fn bot_catalog_broadcasts_do_not_reintroduce_a_deleted_bot() {
     let serving = tokio::spawn(serve_connection(
         stream,
         ConnectionContext {
+            desktop_transport: false,
             local: true,
             auth: server.auth,
             host: server.host,

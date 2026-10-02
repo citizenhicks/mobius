@@ -14,7 +14,9 @@ clients render new middleware and settings without capability-specific code. New
 attachments, artifacts, context offloading, compaction, scratchpad, and subagents by default;
 tasks, workspace instructions, and extensions start disabled. Context offloading masks successful
 tool output after a 50,000-token trailing window. Project chats install sandboxing and workspace
-tools; all chats use turn steering and durable sessions. Only the canonical Bot conversation
+tools; project-free chats expose file and image reads under the same sandbox policy, including
+skill guides, while commands and file mutations remain unavailable. All chats use turn steering
+and durable sessions. Only the canonical Bot conversation
 installs the mandatory Persistent Chat middleware and its routine, subscription and internal
 event tools. Routine runs, forks and subagents cannot inherit that middleware.
 The shared `message_chat` tool sends queued or steering messages, interrupts a selected turn,
@@ -59,6 +61,23 @@ The runtime is stored beside gateway state, normally in
 Setup finishes before the Bot is saved; failed downloads can be retried by enabling
 the capability again. Linux hosts need Chromium's system libraries and Bubblewrap.
 `MOBIUS_COMPUTER_RUNTIME` can select an administrator-provided runtime instead.
+
+While the gateway is stopped, `set-desktop --enabled true` enables gateway-owned
+headed Chromium on Linux with one persistent profile. Linux needs TigerVNC,
+Openbox, xauth, tint2, feh, xterm and pcmanfm, and serves stock noVNC to the Mac and
+iOS apps over a dedicated authenticated encrypted connection. There is no GUI
+Office installation. The desktop has a logo wallpaper, status bar and app rail;
+closing Chrome leaves Terminal and Files available. Restricted Bots with network access are refused
+while the shared browser is enabled; Full access and no-network policies remain
+available. Takeover cancels and drains all gateway sandbox execution before
+enabling input. Worker resets retain the browser, and their first evaluation
+observes without executing code. Portable backups omit the desktop profile.
+Passwords and verification codes work; passkeys and Touch ID forwarding do not.
+
+On macOS the gateway coordinates the existing app's CEF tab over a scoped Unix
+DevTools broker. The app renders the chat's assigned tab; it does not launch a
+separate native Chrome window. One **Bot's computer** action opens the selected
+browser or remote desktop surface.
 
 On macOS 26+, the native desktop app adds voice and native computer control.
 It shares the gateway's chats and workspaces and leaves background tasks running

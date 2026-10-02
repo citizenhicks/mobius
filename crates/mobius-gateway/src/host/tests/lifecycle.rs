@@ -14,6 +14,7 @@ async fn full_session_queue_rejects_external_work_but_preserves_shutdown() {
             termination: Arc::new(tokio::sync::Notify::new()),
             session_mutations: Arc::new(RwLock::new(())),
             realtime_voice: Arc::new(Mutex::new(())),
+            gateway_sandbox: std::sync::Weak::new(),
         }),
     };
     let (reply, _) = tokio::sync::oneshot::channel();
@@ -872,6 +873,7 @@ async fn delete_sessions_preflight_all_roots_before_durable_removal() {
                 termination: Arc::new(tokio::sync::Notify::new()),
                 session_mutations: Arc::new(tokio::sync::RwLock::new(())),
                 realtime_voice: Arc::new(tokio::sync::Mutex::new(())),
+                gateway_sandbox: std::sync::Weak::new(),
             }),
         },
     );
@@ -1041,6 +1043,7 @@ async fn capacity_reclaims_an_unreferenced_idle_chat() {
                     termination: Arc::new(tokio::sync::Notify::new()),
                     session_mutations: Arc::new(tokio::sync::RwLock::new(())),
                     realtime_voice: Arc::new(tokio::sync::Mutex::new(())),
+                    gateway_sandbox: std::sync::Weak::new(),
                 }),
             },
         );

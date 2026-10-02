@@ -32,7 +32,7 @@ use mobius::protocol::{ActiveMessageDelivery, ModelChoice, ModelInfo, SessionCon
 
 use crate::config::{
     ChatSpec, ConfigStore, CredentialStore, DEFAULT_CONTEXT_WINDOW, GatewayConfig,
-    effective_reasoning_effort, local_user_name, model_route_id,
+    configured_approval_policy, effective_reasoning_effort, local_user_name, model_route_id,
 };
 use crate::extensions::{ExtensionStore, ResolvedExtensions};
 use crate::middleware_manifest::{BuiltinMiddleware, MIDDLEWARE};
@@ -191,7 +191,7 @@ pub(crate) async fn assemble(
     session_files: SessionFileStore,
     discovery_gate: Arc<tokio::sync::Mutex<()>>,
     desktop: Arc<crate::computer_runtime::desktop::DesktopControl>,
-    browser: Arc<crate::computer_runtime::browser::BrowserHost>,
+    remote_desktop: Arc<crate::computer_runtime::remote_desktop::RemoteDesktop>,
     session_id: Option<String>,
     origin_label: &str,
     prepared: Arc<PreparedBot>,
@@ -210,6 +210,7 @@ pub(crate) async fn assemble(
         .lock()
         .map_err(|_| Error::Config("gateway configuration lock is poisoned".into()))?
         .clone();
+    crate::config::validate_desktop_bot_policy(&gateway_config, &prepared.bot.config.config)?;
     let models = Arc::clone(&prepared.models);
     let context_window = prepared.context_window;
     let model_providers = prepared.model_providers.clone();
@@ -270,7 +271,7 @@ pub(crate) async fn assemble(
                 COMMAND_TIMEOUT,
             )?
             .with_desktop(desktop)
-            .with_browser(browser)
+            .with_remote_desktop(remote_desktop)
             .allow_attached_folders(attached_folders.iter().cloned())?
             .allow_read_roots(read_roots)?,
         );
@@ -701,7 +702,7 @@ fn build_middleware(
             BuiltinMiddleware::Tools => Arc::new(if project {
                 Tools::coding(session_files.clone())
             } else {
-                Tools::new(Vec::new())
+                Tools::reading(session_files.clone())
             }),
             BuiltinMiddleware::Instructions if !project => continue,
             BuiltinMiddleware::Instructions => Arc::new(Instructions::discover(workspace)?),
@@ -816,15 +817,6 @@ fn activate_extensions(
             workspace,
             backend,
         )
-        .map_err(Error::from)
-}
-
-fn configured_approval_policy(settings: &MiddlewareConfig) -> Result<ApprovalPolicy> {
-    crate::middleware_manifest::string_setting(settings, "sandbox", "approval_policy")?
-        .ok_or_else(|| {
-            Error::Config("missing middleware setting `sandbox.approval_policy`".into())
-        })?
-        .parse::<ApprovalPolicy>()
         .map_err(Error::from)
 }
 

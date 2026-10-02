@@ -1354,3 +1354,41 @@ fn test_context(
 fn test_shared() -> Shared {
     Shared::new(2, 2)
 }
+
+#[tokio::test]
+async fn root_teardown_waits_for_pending_launch_and_child_cleanup_lifetimes() {
+    let shared = Arc::new(test_shared());
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(FailOnceStore {
+        fail_next_save: AtomicBool::new(false),
+        saved_state: StdMutex::new(None),
+    });
+    shared
+        .session_start(test_context(checkpoints, Arc::new(|_| Ok(()))))
+        .await
+        .unwrap();
+    let launch = shared.track_execution("root").await.unwrap();
+    let child = shared.track_execution("root").await.unwrap();
+    let closing = Arc::clone(&shared);
+    let mut teardown = tokio::spawn(async move { closing.remove_root("root").await });
+    while shared.root("root").await.is_ok() {
+        tokio::task::yield_now().await;
+    }
+    assert!(shared.track_execution("root").await.is_err());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(10), &mut teardown)
+            .await
+            .is_err()
+    );
+    drop(launch);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(10), &mut teardown)
+            .await
+            .is_err()
+    );
+    drop(child);
+    tokio::time::timeout(Duration::from_secs(1), teardown)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
