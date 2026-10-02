@@ -43,7 +43,8 @@ enum GatewaySubcommand {
     ResetBotDefaults,
     /// Enable or disable the gateway-owned desktop while the gateway is stopped.
     SetDesktop {
-        #[arg(long, action = ArgAction::Set)]
+        /// Use true to enable the gateway-owned desktop or false to disable it.
+        #[arg(long, action = ArgAction::Set, hide_possible_values = true)]
         enabled: bool,
     },
     /// Issue a one-time pairing code as JSON.

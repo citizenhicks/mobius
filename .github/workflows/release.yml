@@ -43,11 +43,17 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --all-features --locked --no-deps
-      - name: Install Bubblewrap
+      - name: Install Linux verification tools
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bubblewrap
+          sudo apt-get install --yes bubblewrap mandoc
+      - name: Generate and lint manual pages
+        if: runner.os == 'Linux'
+        run: |
+          cargo run --locked -p mobius-cli --example generate-man -- \
+            target/man --date "$(date -u +%F)"
+          mandoc -T lint -W warning target/man/*.1
       - run: cargo test --workspace --all-targets --all-features --locked
       - name: Download and test computer runtime
         run: cargo test -p mobius-gateway computer_runtime::tests::downloaded_runtime_works --all-features --locked -- --ignored --nocapture
