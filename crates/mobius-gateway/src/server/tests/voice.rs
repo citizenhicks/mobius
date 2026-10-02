@@ -47,6 +47,7 @@ async fn signaling_requires_the_selected_session_is_ephemeral_and_keeps_chat_usa
             base_url: Some("http://127.0.0.1:1/v1".into()),
             endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
             reasoning_effort: None,
+            service_tier: None,
             web_search: mobius::backend::model::provider::HostedWebSearch::Off,
         },
         ..crate::wire::AgentComposition::default()

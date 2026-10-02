@@ -31,6 +31,7 @@ async fn provider_removal_gateway(
         base_url: Some("https://connector.example/v1".into()),
         endpoint_auth: ProviderEndpointAuth::Credentialless,
         reasoning_effort: None,
+        service_tier: None,
         web_search: mobius::backend::model::provider::HostedWebSearch::Off,
     };
     let removable = ProviderConfig {
@@ -40,6 +41,7 @@ async fn provider_removal_gateway(
         base_url: Some("https://api.moonshot.ai/v1".into()),
         endpoint_auth: ProviderEndpointAuth::ProviderDefault,
         reasoning_effort: Some("max".into()),
+        service_tier: None,
         web_search: mobius::backend::model::provider::HostedWebSearch::Off,
     };
     let config = config
@@ -298,6 +300,7 @@ async fn provider_registration_commits_against_latest_usage() {
         base_url: Some("https://connector.example/v1".into()),
         endpoint_auth: ProviderEndpointAuth::Credentialless,
         reasoning_effort: None,
+        service_tier: None,
         web_search: mobius::backend::model::provider::HostedWebSearch::Off,
     };
     let usage = TokenUsage {
@@ -447,6 +450,7 @@ async fn explicit_key_replaces_credentialless_endpoint_auth() {
                 base_url: Some(base_url.into()),
                 endpoint_auth: ProviderEndpointAuth::Credentialless,
                 reasoning_effort: None,
+                service_tier: None,
                 web_search: mobius::backend::model::provider::HostedWebSearch::Off,
             },
             "Managed".into(),
@@ -518,6 +522,7 @@ async fn credential_update_prepares_once_when_matching_chats_are_next_used() {
                 base_url: Some("https://api.moonshot.ai/v1".into()),
                 endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
                 reasoning_effort: Some("max".into()),
+                service_tier: None,
                 web_search: mobius::backend::model::provider::HostedWebSearch::Off,
             },
             "Test".into(),
@@ -582,6 +587,7 @@ fn credential_refresh_separates_instances_but_shares_a_browser_login() {
         base_url: Some("https://first.example/v1".into()),
         endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
         reasoning_effort: None,
+        service_tier: None,
         web_search: mobius::backend::model::provider::HostedWebSearch::Off,
     };
 

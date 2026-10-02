@@ -16,6 +16,7 @@ fn selection(instance: &str, provider: &str, model: &str) -> ProviderConfig {
         base_url: Some("https://gateway.example/v1".into()),
         endpoint_auth: ProviderEndpointAuth::Credentialless,
         reasoning_effort: None,
+        service_tier: None,
         web_search: HostedWebSearch::Off,
     }
 }

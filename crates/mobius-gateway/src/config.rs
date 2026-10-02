@@ -176,6 +176,7 @@ impl Default for AgentComposition {
                 base_url: provider.default_base_url().map(str::to_string),
                 endpoint_auth: ProviderEndpointAuth::ProviderDefault,
                 reasoning_effort: model.default_reasoning.clone(),
+                service_tier: None,
                 web_search: *provider
                     .web_search()
                     .first()

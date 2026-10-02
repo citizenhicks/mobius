@@ -8,7 +8,7 @@ use crate::ProviderError;
 use crate::Result;
 
 pub(super) const MAX_ERROR_BYTES: usize = 64 * 1024;
-pub(super) const MAX_SSE_FRAME_BYTES: usize = 4 * 1024 * 1024;
+pub(super) const MAX_SSE_FRAME_BYTES: usize = 8 * 1024 * 1024;
 pub(super) const MAX_STREAM_BYTES: usize = 64 * 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
@@ -103,7 +103,18 @@ impl SseDecoder {
                 .map_err(|error| Error::Provider(format!("invalid SSE UTF-8: {error}").into()));
         }
         self.scan = self.bytes.len().saturating_sub(3).max(start);
-        if self.bytes.len() - start > MAX_SSE_FRAME_BYTES {
+        let unfinished = &self.bytes[start..];
+        // An incomplete delimiter is framing, rather than part of the payload budget.
+        let delimiter_prefix = if unfinished.ends_with(b"\r\n\r") {
+            3
+        } else if unfinished.ends_with(b"\r\n") {
+            2
+        } else if unfinished.ends_with(b"\r") || unfinished.ends_with(b"\n") {
+            1
+        } else {
+            0
+        };
+        if unfinished.len() - delimiter_prefix > MAX_SSE_FRAME_BYTES {
             return Err(Error::Provider("SSE frame exceeded size limit".into()));
         }
         Ok(None)
@@ -244,12 +255,62 @@ mod tests {
     }
 
     #[test]
-    fn sse_framing_rejects_unterminated_frames_over_the_limit() {
+    fn sse_framing_accepts_8_mib_and_rejects_the_first_excess_byte() {
+        let frame = "é".repeat(4 * 1024 * 1024);
         let mut decoder = SseDecoder::default();
-        let bytes = vec![b'x'; MAX_SSE_FRAME_BYTES + 1];
-        decoder.push(&bytes, "test").expect("stream limit");
+        decoder
+            .push(frame.as_bytes(), "test")
+            .expect("stream limit");
+        assert!(decoder.next_frame().expect("unfinished frame").is_none());
+        decoder.push(b"\n\n", "test").expect("stream limit");
+        assert_eq!(
+            decoder.next_frame().expect("8 MiB frame").map(str::len),
+            Some(8 * 1024 * 1024)
+        );
 
-        assert!(decoder.next_frame().is_err());
+        for ending in [b"x".as_slice(), b"x\n\n"] {
+            let mut decoder = SseDecoder::default();
+            decoder
+                .push(frame.as_bytes(), "test")
+                .expect("stream limit");
+            decoder.push(ending, "test").expect("stream limit");
+            assert!(decoder.next_frame().is_err());
+        }
+    }
+
+    #[test]
+    fn sse_framing_accepts_fragmented_delimiters_at_the_frame_limit() {
+        let frame = vec![b'x'; MAX_SSE_FRAME_BYTES];
+        for delimiter in [b"\n\n".as_slice(), b"\r\n\r\n"] {
+            for split in 1..delimiter.len() {
+                let mut decoder = SseDecoder::default();
+                decoder.push(&frame, "test").expect("stream limit");
+                decoder
+                    .push(&delimiter[..split], "test")
+                    .expect("stream limit");
+                assert!(decoder.next_frame().expect("partial delimiter").is_none());
+                assert!(decoder.next_frame().expect("unfinished at EOF").is_none());
+                decoder
+                    .push(&delimiter[split..], "test")
+                    .expect("stream limit");
+                assert_eq!(
+                    decoder
+                        .next_frame()
+                        .expect("complete delimiter")
+                        .map(str::len),
+                    Some(MAX_SSE_FRAME_BYTES)
+                );
+
+                let mut decoder = SseDecoder::default();
+                decoder.push(&frame, "test").expect("stream limit");
+                decoder
+                    .push(&delimiter[..split], "test")
+                    .expect("stream limit");
+                assert!(decoder.next_frame().expect("partial delimiter").is_none());
+                decoder.push(b"x", "test").expect("stream limit");
+                assert!(decoder.next_frame().is_err());
+            }
+        }
     }
 
     #[test]

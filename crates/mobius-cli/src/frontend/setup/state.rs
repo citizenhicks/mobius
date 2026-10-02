@@ -1250,6 +1250,13 @@ impl SetupState {
             return Err(Error::Config("model is required".into()));
         }
         config.provider = ProviderConfig {
+            service_tier: if current.provider.instance == self.target_instance()
+                && current.provider.base_url.as_deref() == base_url.as_deref()
+            {
+                current.provider.service_tier.clone()
+            } else {
+                None
+            },
             instance: self.target_instance(),
             provider: definition.provider.clone(),
             model: model.into(),

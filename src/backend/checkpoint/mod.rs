@@ -152,6 +152,8 @@ pub struct ExecutionStats {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContextRewriteReason {
+    /// Bounds materialized attachment images retained for replay.
+    Attachments,
     /// Selects the context offloading case.
     ContextOffloading,
     /// Selects the compaction case.
@@ -163,6 +165,7 @@ pub enum ContextRewriteReason {
 impl ContextRewriteReason {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
+            Self::Attachments => "attachments",
             Self::ContextOffloading => "context_offloading",
             Self::Compaction => "compaction",
             Self::Scratchpad => "scratchpad",

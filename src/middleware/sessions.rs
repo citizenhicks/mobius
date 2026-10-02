@@ -967,7 +967,19 @@ fn scan_history_batch(
 fn history_text(item: &Value) -> Option<(&'static str, String)> {
     if let Some(message) = crate::protocol::message_metadata(item) {
         return Some(match message.author {
-            crate::protocol::MessageAuthor::User => ("user", message.text),
+            crate::protocol::MessageAuthor::User => {
+                let mut text = message.text;
+                for file in message.attachments {
+                    let reference = crate::protocol::content_part_text(
+                        &serde_json::json!({"type": "file", "file": file}),
+                    )?;
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(&reference);
+                }
+                ("user", text)
+            }
             crate::protocol::MessageAuthor::Source { source, handle, .. } => (
                 "assistant",
                 format!("@{handle} ({}): {}", source.id(), message.text),
@@ -975,12 +987,17 @@ fn history_text(item: &Value) -> Option<(&'static str, String)> {
         });
     }
     if crate::protocol::is_internal_message(item) {
-        let images = crate::protocol::content_parts(item)?
+        let attachments = crate::protocol::content_parts(item)?
             .iter()
-            .filter(|part| part.get("type").and_then(Value::as_str) == Some("input_image"))
+            .filter(|part| {
+                matches!(
+                    part.get("type").and_then(Value::as_str),
+                    Some("input_image" | "file")
+                )
+            })
             .filter_map(crate::protocol::content_part_text)
             .collect::<Vec<_>>();
-        return (!images.is_empty()).then(|| ("user", images.join("\n")));
+        return (!attachments.is_empty()).then(|| ("user", attachments.join("\n")));
     }
     match item.get("type").and_then(Value::as_str) {
         Some("function_call") => Some((
@@ -1394,8 +1411,8 @@ fn session_description(session: &SessionSummary) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn history_preserves_ordered_image_references_even_on_internal_materializations() {
+    #[tokio::test]
+    async fn history_preserves_image_references_and_finds_masked_internal_attachments() {
         let image = serde_json::json!({"type":"input_image","image":{"file":{"id":"screen-id","name":"screen.png","size":100,"media_type":"image/png"},"width":10,"height":10,"detail":"high"}});
         let result = serde_json::json!({"type":"function_call_output","output":[{"type":"input_text","text":"before"},image,{"type":"input_text","text":"after"}]});
         let (_, text) = history_text(&result).expect("tool history");
@@ -1411,6 +1428,70 @@ mod tests {
         let (_, text) = history_text(&materialization).expect("image history");
         assert!(text.contains("screen-id"));
         assert!(!text.contains("private instructions"));
+
+        materialization["content"][1] = serde_json::json!({
+            "type": "file", "file": materialization["content"][1]["image"]["file"]
+        });
+        let state = tempfile::tempdir().expect("state");
+        let history = history_store(&state.path().join("history.sqlite3"));
+        save_history(
+            history.checkpoints.as_ref(),
+            "current",
+            "researcher",
+            vec![materialization],
+        )
+        .await;
+        let page: Value = serde_json::from_str(
+            &history
+                .search(search_args("screen-id", HistoryScope::Current, None))
+                .await
+                .expect("search masked attachment"),
+        )
+        .expect("search page");
+        let excerpt = page["hits"][0]["excerpt"].as_str().expect("search hit");
+        assert!(excerpt.starts_with("Stored file:"));
+        assert!(excerpt.contains("screen-id"));
+        assert!(!excerpt.contains("private instructions"));
+    }
+
+    #[tokio::test]
+    async fn history_finds_attachment_names_and_ids_in_saved_user_messages() {
+        let message = crate::backend::model::message_input(&crate::protocol::MessageEvent {
+            author: crate::protocol::MessageAuthor::User,
+            delivery: crate::protocol::MessageDelivery::Turn,
+            text: "Inspect this receipt.".into(),
+            attachments: vec![crate::protocol::SessionFileReference {
+                id: "upload-id".into(),
+                name: "receipt.png".into(),
+                size: 100,
+                media_type: "image/png".into(),
+            }],
+            reply: None,
+            message_target: None,
+        })
+        .expect("ordinary user message");
+        let state = tempfile::tempdir().expect("state");
+        let history = history_store(&state.path().join("history.sqlite3"));
+        save_history(
+            history.checkpoints.as_ref(),
+            "current",
+            "researcher",
+            vec![message],
+        )
+        .await;
+        for query in ["upload-id", "receipt.png"] {
+            let page: Value = serde_json::from_str(
+                &history
+                    .search(search_args(query, HistoryScope::Current, None))
+                    .await
+                    .expect("search uploaded attachment"),
+            )
+            .expect("search page");
+            let excerpt = page["hits"][0]["excerpt"].as_str().expect("attachment hit");
+            assert!(excerpt.starts_with("Inspect this receipt.\nStored file:"));
+            assert!(excerpt.contains("upload-id"));
+            assert!(excerpt.contains("receipt.png"));
+        }
     }
 
     #[test]

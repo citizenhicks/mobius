@@ -32,6 +32,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
         )
         .expect("initial response body");
         assert!(initial.get("previous_response_id").is_none());
+        assert_eq!(initial["service_tier"], "default");
         for event in completed_events("Warm response.", "response-warm") {
             socket
                 .send(Message::text(event.to_string()))
@@ -115,6 +116,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
         reqwest::Client::new(),
     )
     .expect("provider")
+    .with_service_tier(Some("default".into()))
     .with_reasoning_effort("medium")
     .expect("reasoning effort")
     .with_cached_web_search();
@@ -277,6 +279,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
         "model response stream was interrupted"
     );
     for request in [first_http, second_http, failed_http] {
+        assert_eq!(request["service_tier"], "default");
         assert!(request.get("previous_response_id").is_none());
         assert_eq!(
             request["input"].as_array().expect("full HTTP input").len(),

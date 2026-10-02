@@ -68,6 +68,7 @@ pub(super) async fn register_provider_with_credential(
             ProviderEndpointAuth::ProviderDefault
         },
         reasoning_effort: None,
+        service_tier: options.service_tier,
         web_search: options.web_search,
     };
     let model_ids = if definition.models().is_empty() {

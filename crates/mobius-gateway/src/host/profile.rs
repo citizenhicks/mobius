@@ -320,6 +320,7 @@ mod tests {
             base_url: Some("https://connector.example/v1".into()),
             endpoint_auth: ProviderEndpointAuth::Credentialless,
             reasoning_effort: None,
+            service_tier: None,
             web_search: mobius::backend::model::provider::HostedWebSearch::Off,
         };
         let codex = ProviderConfig {
@@ -329,6 +330,7 @@ mod tests {
             base_url: None,
             endpoint_auth: ProviderEndpointAuth::ProviderDefault,
             reasoning_effort: None,
+            service_tier: None,
             web_search: mobius::backend::model::provider::HostedWebSearch::Off,
         };
         let config = config

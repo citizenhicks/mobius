@@ -57,6 +57,7 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
     let api_key = config.credential.into_optional_api_key("openrouter")?;
     let native_images = api_key.is_some() && uses_default_endpoint(Some(BASE_URL), Some(&base_url));
     let provider = OpenAi::with_client(api_key, base_url, config.model, config.http)?
+        .with_service_tier(config.service_tier)
         .with_image_api(
             native_images.then_some(&super::image_generation::IMAGE_APIS["openrouter"]),
         );
@@ -97,6 +98,7 @@ mod tests {
                     model: "test-model".into(),
                     base_url: Some(BASE_URL.into()),
                     reasoning_effort: None,
+                    service_tier: None,
                     web_search,
                     http: reqwest::Client::new(),
                 })

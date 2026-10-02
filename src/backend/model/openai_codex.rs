@@ -59,6 +59,7 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn super::Model>> 
         config.model,
         config.http,
     )?
+    .with_service_tier(config.service_tier)
     .with_codex_realtime_voice()?
     .with_image_api(Some(&super::image_generation::IMAGE_APIS["codex"]));
     let provider = match config.reasoning_effort {

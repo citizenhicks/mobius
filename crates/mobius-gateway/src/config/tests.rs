@@ -337,6 +337,7 @@ fn provider_registration_never_silently_changes_existing_defaults() {
         base_url: Some("https://api.moonshot.ai/v1".into()),
         endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
         reasoning_effort: Some("max".into()),
+        service_tier: None,
         web_search: mobius::backend::model::provider::HostedWebSearch::Off,
     };
     let first = config
@@ -355,6 +356,7 @@ fn provider_registration_never_silently_changes_existing_defaults() {
         base_url: Some("https://openrouter.ai/api/v1".into()),
         endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
         reasoning_effort: None,
+        service_tier: None,
         web_search: mobius::backend::model::provider::HostedWebSearch::Off,
     };
     let second = first
@@ -430,6 +432,7 @@ fn configured_custom_provider_keeps_its_endpoint_and_model() {
         base_url: Some("https://example.com/v1".into()),
         endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
         reasoning_effort: Some("provider-defined".into()),
+        service_tier: None,
         web_search: mobius::backend::model::provider::HostedWebSearch::Off,
     };
     let config = GatewayConfig::new(DEFAULT_LISTEN, None)
@@ -470,6 +473,7 @@ fn openrouter_accepts_a_credentialless_custom_https_endpoint() {
         base_url: Some("https://connector.example/v1".into()),
         endpoint_auth: ProviderEndpointAuth::Credentialless,
         reasoning_effort: None,
+        service_tier: None,
         web_search: mobius::backend::model::provider::HostedWebSearch::Off,
     };
 
@@ -498,6 +502,7 @@ fn credentialless_endpoint_rejects_openrouter_default_aliases() {
             base_url: Some(base_url.into()),
             endpoint_auth: ProviderEndpointAuth::Credentialless,
             reasoning_effort: None,
+            service_tier: None,
             web_search: mobius::backend::model::provider::HostedWebSearch::Off,
         };
 
@@ -529,6 +534,7 @@ fn credentialless_endpoint_requires_https() {
         base_url: Some("http://127.0.0.1:8080/v1".into()),
         endpoint_auth: ProviderEndpointAuth::Credentialless,
         reasoning_effort: None,
+        service_tier: None,
         web_search: mobius::backend::model::provider::HostedWebSearch::Off,
     };
 
@@ -560,6 +566,7 @@ fn credentialless_endpoint_rejects_secret_bearing_url_components() {
             base_url: Some(base_url.into()),
             endpoint_auth: ProviderEndpointAuth::Credentialless,
             reasoning_effort: None,
+            service_tier: None,
             web_search: mobius::backend::model::provider::HostedWebSearch::Off,
         };
 
@@ -585,6 +592,7 @@ fn credentialless_endpoint_requires_provider_opt_in() {
         base_url: Some("https://connector.example/v1".into()),
         endpoint_auth: ProviderEndpointAuth::Credentialless,
         reasoning_effort: None,
+        service_tier: None,
         web_search: mobius::backend::model::provider::HostedWebSearch::Off,
     };
 
@@ -615,6 +623,7 @@ fn custom_provider_registration_validates_its_model_catalog() {
         base_url: Some("https://openrouter.ai/api/v1".into()),
         endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
         reasoning_effort: None,
+        service_tier: None,
         web_search: mobius::backend::model::provider::HostedWebSearch::Off,
     };
     let config = GatewayConfig::new(DEFAULT_LISTEN, None).expect("gateway config");
@@ -694,6 +703,7 @@ fn custom_provider_catalogs_accept_opaque_ids_but_reject_ambiguous_routes() {
                 base_url: Some("https://openrouter.ai/api/v1".into()),
                 endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
                 reasoning_effort: None,
+                service_tier: None,
                 web_search: mobius::backend::model::provider::HostedWebSearch::Off,
             },
             "Test".into(),
@@ -711,6 +721,7 @@ fn custom_provider_catalogs_accept_opaque_ids_but_reject_ambiguous_routes() {
                 base_url: Some("https://openrouter.ai/api/v1".into()),
                 endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
                 reasoning_effort: Some("high".into()),
+                service_tier: None,
                 web_search: mobius::backend::model::provider::HostedWebSearch::Off,
             },
             "Test".into(),
@@ -741,6 +752,7 @@ fn custom_provider_catalogs_bound_the_total_generated_routes() {
                 base_url: Some("https://openrouter.ai/api/v1".into()),
                 endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
                 reasoning_effort: Some(efforts[0].clone()),
+                service_tier: None,
                 web_search: mobius::backend::model::provider::HostedWebSearch::Off,
             },
             "Test".into(),
@@ -759,6 +771,7 @@ fn custom_provider_catalogs_bound_the_total_generated_routes() {
                 base_url: Some("http://127.0.0.1:11434/v1".into()),
                 endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
                 reasoning_effort: None,
+                service_tier: None,
                 web_search: mobius::backend::model::provider::HostedWebSearch::Off,
             },
             "Test".into(),
@@ -784,6 +797,7 @@ fn provider_registration_rejects_a_catalog_that_invalidates_the_current_default(
                 base_url: Some("https://openrouter.ai/api/v1".into()),
                 endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
                 reasoning_effort: Some("high".into()),
+                service_tier: None,
                 web_search: mobius::backend::model::provider::HostedWebSearch::Off,
             },
             "Test".into(),
@@ -802,6 +816,7 @@ fn provider_registration_rejects_a_catalog_that_invalidates_the_current_default(
                 base_url: Some("https://openrouter.ai/api/v1".into()),
                 endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
                 reasoning_effort: Some("medium".into()),
+                service_tier: None,
                 web_search: mobius::backend::model::provider::HostedWebSearch::Off,
             },
             "Test".into(),
@@ -831,6 +846,7 @@ fn default_and_persisted_config_validate_custom_reasoning_membership() {
                 base_url: Some("https://openrouter.ai/api/v1".into()),
                 endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
                 reasoning_effort: Some("high".into()),
+                service_tier: None,
                 web_search: mobius::backend::model::provider::HostedWebSearch::Off,
             },
             "Test".into(),
@@ -879,6 +895,7 @@ fn provider_catalog_rejects_out_of_catalog_model_and_reasoning() {
                 base_url: Some("https://openrouter.ai/api/v1".into()),
                 endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
                 reasoning_effort: Some("high".into()),
+                service_tier: None,
                 web_search: mobius::backend::model::provider::HostedWebSearch::Off,
             },
             "Test".into(),
@@ -1373,6 +1390,7 @@ fn bot_compatibility_checks_policies_route_and_voice_without_credentials() {
         base_url: Some("https://api.openai.com/v1".into()),
         endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
         reasoning_effort: None,
+        service_tier: None,
         web_search: mobius::backend::model::provider::HostedWebSearch::Off,
     };
     let gateway = GatewayConfig::new(DEFAULT_LISTEN, None)

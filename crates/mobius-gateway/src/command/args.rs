@@ -125,6 +125,9 @@ impl InitArgs {
 
 #[derive(Debug, Args)]
 struct RegisterProviderArgs {
+    /// Native Responses processing tier; omitted to use the endpoint default.
+    #[arg(long, value_name = "TIER")]
+    service_tier: Option<String>,
     /// Provider identifier.
     #[arg(long, value_name = "ID")]
     provider: String,
@@ -258,6 +261,7 @@ pub(super) struct ConnectOptions {
 
 #[derive(Debug)]
 pub(super) struct RegisterProviderOptions {
+    pub(super) service_tier: Option<String>,
     pub(super) state_dir: PathBuf,
     pub(super) provider: String,
     pub(super) instance: Option<String>,
@@ -318,6 +322,7 @@ impl GatewayCli {
             }
             Some(GatewaySubcommand::RegisterProvider(arguments)) => {
                 Ok(Command::RegisterProvider(RegisterProviderOptions {
+                    service_tier: arguments.service_tier,
                     state_dir,
                     provider: arguments.provider,
                     instance: arguments.instance,

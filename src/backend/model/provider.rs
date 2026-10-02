@@ -180,6 +180,8 @@ pub struct ProviderBuildConfig {
     pub base_url: Option<String>,
     /// The reasoning effort.
     pub reasoning_effort: Option<String>,
+    /// Optional native Responses processing tier; omission uses the endpoint default.
+    pub service_tier: Option<String>,
     /// The web search.
     pub web_search: HostedWebSearch,
     /// Shared HTTP client; one per assembly keeps provider clones on one pool.
@@ -1083,6 +1085,7 @@ mod tests {
                         .to_string(),
                     base_url: Some("https://proxy.example/v1".into()),
                     reasoning_effort: None,
+                    service_tier: None,
                     web_search: HostedWebSearch::Off,
                     http: reqwest::Client::new(),
                 })

@@ -1266,6 +1266,7 @@ async fn shutdown_stops_a_blocked_routine_and_fails_its_durable_run() {
         base_url: Some(model_base_url.clone()),
         endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
         reasoning_effort: None,
+        service_tier: None,
         web_search: mobius::backend::model::provider::HostedWebSearch::Off,
     };
     let composition = crate::wire::AgentComposition {

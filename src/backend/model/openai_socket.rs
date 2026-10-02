@@ -182,6 +182,11 @@ impl OpenAiSocket {
         })
     }
 
+    pub(super) fn with_service_tier(mut self, service_tier: Option<String>) -> Self {
+        self.http = self.http.with_service_tier(service_tier);
+        self
+    }
+
     pub(super) fn with_codex_realtime_voice(mut self) -> Result<Self> {
         self.http = self.http.with_codex_realtime_voice()?;
         Ok(self)
@@ -301,7 +306,7 @@ impl OpenAiSocket {
                 envelope_fingerprint,
             )?;
             let used_previous_response = previous_response_id.is_some();
-            let body = response_body(
+            let mut body = response_body(
                 &self.model,
                 &request,
                 input,
@@ -310,6 +315,7 @@ impl OpenAiSocket {
                 &self.hosted_tools,
                 self.explicit_prompt_cache,
             )?;
+            self.http.apply_service_tier(&mut body);
             match exchange(&mut connection, &body, &events).await? {
                 Exchange::Completed(response) => {
                     let response_id = response
@@ -755,7 +761,8 @@ pub(super) fn provider() -> ProviderDefinition {
 fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
     let api_key = config.credential.into_api_key("openai_socket")?;
     let base_url = config.base_url.as_deref().unwrap_or(OPENAI_HTTP_URL);
-    let provider = OpenAiSocket::with_client(api_key, base_url, config.model, config.http)?;
+    let provider = OpenAiSocket::with_client(api_key, base_url, config.model, config.http)?
+        .with_service_tier(config.service_tier);
     let provider = match config.reasoning_effort {
         Some(effort) => provider.with_reasoning_effort(effort)?,
         None => provider,

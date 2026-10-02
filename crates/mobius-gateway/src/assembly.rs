@@ -561,6 +561,7 @@ fn build_route(
         model: route.provider.model,
         base_url,
         reasoning_effort: route.provider.reasoning_effort,
+        service_tier: route.provider.service_tier,
         web_search: route.provider.web_search,
         http: http.clone(),
     })?;

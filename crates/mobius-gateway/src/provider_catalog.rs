@@ -175,6 +175,9 @@ pub(crate) fn catalog_routes(
         }
         for effort in efforts {
             let mut provider = selection.clone();
+            provider.service_tier = provider
+                .service_tier
+                .or_else(|| configured.selection.service_tier.clone());
             provider.model = model.into();
             provider.reasoning_effort = effort.map(str::to_string);
             let route = model_route_id(&selection.instance, model, effort);
@@ -369,6 +372,7 @@ mod tests {
                 provider: "openai_socket".into(),
                 model: "gpt-6.1-sol".into(),
                 reasoning_effort: Some("max".into()),
+                service_tier: Some("default".into()),
                 ..crate::wire::AgentComposition::default().provider
             },
             label: "OpenAI".into(),
@@ -376,10 +380,17 @@ mod tests {
             model_ids: Vec::new(),
             reasoning_efforts: Vec::new(),
         };
+        let mut selection = configured.selection.clone();
+        selection.service_tier = None;
         let routes = catalog_routes(
             provider("openai_socket").expect("provider"),
             &configured,
-            &configured.selection,
+            &selection,
+        );
+        assert!(
+            routes
+                .iter()
+                .all(|route| route.provider.service_tier.as_deref() == Some("default"))
         );
         for model in &status.models {
             assert_eq!(

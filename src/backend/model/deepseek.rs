@@ -53,8 +53,9 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
         .base_url
         .ok_or_else(|| Error::Config("DeepSeek requires a base URL".into()))?;
     let api_key = config.credential.into_optional_api_key("deepseek")?;
-    let provider =
-        OpenAi::with_client(api_key, base_url, config.model, config.http)?.without_image_input();
+    let provider = OpenAi::with_client(api_key, base_url, config.model, config.http)?
+        .with_service_tier(config.service_tier)
+        .without_image_input();
     let provider = match config.reasoning_effort {
         Some(effort) => provider.with_reasoning_effort(effort)?,
         None => provider,
@@ -87,6 +88,7 @@ mod tests {
                     model: definition.default_model().expect("default model").into(),
                     base_url: Some(BASE_URL.into()),
                     reasoning_effort: None,
+                    service_tier: None,
                     web_search,
                     http: reqwest::Client::new(),
                 })
@@ -103,6 +105,7 @@ mod tests {
                 model: "deepseek-v4-flash".into(),
                 base_url: Some(BASE_URL.into()),
                 reasoning_effort: None,
+                service_tier: None,
                 web_search: HostedWebSearch::Off,
                 http: reqwest::Client::new(),
             })

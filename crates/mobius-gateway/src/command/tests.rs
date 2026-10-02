@@ -422,6 +422,7 @@ fn parse_register_provider_accepts_credentialless_endpoint_configuration() {
             label: None,
             model,
             reasoning_efforts,
+            service_tier: None,
             web_search: HostedWebSearch::Live,
             base_url: Some(base_url),
             credentialless: true,
@@ -444,6 +445,8 @@ fn parse_register_provider_accepts_a_piped_credential() {
         "--model".into(),
         "openai/gpt-5".into(),
         "--credential-stdin".into(),
+        "--service-tier".into(),
+        "priority".into(),
     ])
     .expect("parse provider credential input");
 
@@ -453,8 +456,9 @@ fn parse_register_provider_accepts_a_piped_credential() {
             credentialless: false,
             credential_stdin: true,
             credential_expires_at: None,
+            service_tier: Some(tier),
             ..
-        })
+        }) if tier == "priority"
     ));
     assert!(
         parse(vec![
@@ -534,6 +538,7 @@ async fn register_provider_command_is_idempotent() {
             label: Some("Work".into()),
             model: "openai/gpt-5".into(),
             reasoning_efforts: vec!["medium".into(), "high".into()],
+            service_tier: None,
             web_search: HostedWebSearch::Live,
             base_url: Some("https://connector.example/v1".into()),
             credentialless: true,
@@ -598,6 +603,7 @@ async fn register_provider_command_is_idempotent() {
             label: None,
             model: "openai/gpt-5".into(),
             reasoning_efforts: vec!["medium".into(), "high".into()],
+            service_tier: None,
             web_search: HostedWebSearch::Live,
             base_url: Some("https://connector.example/v1".into()),
             credentialless: true,
@@ -650,6 +656,7 @@ async fn register_provider_command_is_idempotent() {
             label: Some("Möbius Cloud".into()),
             model: "openai/gpt-5.6-luna".into(),
             reasoning_efforts: vec!["medium".into()],
+            service_tier: None,
             web_search: HostedWebSearch::Live,
             base_url: None,
             credentialless: false,

@@ -669,6 +669,7 @@ fn provider_registration_is_gateway_scoped() {
             base_url: None,
             endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
             reasoning_effort: Some("max".into()),
+            service_tier: None,
             web_search: HostedWebSearch::Off,
         },
         label: "Kimi".into(),

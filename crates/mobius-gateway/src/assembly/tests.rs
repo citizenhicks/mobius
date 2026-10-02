@@ -123,6 +123,7 @@ fn configured_provider_status_requires_the_selected_credential_endpoint() {
         base_url: Some("https://openrouter.ai/api/v1".into()),
         endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
         reasoning_effort: None,
+        service_tier: None,
         web_search: HostedWebSearch::Off,
     };
     let config = config
@@ -180,6 +181,7 @@ fn configured_catalog_resolves_manifest_and_opaque_custom_routes() {
         base_url: Some("https://api.moonshot.ai/v1".into()),
         endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
         reasoning_effort: Some("max".into()),
+        service_tier: None,
         web_search: HostedWebSearch::Off,
     };
     let custom = ProviderConfig {
@@ -189,6 +191,7 @@ fn configured_catalog_resolves_manifest_and_opaque_custom_routes() {
         base_url: Some("https://example.com/v1".into()),
         endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
         reasoning_effort: Some("provider-defined".into()),
+        service_tier: None,
         web_search: HostedWebSearch::Off,
     };
     let alternate_model = "vendor/model-alternate".to_string();
@@ -256,6 +259,7 @@ fn same_provider_instances_have_distinct_routes_and_models() {
         base_url: Some("https://work.example/v1".into()),
         endpoint_auth: crate::wire::ProviderEndpointAuth::Credentialless,
         reasoning_effort: None,
+        service_tier: None,
         web_search: HostedWebSearch::Off,
     };
     let personal = ProviderConfig {
@@ -355,6 +359,7 @@ fn custom_selection_without_reasoning_uses_the_first_configured_effort() {
         base_url: Some("http://127.0.0.1:11434/v1".into()),
         endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
         reasoning_effort: None,
+        service_tier: None,
         web_search: HostedWebSearch::Off,
     };
     let config = config
@@ -406,6 +411,7 @@ fn custom_openai_roots_require_endpoint_bound_stored_credentials() {
             base_url: Some("https://example.com/v1".into()),
             endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
             reasoning_effort: None,
+            service_tier: None,
             web_search: HostedWebSearch::Off,
         };
 

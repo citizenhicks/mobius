@@ -101,6 +101,7 @@ pub struct OpenAi {
     native_api: bool,
     model: String,
     reasoning_effort: Option<String>,
+    service_tier: Option<String>,
     reasoning_summary: bool,
     hosted_tools: Vec<Value>,
     compaction_endpoint: bool,
@@ -175,6 +176,7 @@ impl OpenAi {
             native_api,
             model,
             reasoning_effort: None,
+            service_tier: None,
             reasoning_summary: false,
             hosted_tools: Vec::new(),
             compaction_endpoint: false,
@@ -206,6 +208,17 @@ impl OpenAi {
         self.image_api = Some(&IMAGE_APIS["openai"]);
         self.native_api = true;
         Ok(self)
+    }
+
+    pub(super) fn with_service_tier(mut self, service_tier: Option<String>) -> Self {
+        self.service_tier = service_tier;
+        self
+    }
+
+    pub(super) fn apply_service_tier(&self, body: &mut Value) {
+        if let Some(tier) = &self.service_tier {
+            body["service_tier"] = Value::String(tier.clone());
+        }
     }
 
     pub(super) fn with_image_api(mut self, api: Option<&'static ImageApi>) -> Self {
@@ -418,6 +431,7 @@ impl OpenAi {
         if let Some(reasoning) = self.reasoning() {
             body["reasoning"] = reasoning;
         }
+        self.apply_service_tier(&mut body);
         Ok(body)
     }
 
@@ -845,7 +859,8 @@ fn build_generic(config: ProviderBuildConfig) -> Result<std::sync::Arc<dyn Model
         .base_url
         .ok_or_else(|| Error::Config("Responses provider requires a base URL".into()))?;
     let api_key = config.credential.into_optional_api_key("responses")?;
-    let provider = OpenAi::with_client(api_key, base_url, config.model, config.http)?;
+    let provider = OpenAi::with_client(api_key, base_url, config.model, config.http)?
+        .with_service_tier(config.service_tier);
     let provider = match config.reasoning_effort {
         Some(effort) => provider.with_reasoning_effort(effort)?,
         None => provider,

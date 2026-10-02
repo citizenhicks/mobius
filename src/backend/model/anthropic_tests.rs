@@ -13,6 +13,7 @@ fn advertised_web_search_modes_build() {
                 model: definition.default_model().expect("default model").into(),
                 base_url: Some(DEFAULT_BASE_URL.into()),
                 reasoning_effort: None,
+                service_tier: None,
                 web_search,
                 http: reqwest::Client::new(),
             })
@@ -28,6 +29,7 @@ fn equivalent_default_endpoint_preserves_native_tool_discovery() {
             model: "claude-haiku-4-5".into(),
             base_url: Some("https://api.anthropic.com:443/v1/".into()),
             reasoning_effort: None,
+            service_tier: None,
             web_search: HostedWebSearch::Off,
             http: reqwest::Client::new(),
         })

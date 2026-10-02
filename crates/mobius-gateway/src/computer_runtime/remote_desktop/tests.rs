@@ -341,7 +341,16 @@ async fn stale_socket_cleanup_refuses_live_and_unrelated_paths() {
     let listener = tokio::net::UnixListener::bind(&socket).unwrap();
     assert!(clean_socket(&socket).await.is_err());
     drop(listener);
-    tokio::task::yield_now().await;
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !matches!(
+            UnixStream::connect(&socket).await,
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused
+        ) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
     clean_socket(&socket).await.unwrap();
     assert!(!socket.exists());
 }

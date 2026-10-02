@@ -41,6 +41,7 @@ async fn native_root_keeps_capabilities_and_websocket_denials_do_not_fallback() 
         )
         .expect("JSON");
         assert_eq!(request["model"], "gpt-6.1-sol");
+        assert_eq!(request["service_tier"], "default");
         socket.send(Message::text(serde_json::json!({"type":"error","status":402,"error":{"code":"insufficient_balance","message":"Balance exhausted"}}).to_string())).await.expect("denial");
         assert!(
             timeout(Duration::from_millis(30), listener.accept())
@@ -56,6 +57,7 @@ async fn native_root_keeps_capabilities_and_websocket_denials_do_not_fallback() 
             model: "gpt-6.1-sol".into(),
             base_url: Some(format!("http://{address}/api/native/v1/")),
             reasoning_effort: None,
+            service_tier: Some("default".into()),
             web_search: HostedWebSearch::Off,
             http: reqwest::Client::new(),
         })

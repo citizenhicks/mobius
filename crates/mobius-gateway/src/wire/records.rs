@@ -558,6 +558,9 @@ pub struct ProviderConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// The reasoning effort.
     pub reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Optional native Responses processing tier.
+    pub service_tier: Option<String>,
     /// The web search.
     pub web_search: HostedWebSearch,
 }

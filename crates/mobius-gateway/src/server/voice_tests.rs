@@ -104,6 +104,7 @@ async fn voice_delegation_consumes_committed_speech_without_echoing_or_replaying
         base_url: Some(base.clone()),
         endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
         reasoning_effort: None,
+        service_tier: None,
         web_search: mobius::backend::model::provider::HostedWebSearch::Off,
     };
     let config = config

@@ -30,6 +30,19 @@ fn tool_definition(name: &str) -> ToolDefinition {
 }
 
 #[test]
+fn service_tier_is_optional_and_preserves_native_values() {
+    for tier in [None, Some("default"), Some("priority")] {
+        let provider = OpenAi::new("key", "https://example.com/v1", "model")
+            .expect("provider")
+            .with_service_tier(tier.map(str::to_owned));
+        let body = provider
+            .response_body(model_request())
+            .expect("request body");
+        assert_eq!(body.get("service_tier").and_then(Value::as_str), tier);
+    }
+}
+
+#[test]
 fn base_url_rejects_serializable_secret_locations() {
     for url in [
         "https://secret@example.com/v1",

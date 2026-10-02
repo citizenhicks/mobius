@@ -14,6 +14,7 @@ use super::{
     Middleware, ModelContext, PromptSection, RuntimeContext, SessionStartContext,
     SessionStartSource,
 };
+use crate::backend::checkpoint::ContextRewriteReason;
 use crate::backend::model::{ToolDefinition, internal_user_message};
 use crate::backend::session_files::{SessionFileStore, session_storage_key};
 use crate::protocol::{
@@ -40,6 +41,9 @@ mod text {
         });
 }
 const MATERIALIZED_ATTACHMENTS_FIELD: &str = "_mobius_attachment_blobs";
+// Leave Cloud request headroom; hysteresis preserves replay prefixes between crossings.
+const IMAGE_REPLAY_HIGH_WATER_BYTES: u64 = 16 * 1024 * 1024;
+const IMAGE_REPLAY_TARGET_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -190,52 +194,89 @@ impl Middleware for Attachments {
 
     fn pre_model<'a>(&'a self, context: &'a mut ModelContext<'_>) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            let Some((message_index, references)) = referenced_attachments(context.input())?.pop()
-            else {
-                return Ok(());
+            self.materialize_latest(context).await?;
+            if let Some(input) = bound_materialized_images(context.input())? {
+                context.rewrite_input(ContextRewriteReason::Attachments, input)?;
+            }
+            Ok(())
+        })
+    }
+}
+
+impl Attachments {
+    async fn materialize_latest(&self, context: &mut ModelContext<'_>) -> Result<()> {
+        let Some((message_index, references)) = referenced_attachments(context.input())?.pop()
+        else {
+            return Ok(());
+        };
+        if materialization_matches(context.input(), message_index, &references)? {
+            return Ok(());
+        }
+        if message_index + 1 != context.input().len() {
+            return Err(Error::Checkpoint(
+                "attachment-bearing user message is missing adjacent materialization".into(),
+            ));
+        }
+        let mut materialized = Vec::with_capacity(references.len());
+        let mut first_error = None;
+        for reference in references {
+            let content_hash = match self
+                .store
+                .upload_content_hash(context.session_id, &reference)
+                .await
+            {
+                Ok(content_hash) => content_hash,
+                Err(error) => {
+                    let reason = error.to_string();
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                    materialized.push(MaterializedAttachment {
+                        reference,
+                        content_hash: None,
+                        image: None,
+                        path: None,
+                        unavailable_reason: Some(reason),
+                    });
+                    continue;
+                }
             };
-            if materialization_matches(context.input(), message_index, &references)? {
-                return Ok(());
-            }
-            if message_index + 1 != context.input().len() {
-                return Err(Error::Checkpoint(
-                    "attachment-bearing user message is missing adjacent materialization".into(),
-                ));
-            }
-            let mut materialized = Vec::with_capacity(references.len());
-            let mut first_error = None;
-            for reference in references {
-                let content_hash = match self
+            let path = match stage_attachment(
+                &self.store,
+                self.workspace.as_deref(),
+                context.session_id,
+                &reference,
+                &content_hash,
+            )
+            .await
+            {
+                Ok(path) => path,
+                Err(error) => {
+                    let reason = error.to_string();
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                    materialized.push(MaterializedAttachment {
+                        reference,
+                        content_hash: Some(content_hash),
+                        image: None,
+                        path: None,
+                        unavailable_reason: Some(reason),
+                    });
+                    continue;
+                }
+            };
+            let image = if reference.media_type.starts_with("image/") {
+                match self
                     .store
-                    .upload_content_hash(context.session_id, &reference)
+                    .inspect_image(
+                        context.session_id,
+                        &reference,
+                        crate::protocol::ImageDetail::Auto,
+                    )
                     .await
                 {
-                    Ok(content_hash) => content_hash,
-                    Err(error) => {
-                        let reason = error.to_string();
-                        if first_error.is_none() {
-                            first_error = Some(error);
-                        }
-                        materialized.push(MaterializedAttachment {
-                            reference,
-                            content_hash: None,
-                            image: None,
-                            path: None,
-                            unavailable_reason: Some(reason),
-                        });
-                        continue;
-                    }
-                };
-                let path = match stage_attachment(
-                    &self.store,
-                    self.workspace.as_deref(),
-                    context.session_id,
-                    &reference,
-                    &content_hash,
-                )
-                .await
-                {
-                    Ok(path) => path,
+                    Ok(image) => Some(image),
                     Err(error) => {
                         let reason = error.to_string();
                         if first_error.is_none() {
@@ -245,53 +286,71 @@ impl Middleware for Attachments {
                             reference,
                             content_hash: Some(content_hash),
                             image: None,
-                            path: None,
+                            path,
                             unavailable_reason: Some(reason),
                         });
                         continue;
                     }
-                };
-                let image = if reference.media_type.starts_with("image/") {
-                    match self
-                        .store
-                        .inspect_image(
-                            context.session_id,
-                            &reference,
-                            crate::protocol::ImageDetail::Auto,
-                        )
-                        .await
-                    {
-                        Ok(image) => Some(image),
-                        Err(error) => {
-                            let reason = error.to_string();
-                            if first_error.is_none() {
-                                first_error = Some(error);
-                            }
-                            materialized.push(MaterializedAttachment {
-                                reference,
-                                content_hash: Some(content_hash),
-                                image: None,
-                                path,
-                                unavailable_reason: Some(reason),
-                            });
-                            continue;
-                        }
-                    }
-                } else {
-                    None
-                };
-                materialized.push(MaterializedAttachment {
-                    reference,
-                    content_hash: Some(content_hash),
-                    image,
-                    path,
-                    unavailable_reason: None,
-                });
-            }
-            context.append_model_input(materialization_message(&materialized)?);
-            first_error.map_or(Ok(()), Err)
-        })
+                }
+            } else {
+                None
+            };
+            materialized.push(MaterializedAttachment {
+                reference,
+                content_hash: Some(content_hash),
+                image,
+                path,
+                unavailable_reason: None,
+            });
+        }
+        context.append_model_input(materialization_message(&materialized)?);
+        first_error.map_or(Ok(()), Err)
     }
+}
+
+fn bound_materialized_images(input: &[Value]) -> Result<Option<Vec<Value>>> {
+    // Current attachments stay visible; admission rejects an oversized fresh request.
+    let newest = input.iter().rposition(is_attachment_materialization);
+    let mut images = Vec::new();
+    let mut encoded = 0u64;
+    for (message_index, item) in input.iter().enumerate().rev() {
+        if !is_attachment_materialization(item) {
+            continue;
+        }
+        let Some(parts) = crate::protocol::content_parts(item) else {
+            continue;
+        };
+        for (part_index, part) in parts.iter().enumerate().rev() {
+            if part.get("type").and_then(Value::as_str) != Some("input_image") {
+                continue;
+            }
+            let size = part["image"]["file"]["size"]
+                .as_u64()
+                .and_then(|size| size.div_ceil(3).checked_mul(4))
+                .ok_or_else(|| Error::Checkpoint("invalid attachment image size".into()))?;
+            encoded = encoded
+                .checked_add(size)
+                .ok_or_else(|| Error::Checkpoint("attachment image replay size overflow".into()))?;
+            if Some(message_index) != newest {
+                images.push((message_index, part_index, size));
+            }
+        }
+    }
+    if encoded <= IMAGE_REPLAY_HIGH_WATER_BYTES || images.is_empty() {
+        return Ok(None);
+    }
+    let mut bounded = input.to_vec();
+    for (message_index, part_index, size) in images.into_iter().rev() {
+        if encoded <= IMAGE_REPLAY_TARGET_BYTES {
+            break;
+        }
+        let part = &mut crate::protocol::content_parts_mut(&mut bounded[message_index])
+            .ok_or_else(|| Error::Checkpoint("attachment content is not an array".into()))?
+            [part_index];
+        *part = serde_json::json!({"type": "file", "file": part["image"]["file"]});
+        encoded -= size;
+    }
+    Ok(Some(bounded))
 }
 
 fn restore_attachment_materialization(
@@ -600,6 +659,119 @@ fn render_attachment_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_replay_masks_oldest_attachments_only_after_crossing_high_water() {
+        let mut input = Vec::new();
+        for message in 0..3 {
+            let attachments = (0..2)
+                .map(|image| {
+                    let reference = SessionFileReference {
+                        id: format!("{message}-{image}"),
+                        name: "image.png".into(),
+                        size: 3 * 1024 * 1024,
+                        media_type: "image/png".into(),
+                    };
+                    MaterializedAttachment {
+                        image: Some(crate::protocol::ImageReference {
+                            file: reference.clone(),
+                            width: 1,
+                            height: 1,
+                            detail: crate::protocol::ImageDetail::Auto,
+                        }),
+                        reference,
+                        content_hash: Some("hash".into()),
+                        path: None,
+                        unavailable_reason: None,
+                    }
+                })
+                .collect::<Vec<_>>();
+            input.push(serde_json::json!({
+                "role": "user", "content": "inspect",
+                ATTACHMENTS_FIELD: attachments.iter().map(|a| &a.reference).collect::<Vec<_>>()
+            }));
+            input.push(materialization_message(&attachments).expect("materialization"));
+        }
+        // Each materialization is 8 MiB encoded; retain even 16 MiB without a rewrite.
+        assert!(
+            bound_materialized_images(&input[..2])
+                .expect("below high water")
+                .is_none()
+        );
+        assert!(
+            bound_materialized_images(&input[..4])
+                .expect("at high water")
+                .is_none()
+        );
+        let original = serde_json::to_vec(&input).expect("original bytes");
+        let bounded = bound_materialized_images(&input)
+            .expect("bound images")
+            .expect("rewrite above high water");
+        assert_eq!(
+            serde_json::to_vec(&input).expect("unchanged input"),
+            original
+        );
+        for index in [1, 3] {
+            let mut expected = input[index].clone();
+            for part in expected["content"]
+                .as_array_mut()
+                .expect("parts")
+                .iter_mut()
+                .skip(1)
+            {
+                *part = serde_json::json!({"type": "file", "file": part["image"]["file"]});
+            }
+            assert_eq!(bounded[index], expected);
+        }
+        assert_eq!(bounded[4..], input[4..]);
+        for (index, references) in referenced_attachments(&bounded).expect("references") {
+            assert_eq!(bounded[index], input[index]);
+            assert!(materialization_matches(&bounded, index, &references).expect("identity"));
+        }
+        assert!(
+            bound_materialized_images(&bounded)
+                .expect("second pass")
+                .is_none()
+        );
+
+        // Fresh images stay visible even when they exceed the historical replay target.
+        let mut fresh = materialized_attachments(&input[5])
+            .expect("fresh metadata")
+            .expect("attachments");
+        fresh.truncate(1);
+        fresh[0].reference.size = 13 * 1024 * 1024;
+        fresh[0].image.as_mut().expect("image").file = fresh[0].reference.clone();
+        let latest = materialization_message(&fresh).expect("fresh materialization");
+        assert!(
+            bound_materialized_images(std::slice::from_ref(&latest))
+                .expect("fresh input admission belongs to the model router")
+                .is_none()
+        );
+        let mut history = input[..4].to_vec();
+        history.push(latest.clone());
+        let retained = bound_materialized_images(&history)
+            .expect("historical pruning")
+            .expect("rewrite old images");
+        assert_eq!(retained[4], latest);
+        assert_eq!(retained[..4], bounded[..4]);
+        assert!(
+            bound_materialized_images(&retained)
+                .expect("unchanged fresh image")
+                .is_none()
+        );
+
+        let mut tool = latest;
+        tool.as_object_mut()
+            .expect("tool item")
+            .remove(INTERNAL_MESSAGE_FIELD);
+        tool["type"] = Value::from("function_call_output");
+        tool["output"] = tool["content"].take();
+        assert!(
+            bound_materialized_images(&[tool])
+                .expect("tool image excluded")
+                .is_none()
+        );
+    }
 
     #[test]
     fn compaction_restores_each_retained_messages_media_without_duplicates() {
