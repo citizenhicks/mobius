@@ -66,8 +66,60 @@ enum GatewaySubcommand {
     Serve(ServeArgs),
     #[command(name = "__serve", hide = true)]
     ServeChild,
+    /// Manage outbound telemetry collectors.
+    Telemetry {
+        #[command(subcommand)]
+        command: TelemetryCommand,
+    },
+    /// Set lifecycle policy while the gateway is stopped.
+    SetRuntime {
+        #[arg(long)]
+        idle_exit_seconds: Option<u64>,
+        #[arg(long)]
+        storage_limit_bytes: Option<u64>,
+        #[arg(long)]
+        ingress: Option<SocketAddr>,
+        #[arg(long)]
+        hold_socket: Option<PathBuf>,
+        #[arg(long, conflicts_with = "ingress")]
+        clear_ingress: bool,
+        #[arg(long, conflicts_with = "hold_socket")]
+        clear_hold_socket: bool,
+        #[arg(long, conflicts_with = "storage_limit_bytes")]
+        clear_storage_limit: bool,
+    },
     /// Stop a background gateway.
     Exit,
+}
+
+#[derive(Debug, Subcommand)]
+pub(super) enum TelemetryCommand {
+    /// Print delivery status and safe endpoint configuration as JSON.
+    List,
+    /// Upsert an endpoint by ID.
+    Add {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        url: String,
+        #[arg(long, default_value_t = 60)]
+        every_seconds: u32,
+        #[arg(long, value_delimiter = ',')]
+        sections: Vec<String>,
+        #[arg(long, value_delimiter = ',')]
+        events: Vec<String>,
+        #[arg(long)]
+        bearer_env: Option<String>,
+        #[arg(long)]
+        bearer_file: Option<String>,
+        #[arg(long = "field")]
+        fields: Vec<String>,
+    },
+    /// Remove an endpoint by ID.
+    Remove {
+        #[arg(long)]
+        id: String,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -186,14 +238,24 @@ struct ServeArgs {
     /// Start the gateway as a background process.
     #[arg(long)]
     background: bool,
-
-    /// Hold work and native connections until authenticated lifecycle activation.
-    #[arg(long, conflicts_with = "background")]
-    start_quiesced: bool,
 }
 
 #[derive(Debug)]
 pub(super) enum Command {
+    Telemetry {
+        state_dir: PathBuf,
+        command: TelemetryCommand,
+    },
+    SetRuntime {
+        state_dir: PathBuf,
+        idle_exit_seconds: Option<u64>,
+        storage_limit_bytes: Option<u64>,
+        ingress: Option<SocketAddr>,
+        hold_socket: Option<PathBuf>,
+        clear_ingress: bool,
+        clear_hold_socket: bool,
+        clear_storage_limit: bool,
+    },
     Init(InitOptions),
     Bootstrap {
         state_dir: PathBuf,
@@ -217,7 +279,6 @@ pub(super) enum Command {
     Serve {
         state_dir: PathBuf,
         background: bool,
-        start_quiesced: bool,
     },
     ServeChild {
         state_dir: PathBuf,
@@ -301,6 +362,27 @@ impl GatewayCli {
     pub(super) fn into_command(self) -> Result<Command> {
         let state_dir = self.state_dir.map_or_else(state_dir, Ok)?;
         match self.command {
+            Some(GatewaySubcommand::Telemetry { command }) => {
+                Ok(Command::Telemetry { state_dir, command })
+            }
+            Some(GatewaySubcommand::SetRuntime {
+                idle_exit_seconds,
+                storage_limit_bytes,
+                ingress,
+                hold_socket,
+                clear_ingress,
+                clear_hold_socket,
+                clear_storage_limit,
+            }) => Ok(Command::SetRuntime {
+                state_dir,
+                idle_exit_seconds,
+                storage_limit_bytes,
+                ingress,
+                hold_socket,
+                clear_ingress,
+                clear_hold_socket,
+                clear_storage_limit,
+            }),
             Some(GatewaySubcommand::Init(arguments)) => {
                 parse_init(state_dir, arguments).map(Command::Init)
             }
@@ -343,7 +425,6 @@ impl GatewayCli {
             Some(GatewaySubcommand::Serve(arguments)) => Ok(Command::Serve {
                 state_dir,
                 background: arguments.background,
-                start_quiesced: arguments.start_quiesced,
             }),
             Some(GatewaySubcommand::ServeChild) => Ok(Command::ServeChild { state_dir }),
             Some(GatewaySubcommand::Exit) => Ok(Command::Exit { state_dir }),
@@ -384,7 +465,7 @@ fn parse_init(state_dir: PathBuf, arguments: InitArgs) -> Result<InitOptions> {
     ) {
         (Some(hostname), Some(path)) => Some(CloudflareInit::Named {
             hostname,
-            token: load_cloudflare_token(&path)?,
+            token: load_secret_file(&path)?,
         }),
         (None, None) => None,
         _ => {

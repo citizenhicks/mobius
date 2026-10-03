@@ -1734,7 +1734,7 @@ fn cloudflare_token_loader_rejects_a_symlink() {
     fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).expect("token permissions");
     std::os::unix::fs::symlink(target, &link).expect("token symlink");
 
-    let error = load_cloudflare_token(&link).expect_err("symlink must fail");
+    let error = load_secret_file(&link).expect_err("symlink must fail");
 
     assert!(error.to_string().contains("regular file"));
 }
@@ -1743,7 +1743,7 @@ fn cloudflare_token_loader_rejects_a_symlink() {
 fn cloudflare_token_loader_rejects_a_nonregular_file() {
     let directory = tempfile::tempdir().expect("token directory");
 
-    let error = load_cloudflare_token(directory.path()).expect_err("directory must fail");
+    let error = load_secret_file(directory.path()).expect_err("directory must fail");
 
     assert!(error.to_string().contains("regular file"));
 }
@@ -1870,4 +1870,23 @@ fn new_gateway_bot_defaults_use_full_access() {
             "full_access".into()
         ))
     );
+}
+
+#[test]
+fn runtime_storage_allowance_requires_at_least_64_mib() {
+    let mut config = GatewayConfig::new(DEFAULT_LISTEN, None).unwrap();
+    for limit in [None, Some(64 * 1024 * 1024), Some(5 * 1024 * 1024 * 1024)] {
+        config.runtime.storage_limit_bytes = limit;
+        config.validate().unwrap();
+    }
+    for limit in [0, 64 * 1024 * 1024 - 1] {
+        config.runtime.storage_limit_bytes = Some(limit);
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("at least 64 MiB")
+        );
+    }
 }

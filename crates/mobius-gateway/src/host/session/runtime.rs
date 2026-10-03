@@ -375,6 +375,16 @@ impl HostState {
                 .await;
                 let _ = reply.send(result);
             }
+            HostCommand::DeleteWorkspaceFile { path, reply } => {
+                let result = async {
+                    self.require_idle()?;
+                    let _mutation = self.begin_session_mutation()?;
+                    self.project()?;
+                    delete_workspace_file(&self.running.gateway_sandbox, &path).await
+                }
+                .await;
+                let _ = reply.send(result);
+            }
             HostCommand::WriteWorkspaceFile {
                 path,
                 content,

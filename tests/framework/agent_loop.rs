@@ -18,6 +18,7 @@ async fn loop_executes_tool_and_returns_result_to_model() {
         vec![Arc::new(Tools::coding(
             mobius::backend::session_files::SessionFileStore::new(
                 tempfile::tempdir().expect("files").path(),
+                None,
             ),
         ))],
     ))
@@ -61,7 +62,7 @@ async fn middleware_setup_runs_once_across_model_steps_and_turns() {
         workspace.path(),
         Arc::clone(&model),
         vec![
-            Arc::new(Tools::coding(SessionFileStore::new(files.path()))),
+            Arc::new(Tools::coding(SessionFileStore::new(files.path(), None))),
             extension.clone(),
         ],
     ))
@@ -163,6 +164,7 @@ async fn approval_allows_an_explicitly_approved_write() {
         vec![Arc::new(Tools::coding(
             mobius::backend::session_files::SessionFileStore::new(
                 tempfile::tempdir().expect("files").path(),
+                None,
             ),
         ))],
     ))
@@ -214,6 +216,7 @@ async fn approval_denial_prevents_command_execution() {
         vec![Arc::new(Tools::coding(
             mobius::backend::session_files::SessionFileStore::new(
                 tempfile::tempdir().expect("files").path(),
+                None,
             ),
         ))],
     ))

@@ -1,5 +1,6 @@
 use super::*;
 use mobius::backend::session_files::session_file_limits;
+use mobius::backend::session_files::{SessionFileOrigin as StoredFileOrigin, SessionFileSelection};
 use mobius::protocol::{MessageAuthor, Submission};
 
 use crate::wire::{GitDiffScope, WorkspaceFileScope};
@@ -72,9 +73,7 @@ pub(super) async fn handle_message(
     mut connection: ConnectionSessionState<'_>,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<()> {
-    let Some(message) =
-        handle_runtime_message(message, gateway, client.connections, writer).await?
-    else {
+    let Some(message) = handle_runtime_message(message, gateway, writer).await? else {
         return Ok(());
     };
     let Some(message) =
@@ -90,9 +89,10 @@ pub(super) async fn handle_message(
         return Ok(());
     };
     match message {
-        ClientMessage::GetRuntimeActivity { .. }
-        | ClientMessage::PrepareIdleShutdown { .. }
-        | ClientMessage::CancelIdleShutdown { .. } => {
+        ClientMessage::GetStorageUsage { .. }
+        | ClientMessage::GetTelemetry { .. }
+        | ClientMessage::ConfigureTelemetry { .. }
+        | ClientMessage::SendTelemetry { .. } => {
             unreachable!("runtime control was handled above")
         }
         ClientMessage::SetNotifications {
@@ -242,9 +242,17 @@ pub(super) async fn handle_message(
         ClientMessage::DeleteSessions {
             request_id,
             session_ids,
+            selection,
         } => {
-            return delete_sessions(writer, &mut connection, request_id, session_ids, gateway)
-                .await;
+            return delete_sessions(
+                writer,
+                &mut connection,
+                request_id,
+                session_ids,
+                selection,
+                gateway,
+            )
+            .await;
         }
         ClientMessage::Submit {
             session_id,
@@ -310,14 +318,6 @@ pub(super) async fn handle_message(
                 upload_id,
             )
             .await;
-        }
-        ClientMessage::DeleteSessionFile {
-            request_id,
-            session_id,
-            file_id,
-        } => {
-            return delete_session_file(writer, &mut connection, request_id, session_id, file_id)
-                .await;
         }
         ClientMessage::ListSessionFiles {
             request_id,
@@ -507,6 +507,17 @@ pub(super) async fn handle_message(
                 max_bytes,
             )
             .await;
+        }
+        ClientMessage::DeleteWorkspaceFile {
+            request_id,
+            session_id,
+            path,
+        } => {
+            let host = match require_selected(&*connection.selected, &session_id) {
+                Ok(host) => host,
+                Err(rejection) => return write_rejection(writer, request_id, rejection).await,
+            };
+            return write_result(writer, request_id, host.delete_workspace_file(path).await).await;
         }
         ClientMessage::WriteWorkspaceFile {
             request_id,
@@ -957,11 +968,29 @@ async fn delete_sessions(
     connection: &mut ConnectionSessionState<'_>,
     request_id: String,
     session_ids: Vec<String>,
+    mut selection: SessionFileSelection,
     gateway: &GatewayHost,
 ) -> Result<()> {
-    match gateway.delete_sessions(&session_ids).await {
+    if let SessionFileSelection::Ids(ids) = &mut selection
+        && session_ids.len() == 1
+        && !ids.is_empty()
+    {
+        ids.retain(|id| {
+            connection
+                .uploads
+                .remove(&(session_ids[0].clone(), id.clone()))
+                .is_none()
+        });
+        if ids.is_empty() {
+            return write_result(writer, request_id, Ok(())).await;
+        }
+    }
+    let all = selection == SessionFileSelection::All;
+    match gateway.delete_sessions(&session_ids, selection).await {
         Ok(deleted) => {
-            forget_deleted_sessions(connection, &deleted);
+            if all {
+                forget_deleted_sessions(connection, &deleted);
+            }
             write_result(writer, request_id, Ok(())).await
         }
         Err(rejection) => write_result(writer, request_id, Err(rejection)).await,
@@ -1095,9 +1124,9 @@ async fn begin_session_file_upload(
         return write_rejection(
             writer,
             request_id,
-            session_file_rejection(format!(
+            session_file_rejection(mobius::Error::Tool(format!(
                 "a connection cannot hold more than {MAX_PENDING_UPLOADS} pending uploads"
-            )),
+            ))),
         )
         .await;
     }
@@ -1154,7 +1183,9 @@ async fn upload_session_file_chunk(
         return write_rejection(
             writer,
             request_id,
-            session_file_rejection("session file upload is not active"),
+            session_file_rejection(mobius::Error::Tool(
+                "session file upload is not active".into(),
+            )),
         )
         .await;
     };
@@ -1205,7 +1236,9 @@ async fn finish_session_file_upload(
         return write_rejection(
             writer,
             request_id,
-            session_file_rejection("session file upload is not active"),
+            session_file_rejection(mobius::Error::Tool(
+                "session file upload is not active".into(),
+            )),
         )
         .await;
     };
@@ -1221,38 +1254,6 @@ async fn finish_session_file_upload(
             )
             .await
         }
-        Err(error) => write_rejection(writer, request_id, session_file_rejection(error)).await,
-    }
-}
-
-async fn delete_session_file(
-    writer: &mut (impl AsyncWrite + Unpin),
-    connection: &mut ConnectionSessionState<'_>,
-    request_id: String,
-    session_id: String,
-    file_id: String,
-) -> Result<()> {
-    let host = match require_selected(&*connection.selected, &session_id) {
-        Ok(host) => host,
-        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
-    };
-    if connection
-        .uploads
-        .remove(&(session_id.clone(), file_id.clone()))
-        .is_some()
-    {
-        return write_result(writer, request_id, Ok(())).await;
-    }
-    let _mutation = match host.begin_session_file_mutation(connection.bots) {
-        Ok(mutation) => mutation,
-        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
-    };
-    match connection
-        .session_files
-        .delete_upload(&session_id, &file_id)
-        .await
-    {
-        Ok(()) => write_result(writer, request_id, Ok(())).await,
         Err(error) => write_rejection(writer, request_id, session_file_rejection(error)).await,
     }
 }
@@ -1273,14 +1274,34 @@ async fn list_session_files(
     if let Err(rejection) = require_readable_files(&*connection.selected, &session_id) {
         return write_rejection(writer, request_id, rejection).await;
     }
-    match connection.session_files.list_files(&session_id).await {
+    match connection
+        .session_files
+        .list_files(
+            &session_id,
+            &[StoredFileOrigin::Upload, StoredFileOrigin::Artifact],
+        )
+        .await
+    {
         Ok(items) => {
             write_frame(
                 writer,
                 &ServerFrame::new(ServerMessage::SessionFiles {
                     request_id,
                     session_id,
-                    files: items,
+                    files: items
+                        .into_iter()
+                        .map(|(origin, file)| mobius::protocol::SessionFileRecord {
+                            origin: match origin {
+                                StoredFileOrigin::Upload => {
+                                    mobius::protocol::SessionFileOrigin::User
+                                }
+                                StoredFileOrigin::Artifact | StoredFileOrigin::Observation => {
+                                    mobius::protocol::SessionFileOrigin::Agent
+                                }
+                            },
+                            file,
+                        })
+                        .collect(),
                 }),
             )
             .await
@@ -1751,16 +1772,15 @@ async fn get_routine_run_preview(
     }
 }
 
-async fn handle_runtime_message(
+pub(super) async fn handle_runtime_message(
     message: ClientMessage,
     gateway: &GatewayHost,
-    connections: &ClientConnections,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<Option<ClientMessage>> {
-    match message {
-        ClientMessage::GetRuntimeActivity { request_id } => {
-            let activity = match gateway.runtime_activity().await {
-                Ok(activity) => activity,
+    let request_id = match message {
+        ClientMessage::GetStorageUsage { request_id } => {
+            let usage = match gateway.storage_usage_request().await {
+                Ok(usage) => usage,
                 Err(rejection) => {
                     return write_rejection(writer, request_id, rejection)
                         .await
@@ -1769,61 +1789,61 @@ async fn handle_runtime_message(
             };
             return write_frame(
                 writer,
-                &ServerFrame::new(ServerMessage::RuntimeActivity {
-                    request_id,
-                    idle: activity.idle,
-                    connected_clients: connections.native_count()?,
-                    activity_revision: activity.activity_revision,
-                    next_routine_at: activity.next_routine_at,
-                }),
+                &ServerFrame::new(ServerMessage::StorageUsage { request_id, usage }),
             )
             .await
             .map(|()| None);
         }
-        ClientMessage::PrepareIdleShutdown {
+        ClientMessage::GetTelemetry { request_id } => request_id,
+        ClientMessage::ConfigureTelemetry {
             request_id,
-            expected_activity_revision,
+            expected_revision,
+            sinks,
+            preserve_auth,
         } => {
-            let prepared = match gateway
-                .prepare_idle_shutdown(&expected_activity_revision, || connections.native_count())
+            if let Err(rejection) = gateway
+                .configure_telemetry(expected_revision, sinks, &preserve_auth)
                 .await
             {
-                Ok(prepared) => prepared,
-                Err(rejection) => {
-                    return write_rejection(writer, request_id, rejection)
-                        .await
-                        .map(|()| None);
-                }
-            };
-            let next_routine_at = if prepared {
-                match gateway.runtime_activity().await {
-                    Ok(activity) => activity.next_routine_at,
-                    Err(rejection) => {
-                        return write_rejection(writer, request_id, rejection)
-                            .await
-                            .map(|()| None);
-                    }
-                }
-            } else {
-                None
-            };
-            return write_frame(
+                return write_rejection(writer, request_id, rejection)
+                    .await
+                    .map(|()| None);
+            }
+            request_id
+        }
+        ClientMessage::SendTelemetry {
+            request_id,
+            sink_id,
+        } => {
+            return write_result(
                 writer,
-                &ServerFrame::new(ServerMessage::IdleShutdownPrepared {
-                    request_id,
-                    prepared,
-                    next_routine_at,
-                }),
+                request_id,
+                gateway
+                    .schedule_telemetry(sink_id)
+                    .await
+                    .map_err(|error| internal_rejection(error.to_string())),
             )
             .await
             .map(|()| None);
         }
-        ClientMessage::CancelIdleShutdown { request_id } => {
-            gateway.cancel_idle_shutdown().await;
-            return write_result(writer, request_id, Ok(()))
+        other => return Ok(Some(other)),
+    };
+    let (revision, sinks) = match gateway.telemetry_report().await {
+        Ok(report) => report,
+        Err(error) => {
+            return write_rejection(writer, request_id, internal_rejection(error.to_string()))
                 .await
                 .map(|()| None);
         }
-        other => Ok(Some(other)),
-    }
+    };
+    write_frame(
+        writer,
+        &ServerFrame::new(ServerMessage::Telemetry {
+            request_id,
+            revision,
+            sinks,
+        }),
+    )
+    .await
+    .map(|()| None)
 }

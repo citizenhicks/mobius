@@ -22,6 +22,13 @@ pub(super) async fn start(
     let logo = directory.join("logo.png");
     fs::write(&logo, include_bytes!("logo.png"))?;
     private_file(&logo)?;
+    // Explicit paths survive minimal sandbox images that omit the OS icon theme at runtime.
+    let terminal_icon = directory.join("terminal.png");
+    fs::write(&terminal_icon, include_bytes!("terminal.png"))?;
+    private_file(&terminal_icon)?;
+    let files_icon = directory.join("files.png");
+    fs::write(&files_icon, include_bytes!("files.png"))?;
+    private_file(&files_icon)?;
     super::run_short(
         Command::new(executable(&["feh"])?)
             .args(["--no-fehbg", "--bg-fill"])
@@ -48,7 +55,7 @@ pub(super) async fn start(
         (
             "terminal",
             "Terminal",
-            "/usr/share/pixmaps/xterm-color_48x48.xpm".into(),
+            terminal_icon.display().to_string(),
             executable(&["xterm"])?,
             vec![
                 "-title".into(),
@@ -62,7 +69,7 @@ pub(super) async fn start(
         (
             "files",
             "Files",
-            "folder".into(),
+            files_icon.display().to_string(),
             executable(&["pcmanfm"])?,
             vec!["--new-win".into(), "--profile=mobius".into()],
         ),

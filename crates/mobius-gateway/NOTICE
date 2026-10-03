@@ -14,6 +14,13 @@ The möbius color palettes use Nord
 (https://github.com/nordtheme/nord), licensed under the MIT License.
 Copyright (c) 2016-present Sven Greb
 
+The private desktop launcher icons for Terminal and Files are rasterized from
+GNOME Adwaita's utilities-terminal-symbolic.svg and folder.svg. Credit: GNOME
+Project (https://www.gnome.org). Adwaita offers the artwork under LGPL-3.0 or
+CC-BY-SA-3.0, and CC-BY-SA-4.0. Source and license information:
+https://gitlab.gnome.org/GNOME/adwaita-icon-theme and
+https://www.gnu.org/licenses/lgpl-3.0.html.
+
 The MIT License
 
 Permission is hereby granted, free of charge, to any person obtaining a copy

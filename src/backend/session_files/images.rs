@@ -154,7 +154,7 @@ impl SessionFileStore {
             ));
         }
         let completed = super::list_completed(&session_dir, &self.blob_dir()).await?;
-        let _reservation = self.reserve(target, file.size, &completed)?;
+        let _reservation = self.reserve_session(target, file.size, &completed)?;
         record.origin = origin;
         let staging = session_dir.join(format!(".{}-partial", record.file.id));
         super::create_private_dir(&staging).await?;
@@ -183,6 +183,7 @@ impl SessionFileStore {
                     media_type.into(),
                     &bytes,
                     SessionFileOrigin::Observation,
+                    false,
                 )
                 .await?,
             width,
@@ -208,8 +209,15 @@ impl SessionFileStore {
                 "generated image media type does not match its bytes".into(),
             ));
         }
-        self.publish_artifact(session_id, name, media_type.into(), &bytes)
-            .await
+        self.publish_bytes(
+            session_id,
+            name,
+            media_type.into(),
+            &bytes,
+            SessionFileOrigin::Artifact,
+            true,
+        )
+        .await
     }
 
     /// Reads an exact file reference authorized by the owning session.

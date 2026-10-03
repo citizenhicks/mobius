@@ -934,7 +934,7 @@ mod tests {
         restore_input_private_fields(&mut compacted, latest_turn_input(&input));
         let files = tempfile::tempdir().expect("files");
         let attachments = super::super::attachments::Attachments::new(
-            crate::backend::session_files::SessionFileStore::new(files.path()),
+            crate::backend::session_files::SessionFileStore::new(files.path(), None),
         );
         attachments.prepare_compacted_input(&input, &mut compacted);
         assert_eq!(compacted, vec![compaction, user, materialization]);

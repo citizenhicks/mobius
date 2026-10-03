@@ -1036,6 +1036,7 @@ async fn send_gateway_action(
                 .send(ClientMessage::DeleteSessions {
                     request_id: request_id.clone(),
                     session_ids: vec![session_id.into()],
+                    selection: mobius::backend::session_files::SessionFileSelection::All,
                 })
                 .await;
             match result {

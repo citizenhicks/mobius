@@ -833,6 +833,20 @@ impl CheckpointStore for SqliteCheckpoint {
         })
     }
 
+    fn session_metadata<'a>(
+        &'a self,
+        session_id: &'a str,
+    ) -> BoxFuture<'a, Result<Option<std::collections::BTreeMap<String, Value>>>> {
+        let session_id = session_id.to_owned();
+        Box::pin(self.run(move |connection| {
+            let metadata = connection.query_row(
+                "SELECT json_extract(latest_checkpoint_json, '$.metadata') FROM sessions WHERE session_id = ?1",
+                [&session_id], |row| row.get::<_, String>(0),
+            ).optional()?;
+            metadata.map(|json| serde_json::from_str(&json).map_err(Into::into)).transpose()
+        }))
+    }
+
     fn load_state<'a>(
         &'a self,
         scope: &'a str,

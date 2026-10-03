@@ -5,6 +5,7 @@ mod connection;
 mod init;
 mod lifecycle;
 mod provider;
+mod telemetry;
 
 use std::ffi::OsString;
 #[cfg(any(unix, test))]
@@ -30,7 +31,7 @@ use crate::auth::{AuthStore, PairingGrant};
 use crate::client::{Endpoint, GatewayClient, MAX_PENDING_FRAMES};
 use crate::cloudflare::CloudflareTunnel;
 use crate::config::{
-    CloudflareConfig, ConfigStore, DEFAULT_LISTEN, GatewayConfig, TlsConfig, load_cloudflare_token,
+    CloudflareConfig, ConfigStore, DEFAULT_LISTEN, GatewayConfig, TlsConfig, load_secret_file,
     state_dir,
 };
 use crate::server::GatewayServer;
@@ -135,6 +136,45 @@ pub async fn run_cli(
     load_local_client: fn(&Endpoint) -> Result<Option<String>>,
 ) -> Result<()> {
     match cli.into_command()? {
+        Command::Telemetry { state_dir, command } => {
+            telemetry::run(state_dir, command, load_local_client).await
+        }
+        Command::SetRuntime {
+            state_dir,
+            idle_exit_seconds,
+            storage_limit_bytes,
+            ingress,
+            hold_socket,
+            clear_ingress,
+            clear_hold_socket,
+            clear_storage_limit,
+        } => {
+            let (store, mut config) = ConfigStore::open(state_dir)?;
+            ensure_gateway_stopped(&store, &config)?;
+            if let Some(seconds) = idle_exit_seconds {
+                config.runtime.idle_exit_seconds = seconds;
+            }
+            if let Some(bytes) = storage_limit_bytes {
+                config.runtime.storage_limit_bytes = Some(bytes);
+            }
+            if let Some(address) = ingress {
+                config.runtime.ingress = Some(address);
+            }
+            if let Some(socket) = hold_socket {
+                config.runtime.hold_socket = Some(socket);
+            }
+            if clear_ingress {
+                config.runtime.ingress = None;
+            }
+            if clear_hold_socket {
+                config.runtime.hold_socket = None;
+            }
+            if clear_storage_limit {
+                config.runtime.storage_limit_bytes = None;
+            }
+            config.validate()?;
+            store.save(&config)
+        }
         Command::Init(options) => initialize(options),
         Command::Bootstrap { state_dir } => initialize_bootstrap(state_dir, save_local_client),
         Command::ResetBotDefaults { state_dir } => reset_bot_defaults(state_dir),
@@ -151,30 +191,15 @@ pub async fn run_cli(
         Command::Serve {
             state_dir,
             background,
-            start_quiesced,
         } => {
             if background {
                 serve_in_background(state_dir, load_local_client).await
             } else {
-                serve(
-                    state_dir,
-                    true,
-                    start_quiesced,
-                    save_local_client,
-                    load_local_client,
-                )
-                .await
+                serve(state_dir, true, save_local_client, load_local_client).await
             }
         }
         Command::ServeChild { state_dir } => {
-            serve(
-                state_dir,
-                false,
-                false,
-                save_local_client,
-                load_local_client,
-            )
-            .await
+            serve(state_dir, false, save_local_client, load_local_client).await
         }
         Command::Exit { state_dir } => exit_gateway(state_dir),
     }

@@ -4,7 +4,7 @@ use cap_std::{ambient_authority, fs::Dir};
 #[tokio::test]
 async fn reading_and_publishing_images_retain_only_their_own_files() {
     let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
     let mut encoded = std::io::Cursor::new(Vec::new());
     image::DynamicImage::ImageRgba8(image::RgbaImage::new(2, 2))
         .write_to(&mut encoded, image::ImageFormat::Png)
@@ -47,7 +47,7 @@ async fn reading_and_publishing_images_retain_only_their_own_files() {
 #[tokio::test]
 async fn upload_round_trip_is_session_scoped_and_atomic() {
     let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
     let session_id = "thread:not-a-uuid";
     let mut pending = store
         .begin_upload(session_id, "notes.txt".into(), 5, "text/plain".into())
@@ -100,7 +100,7 @@ async fn upload_round_trip_is_session_scoped_and_atomic() {
 #[tokio::test]
 async fn file_list_identifies_user_uploads_and_agent_artifacts() {
     let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
     let mut upload = store
         .begin_upload("session", "input.txt".into(), 1, "text/plain".into())
         .await
@@ -112,13 +112,22 @@ async fn file_list_identifies_user_uploads_and_agent_artifacts() {
         .await
         .expect("publish artifact");
 
-    let files = store.list_files("session").await.expect("list files");
+    let files = store
+        .list_files(
+            "session",
+            &[
+                crate::backend::session_files::SessionFileOrigin::Upload,
+                crate::backend::session_files::SessionFileOrigin::Artifact,
+            ],
+        )
+        .await
+        .expect("list files");
 
     assert!(
-        files.iter().any(|record| {
-            record.origin == ProtocolFileOrigin::User && record.file.name == "input.txt"
-        }) && files.iter().any(|record| {
-            record.origin == ProtocolFileOrigin::Agent && record.file.name == "output.txt"
+        files.iter().any(|(origin, file)| {
+            *origin == SessionFileOrigin::Upload && file.name == "input.txt"
+        }) && files.iter().any(|(origin, file)| {
+            *origin == SessionFileOrigin::Artifact && file.name == "output.txt"
         })
     );
 }
@@ -126,7 +135,7 @@ async fn file_list_identifies_user_uploads_and_agent_artifacts() {
 #[tokio::test]
 async fn chat_file_grants_preserve_origin_identity_and_survive_source_deletion() {
     let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
     let mut pending = store
         .begin_upload("source", "input.txt".into(), 5, "text/plain".into())
         .await
@@ -158,7 +167,13 @@ async fn chat_file_grants_preserve_origin_identity_and_survive_source_deletion()
     }
     assert!(
         store
-            .list_files("execution")
+            .list_files(
+                "execution",
+                &[
+                    crate::backend::session_files::SessionFileOrigin::Upload,
+                    crate::backend::session_files::SessionFileOrigin::Artifact
+                ]
+            )
             .await
             .expect("rejected grants")
             .is_empty()
@@ -180,18 +195,30 @@ async fn chat_file_grants_preserve_origin_identity_and_survive_source_deletion()
         );
     }
     store.delete_session("source").await.expect("delete source");
-    let reopened = SessionFileStore::new(state.path());
+    let reopened = SessionFileStore::new(state.path(), None);
     reopened
         .verify_upload("execution", &upload)
         .await
         .expect("user origin");
     assert_eq!(
-        reopened.list_uploads("execution").await.expect("uploads"),
-        std::slice::from_ref(&upload)
+        reopened
+            .list_files(
+                "execution",
+                &[crate::backend::session_files::SessionFileOrigin::Upload]
+            )
+            .await
+            .expect("uploads"),
+        [(SessionFileOrigin::Upload, upload.clone())]
     );
     assert_eq!(
-        reopened.list_artifacts("chat").await.expect("artifacts"),
-        std::slice::from_ref(&artifact)
+        reopened
+            .list_files(
+                "chat",
+                &[crate::backend::session_files::SessionFileOrigin::Artifact]
+            )
+            .await
+            .expect("artifacts"),
+        [(SessionFileOrigin::Artifact, artifact.clone())]
     );
     assert!(reopened.verify_upload("chat", &artifact).await.is_err());
     assert_eq!(
@@ -214,7 +241,7 @@ async fn chat_file_grants_preserve_origin_identity_and_survive_source_deletion()
 #[tokio::test]
 async fn delete_session_removes_only_that_sessions_files() {
     let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
     for session_id in ["deleted", "retained"] {
         store
             .publish_artifact(
@@ -234,14 +261,20 @@ async fn delete_session_removes_only_that_sessions_files() {
 
     assert!(
         store
-            .list_artifacts("deleted")
+            .list_files(
+                "deleted",
+                &[crate::backend::session_files::SessionFileOrigin::Artifact]
+            )
             .await
             .expect("deleted artifacts")
             .is_empty()
     );
     assert_eq!(
         store
-            .list_artifacts("retained")
+            .list_files(
+                "retained",
+                &[crate::backend::session_files::SessionFileOrigin::Artifact]
+            )
             .await
             .expect("retained artifacts")
             .len(),
@@ -252,7 +285,7 @@ async fn delete_session_removes_only_that_sessions_files() {
 #[tokio::test]
 async fn identical_payloads_share_one_content_blob() {
     let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
     let first = store
         .publish_artifact("first", "one.txt".into(), "text/plain".into(), b"same")
         .await
@@ -269,7 +302,7 @@ async fn identical_payloads_share_one_content_blob() {
 #[tokio::test]
 async fn repeated_chunk_reads_share_one_blob_verification() {
     let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
     let file = store
         .publish_artifact("session", "result.txt".into(), "text/plain".into(), b"safe")
         .await
@@ -297,7 +330,7 @@ async fn repeated_chunk_reads_share_one_blob_verification() {
 #[tokio::test]
 async fn changed_blob_is_reverified_and_failed_verification_is_not_cached() {
     let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
     let file = store
         .publish_artifact("session", "result.txt".into(), "text/plain".into(), b"safe")
         .await
@@ -346,7 +379,7 @@ async fn changed_blob_is_reverified_and_failed_verification_is_not_cached() {
 #[tokio::test]
 async fn tampered_content_blob_is_rejected() {
     let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
     let file = store
         .publish_artifact("session", "result.txt".into(), "text/plain".into(), b"safe")
         .await
@@ -384,7 +417,7 @@ fn validated_blob_cache_is_bounded() {
 #[tokio::test]
 async fn private_content_identity_round_trips_without_wire_changes() {
     let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
     let file = store
         .publish_artifact(
             "session",
@@ -418,7 +451,7 @@ async fn private_content_identity_round_trips_without_wire_changes() {
 #[tokio::test]
 async fn deleting_last_reference_garbage_collects_the_blob() {
     let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
     store
         .publish_artifact("first", "one.txt".into(), "text/plain".into(), b"same")
         .await
@@ -437,7 +470,7 @@ async fn deleting_last_reference_garbage_collects_the_blob() {
 #[tokio::test]
 async fn deleting_an_upload_removes_its_last_content_blob() {
     let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
     let mut upload = store
         .begin_upload("session", "input.txt".into(), 1, "text/plain".into())
         .await
@@ -446,13 +479,22 @@ async fn deleting_an_upload_removes_its_last_content_blob() {
     let file = upload.finish().await.expect("finish upload");
 
     store
-        .delete_upload("session", &file.id)
+        .prepare_delete_sessions(
+            &["session".into()],
+            SessionFileSelection::Ids(vec![file.id.clone()]),
+        )
+        .await
+        .expect("prepare")
+        .delete()
         .await
         .expect("delete upload");
 
     assert!(
         store
-            .list_uploads("session")
+            .list_files(
+                "session",
+                &[crate::backend::session_files::SessionFileOrigin::Upload]
+            )
             .await
             .expect("list uploads")
             .is_empty()
@@ -461,9 +503,9 @@ async fn deleting_an_upload_removes_its_last_content_blob() {
 }
 
 #[tokio::test]
-async fn deleting_an_upload_stays_successful_when_blob_cleanup_fails() {
+async fn deleting_an_upload_reports_blob_cleanup_failure_after_removing_reference() {
     let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
     let mut upload = store
         .begin_upload("session", "input.txt".into(), 1, "text/plain".into())
         .await
@@ -473,12 +515,21 @@ async fn deleting_an_upload_stays_successful_when_blob_cleanup_fails() {
     std::fs::create_dir(store.blob_dir().join("invalid-entry")).expect("invalid blob entry");
 
     store
-        .delete_upload("session", &file.id)
+        .prepare_delete_sessions(
+            &["session".into()],
+            SessionFileSelection::Ids(vec![file.id.clone()]),
+        )
         .await
-        .expect("committed deletion");
+        .expect("prepare")
+        .delete()
+        .await
+        .expect_err("blob cleanup failure");
     assert!(
         store
-            .list_uploads("session")
+            .list_files(
+                "session",
+                &[crate::backend::session_files::SessionFileOrigin::Upload]
+            )
             .await
             .expect("list uploads")
             .is_empty()
@@ -488,7 +539,7 @@ async fn deleting_an_upload_stays_successful_when_blob_cleanup_fails() {
 #[tokio::test]
 async fn accepts_250_mib_and_rejects_larger_files() {
     let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
     let limits = session_file_limits();
     let pending = store
         .begin_upload(
@@ -516,7 +567,7 @@ async fn accepts_250_mib_and_rejects_larger_files() {
 #[tokio::test]
 async fn delete_session_rejects_an_active_upload() {
     let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
     let pending = store
         .begin_upload("session", "pending.txt".into(), 1, "text/plain".into())
         .await
@@ -550,14 +601,14 @@ async fn attachment_cleanup_remains_safe_after_real_workspace_replacement_and_re
     std::fs::create_dir_all(&replacement_staged).expect("replacement attachments");
     let pinned_workspace = Dir::open_ambient_dir(&workspace, ambient_authority()).expect("pin");
 
-    SessionFileStore::new(state.path())
+    SessionFileStore::new(state.path(), None)
         .register_attachment_workspace(session_id, &pinned_workspace, &workspace)
         .await
         .expect("register workspace");
     std::fs::rename(&workspace, root.path().join("original")).expect("move original");
     std::fs::rename(&replacement, &workspace).expect("install replacement");
 
-    SessionFileStore::new(state.path())
+    SessionFileStore::new(state.path(), None)
         .delete_session(session_id)
         .await
         .expect("delete session");
@@ -595,14 +646,14 @@ async fn attachment_cleanup_remains_safe_after_symlink_workspace_replacement_and
     std::fs::create_dir_all(&outside_staged).expect("outside attachments");
     let pinned_workspace = Dir::open_ambient_dir(&workspace, ambient_authority()).expect("pin");
 
-    SessionFileStore::new(state.path())
+    SessionFileStore::new(state.path(), None)
         .register_attachment_workspace(session_id, &pinned_workspace, &workspace)
         .await
         .expect("register workspace");
     std::fs::rename(&workspace, root.path().join("original")).expect("move original");
     symlink(&outside, &workspace).expect("install symlink");
 
-    SessionFileStore::new(state.path())
+    SessionFileStore::new(state.path(), None)
         .delete_session(session_id)
         .await
         .expect("delete session");
@@ -623,7 +674,7 @@ async fn attachment_cleanup_removes_staged_files_for_the_registered_workspace() 
     std::fs::create_dir_all(&staged).expect("staged attachments");
     let pinned_workspace = Dir::open_ambient_dir(workspace, ambient_authority()).expect("pin");
 
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
     store
         .register_attachment_workspace(session_id, &pinned_workspace, workspace)
         .await
@@ -643,7 +694,7 @@ async fn attachment_workspace_persists_the_volume_uuid_instead_of_the_mount_devi
     let workspace = tempfile::tempdir().expect("workspace");
     let directory =
         Dir::open_ambient_dir(workspace.path(), ambient_authority()).expect("workspace");
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
 
     store
         .register_attachment_workspace("session", &directory, workspace.path())
@@ -662,8 +713,11 @@ async fn attachment_workspace_persists_the_volume_uuid_instead_of_the_mount_devi
 #[tokio::test]
 async fn empty_deletion_does_not_initialize_or_scan_file_storage() {
     let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path());
-    let mut deletion = store.prepare_delete_sessions(&[]).await.expect("prepare");
+    let store = SessionFileStore::new(state.path(), None);
+    let mut deletion = store
+        .prepare_delete_sessions(&[], SessionFileSelection::All)
+        .await
+        .expect("prepare");
     deletion.stage().await.expect("stage");
     deletion.delete().await.expect("delete");
     assert!(!store.root.exists());
@@ -680,13 +734,13 @@ async fn staged_deletion_releases_uploads_and_resumes_after_restart() {
     std::fs::create_dir_all(&staged).expect("staged attachment directory");
     let directory =
         Dir::open_ambient_dir(workspace.path(), ambient_authority()).expect("workspace");
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
     store
         .register_attachment_workspace("deleted", &directory, workspace.path())
         .await
         .expect("register");
     let mut deletion = store
-        .prepare_delete_sessions(&["deleted".into()])
+        .prepare_delete_sessions(&["deleted".into()], SessionFileSelection::All)
         .await
         .expect("prepare");
     deletion.stage().await.expect("stage deletion");
@@ -708,7 +762,7 @@ async fn staged_deletion_releases_uploads_and_resumes_after_restart() {
     .expect("other uploads remain available")
     .expect("publish");
     drop(deletion);
-    let reopened = SessionFileStore::new(state.path());
+    let reopened = SessionFileStore::new(state.path(), None);
     reopened
         .cleanup_deleted_sessions()
         .await
@@ -716,7 +770,10 @@ async fn staged_deletion_releases_uploads_and_resumes_after_restart() {
     assert!(!staged.exists());
     assert_eq!(
         reopened
-            .list_artifacts("retained")
+            .list_files(
+                "retained",
+                &[crate::backend::session_files::SessionFileOrigin::Artifact]
+            )
             .await
             .expect("retained files")
             .len(),
@@ -742,7 +799,7 @@ async fn attachment_registration_handles_path_replacement_safely() {
     std::fs::rename(&workspace, root.path().join("original")).expect("move original");
     std::fs::rename(&replacement, &workspace).expect("install replacement");
 
-    let registration = SessionFileStore::new(state.path())
+    let registration = SessionFileStore::new(state.path(), None)
         .register_attachment_workspace(session_id, &pinned_workspace, &workspace)
         .await;
 
@@ -754,7 +811,7 @@ async fn attachment_registration_handles_path_replacement_safely() {
     #[cfg(not(target_os = "macos"))]
     {
         registration.expect("register pinned workspace");
-        SessionFileStore::new(state.path())
+        SessionFileStore::new(state.path(), None)
             .delete_session(session_id)
             .await
             .expect("delete session");
@@ -772,7 +829,7 @@ async fn attachment_registration_handles_path_replacement_safely() {
 #[tokio::test]
 async fn display_names_never_select_internal_storage_paths() {
     let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
 
     for name in [METADATA_FILE, ".SESSION-FILE.JSON"] {
         let mut pending = store
@@ -797,7 +854,7 @@ async fn display_names_never_select_internal_storage_paths() {
 #[tokio::test]
 async fn artifacts_are_downloadable_but_excluded_from_upload_access() {
     let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
     let file = store
         .publish_artifact(
             "session",
@@ -810,7 +867,10 @@ async fn artifacts_are_downloadable_but_excluded_from_upload_access() {
 
     assert!(
         store
-            .list_uploads("session")
+            .list_files(
+                "session",
+                &[crate::backend::session_files::SessionFileOrigin::Upload]
+            )
             .await
             .expect("uploads")
             .is_empty()
@@ -830,20 +890,23 @@ async fn artifacts_are_downloadable_but_excluded_from_upload_access() {
             .is_err()
     );
     assert!(store.verify_upload("session", &file).await.is_err());
-    let reopened = SessionFileStore::new(state.path());
+    let reopened = SessionFileStore::new(state.path(), None);
     assert_eq!(
         reopened
-            .list_artifacts("session")
+            .list_files(
+                "session",
+                &[crate::backend::session_files::SessionFileOrigin::Artifact]
+            )
             .await
             .expect("reopened artifacts"),
-        [file]
+        [(SessionFileOrigin::Artifact, file)]
     );
 }
 
 #[tokio::test]
 async fn upload_rejects_traversal_names() {
     let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
 
     assert!(
         store
@@ -856,7 +919,7 @@ async fn upload_rejects_traversal_names() {
 #[tokio::test]
 async fn pending_uploads_reserve_session_quota_and_release_on_drop() {
     let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
     let limits = session_file_limits();
     let mut pending = Vec::new();
     for index in 0..(limits.max_session_bytes / limits.max_file_bytes) {
@@ -902,7 +965,7 @@ async fn pending_uploads_reserve_session_quota_and_release_on_drop() {
 #[tokio::test]
 async fn advertised_file_count_is_enforced() {
     let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
     let limits = session_file_limits();
     let mut pending = Vec::new();
     for index in 0..limits.max_session_files {
@@ -935,7 +998,7 @@ async fn advertised_file_count_is_enforced() {
 #[tokio::test]
 async fn advertised_upload_chunk_size_is_enforced() {
     let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
     let limits = session_file_limits();
     let accepted = vec![0; limits.max_upload_chunk_bytes];
     let rejected = vec![0; limits.max_upload_chunk_bytes + 1];
@@ -957,7 +1020,7 @@ async fn advertised_upload_chunk_size_is_enforced() {
 #[tokio::test]
 async fn first_store_access_removes_crash_leftovers() {
     let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
     let session_id = Uuid::new_v4().to_string();
     let session = store.session_dir(&session_id);
     std::fs::create_dir_all(&session).expect("session directory");
@@ -969,7 +1032,10 @@ async fn first_store_access_removes_crash_leftovers() {
 
     assert!(
         store
-            .list_uploads(&session_id)
+            .list_files(
+                &session_id,
+                &[crate::backend::session_files::SessionFileOrigin::Upload]
+            )
             .await
             .expect("list")
             .is_empty()
@@ -1000,5 +1066,473 @@ async fn text_forks_need_no_store_and_media_forks_fail_closed() {
                 .await
                 .is_err()
         );
+    }
+}
+
+#[tokio::test]
+async fn usage_counts_observations_and_shared_references_without_exposing_hidden_files() {
+    let state = tempfile::tempdir().unwrap();
+    let store = SessionFileStore::new(state.path(), None);
+    let mut pending = store
+        .begin_upload("source", "input.txt".into(), 5, "text/plain".into())
+        .await
+        .unwrap();
+    pending.append(0, b"input").await.unwrap();
+    let upload = pending.finish().await.unwrap();
+    store
+        .publish_artifact(
+            "source",
+            "result.txt".into(),
+            "text/plain".into(),
+            b"result",
+        )
+        .await
+        .unwrap();
+    store
+        .grant_file("source", "observer", &upload)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .list_files("source", &[SessionFileOrigin::Upload])
+            .await
+            .unwrap(),
+        vec![(SessionFileOrigin::Upload, upload.clone())]
+    );
+    assert_eq!(
+        store
+            .list_files("observer", &[SessionFileOrigin::Observation])
+            .await
+            .unwrap(),
+        vec![(SessionFileOrigin::Observation, upload)]
+    );
+}
+
+#[tokio::test]
+async fn gateway_quota_counts_cross_session_reservations_and_releases_after_purge() {
+    let state = tempfile::tempdir().unwrap();
+    let store = SessionFileStore::new(state.path(), Some(5));
+    let mut pending = store
+        .begin_upload("first", "input.txt".into(), 5, "text/plain".into())
+        .await
+        .unwrap();
+    assert!(matches!(
+        store
+            .begin_upload("second", "extra.txt".into(), 1, "text/plain".into())
+            .await,
+        Err(Error::StorageFull)
+    ));
+    pending.append(0, b"input").await.unwrap();
+    pending.finish().await.unwrap();
+    assert!(matches!(
+        store
+            .publish_artifact("second", "extra.txt".into(), "text/plain".into(), b"x")
+            .await,
+        Err(Error::StorageFull)
+    ));
+    store
+        .prepare_delete_sessions(
+            &["first".into()],
+            SessionFileSelection::Origins(vec![SessionFileOrigin::Upload]),
+        )
+        .await
+        .unwrap()
+        .delete()
+        .await
+        .unwrap();
+    store
+        .publish_artifact("second", "extra.txt".into(), "text/plain".into(), b"x")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn origin_purge_preserves_uploads_and_shared_fork_blobs_and_removes_staged_copies() {
+    let state = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let store = SessionFileStore::new(state.path(), None);
+    let mut pending = store
+        .begin_upload("parent", "input.txt".into(), 5, "text/plain".into())
+        .await
+        .unwrap();
+    pending.append(0, b"input").await.unwrap();
+    let upload = pending.finish().await.unwrap();
+    store
+        .publish_artifact(
+            "parent",
+            "result.txt".into(),
+            "text/plain".into(),
+            b"result",
+        )
+        .await
+        .unwrap();
+    store.grant_file("parent", "fork", &upload).await.unwrap();
+    let observation = store
+        .publish_artifact(
+            "source",
+            "observed.txt".into(),
+            "text/plain".into(),
+            b"observed",
+        )
+        .await
+        .unwrap();
+    store
+        .grant_file("source", "parent", &observation)
+        .await
+        .unwrap();
+    store.delete_session("source").await.unwrap();
+    assert_eq!(
+        store
+            .list_files("parent", &[SessionFileOrigin::Observation])
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let pinned = Dir::open_ambient_dir(workspace.path(), ambient_authority()).unwrap();
+    store
+        .register_attachment_workspace("parent", &pinned, workspace.path())
+        .await
+        .unwrap();
+    let staged = workspace
+        .path()
+        .join(".mobius/attachments")
+        .join(session_storage_key("parent"))
+        .join(&upload.id);
+    std::fs::create_dir_all(&staged).unwrap();
+    std::fs::write(staged.join("input.txt"), b"input").unwrap();
+    store
+        .prepare_delete_sessions(
+            &["parent".into()],
+            SessionFileSelection::Origins(vec![
+                SessionFileOrigin::Artifact,
+                SessionFileOrigin::Observation,
+            ]),
+        )
+        .await
+        .unwrap()
+        .delete()
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .list_files("parent", &[SessionFileOrigin::Upload])
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        store
+            .list_files(
+                "parent",
+                &[SessionFileOrigin::Artifact, SessionFileOrigin::Observation]
+            )
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    store
+        .prepare_delete_sessions(
+            &["parent".into()],
+            SessionFileSelection::Origins(vec![SessionFileOrigin::Upload]),
+        )
+        .await
+        .unwrap()
+        .delete()
+        .await
+        .unwrap();
+    assert!(!staged.exists());
+    assert_eq!(store.blob_bytes().await.unwrap(), 5);
+    assert_eq!(
+        store
+            .list_files("fork", &[SessionFileOrigin::Observation])
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    store.delete_session("fork").await.unwrap();
+    assert_eq!(store.blob_bytes().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn stored_references_can_be_granted_and_published_at_capacity() {
+    let state = tempfile::tempdir().unwrap();
+    let store = SessionFileStore::new(state.path(), Some(5));
+    let mut upload = store
+        .begin_upload("source", "input.txt".into(), 5, "text/plain".into())
+        .await
+        .unwrap();
+    upload.append(0, b"input").await.unwrap();
+    let file = upload.finish().await.unwrap();
+    store.grant_file("source", "fork", &file).await.unwrap();
+    store
+        .grant_upload("source", "execution", &file)
+        .await
+        .unwrap();
+    let artifact = store.publish_reference("source", &file).await.unwrap();
+    store
+        .share_artifact("source", "target", &artifact)
+        .await
+        .unwrap();
+    assert_eq!(store.stored_bytes().await.unwrap(), 5);
+    assert_eq!(store.read_file("fork", &file).await.unwrap(), b"input");
+    assert!(matches!(
+        store
+            .begin_upload("new", "extra.txt".into(), 1, "text/plain".into())
+            .await,
+        Err(Error::StorageFull)
+    ));
+}
+
+#[tokio::test]
+async fn simultaneous_upload_admission_cannot_overbook_gateway_capacity() {
+    let state = tempfile::tempdir().unwrap();
+    let store = SessionFileStore::new(state.path(), Some(5));
+    let (first, second) = tokio::join!(
+        store.begin_upload("first", "input.txt".into(), 5, "text/plain".into()),
+        store.begin_upload("second", "input.txt".into(), 5, "text/plain".into()),
+    );
+    assert!(matches!(
+        (&first, &second),
+        (Ok(_), Err(Error::StorageFull)) | (Err(Error::StorageFull), Ok(_))
+    ));
+    drop((first, second));
+    store
+        .begin_upload("retry", "input.txt".into(), 5, "text/plain".into())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn deleting_one_completed_file_preserves_another_pending_upload() {
+    for by_origin in [false, true] {
+        let state = tempfile::tempdir().unwrap();
+        let store = SessionFileStore::new(state.path(), None);
+        let mut completed = store
+            .begin_upload("session", "first.txt".into(), 1, "text/plain".into())
+            .await
+            .unwrap();
+        completed.append(0, b"a").await.unwrap();
+        let first = completed.finish().await.unwrap();
+        let mut pending = store
+            .begin_upload("session", "second.txt".into(), 1, "text/plain".into())
+            .await
+            .unwrap();
+        pending.append(0, b"b").await.unwrap();
+        store
+            .prepare_delete_sessions(
+                &["session".into()],
+                if by_origin {
+                    SessionFileSelection::Origins(vec![SessionFileOrigin::Upload])
+                } else {
+                    SessionFileSelection::Ids(vec![first.id.clone()])
+                },
+            )
+            .await
+            .unwrap()
+            .delete()
+            .await
+            .unwrap();
+        let second = pending.finish().await.unwrap();
+        assert!(store.read_file("session", &first).await.is_err());
+        assert_eq!(store.read_file("session", &second).await.unwrap(), b"b");
+    }
+}
+
+#[tokio::test]
+async fn empty_file_selections_are_rejected() {
+    let state = tempfile::tempdir().unwrap();
+    let store = SessionFileStore::new(state.path(), None);
+    for selection in [
+        SessionFileSelection::Ids(vec![]),
+        SessionFileSelection::Origins(vec![]),
+    ] {
+        assert!(
+            store
+                .prepare_delete_sessions(&["session".into()], selection)
+                .await
+                .is_err()
+        );
+    }
+}
+
+#[tokio::test]
+async fn selected_deletion_handles_damaged_payloads_and_missing_metadata() {
+    for by_origin in [false, true] {
+        let state = tempfile::tempdir().unwrap();
+        let store = SessionFileStore::new(state.path(), None);
+        let file = store
+            .publish_artifact(
+                "session",
+                "damaged.txt".into(),
+                "text/plain".into(),
+                b"payload",
+            )
+            .await
+            .unwrap();
+        let record = load_metadata(
+            &store
+                .session_dir("session")
+                .join(&file.id)
+                .join(METADATA_FILE),
+        )
+        .await
+        .unwrap();
+        if by_origin {
+            tokio::fs::remove_file(store.blob_path(&record.content_hash))
+                .await
+                .unwrap();
+        } else {
+            tokio::fs::write(
+                store
+                    .session_dir("session")
+                    .join(&file.id)
+                    .join(METADATA_FILE),
+                b"invalid json",
+            )
+            .await
+            .unwrap();
+        }
+        let selection = if by_origin {
+            SessionFileSelection::Origins(vec![SessionFileOrigin::Artifact])
+        } else {
+            SessionFileSelection::Ids(vec![file.id])
+        };
+        let mut deletion = store
+            .prepare_delete_sessions(&["session".into()], selection)
+            .await
+            .unwrap();
+        deletion.delete().await.unwrap();
+        assert!(
+            store
+                .list_files("session", &[SessionFileOrigin::Artifact])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        // Repeated deletion must neither wait for the commit mutex nor run GC without it.
+        let _commit = store.commits.lock().await;
+        tokio::fs::create_dir(store.blob_dir().join("invalid-blob"))
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), deletion.delete())
+            .await
+            .unwrap()
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn generated_images_survive_selective_cleanup_until_the_chat_is_deleted() {
+    for legacy in [false, true] {
+        let state = tempfile::tempdir().unwrap();
+        let store = SessionFileStore::new(state.path(), None);
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(2, 2))
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let bytes = encoded.into_inner();
+        let name = if legacy {
+            "generated-image.png"
+        } else {
+            "custom-name.png"
+        };
+        let generated = store
+            .publish_image("session", name.into(), "image/png", bytes.clone())
+            .await
+            .unwrap();
+        if legacy {
+            let path = store
+                .session_dir("session")
+                .join(&generated.id)
+                .join(METADATA_FILE);
+            let mut metadata: serde_json::Value =
+                serde_json::from_slice(&tokio::fs::read(&path).await.unwrap()).unwrap();
+            metadata
+                .as_object_mut()
+                .unwrap()
+                .remove("protected_from_cleanup");
+            tokio::fs::write(path, serde_json::to_vec(&metadata).unwrap())
+                .await
+                .unwrap();
+        }
+        let ordinary = store
+            .publish_artifact("session", "ordinary.png".into(), "image/png".into(), &bytes)
+            .await
+            .unwrap();
+        let origins = [SessionFileOrigin::Artifact];
+        assert_eq!(
+            store.list_files("session", &origins).await.unwrap().len(),
+            2
+        );
+        assert_eq!(
+            store.read_image("session", &generated).await.unwrap(),
+            bytes
+        );
+        assert_eq!(
+            store.list_cleanup_files("session", &origins).await.unwrap(),
+            vec![(SessionFileOrigin::Artifact, ordinary.clone())]
+        );
+
+        let error = store
+            .prepare_delete_sessions(
+                &["session".into()],
+                SessionFileSelection::Ids(vec![ordinary.id.clone(), generated.id.clone()]),
+            )
+            .await
+            .unwrap()
+            .delete()
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("generated images"));
+        assert_eq!(
+            store.list_files("session", &origins).await.unwrap().len(),
+            2
+        );
+        assert_eq!(store.read_image("session", &ordinary).await.unwrap(), bytes);
+        assert_eq!(
+            store.read_image("session", &generated).await.unwrap(),
+            bytes
+        );
+
+        store
+            .prepare_delete_sessions(
+                &["session".into()],
+                SessionFileSelection::Origins(origins.to_vec()),
+            )
+            .await
+            .unwrap()
+            .delete()
+            .await
+            .unwrap();
+        assert_eq!(
+            store.list_files("session", &origins).await.unwrap(),
+            vec![(SessionFileOrigin::Artifact, generated.clone())]
+        );
+        assert!(
+            store
+                .list_cleanup_files("session", &origins)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            store.read_image("session", &generated).await.unwrap(),
+            bytes
+        );
+        assert!(store.read_image("session", &ordinary).await.is_err());
+
+        store.delete_session("session").await.unwrap();
+        assert!(
+            store
+                .list_files("session", &origins)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(store.read_image("session", &generated).await.is_err());
+        assert_eq!(store.stored_bytes().await.unwrap(), 0);
     }
 }

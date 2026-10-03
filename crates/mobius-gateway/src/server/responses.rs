@@ -221,14 +221,6 @@ pub(super) fn internal_rejection(message: String) -> Rejection {
     }
 }
 
-pub(super) fn session_file_rejection(error: impl std::fmt::Display) -> Rejection {
-    Rejection {
-        code: "session_file_rejected",
-        message: error.to_string(),
-        fatal: false,
-    }
-}
-
 pub(super) fn routine_rejection(error: Error) -> Rejection {
     Rejection {
         code: "invalid_routine",

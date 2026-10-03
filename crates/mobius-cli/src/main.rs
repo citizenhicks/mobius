@@ -742,6 +742,7 @@ async fn discard_session(
         .send(ClientMessage::DeleteSessions {
             request_id: request_id.clone(),
             session_ids: vec![session_id.into()],
+            selection: mobius::backend::session_files::SessionFileSelection::All,
         })
         .await
         .map_err(gateway_error)?;

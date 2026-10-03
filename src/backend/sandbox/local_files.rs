@@ -88,6 +88,26 @@ fn open_regular_file(root: Dir, relative: &Path, requested: &str) -> Result<cap_
     Ok(file)
 }
 
+pub(super) fn remove_file(root: Dir, relative: &Path, requested: &str) -> Result<()> {
+    let name = relative
+        .file_name()
+        .ok_or_else(|| Error::Sandbox(requested.into()))?;
+    let parent = open_parent(root, relative.parent().unwrap_or(Path::new("")), requested)?;
+    let metadata = parent.symlink_metadata(name)?;
+    if metadata.is_symlink() {
+        return Err(Error::Sandbox(format!(
+            "cannot remove symbolic link: {requested}"
+        )));
+    }
+    if !metadata.is_file() {
+        return Err(Error::Sandbox(format!(
+            "cannot remove non-regular file: {requested}"
+        )));
+    }
+    parent.remove_file(name)?;
+    sync_directory(&parent)
+}
+
 pub(super) fn atomic_write(
     root: Dir,
     relative: &Path,

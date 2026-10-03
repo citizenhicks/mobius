@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -92,6 +92,7 @@ COMMIT;
 pub(super) struct BotStorage {
     path: PathBuf,
     pub(super) connection: Mutex<Connection>,
+    telemetry_notify: OnceLock<Weak<tokio::sync::Notify>>,
 }
 
 impl BotStorage {
@@ -132,6 +133,12 @@ impl BotStorage {
         if version == 0 {
             connection.execute_batch(SCHEMA).map_err(Error::from)?;
         }
+        // A version-6 database predates telemetry. This optional table is
+        // idempotent and does not change the Bot schema version.
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS telemetry_cursors (sink_id TEXT PRIMARY KEY, after_rowid INTEGER NOT NULL)",
+            [],
+        )?;
         protect_database_files(path)?;
         let persisted = connection
             .query_row(
@@ -144,6 +151,7 @@ impl BotStorage {
             Self {
                 path: path.to_owned(),
                 connection: Mutex::new(connection),
+                telemetry_notify: OnceLock::new(),
             },
             persisted,
         ))
@@ -155,6 +163,10 @@ impl BotStorage {
             .lock()
             .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
         read_catalog(&connection)
+    }
+
+    pub(super) fn attach_telemetry_notify(&self, notify: &Arc<tokio::sync::Notify>) {
+        let _ = self.telemetry_notify.set(Arc::downgrade(notify));
     }
 
     /// The catalog with the stamp it was read at, unless nothing committed since `stamp`.
@@ -334,6 +346,23 @@ impl BotStorage {
                 |row| row.get::<_, bool>(0),
             )
             .map_err(Error::from)
+    }
+
+    pub(super) fn running_routine_count(&self) -> Result<u64> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM routine_runs WHERE status='running'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(Error::from)
+            .and_then(|count| {
+                u64::try_from(count).map_err(|_| Error::Config("invalid routine count".into()))
+            })
     }
 
     pub(super) fn has_running_routines(&self) -> Result<bool> {
@@ -517,6 +546,9 @@ impl BotStorage {
             .map_err(Error::from)?;
         let result = operation(&transaction)?;
         transaction.commit().map_err(Error::from)?;
+        if let Some(notify) = self.telemetry_notify.get().and_then(Weak::upgrade) {
+            notify.notify_one();
+        }
         Ok(result)
     }
 }
@@ -721,6 +753,46 @@ mod tests {
             Some("old")
         );
         assert!(storage.history(None).expect("history").is_empty());
+    }
+
+    #[tokio::test]
+    async fn committed_bot_changes_nudge_telemetry() {
+        let directory = tempfile::tempdir().expect("storage directory");
+        let (storage, _) = BotStorage::open(&directory.path().join(STATE_FILE)).expect("storage");
+        let notify = Arc::new(tokio::sync::Notify::new());
+        storage.attach_telemetry_notify(&notify);
+        storage.save_catalog("updated").expect("commit catalog");
+        tokio::time::timeout(Duration::from_millis(100), notify.notified())
+            .await
+            .expect("committed changes nudge telemetry");
+    }
+
+    #[test]
+    fn existing_version_six_database_gains_telemetry_cursors() {
+        let directory = tempfile::tempdir().expect("storage directory");
+        let path = directory.path().join(STATE_FILE);
+        let (storage, _) = BotStorage::open(&path).expect("initial storage");
+        storage.save_catalog("existing").expect("existing catalog");
+        drop(storage);
+        let connection = Connection::open(&path).expect("old database");
+        connection
+            .execute("DROP TABLE telemetry_cursors", [])
+            .expect("old schema");
+        drop(connection);
+
+        let (storage, persisted) = BotStorage::open(&path).expect("reopen version 6");
+        assert!(persisted);
+        assert_eq!(
+            storage.load_catalog().expect("catalog").as_deref(),
+            Some("existing")
+        );
+        let connection = storage.connection.lock().expect("connection");
+        let cursors: i64 = connection
+            .query_row("SELECT COUNT(*) FROM telemetry_cursors", [], |row| {
+                row.get(0)
+            })
+            .expect("telemetry cursor table");
+        assert_eq!(cursors, 0);
     }
 
     #[test]

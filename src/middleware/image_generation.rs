@@ -276,7 +276,7 @@ mod tests {
             .write_to(&mut bytes, image::ImageFormat::Png)
             .expect("test image");
         let png = bytes.into_inner();
-        let store = SessionFileStore::new(state.path());
+        let store = SessionFileStore::new(state.path(), None);
         let middleware = ImageGeneration::new(
             Arc::new(ModelRouter::new(
                 "image",
@@ -360,12 +360,24 @@ mod tests {
             .expect("published file")
             .clone();
         assert_eq!(store.read_file("session", &file).await.expect("image"), png);
-        let artifacts = store.list_artifacts("session").await.expect("artifacts");
+        let artifacts = store
+            .list_files(
+                "session",
+                &[crate::backend::session_files::SessionFileOrigin::Artifact],
+            )
+            .await
+            .expect("artifacts");
         assert_eq!(artifacts.len(), 2);
-        assert!(artifacts.contains(&file));
+        assert!(artifacts.iter().any(|(_, stored)| stored == &file));
         assert_eq!(
             store
-                .list_files("session")
+                .list_files(
+                    "session",
+                    &[
+                        crate::backend::session_files::SessionFileOrigin::Upload,
+                        crate::backend::session_files::SessionFileOrigin::Artifact
+                    ]
+                )
                 .await
                 .expect("stored files")
                 .len(),

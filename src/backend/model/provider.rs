@@ -26,6 +26,8 @@ mod text {
 }
 pub use super::transport::streaming_client;
 pub use reqwest::Client as HttpClient;
+/// Redirect policy for shared HTTP clients.
+pub use reqwest::redirect::Policy as HttpRedirectPolicy;
 
 /// A reasoning choice advertised for one model.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

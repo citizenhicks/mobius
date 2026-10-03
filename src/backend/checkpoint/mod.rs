@@ -908,6 +908,20 @@ pub trait CheckpointStore: Send + Sync {
         })
     }
 
+    /// Reads session metadata without materializing the transcript or model context.
+    /// Backends may override the checkpoint-based default with a projection query.
+    fn session_metadata<'a>(
+        &'a self,
+        session_id: &'a str,
+    ) -> BoxFuture<'a, Result<Option<BTreeMap<String, Value>>>> {
+        Box::pin(async move {
+            Ok(self
+                .load(session_id)
+                .await?
+                .map(|checkpoint| checkpoint.metadata))
+        })
+    }
+
     /// Lists one page of the most recently updated sessions, newest first.
     fn list_sessions_page(
         &self,

@@ -52,6 +52,13 @@ The möbius logo is adapted from the Composing preset in thinking-orbs
 reproduced above.
 Copyright (c) 2026 Jakub Antalik
 
+The gateway's private desktop launcher icons for Terminal and Files are
+rasterized from GNOME Adwaita's utilities-terminal-symbolic.svg and folder.svg.
+Credit: GNOME Project (https://www.gnome.org). Adwaita offers the artwork under
+LGPL-3.0 or CC-BY-SA-3.0, and CC-BY-SA-4.0. Source and license information:
+https://gitlab.gnome.org/GNOME/adwaita-icon-theme and
+https://www.gnu.org/licenses/lgpl-3.0.html.
+
 HighlightSwift bundles highlight.js (https://highlightjs.org), licensed under
 the BSD 3-Clause License:
 

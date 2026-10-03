@@ -572,9 +572,15 @@ impl Tool for ListAttachments {
     ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let _: EmptyArgs = serde_json::from_value(arguments)?;
-            let references = self.store.list_uploads(&self.session_id).await?;
+            let references = self
+                .store
+                .list_files(
+                    &self.session_id,
+                    &[crate::backend::session_files::SessionFileOrigin::Upload],
+                )
+                .await?;
             let mut listed = Vec::with_capacity(references.len());
-            for reference in references {
+            for (_, reference) in references {
                 let content_hash = self
                     .store
                     .upload_content_hash(&self.session_id, &reference)
@@ -799,7 +805,7 @@ mod tests {
             second.clone(),
         ];
         let directory = tempfile::tempdir().expect("files");
-        let attachments = Attachments::new(SessionFileStore::new(directory.path()));
+        let attachments = Attachments::new(SessionFileStore::new(directory.path(), None));
         attachments.prepare_compacted_input(&original, &mut compacted);
         attachments.prepare_compacted_input(&original, &mut compacted);
         assert_eq!(

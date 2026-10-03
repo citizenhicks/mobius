@@ -53,7 +53,8 @@ fn observation_capping_bounds_all_text_without_dropping_files() {
 fn tools_do_not_claim_footer_space() {
     assert!(
         Tools::coding(crate::backend::session_files::SessionFileStore::new(
-            tempfile::tempdir().expect("files").path()
+            tempfile::tempdir().expect("files").path(),
+            None
         ))
         .frontend()
         .widgets
@@ -66,6 +67,7 @@ fn coding_renderer_preserves_patch_diff_blocks() {
     let diff = "--- a/note.txt\n+++ b/note.txt\n@@ -1 +1 @@\n-old\n+new\n";
     let block = Tools::coding(crate::backend::session_files::SessionFileStore::new(
         tempfile::tempdir().expect("files").path(),
+        None,
     ))
     .render(
         &EventMsg::ToolCallEnd(crate::protocol::ToolCallEndEvent {
@@ -88,6 +90,7 @@ fn coding_renderer_preserves_patch_diff_blocks() {
 fn coding_renderer_groups_read_lifecycle() {
     let tools = Tools::coding(crate::backend::session_files::SessionFileStore::new(
         tempfile::tempdir().expect("files").path(),
+        None,
     ));
     let begin = tools
         .render(
@@ -124,6 +127,7 @@ fn coding_renderer_groups_read_lifecycle() {
 fn view_image_heading_preserves_requested_sources() {
     let block = Tools::coding(crate::backend::session_files::SessionFileStore::new(
         tempfile::tempdir().expect("files").path(),
+        None,
     ))
     .render(
         &EventMsg::ToolCallBegin(crate::protocol::ToolCallBeginEvent {
@@ -157,6 +161,7 @@ fn tool_blocks_format_json_before_appending_and_preserve_plain_text_whitespace()
     let json = serde_json::json!({"a": 1, "b": 2, "c": 3, "d": 4});
     let end = Tools::coding(crate::backend::session_files::SessionFileStore::new(
         tempfile::tempdir().expect("files").path(),
+        None,
     ))
     .render(
         &EventMsg::ToolCallEnd(crate::protocol::ToolCallEndEvent {
@@ -198,6 +203,7 @@ fn generic_tool_renderer_does_not_infer_coding_presentation() {
 fn tool_load_uses_the_standard_tool_presentation() {
     let block = Tools::coding(crate::backend::session_files::SessionFileStore::new(
         tempfile::tempdir().expect("files").path(),
+        None,
     ))
     .render(
         &EventMsg::ToolLoad(crate::protocol::ToolLoadEvent {
@@ -234,6 +240,7 @@ fn tool_load_uses_the_standard_tool_presentation() {
 fn coding_file_links_come_from_owned_arguments_and_keep_bodies_unchanged() {
     let tools = Tools::coding(crate::backend::session_files::SessionFileStore::new(
         tempfile::tempdir().expect("files").path(),
+        None,
     ));
     for (name, title, path) in [
         ("read_file", "Read", "src/test #é.rs"),

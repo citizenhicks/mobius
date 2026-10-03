@@ -1605,6 +1605,7 @@ printf '%s\n' '{"systemMessage":"PONYTAIL:FULL","hookSpecificOutput":{"hookEvent
         let mut catalog = crate::middleware::tools::Catalog::default();
         Tools::coding(crate::backend::session_files::SessionFileStore::new(
             tempfile::tempdir().expect("files").path(),
+            None,
         ))
         .register(&mut catalog, &runtime)
         .expect("coding tools");

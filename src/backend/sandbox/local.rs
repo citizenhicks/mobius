@@ -446,6 +446,17 @@ impl LocalSandbox {
         .map_err(|error| Error::Sandbox(format!("file reader failed: {error}")))?
     }
 
+    /// Removes one regular file through the pinned writable workspace root.
+    /// # Errors
+    /// Rejects unsafe paths, symlinks, directories and filesystem failures.
+    pub async fn remove_file(&self, path: &str) -> Result<()> {
+        let (root, relative) = self.write_target(path)?;
+        let requested = path.to_owned();
+        tokio::task::spawn_blocking(move || files::remove_file(root, &relative, &requested))
+            .await
+            .map_err(|error| Error::Sandbox(format!("file deletion failed: {error}")))?
+    }
+
     /// Runs Git argv with a writable workspace and no network access.
     /// # Errors
     ///

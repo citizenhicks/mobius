@@ -72,6 +72,14 @@ pub(super) async fn write(
         .map_err(error_rejection)
 }
 
+pub(super) async fn remove(
+    sandbox: &GatewaySandbox,
+    path: &str,
+) -> std::result::Result<(), Rejection> {
+    validate_relative(path)?;
+    sandbox.remove(path).await.map_err(error_rejection)
+}
+
 async fn list_inner(
     sandbox: &GatewaySandbox,
     workspace: &Path,
@@ -374,6 +382,41 @@ mod tests {
             "TOKEN=second\n"
         );
         assert!(write(&sandbox, "../outside", "secret").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn remove_refuses_traversal_git_directories_and_symlinks() {
+        let workspace = tempfile::tempdir().unwrap();
+        let (_state, sandbox) = sandbox(workspace.path());
+        std::fs::create_dir(workspace.path().join("folder")).unwrap();
+        std::fs::create_dir(workspace.path().join(".git")).unwrap();
+        std::fs::write(workspace.path().join(".git/config"), b"config").unwrap();
+        std::fs::write(workspace.path().join("file.txt"), b"data").unwrap();
+        for path in ["../outside", ".git/config", "folder"] {
+            assert!(remove(&sandbox, path).await.is_err(), "{path}");
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("file.txt", workspace.path().join("link")).unwrap();
+            assert!(
+                remove(&sandbox, "link")
+                    .await
+                    .unwrap_err()
+                    .message
+                    .contains("symbolic link")
+            );
+            assert!(workspace.path().join("link").symlink_metadata().is_ok());
+        }
+        assert!(
+            remove(&sandbox, "folder")
+                .await
+                .unwrap_err()
+                .message
+                .contains("non-regular file")
+        );
+        remove(&sandbox, "file.txt").await.unwrap();
+        assert!(!workspace.path().join("file.txt").exists());
+        assert!(workspace.path().join(".git/config").exists());
     }
 
     #[tokio::test]

@@ -629,7 +629,7 @@ impl TuiState {
                 description: "cannot be undone".into(),
                 detail: String::new(),
                 shows_detail: false,
-                action: super::PickerAction::Gateway(GatewayAction::DeleteSessionFile(file.id)),
+                action: super::PickerAction::Gateway(GatewayAction::DeleteStoredFile(file.id)),
                 secondary: None,
             }],
             0,

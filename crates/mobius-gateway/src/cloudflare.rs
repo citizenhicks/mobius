@@ -13,7 +13,7 @@ use tokio::time::timeout;
 use url::Url;
 
 use crate::client::Endpoint;
-use crate::config::{CloudflareConfig, ConfigStore, GatewayConfig, load_cloudflare_token};
+use crate::config::{CloudflareConfig, ConfigStore, GatewayConfig, load_secret_file};
 use crate::{Error, Result};
 
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -35,7 +35,7 @@ impl CloudflareTunnel {
             }
             CloudflareConfig::Named { .. } => {
                 let token_path = store.cloudflare_token_path();
-                load_cloudflare_token(&token_path)?;
+                load_secret_file(&token_path)?;
                 named_tunnel_command(cloudflared_executable(), &token_path)
             }
         };

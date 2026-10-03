@@ -244,7 +244,7 @@ mod tests {
             SqliteCheckpoint::new(state.path().join("checkpoints.sqlite3"))
                 .expect("checkpoint store"),
         );
-        let middleware = Artifacts::new(SessionFileStore::new(state.path()));
+        let middleware = Artifacts::new(SessionFileStore::new(state.path(), None));
         let runtime = RuntimeContext {
             sender: crate::agent::test_sender(),
             checkpoints,
@@ -280,7 +280,7 @@ mod tests {
         let workspace = tempfile::tempdir().expect("workspace");
         std::fs::write(workspace.path().join("report.xlsx"), [0, 255, 1, 254]).expect("file");
         let state = tempfile::tempdir().expect("state");
-        let store = SessionFileStore::new(state.path());
+        let store = SessionFileStore::new(state.path(), None);
         let tool = SendArtifact {
             store: store.clone(),
             session_id: "session-a".into(),
@@ -309,8 +309,12 @@ mod tests {
         assert_eq!(tool.approval(), ApprovalRequirement::Always);
         assert!(
             store
-                .list_uploads("session-a")
+                .list_files(
+                    "session-a",
+                    &[crate::backend::session_files::SessionFileOrigin::Upload]
+                )
                 .await
+                .map(|files| files.into_iter().map(|(_, file)| file).collect::<Vec<_>>())
                 .expect("uploads")
                 .is_empty()
         );
@@ -327,7 +331,7 @@ mod tests {
     #[test]
     fn successful_send_replaces_the_pending_block_with_a_file() {
         let state = tempfile::tempdir().expect("state");
-        let middleware = Artifacts::new(SessionFileStore::new(state.path()));
+        let middleware = Artifacts::new(SessionFileStore::new(state.path(), None));
         let file = SessionFileReference {
             id: uuid::Uuid::new_v4().to_string(),
             name: "diagram.svg".into(),

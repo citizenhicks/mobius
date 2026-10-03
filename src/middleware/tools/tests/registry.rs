@@ -21,7 +21,8 @@ fn tool_prompts_match_installed_capabilities() {
     );
     assert_eq!(
         Tools::coding(crate::backend::session_files::SessionFileStore::new(
-            tempfile::tempdir().expect("files").path()
+            tempfile::tempdir().expect("files").path(),
+            None
         ))
         .section(),
         PromptSection::new(format!("{safety} {coding}"))

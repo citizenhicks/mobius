@@ -440,7 +440,7 @@ fn test_config_with_router(
         ApprovalPolicy::Ask,
     ));
     AgentConfig::new(
-        Arc::new(model.session_files(SessionFileStore::new(workspace))),
+        Arc::new(model.session_files(SessionFileStore::new(workspace, None))),
         sandbox,
         checkpoints,
         MiddlewareStack::new(middleware).expect("middleware"),

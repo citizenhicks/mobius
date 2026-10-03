@@ -361,7 +361,14 @@ async fn session_owners_wait_for_the_cascade_gate() {
     let mut deleting_session = tokio::spawn({
         let gateway = gateway.clone();
         let session_id = deletable_id.clone();
-        async move { gateway.delete_sessions(&[session_id]).await }
+        async move {
+            gateway
+                .delete_sessions(
+                    &[session_id],
+                    mobius::backend::session_files::SessionFileSelection::All,
+                )
+                .await
+        }
     });
     let mut running_routine = tokio::spawn({
         let gateway = gateway.clone();
@@ -555,8 +562,12 @@ async fn deleting_a_completed_routine_run_removes_its_session_data() {
     );
     assert!(
         files
-            .list_artifacts(&session_id)
+            .list_files(
+                &session_id,
+                &[mobius::backend::session_files::SessionFileOrigin::Artifact]
+            )
             .await
+            .map(|files| files.into_iter().map(|(_, file)| file).collect::<Vec<_>>())
             .expect("deleted artifacts")
             .is_empty()
     );
@@ -990,8 +1001,12 @@ async fn deleting_a_bot_removes_owned_state() {
         );
         assert!(
             session_files
-                .list_artifacts(session_id)
+                .list_files(
+                    session_id,
+                    &[mobius::backend::session_files::SessionFileOrigin::Artifact]
+                )
                 .await
+                .map(|files| files.into_iter().map(|(_, file)| file).collect::<Vec<_>>())
                 .expect("deleted artifacts")
                 .is_empty()
         );

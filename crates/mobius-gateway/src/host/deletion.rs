@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use mobius::backend::checkpoint::SessionSummary;
-use mobius::backend::session_files::SessionFileDeletion;
+use mobius::backend::session_files::{SessionFileDeletion, SessionFileSelection};
 
 use super::*;
 use crate::wire::{HookData, HookEvent, HookSource};
@@ -90,8 +90,12 @@ impl GatewayHost {
         if let Some(deletion) = &mut deletion {
             deletion.release_state_lock();
         }
-        let mut file_deletion =
-            prepare_session_tree_deletion(&mut state, &intent.session_ids).await?;
+        let mut file_deletion = prepare_session_tree_deletion(
+            &mut state,
+            &intent.session_ids,
+            SessionFileSelection::All,
+        )
+        .await?;
         let bot_store = Arc::clone(&state.bots);
         drop(state);
 
@@ -200,6 +204,7 @@ impl GatewayHost {
     pub(crate) async fn delete_sessions(
         &self,
         session_ids: &[String],
+        selection: SessionFileSelection,
     ) -> std::result::Result<Vec<String>, Rejection> {
         if session_ids.is_empty() || session_ids.len() > MAX_SESSION_DELETE_ROOTS {
             return Err(Rejection {
@@ -228,6 +233,14 @@ impl GatewayHost {
                 .any(|session| session.catalog_visible && session.session_id == *selected)
         }) {
             return Err(unknown_session());
+        }
+        if selection != SessionFileSelection::All {
+            let mut deletion =
+                prepare_session_tree_deletion(&mut state, &selected, selection).await?;
+            drop(state);
+            drop(_mutation);
+            deletion.delete().await.map_err(session_file_rejection)?;
+            return Ok(selected);
         }
         for summary in &summaries {
             if selected.contains(&summary.session_id) {
@@ -263,7 +276,8 @@ impl GatewayHost {
             .cloned()
             .collect::<Vec<_>>();
         let (_, deleted) = session_trees(roots.clone(), &summaries);
-        let mut file_deletion = prepare_session_tree_deletion(&mut state, &deleted).await?;
+        let mut file_deletion =
+            prepare_session_tree_deletion(&mut state, &deleted, SessionFileSelection::All).await?;
         let cleanup =
             remove_session_trees(&mut state, &roots, &deleted, &mut file_deletion, false).await?;
         drop(state);
@@ -327,7 +341,8 @@ pub(super) async fn prepare_bot_session_tree_deletion(
         .await
         .map_err(internal)?;
     let (_, session_ids) = bot_session_trees(bot_id, &summaries);
-    let file_deletion = prepare_session_tree_deletion(state, &session_ids).await?;
+    let file_deletion =
+        prepare_session_tree_deletion(state, &session_ids, SessionFileSelection::All).await?;
     let summaries = gateway_session_summaries(&state.checkpoints)
         .await
         .map_err(internal)?;
@@ -356,7 +371,16 @@ pub(super) fn session_trees(
 pub(super) async fn prepare_session_tree_deletion(
     state: &mut GatewayState,
     session_ids: &[String],
+    selection: SessionFileSelection,
 ) -> std::result::Result<SessionFileDeletion, Rejection> {
+    let all = selection == SessionFileSelection::All;
+    if matches!(selection, SessionFileSelection::Ids(_)) || session_ids.is_empty() {
+        return state
+            .session_files
+            .prepare_delete_sessions(session_ids, selection)
+            .await
+            .map_err(session_file_rejection);
+    }
     if state
         .starting_sessions
         .lock()
@@ -369,13 +393,6 @@ pub(super) async fn prepare_session_tree_deletion(
             message: "wait for this chat to finish starting before deleting it".into(),
             fatal: false,
         });
-    }
-    if session_ids.is_empty() {
-        return state
-            .session_files
-            .prepare_delete_sessions(session_ids)
-            .await
-            .map_err(internal);
     }
     let residents = session_ids
         .iter()
@@ -397,10 +414,10 @@ pub(super) async fn prepare_session_tree_deletion(
     }
     let file_deletion = state
         .session_files
-        .prepare_delete_sessions(session_ids)
+        .prepare_delete_sessions(session_ids, selection)
         .await
-        .map_err(internal)?;
-    for host in residents {
+        .map_err(session_file_rejection)?;
+    for host in residents.into_iter().filter(|_| all) {
         if !host.stop_if_idle().await {
             return Err(Rejection {
                 code: "agent_busy",

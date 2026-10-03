@@ -49,9 +49,10 @@ const GIT_ARGUMENTS: [&str; 7] = [
     "-c",
     "core.fsmonitor=false",
 ];
-const GATEWAY_CREDENTIAL_ENVIRONMENT: [&str; 4] = [
+const GATEWAY_CREDENTIAL_ENVIRONMENT: [&str; 5] = [
     "MOBIUS_GATEWAY_TOKEN",
     "MOBIUS_GATEWAY_BEARER_TOKEN",
+    "MOBIUS_GATEWAY_TELEMETRY_TOKEN",
     "TUNNEL_TOKEN",
     "TUNNEL_TOKEN_FILE",
 ];
@@ -292,6 +293,18 @@ impl GatewaySandbox {
         })
         .await
         .map_err(|error| Error::Sandbox(format!("file reader failed: {error}")))?
+    }
+
+    pub(crate) async fn remove(&self, path: &str) -> Result<()> {
+        let execution = self.execution_lease().await?;
+        let delegate = std::sync::Arc::clone(&self.delegate);
+        let path = path.to_owned();
+        tokio::spawn(async move {
+            let _execution = execution;
+            delegate.remove_file(&path).await
+        })
+        .await
+        .map_err(|error| Error::Sandbox(format!("file deletion failed: {error}")))?
     }
 
     pub(crate) async fn switch_git_branch(&self, branch: &str) -> Result<CommandOutput> {
@@ -564,13 +577,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gateway_bearer_environment_is_hidden_from_commands() {
-        const TEST: &str = "sandbox::tests::gateway_bearer_environment_is_hidden_from_commands";
-        const TOKEN: &str = "MOBIUS_GATEWAY_BEARER_TOKEN";
-        if std::env::var(TOKEN).as_deref() != Ok("synthetic-admission-secret") {
+    async fn gateway_credentials_are_hidden_from_commands_and_workers() {
+        const TEST: &str =
+            "sandbox::tests::gateway_credentials_are_hidden_from_commands_and_workers";
+        const BEARER: &str = "MOBIUS_GATEWAY_BEARER_TOKEN";
+        const TELEMETRY: &str = "MOBIUS_GATEWAY_TELEMETRY_TOKEN";
+        if std::env::var(BEARER).as_deref() != Ok("synthetic-admission-secret")
+            || std::env::var(TELEMETRY).as_deref() != Ok("synthetic-telemetry-secret")
+        {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([TEST, "--exact"])
-                .env(TOKEN, "synthetic-admission-secret")
+                .env(BEARER, "synthetic-admission-secret")
+                .env(TELEMETRY, "synthetic-telemetry-secret")
                 .output()
                 .unwrap();
             assert!(
@@ -586,21 +604,23 @@ mod tests {
             GatewaySandbox::new(workspace.path(), state.path(), None, Duration::from_secs(5))
                 .unwrap();
         for mode in [SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess] {
-            let output = sandbox
+            for command_mode in [CommandMode::Foreground, CommandMode::Background] {
+                let output = sandbox
                 .execute(
-                    r#"printf '%s' "${MOBIUS_GATEWAY_BEARER_TOKEN+present}""#,
+                    r#"printf '%s' "${MOBIUS_GATEWAY_BEARER_TOKEN+present}${MOBIUS_GATEWAY_TELEMETRY_TOKEN+present}""#,
                     mode,
                     NetworkAccess::Denied,
-                    CommandMode::Foreground,
+                    command_mode,
                     CommandOutputSink::default(),
                 )
                 .await
                 .unwrap();
-            assert_eq!(output.exit_code, 0, "{}", output.stderr);
-            assert!(
-                output.stdout.is_empty(),
-                "admission token reached a tool process"
-            );
+                assert_eq!(output.exit_code, 0, "{}", output.stderr);
+                assert!(
+                    output.stdout.is_empty(),
+                    "gateway credential reached a tool process"
+                );
+            }
         }
     }
 

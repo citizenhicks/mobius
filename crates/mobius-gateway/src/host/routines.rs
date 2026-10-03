@@ -216,7 +216,12 @@ impl GatewayHost {
             .await
             .map_err(internal)?;
         let session_ids = session_trees(roots, &summaries).1;
-        let mut file_deletion = prepare_session_tree_deletion(&mut state, &session_ids).await?;
+        let mut file_deletion = prepare_session_tree_deletion(
+            &mut state,
+            &session_ids,
+            mobius::backend::session_files::SessionFileSelection::All,
+        )
+        .await?;
         let summaries = gateway_session_summaries(&state.checkpoints)
             .await
             .map_err(internal)?;
@@ -353,7 +358,12 @@ impl GatewayHost {
         } else {
             Vec::new()
         };
-        let mut file_deletion = prepare_session_tree_deletion(&mut state, &session_ids).await?;
+        let mut file_deletion = prepare_session_tree_deletion(
+            &mut state,
+            &session_ids,
+            mobius::backend::session_files::SessionFileSelection::All,
+        )
+        .await?;
         state.bots.delete_run(run_id).map_err(invalid_routine)?;
         let cleanup = if let Some(session_root) = session_root.filter(|_| !session_ids.is_empty()) {
             remove_session_trees(

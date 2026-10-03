@@ -406,6 +406,7 @@ impl Drop for ClientConnectionGuard {
             };
             if let Some(host) = &self.activity {
                 host.mark_runtime_activity();
+                host.telemetry.notify.notify_one();
             }
             if *connections > 1 {
                 *connections -= 1;
@@ -586,6 +587,7 @@ async fn register_client_connection(
         .map_err(|error| Error::Config(format!("client registration task failed: {error}")))??;
     if admission.is_some() {
         host.mark_runtime_activity();
+        host.telemetry.notify.notify_one();
         connection.activity = Some(host.clone());
     }
     drop(admission);

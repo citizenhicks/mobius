@@ -9,7 +9,7 @@ pub(super) fn png() -> Vec<u8> {
 async fn attachment_hydration_runs_after_native_compaction_replaces_context() {
     let workspace = TempDir::new().expect("create workspace");
     let session_id = "attachment-compaction";
-    let store = SessionFileStore::new(workspace.path());
+    let store = SessionFileStore::new(workspace.path(), None);
     let attachment = upload_attachment(&store, session_id, "photo.png", "image/png", &png()).await;
     let model = Arc::new(
         ScriptedModel::with_compaction(
@@ -81,7 +81,7 @@ async fn video_attachments_are_exposed_as_workspace_files() {
     let workspace = TempDir::new().expect("create workspace");
     let state = TempDir::new().expect("create state directory");
     let session_id = "video-attachment";
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
     let video = b"\0\0\0\x14ftypqt  \xff";
     let attachment =
         upload_attachment(&store, session_id, "clip.mov", "video/quicktime", video).await;
@@ -207,7 +207,7 @@ async fn video_attachments_are_exposed_as_workspace_files() {
 async fn materialized_image_keeps_an_exact_prefix_on_later_turns() {
     let workspace = TempDir::new().expect("create workspace");
     let session_id = "stable-image-prefix";
-    let store = SessionFileStore::new(workspace.path());
+    let store = SessionFileStore::new(workspace.path(), None);
     let attachment = upload_attachment(&store, session_id, "photo.png", "image/png", &png()).await;
     let model = Arc::new(
         ScriptedModel::new(vec![text_response("first"), text_response("second")])
@@ -259,7 +259,7 @@ async fn materialized_image_keeps_an_exact_prefix_on_later_turns() {
 async fn malformed_current_image_fails_but_does_not_poison_later_turns() {
     let workspace = TempDir::new().expect("create workspace");
     let session_id = "oversized-attachment";
-    let store = SessionFileStore::new(workspace.path());
+    let store = SessionFileStore::new(workspace.path(), None);
     let mut oversized_bytes = vec![0_u8; 8 * 1024 * 1024 + 1];
     oversized_bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
     let oversized = upload_attachment(
@@ -358,7 +358,7 @@ async fn request_budget_failure_records_the_action_without_replaying_on_restart(
         }
     }
     let workspace = TempDir::new().expect("workspace");
-    let files = SessionFileStore::new(workspace.path());
+    let files = SessionFileStore::new(workspace.path(), None);
     let image = files
         .ingest_image("budget", "screen.png".into(), png(), ImageDetail::High)
         .await

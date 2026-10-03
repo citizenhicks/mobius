@@ -14,6 +14,7 @@ mod replay;
 mod routines;
 mod session;
 mod ssh;
+mod telemetry;
 
 #[cfg(test)]
 use routines::accept_routine_while_state_locked;
@@ -71,7 +72,7 @@ use self::catalog::{
 };
 use self::files::{
     WorkspaceFiles, WorkspaceRead, list as list_workspace_files, read as read_workspace_file,
-    write as write_workspace_file,
+    remove as delete_workspace_file, write as write_workspace_file,
 };
 use self::git::{
     approve_credential as approve_git_credential_on_host, diff as workspace_git_diff,
@@ -103,15 +104,15 @@ pub(crate) struct GatewayHost {
     pub(crate) remote_desktop: Arc<RemoteDesktop>,
     state: Arc<Mutex<GatewayState>>,
     capacity_gate: Arc<Mutex<()>>,
+    storage_reads: Arc<Mutex<Option<std::time::Instant>>>,
     events: broadcast::Sender<ServerFrame>,
     work_activity: Arc<WorkActivity>,
-    idle_shutdown: Arc<Mutex<Option<tokio::sync::OwnedRwLockWriteGuard<()>>>>,
+    pub(crate) telemetry: Arc<crate::telemetry::Telemetry>,
 }
 
 struct WorkActivity {
     instance: Uuid,
     revision: AtomicU64,
-    quiesced: AtomicBool,
 }
 
 impl WorkActivity {
@@ -124,6 +125,8 @@ pub(crate) struct RuntimeActivity {
     pub(crate) idle: bool,
     pub(crate) activity_revision: String,
     pub(crate) next_routine_at: Option<String>,
+    pub(crate) active_sessions: usize,
+    pub(crate) running_routines: u64,
 }
 
 struct GatewayState {
@@ -196,7 +199,8 @@ impl GatewayHost {
         let capacity_gate = Arc::clone(&self.capacity_gate);
         let events = self.events.clone();
         let work_activity = Arc::clone(&self.work_activity);
-        let idle_shutdown = Arc::clone(&self.idle_shutdown);
+        let telemetry = Arc::clone(&self.telemetry);
+        let storage_reads = Arc::clone(&self.storage_reads);
         Arc::new(move || {
             Ok(Self {
                 state: state
@@ -207,7 +211,8 @@ impl GatewayHost {
                 capacity_gate: Arc::clone(&capacity_gate),
                 events: events.clone(),
                 work_activity: Arc::clone(&work_activity),
-                idle_shutdown: Arc::clone(&idle_shutdown),
+                telemetry: Arc::clone(&telemetry),
+                storage_reads: Arc::clone(&storage_reads),
             })
         })
     }
@@ -242,11 +247,17 @@ impl GatewayHost {
         let checkpoints: Arc<dyn CheckpointStore> =
             Arc::new(SqliteCheckpoint::new(store.checkpoints_path())?);
         let scratchpad = ScratchpadStore::new(Arc::clone(&checkpoints));
-        let session_files = SessionFileStore::new(store.state_dir());
+        let session_files =
+            SessionFileStore::new(store.state_dir(), config.runtime.storage_limit_bytes);
         let remote_desktop = Arc::new(RemoteDesktop::new(
             store.state_dir(),
             config.desktop_enabled,
         ));
+        let telemetry = Arc::new(crate::telemetry::Telemetry::new(
+            &config.telemetry,
+            store.state_dir(),
+        ));
+        bots.attach_telemetry_notify(&telemetry.notify);
         let config = Arc::new(StdMutex::new(config));
         let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
         let activities = Arc::new(Mutex::new(catalog::SessionCatalog::default()));
@@ -276,13 +287,13 @@ impl GatewayHost {
                 idle_cleanup_tasks: Vec::new(),
             })),
             capacity_gate: Arc::new(Mutex::new(())),
+            storage_reads: Arc::new(Mutex::new(None)),
             events,
             work_activity: Arc::new(WorkActivity {
                 instance: Uuid::new_v4(),
                 revision: AtomicU64::new(0),
-                quiesced: AtomicBool::new(false),
             }),
-            idle_shutdown: Arc::default(),
+            telemetry,
         };
         {
             let state = host.state.lock().await;
@@ -340,16 +351,21 @@ impl GatewayHost {
         let mut idle = !starting
             && !state.bots.has_running_routines().map_err(internal)?
             && !state.bots.has_pending_deliveries().map_err(internal)?;
+        let mut active_sessions = 0;
         for session in state.sessions.values() {
             if session.inner.alive.load(Ordering::Acquire) && !session.runtime_is_idle().await? {
                 idle = false;
+                active_sessions += 1;
             }
         }
         // Routine reservations happen outside the registry lock; observe them
         // again and reject an idle result if any work changed during this query.
-        idle &= !state.bots.has_running_routines().map_err(internal)?;
+        let running_routines = state.bots.running_routine_count().map_err(internal)?;
+        idle &= running_routines == 0;
         let after = self.work_activity.revision.load(Ordering::Acquire);
         Ok(RuntimeActivity {
+            active_sessions,
+            running_routines,
             idle: idle && before == after,
             activity_revision: format!("{}:{after}", self.work_activity.instance),
             next_routine_at: state
@@ -361,54 +377,6 @@ impl GatewayHost {
 
     pub(crate) fn mark_runtime_activity(&self) {
         self.work_activity.mark();
-    }
-
-    pub(crate) async fn start_quiesced(&self) -> Result<()> {
-        let mut shutdown = self.idle_shutdown.lock().await;
-        let gate = Arc::clone(&self.state.lock().await.session_mutations);
-        let guard = gate.try_write_owned().map_err(|_| {
-            Error::Config("cannot start quiesced after gateway work has begun".into())
-        })?;
-        self.work_activity.quiesced.store(true, Ordering::Release);
-        *shutdown = Some(guard);
-        Ok(())
-    }
-
-    pub(crate) async fn prepare_idle_shutdown(
-        &self,
-        expected_revision: &str,
-        native_connections: impl FnOnce() -> Result<usize>,
-    ) -> std::result::Result<bool, Rejection> {
-        let Ok(mut shutdown) = self.idle_shutdown.try_lock() else {
-            return Ok(false);
-        };
-        let gate = Arc::clone(&self.state.lock().await.session_mutations);
-        let guard = if shutdown.is_none() {
-            match gate.try_write_owned() {
-                Ok(guard) => Some(guard),
-                Err(_) => return Ok(false),
-            }
-        } else {
-            None
-        };
-        let activity = self.runtime_activity().await?;
-        if !activity.idle
-            || activity.activity_revision != expected_revision
-            || native_connections().map_err(internal)? != 0
-        {
-            return Ok(false);
-        }
-        if let Some(guard) = guard {
-            self.work_activity.quiesced.store(true, Ordering::Release);
-            *shutdown = Some(guard);
-        }
-        Ok(true)
-    }
-
-    pub(crate) async fn cancel_idle_shutdown(&self) {
-        let mut shutdown = self.idle_shutdown.lock().await;
-        self.work_activity.quiesced.store(false, Ordering::Release);
-        shutdown.take();
     }
 
     pub(crate) async fn begin_mutation(
@@ -428,14 +396,6 @@ impl GatewayHost {
     pub(crate) async fn begin_access(
         &self,
     ) -> std::result::Result<tokio::sync::OwnedRwLockReadGuard<()>, Rejection> {
-        let shutdown = self.idle_shutdown.lock().await;
-        if shutdown.is_some() {
-            return Err(Rejection {
-                code: "gateway_busy",
-                message: "retry after the idle shutdown finishes".into(),
-                fatal: false,
-            });
-        }
         let (gate, bots) = {
             let state = self.state.lock().await;
             (
@@ -443,10 +403,8 @@ impl GatewayHost {
                 Arc::clone(&state.bots),
             )
         };
-        // Preserve ordinary cascade waiting, but never queue behind a retained
-        // shutdown guard. Preparation try-locks the same admission decision.
+        // Admission serializes with exclusive session mutations.
         let mutation = gate.read_owned().await;
-        drop(shutdown);
         reject_pending_bot_deletion(&bots)?;
         Ok(mutation)
     }
@@ -459,10 +417,6 @@ impl GatewayHost {
     async fn begin_exclusive_mutation(
         &self,
     ) -> std::result::Result<tokio::sync::OwnedRwLockWriteGuard<()>, Rejection> {
-        let shutdown = self.idle_shutdown.lock().await;
-        if shutdown.is_some() {
-            return Err(internal("gateway is prepared for idle shutdown"));
-        }
         let (gate, bots) = {
             let state = self.state.lock().await;
             (
@@ -471,7 +425,6 @@ impl GatewayHost {
             )
         };
         let mutation = gate.write_owned().await;
-        drop(shutdown);
         reject_pending_bot_deletion(&bots)?;
         Ok(mutation)
     }
@@ -485,14 +438,8 @@ impl GatewayHost {
     }
 
     pub(crate) async fn ready(&self) -> std::result::Result<ReadyPayload, Rejection> {
-        // Dashboard controllers must still authenticate to cancel a prepared
-        // shutdown. The retained write guard already freezes this read-only view.
-        let _mutation = if self.work_activity.quiesced.load(Ordering::Acquire) {
-            None
-        } else {
-            self.reconcile_pending_bot_deletion().await?;
-            Some(self.begin_access().await?)
-        };
+        self.reconcile_pending_bot_deletion().await?;
+        let _mutation = self.begin_access().await?;
         let snapshot = self.state.lock().await.ready_snapshot()?;
         gateway_ready(&snapshot).await
     }
@@ -1395,4 +1342,20 @@ fn reject_persistent_session(summary: &SessionSummary) -> std::result::Result<()
         });
     }
     Ok(())
+}
+
+pub(crate) fn session_file_rejection(error: mobius::Error) -> Rejection {
+    let code = if matches!(&error, mobius::Error::StorageFull) {
+        "storage_full"
+    } else {
+        "session_file_rejected"
+    };
+    Rejection {
+        code,
+        message: match error {
+            mobius::Error::Tool(message) => message,
+            other => other.to_string(),
+        },
+        fatal: false,
+    }
 }

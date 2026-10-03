@@ -406,7 +406,7 @@ mod tests {
         let reject_first = std::sync::atomic::AtomicBool::new(true);
         let state = tempfile::tempdir().expect("state");
         let tool = Evaluate {
-            files: SessionFileStore::new(state.path()),
+            files: SessionFileStore::new(state.path(), None),
             worker: WorkerCommand {
                 executable: "/usr/bin/true".into(),
                 arguments: Vec::new(),
@@ -446,7 +446,7 @@ mod tests {
             let events = Arc::new(std::sync::Mutex::new(Vec::new()));
             let sink = events.clone();
             let tool = Evaluate {
-                files: SessionFileStore::new(workspace.path()),
+                files: SessionFileStore::new(workspace.path(), None),
                 worker: WorkerCommand {
                     executable: "/usr/bin/python3".into(),
                     arguments: vec!["-c".into(), "import time; time.sleep(30)".into()],
@@ -497,7 +497,7 @@ mod tests {
         // Echoes the evaluation request back as the observation's text.
         let echo = "import sys,struct,json; n=struct.unpack('>I',sys.stdin.buffer.read(4))[0]; request=sys.stdin.buffer.read(n).decode(); data=json.dumps({'content':[{'type':'text','text':request}],'is_error':False}).encode(); sys.stdout.buffer.write(struct.pack('>I',len(data))+data); sys.stdout.buffer.flush()";
         let tool = Evaluate {
-            files: SessionFileStore::new(state.path()),
+            files: SessionFileStore::new(state.path(), None),
             worker: WorkerCommand {
                 executable: "/usr/bin/python3".into(),
                 arguments: vec!["-c".into(), echo.into()],
@@ -624,7 +624,7 @@ mod tests {
             "is_error": true
         });
         let tool = Evaluate {
-            files: SessionFileStore::new(state.path()),
+            files: SessionFileStore::new(state.path(), None),
             worker: WorkerCommand {
                 executable: "/usr/bin/python3".into(),
                 arguments: vec!["-c".into(),

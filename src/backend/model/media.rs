@@ -179,7 +179,7 @@ mod tests {
     async fn large_native_observations_keep_exact_prefix_and_durable_compaction_references() {
         use image::ImageEncoder as _;
         let state = tempfile::tempdir().expect("state");
-        let store = SessionFileStore::new(state.path());
+        let store = SessionFileStore::new(state.path(), None);
         let mut random = 1_u32;
         let pixels = (0..1800 * 1800 * 3)
             .map(|_| {

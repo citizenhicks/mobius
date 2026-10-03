@@ -1,0 +1,1 @@
+Gateway protocol 90 adds storage usage and selective cleanup, with runtime storage allowances and protected generated images. Configurable telemetry reports gateway activity and opted-in usage through bounded collection. Workspace file deletion validates the registered workspace and rejects unsafe paths.

@@ -11,7 +11,7 @@ const PNG: &str =
 async fn ordered_images_are_durable_and_reinspectable_after_source_deletion() {
     let workspace = tempfile::tempdir().expect("workspace");
     let state = tempfile::tempdir().expect("state");
-    let store = SessionFileStore::new(state.path());
+    let store = SessionFileStore::new(state.path(), None);
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(PNG)
         .expect("PNG");
@@ -122,8 +122,25 @@ async fn ordered_images_are_durable_and_reinspectable_after_source_deletion() {
     );
     assert!(
         store
-            .list_files("session")
+            .list_files(
+                "session",
+                &[
+                    crate::backend::session_files::SessionFileOrigin::Upload,
+                    crate::backend::session_files::SessionFileOrigin::Artifact
+                ]
+            )
             .await
+            .map(|files| files
+                .into_iter()
+                .map(|(origin, file)| crate::protocol::SessionFileRecord {
+                    origin: if origin == crate::backend::session_files::SessionFileOrigin::Upload {
+                        crate::protocol::SessionFileOrigin::User
+                    } else {
+                        crate::protocol::SessionFileOrigin::Agent
+                    },
+                    file
+                })
+                .collect::<Vec<_>>())
             .expect("published files")
             .is_empty()
     );
@@ -135,7 +152,7 @@ async fn view_image_rejects_malformed_bytes_and_ambiguous_sources() {
     let workspace = tempfile::tempdir().expect("workspace");
     std::fs::write(workspace.path().join("bad.png"), b"not an image").expect("file");
     let tool = ViewImage {
-        store: SessionFileStore::new(state.path()),
+        store: SessionFileStore::new(state.path(), None),
     };
     for arguments in [
         serde_json::json!({"images": [{"path": "bad.png"}]}),

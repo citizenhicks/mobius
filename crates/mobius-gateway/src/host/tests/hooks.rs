@@ -404,7 +404,10 @@ async fn canonical_chat_queues_sources_and_deduplicates_delivery_after_ack_gap()
     );
     assert_eq!(
         gateway
-            .delete_sessions(&[main.session_id().into()])
+            .delete_sessions(
+                &[main.session_id().into()],
+                mobius::backend::session_files::SessionFileSelection::All
+            )
             .await
             .unwrap_err()
             .code,
@@ -529,7 +532,10 @@ async fn session_closure_keeps_final_fact_and_revokes_old_source_authorization()
         .await
         .unwrap();
     gateway
-        .delete_sessions(&[source.session_id().into()])
+        .delete_sessions(
+            &[source.session_id().into()],
+            mobius::backend::session_files::SessionFileSelection::All,
+        )
         .await
         .unwrap();
     assert!(

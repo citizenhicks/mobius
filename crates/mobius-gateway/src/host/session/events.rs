@@ -51,6 +51,7 @@ impl HostState {
                 let _ = waiter.send(());
             }
         }
+        self.telemetry.notify.notify_one();
         Ok(())
     }
 

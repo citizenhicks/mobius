@@ -792,6 +792,7 @@ fn browser_arguments(profile: &Path) -> Vec<String> {
     [
         "--no-first-run",
         "--no-default-browser-check",
+        "--disable-infobars",
         "--window-size=1200,640",
         "--window-position=80,42",
         "--remote-debugging-address=127.0.0.1",

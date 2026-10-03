@@ -410,7 +410,7 @@ fn file_picker_requires_confirmation_before_delete() {
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             &default_catalog(),
         ),
-        UiAction::Gateway(crate::frontend::catalog::GatewayAction::DeleteSessionFile(
+        UiAction::Gateway(crate::frontend::catalog::GatewayAction::DeleteStoredFile(
             "file-1".into()
         ))
     );

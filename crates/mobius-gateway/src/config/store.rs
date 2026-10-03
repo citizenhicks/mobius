@@ -216,7 +216,7 @@ impl ConfigStore {
             config.cloudflare.as_ref(),
             Some(CloudflareConfig::Named { .. })
         ) {
-            load_cloudflare_token(&self.cloudflare_token_path())?;
+            load_secret_file(&self.cloudflare_token_path())?;
         }
         Ok(())
     }
@@ -405,7 +405,7 @@ pub fn state_dir() -> Result<PathBuf> {
 /// # Errors
 ///
 /// Returns an error if the resource cannot be read, decoded, or validated.
-pub fn load_cloudflare_token(path: &Path) -> Result<String> {
+pub fn load_secret_file(path: &Path) -> Result<String> {
     #[cfg(unix)]
     let file = fs::OpenOptions::new()
         .read(true)
@@ -413,7 +413,7 @@ pub fn load_cloudflare_token(path: &Path) -> Result<String> {
         .open(path)
         .map_err(|error| -> Error {
             if error.raw_os_error() == Some(nix::libc::ELOOP) {
-                invalid_cloudflare_token_file()
+                Error::Config("secret must be stored in a regular file".into())
             } else {
                 error.into()
             }
@@ -422,28 +422,32 @@ pub fn load_cloudflare_token(path: &Path) -> Result<String> {
     let file = {
         let metadata = fs::symlink_metadata(path)?;
         if !metadata.file_type().is_file() {
-            return Err(invalid_cloudflare_token_file());
+            return Err(Error::Config(
+                "secret must be stored in a regular file".into(),
+            ));
         }
         fs::File::open(path)?
     };
     let metadata = file.metadata()?;
     if !metadata.file_type().is_file() {
-        return Err(invalid_cloudflare_token_file());
+        return Err(Error::Config(
+            "secret must be stored in a regular file".into(),
+        ));
     }
     #[cfg(unix)]
     if metadata.permissions().mode() & 0o077 != 0 {
         return Err(Error::Config(
-            "Cloudflare tunnel token file must not be accessible by group or others (use mode 0600)"
-                .into(),
+            "secret file must not be accessible by group or others (use mode 0600)".into(),
         ));
     }
     if metadata.len() > MAX_CLOUDFLARE_TOKEN_BYTES as u64 {
-        return Err(invalid_cloudflare_token());
+        return Err(Error::Config("secret file token is too large".into()));
     }
     let mut contents = String::new();
     file.take(MAX_CLOUDFLARE_TOKEN_BYTES as u64 + 1)
         .read_to_string(&mut contents)?;
-    let token = validate_cloudflare_token(&contents)?;
+    let token = validate_cloudflare_token(&contents)
+        .map_err(|_| Error::Config("secret file contains an invalid token".into()))?;
     Ok(token.to_owned())
 }
 

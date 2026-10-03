@@ -50,16 +50,17 @@ pub(super) fn prepare(action: GatewayAction, session_id: &str) -> PreparedAction
         GatewayAction::DeleteCurrent => send(|request_id| ClientMessage::DeleteSessions {
             request_id,
             session_ids: vec![session_id.into()],
+            selection: mobius::backend::session_files::SessionFileSelection::All,
         }),
         GatewayAction::ListSessionFiles => send(|request_id| ClientMessage::ListSessionFiles {
             request_id,
             session_id: session_id.into(),
         }),
-        GatewayAction::DeleteSessionFile(file_id) => {
-            send(|request_id| ClientMessage::DeleteSessionFile {
+        GatewayAction::DeleteStoredFile(file_id) => {
+            send(|request_id| ClientMessage::DeleteSessions {
                 request_id,
-                session_id: session_id.into(),
-                file_id,
+                session_ids: vec![session_id.into()],
+                selection: mobius::backend::session_files::SessionFileSelection::Ids(vec![file_id]),
             })
         }
         GatewayAction::GitDiff(scope) => send(|request_id| ClientMessage::GetGitDiff {

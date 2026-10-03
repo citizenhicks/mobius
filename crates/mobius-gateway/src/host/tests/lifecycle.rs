@@ -765,12 +765,15 @@ async fn delete_sessions_remove_distinct_roots_and_collapse_duplicate_descendant
         .await
         .expect("title retained session");
     gateway
-        .delete_sessions(&[
-            deleted_id.clone(),
-            "deleted-child".into(),
-            also_deleted_id.clone(),
-            deleted_id.clone(),
-        ])
+        .delete_sessions(
+            &[
+                deleted_id.clone(),
+                "deleted-child".into(),
+                also_deleted_id.clone(),
+                deleted_id.clone(),
+            ],
+            mobius::backend::session_files::SessionFileSelection::All,
+        )
         .await
         .expect("delete sessions");
 
@@ -797,8 +800,12 @@ async fn delete_sessions_remove_distinct_roots_and_collapse_duplicate_descendant
     );
     assert!(
         session_files
-            .list_artifacts(&deleted_id)
+            .list_files(
+                &deleted_id,
+                &[mobius::backend::session_files::SessionFileOrigin::Artifact]
+            )
             .await
+            .map(|files| files.into_iter().map(|(_, file)| file).collect::<Vec<_>>())
             .expect("deleted artifacts")
             .is_empty()
     );
@@ -855,10 +862,24 @@ async fn delete_sessions_preflight_all_roots_before_durable_removal() {
         .await
         .expect("fork child");
 
+    gateway
+        .delete_sessions(
+            std::slice::from_ref(&other_id),
+            mobius::backend::session_files::SessionFileSelection::Origins(vec![
+                mobius::backend::session_files::SessionFileOrigin::Artifact,
+            ]),
+        )
+        .await
+        .expect("idle purge");
+    assert!(other_host.is_alive());
+    assert!(checkpoints.load(&other_id).await.unwrap().is_some());
+
     let (commands, mut receiver) = mpsc::channel(1);
     tokio::spawn(async move {
-        if let Some(HostCommand::ProviderCutoverStatus { reply }) = receiver.recv().await {
-            let _ = reply.send(ProviderCutoverStatus { idle: false });
+        for _ in 0..2 {
+            if let Some(HostCommand::ProviderCutoverStatus { reply }) = receiver.recv().await {
+                let _ = reply.send(ProviderCutoverStatus { idle: false });
+            }
         }
     });
     let (events, _) = broadcast::channel(1);
@@ -879,8 +900,23 @@ async fn delete_sessions_preflight_all_roots_before_durable_removal() {
         },
     );
 
+    let purge_error = super::super::deletion::prepare_session_tree_deletion(
+        &mut *gateway.state.lock().await,
+        &["child".into()],
+        mobius::backend::session_files::SessionFileSelection::Origins(vec![
+            mobius::backend::session_files::SessionFileOrigin::Artifact,
+        ]),
+    )
+    .await
+    .err()
+    .expect("busy purge rejected");
+    assert_eq!(purge_error.code, "agent_busy");
+
     let error = gateway
-        .delete_sessions(&[other_id.clone(), root_id.clone()])
+        .delete_sessions(
+            &[other_id.clone(), root_id.clone()],
+            mobius::backend::session_files::SessionFileSelection::All,
+        )
         .await
         .expect_err("busy descendant must reject deletion");
 

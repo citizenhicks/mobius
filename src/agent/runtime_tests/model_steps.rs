@@ -151,6 +151,7 @@ async fn text_only_routes_do_not_expose_or_execute_view_image() {
         test_middleware(vec![Arc::new(Tools::coding(
             crate::backend::session_files::SessionFileStore::new(
                 tempfile::tempdir().expect("files").path(),
+                None,
             ),
         ))]),
         "test prompt",

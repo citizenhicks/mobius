@@ -19,6 +19,8 @@ mod provider_catalog;
 mod publication;
 pub mod sandbox;
 pub mod server;
+pub mod storage_usage;
+pub mod telemetry;
 pub mod wire;
 
 pub use extensions::MAX_EXTENSION_SOURCE_BYTES;

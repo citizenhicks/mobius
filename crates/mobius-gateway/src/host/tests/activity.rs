@@ -62,11 +62,11 @@ async fn runtime_activity_observes_hidden_execution_and_short_completed_work() {
 }
 
 #[tokio::test]
-async fn runtime_idle_shutdown_checks_reservations_revision_and_work_admission() {
+async fn runtime_activity_tracks_reservations_and_pending_deliveries() {
     let (root, gateway, bot) = super::bots::gateway_with_bot().await;
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
-    let host = gateway.create_session(&workspace, &bot.id).await.unwrap();
+    let _host = gateway.create_session(&workspace, &bot.id).await.unwrap();
     let bots = Arc::clone(&gateway.state.lock().await.bots);
     let routine = bots
         .create_routine(
@@ -135,53 +135,8 @@ async fn runtime_idle_shutdown_checks_reservations_revision_and_work_admission()
     }
     let activity = gateway.runtime_activity().await.unwrap();
     assert!(activity.idle);
-    assert!(
-        !gateway
-            .prepare_idle_shutdown("stale", || Ok(0))
-            .await
-            .unwrap()
-    );
-    assert!(
-        !gateway
-            .prepare_idle_shutdown(&activity.activity_revision, || Ok(1))
-            .await
-            .unwrap()
-    );
-    let in_flight = gateway.begin_mutation().await.unwrap();
-    assert!(
-        !gateway
-            .prepare_idle_shutdown(&activity.activity_revision, || Ok(0))
-            .await
-            .unwrap()
-    );
-    drop(in_flight);
-    assert!(
-        gateway
-            .prepare_idle_shutdown(&activity.activity_revision, || Ok(0))
-            .await
-            .unwrap()
-    );
-    assert!(
-        gateway.begin_mutation().await.is_err(),
-        "routine polling and connection admission are closed"
-    );
-    let rejected = host
-        .submit(Submission {
-            id: "racing-submit".into(),
-            op: Op::Interrupt {
-                turn_id: "turn".into(),
-            },
-        })
-        .await;
-    assert_eq!(rejected.unwrap_err().code, "gateway_busy");
-    assert!(
-        gateway.ready().await.is_ok(),
-        "dashboard must reconnect to cancel"
-    );
-    gateway.cancel_idle_shutdown().await;
     assert!(gateway.begin_mutation().await.is_ok());
     let revision = gateway.runtime_activity().await.unwrap().activity_revision;
-    gateway.cancel_idle_shutdown().await;
     assert_eq!(
         revision,
         gateway.runtime_activity().await.unwrap().activity_revision

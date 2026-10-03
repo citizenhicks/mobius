@@ -163,22 +163,34 @@ pub enum ClientMessage {
         /// The request identifier.
         request_id: String,
     },
-    /// Observes machine-wide work without counting the observer as activity.
-    GetRuntimeActivity {
-        /// The request identifier.
+    /// Read collector configuration and delivery status.
+    GetTelemetry {
+        /// Correlates this response with its request.
         request_id: String,
     },
-    /// Closes work admission only if the observed idle state has not changed.
-    PrepareIdleShutdown {
-        /// The request identifier.
+    /// Read storage ownership and measured sizes without mutating files.
+    GetStorageUsage {
+        /// Correlates this response with its request.
         request_id: String,
-        /// The revision returned by the last runtime activity query.
-        expected_activity_revision: String,
     },
-    /// Reopens work admission after a cancelled idle shutdown.
-    CancelIdleShutdown {
-        /// The request identifier.
+    /// Replace collector configuration at an expected revision.
+    ConfigureTelemetry {
+        /// Correlates this response with its request.
         request_id: String,
+        /// Configuration revision observed before editing.
+        expected_revision: u64,
+        /// Configured collectors.
+        sinks: Vec<crate::telemetry::TelemetrySink>,
+        /// IDs whose existing credential sources must survive a redacted report edit.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        preserve_auth: Vec<String>,
+    },
+    /// Deliver a snapshot immediately.
+    SendTelemetry {
+        /// Correlates this response with its request.
+        request_id: String,
+        /// Collector to send now.
+        sink_id: String,
     },
     /// Selects the unpair client case.
     UnpairClient {
@@ -277,6 +289,8 @@ pub enum ClientMessage {
         request_id: String,
         /// The session identifiers.
         session_ids: Vec<String>,
+        /// Required deletion scope; history is removed only for all.
+        selection: mobius::backend::session_files::SessionFileSelection,
     },
     /// Selects the submit case.
     Submit {
@@ -348,15 +362,6 @@ pub enum ClientMessage {
         session_id: String,
         /// The upload identifier.
         upload_id: String,
-    },
-    /// Selects the delete session file case.
-    DeleteSessionFile {
-        /// The request identifier.
-        request_id: String,
-        /// The session identifier.
-        session_id: String,
-        /// The file identifier.
-        file_id: String,
     },
     /// Selects the list session files case.
     ListSessionFiles {
@@ -549,7 +554,16 @@ pub enum ClientMessage {
         /// The max bytes.
         max_bytes: usize,
     },
-    /// Selects the write workspace file case.
+    /// Deletes a file inside the selected workspace.
+    DeleteWorkspaceFile {
+        /// Request correlation identifier.
+        request_id: String,
+        /// Selected project chat.
+        session_id: String,
+        /// Relative regular file path.
+        path: String,
+    },
+    /// Writes one workspace text file.
     WriteWorkspaceFile {
         /// The request identifier.
         request_id: String,
@@ -757,27 +771,21 @@ pub enum ServerMessage {
         /// Committed typed lifecycle fact.
         event: super::HookEvent,
     },
-    /// Result of conditionally closing work admission for an external shutdown.
-    IdleShutdownPrepared {
-        /// The request identifier.
+    /// Fresh measured storage usage.
+    StorageUsage {
+        /// Correlates this response with its request.
         request_id: String,
-        /// Whether admission is closed and the runtime is safe to stop.
-        prepared: bool,
-        /// Earliest enabled routine deadline, frozen by successful preparation.
-        next_routine_at: Option<String>,
+        /// Measured storage ownership and totals.
+        usage: crate::storage_usage::StorageUsage,
     },
-    /// A point-in-time view of all loaded session and routine work.
-    RuntimeActivity {
-        /// The request identifier.
+    /// Collector configuration and delivery state.
+    Telemetry {
+        /// Correlates this response with its request.
         request_id: String,
-        /// Whether no session, subagent, background command or routine is active.
-        idle: bool,
-        /// Number of authenticated connections other than dashboard observers.
-        connected_clients: usize,
-        /// Opaque process-scoped revision, changed by work but never by this query.
-        activity_revision: String,
-        /// Earliest enabled routine deadline as an RFC 3339 timestamp, if any.
-        next_routine_at: Option<String>,
+        /// Current collector configuration revision.
+        revision: u64,
+        /// Configured collectors.
+        sinks: Vec<crate::telemetry::TelemetrySinkReport>,
     },
     /// Requests the local renderer's assigned page for one chat.
     BrowserPageRequested {

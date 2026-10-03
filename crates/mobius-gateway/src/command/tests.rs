@@ -305,29 +305,8 @@ fn parse_serve_accepts_an_explicit_state_directory() {
         Command::Serve {
             state_dir,
             background: false,
-            start_quiesced: false,
         } if state_dir == std::path::Path::new("/tmp/mobius")
     ));
-}
-
-#[test]
-fn parse_serve_accepts_quiesced_foreground_only() {
-    assert!(matches!(
-        parse(vec!["serve".into(), "--start-quiesced".into()]).unwrap(),
-        Command::Serve {
-            background: false,
-            start_quiesced: true,
-            ..
-        }
-    ));
-    assert!(
-        parse(vec![
-            "serve".into(),
-            "--start-quiesced".into(),
-            "--background".into(),
-        ])
-        .is_err()
-    );
 }
 
 #[test]
@@ -804,7 +783,6 @@ fn parse_serve_accepts_background_with_an_explicit_state_directory() {
         Command::Serve {
             state_dir,
             background: true,
-            start_quiesced: false,
         } if state_dir == std::path::Path::new("/tmp/mobius")
     ));
 }
@@ -1271,4 +1249,78 @@ fn parse_init_requires_both_tls_paths() {
     .expect_err("partial TLS config must fail");
 
     assert!(error.to_string().contains("--tls-key <PATH>"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn set_runtime_preserves_omitted_policy_fields() {
+    let root = tempfile::tempdir().unwrap();
+    let state_dir = root.path().join("state");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let listen = listener.local_addr().unwrap();
+    drop(listener);
+    let (store, mut config) = ConfigStore::initialize(state_dir.clone(), listen, None).unwrap();
+    config.runtime.ingress = Some("0.0.0.0:8742".parse().unwrap());
+    config.runtime.hold_socket = Some(root.path().join("provider.sock"));
+    config.runtime.storage_limit_bytes = Some(5368709120);
+    store.save(&config).unwrap();
+    run(
+        vec![
+            "--state-dir".into(),
+            state_dir.into_os_string(),
+            "set-runtime".into(),
+            "--idle-exit-seconds".into(),
+            "300".into(),
+        ],
+        |_, _| Ok(()),
+        |_| Ok(None),
+    )
+    .await
+    .unwrap();
+    let (_, updated) = ConfigStore::open(store.state_dir().to_path_buf()).unwrap();
+    assert_eq!(updated.runtime.idle_exit_seconds, 300);
+    assert_eq!(updated.runtime.ingress, config.runtime.ingress);
+    assert_eq!(updated.runtime.hold_socket, config.runtime.hold_socket);
+    assert_eq!(
+        updated.runtime.storage_limit_bytes,
+        config.runtime.storage_limit_bytes
+    );
+    run(
+        vec![
+            "--state-dir".into(),
+            store.state_dir().as_os_str().to_owned(),
+            "set-runtime".into(),
+            "--clear-ingress".into(),
+            "--clear-hold-socket".into(),
+            "--clear-storage-limit".into(),
+        ],
+        |_, _| Ok(()),
+        |_| Ok(None),
+    )
+    .await
+    .unwrap();
+    let (_, cleared) = ConfigStore::open(store.state_dir().to_path_buf()).unwrap();
+    assert_eq!(cleared.runtime.idle_exit_seconds, 300);
+    assert_eq!(cleared.runtime.ingress, None);
+    assert_eq!(cleared.runtime.hold_socket, None);
+    assert_eq!(cleared.runtime.storage_limit_bytes, None);
+}
+
+#[test]
+fn set_runtime_rejects_setting_and_clearing_the_same_field() {
+    for (clear, set, value) in [
+        ("--clear-ingress", "--ingress", "0.0.0.0:8742"),
+        ("--clear-hold-socket", "--hold-socket", "/tmp/provider.sock"),
+        ("--clear-storage-limit", "--storage-limit-bytes", "1024"),
+    ] {
+        assert!(
+            parse(vec![
+                "set-runtime".into(),
+                clear.into(),
+                set.into(),
+                value.into()
+            ])
+            .is_err()
+        );
+    }
 }

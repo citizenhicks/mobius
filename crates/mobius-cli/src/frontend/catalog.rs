@@ -119,7 +119,7 @@ pub(crate) enum GatewayAction {
     AttachFolder(PathBuf),
     DeleteCurrent,
     ListSessionFiles,
-    DeleteSessionFile(String),
+    DeleteStoredFile(String),
     GitDiff(GitDiffScope),
     SwitchBranch(String),
 }

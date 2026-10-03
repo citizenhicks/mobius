@@ -34,7 +34,7 @@
 //!         "https://api.openai.com/v1",
 //!         model_id,
 //!     )?);
-//!     let files = mobius::backend::session_files::SessionFileStore::new(state_dir);
+//!     let files = mobius::backend::session_files::SessionFileStore::new(state_dir, None);
 //!     let models = Arc::new(ModelRouter::new("default", model).session_files(files.clone()));
 //!     let sandbox = Arc::new(Sandbox::new(
 //!         Arc::new(LocalSandbox::new(workspace)?),
@@ -268,6 +268,9 @@ impl From<&str> for ProviderError {
 /// Errors returned by möbius modules.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// The gateway data allowance cannot admit another file.
+    #[error("storage is full; free up space before adding files")]
+    StorageFull,
     #[error("configuration error: {0}")]
     /// Selects the config case.
     Config(String),

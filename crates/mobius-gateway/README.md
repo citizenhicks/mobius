@@ -288,10 +288,28 @@ schedules, optionally bounded by an end time and pinned to a workspace. Every in
 fresh hidden conversation owned by that Bot, exposed through routine history rather than the chat
 catalog; it never installs a system crontab entry or spawns a child CLI. Routine instructions are
 owner-only under the gateway state directory. With no clients
-and no active routines, the gateway exits after 72 hours. Stopping it manually also stops routine
-work; cron occurrences are not replayed after restart, and intervals catch up at most one overdue
-occurrence.
+and no active routines, the gateway exits after the configured idle interval (72 hours
+by default). `mobius-gateway set-runtime --idle-exit-seconds SECONDS` changes that interval.
+Stopping it manually also stops routine work; cron occurrences are not replayed after
+restart, and intervals catch up at most one overdue occurrence.
 
 Choose one Bot in New Chat. Each chat has one Bot, one Agent checkpoint, and one
 workspace. See [Bots and context](BOTS.md) for history recovery, routine ownership,
 context boundaries, scratchpad knowledge, task lists, and subagents.
+
+### Storage and telemetry
+
+Self-hosted gateways have no storage allowance unless the operator sets one while the
+gateway is stopped. `mobius-gateway set-runtime --storage-limit-bytes BYTES` sets the
+content-blob allowance; `--clear-storage-limit` removes it. The allowance does not
+limit workspace files, checkpoints, or local disk size. Connected apps can inspect
+storage usage and selectively purge uploaded, generated, or screenshot files while
+keeping chat history.
+
+Outbound telemetry is disabled until a destination is configured. Operators can use
+`mobius-gateway telemetry add --id ID --url HTTPS_URL --sections activity,storage`
+and `mobius-gateway telemetry list` or `telemetry remove --id ID`. An endpoint can
+request sections (`activity`, `usage`, `runs`, `storage`) and committed hook-event
+kinds. The gateway sends the chosen sections plus envelope metadata; a hosted gateway
+may have a destination configured by its host. Bearer credentials are read from an
+environment variable or owner-only file and never returned in the endpoint report.

@@ -378,7 +378,7 @@ fn custom_selection_without_reasoning_uses_the_first_configured_effort() {
         &selection,
         &store,
         &credentials,
-        SessionFileStore::new(tempfile::tempdir().expect("files").path()),
+        SessionFileStore::new(tempfile::tempdir().expect("files").path(), None),
     )
     .expect("build selected model");
     let selected = router.choices().next().expect("selected route");
@@ -550,7 +550,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         original_bot.clone(),
         &store,
         &credentials,
-        SessionFileStore::new(store.state_dir()),
+        SessionFileStore::new(store.state_dir(), None),
         0,
     )
     .await
@@ -565,7 +565,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
             &store,
             Arc::clone(&checkpoints),
             ScratchpadStore::new(Arc::clone(&checkpoints)),
-            SessionFileStore::new(store.state_dir()),
+            SessionFileStore::new(store.state_dir(), None),
             Arc::new(tokio::sync::Mutex::new(())),
             Arc::new(crate::computer_runtime::desktop::DesktopControl::default()),
             Arc::new(crate::computer_runtime::remote_desktop::RemoteDesktop::new(
@@ -586,7 +586,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
             &store,
             Arc::clone(&checkpoints),
             ScratchpadStore::new(Arc::clone(&checkpoints)),
-            SessionFileStore::new(store.state_dir()),
+            SessionFileStore::new(store.state_dir(), None),
             Arc::new(tokio::sync::Mutex::new(())),
             Arc::new(crate::computer_runtime::desktop::DesktopControl::default()),
             Arc::new(crate::computer_runtime::remote_desktop::RemoteDesktop::new(
@@ -655,7 +655,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         updated_bot,
         &store,
         &credentials,
-        SessionFileStore::new(store.state_dir()),
+        SessionFileStore::new(store.state_dir(), None),
         0,
     )
     .await
@@ -668,7 +668,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         &store,
         Arc::clone(&checkpoints),
         ScratchpadStore::new(Arc::clone(&checkpoints)),
-        SessionFileStore::new(store.state_dir()),
+        SessionFileStore::new(store.state_dir(), None),
         Arc::new(tokio::sync::Mutex::new(())),
         Arc::new(crate::computer_runtime::desktop::DesktopControl::default()),
         Arc::new(crate::computer_runtime::remote_desktop::RemoteDesktop::new(

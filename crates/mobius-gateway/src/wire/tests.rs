@@ -248,17 +248,17 @@ fn session_file_bytes_use_standard_base64_and_round_trip() {
 
 #[test]
 fn session_file_deletion_round_trips() {
-    let expected = ClientFrame::new(ClientMessage::DeleteSessionFile {
+    let expected = ClientFrame::new(ClientMessage::DeleteSessions {
         request_id: "request-delete".into(),
-        session_id: "session-a".into(),
-        file_id: "file-a".into(),
+        session_ids: vec!["session-a".into()],
+        selection: mobius::backend::session_files::SessionFileSelection::Ids(vec!["file-a".into()]),
     });
 
     let encoded = serde_json::to_value(&expected).expect("encode file deletion");
     let decoded: ClientFrame =
         serde_json::from_value(encoded.clone()).expect("decode file deletion");
 
-    assert_eq!(encoded["type"], "delete_session_file");
+    assert_eq!(encoded["type"], "delete_sessions");
     assert_eq!(decoded, expected);
 }
 
@@ -906,6 +906,7 @@ fn session_actions_have_flat_authenticated_frames() {
     let delete = serde_json::to_value(ClientFrame::new(ClientMessage::DeleteSessions {
         request_id: "request-d".into(),
         session_ids: vec!["session-a".into(), "session-b".into()],
+        selection: mobius::backend::session_files::SessionFileSelection::All,
     }))
     .expect("encode delete");
 
@@ -1643,4 +1644,22 @@ fn desktop_chunks_are_base64_and_bounded_in_both_directions() {
         serde_json::from_value::<ClientFrame>(serde_json::to_value(&control).unwrap()).unwrap(),
         control
     );
+}
+
+#[test]
+fn delete_sessions_requires_an_explicit_selection() {
+    let value = serde_json::json!({"type": "delete_sessions", "request_id": "purge", "session_ids": ["chat"]});
+    assert!(serde_json::from_value::<super::ClientMessage>(value).is_err());
+    let message = super::ClientMessage::DeleteSessions {
+        request_id: "purge".into(),
+        session_ids: vec!["chat".into()],
+        selection: mobius::backend::session_files::SessionFileSelection::Origins(vec![
+            mobius::backend::session_files::SessionFileOrigin::Artifact,
+        ]),
+    };
+    let value = serde_json::to_value(message).unwrap();
+    assert!(serde_json::from_value::<super::ClientMessage>(value.clone()).is_ok());
+    let mut missing = value;
+    missing.as_object_mut().unwrap().remove("selection");
+    assert!(serde_json::from_value::<super::ClientMessage>(missing).is_err());
 }

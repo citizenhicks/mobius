@@ -107,6 +107,7 @@ impl GatewayHost {
             },
         };
         state.bots.record_hook(&event).map_err(invalid_config)?;
+        self.telemetry.notify.notify_one();
         Ok(event)
     }
 

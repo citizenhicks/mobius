@@ -232,6 +232,7 @@ async fn catalogue_mutations_do_not_require_selecting_the_target_chat() {
         .send(ClientMessage::DeleteSessions {
             request_id: "delete-inactive".into(),
             session_ids: vec![inactive_session_id],
+            selection: mobius::backend::session_files::SessionFileSelection::All,
         })
         .await
         .expect("delete inactive chat");
@@ -321,6 +322,7 @@ async fn catalogue_mutations_do_not_require_selecting_the_target_chat() {
         .send(ClientMessage::DeleteSessions {
             request_id: "delete-selected-child-parent".into(),
             session_ids: vec![parent_session_id],
+            selection: mobius::backend::session_files::SessionFileSelection::All,
         })
         .await
         .expect("delete selected child's parent");
@@ -381,6 +383,55 @@ async fn paired_client_cancels_and_deletes_session_uploads() {
     let (session_id, _) =
         create_bot_chat_with_config(&sender, &mut events, &workspace, config).await;
 
+    fs::write(workspace.join("delete-me.txt"), b"workspace").unwrap();
+    sender
+        .send(ClientMessage::DeleteWorkspaceFile {
+            request_id: "delete-idle-workspace-file".into(),
+            session_id: session_id.clone(),
+            path: "delete-me.txt".into(),
+        })
+        .await
+        .unwrap();
+    expect_accepted(&mut events, "delete-idle-workspace-file").await;
+    assert!(!workspace.join("delete-me.txt").exists());
+
+    for selection in [
+        mobius::backend::session_files::SessionFileSelection::Ids(vec![]),
+        mobius::backend::session_files::SessionFileSelection::Origins(vec![]),
+    ] {
+        sender
+            .send(ClientMessage::DeleteSessions {
+                request_id: "empty-selection".into(),
+                session_ids: vec![session_id.clone()],
+                selection,
+            })
+            .await
+            .unwrap();
+        loop {
+            match next_gateway_message(&mut events).await {
+                ServerMessage::Rejected {
+                    request_id, code, ..
+                } if request_id == "empty-selection" => {
+                    assert_eq!(code, "session_file_rejected");
+                    break;
+                }
+                ServerMessage::Accepted { request_id } if request_id == "empty-selection" => {
+                    panic!("empty selection accepted")
+                }
+                _ => {}
+            }
+        }
+    }
+    let mixed_artifact = files
+        .publish_artifact(
+            &session_id,
+            "mixed.txt".into(),
+            "text/plain".into(),
+            b"mixed",
+        )
+        .await
+        .unwrap();
+
     sender
         .send(ClientMessage::BeginSessionFileUpload {
             request_id: "begin-cancelled".into(),
@@ -404,15 +455,20 @@ async fn paired_client_cancels_and_deletes_session_uploads() {
     };
     for request_id in ["cancel-upload", "repeat-cancel"] {
         sender
-            .send(ClientMessage::DeleteSessionFile {
+            .send(ClientMessage::DeleteSessions {
                 request_id: request_id.into(),
-                session_id: session_id.clone(),
-                file_id: cancelled_id.clone(),
+                session_ids: vec![session_id.clone()],
+                selection: mobius::backend::session_files::SessionFileSelection::Ids(vec![
+                    cancelled_id.clone(),
+                    cancelled_id.clone(),
+                    mixed_artifact.id.clone(),
+                ]),
             })
             .await
             .expect("cancel upload");
         expect_accepted(&mut events, request_id).await;
     }
+    assert!(files.read_file(&session_id, &mixed_artifact).await.is_err());
     sender
         .send(ClientMessage::FinishSessionFileUpload {
             request_id: "finish-cancelled".into(),
@@ -492,17 +548,20 @@ async fn paired_client_cancels_and_deletes_session_uploads() {
         }
     }
     sender
-        .send(ClientMessage::DeleteSessionFile {
+        .send(ClientMessage::DeleteSessions {
             request_id: "delete-completed".into(),
-            session_id: session_id.clone(),
-            file_id: deleted_id,
+            session_ids: vec![session_id.clone()],
+            selection: mobius::backend::session_files::SessionFileSelection::Ids(vec![deleted_id]),
         })
         .await
         .expect("delete completed upload");
     expect_accepted(&mut events, "delete-completed").await;
     assert!(
         files
-            .list_uploads(&session_id)
+            .list_files(
+                &session_id,
+                &[mobius::backend::session_files::SessionFileOrigin::Upload]
+            )
             .await
             .expect("list uploads")
             .is_empty()
@@ -517,51 +576,26 @@ async fn paired_client_cancels_and_deletes_session_uploads() {
         )
         .await
         .expect("publish artifact");
-    sender
-        .send(ClientMessage::DeleteSessionFile {
-            request_id: "reject-artifact".into(),
-            session_id: session_id.clone(),
-            file_id: artifact.id.clone(),
-        })
-        .await
-        .expect("reject artifact deletion");
-    loop {
-        if let ServerMessage::Rejected {
-            request_id, code, ..
-        } = next_gateway_message(&mut events).await
-            && request_id == "reject-artifact"
-        {
-            assert_eq!(code, "session_file_rejected");
-            break;
-        }
-    }
-    assert_eq!(
-        files
-            .list_artifacts(&session_id)
-            .await
-            .expect("list artifacts"),
-        [artifact]
-    );
-
     create_chat(&sender, &mut events, &workspace).await;
     sender
-        .send(ClientMessage::DeleteSessionFile {
-            request_id: "reject-unselected-delete".into(),
-            session_id,
-            file_id: Uuid::new_v4().to_string(),
+        .send(ClientMessage::DeleteSessions {
+            request_id: "delete-unselected-artifact".into(),
+            session_ids: vec![session_id.clone()],
+            selection: mobius::backend::session_files::SessionFileSelection::Ids(vec![artifact.id]),
         })
         .await
-        .expect("reject unselected deletion");
-    loop {
-        if let ServerMessage::Rejected {
-            request_id, code, ..
-        } = next_gateway_message(&mut events).await
-            && request_id == "reject-unselected-delete"
-        {
-            assert_eq!(code, "session_not_selected");
-            break;
-        }
-    }
+        .expect("delete unselected session artifact");
+    expect_accepted(&mut events, "delete-unselected-artifact").await;
+    assert!(
+        files
+            .list_files(
+                &session_id,
+                &[mobius::backend::session_files::SessionFileOrigin::Artifact]
+            )
+            .await
+            .unwrap()
+            .is_empty()
+    );
 
     shutdown.send(()).expect("stop gateway");
     serving.await.expect("gateway task").expect("gateway stop");
@@ -1070,7 +1104,13 @@ async fn paired_client_deletes_routine_sessions_with_the_routine() {
     );
     assert!(
         files
-            .list_files(&execution_session_id)
+            .list_files(
+                &execution_session_id,
+                &[
+                    mobius::backend::session_files::SessionFileOrigin::Upload,
+                    mobius::backend::session_files::SessionFileOrigin::Artifact
+                ]
+            )
             .await
             .expect("deleted routine files")
             .is_empty()
@@ -1625,4 +1665,251 @@ async fn attached_folder_is_persisted_for_tool_access() {
 
     shutdown.send(()).expect("stop gateway");
     serving.await.expect("gateway task").expect("gateway stop");
+}
+
+#[test]
+fn storage_allowance_rejection_has_an_actionable_wire_code() {
+    let rejection = crate::host::session_file_rejection(mobius::Error::StorageFull);
+    assert_eq!(rejection.code, "storage_full");
+    assert!(!rejection.fatal);
+    assert!(!rejection.message.is_empty());
+    let rejection = crate::host::session_file_rejection(mobius::Error::Tool("bad input".into()));
+    assert_eq!(rejection.code, "session_file_rejected");
+    assert_eq!(rejection.message, "bad input");
+}
+
+async fn assert_busy_storage_contract(
+    sender: &GatewaySender,
+    events: &mut GatewayEvents,
+    session_id: &str,
+    workspace: &Path,
+) {
+    use mobius::backend::session_files::{SessionFileOrigin, SessionFileSelection};
+    fs::write(workspace.join("retained.txt"), b"retained").unwrap();
+    for (request_id, message) in [
+        (
+            "busy-origins",
+            ClientMessage::DeleteSessions {
+                request_id: "busy-origins".into(),
+                session_ids: vec![session_id.into()],
+                selection: SessionFileSelection::Origins(vec![SessionFileOrigin::Artifact]),
+            },
+        ),
+        (
+            "busy-workspace",
+            ClientMessage::DeleteWorkspaceFile {
+                request_id: "busy-workspace".into(),
+                session_id: session_id.into(),
+                path: "retained.txt".into(),
+            },
+        ),
+    ] {
+        sender.send(message).await.unwrap();
+        loop {
+            match next_gateway_message(events).await {
+                ServerMessage::Rejected {
+                    request_id: actual,
+                    code,
+                    ..
+                } if actual == request_id => {
+                    assert_eq!(code, "agent_busy");
+                    break;
+                }
+                ServerMessage::Accepted { request_id: actual } if actual == request_id => {
+                    panic!("busy mutation accepted")
+                }
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(
+        fs::read(workspace.join("retained.txt")).unwrap(),
+        b"retained"
+    );
+    sender
+        .send(ClientMessage::BeginSessionFileUpload {
+            request_id: "busy-upload".into(),
+            session_id: session_id.into(),
+            name: "pending.txt".into(),
+            size: 1,
+            media_type: "text/plain".into(),
+        })
+        .await
+        .unwrap();
+    let upload_id = loop {
+        match next_gateway_message(events).await {
+            ServerMessage::SessionFileUploadReady {
+                request_id,
+                upload_id,
+                ..
+            } if request_id == "busy-upload" => break upload_id,
+            ServerMessage::Rejected {
+                request_id,
+                code,
+                message,
+                ..
+            } if request_id == "busy-upload" => panic!("upload rejected: {code}: {message}"),
+            _ => {}
+        }
+    };
+    sender
+        .send(ClientMessage::DeleteSessions {
+            request_id: "busy-cancel".into(),
+            session_ids: vec![session_id.into()],
+            selection: SessionFileSelection::Ids(vec![upload_id.clone()]),
+        })
+        .await
+        .unwrap();
+    expect_accepted(events, "busy-cancel").await;
+    sender
+        .send(ClientMessage::FinishSessionFileUpload {
+            request_id: "busy-finish".into(),
+            session_id: session_id.into(),
+            upload_id,
+        })
+        .await
+        .unwrap();
+    loop {
+        match next_gateway_message(events).await {
+            ServerMessage::Rejected {
+                request_id, code, ..
+            } if request_id == "busy-finish" => {
+                assert_eq!(code, "session_file_rejected");
+                break;
+            }
+            ServerMessage::SessionFileUploadCompleted { request_id, .. }
+                if request_id == "busy-finish" =>
+            {
+                panic!("canceled upload committed")
+            }
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test]
+async fn storage_mutations_keep_composer_removal_available_during_active_turns() {
+    let root = tempfile::tempdir().expect("temporary directory");
+    let workspace = root.path().join("workspace");
+    fs::create_dir(&workspace).expect("workspace");
+    let model_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("model listener");
+    let model_base_url = format!(
+        "http://{}/v1",
+        model_listener.local_addr().expect("model address")
+    );
+    let (model_seen, model_request) = tokio::sync::oneshot::channel();
+    let model_server = tokio::spawn(async move {
+        let (mut stream, _) = model_listener.accept().await.expect("model request");
+        let _ = model_seen.send(());
+        let mut buffer = [0; 8 * 1024];
+        while stream.read(&mut buffer).await.expect("model connection") != 0 {}
+    });
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let listen = listener.local_addr().expect("listen address");
+    let (store, config) = ConfigStore::initialize(root.path().join("state"), listen, None)
+        .expect("initialize gateway");
+    let provider = crate::wire::ProviderConfig {
+        instance: "blocked-storage".into(),
+        provider: "responses".into(),
+        model: "local-test".into(),
+        base_url: Some(model_base_url.clone()),
+        endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
+        reasoning_effort: None,
+        service_tier: None,
+        web_search: mobius::backend::model::provider::HostedWebSearch::Off,
+    };
+    let mut composition = crate::wire::AgentComposition {
+        provider: provider.clone(),
+        ..crate::wire::AgentComposition::default()
+    };
+    composition.middleware.set_enabled("attachments", true);
+    let config = config
+        .registering_provider(
+            provider,
+            "Blocked storage".into(),
+            Default::default(),
+            vec!["local-test".into()],
+            Vec::new(),
+        )
+        .expect("register provider");
+    store.save(&config).expect("save provider");
+    let credentials = CredentialStore::open(store.credentials_path()).expect("credentials");
+    credentials
+        .set(
+            "blocked-storage",
+            "responses",
+            "test-key",
+            Some(&model_base_url),
+            None,
+        )
+        .expect("store provider credential");
+    let (_, grant) = AuthStore::initialize(store.auth_path()).expect("authentication");
+    let server = GatewayServer::assemble(store, config, listener)
+        .await
+        .expect("gateway");
+    let host = server.host.clone();
+    let (shutdown, signal) = tokio::sync::oneshot::channel();
+    let serving = tokio::spawn(server.serve_until(async move {
+        let _ = signal.await;
+    }));
+    let endpoint = format!("tcp://{listen}").parse::<Endpoint>().unwrap();
+    let (connection, _) =
+        GatewayClient::pair(&endpoint, grant.code, "busy storage", ClientKind::Ios)
+            .await
+            .unwrap();
+    let (sender, mut events) = connection.into_parts();
+    wait_gateway_ready(&mut events).await;
+    let (session_id, _) =
+        create_bot_chat_with_config(&sender, &mut events, &workspace, composition).await;
+    sender
+        .send(ClientMessage::Submit {
+            session_id: session_id.clone(),
+            submission: Submission {
+                id: "blocked-storage".into(),
+                op: user_message("stay active", Vec::new()),
+            },
+        })
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), model_request)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_busy_storage_contract(&sender, &mut events, &session_id, &workspace).await;
+    let files = host.session_file_store().await;
+    let completed = files
+        .publish_artifact(
+            &session_id,
+            "completed.txt".into(),
+            "text/plain".into(),
+            b"completed",
+        )
+        .await
+        .unwrap();
+    sender
+        .send(ClientMessage::DeleteSessions {
+            request_id: "busy-completed".into(),
+            session_ids: vec![session_id.clone()],
+            selection: mobius::backend::session_files::SessionFileSelection::Ids(vec![
+                completed.id.clone(),
+            ]),
+        })
+        .await
+        .unwrap();
+    expect_accepted(&mut events, "busy-completed").await;
+    assert!(files.read_file(&session_id, &completed).await.is_err());
+
+    shutdown.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), serving)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), model_server)
+        .await
+        .unwrap()
+        .unwrap();
 }

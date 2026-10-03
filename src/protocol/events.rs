@@ -48,6 +48,7 @@ impl ErrorEvent {
             crate::Error::Io(_) => (ErrorKind::Io, false, None, None),
             crate::Error::Http(_) => (ErrorKind::Http, false, None, None),
             crate::Error::Json(_) => (ErrorKind::Json, false, None, None),
+            crate::Error::StorageFull => (ErrorKind::Storage, false, None, None),
             crate::Error::Sqlite(_) => (ErrorKind::Storage, false, None, None),
         };
         Self {

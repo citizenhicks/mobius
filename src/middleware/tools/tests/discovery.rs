@@ -91,9 +91,10 @@ fn only_core_tools_are_direct_by_default() {
     for exposure in [
         ReadFile.exposure(),
         ViewImage {
-            store: crate::backend::session_files::SessionFileStore::new(std::path::Path::new(
-                "unused",
-            )),
+            store: crate::backend::session_files::SessionFileStore::new(
+                std::path::Path::new("unused"),
+                None,
+            ),
         }
         .exposure(),
         WriteFile.exposure(),

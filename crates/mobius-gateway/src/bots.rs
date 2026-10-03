@@ -390,6 +390,10 @@ impl Default for BotState {
 }
 
 impl BotStore {
+    pub(crate) fn attach_telemetry_notify(&self, notify: &std::sync::Arc<tokio::sync::Notify>) {
+        self.storage.attach_telemetry_notify(notify);
+    }
+
     /// Opens or creates owner-only Bot state.
     pub(crate) fn open(state_dir: &Path) -> Result<Self> {
         let state_dir = std::fs::canonicalize(state_dir)?;
@@ -750,12 +754,17 @@ impl BotStore {
     }
 
     pub(crate) fn bot(&self, id: &str) -> Result<BotRecord> {
+        self.find_bot(id)?
+            .ok_or_else(|| Error::Config(format!("unknown Bot `{id}`")))
+    }
+
+    pub(crate) fn find_bot(&self, id: &str) -> Result<Option<BotRecord>> {
         self.current_state()?
             .bots
             .iter()
             .find(|bot| bot.id == id)
-            .ok_or_else(|| Error::Config(format!("unknown Bot `{id}`")))?
-            .record()
+            .map(StoredBot::record)
+            .transpose()
     }
 
     #[cfg(test)]
@@ -847,6 +856,10 @@ impl BotStore {
             .find(|routine| routine.id == id)
             .ok_or_else(|| Error::Config(format!("unknown routine `{id}`")))?;
         self.routine_record_from(stored, now)
+    }
+
+    pub(crate) fn running_routine_count(&self) -> Result<u64> {
+        self.storage.running_routine_count()
     }
 
     pub(crate) fn has_running_routines(&self) -> Result<bool> {

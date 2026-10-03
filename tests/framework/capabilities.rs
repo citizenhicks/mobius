@@ -52,6 +52,7 @@ async fn external_skill_resources_use_the_generic_read_tool() {
                 Arc::new(Tools::coding(
                     mobius::backend::session_files::SessionFileStore::new(
                         tempfile::tempdir().expect("files").path(),
+                        None,
                     ),
                 )),
                 Arc::new(extensions),

@@ -542,7 +542,8 @@ pub(super) fn record_event(
         }
         return Ok(false);
     }
-    tx.execute("INSERT INTO hook_events(id,bot_id,source_json,occurred_at,event_json) VALUES(?1,?2,?3,?4,?5)",params![event.id,event.bot_id,serde_json::to_string(&event.source)?,event.occurred_at,json])?;
+    // Deleting old facts must not reuse a row ID already acknowledged by a collector.
+    tx.execute("INSERT INTO hook_events(rowid,id,bot_id,source_json,occurred_at,event_json) VALUES(MAX(COALESCE((SELECT MAX(rowid) FROM hook_events),0),COALESCE((SELECT MAX(after_rowid) FROM telemetry_cursors),0))+1,?1,?2,?3,?4,?5)",params![event.id,event.bot_id,serde_json::to_string(&event.source)?,event.occurred_at,json])?;
     if event.ancestry.len() >= MAX_HOOK_ANCESTRY {
         return Ok(true);
     }
@@ -739,4 +740,98 @@ pub(crate) fn stable_id(prefix: &str, first: &str, second: &str) -> String {
     hash.update(first.as_bytes());
     hash.update(second.as_bytes());
     format!("{prefix}-{:x}", hash.finalize())
+}
+
+impl super::BotStore {
+    pub(crate) fn sync_telemetry_cursors(
+        &self,
+        sinks: &[crate::telemetry::TelemetrySink],
+    ) -> Result<()> {
+        let ids = serde_json::to_string(
+            &sinks
+                .iter()
+                .filter(|s| !s.events.is_empty())
+                .map(|s| &s.id)
+                .collect::<Vec<_>>(),
+        )?;
+        self.storage.transaction(|tx| {
+            tx.execute("DELETE FROM telemetry_cursors WHERE sink_id NOT IN (SELECT value FROM json_each(?1))", [&ids])?;
+            tx.execute("INSERT OR IGNORE INTO telemetry_cursors(sink_id,after_rowid) SELECT value,COALESCE((SELECT MAX(rowid) FROM hook_events),0) FROM json_each(?1)", [&ids])?;
+            Ok(())
+        })
+    }
+
+    pub(crate) fn telemetry_count(&self, sink: &crate::telemetry::TelemetrySink) -> Result<u64> {
+        let connection = self
+            .storage
+            .connection
+            .lock()
+            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        let after: i64 = connection
+            .query_row(
+                "SELECT after_rowid FROM telemetry_cursors WHERE sink_id=?1",
+                [&sink.id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| Error::Config(format!("telemetry cursor missing for {}", sink.id)))?;
+        let kinds = serde_json::to_string(&sink.events)?;
+        let count = connection.query_row("SELECT COUNT(*) FROM hook_events WHERE rowid > ?1 AND json_extract(event_json,'$.data.type') IN (SELECT value FROM json_each(?2))", params![after,kinds], |row| row.get::<_, i64>(0))?;
+        u64::try_from(count).map_err(|_| Error::Config("invalid telemetry event count".into()))
+    }
+
+    pub(crate) fn telemetry_batch(
+        &self,
+        sink: &crate::telemetry::TelemetrySink,
+    ) -> Result<(Vec<(i64, HookEvent)>, u64)> {
+        let connection = self
+            .storage
+            .connection
+            .lock()
+            .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
+        let after: i64 = connection
+            .query_row(
+                "SELECT after_rowid FROM telemetry_cursors WHERE sink_id=?1",
+                [&sink.id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| Error::Config(format!("telemetry cursor missing for {}", sink.id)))?;
+        let kinds = serde_json::to_string(&sink.events)?;
+        let filter = "FROM hook_events WHERE rowid > ?1 AND json_extract(event_json,'$.data.type') IN (SELECT value FROM json_each(?2))";
+        let count = connection.query_row(
+            &format!("SELECT COUNT(*) {filter}"),
+            params![after, kinds],
+            |row| row.get::<_, i64>(0),
+        )?;
+        let count =
+            u64::try_from(count).map_err(|_| Error::Config("invalid event count".into()))?;
+        let mut query = connection.prepare(&format!(
+            "SELECT rowid,event_json {filter} ORDER BY rowid LIMIT 32"
+        ))?;
+        let events = query
+            .query_map(params![after, kinds], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?
+            .map(|row| {
+                let (id, json) = row?;
+                Ok((id, serde_json::from_str(&json)?))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok((events, count))
+    }
+    pub(crate) fn advance_telemetry(&self, sink_id: &str, rowid: i64) -> Result<()> {
+        self.storage.transaction(|tx| {
+            if tx.execute(
+                "UPDATE telemetry_cursors SET after_rowid=MAX(after_rowid,?2) WHERE sink_id=?1",
+                params![sink_id, rowid],
+            )? == 0
+            {
+                return Err(Error::Config(format!(
+                    "telemetry cursor missing for {sink_id}"
+                )));
+            }
+            Ok(())
+        })
+    }
 }

@@ -27,6 +27,7 @@ pub(super) struct HostInner {
 }
 
 struct HostState {
+    telemetry: Arc<crate::telemetry::Telemetry>,
     work_activity: Arc<WorkActivity>,
     store: ConfigStore,
     gateway: Arc<StdMutex<GatewayConfig>>,
@@ -183,6 +184,10 @@ pub(super) enum HostCommand {
         max_bytes: usize,
         reply: oneshot::Sender<std::result::Result<WorkspaceRead, Rejection>>,
     },
+    DeleteWorkspaceFile {
+        path: String,
+        reply: oneshot::Sender<std::result::Result<(), Rejection>>,
+    },
     WriteWorkspaceFile {
         path: String,
         content: String,
@@ -299,6 +304,7 @@ impl HostHandle {
             .state
             == SessionActivityState::AwaitingApproval;
         let mut state = HostState {
+            telemetry: Arc::clone(&(host_access)()?.telemetry),
             work_activity,
             store,
             gateway,
@@ -556,6 +562,16 @@ impl HostHandle {
         })
         .await?;
         receiver.await.map_err(|_| stopped())?
+    }
+
+    pub(crate) async fn delete_workspace_file(
+        &self,
+        path: String,
+    ) -> std::result::Result<(), Rejection> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(HostCommand::DeleteWorkspaceFile { path, reply })
+            .await?;
+        receive(receiver).await
     }
 
     pub(crate) async fn write_workspace_file(

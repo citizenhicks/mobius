@@ -1,0 +1,1 @@
+Session files enforce a shared storage allowance, support selective cleanup, and preserve generated images while chat history remains. Checkpoint metadata projections support bounded storage measurements without materializing transcripts.

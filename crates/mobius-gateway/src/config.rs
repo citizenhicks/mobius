@@ -34,7 +34,7 @@ use crate::{Error, Result};
 
 use self::store::*;
 pub use self::store::{
-    ConfigStore, CredentialStore, ResolvedCredential, load_cloudflare_token, state_dir,
+    ConfigStore, CredentialStore, ResolvedCredential, load_secret_file, state_dir,
 };
 pub use self::validation::validate_agent_composition;
 use self::validation::*;
@@ -107,6 +107,12 @@ pub enum CloudflareConfig {
 #[serde(deny_unknown_fields)]
 pub struct GatewayConfig {
     version: u32,
+    /// Gateway lifecycle and private ingress.
+    #[serde(default)]
+    pub runtime: crate::telemetry::RuntimeConfig,
+    /// Explicit outbound collectors.
+    #[serde(default)]
+    pub telemetry: crate::telemetry::TelemetryConfig,
     /// The listen.
     pub listen: SocketAddr,
     /// The TLS.
@@ -199,6 +205,8 @@ impl GatewayConfig {
     pub fn new(listen: SocketAddr, tls: Option<TlsConfig>) -> Result<Self> {
         let config = Self {
             version: CONFIG_VERSION,
+            runtime: Default::default(),
+            telemetry: Default::default(),
             listen,
             tls,
             cloudflare: None,
@@ -383,6 +391,39 @@ impl GatewayConfig {
                 "unsupported gateway config version {}",
                 self.version
             )));
+        }
+        validate_telemetry(&self.telemetry)?;
+        if self
+            .runtime
+            .storage_limit_bytes
+            .is_some_and(|limit| limit < 64 * 1024 * 1024)
+        {
+            return Err(Error::Config(
+                "storage_limit_bytes must be at least 64 MiB".into(),
+            ));
+        }
+        if self
+            .runtime
+            .hold_socket
+            .as_ref()
+            .is_some_and(|path| !path.is_absolute())
+        {
+            return Err(Error::Config("hold_socket must be an absolute path".into()));
+        }
+        if self.runtime.idle_exit_seconds < 60 {
+            return Err(Error::Config(
+                "idle_exit_seconds must be at least 60".into(),
+            ));
+        }
+        if let Some(ingress) = self.runtime.ingress
+            && (ingress == self.listen
+                || ingress.port() == 0
+                || self.tls.is_some()
+                || self.cloudflare.is_some())
+        {
+            return Err(Error::Config(
+                "ingress must differ from listen and cannot use TLS or Cloudflare".into(),
+            ));
         }
         if self.listen.port() == 0 {
             return Err(Error::Config(

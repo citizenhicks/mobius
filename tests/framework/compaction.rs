@@ -39,6 +39,7 @@ async fn native_compaction_survives_recreation_with_current_prompt_and_tools() {
             middleware.push(Arc::new(Tools::coding(
                 mobius::backend::session_files::SessionFileStore::new(
                     tempfile::tempdir().expect("files").path(),
+                    None,
                 ),
             )));
         }
@@ -357,7 +358,7 @@ async fn native_compaction_uses_fresh_usage_after_a_retained_user() {
 #[tokio::test]
 async fn compaction_falls_back_to_a_model_summary_and_keeps_recent_context() {
     let workspace = TempDir::new().expect("create workspace");
-    let files = SessionFileStore::new(workspace.path());
+    let files = SessionFileStore::new(workspace.path(), None);
     let attachment = upload_attachment(
         &files,
         "summary-media",

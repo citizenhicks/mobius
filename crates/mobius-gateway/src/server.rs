@@ -1,5 +1,7 @@
 //! Authenticated raw, WebSocket-loopback, and TLS gateway listeners.
 
+use crate::host::session_file_rejection;
+
 mod desktop;
 mod dispatch;
 mod responses;
@@ -7,6 +9,7 @@ mod transport;
 mod view;
 mod voice;
 
+use crate::telemetry::{StopCause, Trigger};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::future::Future;
@@ -56,7 +59,6 @@ const PRE_AUTH_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_AUTHENTICATED_CONNECTIONS: usize = 32;
 const MAX_PRE_AUTH_CONNECTIONS: usize = 8;
 const MAX_CONNECTIONS: usize = MAX_AUTHENTICATED_CONNECTIONS + MAX_PRE_AUTH_CONNECTIONS;
-const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(72 * 60 * 60);
 const ROUTINE_TICK: Duration = Duration::from_secs(15);
 const MAX_DIRECTORY_ENTRIES: usize = 512;
 const MAX_PENDING_UPLOADS: usize = 8;
@@ -129,6 +131,7 @@ impl GatewayServer {
         let auth = Arc::new(AuthStore::open(store.auth_path())?);
         let credentials = Arc::new(CredentialStore::open(store.credentials_path())?);
         let bots = Arc::new(BotStore::open(store.state_dir())?);
+        bots.sync_telemetry_cursors(&config.telemetry.sinks)?;
         let host =
             GatewayHost::start(store, config.clone(), credentials, Arc::clone(&bots)).await?;
         Ok(Self {
@@ -148,11 +151,7 @@ impl GatewayServer {
         receiver
     }
 
-    pub(crate) async fn start_quiesced(&self) -> Result<()> {
-        self.host.start_quiesced().await
-    }
-
-    /// Serves until a process shutdown signal or 72 hours of inactivity.
+    /// Serves until shutdown or the configured idle interval (72 hours by default).
     /// # Errors
     ///
     /// Returns an error if validation or an operation required to complete the request fails.
@@ -178,6 +177,7 @@ impl GatewayServer {
     }
 
     async fn serve_with_host(self, websocket_host: Option<String>) -> Result<()> {
+        let inactivity_timeout = Duration::from_secs(self.config.runtime.idle_exit_seconds);
         #[cfg(unix)]
         {
             use tokio::signal::unix::{SignalKind, signal};
@@ -191,7 +191,7 @@ impl GatewayServer {
                         _ = terminations.recv() => {}
                     }
                 },
-                INACTIVITY_TIMEOUT,
+                inactivity_timeout,
                 websocket_host,
             )
             .await
@@ -201,7 +201,7 @@ impl GatewayServer {
             async {
                 let _ = tokio::signal::ctrl_c().await;
             },
-            INACTIVITY_TIMEOUT,
+            inactivity_timeout,
             websocket_host,
         )
         .await
@@ -217,7 +217,8 @@ impl GatewayServer {
     /// Returns an error if validation or an operation required to complete the request fails.
     pub async fn serve_until(self, shutdown: impl Future<Output = ()>) -> Result<()> {
         let websocket_host = self.configured_websocket_host()?;
-        self.serve_until_inactive_with_host(shutdown, INACTIVITY_TIMEOUT, websocket_host)
+        let inactivity_timeout = Duration::from_secs(self.config.runtime.idle_exit_seconds);
+        self.serve_until_inactive_with_host(shutdown, inactivity_timeout, websocket_host)
             .await
     }
 
@@ -245,8 +246,17 @@ impl GatewayServer {
                 "plaintext listeners are restricted to loopback".into(),
             ));
         }
+        let ingress = match self.config.runtime.ingress {
+            Some(address) => Some(TcpListener::bind(address).await?),
+            None => None,
+        };
+        let mut telemetry_tasks = JoinSet::new();
+        let mut stop_cause = StopCause::Signal;
         let mut connections = JoinSet::new();
         let mut routine_dispatchers = JoinSet::new();
+        let mut next_nudge = Instant::now();
+        let mut next_hold = Instant::now();
+        let mut hold_active = true;
         let connection_admission =
             ConnectionAdmission::new(MAX_PRE_AUTH_CONNECTIONS, MAX_AUTHENTICATED_CONNECTIONS);
         let client_connections = Arc::new(ClientConnections::default());
@@ -262,6 +272,8 @@ impl GatewayServer {
         if let Some(ready) = self.ready.take() {
             let _ = ready.send(());
         }
+        crate::telemetry::Telemetry::tick(&self.host, 0, Trigger::Start, &mut telemetry_tasks)
+            .await;
         let mut access_expired = false;
         let result = async {
             loop {
@@ -277,10 +289,36 @@ impl GatewayServer {
                     access_expired = true;
                     break Ok(());
                 }
+                _ = async {
+                    tokio::time::sleep_until(next_nudge).await;
+                    self.host.telemetry.notify.notified().await;
+                }, if routine_dispatchers.is_empty() => {
+                    next_nudge = Instant::now() + Duration::from_secs(1);
+                    let host = self.host.clone();
+                    routine_dispatchers.spawn(async move {
+                        if let Err(error) = host.dispatch_bot_events().await { eprintln!("Bot delivery failed: code={}", error.code); }
+                    });
+                }
                 _ = routine_timer.tick() => {
                     if self.access_lease.is_some_and(AccessLease::expired) {
                         access_expired = true;
                         break Ok(());
+                    }
+                    self.tick_telemetry(&client_connections, Trigger::Interval, &mut telemetry_tasks).await;
+                    #[cfg(unix)]
+                    if let Some(socket) = &self.config.runtime.hold_socket
+                        && Instant::now() >= next_hold {
+                        let busy = match (self.host.runtime_activity().await, client_connections.native_count()) {
+                            (Ok(activity), Ok(clients)) => !activity.idle || clients > 0,
+                            _ => { eprintln!("provider hold activity unavailable; retaining hold"); true }
+                        };
+                        if busy || hold_active {
+                            match crate::telemetry::update_hold(socket, busy).await {
+                                Ok(()) => hold_active = busy,
+                                Err(error) => eprintln!("provider hold update failed: {error}"),
+                            }
+                        }
+                        next_hold = Instant::now() + Duration::from_secs(60);
                     }
                     // Keep reservation and the shutdown decision under the same
                     // admission gate; future schedules alone do not keep it open.
@@ -304,6 +342,9 @@ impl GatewayServer {
                     let _ = poll.events;
 
                 }
+                Some(result) = telemetry_tasks.join_next(), if !telemetry_tasks.is_empty() => {
+                    if let Err(error) = result { eprintln!("telemetry worker failed: {error}"); }
+                }
                 Some(_) = connections.join_next(), if !connections.is_empty() => {
                     if connections.is_empty() {
                         has_active_routines =
@@ -313,12 +354,17 @@ impl GatewayServer {
                         }
                     }
                 }
-                Some(_) = routine_dispatchers.join_next(), if !routine_dispatchers.is_empty() => {}
+                Some(_) = routine_dispatchers.join_next(), if !routine_dispatchers.is_empty() => {
+                    self.tick_telemetry(&client_connections, Trigger::Interval, &mut telemetry_tasks).await;
+                }
                 accepted = async {
                     let admission = connection_admission.admit().await;
-                    self.listener.accept().await.map(|accepted| (accepted, admission))
+                    tokio::select! {
+                        accepted = self.listener.accept() => accepted.map(|accepted| (accepted, admission, false)),
+                        accepted = async { match &ingress { Some(listener) => listener.accept().await, None => std::future::pending().await } } => accepted.map(|accepted| (accepted, admission, true)),
+                    }
                 }, if connections.len() < MAX_CONNECTIONS => {
-                    let ((stream, peer), admission) = accepted?;
+                    let ((stream, peer), admission, ingress_connection) = accepted?;
                     if self.access_lease.is_some_and(AccessLease::expired) {
                         access_expired = true;
                         break Ok(());
@@ -343,7 +389,9 @@ impl GatewayServer {
                             admission,
                             access_lease: self.access_lease,
                         };
-                        let result = if let Some(tls) = tls {
+                        let result = if ingress_connection {
+                            serve_websocket(stream, connection, PlaintextHandshake { expected_websocket_host: None, auth_deadline }).await
+                        } else if let Some(tls) = tls {
                             let stream = match tokio::time::timeout_at(
                                 auth_deadline,
                                 tls.accept(stream),
@@ -377,9 +425,14 @@ impl GatewayServer {
                         }
                     });
                 }
-                () = &mut inactivity, if connections.is_empty() && !has_active_routines => {
+                () = &mut inactivity, if connections.is_empty() && !has_active_routines && (!cfg!(unix) || self.config.runtime.hold_socket.is_none()) => {
                     has_active_routines = self.bots.has_active_routines(Utc::now().timestamp())? || self.bots.has_pending_deliveries()? || self.bots.has_monitored_sessions()?;
                     if !has_active_routines {
+                        if crate::telemetry::Telemetry::pending(&self.host).await {
+                            inactivity.as_mut().reset(Instant::now() + ROUTINE_TICK);
+                            continue;
+                        }
+                        stop_cause = StopCause::Idle;
                         break Ok(());
                     }
                 }
@@ -394,7 +447,36 @@ impl GatewayServer {
             while routine_dispatchers.join_next().await.is_some() {}
         }
         self.host.shutdown().await;
+        let cause = if access_expired {
+            StopCause::LeaseExpired
+        } else if result.is_err() {
+            StopCause::Error
+        } else {
+            stop_cause
+        };
+        crate::telemetry::Telemetry::stop(&self.host, cause, &mut telemetry_tasks).await;
+        #[cfg(unix)]
+        if let Some(socket) = &self.config.runtime.hold_socket
+            && hold_active
+            && let Err(error) = crate::telemetry::update_hold(socket, false).await
+        {
+            eprintln!("provider hold release failed: {error}");
+        }
         result
+    }
+
+    async fn tick_telemetry(
+        &self,
+        connections: &ClientConnections,
+        trigger: Trigger,
+        tasks: &mut JoinSet<()>,
+    ) {
+        match connections.native_count() {
+            Ok(clients) => {
+                crate::telemetry::Telemetry::tick(&self.host, clients, trigger, tasks).await
+            }
+            Err(error) => eprintln!("telemetry client count unavailable: {error}"),
+        }
     }
 
     fn configured_websocket_host(&self) -> Result<Option<String>> {

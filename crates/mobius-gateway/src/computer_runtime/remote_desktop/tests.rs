@@ -1,5 +1,15 @@
 use super::*;
 
+#[test]
+fn headed_browser_hides_noninteractive_infobars() {
+    let arguments = browser_arguments(Path::new("/tmp/profile"));
+    assert!(
+        arguments
+            .iter()
+            .any(|argument| argument == "--disable-infobars")
+    );
+}
+
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn local_browser_without_a_renderer_falls_back_without_starting_chromium() {

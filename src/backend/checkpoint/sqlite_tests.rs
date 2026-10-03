@@ -115,3 +115,24 @@ mod model_steps;
 mod sessions;
 #[path = "sqlite_tests/strict.rs"]
 mod strict;
+
+#[tokio::test]
+async fn metadata_projection_does_not_decode_checkpoint_context() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("metadata.sqlite3");
+    let store = SqliteCheckpoint::new(&path).unwrap();
+    let mut state = checkpoint("session");
+    state
+        .metadata
+        .insert("owner".into(), json!({"workspace": "/project"}));
+    store.save(&state, &[], None).await.unwrap();
+    Connection::open(&path).unwrap().execute(
+        "UPDATE sessions SET latest_checkpoint_json = json_set(latest_checkpoint_json, '$.context', 'invalid context') WHERE session_id = 'session'", [],
+    ).unwrap();
+    assert!(store.load("session").await.is_err());
+    assert_eq!(
+        store.session_metadata("session").await.unwrap(),
+        Some(state.metadata)
+    );
+    assert_eq!(store.session_metadata("missing").await.unwrap(), None);
+}
