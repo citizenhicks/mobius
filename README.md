@@ -1,5 +1,7 @@
 <p align="center">
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/citizenhicks/mobius/main/assets/MobiusMark.svg" width="120" height="120" alt="möbius logo">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/citizenhicks/mobius/main/assets/MobiusMark.svg">
+</picture>
 </p>
 
 <h1 align="center">möbius</h1>
