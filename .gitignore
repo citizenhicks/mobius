@@ -1,5 +1,7 @@
 /target
 /.mobius
+/docs
+/.local
 .codex
 .env
 xcuserdata/
