@@ -134,7 +134,7 @@ async fn capacity_reclaims_real_idle_agents() {
     let gateway = GatewayHost::start(store, config, credentials, bots)
         .await
         .expect("gateway");
-    for index in 0..=MAX_ACTIVE_SESSIONS {
+    for index in 0..=crate::server::ConnectionPolicy::default().active_sessions {
         let host = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             create_test_session(&gateway, &workspace),
@@ -144,6 +144,51 @@ async fn capacity_reclaims_real_idle_agents() {
         .expect("chat");
         drop(host);
     }
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
+async fn configured_session_capacity_preserves_referenced_chats_and_reclaims_idle_chats() {
+    let root = tempfile::tempdir().expect("root");
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).expect("workspace");
+    let (store, mut config) = ConfigStore::initialize(
+        root.path().join("state"),
+        "127.0.0.1:8741".parse().expect("listen"),
+        None,
+    )
+    .expect("config");
+    config.connections.active_sessions = 1;
+    let credentials =
+        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
+    let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
+    let gateway = GatewayHost::start(store, config, credentials, bots)
+        .await
+        .expect("gateway");
+    let first = create_test_session(&gateway, &workspace)
+        .await
+        .expect("first chat");
+    let first_id = first.session_id().to_owned();
+    let rejection = create_test_session(&gateway, &workspace)
+        .await
+        .err()
+        .expect("capacity rejection");
+    assert_eq!(rejection.code, "session_limit");
+    assert!(rejection.message.contains("1 connected or running chats"));
+    first
+        .snapshot(None)
+        .await
+        .expect("referenced chat remains usable");
+    drop(first);
+    let replacement = create_test_session(&gateway, &workspace)
+        .await
+        .expect("idle chat reclaimed");
+    assert_ne!(replacement.session_id(), first_id);
+    assert_eq!(gateway.state.lock().await.sessions.len(), 1);
+    replacement
+        .snapshot(None)
+        .await
+        .expect("replacement chat ready");
     gateway.shutdown().await;
 }
 
@@ -1055,7 +1100,7 @@ async fn capacity_reclaims_an_unreferenced_idle_chat() {
     let stop_entered = Arc::new(tokio::sync::Notify::new());
     let stop_release = Arc::new(tokio::sync::Notify::new());
     let mut state = gateway.state.lock().await;
-    for index in 0..MAX_ACTIVE_SESSIONS {
+    for index in 0..crate::server::ConnectionPolicy::default().active_sessions {
         let (commands, mut receiver) = mpsc::channel(1);
         let entered = Arc::clone(&stop_entered);
         let release = Arc::clone(&stop_release);
@@ -1095,7 +1140,10 @@ async fn capacity_reclaims_an_unreferenced_idle_chat() {
     let guard = tokio::time::timeout(std::time::Duration::from_secs(1), gateway.state.lock())
         .await
         .expect("capacity reclaim must not hold global state while awaiting a chat");
-    assert_eq!(guard.sessions.len(), MAX_ACTIVE_SESSIONS - 1);
+    assert_eq!(
+        guard.sessions.len(),
+        crate::server::ConnectionPolicy::default().active_sessions - 1
+    );
     drop(guard);
     stop_release.notify_one();
     reclaim
@@ -1104,5 +1152,8 @@ async fn capacity_reclaims_an_unreferenced_idle_chat() {
         .expect("reclaim capacity");
 
     let state = gateway.state.lock().await;
-    assert_eq!(state.sessions.len(), MAX_ACTIVE_SESSIONS - 1);
+    assert_eq!(
+        state.sessions.len(),
+        crate::server::ConnectionPolicy::default().active_sessions - 1
+    );
 }

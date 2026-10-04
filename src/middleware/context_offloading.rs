@@ -3,7 +3,7 @@
 use serde_json::Value;
 
 use super::manifest::{MiddlewareManifest, MiddlewareSettingManifest};
-use super::{Middleware, ModelContext, approximate_item_tokens};
+use super::{Middleware, ModelContext, TokenEstimate};
 use crate::backend::checkpoint::ContextRewriteReason;
 use crate::protocol::{TOOL_ERROR_FIELD, is_internal_message, tool_complete_boundaries};
 use crate::{BoxFuture, Error, Result};
@@ -22,8 +22,8 @@ mod text {
     }
     pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
         std::sync::LazyLock::new(|| {
-            let definition: Definition = toml::from_str(include_str!("context_offloading.toml"))
-                .expect("bundled context_offloading definition must be valid");
+            let definition: Definition =
+                crate::config::embedded(include_str!("context_offloading.toml"));
 
             assert!(definition.defaults_stale_after_tokens >= 1);
             assert!(definition.setting_stale_after_tokens_step > 0);
@@ -97,7 +97,11 @@ impl Middleware for ContextOffloading {
 
     fn pre_model<'a>(&'a self, context: &'a mut ModelContext<'_>) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            if let Some(input) = mask_stale_outputs(context.input(), self.stale_after_tokens) {
+            if let Some(input) = mask_stale_outputs(
+                context.input(),
+                self.stale_after_tokens,
+                context.token_estimate,
+            ) {
                 context.rewrite_input(ContextRewriteReason::ContextOffloading, input)?;
             }
             Ok(())
@@ -105,13 +109,17 @@ impl Middleware for ContextOffloading {
     }
 }
 
-fn mask_stale_outputs(input: &[Value], stale_after_tokens: usize) -> Option<Vec<Value>> {
+fn mask_stale_outputs(
+    input: &[Value],
+    stale_after_tokens: usize,
+    estimate: TokenEstimate,
+) -> Option<Vec<Value>> {
     let latest_user = input.iter().rposition(|item| {
         item.get("role").and_then(Value::as_str) == Some("user") && !is_internal_message(item)
     })?;
     let item_tokens = input
         .iter()
-        .map(approximate_item_tokens)
+        .map(|item| estimate.item_tokens(item))
         .collect::<Vec<_>>();
     let total_tokens = item_tokens.iter().copied().fold(0, usize::saturating_add);
     if total_tokens <= high_water_tokens(stale_after_tokens) {
@@ -157,6 +165,19 @@ fn successful_tool_output(item: &Value) -> Option<&Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offloading_uses_the_session_token_estimate() {
+        let input = vec![
+            user_message("old request"),
+            serde_json::json!({"type":"function_call", "call_id":"a", "name":"read", "arguments":"{}"}),
+            tool_output("a", "x".repeat(100), false),
+            user_message("latest"),
+        ];
+        assert!(mask_stale_outputs(&input, 10, TokenEstimate::default()).is_some());
+        assert!(mask_stale_outputs(&input, 10, TokenEstimate::new(100.0).unwrap()).is_none());
+    }
+
     use crate::backend::model::{tool_output, user_message};
 
     #[test]
@@ -174,7 +195,8 @@ mod tests {
             user_message("latest turn"),
         ];
 
-        let masked = mask_stale_outputs(&input, 10).expect("stale parallel block");
+        let masked =
+            mask_stale_outputs(&input, 10, TokenEstimate::default()).expect("stale parallel block");
 
         assert_eq!(masked[1], input[1]);
         assert_eq!(masked[2], input[2]);
@@ -194,7 +216,7 @@ mod tests {
             }),
             user_message("latest turn"),
         ];
-        assert!(mask_stale_outputs(&incomplete, 1).is_none());
+        assert!(mask_stale_outputs(&incomplete, 1, TokenEstimate::default()).is_none());
 
         let input = vec![
             user_message("old turn"),
@@ -209,7 +231,8 @@ mod tests {
             user_message("latest turn"),
         ];
 
-        let masked = mask_stale_outputs(&input, 10).expect("stale complete block");
+        let masked =
+            mask_stale_outputs(&input, 10, TokenEstimate::default()).expect("stale complete block");
 
         assert_eq!(masked[2], input[2]);
         assert_eq!(masked[4]["output"][0]["text"], MASKED_TOOL_OUTPUT);
@@ -226,7 +249,7 @@ mod tests {
             user_message("latest turn"),
         ];
 
-        assert!(mask_stale_outputs(&input, 10).is_none());
+        assert!(mask_stale_outputs(&input, 10, TokenEstimate::default()).is_none());
     }
 
     #[test]
@@ -241,14 +264,24 @@ mod tests {
         ];
         let low = low_input
             .iter()
-            .map(approximate_item_tokens)
+            .map(|item| TokenEstimate::default().item_tokens(item))
             .sum::<usize>()
             .saturating_sub(1);
-        assert!(low_input.iter().map(approximate_item_tokens).sum::<usize>() > low);
         assert!(
-            low_input.iter().map(approximate_item_tokens).sum::<usize>() <= high_water_tokens(low)
+            low_input
+                .iter()
+                .map(|item| TokenEstimate::default().item_tokens(item))
+                .sum::<usize>()
+                > low
         );
-        assert!(mask_stale_outputs(&low_input, low).is_none());
+        assert!(
+            low_input
+                .iter()
+                .map(|item| TokenEstimate::default().item_tokens(item))
+                .sum::<usize>()
+                <= high_water_tokens(low)
+        );
+        assert!(mask_stale_outputs(&low_input, low, TokenEstimate::default()).is_none());
 
         let mut over_high = vec![
             user_message("old turn"),
@@ -263,7 +296,8 @@ mod tests {
             4,
             serde_json::json!({"role": "assistant", "content": "more".repeat(20)}),
         );
-        let masked = mask_stale_outputs(&over_high, low).expect("high-water rewrite");
+        let masked = mask_stale_outputs(&over_high, low, TokenEstimate::default())
+            .expect("high-water rewrite");
         assert_eq!(masked[2]["output"][0]["text"], MASKED_TOOL_OUTPUT);
         assert_eq!(masked.last(), over_high.last());
     }
@@ -278,7 +312,7 @@ mod tests {
             tool_output("stale", "stale".repeat(100), false),
             user_message("latest turn"),
         ];
-        let masked = mask_stale_outputs(&input, 10).expect("stale block");
-        assert!(mask_stale_outputs(&masked, 10).is_none());
+        let masked = mask_stale_outputs(&input, 10, TokenEstimate::default()).expect("stale block");
+        assert!(mask_stale_outputs(&masked, 10, TokenEstimate::default()).is_none());
     }
 }

@@ -168,7 +168,10 @@ async fn stream_idle_timeout_is_retryable() {
     let exchange = tokio::spawn(async move { read_exchange(&mut messages, &events).await });
     tokio::task::yield_now().await;
 
-    tokio::time::advance(STREAM_IDLE_TIMEOUT).await;
+    tokio::time::advance(Duration::from_millis(
+        crate::backend::model::ModelTransportSettings::default().socket_idle_timeout_ms,
+    ))
+    .await;
     let exchange = exchange
         .await
         .expect("exchange task")

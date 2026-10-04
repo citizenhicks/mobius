@@ -2,8 +2,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::{
-    ApprovalRequirement, HookIdentity, MAX_COMMAND_BYTES, MAX_TOOL_OUTPUT_BYTES, Tool, ToolContext,
-    ToolExposure,
+    ApprovalRequirement, HookIdentity, MAX_COMMAND_BYTES, Tool, ToolContext, ToolExposure,
 };
 use crate::backend::model::ToolDefinition;
 use crate::backend::sandbox::BackgroundCommandPoll;
@@ -16,9 +15,8 @@ struct Definition {
     manage_command: super::ToolSpec,
     initial_wait_ms: u64,
 }
-static DEFINITION: std::sync::LazyLock<Definition> = std::sync::LazyLock::new(|| {
-    toml::from_str(include_str!("commands.toml")).expect("bundled commands tools must be valid")
-});
+static DEFINITION: std::sync::LazyLock<Definition> =
+    std::sync::LazyLock::new(|| crate::config::embedded(include_str!("commands.toml")));
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -72,7 +70,7 @@ impl Tool for Bash {
                     std::time::Duration::from_millis(DEFINITION.initial_wait_ms),
                 )
                 .await?;
-            Ok(background_output(output).into())
+            Ok(background_output(output, context.sandbox.output_limit()).into())
         })
     }
 }
@@ -128,7 +126,7 @@ impl Tool for ManageCommand {
                         .await?
                 }
             };
-            Ok(background_output(output).into())
+            Ok(background_output(output, context.sandbox.output_limit()).into())
         })
     }
 }
@@ -159,7 +157,7 @@ fn validate_command_id(id: &str) -> Result<()> {
         .map_err(|_| Error::Tool("command_id must be a UUID".into()))
 }
 
-pub(super) fn background_output(output: BackgroundCommandPoll) -> String {
+pub(super) fn background_output(output: BackgroundCommandPoll, output_limit: usize) -> String {
     let status = output.status.as_str();
     let exit_code = output.exit_code;
     let rendered = serde_json::json!({
@@ -172,7 +170,7 @@ pub(super) fn background_output(output: BackgroundCommandPoll) -> String {
         "error": output.error
     })
     .to_string();
-    if rendered.len() <= MAX_TOOL_OUTPUT_BYTES {
+    if rendered.len() <= output_limit {
         return rendered;
     }
     serde_json::json!({

@@ -2,7 +2,7 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex, MutexGuard},
     time::Duration,
 };
 
@@ -37,7 +37,7 @@ pub(crate) struct BrowserConnection {
 
 impl BrowserHost {
     fn app(&self) -> MutexGuard<'_, Option<App>> {
-        self.app.lock().unwrap_or_else(PoisonError::into_inner)
+        mobius::sync::recover_lock(&self.app)
     }
 
     /// Registers this renderer; a newer connection replaces it.

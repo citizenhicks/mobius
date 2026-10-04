@@ -7,14 +7,17 @@ mod channel;
 pub mod client;
 mod cloudflare;
 pub mod command;
-mod computer_runtime;
+pub mod computer_runtime;
 pub mod config;
 mod extensions;
 /// Shared saved gateway accounts and endpoint selection.
 pub mod gateway_accounts;
+mod git;
 mod host;
+mod hostnames;
 mod middleware_manifest;
 mod persistent_chat;
+mod process_environment;
 mod provider_catalog;
 mod publication;
 pub mod sandbox;

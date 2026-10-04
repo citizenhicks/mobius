@@ -3,7 +3,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use futures_util::future::BoxFuture;
-use mobius::backend::model::provider::{DeviceLogin, ProviderAuth, provider};
+use mobius::backend::model::provider::{
+    DeviceLogin, ProviderAuth, provider, uses_default_endpoint,
+};
 use uuid::Uuid;
 
 use crate::Error;
@@ -167,6 +169,7 @@ impl GatewayHost {
             let mut selection = configured.selection;
             selection.endpoint_auth = ProviderEndpointAuth::ProviderDefault;
             self.register_provider(
+                false,
                 selection,
                 configured.label,
                 configured.tint,
@@ -201,7 +204,14 @@ impl GatewayHost {
                 fatal: false,
             });
         }
-        let login_guard = Arc::clone(&self.state.lock().await.provider_login);
+        let state = self.state.lock().await;
+        let transport = state
+            .config
+            .lock()
+            .map_err(|_| internal("gateway configuration lock is poisoned"))?
+            .model_transport;
+        let login_guard = Arc::clone(&state.provider_login);
+        drop(state);
         let login_id = Uuid::new_v4().to_string();
         {
             let mut logins = login_guard
@@ -222,7 +232,12 @@ impl GatewayHost {
                     .and_then(|attempt| attempt.response.clone()));
             }
         }
-        self.spawn_provider_login(request_id, login_id, provider_id, auth.start_device());
+        self.spawn_provider_login(
+            request_id,
+            login_id,
+            provider_id,
+            auth.start_device_with_transport(transport),
+        );
         Ok(None)
     }
 
@@ -231,7 +246,7 @@ impl GatewayHost {
         request_id: String,
         login_id: String,
         provider: String,
-        start: BoxFuture<'static, mobius::Result<Box<dyn DeviceLogin>>>,
+        start: BoxFuture<'static, mobius::Result<DeviceLogin>>,
     ) {
         let gateway = self.clone();
         // Code acquisition and polling both belong to the gateway. No connection
@@ -367,6 +382,7 @@ impl GatewayHost {
 
     pub(crate) async fn register_provider(
         &self,
+        operator: bool,
         selection: ProviderConfig,
         label: String,
         tint: ProviderTint,
@@ -375,6 +391,12 @@ impl GatewayHost {
     ) -> std::result::Result<ReadyPayload, Rejection> {
         let _mutation = self.begin_exclusive_mutation().await?;
         let state = self.state.lock().await;
+        let current = state
+            .config
+            .lock()
+            .map_err(|_| internal("gateway configuration lock is poisoned"))?
+            .clone();
+        validate_browser_endpoint_registration(&current, &selection, operator)?;
         if !credential_is_configured(&selection, &state.store, &state.credentials)
             .map_err(invalid_config)?
         {
@@ -383,11 +405,6 @@ impl GatewayHost {
                 selection.provider
             ))));
         }
-        let current = state
-            .config
-            .lock()
-            .map_err(|_| internal("gateway configuration lock is poisoned"))?
-            .clone();
         let next = current
             .registering_provider(
                 selection.clone(),
@@ -496,6 +513,36 @@ impl GatewayHost {
         }));
         Ok(payload)
     }
+}
+
+fn validate_browser_endpoint_registration(
+    gateway: &GatewayConfig,
+    selection: &ProviderConfig,
+    operator: bool,
+) -> std::result::Result<(), Rejection> {
+    let definition = provider(&selection.provider).map_err(invalid_config)?;
+    let endpoint = selected_base_url(definition, selection);
+    if operator
+        || !matches!(definition.auth(), ProviderAuth::Browser(_))
+        || definition.uses_default_endpoint(endpoint)
+    {
+        return Ok(());
+    }
+    let trusted = gateway.configured_providers.values().any(|configured| {
+        configured.selection.provider == selection.provider
+            && uses_default_endpoint(
+                selected_base_url(definition, &configured.selection),
+                endpoint,
+            )
+    });
+    if trusted {
+        return Ok(());
+    }
+    Err(Rejection {
+        code: "operator_required",
+        message: "browser-authenticated proxy destinations are configured locally by the gateway operator".into(),
+        fatal: false,
+    })
 }
 
 fn commit_provider_registration(

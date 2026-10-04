@@ -11,11 +11,12 @@ fn advertised_web_search_modes_build() {
             .build(ProviderBuildConfig {
                 credential: ProviderCredential::ApiKey("test-key".into()),
                 model: definition.default_model().expect("default model").into(),
-                base_url: Some(DEFAULT_BASE_URL.into()),
+                base_url: Some(MANIFEST.base_url.as_str().into()),
                 reasoning_effort: None,
                 service_tier: None,
                 web_search,
                 http: reqwest::Client::new(),
+                transport: crate::backend::model::ModelTransportSettings::default(),
             })
             .expect("advertised web search mode builds");
     }
@@ -32,6 +33,7 @@ fn equivalent_default_endpoint_preserves_native_tool_discovery() {
             service_tier: None,
             web_search: HostedWebSearch::Off,
             http: reqwest::Client::new(),
+            transport: crate::backend::model::ModelTransportSettings::default(),
         })
         .expect("equivalent default endpoint builds");
 
@@ -61,8 +63,8 @@ async fn credentialless_post_uses_custom_path_and_omits_api_key() {
 
 #[test]
 fn anthropic_reports_provider_owned_cache_pricing() {
-    let provider =
-        Anthropic::new("test-key", DEFAULT_BASE_URL, "claude-haiku-4-5").expect("provider");
+    let provider = Anthropic::new("test-key", MANIFEST.base_url.as_str(), "claude-haiku-4-5")
+        .expect("provider");
     let usage = TokenUsage {
         input_tokens: 1_000_000,
         cached_input_tokens: 200_000,
@@ -106,8 +108,8 @@ fn sonnet_5_pricing_changes_at_the_standard_rate_date() {
 
 #[test]
 fn explicit_prompt_cache_breakpoint_is_sent_on_the_marked_content_block() {
-    let provider =
-        Anthropic::new("test-key", DEFAULT_BASE_URL, "claude-sonnet-5").expect("provider");
+    let provider = Anthropic::new("test-key", MANIFEST.base_url.as_str(), "claude-sonnet-5")
+        .expect("provider");
     let mut input = user_message("stable prefix");
     assert!(crate::backend::model::mark_prompt_cache_breakpoint(
         &mut input
@@ -132,8 +134,8 @@ fn hosted_search_can_be_disabled_per_request() {
 
 #[test]
 fn native_discovery_defers_schemas_and_replays_tool_references() {
-    let provider =
-        Anthropic::new("test-key", DEFAULT_BASE_URL, "claude-haiku-4-5").expect("provider");
+    let provider = Anthropic::new("test-key", MANIFEST.base_url.as_str(), "claude-haiku-4-5")
+        .expect("provider");
     let direct = [discovery_tool(TOOLS_SEARCH_NAME)];
     let deferred = [discovery_tool("notebook_post")];
     let input = discovery_history();
@@ -167,8 +169,8 @@ fn native_discovery_defers_schemas_and_replays_tool_references() {
 
 #[test]
 fn native_discovery_replays_a_standalone_compacted_tool_load() {
-    let provider =
-        Anthropic::new("test-key", DEFAULT_BASE_URL, "claude-haiku-4-5").expect("provider");
+    let provider = Anthropic::new("test-key", MANIFEST.base_url.as_str(), "claude-haiku-4-5")
+        .expect("provider");
     let direct = [discovery_tool(TOOLS_SEARCH_NAME)];
     let deferred = [discovery_tool("notebook_post")];
     let input = [
@@ -205,8 +207,8 @@ fn native_discovery_replays_a_standalone_compacted_tool_load() {
 
 #[test]
 fn native_discovery_ignores_tool_loads_from_an_old_catalog() {
-    let provider =
-        Anthropic::new("test-key", DEFAULT_BASE_URL, "claude-haiku-4-5").expect("provider");
+    let provider = Anthropic::new("test-key", MANIFEST.base_url.as_str(), "claude-haiku-4-5")
+        .expect("provider");
     let direct = [discovery_tool(TOOLS_SEARCH_NAME)];
     let deferred = [discovery_tool("notebook_post")];
     let mut input = discovery_history();
@@ -231,8 +233,8 @@ fn native_discovery_ignores_tool_loads_from_an_old_catalog() {
 
 #[test]
 fn rebuild_discovery_omits_deferred_schemas_and_internal_markers() {
-    let provider =
-        Anthropic::new("test-key", DEFAULT_BASE_URL, "claude-sonnet-5").expect("provider");
+    let provider = Anthropic::new("test-key", MANIFEST.base_url.as_str(), "claude-sonnet-5")
+        .expect("provider");
     let direct = [discovery_tool(TOOLS_SEARCH_NAME)];
     let deferred = [discovery_tool("notebook_post")];
     let input = discovery_history();
@@ -817,4 +819,17 @@ fn ordered_tool_images_keep_error_status_and_image_cache_marker() {
     assert_eq!(result["content"][2]["text"], "after");
     assert_eq!(result["content"][3]["source"]["data"], "AQ==");
     assert_eq!(result["content"][3]["cache_control"]["type"], "ephemeral");
+}
+
+#[test]
+fn selected_output_token_budget_reaches_the_native_request() {
+    let provider = Anthropic::new("test-key", MANIFEST.base_url.as_str(), "claude-haiku-4-5")
+        .expect("provider")
+        .with_max_output_tokens(2048)
+        .expect("output policy");
+    let body = provider
+        .request_body("test", &[user_message("test")], "test", &[], &[], false)
+        .expect("native request");
+    assert_eq!(body["max_tokens"], 2048);
+    assert!(provider.with_max_output_tokens(0).is_err());
 }

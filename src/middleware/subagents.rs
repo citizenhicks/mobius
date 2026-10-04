@@ -1,5 +1,6 @@
 //! Durable asynchronous child-agent middleware.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -60,6 +61,9 @@ mod text {
     pub(super) struct Definition {
         pub(super) default_enabled: bool,
         pub(super) command_description: String,
+        pub(super) ceilings_max_depth: u8,
+        pub(super) ceilings_max_concurrency: usize,
+        pub(super) ceilings_max_agents: usize,
         pub(super) defaults_max_agents: i64,
         pub(super) defaults_max_concurrency: i64,
         pub(super) defaults_max_depth: i64,
@@ -100,17 +104,33 @@ mod text {
     }
     pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
         std::sync::LazyLock::new(|| {
-            let definition: Definition = toml::from_str(include_str!("subagents.toml"))
-                .expect("bundled subagents definition must be valid");
+            let definition: Definition = crate::config::embedded(include_str!("subagents.toml"));
 
-            assert!(definition.defaults_wait_ms >= MIN_WAIT_MS as i64);
-            assert!(definition.defaults_wait_ms <= MAX_WAIT_MS as i64);
+            assert!(definition.ceilings_max_depth > 0);
+            assert!(definition.ceilings_max_concurrency >= 2);
+            assert!(definition.ceilings_max_agents >= definition.ceilings_max_concurrency);
+            assert!(
+                definition.defaults_wait_ms
+                    >= i64::try_from(MIN_WAIT_MS).expect("wait bound must fit")
+            );
+            assert!(
+                definition.defaults_wait_ms
+                    <= i64::try_from(MAX_WAIT_MS).expect("wait bound must fit")
+            );
             assert!(definition.defaults_max_depth >= 1);
-            assert!(definition.defaults_max_depth <= MAX_CONFIGURED_DEPTH as i64);
+            assert!(definition.defaults_max_depth <= i64::from(definition.ceilings_max_depth));
             assert!(definition.defaults_max_concurrency >= 2);
-            assert!(definition.defaults_max_concurrency <= MAX_CONFIGURED_CONCURRENCY as i64);
+            assert!(
+                definition.defaults_max_concurrency
+                    <= i64::try_from(definition.ceilings_max_concurrency)
+                        .expect("bundled concurrency ceiling must fit")
+            );
             assert!(definition.defaults_max_agents >= definition.defaults_max_concurrency);
-            assert!(definition.defaults_max_agents <= MAX_CONFIGURED_AGENTS as i64);
+            assert!(
+                definition.defaults_max_agents
+                    <= i64::try_from(definition.ceilings_max_agents)
+                        .expect("bundled agent ceiling must fit")
+            );
             assert!(definition.setting_max_depth_step > 0);
             assert!(definition.setting_max_concurrency_step > 0);
             assert!(definition.setting_max_agents_step > 0);
@@ -120,52 +140,140 @@ mod text {
 }
 const MIN_WAIT_MS: u64 = 10_000;
 const MAX_WAIT_MS: u64 = 120_000;
-const MAX_CONFIGURED_DEPTH: u8 = 16;
-const MAX_CONFIGURED_CONCURRENCY: usize = 64;
-const MAX_CONFIGURED_AGENTS: usize = 256;
 
 fn default_wait_ms() -> u64 {
-    text::DEFINITION.defaults_wait_ms as u64
+    u64::try_from(text::DEFINITION.defaults_wait_ms)
+        .expect("validated default wait must be positive")
 }
 /// Default maximum child-agent nesting depth.
 pub fn default_max_depth() -> u8 {
-    text::DEFINITION.defaults_max_depth as u8
+    u8::try_from(text::DEFINITION.defaults_max_depth).expect("validated default depth must fit")
 }
 /// Default number of concurrently active agents, including the root.
 pub fn default_max_concurrency() -> usize {
-    text::DEFINITION.defaults_max_concurrency as usize
+    usize::try_from(text::DEFINITION.defaults_max_concurrency)
+        .expect("validated default concurrency must fit")
 }
 /// Default number of retained agents, including the root.
 pub fn default_max_agents() -> usize {
-    text::DEFINITION.defaults_max_agents as usize
+    usize::try_from(text::DEFINITION.defaults_max_agents)
+        .expect("validated default agent count must fit")
 }
 
-/// Validates subagent tree limits shared by framework and host composition.
+/// Trusted operator ceilings for the per-Bot subagent settings.
+/// These govern resource policy, while Rust's integer representation remains a safety bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubagentCeilings {
+    max_depth: u8,
+    max_concurrency: usize,
+    max_agents: usize,
+}
+
+impl Default for SubagentCeilings {
+    fn default() -> Self {
+        Self {
+            max_depth: text::DEFINITION.ceilings_max_depth,
+            max_concurrency: text::DEFINITION.ceilings_max_concurrency,
+            max_agents: text::DEFINITION.ceilings_max_agents,
+        }
+    }
+}
+
+impl SubagentCeilings {
+    /// Sets operator ceilings independently of a Bot's selected limits.
+    /// # Errors
+    /// Returns an error for zero depth, fewer than two concurrent slots, an agent
+    /// ceiling below concurrency, or values outside signed configuration integers.
+    pub fn new(max_depth: u8, max_concurrency: usize, max_agents: usize) -> Result<Self> {
+        if max_depth == 0
+            || max_concurrency < 2
+            || max_agents < max_concurrency
+            || i64::try_from(max_concurrency).is_err()
+            || i64::try_from(max_agents).is_err()
+        {
+            return Err(Error::Config("subagent ceilings require positive depth and at least two agents and concurrent slots within signed integer bounds".into()));
+        }
+        Ok(Self {
+            max_depth,
+            max_concurrency,
+            max_agents,
+        })
+    }
+
+    /// Returns the operator's maximum nesting depth.
+    #[must_use]
+    pub const fn max_depth(self) -> u8 {
+        self.max_depth
+    }
+    /// Returns the operator's maximum concurrent agent count, including the root.
+    #[must_use]
+    pub const fn max_concurrency(self) -> usize {
+        self.max_concurrency
+    }
+    /// Returns the operator's maximum retained agent count, including the root.
+    #[must_use]
+    pub const fn max_agents(self) -> usize {
+        self.max_agents
+    }
+
+    /// Returns this middleware's settings with the trusted operator's bounds.
+    #[must_use]
+    pub fn settings(self) -> Vec<MiddlewareSettingManifest> {
+        SETTINGS
+            .iter()
+            .copied()
+            .map(|mut setting| {
+                if let MiddlewareSettingManifest::Integer {
+                    id, max, default, ..
+                } = &mut setting
+                {
+                    let ceiling = match *id {
+                        "max_depth" => i64::from(self.max_depth),
+                        "max_concurrency" => i64::try_from(self.max_concurrency)
+                            .expect("validated concurrency ceiling must fit"),
+                        "max_agents" => i64::try_from(self.max_agents)
+                            .expect("validated agent ceiling must fit"),
+                        _ => return setting,
+                    };
+                    *max = Some(ceiling);
+                    *default = (*default).min(ceiling);
+                }
+                setting
+            })
+            .collect()
+    }
+
+    /// Validates a Bot's configured limits against trusted operator ceilings.
+    /// # Errors
+    /// Returns an error for a limit above the ceilings or an invalid tree relationship.
+    pub fn validate(self, max_depth: u8, max_concurrency: usize, max_agents: usize) -> Result<()> {
+        if max_depth == 0 || max_depth > self.max_depth {
+            return Err(Error::Config(format!(
+                "subagent max depth must be between 1 and {}",
+                self.max_depth
+            )));
+        }
+        if !(2..=self.max_concurrency).contains(&max_concurrency) {
+            return Err(Error::Config(format!(
+                "subagent max concurrency must be between 2 and {}",
+                self.max_concurrency
+            )));
+        }
+        if max_agents < max_concurrency || max_agents > self.max_agents {
+            return Err(Error::Config(format!(
+                "subagent max agents must be at least concurrency and no greater than {}",
+                self.max_agents
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Validates subagent limits against the owner-local default ceilings.
 /// # Errors
-///
-/// Returns an error if the supplied value is invalid.
+/// Returns an error if limits exceed the default operator policy.
 pub fn validate_limits(max_depth: u8, max_concurrency: usize, max_agents: usize) -> Result<()> {
-    if max_depth == 0 || max_depth > MAX_CONFIGURED_DEPTH {
-        return Err(Error::Config(format!(
-            "subagent max depth must be between 1 and {MAX_CONFIGURED_DEPTH}"
-        )));
-    }
-    if !(2..=MAX_CONFIGURED_CONCURRENCY).contains(&max_concurrency) {
-        return Err(Error::Config(format!(
-            "subagent max concurrency must be between 2 and {MAX_CONFIGURED_CONCURRENCY}"
-        )));
-    }
-    if max_agents < max_concurrency {
-        return Err(Error::Config(
-            "subagent max agents must be at least max concurrency".into(),
-        ));
-    }
-    if max_agents > MAX_CONFIGURED_AGENTS {
-        return Err(Error::Config(format!(
-            "subagent max agents cannot exceed {MAX_CONFIGURED_AGENTS}"
-        )));
-    }
-    Ok(())
+    SubagentCeilings::default().validate(max_depth, max_concurrency, max_agents)
 }
 
 static SETTINGS: std::sync::LazyLock<Vec<MiddlewareSettingManifest>> =
@@ -186,9 +294,9 @@ static SETTINGS: std::sync::LazyLock<Vec<MiddlewareSettingManifest>> =
                 label: text::DEFINITION.setting_max_depth_label.as_str(),
                 description: text::DEFINITION.setting_max_depth_description.as_str(),
                 min: 1,
-                max: Some(MAX_CONFIGURED_DEPTH as i64),
+                max: Some(i64::from(text::DEFINITION.ceilings_max_depth)),
                 step: text::DEFINITION.setting_max_depth_step,
-                default: default_max_depth() as i64,
+                default: i64::from(default_max_depth()),
             },
             MiddlewareSettingManifest::Integer {
                 id: "max_concurrency",
@@ -197,18 +305,24 @@ static SETTINGS: std::sync::LazyLock<Vec<MiddlewareSettingManifest>> =
                     .setting_max_concurrency_description
                     .as_str(),
                 min: 2,
-                max: Some(MAX_CONFIGURED_CONCURRENCY as i64),
+                max: Some(
+                    i64::try_from(text::DEFINITION.ceilings_max_concurrency)
+                        .expect("bundled concurrency ceiling must fit"),
+                ),
                 step: text::DEFINITION.setting_max_concurrency_step,
-                default: default_max_concurrency() as i64,
+                default: text::DEFINITION.defaults_max_concurrency,
             },
             MiddlewareSettingManifest::Integer {
                 id: "max_agents",
                 label: text::DEFINITION.setting_max_agents_label.as_str(),
                 description: text::DEFINITION.setting_max_agents_description.as_str(),
                 min: 2,
-                max: Some(MAX_CONFIGURED_AGENTS as i64),
+                max: Some(
+                    i64::try_from(text::DEFINITION.ceilings_max_agents)
+                        .expect("bundled agent ceiling must fit"),
+                ),
                 step: text::DEFINITION.setting_max_agents_step,
-                default: default_max_agents() as i64,
+                default: text::DEFINITION.defaults_max_agents,
             },
         ]
     });
@@ -317,6 +431,12 @@ struct AgentScope {
 }
 
 impl AgentScope {
+    fn next_depth(&self) -> Result<u8> {
+        self.depth.checked_add(1).ok_or_else(|| {
+            Error::Config("subagent depth exceeds its integer representation".into())
+        })
+    }
+
     fn new(runtime: &RuntimeContext, launch_agent: SubagentLauncher) -> Result<Self> {
         let identity = AgentIdentity::read(&runtime.session_id, &runtime.metadata)?;
         Ok(Self {
@@ -370,7 +490,7 @@ impl AgentScope {
         let mut metadata = AgentIdentity {
             root_session_id: self.root_session_id.clone(),
             agent_path: agent_path.clone(),
-            depth: self.depth + 1,
+            depth: self.next_depth()?,
         }
         .metadata(self.metadata.clone());
         metadata.insert(SPAWN_CONTEXT_KEY.into(), Value::String(turns.label()));
@@ -435,7 +555,7 @@ pub struct Subagents {
     launch_agent: SubagentLauncher,
     default_model: Option<String>,
     default_reasoning: Option<String>,
-    prompt: String,
+    prompt: Cow<'static, str>,
     shared: Arc<Shared>,
 }
 
@@ -460,14 +580,33 @@ impl Subagents {
         max_agents: usize,
         launch_agent: SubagentLauncher,
     ) -> Result<Self> {
-        validate_limits(max_depth, max_concurrency, max_agents)?;
+        Self::new_with_ceilings(
+            SubagentCeilings::default(),
+            max_depth,
+            max_concurrency,
+            max_agents,
+            launch_agent,
+        )
+    }
+
+    /// Creates a subagent capability under trusted operator ceilings.
+    /// # Errors
+    /// Returns an error if the requested Bot limits exceed the operator policy.
+    pub fn new_with_ceilings(
+        ceilings: SubagentCeilings,
+        max_depth: u8,
+        max_concurrency: usize,
+        max_agents: usize,
+        launch_agent: SubagentLauncher,
+    ) -> Result<Self> {
+        ceilings.validate(max_depth, max_concurrency, max_agents)?;
         Ok(Self {
             max_depth,
             files: None,
             launch_agent,
             default_model: None,
             default_reasoning: None,
-            prompt: text::DEFINITION.prompt_default.clone(),
+            prompt: Cow::Borrowed(text::DEFINITION.prompt_default.as_str()),
             shared: Arc::new(Shared::new(max_concurrency, max_agents)),
         })
     }
@@ -511,21 +650,20 @@ impl Subagents {
         if prompt.trim().is_empty() {
             return Err(Error::Config("subagent prompt cannot be empty".into()));
         }
-        self.prompt = prompt;
+        self.prompt = Cow::Owned(prompt);
         Ok(self)
     }
 
     fn section(&self, identity: &AgentIdentity) -> PromptSection {
-        let body = if identity.depth == 0 {
-            text::DEFINITION.prompt_root.clone()
+        if identity.depth == 0 {
+            PromptSection::new(text::DEFINITION.prompt_root.as_str())
         } else {
-            format!(
+            PromptSection::new(format!(
                 "You are `{}`, a child agent.\n{}",
                 identity.agent_path,
                 self.prompt.trim()
-            )
-        };
-        PromptSection::new(body)
+            ))
+        }
     }
 
     async fn read_command(

@@ -205,9 +205,11 @@ impl Runner {
                     };
                     completion
                 };
-                completion
-                    .results
-                    .extend(denied_results(&denied_calls, &rejection));
+                completion.results.extend(denied_results(
+                    &denied_calls,
+                    &rejection,
+                    self.config.sandbox.output_limit(),
+                ));
                 completion.results = order_results(&pending.calls, completion.results);
                 Ok(Some(completion))
             }
@@ -282,9 +284,9 @@ fn validate_approval_selection(calls: &[ToolCall], call_ids: &[String]) -> Resul
     Ok(())
 }
 
-fn denied_results(calls: &[ToolCall], rejection: &str) -> Vec<ToolResult> {
+fn denied_results(calls: &[ToolCall], rejection: &str, output_limit: usize) -> Vec<ToolResult> {
     calls
         .iter()
-        .map(|call| ToolResult::error(call, format!("tool denied: {rejection}")))
+        .map(|call| ToolResult::error(call, format!("tool denied: {rejection}"), output_limit))
         .collect()
 }

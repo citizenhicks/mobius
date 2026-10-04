@@ -6,7 +6,7 @@ pub(crate) fn validate_bot_compatibility(
     config: &AgentComposition,
     models: &[mobius::protocol::ModelChoice],
 ) -> Result<()> {
-    validate_agent_composition(config)?;
+    validate_agent_composition_with_ceilings(config, gateway.execution.subagent_ceilings()?)?;
     validate_desktop_bot_policy(gateway, config)?;
     gateway.validate_provider_selection(&config.provider)?;
     let selection = &config.provider;
@@ -58,11 +58,20 @@ pub(crate) fn validate_desktop_bot_policy(
     Ok(())
 }
 
-/// Validates the complete frontend-writable agent composition.
+/// Validates the structural composition without imposing a host's resource policy.
 /// # Errors
 ///
 /// Returns an error if the supplied value is invalid.
 pub fn validate_agent_composition(config: &AgentComposition) -> Result<()> {
+    let maximum = usize::try_from(i64::MAX).unwrap_or(usize::MAX);
+    let ceilings = mobius::middleware::subagents::SubagentCeilings::new(u8::MAX, maximum, maximum)?;
+    validate_agent_composition_with_ceilings(config, ceilings)
+}
+
+pub(crate) fn validate_agent_composition_with_ceilings(
+    config: &AgentComposition,
+    ceilings: mobius::middleware::subagents::SubagentCeilings,
+) -> Result<()> {
     if config.max_model_steps == 0 {
         return Err(Error::Config("maximum model steps must be positive".into()));
     }
@@ -84,7 +93,7 @@ pub fn validate_agent_composition(config: &AgentComposition) -> Result<()> {
             "the selected voice is not supported by this provider".into(),
         ));
     }
-    crate::middleware_manifest::validate(&config.middleware)
+    crate::middleware_manifest::validate_with_ceilings(&config.middleware, ceilings)
 }
 
 pub(super) fn validate_provider_config(config: &ProviderConfig) -> Result<()> {
@@ -146,6 +155,17 @@ pub(super) fn validate_configured_provider_selection(
         ));
     }
     let definition = provider(&selection.provider)?;
+    if matches!(
+        definition.auth(),
+        mobius::backend::model::provider::ProviderAuth::Browser(_)
+    ) && !mobius::backend::model::provider::uses_default_endpoint(
+        crate::provider_catalog::selected_base_url(definition, &configured.selection),
+        crate::provider_catalog::selected_base_url(definition, selection),
+    ) {
+        return Err(Error::Config(
+            "browser-auth provider selection must use its operator-registered endpoint".into(),
+        ));
+    }
     if !definition.models().is_empty() {
         return Ok(());
     }
@@ -314,21 +334,6 @@ pub(crate) fn effective_reasoning_effort<'a>(
         .or_else(|| configured.reasoning_efforts.first().map(String::as_str))
 }
 
-pub(super) fn valid_hostname_label(label: &str) -> bool {
-    (1..=63).contains(&label.len())
-        && label
-            .bytes()
-            .next()
-            .is_some_and(|byte| byte.is_ascii_alphanumeric())
-        && label
-            .bytes()
-            .next_back()
-            .is_some_and(|byte| byte.is_ascii_alphanumeric())
-        && label
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-}
-
 pub(super) fn invalid_cloudflare_hostname() -> Error {
     Error::Config(
         "Cloudflare hostname must be a DNS name such as mobius.example.com, without a scheme, path, or port"
@@ -355,6 +360,7 @@ pub(super) fn invalid_cloudflare_token() -> Error {
 
 pub(super) fn validate_telemetry(config: &crate::telemetry::TelemetryConfig) -> Result<()> {
     use crate::telemetry::SinkMethod;
+    config.policy.validate()?;
     if config.sinks.len() > 16 {
         return Err(Error::Config(
             "telemetry.sinks accepts at most 16 destinations".into(),
@@ -399,11 +405,13 @@ pub(super) fn validate_telemetry(config: &crate::telemetry::TelemetryConfig) -> 
             Some(url::Host::Domain("localhost")) => true,
             _ => false,
         };
-        if url.host().is_none() || !(url.scheme() == "https" || url.scheme() == "http" && loopback)
+        if url.host().is_none()
+            || !(url.scheme() == "https"
+                || url.scheme() == "http" && (loopback || config.policy.allow_insecure_http))
         {
             return Err(invalid(
                 "url",
-                "requires HTTPS, except HTTP on a literal loopback address or localhost",
+                "requires HTTPS or an explicit operator HTTP policy",
             ));
         }
         if !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
@@ -475,13 +483,26 @@ pub(super) fn validate_telemetry(config: &crate::telemetry::TelemetryConfig) -> 
             return Err(invalid("fields", "encoded labels must fit within 8 KiB"));
         }
         if let Some(name) = &sink.bearer_env
-            && (name.is_empty()
-                || name.len() > 128
-                || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+            && (!name.starts_with("MOBIUS_")
+                || name.len() == "MOBIUS_".len()
+                || !mobius::identifier::valid_ascii_identifier(
+                    name,
+                    128,
+                    mobius::identifier::AsciiCase::Any,
+                    b"_",
+                ))
         {
             return Err(invalid(
                 "bearer_env",
-                "must be 1–128 ASCII letters, digits or underscores",
+                "must start with MOBIUS_ and contain at most 128 ASCII letters, digits or underscores",
+            ));
+        }
+        if let Some(name) = &sink.bearer_env
+            && crate::sandbox::reserved_credential_environment().any(|reserved| reserved == name)
+        {
+            return Err(invalid(
+                "bearer_env",
+                "cannot select a gateway or provider credential",
             ));
         }
         if let Some(path) = &sink.bearer_file

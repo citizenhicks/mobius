@@ -111,11 +111,11 @@ fn failed_auth_initialization_removes_only_the_new_gateway_state() {
     let state = root.path().join("gateway");
     let sibling = root.path().join("keep");
     std::fs::write(&sibling, "keep").expect("sibling state");
-    let (store, _) =
+    let (store, config) =
         ConfigStore::initialize(state.clone(), DEFAULT_LISTEN, None).expect("gateway config");
     std::fs::create_dir(store.auth_path()).expect("conflicting auth path");
 
-    initialize_auth(&store).expect_err("auth initialization must fail");
+    initialize_auth(&store, config.auth).expect_err("auth initialization must fail");
 
     assert_eq!((state.exists(), sibling.exists()), (false, true));
 }
@@ -161,7 +161,7 @@ fn bootstrap_is_direct_and_saves_an_authenticated_control_client() {
         .expect("saved bootstrap client");
     assert_eq!(endpoint.to_string(), "tcp://127.0.0.1:8741");
     assert!(
-        AuthStore::open(store.auth_path())
+        AuthStore::open(store.auth_path(), config.auth)
             .expect("open hosted auth")
             .authenticate(&token)
             .is_ok()
@@ -238,7 +238,8 @@ fn bootstrap_commands_reject_tunnel_configuration() {
 fn cloudflare_local_client_uses_the_authenticated_loopback_endpoint() {
     let directory = tempfile::tempdir().expect("gateway state");
     let path = directory.path().join("auth.json");
-    let (auth, _) = AuthStore::initialize(path).expect("initialize auth");
+    let (auth, _) =
+        AuthStore::initialize(path, crate::auth::AuthConfig::default()).expect("initialize auth");
     let config = GatewayConfig::new_cloudflare(DEFAULT_LISTEN, CloudflareConfig::Quick)
         .expect("Cloudflare config");
 
@@ -248,6 +249,44 @@ fn cloudflare_local_client_uses_the_authenticated_loopback_endpoint() {
 
     assert_eq!(endpoint.to_string(), "tcp://127.0.0.1:8741");
     assert!(auth.authenticate(&token).is_ok());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn serving_a_tunnel_respects_configured_client_capacity_before_provisioning() {
+    let directory = tempfile::tempdir().expect("gateway state");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("reserve loopback port");
+    let (store, mut config) = ConfigStore::initialize_quick_cloudflare(
+        directory.path().join("gateway"),
+        listener.local_addr().expect("loopback listener"),
+    )
+    .expect("gateway config");
+    config.auth.paired_clients = 1;
+    store.save(&config).expect("save client capacity");
+    let (auth, grant) =
+        AuthStore::initialize(store.auth_path(), config.auth).expect("initialize auth");
+    let paired = auth
+        .pair(&grant.code, "Existing client")
+        .expect("pair client");
+    drop(listener);
+
+    let error = tokio::time::timeout(
+        Duration::from_secs(5),
+        serve(
+            store.state_dir().to_path_buf(),
+            true,
+            reject_bootstrap_test_client,
+            |_| Ok(None),
+        ),
+    )
+    .await
+    .expect("capacity rejection precedes tunnel startup")
+    .expect_err("local operator cannot exceed client capacity");
+    assert!(error.to_string().contains("paired client limit reached"));
+    let reopened = AuthStore::open(store.auth_path(), config.auth).expect("auth store");
+    assert!(reopened.authenticate(&paired.token).is_ok());
 }
 
 #[test]
@@ -827,7 +866,7 @@ fn parse_init_loads_a_private_cloudflare_token_without_debugging_it() {
     std::fs::write(token.path(), "secret-tunnel-token").expect("write token");
     token
         .as_file()
-        .set_permissions(std::fs::Permissions::from_mode(0o600))
+        .set_permissions(mobius::owner_only::file())
         .expect("secure token");
     let command = parse(vec![
         "init".into(),
@@ -1261,7 +1300,8 @@ async fn set_runtime_preserves_omitted_policy_fields() {
     drop(listener);
     let (store, mut config) = ConfigStore::initialize(state_dir.clone(), listen, None).unwrap();
     config.runtime.ingress = Some("0.0.0.0:8742".parse().unwrap());
-    config.runtime.hold_socket = Some(root.path().join("provider.sock"));
+    config.runtime.require_access_lease = true;
+    config.runtime.access_grace_seconds = 30;
     config.runtime.storage_limit_bytes = Some(5368709120);
     store.save(&config).unwrap();
     run(
@@ -1280,7 +1320,8 @@ async fn set_runtime_preserves_omitted_policy_fields() {
     let (_, updated) = ConfigStore::open(store.state_dir().to_path_buf()).unwrap();
     assert_eq!(updated.runtime.idle_exit_seconds, 300);
     assert_eq!(updated.runtime.ingress, config.runtime.ingress);
-    assert_eq!(updated.runtime.hold_socket, config.runtime.hold_socket);
+    assert!(updated.runtime.require_access_lease);
+    assert_eq!(updated.runtime.access_grace_seconds, 30);
     assert_eq!(
         updated.runtime.storage_limit_bytes,
         config.runtime.storage_limit_bytes
@@ -1291,7 +1332,6 @@ async fn set_runtime_preserves_omitted_policy_fields() {
             store.state_dir().as_os_str().to_owned(),
             "set-runtime".into(),
             "--clear-ingress".into(),
-            "--clear-hold-socket".into(),
             "--clear-storage-limit".into(),
         ],
         |_, _| Ok(()),
@@ -1302,7 +1342,8 @@ async fn set_runtime_preserves_omitted_policy_fields() {
     let (_, cleared) = ConfigStore::open(store.state_dir().to_path_buf()).unwrap();
     assert_eq!(cleared.runtime.idle_exit_seconds, 300);
     assert_eq!(cleared.runtime.ingress, None);
-    assert_eq!(cleared.runtime.hold_socket, None);
+    assert!(cleared.runtime.require_access_lease);
+    assert_eq!(cleared.runtime.access_grace_seconds, 30);
     assert_eq!(cleared.runtime.storage_limit_bytes, None);
 }
 
@@ -1310,7 +1351,6 @@ async fn set_runtime_preserves_omitted_policy_fields() {
 fn set_runtime_rejects_setting_and_clearing_the_same_field() {
     for (clear, set, value) in [
         ("--clear-ingress", "--ingress", "0.0.0.0:8742"),
-        ("--clear-hold-socket", "--hold-socket", "/tmp/provider.sock"),
         ("--clear-storage-limit", "--storage-limit-bytes", "1024"),
     ] {
         assert!(

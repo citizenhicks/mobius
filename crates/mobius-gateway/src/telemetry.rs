@@ -1,8 +1,10 @@
 //! Configured outbound telemetry; no endpoint is enabled by default.
+mod policy;
 mod upload;
 use crate::wire::HookKind;
 use crate::{Error, Result, host::GatewayHost};
 use mobius::backend::model::provider::{HttpClient, HttpRedirectPolicy};
+pub use policy::TelemetryPolicy;
 use serde_json::{Value, json};
 use std::sync::{
     Arc, Mutex, RwLock,
@@ -13,33 +15,12 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Gateway lifecycle policy.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct RuntimeConfig {
-    /// Exit after this many idle seconds; with `hold_socket`, idle releases the hold instead.
-    pub idle_exit_seconds: u64,
-    /// Informational Cloud content allowance; upload decisions belong to its collector.
-    pub storage_limit_bytes: Option<u64>,
-    /// Additional Noise-only WebSocket listener.
-    pub ingress: Option<std::net::SocketAddr>,
-    /// Provider task socket; when set, release the hold instead of exiting on idle.
-    pub hold_socket: Option<std::path::PathBuf>,
-}
-impl Default for RuntimeConfig {
-    fn default() -> Self {
-        Self {
-            idle_exit_seconds: 72 * 3600,
-            storage_limit_bytes: None,
-            ingress: None,
-            hold_socket: None,
-        }
-    }
-}
 /// Durable endpoint configuration.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TelemetryConfig {
+    /// Transport settings controlled locally by the gateway operator.
+    pub policy: TelemetryPolicy,
     /// Optimistic concurrency revision.
     pub revision: u64,
     /// Explicitly configured destinations.
@@ -147,6 +128,19 @@ pub struct TelemetrySink {
     #[serde(default)]
     pub upload_admission: bool,
 }
+impl TelemetrySink {
+    pub(crate) fn redact_report(&mut self) -> Result<()> {
+        let url = url::Url::parse(&self.url)
+            .map_err(|_| Error::Config("telemetry endpoint is invalid".into()))?;
+        // A collector can carry credentials in its path, query or custom headers.
+        self.url = url.origin().ascii_serialization();
+        self.headers.clear();
+        self.bearer_env = None;
+        self.bearer_file = None;
+        Ok(())
+    }
+}
+
 const fn enabled() -> bool {
     true
 }
@@ -235,7 +229,7 @@ impl Telemetry {
             // One connection pool and root store for the gateway's lifetime.
             client: HttpClient::builder()
                 .redirect(HttpRedirectPolicy::none())
-                .timeout(Duration::from_secs(10))
+                .timeout(Duration::from_secs(config.policy.request_timeout_seconds))
                 .build()
                 .map_err(|error| {
                     Error::Config(format!(
@@ -696,35 +690,9 @@ async fn deliver(
         }
         return Ok((status.as_u16(), body));
     }
-    let mut body = Vec::with_capacity(200);
-    while body.len() < 200 {
-        match response.chunk().await {
-            Ok(Some(chunk)) => body.extend_from_slice(&chunk[..chunk.len().min(200 - body.len())]),
-            Ok(None) => break,
-            Err(_) => {
-                body.extend_from_slice(b" [body read failed]");
-                break;
-            }
-        }
-    }
     Err(DeliveryError {
         status: Some(status.as_u16()),
-        message: format!("{} {}", status.as_u16(), String::from_utf8_lossy(&body)),
+        message: format!("telemetry collector returned HTTP {}", status.as_u16()),
         permanent: status.is_client_error() && status.as_u16() != 408 && status.as_u16() != 429,
     })
-}
-
-#[cfg(unix)]
-pub(crate) async fn update_hold(socket: &std::path::Path, busy: bool) -> Result<()> {
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-    tokio::time::timeout(Duration::from_secs(5), async {
-        let mut stream = tokio::net::UnixStream::connect(socket).await?;
-        let (method, body) = if busy { ("PUT", r#"{"expire":"5m"}"#) } else { ("DELETE", "") };
-        stream.write_all(format!("{method} /v1/tasks/mobius-gateway HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await?;
-        let mut response = Vec::new();
-        stream.take(1024).read_to_end(&mut response).await?;
-        let response = String::from_utf8_lossy(&response);
-        let status = response.split_whitespace().nth(1).and_then(|s| s.parse::<u16>().ok());
-        if status.is_some_and(|s| (200..300).contains(&s) || !busy && s == 404) { Ok(()) } else { Err(Error::Config("provider hold request failed".into())) }
-    }).await.map_err(|_| Error::Config("provider hold request timed out".into()))?
 }

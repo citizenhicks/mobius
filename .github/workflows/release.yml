@@ -28,16 +28,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Verify release notes
         run: test -s ".github/release-notes/${GITHUB_REF_NAME}.md"
-      - name: Install Rust
+      - name: Install pinned Rust toolchain
         run: |
-          rustup update stable
-          rustup default stable
-          rustup component add clippy rustfmt
+          rustup toolchain install --profile minimal --component clippy --component rustfmt
       - run: cargo fmt --all -- --check
-      - name: Check Rust 1.98.1
+      - name: Check Rust 1.99.0
         run: |
-          rustup toolchain install 1.98.1 --profile minimal
-          cargo +1.98.1 check --workspace --all-targets --all-features --locked
+          cargo +1.99.0 check --workspace --all-targets --all-features --locked
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Build documentation
         env:
@@ -69,10 +66,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install Rust
+      - name: Install pinned Rust toolchain
         run: |
-          rustup update stable
-          rustup default stable
+          rustup toolchain install --profile minimal --component clippy --component rustfmt
       - name: Verify tag version
         run: |
           version="${GITHUB_REF_NAME#mobius-v}"
@@ -91,10 +87,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install Rust
+      - name: Install pinned Rust toolchain
         run: |
-          rustup update stable
-          rustup default stable
+          rustup toolchain install --profile minimal --component clippy --component rustfmt
       - name: Verify tag version
         run: |
           version="${GITHUB_REF_NAME#mobius-cli-v}"
@@ -122,10 +117,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install Rust
+      - name: Install pinned Rust toolchain
         run: |
-          rustup update stable
-          rustup default stable
+          rustup toolchain install --profile minimal --component clippy --component rustfmt
       - name: Verify tag version
         run: |
           version="${GITHUB_REF_NAME#mobius-gateway-v}"
@@ -156,10 +150,9 @@ jobs:
           - macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install Rust
+      - name: Install pinned Rust toolchain
         run: |
-          rustup update stable
-          rustup default stable
+          rustup toolchain install --profile minimal --component clippy --component rustfmt
       - name: Verify tag version
         run: |
           version="${GITHUB_REF_NAME#mobius-gateway-v}"
@@ -241,10 +234,9 @@ jobs:
           - macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install Rust
+      - name: Install pinned Rust toolchain
         run: |
-          rustup update stable
-          rustup default stable
+          rustup toolchain install --profile minimal --component clippy --component rustfmt
       - name: Verify tag version
         run: |
           version="${GITHUB_REF_NAME#mobius-cli-v}"

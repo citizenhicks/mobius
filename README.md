@@ -77,7 +77,8 @@ The archive also includes the licenses and terminal manual pages.
 <details>
 <summary>Install with Cargo or build from source</summary>
 
-Rust **1.98 or newer** is required. Install `cloudflared` separately for Quick Connect;
+Rust **1.99.0 or newer** is required. The repository pins Rust 1.99.0 with Clippy
+and rustfmt in `rust-toolchain.toml`. Install `cloudflared` separately for Quick Connect;
 the Cargo package installs the two möbius commands only.
 
 ```sh

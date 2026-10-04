@@ -1,18 +1,35 @@
 use super::*;
 
-#[cfg(target_os = "linux")]
 #[test]
-fn browser_disables_its_sandbox_only_for_root_launches() {
-    let arguments = browser_arguments(Path::new("/tmp/profile"));
-    assert_eq!(
-        arguments.iter().any(|argument| argument == "--no-sandbox"),
-        nix::unistd::geteuid().is_root()
+fn frozen_computer_policy_is_shared_with_the_desktop() {
+    let root = tempfile::tempdir().unwrap();
+    let config = Arc::new(ComputerConfig::default());
+    let remote = RemoteDesktop::new(root.path(), false, Arc::clone(&config));
+    assert!(Arc::ptr_eq(&config, remote.configuration()));
+}
+
+#[test]
+fn browser_sandbox_policy_does_not_depend_on_host_identity() {
+    let mut config = ComputerConfig::default();
+    assert!(
+        !config
+            .browser
+            .headed_arguments(Path::new("/tmp/profile"))
+            .contains(&"--no-sandbox".into())
+    );
+    config.browser.sandbox = false;
+    assert!(
+        config
+            .browser
+            .headed_arguments(Path::new("/tmp/profile"))
+            .contains(&"--no-sandbox".into())
     );
 }
 
 #[test]
 fn headed_browser_hides_noninteractive_infobars() {
-    let arguments = browser_arguments(Path::new("/tmp/profile"));
+    let config = ComputerConfig::default();
+    let arguments = config.browser.headed_arguments(Path::new("/tmp/profile"));
     assert!(
         arguments
             .iter()
@@ -24,7 +41,7 @@ fn headed_browser_hides_noninteractive_infobars() {
 #[tokio::test]
 async fn local_browser_without_a_renderer_falls_back_without_starting_chromium() {
     let directory = tempfile::tempdir().unwrap();
-    let remote = RemoteDesktop::new(directory.path(), true);
+    let remote = RemoteDesktop::new(directory.path(), true, ComputerConfig::default());
     assert!(remote.page("chat").await.unwrap().is_none());
     assert!(remote.runtime.lock().await.is_none());
 }
@@ -53,6 +70,7 @@ async fn sleeping_runtime(remote: &RemoteDesktop) -> u32 {
     let socket = directory.join("rfb.sock");
     let _listener = tokio::net::UnixListener::bind(&socket).unwrap();
     *remote.runtime.lock().await = Some(Runtime {
+        config: Arc::clone(remote.configuration()),
         children: vec![],
         browser: Some(child),
         chromium: PathBuf::new(),
@@ -80,7 +98,11 @@ async fn wait_stopped(remote: &RemoteDesktop) {
 #[tokio::test]
 async fn closing_the_viewer_keeps_the_agent_runtime_until_its_last_use_ends() {
     let directory = tempfile::tempdir().unwrap();
-    let remote = Arc::new(RemoteDesktop::new(directory.path(), true));
+    let remote = Arc::new(RemoteDesktop::new(
+        directory.path(),
+        true,
+        ComputerConfig::default(),
+    ));
     let agent = remote.acquire_use().await;
     let pid = sleeping_runtime(&remote).await;
     let (socket, _peer) = UnixStream::pair().unwrap();
@@ -119,7 +141,11 @@ async fn closing_the_viewer_keeps_the_agent_runtime_until_its_last_use_ends() {
 #[tokio::test]
 async fn last_use_waits_for_execution_and_rechecks_a_new_consumer() {
     let directory = tempfile::tempdir().unwrap();
-    let remote = Arc::new(RemoteDesktop::new(directory.path(), true));
+    let remote = Arc::new(RemoteDesktop::new(
+        directory.path(),
+        true,
+        ComputerConfig::default(),
+    ));
     let agent = remote.acquire_use().await;
     sleeping_runtime(&remote).await;
     let execution = remote.execution_lease().await.unwrap();
@@ -138,7 +164,11 @@ async fn last_use_waits_for_execution_and_rechecks_a_new_consumer() {
 #[tokio::test]
 async fn pending_takeover_keeps_an_unused_runtime_until_hold_is_cleared() {
     let directory = tempfile::tempdir().unwrap();
-    let remote = Arc::new(RemoteDesktop::new(directory.path(), true));
+    let remote = Arc::new(RemoteDesktop::new(
+        directory.path(),
+        true,
+        ComputerConfig::default(),
+    ));
     let agent = remote.acquire_use().await;
     sleeping_runtime(&remote).await;
     remote.held.store(true, Ordering::Release);
@@ -159,7 +189,7 @@ async fn last_use_waits_for_a_background_command_but_not_its_unpolled_result() {
     let state = directory.path().join("state");
     fs::create_dir(&workspace).unwrap();
     fs::create_dir(&state).unwrap();
-    let remote = Arc::new(RemoteDesktop::new(&state, true));
+    let remote = Arc::new(RemoteDesktop::new(&state, true, ComputerConfig::default()));
     let sandbox = Arc::new(
         crate::sandbox::GatewaySandbox::new(&workspace, &state, None, Duration::from_secs(5))
             .unwrap()
@@ -208,7 +238,11 @@ async fn failed_browser_is_reported_promptly_and_partial_children_are_reaped() {
     browser.child.wait().await.unwrap();
     let error = tokio::time::timeout(
         Duration::from_secs(1),
-        wait_devtools(&profile.join("DevToolsActivePort"), &mut browser),
+        wait_devtools(
+            &profile.join("DevToolsActivePort"),
+            &mut browser,
+            ComputerConfig::default().desktop.startup_timeout_seconds,
+        ),
     )
     .await
     .unwrap()
@@ -236,7 +270,11 @@ async fn failed_browser_is_reported_promptly_and_partial_children_are_reaped() {
 #[tokio::test]
 async fn inactive_stream_drop_does_not_release_a_later_control_grant() {
     let directory = tempfile::tempdir().unwrap();
-    let remote = Arc::new(RemoteDesktop::new(directory.path(), true));
+    let remote = Arc::new(RemoteDesktop::new(
+        directory.path(),
+        true,
+        ComputerConfig::default(),
+    ));
     let connection = Uuid::new_v4();
     let (socket, _peer) = UnixStream::pair().unwrap();
     drop(DesktopStream {
@@ -262,7 +300,11 @@ async fn inactive_stream_drop_does_not_release_a_later_control_grant() {
 #[tokio::test]
 async fn failed_release_notifies_chat_connections_that_execution_resumed() {
     let directory = tempfile::tempdir().unwrap();
-    let remote = Arc::new(RemoteDesktop::new(directory.path(), true));
+    let remote = Arc::new(RemoteDesktop::new(
+        directory.path(),
+        true,
+        ComputerConfig::default(),
+    ));
     let connection = Uuid::new_v4();
     *remote.user.lock().unwrap() = Some(UserControl {
         connection,
@@ -282,7 +324,11 @@ use mobius::backend::sandbox::{NetworkAccess, SandboxBackend, SandboxMode};
 #[tokio::test]
 async fn one_lease_blocks_all_other_evaluations_and_releases_on_disconnect() {
     let directory = tempfile::tempdir().unwrap();
-    let remote = Arc::new(RemoteDesktop::new(directory.path(), true));
+    let remote = Arc::new(RemoteDesktop::new(
+        directory.path(),
+        true,
+        ComputerConfig::default(),
+    ));
     let native = Arc::new(DesktopControl::default());
     let worker = remote.connect("one", Arc::clone(&native)).unwrap();
     assert!(remote.connect("two", Arc::clone(&native)).is_err());
@@ -307,7 +353,7 @@ async fn execution_hold_covers_reads_writes_commands_workers_and_helpers() {
     let state = directory.path().join("state");
     fs::create_dir(&workspace).unwrap();
     fs::create_dir(&state).unwrap();
-    let remote = Arc::new(RemoteDesktop::new(&state, true));
+    let remote = Arc::new(RemoteDesktop::new(&state, true, ComputerConfig::default()));
     let sandbox =
         crate::sandbox::GatewaySandbox::new(&workspace, &state, None, Duration::from_secs(5))
             .unwrap()
@@ -344,7 +390,11 @@ async fn execution_hold_covers_reads_writes_commands_workers_and_helpers() {
 #[tokio::test]
 async fn disabled_desktop_does_not_start_or_lease_a_browser() {
     let directory = tempfile::tempdir().unwrap();
-    let remote = Arc::new(RemoteDesktop::new(directory.path(), false));
+    let remote = Arc::new(RemoteDesktop::new(
+        directory.path(),
+        false,
+        ComputerConfig::default(),
+    ));
     assert!(remote.page("chat").await.unwrap().is_none());
     assert!(remote.runtime.lock().await.is_none());
     assert!(!remote.available());
@@ -383,7 +433,7 @@ async fn hold_cancels_a_running_command_before_admitting_user_input() {
     let state = directory.path().join("state");
     fs::create_dir(&workspace).unwrap();
     fs::create_dir(&state).unwrap();
-    let remote = Arc::new(RemoteDesktop::new(&state, true));
+    let remote = Arc::new(RemoteDesktop::new(&state, true, ComputerConfig::default()));
     let sandbox =
         crate::sandbox::GatewaySandbox::new(&workspace, &state, None, Duration::from_secs(20))
             .unwrap()
@@ -423,7 +473,11 @@ async fn hold_cancels_a_running_command_before_admitting_user_input() {
 #[tokio::test]
 async fn cancelled_takeover_keeps_hold_until_execution_has_drained() {
     let directory = tempfile::tempdir().unwrap();
-    let remote = Arc::new(RemoteDesktop::new(directory.path(), true));
+    let remote = Arc::new(RemoteDesktop::new(
+        directory.path(),
+        true,
+        ComputerConfig::default(),
+    ));
     let execution = remote.execution_lease().await.unwrap();
     remote.held.store(true, Ordering::Release);
     let connection = Uuid::new_v4();
@@ -450,7 +504,11 @@ async fn cancelled_takeover_keeps_hold_until_execution_has_drained() {
 #[tokio::test]
 async fn dropping_a_pending_grant_never_starts_a_late_controller() {
     let directory = tempfile::tempdir().unwrap();
-    let remote = Arc::new(RemoteDesktop::new(directory.path(), true));
+    let remote = Arc::new(RemoteDesktop::new(
+        directory.path(),
+        true,
+        ComputerConfig::default(),
+    ));
     let execution = remote.execution_lease().await.unwrap();
     remote.held.store(true, Ordering::Release);
     let mut grant = Box::pin(remote.grant_control(Uuid::new_v4(), "chat".into()));
@@ -470,7 +528,11 @@ async fn dropping_a_pending_grant_never_starts_a_late_controller() {
 #[tokio::test]
 async fn closed_browser_does_not_stop_the_native_desktop_or_retain_stale_assignments() {
     let directory = tempfile::tempdir().unwrap();
-    let remote = Arc::new(RemoteDesktop::new(directory.path(), true));
+    let remote = Arc::new(RemoteDesktop::new(
+        directory.path(),
+        true,
+        ComputerConfig::default(),
+    ));
     sleeping_runtime(&remote).await;
     let path = directory.path().join("desktop");
     let display =
@@ -515,7 +577,11 @@ async fn closed_browser_does_not_stop_the_native_desktop_or_retain_stale_assignm
 #[tokio::test]
 async fn a_reopened_browser_endpoint_discards_old_chat_assignments_without_another_launch() {
     let directory = tempfile::tempdir().unwrap();
-    let remote = Arc::new(RemoteDesktop::new(directory.path(), true));
+    let remote = Arc::new(RemoteDesktop::new(
+        directory.path(),
+        true,
+        ComputerConfig::default(),
+    ));
     sleeping_runtime(&remote).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

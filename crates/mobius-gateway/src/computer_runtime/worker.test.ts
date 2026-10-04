@@ -14,11 +14,16 @@ type DesktopPage = { endpoint: string; target_id: string | null };
 type Evaluate = (code: string, desktop?: DesktopPage) => Promise<Observation>;
 const runtime = process.env.MOBIUS_COMPUTER_RUNTIME;
 
-async function withWorker(signal: AbortSignal, run: (evaluate: Evaluate, directory: string) => Promise<void>, host?: (request: any) => unknown) {
+async function withWorker(signal: AbortSignal, run: (evaluate: Evaluate, directory: string) => Promise<void>, host?: (request: any) => unknown,
+  browser?: (directory: string) => Record<string, unknown>, uid?: number) {
   const directory = await mkdtemp(join(tmpdir(), "mobius-computer-test-"));
   const script = join(directory, "worker.cjs");
   await writeFile(script, COMPUTER_WORKER);
-  const child = spawn(process.execPath, [script], {
+  const options = {sandbox:false, arguments:[], viewport:[1365,768], start_page:'about:blank',
+    playwright_module:'playwright',
+    browsers_directory:runtime ? join(runtime, 'browsers') : join(directory, 'browsers'), root_sandbox_error:'root requires an explicit operator sandbox opt-out', ...browser?.(directory)};
+  const workerArguments = uid === undefined ? [script, JSON.stringify(options)] : ['-e', 'process.getuid=()=>Number(process.argv[3]);require(process.argv[1]);', script, JSON.stringify(options), String(uid)];
+  const child = spawn(process.execPath, workerArguments, {
     env: { ...process.env, TMPDIR: directory, ...(runtime ? {
       NODE_PATH: join(runtime, "node_modules"), PLAYWRIGHT_BROWSERS_PATH: join(runtime, "browsers"),
     } : {}) },
@@ -73,6 +78,31 @@ function text(result: Observation) {
 function images(result: Observation) {
   return result.content.filter(part => part.type === "image");
 }
+
+test("headless browser consumes operator policy and keeps CDP on loopback", { timeout: 10000 }, t => withWorker(t.signal, async (evaluate, directory) => {
+  await writeFile(join(directory, 'playwright.cjs'), `exports.chromium = {launch:async launchOptions=>({
+    isConnected:()=>true, close:async()=>{}, newContext:async contextOptions=>({newPage:async()=>({
+      launchOptions, contextOptions, isClosed:()=>false, setDefaultTimeout:()=>{},
+      goto:async function(url){this.startPage=url}
+    })})
+  })};`);
+  const result = await evaluate("var configured = await getPage(); console.log(JSON.stringify({launch:configured.launchOptions,context:configured.contextOptions,url:configured.startPage}));");
+  assert.equal(result.is_error, false, text(result));
+  const options = JSON.parse(text(result));
+  assert.equal(options.launch.executablePath, '/operator/chromium');
+  assert.equal(options.launch.chromiumSandbox, true);
+  assert.ok(options.launch.args.includes('--force-color-profile=srgb'));
+  assert.ok(options.launch.args.includes('--remote-debugging-address=127.0.0.1'));
+  assert.deepEqual(options.context.viewport, {width:800,height:600});
+  assert.equal(options.url, 'https://example.invalid/start');
+}, undefined, directory => ({playwright_module:join(directory, 'playwright.cjs'), executable:'/operator/chromium',
+  sandbox:true, arguments:['--force-color-profile=srgb'], viewport:[800,600], start_page:'https://example.invalid/start'}), 1000));
+
+test("headless root failure explains the operator sandbox choice before loading a browser", { timeout: 10000 }, t => withWorker(t.signal, async evaluate => {
+  const result = await evaluate("await getPage()");
+  assert.equal(result.is_error, true);
+  assert.match(text(result), /root requires an explicit operator sandbox opt-out/);
+}, undefined, () => ({sandbox:true, playwright_module:'/browser-module-that-must-not-load'}), 0));
 
 test("worker cancellation stops a pending evaluation", { timeout: 2000 }, async () => {
   await assert.rejects(withWorker(AbortSignal.timeout(100), async evaluate => {

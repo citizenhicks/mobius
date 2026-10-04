@@ -14,17 +14,20 @@ fn only_launching_a_command_requires_approval() {
 
 #[test]
 fn background_output_remains_valid_json_at_its_limit() {
-    let rendered = background_output(BackgroundCommandPoll {
-        command_id: Some(uuid::Uuid::nil().to_string()),
-        status: crate::backend::sandbox::BackgroundCommandStatus::Running,
-        exit_code: None,
-        stdout: "\0".repeat(6_000),
-        stderr: String::new(),
-        truncated: false,
-        error: Some("\0".repeat(512)),
-    });
+    let rendered = background_output(
+        BackgroundCommandPoll {
+            command_id: Some(uuid::Uuid::nil().to_string()),
+            status: crate::backend::sandbox::BackgroundCommandStatus::Running,
+            exit_code: None,
+            stdout: "\0".repeat(6_000),
+            stderr: String::new(),
+            truncated: false,
+            error: Some("\0".repeat(512)),
+        },
+        crate::backend::sandbox::default_tool_output_limit(),
+    );
 
-    assert!(rendered.len() <= MAX_TOOL_OUTPUT_BYTES);
+    assert!(rendered.len() <= crate::backend::sandbox::default_tool_output_limit());
     let value: Value = serde_json::from_str(&rendered).expect("valid JSON");
     assert_eq!(value["status"], "running");
     assert_eq!(value["command_id"], uuid::Uuid::nil().to_string());

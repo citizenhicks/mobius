@@ -1,0 +1,7 @@
+symbol = "kimi"
+label = "Kimi"
+description = "Kimi Chat Completions API"
+base_url = "https://api.moonshot.ai/v1"
+tool_discovery = "rebuild"
+search = ["off"]
+credential_env = "MOONSHOT_API_KEY"

@@ -25,6 +25,32 @@ struct LifecycleProbe {
 struct CompactInputRewrite;
 
 #[test]
+fn owner_local_execution_and_token_defaults_preserve_shipped_behavior() {
+    assert_eq!(crate::backend::sandbox::default_tool_output_limit(), 40_000);
+    assert_eq!(
+        crate::backend::sandbox::default_background_command_limit(),
+        4
+    );
+    assert_eq!(
+        crate::backend::sandbox::default_command_timeout_seconds(),
+        120
+    );
+    assert_eq!(
+        crate::backend::sandbox::ProcfsMode::default(),
+        crate::backend::sandbox::ProcfsMode::Private
+    );
+    assert_eq!(TokenEstimate::default().tokens(8), 2);
+    assert_eq!(TokenEstimate::default().tokens(9), 3);
+    let ceilings = subagents::SubagentCeilings::default();
+    assert_eq!(ceilings.max_depth(), 16);
+    assert_eq!(ceilings.max_concurrency(), 64);
+    assert_eq!(ceilings.max_agents(), 256);
+    assert_eq!(subagents::default_max_depth(), 4);
+    assert_eq!(subagents::default_max_concurrency(), 8);
+    assert_eq!(subagents::default_max_agents(), 101);
+}
+
+#[test]
 fn token_estimation_serializes_borrowed_public_fields() {
     let item = serde_json::json!({
         "role": "user",
@@ -32,9 +58,11 @@ fn token_estimation_serializes_borrowed_public_fields() {
         "_private": "ignored"
     });
     let public = serde_json::json!({"role": "user", "content": "hello"});
-    let expected = approximate_tokens(serde_json::to_vec(&public).expect("json").len()).max(1);
+    let expected = TokenEstimate::default()
+        .tokens(serde_json::to_vec(&public).expect("json").len())
+        .max(1);
 
-    assert_eq!(approximate_item_tokens(&item), expected);
+    assert_eq!(TokenEstimate::default().item_tokens(&item), expected);
     assert_eq!(
         serialized_len(&public),
         Some(serde_json::to_vec(&public).expect("json").len())
@@ -686,4 +714,23 @@ fn provisional_message_target_rejects_sequence_overflow() {
         provisional_message_target(u64::MAX, 1),
         Err(Error::Checkpoint(message)) if message == "checkpoint sequence overflow"
     ));
+}
+
+#[test]
+fn token_estimate_is_workload_tunable_and_rejects_invalid_ratios() {
+    for ratio in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        assert!(TokenEstimate::new(ratio).is_err());
+    }
+    let estimate = TokenEstimate::new(2.5).expect("fractional ratio");
+    assert_eq!(estimate.tokens(11), 5);
+    assert_eq!(estimate.tokens(0), 0);
+    assert_eq!(
+        TokenEstimate::new(f64::MIN_POSITIVE).unwrap().tokens(1),
+        usize::MAX
+    );
+    let item = crate::backend::model::user_message("漢字 and code");
+    assert!(
+        TokenEstimate::new(2.0).unwrap().item_tokens(&item)
+            > TokenEstimate::default().item_tokens(&item)
+    );
 }

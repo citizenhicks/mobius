@@ -79,6 +79,7 @@ pub(super) async fn install_model(
         &state.credentials,
         state.session_files.clone(),
         0,
+        Arc::clone(gateway.remote_desktop.configuration()),
     )
     .await
     .unwrap();
@@ -114,6 +115,74 @@ fn user_submission(id: &str, text: &str) -> Submission {
             },
         },
     }
+}
+
+#[tokio::test]
+async fn persisted_bot_without_new_scalar_settings_assembles_and_runs_with_owner_defaults() {
+    let (_root, gateway, bot) = gateway_with_bot().await;
+    let mut encoded = serde_json::to_value(&bot.config.config).expect("saved Bot configuration");
+    let settings = encoded["middleware"]["settings"]
+        .as_object_mut()
+        .expect("middleware settings");
+    settings["sandbox"]
+        .as_object_mut()
+        .expect("sandbox settings")
+        .retain(|id, _| id == "approval_policy");
+    settings["compaction"]
+        .as_object_mut()
+        .expect("compaction settings")
+        .retain(|id, _| id == "mode" || id == "at_tokens");
+    let composition =
+        serde_json::from_value(encoded).expect("deserialize existing Bot configuration");
+    let bot = {
+        let state = gateway.state.lock().await;
+        state
+            .bots
+            .update_bot(
+                &bot.id,
+                bot.config.revision,
+                crate::bots::BotIdentity {
+                    name: &bot.name,
+                    description: &bot.description,
+                    tint: bot.tint,
+                    shape: bot.shape,
+                },
+                composition,
+            )
+            .expect("persist existing Bot map");
+        crate::bots::BotStore::open(state.store.state_dir())
+            .expect("reopen persisted Bots")
+            .bot(&bot.id)
+            .expect("load saved Bot")
+    };
+    assert_eq!(
+        bot.config
+            .config
+            .middleware
+            .setting("sandbox", "tool_output_bytes"),
+        Some(&mobius::protocol::FrontendSettingValue::Integer(
+            i64::try_from(mobius::backend::sandbox::default_tool_output_limit())
+                .expect("default fits")
+        ))
+    );
+    let model = Arc::new(CaptureModel::default());
+    model.release.notify_one();
+    install_model(&gateway, &bot, Arc::clone(&model)).await;
+    let chat = gateway
+        .open_session(&bot.conversation_session_id)
+        .await
+        .expect("assemble existing Bot");
+    chat.submit(user_submission(
+        "defaulted-settings",
+        "Use the saved configuration",
+    ))
+    .await
+    .expect("submit");
+    tokio::time::timeout(std::time::Duration::from_secs(5), chat.wait_idle())
+        .await
+        .expect("finished turn");
+    assert_eq!(model.calls.load(Ordering::Relaxed), 1);
+    gateway.shutdown().await;
 }
 
 #[tokio::test]

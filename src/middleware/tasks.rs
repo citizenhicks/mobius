@@ -24,6 +24,7 @@ mod text {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(super) struct Definition {
+        pub(super) prompt_projection: String,
         pub(super) default_enabled: bool,
         pub(super) command_tasks_description: String,
         pub(super) manifest_description: String,
@@ -34,10 +35,7 @@ mod text {
         pub(super) tool_write_todos_description: String,
     }
     pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
-        std::sync::LazyLock::new(|| {
-            toml::from_str(include_str!("tasks.toml"))
-                .expect("bundled tasks definition must be valid")
-        });
+        std::sync::LazyLock::new(|| crate::config::embedded(include_str!("tasks.toml")));
 }
 const STATE_KEY: &str = "tasks.v1";
 const PROJECTION_KIND: &str = "tasks_state";
@@ -143,10 +141,9 @@ impl Middleware for Tasks {
         Box::pin(async move {
             let todos =
                 load_todos(&context.runtime.checkpoints, &context.runtime.session_id).await?;
-            let text = format!(
-                "<tasks>\nCurrent saved todo list replaces all prior task-list state:\n{}\n</tasks>",
-                serde_json::to_string(&todos)?,
-            );
+            let text = text::DEFINITION
+                .prompt_projection
+                .replace("{todos}", &serde_json::to_string(&todos)?);
             let previous = context
                 .input
                 .iter()

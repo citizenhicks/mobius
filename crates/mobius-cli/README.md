@@ -13,7 +13,7 @@ Download one `mobius-cli` archive and checksum from
 
 Verify with `shasum -a 256 -c FILE.sha256`, extract the included `mobius` and
 `mobius-gateway` binaries into one directory, and put it on your `PATH`. Rust users and other
-macOS or Linux architectures can install both commands with Rust 1.98 or newer:
+macOS or Linux architectures can install both commands with Rust 1.99.0 or newer:
 
 ```sh
 cargo install --locked mobius-cli

@@ -1,4 +1,3 @@
-use std::env;
 use std::fs;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -31,10 +30,8 @@ pub(super) async fn generate() -> std::result::Result<(SshIdentityRecord, String
 }
 
 fn ssh_directory() -> std::result::Result<PathBuf, Rejection> {
-    env::var_os("HOME")
-        .or_else(|| env::var_os("USERPROFILE"))
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
+    std::env::home_dir()
+        .filter(|path| !path.as_os_str().is_empty())
         .map(|path| path.join(".ssh"))
         .ok_or_else(|| ssh_error("the host home directory is unavailable"))
 }
@@ -130,7 +127,7 @@ fn protect_directory(directory: &Path) -> std::result::Result<(), Rejection> {
         }
         Err(_) => return Err(ssh_error("failed to inspect the host SSH directory")),
     }
-    set_mode(directory, 0o700)
+    protect(directory, true)
 }
 
 fn ensure_destination_available(destination: &Path) -> std::result::Result<(), Rejection> {
@@ -150,8 +147,13 @@ fn install_keypair(
 ) -> std::result::Result<(SshIdentityRecord, String), Rejection> {
     ensure_destination_available(destination_private)?;
     let temporary_public = temporary_private.with_extension("pub");
-    set_mode(temporary_private, 0o600)?;
-    set_mode(&temporary_public, 0o644)?;
+    protect(temporary_private, false)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(&temporary_public, fs::Permissions::from_mode(0o644))
+            .map_err(|_| ssh_error("failed to protect host SSH credentials"))?;
+    }
     let public_key = read_public_key(&temporary_public)
         .map_err(|_| ssh_error("ssh-keygen returned an invalid public key"))?;
     let (identity, public_key) = parse_public_key(GENERATED_KEY_LABEL, &public_key)
@@ -237,14 +239,18 @@ fn path_exists(path: &Path) -> bool {
 }
 
 #[cfg(unix)]
-fn set_mode(path: &Path, mode: u32) -> std::result::Result<(), Rejection> {
-    use std::os::unix::fs::PermissionsExt as _;
-    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+fn protect(path: &Path, directory: bool) -> std::result::Result<(), Rejection> {
+    let permissions = if directory {
+        mobius::owner_only::dir()
+    } else {
+        mobius::owner_only::file()
+    };
+    fs::set_permissions(path, permissions)
         .map_err(|_| ssh_error("failed to protect host SSH credentials"))
 }
 
 #[cfg(not(unix))]
-fn set_mode(_path: &Path, _mode: u32) -> std::result::Result<(), Rejection> {
+fn protect(_path: &Path, _directory: bool) -> std::result::Result<(), Rejection> {
     Ok(())
 }
 

@@ -49,7 +49,8 @@ async fn configured_test_server(state_dir: PathBuf) -> (GatewayServer, PairingGr
         )
         .expect("register provider");
     store.save(&config).expect("save provider");
-    let (_, grant) = AuthStore::initialize(store.auth_path()).expect("initialize auth");
+    let (_, grant) =
+        AuthStore::initialize(store.auth_path(), config.auth).expect("initialize auth");
     let server = GatewayServer::assemble(store, config, listener)
         .await
         .expect("assemble gateway");
@@ -57,6 +58,7 @@ async fn configured_test_server(state_dir: PathBuf) -> (GatewayServer, PairingGr
 }
 
 mod bots;
+mod capacity;
 mod catalog;
 mod desktop;
 mod protocol;

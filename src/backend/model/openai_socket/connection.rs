@@ -41,9 +41,6 @@ use crate::Result;
 const MAX_SOCKET_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 pub(super) const MAX_STREAM_EVENTS: usize = 65_536;
 const SOCKET_COMMAND_CAPACITY: usize = 8;
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
-const SOCKET_IO_TIMEOUT: Duration = Duration::from_secs(5);
-pub(super) const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 type RawSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -60,6 +57,8 @@ pub(super) struct OpenAiWsConnection {
     pub(super) messages: mpsc::UnboundedReceiver<SocketEvent>,
     pub(super) closed: Arc<AtomicBool>,
     pump: tokio::task::AbortHandle,
+    io_timeout: Duration,
+    idle_timeout: Duration,
 }
 
 enum SocketCommand {
@@ -80,7 +79,13 @@ pub(super) enum SocketEvent {
 }
 
 impl OpenAiWsConnection {
+    #[cfg(test)]
     pub(super) fn new(socket: RawSocket) -> Self {
+        Self::with_settings(socket, &super::super::ModelTransportSettings::default())
+    }
+
+    fn with_settings(socket: RawSocket, settings: &super::super::ModelTransportSettings) -> Self {
+        let io_timeout = Duration::from_millis(settings.socket_io_timeout_ms);
         let (commands, command_receiver) = mpsc::channel(SOCKET_COMMAND_CAPACITY);
         // Keep reading and answering pings while the consumer persists events.
         // The pump bounds each response by bytes and event count before enqueueing.
@@ -91,12 +96,15 @@ impl OpenAiWsConnection {
             command_receiver,
             message_sender,
             Arc::clone(&closed),
+            io_timeout,
         ));
         Self {
             commands,
             messages,
             closed,
             pump: task.abort_handle(),
+            io_timeout,
+            idle_timeout: Duration::from_millis(settings.socket_idle_timeout_ms),
         }
     }
 
@@ -118,7 +126,7 @@ impl OpenAiWsConnection {
             self.retire();
             return Err(());
         }
-        match timeout(SOCKET_IO_TIMEOUT, response).await {
+        match timeout(self.io_timeout, response).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => {
                 log_interruption("request", "socket pump stopped before send acknowledgement");
@@ -146,7 +154,7 @@ impl OpenAiWsConnection {
             .try_send(SocketCommand::Close { result })
             .is_ok()
         {
-            let _ = timeout(SOCKET_IO_TIMEOUT, closed).await;
+            let _ = timeout(self.io_timeout, closed).await;
         }
         self.retire();
     }
@@ -168,6 +176,7 @@ async fn socket_pump(
     mut commands: mpsc::Receiver<SocketCommand>,
     messages: mpsc::UnboundedSender<SocketEvent>,
     closed: Arc<AtomicBool>,
+    io_timeout: Duration,
 ) {
     let mut active = false;
     let mut stream_bytes = 0;
@@ -178,7 +187,7 @@ async fn socket_pump(
             command = commands.recv() => {
                 match command {
                     Some(SocketCommand::Send { message, result }) if !active => {
-                        let sent = send_socket_message(&mut socket, message, "request").await;
+                        let sent = send_socket_message(&mut socket, message, "request", io_timeout).await;
                         active = sent;
                         stream_bytes = 0;
                         stream_events = 0;
@@ -204,7 +213,7 @@ async fn socket_pump(
                 match message {
                     Some(Ok(Message::Ping(payload))) => {
                         let sent =
-                            send_socket_message(&mut socket, Message::Pong(payload), "pong").await;
+                            send_socket_message(&mut socket, Message::Pong(payload), "pong", io_timeout).await;
                         if !sent {
                             if active {
                                 let _ = messages.send(SocketEvent::Closed);
@@ -275,14 +284,19 @@ async fn socket_pump(
     }
     closed.store(true, Ordering::Release);
     drop(messages);
-    let _ = timeout(SOCKET_IO_TIMEOUT, socket.close(None)).await;
+    let _ = timeout(io_timeout, socket.close(None)).await;
     if let Some(result) = close_result {
         let _ = result.send(());
     }
 }
 
-async fn send_socket_message(socket: &mut RawSocket, message: Message, context: &str) -> bool {
-    match timeout(SOCKET_IO_TIMEOUT, socket.send(message)).await {
+async fn send_socket_message(
+    socket: &mut RawSocket,
+    message: Message,
+    context: &str,
+    io_timeout: Duration,
+) -> bool {
+    match timeout(io_timeout, socket.send(message)).await {
         Ok(Ok(())) => true,
         Ok(Err(error)) => {
             log_websocket_error(context, &error);
@@ -299,16 +313,16 @@ pub(super) async fn connect(
     auth: &dyn OpenAiAuthorization,
     socket_url: &str,
     session_id: &str,
+    settings: &super::super::ModelTransportSettings,
 ) -> Result<OpenAiWsConnection> {
     for attempt in 0..2 {
         let authorization = auth.authorize_websocket(session_id).await?;
-        let rejected_token = authorization.token.clone();
-        let request = connection_request(socket_url, authorization)?;
+        let request = connection_request(socket_url, &authorization)?;
         let config = WebSocketConfig::default()
             .max_message_size(Some(MAX_SOCKET_MESSAGE_BYTES))
             .max_frame_size(Some(MAX_SOCKET_MESSAGE_BYTES));
         let result = match timeout(
-            CONNECT_TIMEOUT,
+            Duration::from_millis(settings.socket_connect_timeout_ms),
             connect_async_with_config(request, Some(config), false),
         )
         .await
@@ -320,9 +334,9 @@ pub(super) async fn connect(
             }
         };
         match result {
-            Ok((socket, _)) => return Ok(OpenAiWsConnection::new(socket)),
+            Ok((socket, _)) => return Ok(OpenAiWsConnection::with_settings(socket, settings)),
             Err(error) if attempt == 0 && unauthorized(&error) => {
-                if auth.recover_unauthorized(&rejected_token).await? {
+                if auth.recover_unauthorized(&authorization.token).await? {
                     continue;
                 }
                 return Err(Error::Auth("WebSocket authorization was rejected".into()));
@@ -361,7 +375,7 @@ fn websocket_connect_error(error: WebSocketError) -> Error {
 
 fn connection_request(
     socket_url: &str,
-    authorization: ResolvedAuthorization,
+    authorization: &ResolvedAuthorization<'_>,
 ) -> Result<tokio_tungstenite::tungstenite::http::Request<()>> {
     let mut request = socket_url.into_client_request().map_err(socket_error)?;
     request.headers_mut().insert(
@@ -369,12 +383,12 @@ fn connection_request(
         HeaderValue::from_str(&format!("Bearer {}", authorization.token))
             .map_err(|_| Error::Auth("access token is not a valid header value".into()))?,
     );
-    for (name, value) in authorization.headers {
+    for (name, value) in &authorization.headers {
         let name = tokio_tungstenite::tungstenite::http::HeaderName::from_bytes(name.as_bytes())
             .map_err(|_| Error::Auth(format!("{name} is not a valid header name")))?;
         request.headers_mut().insert(
             name,
-            HeaderValue::from_str(&value)
+            HeaderValue::from_str(value.as_ref())
                 .map_err(|_| Error::Auth("authorization header value is invalid".into()))?,
         );
     }
@@ -399,14 +413,31 @@ pub(super) async fn exchange(
     if connection.start(message).await.is_err() {
         return Ok(Exchange::Reconnect);
     }
-    let result = read_exchange(&mut connection.messages, events).await;
+    let result =
+        read_exchange_with_timeout(&mut connection.messages, events, connection.idle_timeout).await;
     connection.finish();
     result
 }
 
+#[cfg(test)]
 pub(super) async fn read_exchange(
     messages: &mut mpsc::UnboundedReceiver<SocketEvent>,
     events: &ModelEventSink,
+) -> Result<Exchange> {
+    read_exchange_with_timeout(
+        messages,
+        events,
+        Duration::from_millis(
+            super::super::ModelTransportSettings::default().socket_idle_timeout_ms,
+        ),
+    )
+    .await
+}
+
+async fn read_exchange_with_timeout(
+    messages: &mut mpsc::UnboundedReceiver<SocketEvent>,
+    events: &ModelEventSink,
+    idle_timeout: Duration,
 ) -> Result<Exchange> {
     let mut web_searches = BTreeSet::new();
     let mut commentary = BTreeSet::new();
@@ -428,7 +459,7 @@ pub(super) async fn read_exchange(
         })
     });
     loop {
-        let message = match timeout(STREAM_IDLE_TIMEOUT, messages.recv()).await {
+        let message = match timeout(idle_timeout, messages.recv()).await {
             Ok(Some(SocketEvent::Message(message))) => message,
             Ok(Some(SocketEvent::ProtocolError(message))) => {
                 return Err(Error::Provider(message.into()));

@@ -37,10 +37,8 @@ struct Definition {
     browser_notice: String,
     tool: ToolDefinition,
 }
-static DEFINITION: std::sync::LazyLock<Definition> = std::sync::LazyLock::new(|| {
-    toml::from_str(include_str!("computer_control.toml"))
-        .expect("bundled computer control definition must be valid")
-});
+static DEFINITION: std::sync::LazyLock<Definition> =
+    std::sync::LazyLock::new(|| crate::config::embedded(include_str!("computer_control.toml")));
 
 /// Optional computer control; deployment supplies the runtime and its documentation.
 pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
@@ -212,10 +210,7 @@ impl Evaluate {
     /// the browser is gone.
     fn announce(&self, address: Option<&str>) {
         let address = address.filter(|address| loopback_devtools(address));
-        let mut published = self
-            .browser
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut published = crate::sync::recover_lock(&self.browser);
         if published.as_deref() == address {
             return;
         }

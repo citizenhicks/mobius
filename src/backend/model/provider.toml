@@ -1,0 +1,6 @@
+off_label = "Off"
+off_description = "Do not use provider-hosted web search"
+cached_label = "Cached"
+cached_description = "Allow cached provider-hosted search"
+live_label = "Live"
+live_description = "Allow live provider-hosted search"

@@ -384,7 +384,12 @@ pub(super) async fn validate_selector(
             Ok(0)
         }
         HookSource::Client { client_id } => {
-            if !crate::auth::AuthStore::open(state.store.auth_path())
+            let policy = state
+                .config
+                .lock()
+                .map_err(|_| internal("configuration lock poisoned"))?
+                .auth;
+            if !crate::auth::AuthStore::open(state.store.auth_path(), policy)
                 .map_err(internal)?
                 .clients()
                 .map_err(internal)?

@@ -5,11 +5,12 @@ use std::path::{Path, PathBuf};
 /// File counts and logical bytes; not an estimate of reclaimable disk space.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageSize {
-    /// Sum of regular file lengths.
+    /// Sum of regular file lengths and symlink metadata lengths; targets are not followed.
     pub bytes: u64,
-    /// Number of regular files.
+    /// Number of regular files and symlink entries.
     pub files: u64,
-    /// False when a limit, inaccessible entry, or symlink prevented measurement.
+    /// False when a limit or inaccessible entry prevented measurement, or a symlink
+    /// appeared within or replaced the charged blob directory.
     pub complete: bool,
 }
 /// A stable storage ownership category.
@@ -153,7 +154,13 @@ fn measure_paths(
             }
         };
         if metadata.is_symlink() {
-            size.complete = false;
+            size.bytes = size.bytes.saturating_add(metadata.len());
+            size.files = size.files.saturating_add(1);
+            // Browser profiles legitimately contain runtime links. Blob storage must remain
+            // regular files: a linked blob or ancestor makes the charged total untrustworthy.
+            if blobs.is_some_and(|blobs| path.starts_with(blobs) || blobs.starts_with(&path)) {
+                size.complete = false;
+            }
             continue;
         }
         if metadata.is_file() {
@@ -187,7 +194,7 @@ fn measure_paths(
 }
 
 fn gateway_categories(root: &Path, budget: &mut MeasurementBudget) -> (Vec<StorageCategory>, u64) {
-    let mut used_bytes = 0;
+    let mut used_bytes = 0_u64;
     let mut categories = std::collections::BTreeMap::<String, StorageSize>::new();
     let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
@@ -220,7 +227,7 @@ fn gateway_categories(root: &Path, budget: &mut MeasurementBudget) -> (Vec<Stora
         };
         let blobs = root.join("session-files/blobs");
         let (measured, charged) = measure_content(&entry.path(), budget, Some(&blobs));
-        used_bytes += charged;
+        used_bytes = used_bytes.saturating_add(charged);
         let size = categories.entry(id.into()).or_insert_with(|| StorageSize {
             complete: true,
             ..Default::default()
@@ -412,9 +419,19 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(root.path(), root.path().join("loop")).unwrap();
         let size = super::measure(root.path(), &mut super::MeasurementBudget::new());
-        assert_eq!((size.bytes, size.files), (4, 1));
         #[cfg(unix)]
-        assert!(!size.complete);
+        assert_eq!(
+            (size.bytes, size.files),
+            (
+                4 + std::fs::symlink_metadata(root.path().join("loop"))
+                    .unwrap()
+                    .len(),
+                2
+            )
+        );
+        #[cfg(not(unix))]
+        assert_eq!((size.bytes, size.files), (4, 1));
+        assert!(size.complete);
     }
     #[test]
     fn depth_limit_skips_only_the_deep_subtree() {
@@ -440,6 +457,50 @@ mod tests {
             super::gateway_categories(root.path(), &mut super::MeasurementBudget::new());
         assert_eq!(used, 7);
         assert_eq!(categories[0].size.bytes, 11);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn browser_profile_symlinks_preserve_complete_usage_without_charging_targets() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("unrelated"), b"outside data").unwrap();
+        let profile = root.path().join("desktop/profile");
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::write(profile.join("Preferences"), b"preferences").unwrap();
+        let link = profile.join("SingletonSocket");
+        std::os::unix::fs::symlink(outside.path().join("missing-runtime-socket"), &link).unwrap();
+        let (categories, used) =
+            super::gateway_categories(root.path(), &mut super::MeasurementBudget::new());
+        assert_eq!(used, 0);
+        assert!(categories.iter().all(|category| category.size.complete));
+        assert_eq!(categories[0].size.files, 2);
+        assert_eq!(
+            categories[0].size.bytes,
+            11 + std::fs::symlink_metadata(link).unwrap().len()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn charged_blob_symlinks_and_linked_blob_roots_make_usage_incomplete() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("blob"), b"outside payload").unwrap();
+        let blobs = root.path().join("session-files/blobs");
+        std::fs::create_dir_all(&blobs).unwrap();
+        std::fs::write(blobs.join("regular"), b"data").unwrap();
+        std::os::unix::fs::symlink(outside.path().join("blob"), blobs.join("linked")).unwrap();
+        let (categories, used) =
+            super::gateway_categories(root.path(), &mut super::MeasurementBudget::new());
+        assert_eq!(used, 4);
+        assert!(!categories[0].size.complete);
+        std::fs::remove_dir_all(&blobs).unwrap();
+        std::os::unix::fs::symlink(outside.path(), &blobs).unwrap();
+        let (categories, used) =
+            super::gateway_categories(root.path(), &mut super::MeasurementBudget::new());
+        assert_eq!(used, 0);
+        assert!(!categories[0].size.complete);
     }
 
     #[tokio::test]

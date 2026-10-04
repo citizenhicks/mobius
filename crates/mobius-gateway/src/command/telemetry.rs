@@ -28,8 +28,7 @@ pub(super) async fn run(
     match command {
         TelemetryCommand::List => {
             for sink in &mut config.telemetry.sinks {
-                sink.bearer_env = None;
-                sink.bearer_file = None;
+                sink.redact_report()?;
             }
             println!("{}", serde_json::to_string_pretty(&config.telemetry)?);
             return Ok(());

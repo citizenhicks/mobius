@@ -23,10 +23,7 @@ mod text {
         pub(super) prompt_title: String,
     }
     pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
-        std::sync::LazyLock::new(|| {
-            toml::from_str(include_str!("instructions.toml"))
-                .expect("bundled instructions definition must be valid")
-        });
+        std::sync::LazyLock::new(|| crate::config::embedded(include_str!("instructions.toml")));
 }
 const OVERRIDE_FILE: &str = "AGENTS.override.md";
 const INSTRUCTIONS_FILE: &str = "AGENTS.md";

@@ -2,7 +2,7 @@
 
 `mobius-gateway` is the headless möbius runtime. One process owns machine
 credentials, usage, durable Bot profiles, Bot routines, and chats
-while hosting up to 32 independent conversations. Every conversation belongs
+with a configurable resident-session limit (32 by default). Every conversation belongs
 to exactly one Bot. Project chats own their canonical workspace and transcript; each Bot also
 has one persistent conversation without a project workspace. The
 Bot owns its model, reasoning, capabilities, approval policy, extensions, and
@@ -61,10 +61,13 @@ The runtime is stored beside gateway state, normally in
 Setup finishes before the Bot is saved; failed downloads can be retried by enabling
 the capability again. Linux hosts need Chromium's system libraries and Bubblewrap.
 `MOBIUS_COMPUTER_RUNTIME` can select an administrator-provided runtime instead.
+System executables, offline resources, proxy/CA and launch policy are configurable;
+see the [complete configuration reference](CONFIGURATION.md).
 
 While the gateway is stopped, `set-desktop --enabled true` enables gateway-owned
 headed Chromium on Linux with one persistent profile. Linux needs TigerVNC,
-Openbox, xauth, tint2, feh, xterm and pcmanfm, and serves stock noVNC to the Mac and
+xauth and setpriv (util-linux); Openbox, tint2, feh, xterm and pcmanfm are optional
+configurable applications. The gateway serves stock noVNC to the Mac and
 iOS apps over a dedicated authenticated encrypted connection. There is no GUI
 Office installation. The desktop has a logo wallpaper, status bar and app rail;
 closing Chrome leaves Terminal and Files available. Restricted Bots with network access are refused
@@ -174,7 +177,7 @@ are rejected, not migrated or reset automatically. Back up state before upgradin
 On Linux, run the gateway account without permitted or ambient capabilities;
 Bubblewrap rejects a non-root caller that retains them. Hosts that allow user,
 PID, mount, and network namespaces but forbid mounting procfs inside a child PID
-namespace can set `MOBIUS_GATEWAY_SANDBOX_PROC=empty`. This keeps PID isolation
+namespace can set `execution.procfs_mode = "empty"` in `gateway.toml`. This keeps PID isolation
 and mounts an empty `/proc`; the default `private` mode mounts a private procfs.
 Provider credential APIs are write-only and never return stored secret values.
 Full-access file tools and shell commands can use the host filesystem; shell commands also

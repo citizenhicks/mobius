@@ -1,7 +1,7 @@
 //! One gateway-owned browser/profile; Linux adds a private virtual desktop.
 
 mod processes;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 mod shell;
 
 use std::collections::BTreeMap;
@@ -21,13 +21,13 @@ use tokio::sync::{OwnedMutexGuard, broadcast};
 use uuid::Uuid;
 
 use super::desktop::DesktopControl;
+use super::{ComputerConfig, config};
 use crate::wire::MAX_DESKTOP_CHUNK_BYTES;
 use crate::{Error, Result};
-use processes::{OwnedProcess, private_directory};
 #[cfg(target_os = "linux")]
-use processes::{executable, private_file};
+use processes::private_file;
+use processes::{OwnedProcess, private_directory};
 
-const START_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_HOST_REQUEST: usize = 1024 * 1024;
 const MAX_TABS: usize = 128;
 
@@ -35,6 +35,7 @@ pub(crate) struct RemoteDesktop {
     pub(crate) browser: Arc<super::browser::BrowserHost>,
     enabled: bool,
     state_dir: PathBuf,
+    config: Arc<ComputerConfig>,
     runtime: tokio::sync::Mutex<Option<Runtime>>,
     consumers: Mutex<usize>,
     control: Arc<tokio::sync::Mutex<()>>,
@@ -53,6 +54,7 @@ struct UserControl {
 }
 
 struct Runtime {
+    config: Arc<ComputerConfig>,
     children: Vec<OwnedProcess>,
     browser: Option<OwnedProcess>,
     chromium: PathBuf,
@@ -76,13 +78,25 @@ pub(crate) struct DesktopUse {
     remote: Arc<RemoteDesktop>,
 }
 
+pub(super) fn prepare_configured_profile(config: &ComputerConfig) -> Result<()> {
+    if let Some(path) = &config.browser.profile_directory {
+        private_directory(path)?;
+    }
+    Ok(())
+}
+
 impl RemoteDesktop {
-    pub(crate) fn new(state_dir: &Path, enabled: bool) -> Self {
+    pub(crate) fn new(
+        state_dir: &Path,
+        enabled: bool,
+        config: impl Into<Arc<ComputerConfig>>,
+    ) -> Self {
         let (changed, _) = broadcast::channel(16);
         Self {
             browser: Arc::default(),
             enabled,
             state_dir: state_dir.to_path_buf(),
+            config: config.into(),
             runtime: tokio::sync::Mutex::new(None),
             consumers: Mutex::new(0),
             control: Arc::default(),
@@ -92,6 +106,10 @@ impl RemoteDesktop {
             last_session: Mutex::new(None),
             changed,
         }
+    }
+
+    pub(crate) fn configuration(&self) -> &Arc<ComputerConfig> {
+        &self.config
     }
 
     pub(crate) const fn available(&self) -> bool {
@@ -104,10 +122,7 @@ impl RemoteDesktop {
 
     pub(crate) async fn acquire_use(self: &Arc<Self>) -> DesktopUse {
         let _runtime = self.runtime.lock().await;
-        *self
-            .consumers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+        *mobius::sync::recover_lock(&self.consumers) += 1;
         DesktopUse {
             remote: Arc::clone(self),
         }
@@ -115,10 +130,7 @@ impl RemoteDesktop {
 
     #[cfg(test)]
     pub(crate) fn consumer_count(&self) -> usize {
-        *self
-            .consumers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        *mobius::sync::recover_lock(&self.consumers)
     }
 
     fn stop_if_unused(self: &Arc<Self>) {
@@ -127,11 +139,7 @@ impl RemoteDesktop {
             let _execution = Arc::clone(&remote.executions).write_owned().await;
             let mut runtime = remote.runtime.lock().await;
             if remote.held.load(Ordering::Acquire)
-                || *remote
-                    .consumers
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    != 0
+                || *mobius::sync::recover_lock(&remote.consumers) != 0
             {
                 return;
             }
@@ -178,10 +186,7 @@ impl RemoteDesktop {
     }
 
     pub(crate) fn control_state(&self, connection: Uuid) -> (bool, bool, Option<String>) {
-        let user = self
-            .user
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let user = mobius::sync::recover_lock(&self.user);
         match user.as_ref() {
             Some(user) => (
                 true,
@@ -191,10 +196,7 @@ impl RemoteDesktop {
             None => (
                 self.held.load(Ordering::Acquire),
                 false,
-                self.last_session
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone(),
+                mobius::sync::recover_lock(&self.last_session).clone(),
             ),
         }
     }
@@ -231,10 +233,7 @@ impl RemoteDesktop {
             if let Some(runtime) = runtime.as_mut() {
                 runtime.show(session_id).await?;
             }
-            *self
-                .last_session
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(session_id.to_owned());
+            *mobius::sync::recover_lock(&self.last_session) = Some(session_id.to_owned());
         }
         let _ = self.changed.send(());
         Ok(())
@@ -254,7 +253,7 @@ impl RemoteDesktop {
         }
         let mut runtime = self.runtime.lock().await;
         if runtime.is_none() {
-            *runtime = Some(Runtime::start(&self.state_dir).await?);
+            *runtime = Some(Runtime::start(&self.state_dir, &self.config).await?);
         }
         let runtime = runtime.as_mut().ok_or_else(unavailable)?;
         for child in &mut runtime.children {
@@ -263,10 +262,7 @@ impl RemoteDesktop {
         runtime.ensure_browser().await?;
         let page = runtime.page(session_id, activate).await?;
         if activate {
-            *self
-                .last_session
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(session_id.to_owned());
+            *mobius::sync::recover_lock(&self.last_session) = Some(session_id.to_owned());
             let _ = self.changed.send(());
         }
         Ok(page)
@@ -336,12 +332,8 @@ impl RemoteDesktop {
         let desktop_use = self.acquire_use().await;
         let mut runtime = self.runtime.lock().await;
         if runtime.is_none() {
-            *runtime = Some(Runtime::start(&self.state_dir).await?);
-            let session_id = self
-                .last_session
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone();
+            *runtime = Some(Runtime::start(&self.state_dir, &self.config).await?);
+            let session_id = mobius::sync::recover_lock(&self.last_session).clone();
             if let Some(session_id) = session_id {
                 runtime
                     .as_mut()
@@ -379,12 +371,7 @@ impl RemoteDesktop {
     }
 
     pub(crate) async fn cancel_takeover(self: &Arc<Self>) {
-        if self
-            .user
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_none()
-        {
+        if mobius::sync::recover_lock(&self.user).is_none() {
             let _execution = Arc::clone(&self.executions).write_owned().await;
             let has_runtime = self.runtime.lock().await.is_some();
             if has_runtime && self.set_input(false).await.is_err() {
@@ -407,20 +394,14 @@ impl RemoteDesktop {
                 .show(&session_id)
                 .await?;
         }
-        *self
-            .last_session
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(session_id.clone());
+        *mobius::sync::recover_lock(&self.last_session) = Some(session_id.clone());
         if let Err(error) = self.set_input(true).await {
             if self.set_input(false).await.is_err() {
                 self.shutdown().await;
             }
             return Err(error);
         }
-        *self
-            .user
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(UserControl {
+        *mobius::sync::recover_lock(&self.user) = Some(UserControl {
             connection,
             session_id,
             _lease: lease,
@@ -439,10 +420,7 @@ impl RemoteDesktop {
 
     async fn release_control_inner(self: &Arc<Self>, connection: Uuid) -> Result<()> {
         let user = {
-            let mut user = self
-                .user
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut user = mobius::sync::recover_lock(&self.user);
             if user
                 .as_ref()
                 .is_none_or(|user| user.connection != connection)
@@ -482,11 +460,7 @@ impl RemoteDesktop {
 impl Drop for DesktopUse {
     fn drop(&mut self) {
         let unused = {
-            let mut consumers = self
-                .remote
-                .consumers
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut consumers = mobius::sync::recover_lock(&self.remote.consumers);
             *consumers -= 1;
             *consumers == 0
         };
@@ -530,10 +504,14 @@ impl Drop for DesktopStream {
 }
 
 impl Runtime {
-    async fn start(state_dir: &Path) -> Result<Self> {
+    async fn start(state_dir: &Path, config: &Arc<ComputerConfig>) -> Result<Self> {
         let directory = state_dir.join("desktop");
         private_directory(&directory)?;
-        let profile = directory.join("profile");
+        let profile = config
+            .browser
+            .profile_directory
+            .clone()
+            .unwrap_or_else(|| directory.join("profile"));
         private_directory(&profile)?;
         for name in ["panel", "status", "browser", "openbox", "xvnc"] {
             processes::clean_record(&directory.join(format!("{name}.json"))).await?;
@@ -545,11 +523,12 @@ impl Runtime {
         let mut browser = None;
         eprintln!("gateway desktop starting");
         let started: Result<_> = async {
-            let display = start_display(&directory, &authority, &socket, &mut children).await?;
-            let runtime = super::prepare_desktop(state_dir).await?;
-            let chromium = chromium_executable(&runtime).await?;
+            let display =
+                start_display(&directory, &authority, &socket, &mut children, config).await?;
+            let runtime = super::prepare_desktop(state_dir, config).await?;
+            let chromium = chromium_executable(&runtime, config).await?;
             let (child, endpoint, websocket) =
-                start_browser(&chromium, &profile, display.as_deref(), &authority).await?;
+                start_browser(&chromium, &profile, display.as_deref(), &authority, config).await?;
             browser = Some(child);
             #[cfg(target_os = "linux")]
             if let Some(display) = &display {
@@ -560,6 +539,7 @@ impl Runtime {
                     &chromium,
                     &profile,
                     &mut children,
+                    config,
                 )
                 .await?;
             }
@@ -582,6 +562,7 @@ impl Runtime {
             }
         };
         Ok(Self {
+            config: Arc::clone(config),
             children,
             browser,
             chromium,
@@ -639,6 +620,7 @@ impl Runtime {
                 &self.profile,
                 self.display.as_deref(),
                 &self.authority,
+                &self.config,
             )
             .await?;
             self.browser = Some(browser);
@@ -683,7 +665,7 @@ impl Runtime {
                 let target = cdp(
                     &self.websocket,
                     "Target.createTarget",
-                    json!({"url":"about:blank","background":true}),
+                    json!({"url":self.config.browser.start_page,"background":true}),
                 )
                 .await?;
                 let target = target["targetId"]
@@ -710,7 +692,7 @@ impl Runtime {
 
     async fn set_input(&self, enabled: bool) -> Result<()> {
         let display = self.display.as_ref().ok_or_else(unavailable)?;
-        let executable = processes::executable(&["tigervncconfig", "vncconfig"])?;
+        let executable = config::resolve_candidates(&self.config.desktop.tools.vncconfig)?;
         let value = if enabled { "1" } else { "0" };
         let parameters = ["AcceptKeyEvents", "AcceptPointerEvents", "AcceptCutText"];
         let mut command = Command::new(&executable);
@@ -764,53 +746,36 @@ async fn forward_native(channel: &mut DuplexStream, bytes: &[u8]) -> Result<Vec<
     Ok(reply)
 }
 
-async fn chromium_executable(runtime: &Path) -> Result<PathBuf> {
-    let output = Command::new(runtime.join("node"))
+async fn chromium_executable(runtime: &Path, config: &ComputerConfig) -> Result<PathBuf> {
+    if let Some(executable) = &config.browser.executable {
+        return config::resolve_executable(executable);
+    }
+    let mut command = Command::new(super::node_executable(runtime, config)?);
+    command
         .args([
             "-e",
-            "process.stdout.write(require('playwright').chromium.executablePath())",
+            "process.stdout.write(require(process.argv[1]).chromium.executablePath())",
         ])
+        .arg(super::playwright_module(runtime, config).as_ref())
         .current_dir(runtime)
-        .env("PLAYWRIGHT_BROWSERS_PATH", runtime.join("browsers"))
-        .output()
-        .await?;
+        .env(
+            "PLAYWRIGHT_BROWSERS_PATH",
+            super::browsers_directory(runtime, config).as_ref(),
+        )
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(
+        Duration::from_secs(config.desktop.startup_timeout_seconds),
+        command.output(),
+    )
+    .await
+    .map_err(|_| Error::Config("Chromium discovery timed out".into()))??;
     if !output.status.success() || output.stdout.len() > 4096 {
         return Err(Error::Config(
             "installed headed Chromium is unavailable".into(),
         ));
     }
     let path = PathBuf::from(String::from_utf8(output.stdout).map_err(|_| unavailable())?);
-    if !path.is_absolute() || !path.is_file() {
-        return Err(Error::Config(
-            "installed headed Chromium is unavailable".into(),
-        ));
-    }
-    Ok(path)
-}
-
-fn browser_arguments(profile: &Path) -> Vec<String> {
-    let mut arguments: Vec<String> = [
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-infobars",
-        "--window-size=1200,640",
-        "--window-position=80,42",
-        "--remote-debugging-address=127.0.0.1",
-        "--remote-debugging-port=0",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect();
-    // Chromium cannot use its internal sandbox as root, including panel launches.
-    #[cfg(target_os = "linux")]
-    if nix::unistd::geteuid().is_root() {
-        arguments.push("--no-sandbox".into());
-    }
-    arguments.extend([
-        format!("--user-data-dir={}", profile.display()),
-        "about:blank".into(),
-    ]);
-    arguments
+    config::resolve_executable(&path)
 }
 
 async fn start_browser(
@@ -818,19 +783,35 @@ async fn start_browser(
     profile: &Path,
     display: Option<&str>,
     authority: &Path,
+    config: &ComputerConfig,
 ) -> Result<(OwnedProcess, String, String)> {
+    config
+        .browser
+        .validate_root_sandbox(nix::unistd::geteuid().is_root())?;
     let active_port = profile.join("DevToolsActivePort");
     if active_port.exists() {
         fs::remove_file(&active_port)?;
     }
     let mut command = Command::new(chromium);
-    command.args(browser_arguments(profile));
+    command.args(
+        config
+            .browser
+            .headed_arguments(profile)
+            .iter()
+            .map(|argument| argument.as_ref()),
+    );
     if let Some(display) = display {
         command.env("DISPLAY", display).env("XAUTHORITY", authority);
     }
-    let directory = profile.parent().ok_or_else(unavailable)?;
+    let directory = authority.parent().ok_or_else(unavailable)?;
     let mut browser = OwnedProcess::spawn(&mut command, directory.join("browser.json"))?;
-    match wait_devtools(&active_port, &mut browser).await {
+    match wait_devtools(
+        &active_port,
+        &mut browser,
+        config.desktop.startup_timeout_seconds,
+    )
+    .await
+    {
         Ok((endpoint, websocket)) => Ok((browser, endpoint, websocket)),
         Err(error) => {
             browser.stop().await;
@@ -859,8 +840,12 @@ fn read_devtools(path: &Path) -> Option<(String, String)> {
     ))
 }
 
-async fn wait_devtools(path: &Path, browser: &mut OwnedProcess) -> Result<(String, String)> {
-    let deadline = tokio::time::Instant::now() + START_TIMEOUT;
+async fn wait_devtools(
+    path: &Path,
+    browser: &mut OwnedProcess,
+    timeout_seconds: u64,
+) -> Result<(String, String)> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_seconds);
     loop {
         browser.check_running()?;
         if let Some(endpoint) = read_devtools(path) {
@@ -918,8 +903,9 @@ async fn start_display(
     authority: &Path,
     socket: &Path,
     children: &mut Vec<OwnedProcess>,
+    config: &ComputerConfig,
 ) -> Result<Option<String>> {
-    let display = (100..200)
+    let display = (config.desktop.display_start..config.desktop.display_end)
         .find(|display| {
             !Path::new(&format!("/tmp/.X{display}-lock")).exists()
                 && !Path::new(&format!("/tmp/.X11-unix/X{display}")).exists()
@@ -927,14 +913,16 @@ async fn start_display(
         .ok_or_else(|| Error::Config("no virtual display is available".into()))?;
     let display = format!(":{display}");
     run_short(
-        Command::new(executable(&["xauth"])?)
-            .arg("-f")
-            .arg(authority)
-            .args(["add", &display, ".", &Uuid::new_v4().simple().to_string()]),
+        Command::new(config::resolve_executable(Path::new(
+            config.desktop.tools.xauth.as_ref(),
+        ))?)
+        .arg("-f")
+        .arg(authority)
+        .args(["add", &display, ".", &Uuid::new_v4().simple().to_string()]),
     )
     .await?;
     private_file(authority)?;
-    let mut xvnc = Command::new(executable(&["Xtigervnc", "Xvnc"])?);
+    let mut xvnc = Command::new(config::resolve_candidates(&config.desktop.tools.xvnc)?);
     xvnc.arg(&display)
         .arg("-auth")
         .arg(authority)
@@ -948,10 +936,6 @@ async fn start_display(
             "-SecurityTypes",
             "None",
             "-AlwaysShared",
-            "-geometry",
-            "1365x768",
-            "-depth",
-            "24",
             "-AcceptKeyEvents=0",
             "-AcceptPointerEvents=0",
             "-AcceptCutText=0",
@@ -959,24 +943,38 @@ async fn start_display(
             "-AllowOverride",
             "AcceptKeyEvents,AcceptPointerEvents,AcceptCutText",
         ])
+        .arg("-geometry")
+        .arg(format!(
+            "{}x{}",
+            config.desktop.resolution[0], config.desktop.resolution[1]
+        ))
+        .arg("-depth")
+        .arg(config.desktop.depth.to_string())
         .arg("-rfbunixpath")
         .arg(socket);
     children.push(OwnedProcess::spawn(&mut xvnc, directory.join("xvnc.json"))?);
-    let deadline = tokio::time::Instant::now() + START_TIMEOUT;
+    let deadline =
+        tokio::time::Instant::now() + Duration::from_secs(config.desktop.startup_timeout_seconds);
     while UnixStream::connect(socket).await.is_err() {
         if tokio::time::Instant::now() >= deadline {
             return Err(Error::Config("virtual desktop did not become ready".into()));
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    let mut openbox = Command::new(executable(&["openbox"])?);
-    openbox
-        .env("DISPLAY", &display)
-        .env("XAUTHORITY", authority);
-    children.push(OwnedProcess::spawn(
-        &mut openbox,
-        directory.join("openbox.json"),
-    )?);
+    if let Some((executable, arguments)) = config::application(
+        &config.desktop.window_manager,
+        config::ApplicationRole::WindowManager,
+    )? {
+        let mut manager = Command::new(executable);
+        manager
+            .args(arguments)
+            .env("DISPLAY", &display)
+            .env("XAUTHORITY", authority);
+        children.push(OwnedProcess::spawn(
+            &mut manager,
+            directory.join("openbox.json"),
+        )?);
+    }
     Ok(Some(display))
 }
 
@@ -986,6 +984,7 @@ async fn start_display(
     _: &Path,
     _: &Path,
     _: &mut Vec<OwnedProcess>,
+    _: &ComputerConfig,
 ) -> Result<Option<String>> {
     Ok(None)
 }
@@ -1014,7 +1013,7 @@ async fn clean_socket(socket: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 async fn run_short(command: &mut Command) -> Result<()> {
     command
         .stdin(std::process::Stdio::null())

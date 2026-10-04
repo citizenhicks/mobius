@@ -26,6 +26,58 @@ fn fixture() -> (tempfile::TempDir, BotStore, PathBuf) {
     fixture
 }
 
+#[test]
+fn sparse_saved_bot_projects_integer_defaults_without_rewriting_storage() {
+    let (_root, store, _workspace) = fixture();
+    let mut state = store.fresh_state().expect("saved catalog");
+    let middleware = &mut state.bots[0].config.config.middleware;
+    for entry in crate::middleware_manifest::MIDDLEWARE.iter() {
+        for setting in entry.manifest.settings {
+            if matches!(
+                setting,
+                mobius::middleware::manifest::MiddlewareSettingManifest::Integer { .. }
+            ) {
+                middleware.set_setting(entry.manifest.id, setting.id(), None);
+            }
+        }
+    }
+    store
+        .save(&state)
+        .expect("persist sparse existing configuration");
+    let before = store.storage.load_catalog().expect("raw stored catalog");
+    let reopened = BotStore::open(&store.state_dir).expect("reopen sparse catalog");
+    let bot = reopened.bots().expect("frontend records").remove(0);
+    for id in ["max_depth", "max_concurrency", "max_agents"] {
+        assert!(
+            bot.config
+                .config
+                .middleware
+                .setting("subagents", id)
+                .is_none()
+        );
+    }
+    let defaults = crate::middleware_manifest::default_config();
+    for (owner, id) in [
+        ("sandbox", "tool_output_bytes"),
+        ("sandbox", "background_commands"),
+        ("compaction", "keep_recent_tokens"),
+        ("compaction", "native_retained_tokens"),
+        ("compaction", "reserve_tokens"),
+    ] {
+        assert_eq!(
+            bot.config.config.middleware.setting(owner, id),
+            defaults.setting(owner, id)
+        );
+    }
+    assert_eq!(
+        reopened
+            .storage
+            .load_catalog()
+            .expect("unchanged stored catalog"),
+        before
+    );
+}
+
 fn create_bot(store: &BotStore, handle: &str) -> BotRecord {
     store
         .create_bot(handle, "Own test work.", AgentComposition::default())
@@ -212,7 +264,6 @@ fn clock_records_only_due_facts_and_start_commands_deduplicate_after_completion(
 fn pause_changes_start_eligibility_without_interrupting_run_or_disabling_resume_hook() {
     let (_root, store, workspace) = fixture();
     let bot = create_bot(&store, "pausable");
-    let now = Utc::now().timestamp();
     let mut definition = scheduled_definition(&workspace, "check it", interval(60), None);
     definition.bindings.push(RoutineBinding {
         id: "resume".into(),
@@ -227,6 +278,7 @@ fn pause_changes_start_eligibility_without_interrupting_run_or_disabling_resume_
     let routine = store
         .create_routine(&bot.id, &definition, None)
         .expect("routine");
+    let now = Utc::now().timestamp();
     let BeginRun::Started(active) = store.begin_run(&routine.id).expect("start") else {
         panic!("expected run")
     };
@@ -268,7 +320,17 @@ fn pause_changes_start_eligibility_without_interrupting_run_or_disabling_resume_
         },
     };
     store.record_hook(&event).expect("event while paused");
-    let pending=store.pending_actions(now,10).expect("resume consumer").into_iter().find(|pending|matches!(&pending.action,BotAction::Routine{command} if command.action==RoutineAction::Resume)).expect("resume action");
+    let pending = store
+        .pending_actions(event.occurred_at, 10)
+        .expect("resume consumer")
+        .into_iter()
+        .find(|pending| {
+            matches!(
+                &pending.action,
+                BotAction::Routine { command } if command.action == RoutineAction::Resume
+            )
+        })
+        .expect("resume action");
     let resumed = store
         .set_routine_enabled(&routine.id, true, Some(&pending.event), Some(&pending.id))
         .expect("resume");

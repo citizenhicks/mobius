@@ -23,21 +23,31 @@ const MAX_TEXT_BYTES: usize = 64 * 1024;
 const MAX_EVENT_BYTES: usize = 256 * 1024;
 const MAX_TURNS: usize = 1_024;
 const COMMAND_CAPACITY: usize = 32;
-const START_TIMEOUT: Duration = Duration::from_secs(30);
-const IO_TIMEOUT: Duration = Duration::from_secs(5);
-const CALL_TIMEOUT: Duration = Duration::from_secs(3_600);
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VoiceManifest {
+    openai: VoiceProvider,
+    codex: VoiceProvider,
+}
 
-pub(super) const VOICES: &[&str] = &[
-    "marin", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "cedar",
-    "quartz", "ripple", "vesper", "willow", "stone", "gleam", "meridian", "bossa", "tempo",
-    "beacon", "delta", "cinder",
-];
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VoiceProvider {
+    model: String,
+    voices: Vec<String>,
+    calls_path: String,
+    sideband_base_url: Option<String>,
+    #[serde(default)]
+    headers: std::collections::BTreeMap<String, String>,
+}
 
-// AVAS/FramelessBidi uses upstream's V3 transport with the ChatGPT (v1) voice family.
-// Its quicksilver=v2 header is not the separate public Realtime V2 protocol.
-pub(super) const CODEX_VOICES: &[&str] = &[
-    "cove", "juniper", "maple", "spruce", "ember", "vale", "breeze", "arbor", "sol",
-];
+static MANIFEST: std::sync::LazyLock<VoiceManifest> =
+    std::sync::LazyLock::new(|| crate::config::embedded(include_str!("realtime.toml")));
+
+pub(super) static VOICES: std::sync::LazyLock<Vec<&'static str>> =
+    std::sync::LazyLock::new(|| MANIFEST.openai.voices.iter().map(String::as_str).collect());
+pub(super) static CODEX_VOICES: std::sync::LazyLock<Vec<&'static str>> =
+    std::sync::LazyLock::new(|| MANIFEST.codex.voices.iter().map(String::as_str).collect());
 
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -69,10 +79,13 @@ pub struct RealtimeVoiceCall {
 }
 
 impl RealtimeVoiceCall {
-    pub(super) fn cleanup_deadline(expires_at: std::time::SystemTime) -> std::time::SystemTime {
+    pub(super) fn cleanup_deadline(
+        expires_at: std::time::SystemTime,
+        io_timeout: Duration,
+    ) -> std::time::SystemTime {
         // Closing the socket and authenticating the hangup must finish before key expiry.
         expires_at
-            .checked_sub(3 * IO_TIMEOUT)
+            .checked_sub(3 * io_timeout)
             .unwrap_or(std::time::UNIX_EPOCH)
     }
 
@@ -172,22 +185,52 @@ pub(super) struct RealtimeTransport {
     auth: Arc<dyn OpenAiAuthorization>,
     calls_url: Url,
     api_url: Url,
+    settings: super::ModelTransportSettings,
 }
 
 impl RealtimeTransport {
-    pub(super) fn new_openai(base_url: &str, auth: Arc<dyn OpenAiAuthorization>) -> Result<Self> {
+    pub(super) fn new_openai(
+        base_url: &str,
+        auth: Arc<dyn OpenAiAuthorization>,
+        settings: super::ModelTransportSettings,
+    ) -> Result<Self> {
         super::provider::validate_base_url(base_url)?;
-        let endpoint = format!("{}/live/sessions", base_url.trim_end_matches('/'));
-        Self::with_endpoints(VoiceApi::OpenAi, auth, &endpoint, &endpoint)
+        let endpoint = format!(
+            "{}/{}",
+            base_url.trim_end_matches('/'),
+            MANIFEST.openai.calls_path
+        );
+        let sideband = MANIFEST
+            .openai
+            .sideband_base_url
+            .as_deref()
+            .unwrap_or(&endpoint);
+        Self::with_endpoints(VoiceApi::OpenAi, auth, &endpoint, sideband, settings)
     }
 
-    pub(super) fn new_codex(auth: Arc<dyn OpenAiAuthorization>) -> Result<Self> {
-        Self::with_endpoints(
-            VoiceApi::Codex,
-            auth,
-            "https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas",
-            "https://api.openai.com/v1/live",
-        )
+    pub(super) fn new_codex(
+        base_url: &str,
+        auth: Arc<dyn OpenAiAuthorization>,
+        settings: super::ModelTransportSettings,
+    ) -> Result<Self> {
+        super::provider::validate_base_url(base_url)?;
+        let calls_url = format!(
+            "{}/{}",
+            base_url.trim_end_matches('/'),
+            MANIFEST.codex.calls_path
+        );
+        let api_url = if super::openai_codex::provider().uses_default_endpoint(Some(base_url)) {
+            std::borrow::Cow::Borrowed(
+                MANIFEST
+                    .codex
+                    .sideband_base_url
+                    .as_deref()
+                    .expect("Codex native sideband endpoint is required"),
+            )
+        } else {
+            std::borrow::Cow::Owned(format!("{}/live", base_url.trim_end_matches('/')))
+        };
+        Self::with_endpoints(VoiceApi::Codex, auth, &calls_url, &api_url, settings)
     }
 
     fn with_endpoints(
@@ -195,25 +238,42 @@ impl RealtimeTransport {
         auth: Arc<dyn OpenAiAuthorization>,
         calls_url: &str,
         api_url: &str,
+        settings: super::ModelTransportSettings,
     ) -> Result<Self> {
+        settings.validate()?;
         Ok(Self {
             api,
             // Voice credentials must never follow a provider redirect.
             client: Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
-                .connect_timeout(START_TIMEOUT)
+                .connect_timeout(Duration::from_millis(settings.voice_start_timeout_ms))
                 .build()?,
             auth,
             calls_url: Url::parse(calls_url)
                 .map_err(|_| invalid("invalid voice calls endpoint"))?,
             api_url: Url::parse(api_url).map_err(|_| invalid("invalid voice sideband endpoint"))?,
+            settings,
         })
     }
 
+    pub(super) fn with_settings(mut self, settings: super::ModelTransportSettings) -> Result<Self> {
+        if settings.voice_start_timeout_ms != self.settings.voice_start_timeout_ms {
+            self.client = Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(Duration::from_millis(settings.voice_start_timeout_ms))
+                .build()?;
+        }
+        self.settings = settings;
+        Ok(self)
+    }
+
     pub(super) async fn start(&self, request: RealtimeVoiceRequest) -> Result<RealtimeVoiceCall> {
-        timeout(START_TIMEOUT, self.start_inner(request))
-            .await
-            .map_err(|_| invalid("voice negotiation timed out"))?
+        timeout(
+            Duration::from_millis(self.settings.voice_start_timeout_ms),
+            self.start_inner(request),
+        )
+        .await
+        .map_err(|_| invalid("voice negotiation timed out"))?
     }
 
     async fn start_inner(&self, request: RealtimeVoiceRequest) -> Result<RealtimeVoiceCall> {
@@ -227,11 +287,8 @@ impl RealtimeTransport {
                 "the selected voice is not supported by this provider",
             ));
         }
-        let voice = request
-            .voice
-            .clone()
-            .unwrap_or_else(|| self.voices()[0].into());
         let session = self.session(&request);
+        let voice = request.voice.unwrap_or_else(|| self.voices()[0].into());
         let body = serde_json::to_vec(&match self.api {
             VoiceApi::Codex => json!({"sdp":request.offer_sdp,"session":session}),
             VoiceApi::OpenAi => {
@@ -265,7 +322,11 @@ impl RealtimeTransport {
             let mut pending = VecDeque::new();
             let call_id = cleanup.call_id.clone();
             let session_id = cleanup.session_id.clone();
-            let connect = timeout(START_TIMEOUT, transport.connect(&call_id, &session_id));
+            let io_timeout = Duration::from_millis(transport.settings.voice_io_timeout_ms);
+            let connect = timeout(
+                Duration::from_millis(transport.settings.voice_start_timeout_ms),
+                transport.connect(&call_id, &session_id),
+            );
             tokio::pin!(connect);
             let mut command_rx = command_rx;
             let mut socket = loop {
@@ -292,17 +353,17 @@ impl RealtimeTransport {
             };
             let result = tokio::select! {
                 _ = &mut cancelled => {
-                    let _ = send(&mut socket, json!({"type":"session.close"})).await;
+                    let _ = send(&mut socket, json!({"type":"session.close"}), io_timeout).await;
                     Ok(())
                 },
-                result = timeout(CALL_TIMEOUT, drive(&mut socket, api, command_rx, pending, &event_tx)) => {
+                result = timeout(Duration::from_millis(transport.settings.voice_call_timeout_ms), drive(&mut socket, api, command_rx, pending, &event_tx, io_timeout)) => {
                     result.unwrap_or_else(|_| Err(invalid("voice call reached its time limit")))
                 }
             };
             if let Err(error) = result {
                 let _ = event_tx.send(Err(error)).await;
             }
-            let _ = timeout(IO_TIMEOUT, socket.close(None)).await;
+            let _ = timeout(io_timeout, socket.close(None)).await;
             drop(cleanup);
         });
         RealtimeVoiceCall::new(answer_sdp, voice, commands, events, cancel)
@@ -310,16 +371,16 @@ impl RealtimeTransport {
 
     fn voices(&self) -> &'static [&'static str] {
         match self.api {
-            VoiceApi::OpenAi => VOICES,
-            VoiceApi::Codex => CODEX_VOICES,
+            VoiceApi::OpenAi => &VOICES,
+            VoiceApi::Codex => &CODEX_VOICES,
         }
     }
 
     fn session(&self, request: &RealtimeVoiceRequest) -> Value {
         let voice = request.voice.as_deref().unwrap_or(self.voices()[0]);
         let model = match self.api {
-            VoiceApi::OpenAi => "gpt-live-1",
-            VoiceApi::Codex => "gpt-live-1-codex",
+            VoiceApi::OpenAi => &MANIFEST.openai.model,
+            VoiceApi::Codex => &MANIFEST.codex.model,
         };
         json!({"model":model,"instructions":request.instructions,
             "audio":{"output":{"voice":voice}},"delegation":{"type":"client"}})
@@ -378,14 +439,15 @@ impl RealtimeTransport {
                 .bearer_auth(&auth.token)
                 .header(reqwest::header::CONTENT_TYPE, content_type)
                 .body(body.clone())
-                .timeout(START_TIMEOUT);
+                .timeout(Duration::from_millis(self.settings.voice_start_timeout_ms));
             for (name, value) in auth.headers {
-                request = request.header(name, value);
+                request = request.header(name, value.as_ref());
             }
             if self.api == VoiceApi::Codex {
-                request = request
-                    .header("openai-alpha", "quicksilver=v2")
-                    .header("x-session-id", session_id);
+                for (name, value) in &MANIFEST.codex.headers {
+                    request = request.header(name, value);
+                }
+                request = request.header("x-session-id", session_id);
             }
             let response = request.send().await?;
             if response.status() != reqwest::StatusCode::UNAUTHORIZED
@@ -421,11 +483,12 @@ impl RealtimeTransport {
             .rsplit_once('/')
             .ok_or_else(|| invalid("voice Location omitted call identity"))?;
         // Forwarded provider paths vary; credentials only use our fixed endpoint and this ID.
-        if id.len() > 128
-            || !id
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-            || !(id.starts_with("rtc_") && id.len() > 4 || uuid::Uuid::parse_str(id).is_ok())
+        if !crate::identifier::valid_ascii_identifier(
+            id,
+            128,
+            crate::identifier::AsciiCase::Any,
+            b"_-",
+        ) || !(id.starts_with("rtc_") && id.len() > 4 || uuid::Uuid::parse_str(id).is_ok())
         {
             return Err(invalid("invalid provider voice call identity"));
         }
@@ -447,7 +510,7 @@ impl RealtimeTransport {
             let auth = self.auth.authorize_http(false, Some(session_id)).await?;
             let mut request = url.as_str().into_client_request().map_err(socket_error)?;
             for (name, value) in
-                std::iter::once(("authorization".into(), format!("Bearer {}", auth.token)))
+                std::iter::once(("authorization", format!("Bearer {}", auth.token).into()))
                     .chain(auth.headers)
             {
                 request.headers_mut().insert(
@@ -459,10 +522,17 @@ impl RealtimeTransport {
                 );
             }
             if self.api == VoiceApi::Codex {
-                request.headers_mut().insert(
-                    "openai-alpha",
-                    "quicksilver=v2".parse().expect("static header"),
-                );
+                for (name, value) in &MANIFEST.codex.headers {
+                    request.headers_mut().insert(
+                        tokio_tungstenite::tungstenite::http::HeaderName::from_bytes(
+                            name.as_bytes(),
+                        )
+                        .map_err(|_| invalid("invalid realtime manifest header"))?,
+                        value
+                            .parse()
+                            .map_err(|_| invalid("invalid realtime manifest header value"))?,
+                    );
+                }
                 request.headers_mut().insert(
                     "x-session-id",
                     session_id
@@ -526,7 +596,7 @@ impl Drop for CallCleanup {
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
                 let _ = timeout(
-                    IO_TIMEOUT,
+                    Duration::from_millis(transport.settings.voice_io_timeout_ms),
                     transport.post(url, Vec::new(), "application/json", &session_id),
                 )
                 .await;
@@ -537,9 +607,7 @@ impl Drop for CallCleanup {
 
 fn validate_call_id(id: &str) -> Result<()> {
     validate_text(id, 256, "voice call identity")?;
-    if !id
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    if !crate::identifier::valid_ascii_identifier(id, 256, crate::identifier::AsciiCase::Any, b"_-")
     {
         return Err(invalid("invalid provider voice call identity"));
     }
@@ -568,12 +636,12 @@ fn socket_error(_: tokio_tungstenite::tungstenite::Error) -> Error {
     Error::Provider(ProviderError::stream_interrupted(None))
 }
 
-async fn send(socket: &mut Socket, value: Value) -> Result<()> {
+async fn send(socket: &mut Socket, value: Value, io_timeout: Duration) -> Result<()> {
     let text = serde_json::to_string(&value)?;
     if text.len() > MAX_EVENT_BYTES {
         return Err(invalid("voice command exceeded size limit"));
     }
-    timeout(IO_TIMEOUT, socket.send(Message::text(text)))
+    timeout(io_timeout, socket.send(Message::text(text)))
         .await
         .map_err(|_| invalid("voice send timed out"))?
         .map_err(socket_error)
@@ -585,11 +653,12 @@ async fn drive(
     mut commands: mpsc::Receiver<RealtimeVoiceCommand>,
     mut pending: VecDeque<RealtimeVoiceCommand>,
     events: &mpsc::Sender<Result<RealtimeVoiceEvent>>,
+    io_timeout: Duration,
 ) -> Result<()> {
     let mut turns = VoiceTurns::default();
     loop {
         if let Some(command) = pending.pop_front() {
-            if apply_command(socket, api, &mut turns, events, command).await? {
+            if apply_command(socket, api, &mut turns, events, command, io_timeout).await? {
                 return Ok(());
             }
             continue;
@@ -598,7 +667,7 @@ async fn drive(
             _ = events.closed() => return Ok(()),
             command = commands.recv() => {
                 let Some(command) = command else { return Ok(()); };
-                if apply_command(socket, api, &mut turns, events, command).await? {
+                if apply_command(socket, api, &mut turns, events, command, io_timeout).await? {
                     return Ok(());
                 }
             }
@@ -609,7 +678,7 @@ async fn drive(
                     Message::Text(text) => serde_json::from_str(&text)?,
                     Message::Binary(bytes) => serde_json::from_slice(&bytes)?,
                     Message::Close(_) => return Ok(()),
-                    Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => { timeout(IO_TIMEOUT, socket.flush()).await.map_err(|_| invalid("voice flush timed out"))?.map_err(socket_error)?; continue; }
+                    Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => { timeout(io_timeout, socket.flush()).await.map_err(|_| invalid("voice flush timed out"))?.map_err(socket_error)?; continue; }
                 };
                 for event in turns.observe(api, &value)? {
                     events
@@ -629,11 +698,12 @@ async fn apply_command(
     turns: &mut VoiceTurns,
     events: &mpsc::Sender<Result<RealtimeVoiceEvent>>,
     command: RealtimeVoiceCommand,
+    io_timeout: Duration,
 ) -> Result<bool> {
     if matches!(command, RealtimeVoiceCommand::Close) {
-        send(socket, json!({"type":"session.close"})).await?;
+        send(socket, json!({"type":"session.close"}), io_timeout).await?;
         if api == VoiceApi::OpenAi {
-            timeout(IO_TIMEOUT, drain_closed(socket, api, turns, events))
+            timeout(io_timeout, drain_closed(socket, api, turns, events))
                 .await
                 .map_err(|_| invalid("voice session finalization timed out"))??;
         }
@@ -662,7 +732,7 @@ async fn apply_command(
                 json!({"type":if id.is_some() {"session.commentary.append"} else {"session.thinking.append"},"delegation_id":id,"content":chunk})
             }
         };
-        send(socket, value).await?;
+        send(socket, value, io_timeout).await?;
     }
     Ok(false)
 }

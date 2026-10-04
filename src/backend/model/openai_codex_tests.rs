@@ -60,6 +60,54 @@ fn provider_advertises_cross_device_login() {
 }
 
 #[test]
+fn embedded_auth_metadata_preserves_native_login_and_account_routes() {
+    assert_eq!(
+        [
+            MANIFEST.label.as_str(),
+            MANIFEST.client_id.as_str(),
+            MANIFEST.authorize_url.as_str(),
+            MANIFEST.token_url.as_str(),
+            MANIFEST.redirect_uri.as_str(),
+            MANIFEST.device_user_code_url.as_str(),
+            MANIFEST.device_token_url.as_str(),
+            MANIFEST.device_verification_url.as_str(),
+            MANIFEST.device_redirect_uri.as_str(),
+            MANIFEST.usage_url.as_str(),
+            MANIFEST.scope.as_str(),
+            MANIFEST.jwt_auth_claim.as_str(),
+        ],
+        [
+            "ChatGPT",
+            "app_EMoamEEZ73f0CkXaXp7hrann",
+            "https://auth.openai.com/oauth/authorize",
+            "https://auth.openai.com/oauth/token",
+            "http://localhost:1455/auth/callback",
+            "https://auth.openai.com/api/accounts/deviceauth/usercode",
+            "https://auth.openai.com/api/accounts/deviceauth/token",
+            "https://auth.openai.com/codex/device",
+            "https://auth.openai.com/deviceauth/callback",
+            "https://chatgpt.com/backend-api/wham/usage",
+            "openid profile email offline_access",
+            "https://api.openai.com/auth",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn usage_reader_validates_configured_transport_before_reading_credentials() {
+    let settings = super::super::super::ModelTransportSettings {
+        oauth_request_timeout_ms: 0,
+        ..Default::default()
+    };
+    let error = BROWSER_AUTH
+        .usage_limits_with_transport(Path::new("missing-credential.json"), settings)
+        .expect("provider supports usage reporting")
+        .await
+        .expect_err("invalid authentication deadline");
+    assert!(matches!(error, Error::Config(_)));
+}
+
+#[test]
 fn device_code_response_accepts_the_upstream_usercode_alias() {
     let response: DeviceUserCodeResponse = serde_json::from_value(serde_json::json!({
         "device_auth_id": "device-1",
@@ -193,6 +241,8 @@ fn usage_parser_flattens_present_windows_without_inventing_missing_ones() {
 #[cfg(unix)]
 #[test]
 fn saved_auth_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt as _;
+
     let directory = tempfile::tempdir().expect("temporary directory");
     let path = directory.path().join("auth.json");
     let credential = OAuthCredential {
@@ -220,7 +270,7 @@ async fn codex_requests_include_session_and_thread_identity() {
     let path = directory.path().join("auth.json");
     let payload = URL_SAFE_NO_PAD.encode(
         serde_json::to_vec(&serde_json::json!({
-            (JWT_AUTH_CLAIM): {"chatgpt_account_id": "account-123"}
+            (MANIFEST.jwt_auth_claim.as_str()): {"chatgpt_account_id": "account-123"}
         }))
         .expect("JWT payload"),
     );
@@ -242,6 +292,14 @@ async fn codex_requests_include_session_and_thread_identity() {
         .expect("compaction authorization");
     assert_eq!(header(&compact, "version"), Some("0.159.1"));
     assert_eq!(header(&compact, "originator"), Some("mobius"));
+    assert!(
+        compact
+            .headers
+            .iter()
+            .filter(|(name, _)| ["originator", "version", "user-agent"].contains(name))
+            .all(|(_, value)| matches!(value, Cow::Borrowed(_))),
+        "static authorization values remain borrowed"
+    );
     assert_eq!(header(&compact, "session-id"), Some("session-123"));
     assert_eq!(header(&compact, "thread-id"), Some("session-123"));
     assert_eq!(header(&compact, "x-client-request-id"), None);
@@ -285,7 +343,7 @@ async fn usage_limits_read_saved_auth_and_mocked_http() {
     let path = directory.path().join("auth.json");
     let payload = URL_SAFE_NO_PAD.encode(
         serde_json::to_vec(&serde_json::json!({
-            (JWT_AUTH_CLAIM): {"chatgpt_account_id": "account-123"}
+            (MANIFEST.jwt_auth_claim.as_str()): {"chatgpt_account_id": "account-123"}
         }))
         .expect("JWT payload"),
     );
@@ -348,11 +406,11 @@ async fn usage_limits_read_saved_auth_and_mocked_http() {
     assert!(request.contains("chatgpt-account-id: account-123"));
 }
 
-fn header<'a>(authorization: &'a ResolvedAuthorization, name: &str) -> Option<&'a str> {
+fn header<'a>(authorization: &'a ResolvedAuthorization<'_>, name: &str) -> Option<&'a str> {
     authorization
         .headers
         .iter()
-        .find_map(|(header, value)| header.eq_ignore_ascii_case(name).then_some(value.as_str()))
+        .find_map(|(header, value)| header.eq_ignore_ascii_case(name).then_some(value.as_ref()))
 }
 
 #[tokio::test]
@@ -390,6 +448,34 @@ async fn callback_rejects_wrong_state_then_accepts_the_expected_state() {
             .expect("callback result"),
         "accepted"
     );
+}
+
+#[tokio::test]
+async fn browser_login_completion_obeys_configured_deadline_and_releases_callback() {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("callback listener");
+    let address = listener.local_addr().expect("callback address");
+    let settings = super::super::super::ModelTransportSettings {
+        oauth_callback_timeout_ms: 1,
+        ..Default::default()
+    };
+    let login = BrowserLogin {
+        settings,
+        listener,
+        verifier: "verifier".into(),
+        state: "state".into(),
+        url: "https://example.invalid/authorize".into(),
+        client: http_client_with_settings(&settings).expect("HTTP client"),
+    };
+    let error = login
+        .complete(PathBuf::from("unused-credential.json"))
+        .await
+        .expect_err("missing callback must time out");
+    assert!(matches!(error, Error::Auth(message) if message == "ChatGPT login timed out"));
+    TcpListener::bind(address)
+        .await
+        .expect("completion timeout must release the callback listener");
 }
 
 #[tokio::test]
@@ -467,4 +553,94 @@ fn rejected_credentials_refresh_before_expiry() {
 
     assert!(refresh_required(&credential, Some("rejected-token")));
     assert!(!refresh_required(&credential, Some("newer-token")));
+}
+
+#[tokio::test]
+async fn codex_custom_root_routes_http_fallback_to_proxy() {
+    use crate::backend::model::provider::{HostedWebSearch, ProviderBuildConfig};
+    use crate::backend::model::{ModelRequest, ModelTransportSettings};
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let directory = tempfile::tempdir().expect("auth directory");
+    let path = directory.path().join("auth.json");
+    let payload = URL_SAFE_NO_PAD.encode(
+        serde_json::to_vec(&serde_json::json!({
+            (MANIFEST.jwt_auth_claim.as_str()): {"chatgpt_account_id": "proxy-account"}
+        }))
+        .expect("JWT payload"),
+    );
+    let access = format!("e30.{payload}.signature");
+    let credential = OAuthCredential {
+        access,
+        refresh: "unused-refresh".into(),
+        expires: u64::MAX,
+        account_id: "proxy-account".into(),
+    };
+    write_credential(&path, &credential).expect("stored credential");
+    let access = credential.access;
+    let auth = BROWSER_AUTH.load(&path).expect("browser credential");
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("proxy listener");
+    let address = listener.local_addr().expect("proxy address");
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("proxy connection");
+        let mut request = Vec::new();
+        while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+            let mut chunk = [0; 1024];
+            let count = stream.read(&mut chunk).await.expect("proxy request");
+            assert_ne!(count, 0);
+            request.extend_from_slice(&chunk[..count]);
+        }
+        let request = String::from_utf8(request).expect("HTTP UTF-8");
+        assert!(request.starts_with("POST /tenant/native/responses HTTP/1.1"));
+        assert!(request.contains(&format!("authorization: Bearer {access}")));
+        assert!(request.contains("chatgpt-account-id: proxy-account"));
+        stream
+            .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("proxy response");
+    });
+    let settings = ModelTransportSettings {
+        stream_retry_limit: 0,
+        ..ModelTransportSettings::default()
+    };
+    let model = super::super::provider()
+        .build(ProviderBuildConfig {
+            credential: auth,
+            model: "gpt-6.1-sol".into(),
+            base_url: Some(format!("http://{address}/tenant/native/")),
+            reasoning_effort: None,
+            service_tier: None,
+            web_search: HostedWebSearch::Off,
+            http: settings.streaming_client().expect("HTTP client"),
+            transport: settings,
+        })
+        .expect("Codex proxy provider");
+    assert!(model.supports_realtime_voice());
+    assert!(model.supports_image_generation());
+    assert_eq!(model.transport_settings(), settings);
+    model
+        .fallback_transport("proxy-session")
+        .await
+        .expect("fallback selection");
+    let error = model
+        .respond(
+            ModelRequest {
+                session_id: "proxy-session",
+                prompt_cache: None,
+                instructions: "test",
+                input: &[],
+                catalog_revision: "test",
+                tools: &[],
+                deferred_tools: &[],
+                allow_hosted_tools: false,
+                allow_continuation: false,
+            },
+            Arc::new(|_| Box::pin(async { Ok(()) })),
+        )
+        .await
+        .expect_err("proxy denial");
+    assert!(matches!(error, Error::Provider(ref error) if error.status() == Some(403)));
+    server.await.expect("proxy assertion");
 }

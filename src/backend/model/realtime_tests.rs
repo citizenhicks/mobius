@@ -17,6 +17,71 @@ fn request() -> RealtimeVoiceRequest {
     }
 }
 
+#[test]
+fn embedded_voice_metadata_preserves_models_voices_and_native_routes() {
+    assert_eq!(
+        (
+            MANIFEST.openai.model.as_str(),
+            MANIFEST.openai.calls_path.as_str(),
+            MANIFEST.codex.model.as_str(),
+            MANIFEST.codex.calls_path.as_str(),
+            MANIFEST.codex.sideband_base_url.as_deref(),
+            MANIFEST
+                .codex
+                .headers
+                .get("openai-alpha")
+                .map(String::as_str),
+        ),
+        (
+            "gpt-live-1",
+            "live/sessions",
+            "gpt-live-1-codex",
+            "realtime/calls?intent=quicksilver&architecture=avas",
+            Some("https://api.openai.com/v1/live"),
+            Some("quicksilver=v2"),
+        )
+    );
+    assert_eq!(
+        VOICES.as_slice(),
+        [
+            "marin", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse",
+            "cedar", "quartz", "ripple", "vesper", "willow", "stone", "gleam", "meridian", "bossa",
+            "tempo", "beacon", "delta", "cinder",
+        ]
+    );
+    assert_eq!(
+        CODEX_VOICES.as_slice(),
+        [
+            "cove", "juniper", "maple", "spruce", "ember", "vale", "breeze", "arbor", "sol",
+        ]
+    );
+}
+
+#[test]
+fn voice_constructors_apply_policy_and_keep_custom_codex_data_on_the_proxy() {
+    let settings = crate::backend::model::ModelTransportSettings {
+        voice_start_timeout_ms: 1_234,
+        voice_call_timeout_ms: 4_567,
+        ..Default::default()
+    };
+    let openai = RealtimeTransport::new_openai(
+        "https://api.openai.com/v1",
+        Arc::new(Auth::default()),
+        settings,
+    )
+    .expect("OpenAI voice");
+    let codex = RealtimeTransport::new_codex(
+        "https://proxy.example/native",
+        Arc::new(Auth::default()),
+        settings,
+    )
+    .expect("Codex voice");
+    assert_eq!(openai.settings, settings);
+    assert_eq!(codex.settings, settings);
+    assert_eq!(codex.calls_url.host_str(), Some("proxy.example"));
+    assert_eq!(codex.api_url.as_str(), "https://proxy.example/native/live");
+}
+
 #[derive(Default)]
 struct Auth(AtomicBool);
 
@@ -25,7 +90,7 @@ impl OpenAiAuthorization for Auth {
         &'a self,
         streaming: bool,
         session: Option<&'a str>,
-    ) -> BoxFuture<'a, Result<ResolvedAuthorization>> {
+    ) -> BoxFuture<'a, Result<ResolvedAuthorization<'a>>> {
         assert!(!streaming);
         assert_eq!(session, Some("session-1"));
         Box::pin(async move {
@@ -36,14 +101,14 @@ impl OpenAiAuthorization for Auth {
                     "secret"
                 }
                 .into(),
-                headers: vec![("chatgpt-account-id".into(), "account-1".into())],
+                headers: vec![("chatgpt-account-id", "account-1".into())],
             })
         })
     }
     fn authorize_websocket<'a>(
         &'a self,
         _: &'a str,
-    ) -> BoxFuture<'a, Result<ResolvedAuthorization>> {
+    ) -> BoxFuture<'a, Result<ResolvedAuthorization<'a>>> {
         panic!("voice must use call-create authorization, without Responses socket headers")
     }
     fn recover_unauthorized<'a>(&'a self, rejected: &'a str) -> BoxFuture<'a, Result<bool>> {
@@ -58,7 +123,12 @@ async fn transport(api: VoiceApi) -> (RealtimeTransport, TcpListener) {
     if api == VoiceApi::OpenAi {
         let base = format!("http://{}/api/native/v1/", listener.local_addr().unwrap());
         return (
-            RealtimeTransport::new_openai(&base, Arc::new(Auth::default())).unwrap(),
+            RealtimeTransport::new_openai(
+                &base,
+                Arc::new(Auth::default()),
+                crate::backend::model::ModelTransportSettings::default(),
+            )
+            .unwrap(),
             listener,
         );
     }
@@ -75,6 +145,7 @@ async fn transport(api: VoiceApi) -> (RealtimeTransport, TcpListener) {
             auth: Arc::new(Auth::default()),
             calls_url,
             api_url: Url::parse(&base.replace("/realtime", "/live")).unwrap(),
+            settings: crate::backend::model::ModelTransportSettings::default(),
         },
         listener,
     )
@@ -247,7 +318,10 @@ async fn stalled_sideband_handshake_times_out_and_hangs_up() {
     assert_eq!(call.voice, "marin");
     ready.await.unwrap();
     tokio::time::pause();
-    tokio::time::advance(START_TIMEOUT).await;
+    tokio::time::advance(Duration::from_millis(
+        crate::backend::model::ModelTransportSettings::default().voice_start_timeout_ms,
+    ))
+    .await;
     let event = call.events.recv().await;
     tokio::time::resume();
     let Some(Err(error)) = event else {

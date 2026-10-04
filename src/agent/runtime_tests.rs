@@ -35,7 +35,12 @@ use crate::backend::model::ModelEventSink;
 use crate::backend::model::ModelOutput;
 use crate::backend::model::ModelRequest;
 use crate::backend::model::ModelRouter;
-use crate::backend::model::STREAM_RETRY_LIMIT;
+use crate::backend::model::ModelTransportSettings;
+
+fn stream_retry_limit() -> usize {
+    usize::try_from(ModelTransportSettings::default().stream_retry_limit)
+        .expect("retry limit fits usize")
+}
 use crate::backend::model::TOOL_ERROR_FIELD;
 use crate::backend::model::ToolDefinition;
 use crate::backend::sandbox::ApprovalPolicy;
@@ -113,6 +118,7 @@ struct RecoveringStreamModel {
 }
 
 struct InterruptedStreamModel {
+    transport: ModelTransportSettings,
     calls: AtomicUsize,
     retry_after: Option<String>,
 }
@@ -502,6 +508,10 @@ impl Model for RecoveringStreamModel {
 }
 
 impl Model for InterruptedStreamModel {
+    fn transport_settings(&self) -> ModelTransportSettings {
+        self.transport
+    }
+
     fn respond<'a>(
         &'a self,
         _request: ModelRequest,

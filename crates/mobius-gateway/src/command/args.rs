@@ -33,6 +33,15 @@ pub enum FrontendCommand {
 
 #[derive(Debug, Subcommand)]
 enum GatewaySubcommand {
+    /// Print complete default gateway TOML without creating state.
+    PrintDefaultConfig,
+    /// Validate the current gateway TOML without starting services.
+    CheckConfig,
+    /// Export the matching computer worker and documentation for offline installs.
+    ExportComputerResources {
+        #[arg(long, value_name = "PATH")]
+        directory: PathBuf,
+    },
     /// Open the provider setup interface.
     Provider,
     /// Initialize gateway state.
@@ -75,17 +84,13 @@ enum GatewaySubcommand {
     SetRuntime {
         #[arg(long)]
         idle_exit_seconds: Option<u64>,
-        /// Informational Cloud allowance, without local upload enforcement.
+        /// Informational remote allowance, without local upload enforcement.
         #[arg(long)]
         storage_limit_bytes: Option<u64>,
         #[arg(long)]
         ingress: Option<SocketAddr>,
-        #[arg(long)]
-        hold_socket: Option<PathBuf>,
         #[arg(long, conflicts_with = "ingress")]
         clear_ingress: bool,
-        #[arg(long, conflicts_with = "hold_socket")]
-        clear_hold_socket: bool,
         #[arg(long, conflicts_with = "storage_limit_bytes")]
         clear_storage_limit: bool,
     },
@@ -246,6 +251,13 @@ struct ServeArgs {
 
 #[derive(Debug)]
 pub(super) enum Command {
+    PrintDefaultConfig,
+    CheckConfig {
+        state_dir: PathBuf,
+    },
+    ExportComputerResources {
+        directory: PathBuf,
+    },
     Telemetry {
         state_dir: PathBuf,
         command: TelemetryCommand,
@@ -255,9 +267,7 @@ pub(super) enum Command {
         idle_exit_seconds: Option<u64>,
         storage_limit_bytes: Option<u64>,
         ingress: Option<SocketAddr>,
-        hold_socket: Option<PathBuf>,
         clear_ingress: bool,
-        clear_hold_socket: bool,
         clear_storage_limit: bool,
     },
     Init(InitOptions),
@@ -364,8 +374,20 @@ impl GatewayCli {
     }
 
     pub(super) fn into_command(self) -> Result<Command> {
-        let state_dir = self.state_dir.map_or_else(state_dir, Ok)?;
-        match self.command {
+        self.into_command_with_state(state_dir)
+    }
+
+    fn into_command_with_state(self, resolve: impl FnOnce() -> Result<PathBuf>) -> Result<Command> {
+        let command = match self.command {
+            Some(GatewaySubcommand::PrintDefaultConfig) => return Ok(Command::PrintDefaultConfig),
+            Some(GatewaySubcommand::ExportComputerResources { directory }) => {
+                return Ok(Command::ExportComputerResources { directory });
+            }
+            command => command,
+        };
+        let state_dir = self.state_dir.map_or_else(resolve, Ok)?;
+        match command {
+            Some(GatewaySubcommand::CheckConfig) => Ok(Command::CheckConfig { state_dir }),
             Some(GatewaySubcommand::Telemetry { command }) => {
                 Ok(Command::Telemetry { state_dir, command })
             }
@@ -373,18 +395,14 @@ impl GatewayCli {
                 idle_exit_seconds,
                 storage_limit_bytes,
                 ingress,
-                hold_socket,
                 clear_ingress,
-                clear_hold_socket,
                 clear_storage_limit,
             }) => Ok(Command::SetRuntime {
                 state_dir,
                 idle_exit_seconds,
                 storage_limit_bytes,
                 ingress,
-                hold_socket,
                 clear_ingress,
-                clear_hold_socket,
                 clear_storage_limit,
             }),
             Some(GatewaySubcommand::Init(arguments)) => {
@@ -432,7 +450,12 @@ impl GatewayCli {
             }),
             Some(GatewaySubcommand::ServeChild) => Ok(Command::ServeChild { state_dir }),
             Some(GatewaySubcommand::Exit) => Ok(Command::Exit { state_dir }),
-            None | Some(GatewaySubcommand::Provider) => Err(Error::Config(
+            None
+            | Some(
+                GatewaySubcommand::Provider
+                | GatewaySubcommand::PrintDefaultConfig
+                | GatewaySubcommand::ExportComputerResources { .. },
+            ) => Err(Error::Config(
                 "an executable gateway command is required".into(),
             )),
         }
@@ -485,4 +508,41 @@ fn parse_init(state_dir: PathBuf, arguments: InitArgs) -> Result<InitOptions> {
         tls,
         cloudflare,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unavailable_state() -> Result<PathBuf> {
+        Err(Error::Config("no home directory configured".into()))
+    }
+
+    #[test]
+    fn state_independent_commands_do_not_resolve_gateway_state() {
+        let print = parse_cli(vec!["print-default-config".into()])
+            .expect("print command")
+            .into_command_with_state(unavailable_state)
+            .expect("defaults do not require state");
+        assert!(matches!(print, Command::PrintDefaultConfig));
+
+        let export = parse_cli(vec![
+            "export-computer-resources".into(),
+            "--directory".into(),
+            "computer-resources".into(),
+        ])
+        .expect("export command")
+        .into_command_with_state(unavailable_state)
+        .expect("resource export does not require state");
+        assert!(matches!(export,
+            Command::ExportComputerResources { directory }
+                if directory == Path::new("computer-resources")
+        ));
+
+        let check = parse_cli(vec!["check-config".into()])
+            .expect("check command")
+            .into_command_with_state(unavailable_state)
+            .expect_err("checking persisted configuration requires state");
+        assert!(check.to_string().contains("no home directory configured"));
+    }
 }

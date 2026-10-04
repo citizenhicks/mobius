@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{apply_compaction, text};
+use super::{Compaction, apply_compaction, text};
 use crate::backend::checkpoint::CheckpointStore;
 use crate::backend::model::{ToolDefinition, internal_user_message};
 use crate::middleware::tools::{Catalog, Tool, ToolContext, ToolExposure};
@@ -64,7 +64,7 @@ impl Tool for HandoffTool {
                 parameters: serde_json::json!({
                     "type": "object", "properties": {"notes": {
                         "type": "string", "minLength": 1,
-                        "description": format!("Working checkpoint, at most {MAX_NOTE_BYTES} UTF-8 bytes after trimming surrounding whitespace.")
+                        "description": text::DEFINITION.handoff_notes_parameter_description.replace("{max_bytes}", &MAX_NOTE_BYTES.to_string())
                     }},
                     "required": ["notes"], "additionalProperties": false
                 }),
@@ -95,7 +95,7 @@ impl Tool for HandoffTool {
                 self.checkpoints
                     .save_state(&self.session_id, STATE_KEY, &Value::String(notes))
                     .await?;
-                Ok("Saved this chat's handoff checkpoint.".into())
+                Ok(text::DEFINITION.handoff_saved_result.as_str().into())
             } else {
                 let _: NewContext = serde_json::from_value(arguments)?;
                 load_notes(&self.checkpoints, &self.session_id)
@@ -106,7 +106,7 @@ impl Tool for HandoffTool {
                                 .into(),
                         )
                     })?;
-                Ok("Requested a new context window after this tool batch is durably saved.".into())
+                Ok(text::DEFINITION.handoff_requested_result.as_str().into())
             }
         })
     }
@@ -199,30 +199,33 @@ pub(super) fn post_tool(context: &mut PostToolUseContext<'_>) -> Result<()> {
         return Ok(());
     }
     if context.call.name == "write_handoff" {
-        context.push_input(internal_user_message(SAVED, "Working checkpoint saved."));
+        context.push_input(internal_user_message(
+            SAVED,
+            &text::DEFINITION.handoff_saved_context,
+        ));
     } else {
-        let mut request = internal_user_message(REQUEST, "Context transition requested.");
+        let mut request =
+            internal_user_message(REQUEST, &text::DEFINITION.handoff_requested_context);
         request[CALL_ID] = Value::String(context.call.call_id.clone());
         context.push_input(request);
     }
     Ok(())
 }
 
-fn reserve_tokens(context_window: i64) -> i64 {
-    (context_window.max(1) / 8).clamp(1, super::COMPACTION_RESERVE_TOKENS)
+fn reserve_tokens(policy: &Compaction, context_window: i64) -> i64 {
+    (context_window.max(1) / policy.handoff_reserve_divisor).clamp(1, policy.reserve_tokens)
 }
 
-pub(super) fn warning_tokens(threshold: i64, context_window: i64) -> i64 {
-    threshold
-        .min(
-            context_window
-                .max(1)
-                .saturating_sub(reserve_tokens(context_window).saturating_mul(3)),
-        )
+pub(super) fn warning_tokens(policy: &Compaction, context_window: i64) -> i64 {
+    policy
+        .at_tokens
+        .min(context_window.max(1).saturating_sub(
+            reserve_tokens(policy, context_window).saturating_mul(policy.handoff_warning_reserves),
+        ))
         .max(1)
 }
 
-pub(super) async fn prepare(context: &mut ModelContext<'_>, threshold: i64) -> Result<()> {
+pub(super) async fn prepare(context: &mut ModelContext<'_>, policy: &Compaction) -> Result<()> {
     if let Some(request) = context
         .input()
         .iter()
@@ -238,7 +241,7 @@ pub(super) async fn prepare(context: &mut ModelContext<'_>, threshold: i64) -> R
         if context.turn_stopped() {
             return Ok(());
         }
-        apply_compaction(context, input, None).await?;
+        apply_compaction(context, input, None, policy.native_retained_tokens).await?;
         if context.turn_stopped() {
             return Ok(());
         }
@@ -249,9 +252,11 @@ pub(super) async fn prepare(context: &mut ModelContext<'_>, threshold: i64) -> R
         .map_or(0, |usage| usage.input_tokens)
         .max(context.estimated_input_tokens());
     let window = context.context_window.max(1);
-    let reserve = reserve_tokens(window);
-    let hard = window.saturating_sub(reserve.saturating_mul(2)).max(1);
-    let warning = warning_tokens(threshold, window);
+    let reserve = reserve_tokens(policy, window);
+    let hard = window
+        .saturating_sub(reserve.saturating_mul(policy.handoff_urgent_reserves))
+        .max(1);
+    let warning = warning_tokens(policy, window);
     let last = |kind| {
         context
             .input()

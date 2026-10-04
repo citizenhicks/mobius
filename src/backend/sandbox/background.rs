@@ -11,7 +11,6 @@ use super::{
 };
 use crate::{Error, Result};
 
-const MAX_BACKGROUND_COMMANDS: usize = 4;
 const MAX_POLL_OUTPUT_BYTES: usize = 6_000;
 const MAX_ERROR_BYTES: usize = 512;
 
@@ -44,9 +43,15 @@ pub(crate) struct BackgroundCommandPoll {
     pub(crate) error: Option<String>,
 }
 
-#[derive(Default)]
 pub(super) struct BackgroundCommands {
+    limit: usize,
     entries: Mutex<BTreeMap<String, Entry>>,
+}
+
+impl Default for BackgroundCommands {
+    fn default() -> Self {
+        Self::new(super::default_background_command_limit())
+    }
 }
 
 struct Entry {
@@ -96,6 +101,17 @@ struct BufferedOutput {
 }
 
 impl BackgroundCommands {
+    pub(super) fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            entries: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    pub(super) fn limit(&self) -> usize {
+        self.limit
+    }
+
     pub(super) fn has_owner(&self, owner: &str) -> Result<bool> {
         Ok(self
             .entries
@@ -114,9 +130,10 @@ impl BackgroundCommands {
         network_access: NetworkAccess,
     ) -> Result<StartingCommand<'_>> {
         let mut entries = self.entries.lock().map_err(|_| state_error())?;
-        if entries.len() >= MAX_BACKGROUND_COMMANDS {
+        if entries.len() >= self.limit {
             return Err(Error::Sandbox(format!(
-                "background command limit {MAX_BACKGROUND_COMMANDS} reached"
+                "background command limit {} reached",
+                self.limit
             )));
         }
         let id = loop {
@@ -240,8 +257,8 @@ impl BufferedOutput {
 
     fn take(&mut self) -> TakenOutput {
         TakenOutput {
-            stdout: String::from_utf8_lossy(&std::mem::take(&mut self.stdout)).into_owned(),
-            stderr: String::from_utf8_lossy(&std::mem::take(&mut self.stderr)).into_owned(),
+            stdout: String::from_utf8_lossy_owned(std::mem::take(&mut self.stdout)),
+            stderr: String::from_utf8_lossy_owned(std::mem::take(&mut self.stderr)),
             truncated: std::mem::take(&mut self.truncated),
             saw_output: self.saw_output,
         }
@@ -466,6 +483,34 @@ mod tests {
         assert!(commands.poll("session-a", &id).await.is_err());
     }
 
+    #[tokio::test]
+    async fn configured_capacity_is_enforced_before_launch() {
+        let commands = BackgroundCommands::new(1);
+        let backend: Arc<dyn SandboxBackend> = Arc::new(PendingBackend {
+            started: Arc::new(Notify::new()),
+            cancelled: Arc::new(AtomicBool::new(false)),
+        });
+        let first = commands
+            .start(
+                "session",
+                Arc::clone(&backend),
+                "first".into(),
+                SandboxMode::WorkspaceWrite,
+                NetworkAccess::Denied,
+            )
+            .expect("first slot");
+        let rejected = commands.start(
+            "session",
+            backend,
+            "second".into(),
+            SandboxMode::WorkspaceWrite,
+            NetworkAccess::Denied,
+        );
+        assert!(matches!(rejected, Err(Error::Sandbox(message)) if message.contains("limit 1")));
+        drop(first);
+        assert!(!commands.has_owner("session").unwrap());
+    }
+
     struct CancellationGuard(Arc<AtomicBool>);
 
     impl Drop for CancellationGuard {
@@ -617,6 +662,19 @@ mod tests {
         assert_eq!(output.status, BackgroundCommandStatus::Exited);
         assert_eq!(output.exit_code, Some(7));
         assert_eq!(output.stderr, "last");
+    }
+
+    #[test]
+    fn poll_output_replaces_invalid_utf8_without_retaining_drained_bytes() {
+        let mut output = BufferedOutput::default();
+        output.push(CommandStream::Stdout, b"\xffa");
+        output.push(CommandStream::Stderr, b"\xf0\x9f");
+        let first = output.take();
+        assert_eq!(first.stdout, "�a");
+        assert_eq!(first.stderr, "�");
+        let second = output.take();
+        assert!(second.stdout.is_empty());
+        assert!(second.stderr.is_empty());
     }
 
     #[test]

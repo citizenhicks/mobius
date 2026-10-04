@@ -44,6 +44,11 @@ mod text {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(super) struct Definition {
+        pub(super) tool_search_history_parameter_scope_description: String,
+        pub(super) tool_search_history_parameter_cursor_description: String,
+        pub(super) tool_read_history_parameter_session_description: String,
+        pub(super) tool_read_history_parameter_offset_description: String,
+        pub(super) tool_read_history_parameter_max_chars_description: String,
         pub(super) default_enabled: bool,
         pub(super) command_fork_description: String,
         pub(super) command_resume_description: String,
@@ -73,11 +78,13 @@ mod text {
     }
     pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
         std::sync::LazyLock::new(|| {
-            let definition: Definition = toml::from_str(include_str!("sessions.toml"))
-                .expect("bundled sessions definition must be valid");
+            let definition: Definition = crate::config::embedded(include_str!("sessions.toml"));
 
             assert!(definition.defaults_page_size >= 1);
-            assert!(definition.defaults_page_size <= MAX_PAGE_SIZE as i64);
+            assert!(
+                definition.defaults_page_size
+                    <= i64::try_from(MAX_PAGE_SIZE).expect("page safety bound must fit")
+            );
             assert!(definition.setting_page_size_step > 0);
 
             definition
@@ -97,7 +104,8 @@ const MAX_HANDLE_TITLE_BYTES: usize = 64;
 
 /// Default number of chats loaded per catalog page.
 pub fn default_page_size() -> usize {
-    text::DEFINITION.defaults_page_size as usize
+    usize::try_from(text::DEFINITION.defaults_page_size)
+        .expect("validated default page size must fit")
 }
 static SETTINGS: std::sync::LazyLock<Vec<MiddlewareSettingManifest>> =
     std::sync::LazyLock::new(|| {
@@ -106,9 +114,9 @@ static SETTINGS: std::sync::LazyLock<Vec<MiddlewareSettingManifest>> =
             label: text::DEFINITION.setting_page_size_label.as_str(),
             description: text::DEFINITION.setting_page_size_description.as_str(),
             min: 1,
-            max: Some(MAX_PAGE_SIZE as i64),
+            max: Some(i64::try_from(MAX_PAGE_SIZE).expect("page safety bound must fit")),
             step: text::DEFINITION.setting_page_size_step,
-            default: default_page_size() as i64,
+            default: text::DEFINITION.defaults_page_size,
         }]
     });
 
@@ -588,9 +596,9 @@ impl Tool for SearchHistory {
                     "query": {"type": "string", "maxLength": MAX_HISTORY_QUERY_BYTES,
                         "description": text::DEFINITION.tool_search_history_parameter_query_description.as_str()},
                     "scope": {"type": "string", "enum": ["current", "other_chats"],
-                        "description": "Defaults to this chat. other_chats explicitly searches this owner's other chats."},
+                        "description": text::DEFINITION.tool_search_history_parameter_scope_description.as_str()},
                     "cursor": {"type": "string", "maxLength": MAX_HISTORY_CURSOR_BYTES,
-                        "description": "Unmodified next_cursor from the same query and scope; continue even when hits is empty."}
+                        "description": text::DEFINITION.tool_search_history_parameter_cursor_description.as_str()}
                 },
                 "required": ["query"],
                 "additionalProperties": false
@@ -629,15 +637,15 @@ impl Tool for ReadHistory {
                 "type": "object",
                 "properties": {
                     "session_id": {"type": "string", "maxLength": 512,
-                        "description": "Defaults to this chat; an explicit other chat must belong to this owner."},
+                        "description": text::DEFINITION.tool_read_history_parameter_session_description.as_str()},
                     "target": {"type": "object", "properties": {
                         "checkpoint_sequence": {"type": "integer", "minimum": 0},
                         "batch_item_count": {"type": "integer", "minimum": 1}
                     }, "required": ["checkpoint_sequence", "batch_item_count"], "additionalProperties": false},
                     "offset": {"type": "integer", "minimum": 0,
-                        "description": "Character offset, initially zero or the search hit's offset."},
+                        "description": text::DEFINITION.tool_read_history_parameter_offset_description.as_str()},
                     "max_chars": {"type": "integer", "minimum": 1, "maximum": MAX_HISTORY_READ_CHARS,
-                        "description": "Maximum characters to return; defaults to 4000. Continue at next_offset."}
+                        "description": text::DEFINITION.tool_read_history_parameter_max_chars_description.as_str()}
                 },
                 "required": ["target"],
                 "additionalProperties": false
@@ -758,14 +766,14 @@ impl History {
         let mut complete = false;
         // ponytail: scan bounded transcript batches on demand; add an index only if measured latency warrants it.
         for _ in 0..MAX_HISTORY_PAGES {
-            let Some(session_id) = cursor.session_id.clone() else {
+            let Some(session_id) = cursor.session_id.as_deref() else {
                 if !self.advance_session(&mut cursor).await? {
                     complete = true;
                     break;
                 }
                 continue;
             };
-            let page = self.page(&session_id, cursor.before_sequence).await?;
+            let page = self.page(session_id, cursor.before_sequence).await?;
             let Some(batch) = page.batches.into_iter().next() else {
                 if cursor.scope == HistoryScope::Current {
                     complete = true;
@@ -1410,6 +1418,13 @@ fn session_description(session: &SessionSummary) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owner_local_defaults_preserve_catalog_paging() {
+        assert_eq!(Sessions::default().page_size, 100);
+        assert_eq!(default_page_size(), 100);
+        assert!(MANIFEST.default_enabled);
+    }
 
     #[tokio::test]
     async fn history_preserves_image_references_and_finds_masked_internal_attachments() {

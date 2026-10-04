@@ -1,0 +1,7 @@
+symbol = "storage"
+label = "Local"
+description = "Any local or remote OpenAI-compatible Responses endpoint"
+base_url = "https://api.openai.com/v1"
+tool_discovery = "rebuild"
+search = ["off"]
+credential_env = "OPENAI_API_KEY"

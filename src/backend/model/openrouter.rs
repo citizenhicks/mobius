@@ -5,7 +5,6 @@ use std::sync::Arc;
 use super::Model;
 use super::openai::OpenAi;
 use super::provider::HostedWebSearch;
-use super::provider::ProviderAuth;
 use super::provider::ProviderBuildConfig;
 use super::provider::ProviderDefinition;
 use super::provider::uses_default_endpoint;
@@ -13,39 +12,21 @@ use crate::Error;
 use crate::Result;
 use crate::protocol::ToolDiscoveryMode;
 
-mod manifest {
-    use crate::backend::model::provider::{HostedWebSearch, ModelPreset};
-    use crate::protocol::ToolDiscoveryMode;
-    pub const PROVIDER_LABEL: &str = "OpenRouter";
-    pub const PROVIDER_DESCRIPTION: &str = "Responses API across multiple model vendors";
-    pub const TOOL_DISCOVERY: ToolDiscoveryMode = ToolDiscoveryMode::Native;
-    pub const CUSTOM_ENDPOINT_TOOL_DISCOVERY: Option<ToolDiscoveryMode> =
-        Some(ToolDiscoveryMode::Rebuild);
-    pub const DEFAULT_MODEL: Option<&str> = None;
-    pub const MODELS: &[ModelPreset] = &[];
-    pub const SEARCH: &[HostedWebSearch] = &[HostedWebSearch::Off, HostedWebSearch::Live];
-}
-const BASE_URL: &str = "https://openrouter.ai/api/v1";
+pub(super) static MANIFEST: std::sync::LazyLock<super::provider::ProviderMetadata> =
+    std::sync::LazyLock::new(|| {
+        super::provider::ProviderMetadata::load(include_str!("openrouter_provider.toml"))
+    });
 
-pub(super) const fn provider() -> ProviderDefinition {
-    ProviderDefinition::new(
+pub(super) fn provider() -> ProviderDefinition {
+    ProviderDefinition::from_metadata(
         "openrouter",
-        manifest::PROVIDER_LABEL,
-        "route",
-        manifest::PROVIDER_DESCRIPTION,
-        ProviderAuth::ApiKey("OPENROUTER_API_KEY"),
-        manifest::MODELS,
-        manifest::DEFAULT_MODEL,
-        manifest::SEARCH,
+        &MANIFEST,
+        MANIFEST.api_key_auth(),
+        None,
         build_provider,
     )
     .with_image_input()
     .with_image_generation()
-    .with_base_url(BASE_URL)
-    .with_tool_discovery(
-        manifest::TOOL_DISCOVERY,
-        manifest::CUSTOM_ENDPOINT_TOOL_DISCOVERY,
-    )
     .with_credentialless_endpoints()
 }
 
@@ -55,12 +36,17 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
         .base_url
         .ok_or_else(|| Error::Config("OpenRouter requires a base URL".into()))?;
     let api_key = config.credential.into_optional_api_key("openrouter")?;
-    let native_images = api_key.is_some() && uses_default_endpoint(Some(BASE_URL), Some(&base_url));
-    let provider = OpenAi::with_client(api_key, base_url, config.model, config.http)?
-        .with_service_tier(config.service_tier)
-        .with_image_api(
-            native_images.then_some(&super::image_generation::IMAGE_APIS["openrouter"]),
-        );
+    let native_images = api_key.is_some()
+        && uses_default_endpoint(Some(MANIFEST.base_url.as_str()), Some(&base_url));
+    let provider = OpenAi::with_client(
+        api_key,
+        base_url,
+        config.model,
+        config.http,
+        config.transport,
+    )?
+    .with_service_tier(config.service_tier)
+    .with_image_api(native_images.then_some(&super::image_generation::IMAGE_APIS["openrouter"]));
     let provider = match tool_discovery {
         ToolDiscoveryMode::Native => provider.with_openrouter_tool_search(),
         ToolDiscoveryMode::Rebuild => provider.with_tool_discovery(ToolDiscoveryMode::Rebuild),
@@ -96,11 +82,12 @@ mod tests {
                 .build(ProviderBuildConfig {
                     credential: ProviderCredential::ApiKey("test-key".into()),
                     model: "test-model".into(),
-                    base_url: Some(BASE_URL.into()),
+                    base_url: Some(MANIFEST.base_url.as_str().into()),
                     reasoning_effort: None,
                     service_tier: None,
                     web_search,
                     http: reqwest::Client::new(),
+                    transport: crate::backend::model::ModelTransportSettings::default(),
                 })
                 .expect("advertised web search mode builds");
             assert!(model.supports_image_generation());

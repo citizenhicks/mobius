@@ -409,7 +409,7 @@ fn lock_local_gateway_startup(state_dir: &Path) -> mobius_gateway::Result<File> 
         .write(true)
         .open(path)?;
     #[cfg(unix)]
-    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    file.set_permissions(mobius::owner_only::file())?;
     file.lock()?;
     Ok(file)
 }
@@ -497,8 +497,7 @@ fn spawn_gateway(
 ) -> mobius_gateway::Result<(Child, tempfile::NamedTempFile)> {
     let log = tempfile::NamedTempFile::new()?;
     #[cfg(unix)]
-    log.as_file()
-        .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    log.as_file().set_permissions(mobius::owner_only::file())?;
     let mut command = Command::new(binary);
     command
         .arg("serve")

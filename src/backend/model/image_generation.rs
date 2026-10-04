@@ -1,6 +1,6 @@
 //! Provider-neutral image requests and the two native Images API wire shapes.
 
-use std::{collections::BTreeMap, sync::LazyLock};
+use std::collections::BTreeMap;
 
 use base64::Engine as _;
 use image::ImageFormat;
@@ -98,10 +98,9 @@ pub struct GeneratedImage {
     pub usage: Option<TokenUsage>,
 }
 
-pub(super) static IMAGE_APIS: LazyLock<BTreeMap<String, ImageApi>> = LazyLock::new(|| {
-    toml::from_str(include_str!("image_generation.toml"))
-        .expect("bundled image transport definitions must be valid")
-});
+crate::embedded_config! {
+    pub(super) static IMAGE_APIS: BTreeMap<String, ImageApi> = include_str!("image_generation.toml");
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

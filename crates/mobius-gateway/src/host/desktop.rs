@@ -139,7 +139,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn granted_takeover_does_not_schedule_stale_cancellation() {
         let directory = tempfile::tempdir().unwrap();
-        let remote = Arc::new(RemoteDesktop::new(directory.path(), false));
+        let remote = Arc::new(RemoteDesktop::new(
+            directory.path(),
+            false,
+            crate::computer_runtime::ComputerConfig::default(),
+        ));
         let mut changed = remote.subscribe();
         drop(Takeover {
             remote: Arc::clone(&remote),

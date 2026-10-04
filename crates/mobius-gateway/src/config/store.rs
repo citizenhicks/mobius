@@ -389,10 +389,8 @@ pub fn state_dir() -> Result<PathBuf> {
         }
         return Ok(path.into());
     }
-    env::var_os("HOME")
-        .or_else(|| env::var_os("USERPROFILE"))
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
+    env::home_dir()
+        .filter(|path| !path.as_os_str().is_empty())
         .map(|path| path.join(".mobius").join("gateway"))
         .ok_or_else(|| {
             Error::Config(
@@ -472,7 +470,7 @@ fn prepare_state_dir(path: PathBuf) -> Result<PathBuf> {
         Err(error) => return Err(error.into()),
     }
     #[cfg(unix)]
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
+    fs::set_permissions(&path, mobius::owner_only::dir())?;
     Ok(path)
 }
 

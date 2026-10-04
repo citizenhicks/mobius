@@ -74,7 +74,8 @@ pub(super) async fn handle_message(
     mut connection: ConnectionSessionState<'_>,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<()> {
-    let Some(message) = handle_runtime_message(message, gateway, writer).await? else {
+    let operator = client.local && crate::auth::is_local_operator(client.id);
+    let Some(message) = handle_runtime_message(message, gateway, operator, writer).await? else {
         return Ok(());
     };
     let Some(message) =
@@ -590,7 +591,7 @@ pub(super) async fn handle_message(
             reasoning_efforts,
         } => {
             let registered = gateway
-                .register_provider(config, label, tint, model_ids, reasoning_efforts)
+                .register_provider(operator, config, label, tint, model_ids, reasoning_efforts)
                 .await;
             return write_gateway_result(writer, connection.view, request_id, registered).await;
         }
@@ -1121,12 +1122,13 @@ async fn begin_session_file_upload(
         Ok(mutation) => mutation,
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
-    if connection.uploads.len() >= MAX_PENDING_UPLOADS {
+    let capacity = connection.gateway.pending_upload_capacity().await?;
+    if connection.uploads.len() >= capacity {
         return write_rejection(
             writer,
             request_id,
             session_file_rejection(mobius::Error::Tool(format!(
-                "a connection cannot hold more than {MAX_PENDING_UPLOADS} pending uploads"
+                "a connection cannot hold more than {capacity} pending uploads"
             ))),
         )
         .await;
@@ -1783,6 +1785,7 @@ async fn get_routine_run_preview(
 pub(super) async fn handle_runtime_message(
     message: ClientMessage,
     gateway: &GatewayHost,
+    operator: bool,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> Result<Option<ClientMessage>> {
     let request_id = match message {
@@ -1809,6 +1812,21 @@ pub(super) async fn handle_runtime_message(
             sinks,
             preserve_auth,
         } => {
+            if !operator {
+                return write_rejection(
+                    writer,
+                    request_id,
+                    Rejection {
+                        code: "operator_required",
+                        message:
+                            "telemetry collectors are configured locally by the gateway operator"
+                                .into(),
+                        fatal: false,
+                    },
+                )
+                .await
+                .map(|()| None);
+            }
             if let Err(rejection) = gateway
                 .configure_telemetry(expected_revision, sinks, &preserve_auth)
                 .await

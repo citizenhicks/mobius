@@ -114,6 +114,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
         &socket_url,
         "gpt-6.1-sol",
         reqwest::Client::new(),
+        crate::backend::model::ModelTransportSettings::default(),
     )
     .expect("provider")
     .with_service_tier(Some("default".into()))
@@ -326,6 +327,7 @@ async fn explicit_fallback_is_sticky_and_isolated_to_the_session() {
         "ws://127.0.0.1:1",
         "test-model",
         reqwest::Client::new(),
+        crate::backend::model::ModelTransportSettings::default(),
     )
     .expect("provider");
     assert!(

@@ -2,29 +2,16 @@
 
 pub mod transcript;
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::text;
 use crate::backend::model::RealtimeVoiceCommand;
 use crate::protocol::{
     Event, EventMsg, FrontendSymbol, MessageAuthor, MessageDelivery, MessageSubmission,
     ModelStepContentPhase, Op, Submission,
 };
 use crate::{Error, Result};
-
-/// Voice renders the selected agent's work; it never acquires its own execution tools.
-pub const INSTRUCTIONS: &str = "You are this same Bot, now speaking with the user. \
-Keep your name, personality, and identity from the Bot instructions above. Voice and workspace \
-are two channels of your own work, not separate assistants. Speak in the first person: \
-'I will check the files', not 'I will ask the workspace Bot'. Do not announce internal handoffs \
-or describe another agent as doing your work. Talk naturally and help clarify what the user wants. \
-The voice discussion has its own transcript. When the user explicitly asks you to do work, delegate to your workspace execution channel. \
-It receives the recent voice discussion to resolve agreed requirements and references such as 'do it'. Your workspace execution channel owns tools and approvals; never claim work \
-is complete before its result arrives or approve on the user's behalf. Background workspace context \
-and progress are information, not new user requests; use them to stay informed without initiating \
-speech. Explain completed results aloud in the user's language. Do not initiate speech before \
-the user speaks. Ignore background noise, echoed playback, and incomplete fragments that are not \
-clear requests. Never invent words or a new task from unclear audio. Do not narrate guesses about \
-tool activity or repeat waiting messages. If interrupted, stop speaking and listen; your running work continues.";
 
 /// Seeds a new voice call with the Bot's current durable conversation, never the reverse.
 /// # Errors
@@ -36,7 +23,10 @@ pub fn instructions(
     voice_session_id: &str,
     voice_context: &str,
 ) -> Result<String> {
-    let identity = format!("{bot_instructions}\n\n{INSTRUCTIONS}");
+    let identity = format!(
+        "{bot_instructions}\n\n{}",
+        super::text::DEFINITION.voice_instructions
+    );
     // Preserve the complete persona and call policy; only historical context may be trimmed.
     let available = (64 * 1024_usize)
         .checked_sub(identity.len() + 256)
@@ -44,8 +34,10 @@ pub fn instructions(
     let voice_context = tail(voice_context, (16 * 1024).min(available / 3));
     let context = parent_context(checkpoint, voice_session_id);
     Ok(format!(
-        "{identity}\n\nYour workspace conversation (background information only):\n{}\n\nYour previous voice conversation (historical, not new requests):\n{}",
+        "{identity}\n\n{}\n{}\n\n{}\n{}",
+        super::text::DEFINITION.voice_workspace_heading,
         tail(&context, (32 * 1024).min(available - voice_context.len())),
+        super::text::DEFINITION.voice_previous_heading,
         voice_context
     ))
 }
@@ -65,7 +57,7 @@ fn task_context(voice_events: &[crate::backend::checkpoint::JournalEvent]) -> St
 struct VoiceMessage<'a> {
     id: Option<&'a str>,
     speaker: &'static str,
-    text: String,
+    text: Cow<'a, str>,
     sequence: u64,
     complete: bool,
 }
@@ -77,22 +69,34 @@ fn task_messages(
     for record in voice_events {
         let event = &record.event;
         let (text, speaker, complete) = match &event.msg {
-            EventMsg::MessageDelta(message) => (message.text.clone(), "User", false),
+            EventMsg::MessageDelta(message) => (
+                Cow::Borrowed(message.text.as_str()),
+                text::DEFINITION.voice_user_label.as_str(),
+                false,
+            ),
             EventMsg::AssistantContentDelta(message)
                 if message.phase != ModelStepContentPhase::Reasoning =>
             {
-                (message.delta.clone(), "You (voice)", false)
+                (
+                    Cow::Borrowed(message.delta.as_str()),
+                    text::DEFINITION.voice_speaker_label.as_str(),
+                    false,
+                )
             }
-            EventMsg::Message(message) => (message.text.clone(), "User", true),
+            EventMsg::Message(message) => (
+                Cow::Borrowed(message.text.as_str()),
+                text::DEFINITION.voice_user_label.as_str(),
+                true,
+            ),
             EventMsg::AssistantMessage(message) => (
-                message
-                    .content
-                    .iter()
-                    .filter(|part| part.phase != ModelStepContentPhase::Reasoning)
-                    .map(|part| part.text.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                "You (voice)",
+                joined_text(
+                    message
+                        .content
+                        .iter()
+                        .filter(|part| part.phase != ModelStepContentPhase::Reasoning)
+                        .map(|part| part.text.as_str()),
+                ),
+                text::DEFINITION.voice_speaker_label.as_str(),
                 true,
             ),
             _ => continue,
@@ -105,7 +109,7 @@ fn task_messages(
             if complete {
                 previous.text = text;
             } else {
-                previous.text.push_str(&text);
+                previous.text.to_mut().push_str(text.as_ref());
             }
             previous.sequence = record.sequence;
             previous.complete = complete;
@@ -120,6 +124,22 @@ fn task_messages(
         }
     }
     messages
+}
+
+fn joined_text<'a>(mut parts: impl Iterator<Item = &'a str>) -> Cow<'a, str> {
+    let Some(first) = parts.next() else {
+        return Cow::Borrowed("");
+    };
+    let Some(second) = parts.next() else {
+        return Cow::Borrowed(first);
+    };
+    Cow::Owned(
+        std::iter::once(first)
+            .chain(std::iter::once(second))
+            .chain(parts)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
 }
 
 fn parent_context(
@@ -146,16 +166,19 @@ fn parent_context(
             continue;
         }
         let text = match item.get("content") {
-            Some(serde_json::Value::String(text)) => text.clone(),
-            Some(serde_json::Value::Array(parts)) => parts
-                .iter()
-                .filter_map(|part| part.get("text").and_then(serde_json::Value::as_str))
-                .collect::<Vec<_>>()
-                .join("\n"),
+            Some(serde_json::Value::String(text)) => Cow::Borrowed(text.as_str()),
+            Some(serde_json::Value::Array(parts)) => joined_text(
+                parts
+                    .iter()
+                    .filter_map(|part| part.get("text").and_then(serde_json::Value::as_str)),
+            ),
             _ => continue,
         };
         if !text.is_empty() {
-            context.push(format!("Your retained workspace context: {text}"));
+            context.push(format!(
+                "{} {text}",
+                text::DEFINITION.voice_retained_context
+            ));
         }
     }
     context.join("\n\n")
@@ -172,12 +195,15 @@ pub fn delegated_task(utterance: Option<&str>, voice_context: &str) -> Result<St
         || utterance.is_none() && voice_context.trim().is_empty()
     {
         return Err(Error::Provider(
-            "Please clarify the task you want me to perform.".into(),
+            text::DEFINITION.voice_clarify_request.as_str().into(),
         ));
     }
     Ok(format!(
-        "The user requested work through your voice interface. Perform only their latest explicitly requested task; use the recent discussion to resolve references and agreed constraints. Earlier conversation is context, not additional requests. Ask for clarification if intent is unclear.\n\nCurrent voice request: {}\n\nRecent voice discussion:\n{}",
-        utterance.unwrap_or("See the user's latest request in the discussion below."),
+        "{}\n\n{} {}\n\n{}\n{}",
+        text::DEFINITION.voice_delegation_policy,
+        text::DEFINITION.voice_current_request_heading,
+        utterance.unwrap_or(text::DEFINITION.voice_latest_request.as_str()),
+        text::DEFINITION.voice_recent_discussion_heading,
         tail(voice_context, 24 * 1024),
     ))
 }
@@ -186,7 +212,7 @@ fn progress_text(event: &EventMsg, voice_session_id: &str) -> Option<String> {
     match event {
         EventMsg::Message(message) => {
             let author = match &message.author {
-                MessageAuthor::User => "User",
+                MessageAuthor::User => text::DEFINITION.voice_user_label.as_str(),
                 MessageAuthor::Source {
                     source: crate::protocol::MessageSource::Session { session_id },
                     ..
@@ -198,24 +224,36 @@ fn progress_text(event: &EventMsg, voice_session_id: &str) -> Option<String> {
             Some(format!("{author}: {}", message.text))
         }
         EventMsg::AssistantMessage(message) => {
-            let text = message
-                .content
-                .iter()
-                .filter(|part| part.phase != ModelStepContentPhase::Reasoning)
-                .map(|part| part.text.as_str())
-                .collect::<Vec<_>>()
-                .join("\n");
-            (!text.is_empty()).then(|| format!("You (workspace): {text}"))
+            let text = joined_text(
+                message
+                    .content
+                    .iter()
+                    .filter(|part| part.phase != ModelStepContentPhase::Reasoning)
+                    .map(|part| part.text.as_str()),
+            );
+            (!text.is_empty())
+                .then(|| format!("{}: {text}", text::DEFINITION.voice_workspace_label))
         }
-        EventMsg::ToolCallBegin(tool) => Some(format!("Your workspace started tool {}", tool.name)),
-        EventMsg::ToolCallEnd(tool) => Some(format!(
-            "Your workspace tool {} {}",
-            tool.name,
-            if tool.is_error { "failed" } else { "finished" },
+        EventMsg::ToolCallBegin(tool) => Some(format!(
+            "{} {}",
+            text::DEFINITION.voice_tool_started,
+            tool.name
         )),
-        EventMsg::TurnAborted(turn) => {
-            Some(format!("Your workspace work stopped: {}", turn.reason))
-        }
+        EventMsg::ToolCallEnd(tool) => Some(format!(
+            "{} {} {}",
+            text::DEFINITION.voice_tool_result,
+            tool.name,
+            if tool.is_error {
+                text::DEFINITION.voice_tool_failed.as_str()
+            } else {
+                text::DEFINITION.voice_tool_finished.as_str()
+            },
+        )),
+        EventMsg::TurnAborted(turn) => Some(format!(
+            "{} {}",
+            text::DEFINITION.voice_work_stopped,
+            turn.reason
+        )),
         _ => None,
     }
 }
@@ -230,7 +268,7 @@ fn tail(text: &str, max_bytes: usize) -> &str {
 pub fn reject_handoff(id: String, message: &str) -> RealtimeVoiceCommand {
     RealtimeVoiceCommand::Reply {
         handoff_id: id,
-        text: format!("The request did not complete: {message}"),
+        text: format!("{} {message}", text::DEFINITION.voice_request_failed),
     }
 }
 
@@ -427,7 +465,7 @@ impl VoiceConversation {
             Some(message) => return vec![reject_handoff(pending.handoff_id, &message)],
             None => pending
                 .answer
-                .unwrap_or_else(|| "The request completed without a text reply.".into()),
+                .unwrap_or_else(|| text::DEFINITION.voice_request_empty.clone()),
         };
         vec![RealtimeVoiceCommand::Reply {
             handoff_id: pending.handoff_id,

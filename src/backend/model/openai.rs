@@ -28,7 +28,6 @@ use super::openai_auth::ApiKeyAuthorization;
 use super::openai_auth::OpenAiAuthorization;
 #[cfg(test)]
 use super::openai_auth::ResolvedAuthorization;
-use super::provider::ProviderAuth;
 use super::provider::ProviderBuildConfig;
 use super::provider::ProviderDefinition;
 use super::provider::uses_default_endpoint;
@@ -38,7 +37,6 @@ use super::transport::SseDecoder;
 use super::transport::frame_data;
 use super::transport::read_limited;
 use super::transport::status_error;
-use super::transport::streaming_client;
 use super::usage_i64;
 use super::{RealtimeVoiceCall, RealtimeVoiceRequest};
 use crate::BoxFuture;
@@ -53,22 +51,13 @@ use crate::protocol::ToolDiscoveryMode;
 use crate::protocol::ToolLoad;
 use crate::protocol::WebSearchAction;
 
-mod manifest {
-    use crate::backend::model::provider::{HostedWebSearch, ModelPreset};
-    use crate::protocol::ToolDiscoveryMode;
-    pub const PROVIDER_LABEL: &str = "Local";
-    pub const PROVIDER_DESCRIPTION: &str =
-        "Any local or remote OpenAI-compatible Responses endpoint";
-    pub const TOOL_DISCOVERY: ToolDiscoveryMode = ToolDiscoveryMode::Rebuild;
-    pub const CUSTOM_ENDPOINT_TOOL_DISCOVERY: Option<ToolDiscoveryMode> = None;
-    pub const DEFAULT_MODEL: Option<&str> = None;
-    pub const MODELS: &[ModelPreset] = &[];
-    pub const SEARCH: &[HostedWebSearch] = &[HostedWebSearch::Off];
-}
+pub(super) static MANIFEST: std::sync::LazyLock<super::provider::ProviderMetadata> =
+    std::sync::LazyLock::new(|| {
+        super::provider::ProviderMetadata::load(include_str!("openai_provider.toml"))
+    });
 const MAX_JSON_BYTES: usize = 16 * 1024 * 1024;
 const MAX_IMAGE_RESPONSE_BYTES: usize = 65 * 1024 * 1024;
 const MAX_STREAM_OUTPUT_ITEMS: usize = 1_024;
-const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ToolDiscoveryWire {
@@ -87,14 +76,12 @@ impl ToolDiscoveryWire {
 }
 
 pub(super) static CATALOG: std::sync::LazyLock<super::provider::ModelCatalog> =
-    std::sync::LazyLock::new(|| {
-        toml::from_str(include_str!("openai.toml"))
-            .expect("bundled openai model catalog must be valid")
-    });
+    std::sync::LazyLock::new(|| crate::config::embedded(include_str!("openai.toml")));
 
 /// OpenAI Responses API configuration.
 pub struct OpenAi {
     client: Client,
+    transport: super::ModelTransportSettings,
     auth: Option<Arc<dyn OpenAiAuthorization>>,
     realtime: Option<RealtimeTransport>,
     base_url: String,
@@ -109,6 +96,7 @@ pub struct OpenAi {
     image_api: Option<&'static ImageApi>,
     explicit_prompt_cache: bool,
     tool_discovery: ToolDiscoveryWire,
+    pricing_resolver: Option<fn(&str, &str) -> Option<ModelPricing>>,
 }
 
 impl OpenAi {
@@ -121,7 +109,30 @@ impl OpenAi {
         base_url: impl Into<String>,
         model: impl Into<String>,
     ) -> Result<Self> {
-        Self::with_client(Some(api_key.into()), base_url, model, streaming_client()?)
+        Self::new_with_transport(
+            api_key,
+            base_url,
+            model,
+            super::ModelTransportSettings::default(),
+        )
+    }
+
+    /// Creates a provider with explicit HTTP, socket and retry policy.
+    /// # Errors
+    /// Returns invalid provider policy or HTTP client construction errors.
+    pub fn new_with_transport(
+        api_key: impl Into<String>,
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+        settings: super::ModelTransportSettings,
+    ) -> Result<Self> {
+        Self::with_client(
+            Some(api_key.into()),
+            base_url,
+            model,
+            settings.streaming_client()?,
+            settings,
+        )
     }
 
     pub(super) fn with_client(
@@ -129,13 +140,14 @@ impl OpenAi {
         base_url: impl Into<String>,
         model: impl Into<String>,
         client: Client,
+        settings: super::ModelTransportSettings,
     ) -> Result<Self> {
         if api_key.as_deref().is_some_and(|key| key.trim().is_empty()) {
-            return Err(Error::Config("OPENAI_API_KEY is empty".into()));
+            return Err(Error::Config("provider API key cannot be empty".into()));
         }
         let auth = api_key
             .map(|key| Arc::new(ApiKeyAuthorization::new(key)) as Arc<dyn OpenAiAuthorization>);
-        Self::from_parts(auth, base_url, model, client)
+        Self::from_parts(auth, base_url, model, client, settings)
     }
 
     pub(super) fn with_authorization(
@@ -143,8 +155,9 @@ impl OpenAi {
         base_url: impl Into<String>,
         model: impl Into<String>,
         client: Client,
+        settings: super::ModelTransportSettings,
     ) -> Result<Self> {
-        Self::from_parts(Some(auth), base_url, model, client)
+        Self::from_parts(Some(auth), base_url, model, client, settings)
     }
 
     fn from_parts(
@@ -152,17 +165,19 @@ impl OpenAi {
         base_url: impl Into<String>,
         model: impl Into<String>,
         client: Client,
+        settings: super::ModelTransportSettings,
     ) -> Result<Self> {
+        settings.validate()?;
         let base_url = base_url.into().trim_end_matches('/').to_string();
         let model = model.into();
         validate_base_url(&base_url)?;
         if model.trim().is_empty() {
             return Err(Error::Config("OPENAI_MODEL is empty".into()));
         }
-        let native_api = uses_default_endpoint(Some(DEFAULT_BASE_URL), Some(&base_url));
+        let native_api = uses_default_endpoint(Some(MANIFEST.base_url.as_str()), Some(&base_url));
         let realtime = if native_api {
             auth.as_ref()
-                .map(|auth| RealtimeTransport::new_openai(&base_url, Arc::clone(auth)))
+                .map(|auth| RealtimeTransport::new_openai(&base_url, Arc::clone(auth), settings))
                 .transpose()?
         } else {
             None
@@ -170,6 +185,7 @@ impl OpenAi {
         let image_api = (auth.is_some() && native_api).then_some(&IMAGE_APIS["openai"]);
         Ok(Self {
             client,
+            transport: settings,
             auth,
             realtime,
             base_url,
@@ -184,15 +200,43 @@ impl OpenAi {
             image_api,
             explicit_prompt_cache: false,
             tool_discovery: ToolDiscoveryWire::Rebuild,
+            pricing_resolver: None,
         })
     }
 
-    pub(super) fn with_codex_realtime_voice(mut self) -> Result<Self> {
+    pub(super) fn with_pricing_resolver(
+        mut self,
+        resolver: fn(&str, &str) -> Option<ModelPricing>,
+    ) -> Self {
+        self.pricing_resolver = Some(resolver);
+        self
+    }
+
+    /// Sets validated socket, voice and retry policy for this model.
+    /// # Errors
+    /// Returns an error for invalid operational settings.
+    pub fn with_transport_settings(
+        mut self,
+        settings: super::ModelTransportSettings,
+    ) -> Result<Self> {
+        settings.validate()?;
+        if let Some(realtime) = self.realtime.take() {
+            self.realtime = Some(realtime.with_settings(settings)?);
+        }
+        self.transport = settings;
+        Ok(self)
+    }
+
+    pub(super) fn with_codex_realtime_voice(mut self, base_url: &str) -> Result<Self> {
         let auth = self
             .auth
             .as_ref()
             .ok_or_else(|| Error::Config("Codex voice requires authorization".into()))?;
-        self.realtime = Some(RealtimeTransport::new_codex(Arc::clone(auth))?);
+        self.realtime = Some(RealtimeTransport::new_codex(
+            base_url,
+            Arc::clone(auth),
+            self.transport,
+        )?);
         Ok(self)
     }
 
@@ -201,10 +245,13 @@ impl OpenAi {
             .auth
             .as_ref()
             .ok_or_else(|| Error::Config("native OpenAI API requires authorization".into()))?;
-        self.realtime = Some(RealtimeTransport::new_openai(
-            &self.base_url,
-            Arc::clone(auth),
-        )?);
+        if self.realtime.is_none() {
+            self.realtime = Some(RealtimeTransport::new_openai(
+                &self.base_url,
+                Arc::clone(auth),
+                self.transport,
+            )?);
+        }
         self.image_api = Some(&IMAGE_APIS["openai"]);
         self.native_api = true;
         Ok(self)
@@ -530,16 +577,15 @@ impl OpenAi {
                 return Ok(request.send().await?);
             };
             let authorization = auth.authorize_http(streaming, session_id).await?;
-            let rejected_token = authorization.token.clone();
-            request = request.bearer_auth(authorization.token);
+            request = request.bearer_auth(&authorization.token);
             for (name, value) in authorization.headers {
-                request = request.header(name, value);
+                request = request.header(name, value.as_ref());
             }
             let response = request.send().await?;
             if response.status() != reqwest::StatusCode::UNAUTHORIZED || attempt == 1 {
                 return Ok(response);
             }
-            if !auth.recover_unauthorized(&rejected_token).await? {
+            if !auth.recover_unauthorized(&authorization.token).await? {
                 return Ok(response);
             }
         }
@@ -592,6 +638,10 @@ impl OpenAi {
 }
 
 impl Model for OpenAi {
+    fn transport_settings(&self) -> super::ModelTransportSettings {
+        self.transport
+    }
+
     fn info(&self) -> ModelInfo {
         ModelInfo {
             model: self.model.clone(),
@@ -650,6 +700,9 @@ impl Model for OpenAi {
     }
 
     fn pricing(&self) -> Option<ModelPricing> {
+        if let Some(resolver) = self.pricing_resolver {
+            return resolver(&self.base_url, &self.model);
+        }
         self.native_api
             .then(|| CATALOG.pricing(&self.model))
             .flatten()
@@ -831,26 +884,17 @@ fn wire_function_tool(tool: &ToolDefinition) -> Value {
     })
 }
 
-pub(super) const fn generic_provider() -> ProviderDefinition {
-    ProviderDefinition::new(
+pub(super) fn generic_provider() -> ProviderDefinition {
+    ProviderDefinition::from_metadata(
         "responses",
-        manifest::PROVIDER_LABEL,
-        "storage",
-        manifest::PROVIDER_DESCRIPTION,
-        ProviderAuth::ApiKey("OPENAI_API_KEY"),
-        manifest::MODELS,
-        manifest::DEFAULT_MODEL,
-        manifest::SEARCH,
+        &MANIFEST,
+        MANIFEST.api_key_auth(),
+        None,
         build_generic,
     )
     .with_image_input()
     .with_image_generation()
-    .with_realtime_voices(super::realtime::VOICES)
-    .with_tool_discovery(
-        manifest::TOOL_DISCOVERY,
-        manifest::CUSTOM_ENDPOINT_TOOL_DISCOVERY,
-    )
-    .with_base_url(DEFAULT_BASE_URL)
+    .with_realtime_voices(&super::realtime::VOICES)
     .with_credentialless_endpoints()
 }
 
@@ -859,8 +903,14 @@ fn build_generic(config: ProviderBuildConfig) -> Result<std::sync::Arc<dyn Model
         .base_url
         .ok_or_else(|| Error::Config("Responses provider requires a base URL".into()))?;
     let api_key = config.credential.into_optional_api_key("responses")?;
-    let provider = OpenAi::with_client(api_key, base_url, config.model, config.http)?
-        .with_service_tier(config.service_tier);
+    let provider = OpenAi::with_client(
+        api_key,
+        base_url,
+        config.model,
+        config.http,
+        config.transport,
+    )?
+    .with_service_tier(config.service_tier);
     let provider = match config.reasoning_effort {
         Some(effort) => provider.with_reasoning_effort(effort)?,
         None => provider,
@@ -1077,15 +1127,15 @@ fn decode_web_action(item: &Value) -> WebSearchAction {
     }
 }
 
-pub(super) fn decode_response(response: Value) -> Result<ModelOutput> {
+pub(super) fn decode_response(mut response: Value) -> Result<ModelOutput> {
     let end_turn = response
         .get("end_turn")
         .and_then(Value::as_bool)
         .unwrap_or(true);
     let mut output = response
-        .get("output")
-        .and_then(Value::as_array)
-        .cloned()
+        .get_mut("output")
+        .and_then(Value::as_array_mut)
+        .map(std::mem::take)
         .ok_or_else(|| Error::Provider("response omitted output".into()))?;
     for item in &mut output {
         normalize_replay_item(item);
@@ -1114,11 +1164,11 @@ pub(super) fn decode_response(response: Value) -> Result<ModelOutput> {
     ModelOutput::from_output(output, end_turn, decode_usage(response.get("usage"))?)
 }
 
-pub(super) fn decode_compact_response(response: Value) -> Result<CompactOutput> {
+pub(super) fn decode_compact_response(mut response: Value) -> Result<CompactOutput> {
     let mut output = response
-        .get("output")
-        .and_then(Value::as_array)
-        .cloned()
+        .get_mut("output")
+        .and_then(Value::as_array_mut)
+        .map(std::mem::take)
         .unwrap_or_default();
     for item in &mut output {
         normalize_replay_item(item);

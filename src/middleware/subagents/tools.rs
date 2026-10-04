@@ -115,7 +115,7 @@ impl Tool for SpawnAgent {
                         &path,
                         &scope.agent_path,
                         session_id.clone(),
-                        scope.depth + 1,
+                        scope.next_depth()?,
                         AgentPresentation {
                             model: model.clone(),
                             spawn_context: turns.label(),
@@ -519,12 +519,12 @@ fn parse_fork_turns(value: Option<&str>) -> Result<ForkTurns> {
 }
 
 fn validate_task_name(name: &str) -> Result<()> {
-    if name.is_empty()
-        || name.len() > MAX_TASK_NAME_BYTES
-        || !name
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
-    {
+    if !crate::identifier::valid_ascii_identifier(
+        name,
+        MAX_TASK_NAME_BYTES,
+        crate::identifier::AsciiCase::Lower,
+        b"_",
+    ) {
         return Err(Error::Tool(
             "task_name must contain 1-64 lowercase letters, digits, or underscores".into(),
         ));

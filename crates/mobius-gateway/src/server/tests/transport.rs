@@ -30,7 +30,13 @@ async fn queued_client_requests_do_not_starve_gateway_broadcasts() {
     )
     .await
     .unwrap();
-    let serving = serve_connection(stream, connection, Instant::now() + PRE_AUTH_TIMEOUT, None);
+    let serving = serve_connection(
+        stream,
+        connection,
+        Instant::now()
+            + Duration::from_secs(ConnectionPolicy::default().authentication_timeout_seconds),
+        None,
+    );
     tokio::pin!(serving);
     tokio::select! {
         result = &mut serving => panic!("connection stopped: {result:?}"),
@@ -94,7 +100,8 @@ async fn non_reading_client_releases_its_authenticated_connection_slot() {
     let serving = tokio::spawn(serve_connection(
         stream,
         connection,
-        Instant::now() + PRE_AUTH_TIMEOUT,
+        Instant::now()
+            + Duration::from_secs(ConnectionPolicy::default().authentication_timeout_seconds),
         None,
     ));
     write_frame(
@@ -160,14 +167,15 @@ async fn failed_listener_initialization_never_signals_readiness() {
 }
 
 #[test]
-fn cloud_gateway_access_lease_fails_closed_after_five_minutes() {
+fn explicit_access_lease_policy_controls_expiry_and_grace() {
     let now = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-    assert!(access_lease(None, true, now).is_err());
-    assert!(access_lease(Some("1699999700"), true, now).is_err());
-    assert!(access_lease(Some("1699999701"), true, now).is_ok());
+    assert!(access_lease(None, true, Duration::ZERO, now).is_err());
+    assert!(access_lease(Some("1699999999"), true, Duration::ZERO, now).is_err());
+    assert!(access_lease(Some("1699999999"), true, Duration::from_secs(2), now).is_ok());
+    assert!(access_lease(Some("1699999999"), true, Duration::from_secs(1), now).is_err());
     assert!(
-        access_lease(None, false, now)
-            .expect("local gateway")
+        access_lease(None, false, Duration::ZERO, now)
+            .expect("optional lease")
             .is_none()
     );
 }
@@ -624,12 +632,13 @@ async fn websocket_upgrade_and_authentication_share_one_deadline() {
         ..
     } = server;
     let client_connections = Arc::new(ClientConnections::default());
-    let (client_revocations, _) = broadcast::channel(MAX_CONNECTIONS);
+    let (client_revocations, _) = broadcast::channel(ConnectionPolicy::default().total());
     let admission = ConnectionAdmission::new(1, 1).admit().await;
     let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
     let serving = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.expect("accept connection");
-        let auth_deadline = Instant::now() + PRE_AUTH_TIMEOUT;
+        let auth_deadline = Instant::now()
+            + Duration::from_secs(ConnectionPolicy::default().authentication_timeout_seconds);
         accepted_tx.send(()).expect("report accepted connection");
         serve_plaintext_connection(
             stream,

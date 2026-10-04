@@ -84,6 +84,7 @@ async fn transient_response_failure_leaves_retry_to_a_fresh_model_attempt() {
         &socket_url,
         "test-model",
         reqwest::Client::new(),
+        crate::backend::model::ModelTransportSettings::default(),
     )
     .expect("provider");
     let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
@@ -157,6 +158,7 @@ async fn previous_response_not_found_does_not_repeat_full_context() {
         &socket_url,
         "test-model",
         reqwest::Client::new(),
+        crate::backend::model::ModelTransportSettings::default(),
     )
     .expect("provider");
     let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
@@ -257,6 +259,7 @@ async fn previous_response_not_found_rebuilds_full_context_on_the_same_connectio
         &socket_url,
         "test-model",
         reqwest::Client::new(),
+        crate::backend::model::ModelTransportSettings::default(),
     )
     .expect("provider");
     let initial_input = vec![serde_json::json!({"role": "user", "content": "one"})];

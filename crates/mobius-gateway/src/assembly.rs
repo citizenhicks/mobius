@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(test)]
 use std::time::Duration;
 
 use mobius::Error as MobiusError;
 use mobius::agent::{Agent, AgentConfig, create_agent};
 use mobius::backend::checkpoint::CheckpointStore;
 use mobius::backend::model::provider::{
-    HttpClient, ProviderAuth, ProviderBuildConfig, ProviderCredential, ProviderDefinition,
-    provider, streaming_client,
+    HttpClient, ProviderAuth, ProviderBuildConfig, ProviderCredential, ProviderDefinition, provider,
 };
 use mobius::backend::model::{
     Model, ModelCredentialLifetime, ModelEventSink, ModelOutput, ModelRequest, ModelRouter,
@@ -47,8 +47,6 @@ use crate::wire::{
 };
 use crate::{Error, Result};
 
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
-
 pub(crate) async fn run_discovery<T, F>(
     discovery_gate: Arc<tokio::sync::Mutex<()>>,
     operation: F,
@@ -79,6 +77,8 @@ pub(crate) struct PreparedBot {
     pub(crate) compaction: Option<Arc<Compaction>>,
     extensions: ResolvedExtensions,
     computer_runtime: Option<std::path::PathBuf>,
+    computer_config: Arc<crate::computer_runtime::ComputerConfig>,
+    subagent_ceilings: mobius::middleware::subagents::SubagentCeilings,
 }
 
 impl PreparedBot {
@@ -112,6 +112,7 @@ pub(crate) async fn prepare_bot(
     credentials: &CredentialStore,
     session_files: SessionFileStore,
     epoch: u64,
+    computer_config: Arc<crate::computer_runtime::ComputerConfig>,
 ) -> Result<PreparedBot> {
     #[cfg(test)]
     store
@@ -136,7 +137,8 @@ pub(crate) async fn prepare_bot(
         .then(|| configured_compaction(&config.middleware).map(Arc::new))
         .transpose()?;
     let computer_runtime =
-        crate::computer_runtime::prepare(store.state_dir(), &config.middleware).await?;
+        crate::computer_runtime::prepare(store.state_dir(), &config.middleware, &computer_config)
+            .await?;
     let extensions = ExtensionStore::new(store).resolve(gateway, &config.extensions)?;
     let providers = std::iter::once(config.provider.clone())
         .chain(
@@ -160,6 +162,8 @@ pub(crate) async fn prepare_bot(
         compaction,
         extensions,
         computer_runtime,
+        computer_config,
+        subagent_ceilings: gateway.execution.subagent_ceilings()?,
     })
 }
 
@@ -225,6 +229,8 @@ pub(crate) async fn assemble(
         .tls
         .as_ref()
         .map(|tls| tls.private_key.clone());
+    let token_estimate =
+        mobius::middleware::TokenEstimate::new(gateway_config.execution.bytes_per_token)?;
     let resources = Arc::clone(&prepared);
     let gateway_for_middleware = Arc::clone(&gateway);
     // Hidden routine and channel chats may carry third-party input.
@@ -262,21 +268,66 @@ pub(crate) async fn assemble(
                     .map(|plugin| plugin.root.clone()),
             );
         }
-        read_roots.extend(computer_runtime.iter().cloned());
+        if let Some(runtime) = &computer_runtime {
+            read_roots.extend(crate::computer_runtime::resource_roots(
+                runtime,
+                &resources.computer_config,
+                &state_dir,
+                &workspace_path,
+                &attached_folders,
+            )?);
+        }
+        let output_bytes =
+            crate::middleware_manifest::usize_setting(&settings, "sandbox", "tool_output_bytes")?;
+        let credential_environment = gateway_config
+            .telemetry
+            .sinks
+            .iter()
+            .filter_map(|sink| sink.bearer_env.as_deref())
+            .collect::<Vec<_>>();
         let gateway_sandbox = Arc::new(
-            GatewaySandbox::new(
+            GatewaySandbox::new_configured(
                 &workspace_path,
                 &state_dir,
                 tls_key.as_deref(),
-                COMMAND_TIMEOUT,
+                &gateway_config.execution,
+                output_bytes,
+                &credential_environment,
             )?
             .with_desktop(desktop)
             .with_remote_desktop(remote_desktop)
+            .deny_read_paths(
+                gateway_config
+                    .computer
+                    .browser
+                    .profile_directory
+                    .iter()
+                    .cloned()
+                    .chain(gateway_config.telemetry.sinks.iter().filter_map(|sink| {
+                        sink.bearer_file
+                            .as_ref()
+                            .map(|file| {
+                                let path = std::path::PathBuf::from(file);
+                                if path.is_absolute() {
+                                    path
+                                } else {
+                                    state_dir.join(path)
+                                }
+                            })
+                            .filter(|path| path.exists())
+                    })),
+            )?
             .allow_attached_folders(attached_folders.iter().cloned())?
             .allow_read_roots(read_roots)?,
         );
         let backend: Arc<dyn SandboxBackend> = gateway_sandbox.clone();
-        let sandbox = Sandbox::new(Arc::clone(&backend), approval_policy);
+        let sandbox = Sandbox::new(Arc::clone(&backend), approval_policy)
+            .tool_output_limit(output_bytes)?
+            .background_command_limit(crate::middleware_manifest::usize_setting(
+                &settings,
+                "sandbox",
+                "background_commands",
+            )?)?;
         let sandbox = if attached_folders.is_empty() {
             sandbox
         } else {
@@ -329,6 +380,7 @@ pub(crate) async fn assemble(
         system_prompt,
     )
     .context_window(context_window)
+    .token_estimate(token_estimate)
     .catalog_visible(chat.catalog_visible)
     .initial_replay_batches(0)
     .override_saved_model_route()
@@ -454,7 +506,7 @@ fn build_models(
             "active model route is not in the configured gateway catalog".into(),
         ));
     }
-    let routes = instantiate_routes(catalog, store, credentials)?;
+    let routes = instantiate_routes(catalog, store, credentials, &gateway.model_transport)?;
     let first = routes
         .first()
         .ok_or_else(|| Error::Config("provider has no model routes".into()))?;
@@ -478,8 +530,9 @@ fn instantiate_routes(
     catalog: Vec<CatalogRoute>,
     store: &ConfigStore,
     credentials: &CredentialStore,
+    transport: &mobius::backend::model::ModelTransportSettings,
 ) -> Result<Vec<RouteValue>> {
-    let http = streaming_client()?;
+    let http = transport.streaming_client()?;
     let mut provider_credentials =
         BTreeMap::<String, (ProviderCredential, ModelCredentialLifetime)>::new();
     let mut routes = Vec::with_capacity(catalog.len());
@@ -499,6 +552,7 @@ fn instantiate_routes(
                             base_url.as_deref(),
                             store,
                             credentials,
+                            transport,
                         )?;
                         provider_credentials
                             .insert(route.provider.instance.clone(), credential.clone());
@@ -507,7 +561,7 @@ fn instantiate_routes(
                 }
             };
         routes.push(build_route(
-            route, definition, credential, lifetime, base_url, &http,
+            route, definition, credential, lifetime, base_url, &http, transport,
         )?);
     }
     Ok(routes)
@@ -519,6 +573,7 @@ fn resolve_credential(
     base_url: Option<&str>,
     store: &ConfigStore,
     credentials: &CredentialStore,
+    transport: &mobius::backend::model::ModelTransportSettings,
 ) -> Result<(ProviderCredential, ModelCredentialLifetime)> {
     match definition.auth() {
         ProviderAuth::ApiKey(default_env) => {
@@ -542,7 +597,7 @@ fn resolve_credential(
             Ok((ProviderCredential::ApiKey(value), Default::default()))
         }
         ProviderAuth::Browser(auth) => auth
-            .load(&store.provider_auth_path())
+            .load_with_transport(&store.provider_auth_path(), *transport)
             .map(|credential| (credential, Default::default()))
             .map_err(Error::from),
     }
@@ -555,6 +610,7 @@ fn build_route(
     lifetime: ModelCredentialLifetime,
     base_url: Option<String>,
     http: &HttpClient,
+    transport: &mobius::backend::model::ModelTransportSettings,
 ) -> Result<RouteValue> {
     let model = definition.build(ProviderBuildConfig {
         credential,
@@ -564,6 +620,7 @@ fn build_route(
         service_tier: route.provider.service_tier,
         web_search: route.provider.web_search,
         http: http.clone(),
+        transport: *transport,
     })?;
     let mut choice = route.choice;
     choice.supports_image_input = model.supports_image_input();
@@ -664,7 +721,39 @@ pub(crate) fn configured_compaction(settings: &MiddlewareConfig) -> Result<Compa
         crate::middleware_manifest::string_setting(settings, "compaction", "mode")?
             .ok_or_else(|| Error::Config("unsupported compaction mode".into()))?
             .parse::<CompactionMode>()?,
-    ))
+    )
+    .keep_recent_tokens(crate::middleware_manifest::usize_setting(
+        settings,
+        "compaction",
+        "keep_recent_tokens",
+    )?)?
+    .native_retained_tokens(crate::middleware_manifest::usize_setting(
+        settings,
+        "compaction",
+        "native_retained_tokens",
+    )?)?
+    .reserve_tokens(crate::middleware_manifest::integer_setting(
+        settings,
+        "compaction",
+        "reserve_tokens",
+    )?)?
+    .handoff_policy(
+        crate::middleware_manifest::integer_setting(
+            settings,
+            "compaction",
+            "handoff_reserve_divisor",
+        )?,
+        crate::middleware_manifest::integer_setting(
+            settings,
+            "compaction",
+            "handoff_warning_reserves",
+        )?,
+        crate::middleware_manifest::integer_setting(
+            settings,
+            "compaction",
+            "handoff_urgent_reserves",
+        )?,
+    )?)
 }
 
 fn build_middleware(
@@ -718,22 +807,16 @@ fn build_middleware(
             BuiltinMiddleware::Tasks => Arc::new(Tasks),
             BuiltinMiddleware::Subagents => {
                 let template = Arc::new(OnceLock::<AgentConfig>::new());
-                let max_depth = u8::try_from(crate::middleware_manifest::integer_setting(
-                    settings,
-                    "subagents",
-                    "max_depth",
-                )?)
-                .map_err(|_| {
-                    Error::Config("subagent max depth must fit an unsigned byte".into())
-                })?;
-                let middleware = Subagents::new(
-                    max_depth,
-                    crate::middleware_manifest::usize_setting(
+                let (max_depth, max_concurrency, max_agents) =
+                    crate::middleware_manifest::subagent_limits(
                         settings,
-                        "subagents",
-                        "max_concurrency",
-                    )?,
-                    crate::middleware_manifest::usize_setting(settings, "subagents", "max_agents")?,
+                        prepared.subagent_ceilings,
+                    )?;
+                let middleware = Subagents::new_with_ceilings(
+                    prepared.subagent_ceilings,
+                    max_depth,
+                    max_concurrency,
+                    max_agents,
                     subagent_launcher(&template),
                 )?
                 .session_files(session_files.clone());
@@ -768,10 +851,7 @@ fn build_middleware(
                     .ok_or_else(|| Error::Config("computer runtime was not prepared".into()))?;
                 Arc::new(mobius::middleware::computer_control::ComputerControl::new(
                     session_files.clone(),
-                    mobius::backend::sandbox::WorkerCommand {
-                        executable: runtime.join("node"),
-                        arguments: vec![runtime.join("worker.cjs").to_string_lossy().into_owned()],
-                    },
+                    crate::computer_runtime::worker_command(runtime, &prepared.computer_config)?,
                     runtime.join("computer-control.md"),
                 )?)
             }

@@ -166,35 +166,34 @@ impl VoiceTranscript {
         };
         let mut discussion = Vec::new();
         for message in super::task_messages(&history) {
+            if message.sequence > self.cursor.sequence {
+                cursor.sequence = cursor.sequence.max(message.sequence);
+                let previous = message.id.and_then(|id| self.cursor.drafts.get(id));
+                let text = match previous {
+                    Some(previous) => match message.text.strip_prefix(previous) {
+                        Some("") => String::new(),
+                        Some(rest) => format!("{} (continued): {rest}", message.speaker),
+                        None => format!(
+                            "Correction to earlier voice speech:\n{}: {}",
+                            message.speaker,
+                            if message.text.is_empty() {
+                                "[speech discarded]"
+                            } else {
+                                &message.text
+                            }
+                        ),
+                    },
+                    None if message.text.is_empty() => String::new(),
+                    None => format!("{}: {}", message.speaker, message.text),
+                };
+                if !text.is_empty() {
+                    discussion.push(text);
+                }
+            }
             if !message.complete
                 && let Some(id) = message.id
             {
-                cursor.drafts.insert(id.into(), message.text.clone());
-            }
-            if message.sequence <= self.cursor.sequence {
-                continue;
-            }
-            cursor.sequence = cursor.sequence.max(message.sequence);
-            let previous = message.id.and_then(|id| self.cursor.drafts.get(id));
-            let text = match previous {
-                Some(previous) => match message.text.strip_prefix(previous) {
-                    Some("") => String::new(),
-                    Some(rest) => format!("{} (continued): {rest}", message.speaker),
-                    None => format!(
-                        "Correction to earlier voice speech:\n{}: {}",
-                        message.speaker,
-                        if message.text.is_empty() {
-                            "[speech discarded]"
-                        } else {
-                            &message.text
-                        }
-                    ),
-                },
-                None if message.text.is_empty() => String::new(),
-                None => format!("{}: {}", message.speaker, message.text),
-            };
-            if !text.is_empty() {
-                discussion.push(text);
+                cursor.drafts.insert(id.into(), message.text.into_owned());
             }
         }
         Ok(VoiceHandoff {

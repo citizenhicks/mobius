@@ -25,6 +25,10 @@ mod text {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(super) struct Definition {
+        pub(super) prompt_projection_header: String,
+        pub(super) prompt_projection_global: String,
+        pub(super) prompt_projection_empty: String,
+        pub(super) prompt_projection_footer: String,
         pub(super) default_enabled: bool,
         pub(super) action_add_global: String,
         pub(super) action_delete: String,
@@ -54,10 +58,7 @@ mod text {
         pub(super) widget_text: String,
     }
     pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
-        std::sync::LazyLock::new(|| {
-            toml::from_str(include_str!("scratchpad.toml"))
-                .expect("bundled scratchpad definition must be valid")
-        });
+        std::sync::LazyLock::new(|| crate::config::embedded(include_str!("scratchpad.toml")));
 }
 mod presentation;
 mod projection;

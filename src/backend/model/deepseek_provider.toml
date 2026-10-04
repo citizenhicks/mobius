@@ -1,0 +1,7 @@
+symbol = "deepseek"
+label = "DeepSeek"
+description = "DeepSeek Responses API"
+base_url = "https://api.deepseek.com"
+tool_discovery = "rebuild"
+search = ["off", "live"]
+credential_env = "DEEPSEEK_API_KEY"

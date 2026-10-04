@@ -17,6 +17,8 @@ use tokio::io::AsyncReadExt;
 use super::NetworkAccess;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::ProcessGroupGuard;
+#[cfg(target_os = "linux")]
+use super::ProcfsMode;
 use super::SandboxBackend;
 use super::SandboxMode;
 use super::{
@@ -63,21 +65,8 @@ fn pin_directory(path: &Path) -> Result<Arc<Dir>> {
     Ok(directory)
 }
 
-const MAX_COMMAND_OUTPUT_BYTES: usize = 40_000;
 /// Read-only inspection feeds a UI rather than a model context, so it keeps a larger budget.
 const MAX_READ_ONLY_OUTPUT_BYTES: usize = MAX_BINARY_FILE_BYTES;
-const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
-const ISOLATED_ENVIRONMENT: [&str; 8] = [
-    "PATH",
-    "USER",
-    "LOGNAME",
-    "LANG",
-    "LC_ALL",
-    "TERM",
-    "DEVELOPER_DIR",
-    "SDKROOT",
-];
-
 /// Provides capability-safe file tools and policy-selected command execution.
 pub struct LocalSandbox {
     root: PathBuf,
@@ -87,11 +76,15 @@ pub struct LocalSandbox {
     temp: Arc<tempfile::TempDir>,
     temp_root: Arc<Dir>,
     command_timeout: Duration,
+    command_output_limit: usize,
+    shell_executable: PathBuf,
+    bubblewrap_executable: Option<PathBuf>,
+    allowed_environment: BTreeSet<String>,
     denied_reads: Vec<DeniedRead>,
     denied_environment: BTreeSet<String>,
     isolated_home: bool,
     #[cfg(target_os = "linux")]
-    empty_proc: bool,
+    procfs_mode: ProcfsMode,
 }
 
 #[derive(Clone)]
@@ -107,7 +100,10 @@ struct PinnedRoot {
 }
 
 enum Invocation<'a> {
-    Shell(&'a str),
+    Shell {
+        script: &'a str,
+        executable: &'a Path,
+    },
     Argv {
         executable: &'a Path,
         arguments: &'a [&'a str],
@@ -167,12 +163,16 @@ impl LocalSandbox {
                 read_roots: Vec::new(),
                 temp: Arc::new(temp),
                 temp_root,
-                command_timeout: DEFAULT_COMMAND_TIMEOUT,
+                command_timeout: Duration::from_secs(super::default_command_timeout_seconds()),
+                command_output_limit: super::default_tool_output_limit(),
+                shell_executable: super::text::DEFINITION.defaults_shell.as_str().into(),
+                bubblewrap_executable: None,
+                allowed_environment: BTreeSet::new(),
                 denied_reads: Vec::new(),
                 denied_environment: BTreeSet::new(),
                 isolated_home: false,
                 #[cfg(target_os = "linux")]
-                empty_proc: false,
+                procfs_mode: ProcfsMode::default(),
             })
         }
     }
@@ -188,12 +188,16 @@ impl LocalSandbox {
         scoped.workspace_roots = self.workspace_roots.clone();
         scoped.read_roots = self.read_roots.clone();
         scoped.command_timeout = self.command_timeout;
+        scoped.command_output_limit = self.command_output_limit;
+        scoped.shell_executable = self.shell_executable.clone();
+        scoped.bubblewrap_executable = self.bubblewrap_executable.clone();
+        scoped.allowed_environment = self.allowed_environment.clone();
         scoped.denied_reads = self.denied_reads.clone();
         scoped.denied_environment = self.denied_environment.clone();
         scoped.isolated_home = self.isolated_home;
         #[cfg(target_os = "linux")]
         {
-            scoped.empty_proc = self.empty_proc;
+            scoped.procfs_mode = self.procfs_mode;
         }
         Ok(scoped)
     }
@@ -236,6 +240,56 @@ impl LocalSandbox {
             return Err(Error::Config("command timeout must be positive".into()));
         }
         self.command_timeout = timeout;
+        Ok(self)
+    }
+
+    /// Sets the retained byte budget for each command output stream.
+    /// # Errors
+    /// Returns an error for a zero budget or a budget above the internal safety bound.
+    pub fn command_output_limit(mut self, bytes: usize) -> Result<Self> {
+        super::validate_tool_output_limit(bytes)?;
+        self.command_output_limit = bytes;
+        Ok(self)
+    }
+
+    /// Selects an absolute POSIX shell executable supporting `-c` command execution.
+    /// # Errors
+    /// Returns an error for a missing executable or one in writable or protected storage.
+    pub fn shell_executable(mut self, executable: impl AsRef<Path>) -> Result<Self> {
+        let executable = validated_executable(executable.as_ref())?;
+        self.validate_trusted_executable(&executable)?;
+        self.shell_executable = executable;
+        Ok(self)
+    }
+
+    /// Selects the trusted Bubblewrap executable without changing isolation flags.
+    /// # Errors
+    /// Returns an error for a missing executable or one in writable or protected storage.
+    pub fn bubblewrap_executable(mut self, executable: impl AsRef<Path>) -> Result<Self> {
+        let executable = validated_executable(executable.as_ref())?;
+        self.validate_trusted_executable(&executable)?;
+        self.bubblewrap_executable = Some(executable);
+        Ok(self)
+    }
+
+    /// Allows an inherited variable into commands with an isolated home.
+    /// Explicit removals and [`Self::deny_environment`] always take precedence.
+    /// # Errors
+    /// Returns an error unless the name is a valid environment identifier.
+    pub fn allow_environment(mut self, name: impl Into<String>) -> Result<Self> {
+        let name = name.into();
+        if !crate::identifier::valid_ascii_identifier(
+            &name,
+            usize::MAX,
+            crate::identifier::AsciiCase::Any,
+            b"_",
+        ) || name.as_bytes().first().is_some_and(u8::is_ascii_digit)
+        {
+            return Err(Error::Config(
+                "environment name must be an identifier".into(),
+            ));
+        }
+        self.allowed_environment.insert(name);
         Ok(self)
     }
 
@@ -367,11 +421,13 @@ impl LocalSandbox {
         self
     }
 
-    /// Uses an empty `/proc` mount while retaining PID namespace isolation.
+    /// Selects the Linux `/proc` mount while retaining user and PID namespace isolation.
+    ///
+    /// Use [`ProcfsMode::Empty`] only when the host already provides PID isolation.
     #[cfg(target_os = "linux")]
     #[must_use]
-    pub fn empty_proc(mut self) -> Self {
-        self.empty_proc = true;
+    pub fn procfs_mode(mut self, mode: ProcfsMode) -> Self {
+        self.procfs_mode = mode;
         self
     }
 
@@ -591,6 +647,36 @@ impl LocalSandbox {
             .ok_or_else(|| Error::Sandbox(format!("{name} is unavailable outside protected paths")))
     }
 
+    fn validate_trusted_executable(&self, executable: &Path) -> Result<()> {
+        let temporary = std::fs::canonicalize(self.temp.path())?;
+        if executable.starts_with(&self.root)
+            || executable.starts_with(&temporary)
+            || self
+                .workspace_roots
+                .iter()
+                .any(|root| executable.starts_with(&root.path))
+            || self
+                .denied_reads
+                .iter()
+                .any(|denied| executable.starts_with(&denied.path))
+        {
+            return Err(Error::Config(
+                "execution helper must be outside writable and protected sandbox paths".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn trusted_bubblewrap(&self) -> Result<PathBuf> {
+        let executable = self.bubblewrap_executable.as_ref().map_or_else(
+            || self.find_executable("bwrap"),
+            |path| validated_executable(path),
+        )?;
+        self.validate_trusted_executable(&executable)?;
+        Ok(executable)
+    }
+
     fn command(
         &self,
         invocation: &Invocation<'_>,
@@ -598,6 +684,9 @@ impl LocalSandbox {
         environment: (&[(&str, &str)], &[&str]),
     ) -> Result<tokio::process::Command> {
         self.validate_workspace_roots()?;
+        if let Invocation::Shell { executable, .. } = invocation {
+            self.validate_trusted_executable(&validated_executable(executable)?)?;
+        }
         let mut command = match isolation.sandbox_mode {
             SandboxMode::WorkspaceWrite => platform::sandboxed_command(
                 self,
@@ -614,8 +703,11 @@ impl LocalSandbox {
         };
         command.current_dir(&self.root);
         if self.isolated_home {
-            let inherited = ISOLATED_ENVIRONMENT
-                .into_iter()
+            let inherited = super::text::DEFINITION
+                .defaults_environment
+                .iter()
+                .map(String::as_str)
+                .chain(self.allowed_environment.iter().map(String::as_str))
                 .filter_map(|name| std::env::var_os(name).map(|value| (name, value)));
             command.env_clear().envs(inherited);
         }
@@ -625,7 +717,7 @@ impl LocalSandbox {
         if self.isolated_home {
             command
                 .env("HOME", self.temp.path())
-                .env("SHELL", "/bin/bash");
+                .env("SHELL", &self.shell_executable);
         }
         for name in environment.1 {
             command.env_remove(name);
@@ -645,13 +737,13 @@ impl LocalSandbox {
         environment: (&[(&str, &str)], &[&str]),
         authorization: Option<&CommandAuthorization>,
     ) -> Result<Option<CommandOutput>> {
-        if matches!(&invocation, Invocation::Shell(script) if script.trim().is_empty()) {
+        if matches!(&invocation, Invocation::Shell { script, .. } if script.trim().is_empty()) {
             return Err(Error::Sandbox("command is empty".into()));
         }
         let output_limit = if isolation.workspace_access == WorkspaceAccess::ReadOnly {
             MAX_READ_ONLY_OUTPUT_BYTES
         } else {
-            MAX_COMMAND_OUTPUT_BYTES
+            self.command_output_limit
         };
         async {
             let mut command = self.command(&invocation, isolation, environment)?;
@@ -744,7 +836,7 @@ impl LocalSandbox {
                     stderr_truncated: stderr.truncated,
                 })
             };
-            let output = match mode {
+            let output: Result<CommandOutput> = match mode {
                 CommandMode::Background => execution.await,
                 CommandMode::Foreground => {
                     match tokio::time::timeout(self.command_timeout, execution).await {
@@ -772,7 +864,14 @@ impl LocalSandbox {
             if let Some(process_group) = &mut process_group {
                 process_group.kill();
             }
-            output.map(Some)
+            let output = output?;
+            #[cfg(target_os = "linux")]
+            if isolation.sandbox_mode == SandboxMode::WorkspaceWrite
+                || !self.denied_reads.is_empty()
+            {
+                platform::check_procfs_output(self.procfs_mode, &output)?;
+            }
+            Ok(Some(output))
         }
         .await
     }
@@ -926,7 +1025,10 @@ impl SandboxBackend for LocalSandbox {
     ) -> BoxFuture<'a, Result<CommandOutput>> {
         Box::pin(async move {
             self.execute_invocation(
-                Invocation::Shell(script),
+                Invocation::Shell {
+                    script,
+                    executable: &self.shell_executable,
+                },
                 CommandIsolation {
                     sandbox_mode,
                     network_access,
@@ -952,7 +1054,10 @@ impl SandboxBackend for LocalSandbox {
         authorization: &'a CommandAuthorization,
     ) -> BoxFuture<'a, Result<Option<CommandOutput>>> {
         Box::pin(self.execute_invocation(
-            Invocation::Shell(script),
+            Invocation::Shell {
+                script,
+                executable: &self.shell_executable,
+            },
             CommandIsolation {
                 sandbox_mode,
                 network_access,
@@ -1039,7 +1144,7 @@ async fn read_output(
         output.extend_from_slice(&buffer[..read.min(remaining)]);
         truncated |= read > remaining;
     }
-    let mut output = String::from_utf8_lossy(&output).into_owned();
+    let mut output = String::from_utf8_lossy_owned(output);
     if truncated {
         output.push_str("\n[output truncated]");
     }
@@ -1073,6 +1178,25 @@ fn validate_root(_path: &Path, _directory: &Dir) -> Result<()> {
     Err(Error::Sandbox(
         "the local sandbox requires a Unix platform".into(),
     ))
+}
+
+fn validated_executable(executable: &Path) -> Result<PathBuf> {
+    if !executable.is_absolute() {
+        return Err(Error::Config("executable path must be absolute".into()));
+    }
+    let path = std::fs::canonicalize(executable)?;
+    let metadata = std::fs::metadata(&path)?;
+    if !metadata.is_file() {
+        return Err(Error::Config("executable path must be a file".into()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return Err(Error::Config("executable path is not executable".into()));
+        }
+    }
+    Ok(path)
 }
 
 #[cfg(test)]

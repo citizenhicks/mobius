@@ -19,18 +19,22 @@ fn observation_capping_bounds_all_text_without_dropping_files() {
             size: 100,
         },
     };
-    let output = cap_content(ToolContent(vec![
-        ContentPart::Text {
-            text: "é🗣".repeat(MAX_TOOL_OUTPUT_BYTES),
-        },
-        file.clone(),
-        ContentPart::Text {
-            text: "tail".repeat(MAX_TOOL_OUTPUT_BYTES),
-        },
-        ContentPart::Text {
-            text: "no remaining budget".into(),
-        },
-    ]));
+    let output_limit = crate::backend::sandbox::default_tool_output_limit();
+    let output = cap_content(
+        ToolContent(vec![
+            ContentPart::Text {
+                text: "é🗣".repeat(output_limit),
+            },
+            file.clone(),
+            ContentPart::Text {
+                text: "tail".repeat(output_limit),
+            },
+            ContentPart::Text {
+                text: "no remaining budget".into(),
+            },
+        ]),
+        output_limit,
+    );
     let bytes: usize = output
         .0
         .iter()
@@ -39,7 +43,7 @@ fn observation_capping_bounds_all_text_without_dropping_files() {
             _ => None,
         })
         .sum();
-    assert!(bytes <= MAX_TOOL_OUTPUT_BYTES);
+    assert!(bytes <= output_limit);
     assert_eq!(output.0[1], file);
     assert_eq!(
         output.0[3],
@@ -304,4 +308,18 @@ fn coding_file_links_come_from_owned_arguments_and_keep_bodies_unchanged() {
         generic.links.is_empty(),
         "generic rendering must not infer file semantics"
     );
+}
+
+#[test]
+fn configured_output_budget_can_exceed_the_default_and_bounds_hook_replacements() {
+    let text = "x".repeat(50_000);
+    assert_eq!(cap_content(text.clone().into(), 60_000).text(), text);
+    let call = ToolCall {
+        call_id: "a".into(),
+        name: "read".into(),
+        arguments: Value::Null,
+    };
+    let mut result = ToolResult::error(&call, "initial", 8);
+    result.replace("éééééé");
+    assert_eq!(result.output.text(), "éééé");
 }

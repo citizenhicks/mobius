@@ -1192,9 +1192,9 @@ fn prepare_path(path: &Path) -> Result<()> {
             .write(true)
             .create(true)
             .truncate(false)
-            .mode(0o600)
+            .mode(crate::owner_only::file().mode())
             .open(path)?;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        fs::set_permissions(path, crate::owner_only::file())?;
     }
     Ok(())
 }

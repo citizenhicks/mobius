@@ -96,6 +96,20 @@ async fn bounded_output_reports_when_the_stream_was_truncated() {
 }
 
 #[tokio::test]
+async fn bounded_output_replaces_invalid_and_truncated_utf8() {
+    let output = read_output(
+        &b"\xffa\xf0\x9f\x92\xa9z"[..],
+        CommandStream::Stdout,
+        CommandOutputSink::default(),
+        4,
+    )
+    .await
+    .expect("lossy bounded output");
+    assert_eq!(output.text, "�a�\n[output truncated]");
+    assert!(output.truncated);
+}
+
+#[tokio::test]
 async fn background_commands_do_not_use_the_foreground_deadline() {
     let workspace = tempfile::tempdir().expect("workspace");
     let sandbox = LocalSandbox::new(workspace.path())
@@ -777,9 +791,10 @@ async fn denied_environment_is_removed_from_full_access_commands() {
 
     let output = sandbox
         .execute_invocation(
-            Invocation::Shell(
-                r#"printf '%s:%s' "${MOBIUS_TEST_SECRET-unset}" "$MOBIUS_TEST_VISIBLE""#,
-            ),
+            Invocation::Shell {
+                script: r#"printf '%s:%s' "${MOBIUS_TEST_SECRET-unset}" "$MOBIUS_TEST_VISIBLE""#,
+                executable: Path::new("/bin/bash"),
+            },
             CommandIsolation {
                 sandbox_mode: SandboxMode::DangerFullAccess,
                 network_access: NetworkAccess::Allowed,
@@ -874,7 +889,13 @@ async fn full_access_timeout_reaps_process_group_descendants() {
 fn host_commands_do_not_embed_the_seatbelt_cleanup_wrapper() {
     let workspace = tempfile::tempdir().expect("workspace");
     let sandbox = local_sandbox(workspace.path());
-    let command = platform::host_command(&Invocation::Shell("true"), sandbox.isolated_home);
+    let command = platform::host_command(
+        &Invocation::Shell {
+            script: "true",
+            executable: Path::new("/bin/bash"),
+        },
+        sandbox.isolated_home,
+    );
     let command = command.as_std();
 
     assert_eq!(command.get_program(), "/bin/bash");
@@ -893,8 +914,14 @@ fn protected_full_access_masks_paths_and_scopes_cleanup() {
     let sandbox = local_sandbox(workspace.path())
         .deny_read(protected.path())
         .expect("protected path");
-    let command = platform::protected_full_access_command(&sandbox, &Invocation::Shell("true"))
-        .expect("protected full access command");
+    let command = platform::protected_full_access_command(
+        &sandbox,
+        &Invocation::Shell {
+            script: "true",
+            executable: Path::new("/bin/bash"),
+        },
+    )
+    .expect("protected full access command");
     let arguments = command
         .as_std()
         .get_args()
@@ -939,14 +966,20 @@ async fn network_policy_changes_command_isolation() {
     let sandbox = local_sandbox(workspace.path());
     let denied = platform::sandboxed_command(
         &sandbox,
-        &Invocation::Shell("true"),
+        &Invocation::Shell {
+            script: "true",
+            executable: Path::new("/bin/bash"),
+        },
         NetworkAccess::Denied,
         WorkspaceAccess::Writable,
     )
     .expect("network-disabled command");
     let allowed = platform::sandboxed_command(
         &sandbox,
-        &Invocation::Shell("true"),
+        &Invocation::Shell {
+            script: "true",
+            executable: Path::new("/bin/bash"),
+        },
         NetworkAccess::Allowed,
         WorkspaceAccess::Writable,
     )
@@ -985,17 +1018,28 @@ async fn network_policy_changes_command_isolation() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn empty_proc_keeps_pid_isolation_in_both_bubblewrap_commands() {
+fn procfs_policy_preserves_namespaces_in_both_bubblewrap_commands() {
     let workspace = tempfile::tempdir().expect("workspace");
     let protected = tempfile::tempdir().expect("protected");
     let default = local_sandbox(workspace.path());
     let empty = local_sandbox(workspace.path())
         .deny_read(protected.path())
         .expect("protected path")
-        .empty_proc();
+        .procfs_mode(ProcfsMode::Empty);
+    assert_eq!(default.procfs_mode, ProcfsMode::Private);
+    assert_eq!(
+        empty
+            .isolated_execution()
+            .expect("child sandbox")
+            .procfs_mode,
+        ProcfsMode::Empty
+    );
     let default_command = platform::sandboxed_command(
         &default,
-        &Invocation::Shell("true"),
+        &Invocation::Shell {
+            script: "true",
+            executable: Path::new("/bin/bash"),
+        },
         NetworkAccess::Denied,
         WorkspaceAccess::Writable,
     )
@@ -1003,13 +1047,22 @@ fn empty_proc_keeps_pid_isolation_in_both_bubblewrap_commands() {
     let empty_commands = [
         platform::sandboxed_command(
             &empty,
-            &Invocation::Shell("true"),
+            &Invocation::Shell {
+                script: "true",
+                executable: Path::new("/bin/bash"),
+            },
             NetworkAccess::Denied,
             WorkspaceAccess::Writable,
         )
         .expect("sandboxed command"),
-        platform::protected_full_access_command(&empty, &Invocation::Shell("true"))
-            .expect("protected full-access command"),
+        platform::protected_full_access_command(
+            &empty,
+            &Invocation::Shell {
+                script: "true",
+                executable: Path::new("/bin/bash"),
+            },
+        )
+        .expect("protected full-access command"),
     ];
     let mounts_proc = |command: &Command, option: &str| {
         command
@@ -1021,13 +1074,23 @@ fn empty_proc_keeps_pid_isolation_in_both_bubblewrap_commands() {
     };
 
     assert!(mounts_proc(&default_command, "--proc"));
+    assert!(
+        empty_commands[0]
+            .as_std()
+            .get_args()
+            .any(|argument| argument == OsStr::new("--unshare-net"))
+    );
+    for command in std::iter::once(&default_command).chain(&empty_commands) {
+        for namespace in ["--unshare-user", "--unshare-pid"] {
+            assert!(
+                command
+                    .as_std()
+                    .get_args()
+                    .any(|argument| argument == OsStr::new(namespace))
+            );
+        }
+    }
     for command in empty_commands {
-        assert!(
-            command
-                .as_std()
-                .get_args()
-                .any(|argument| argument == OsStr::new("--unshare-pid"))
-        );
         assert!(mounts_proc(&command, "--tmpfs"));
         assert!(!mounts_proc(&command, "--proc"));
     }
@@ -1037,7 +1100,7 @@ fn empty_proc_keeps_pid_isolation_in_both_bubblewrap_commands() {
 #[tokio::test]
 async fn empty_proc_hides_host_processes() {
     let workspace = tempfile::tempdir().expect("workspace");
-    let sandbox = local_sandbox(workspace.path()).empty_proc();
+    let sandbox = local_sandbox(workspace.path()).procfs_mode(ProcfsMode::Empty);
     let output = sandbox
         .execute(
             &format!(
@@ -1053,6 +1116,81 @@ async fn empty_proc_hides_host_processes() {
         .expect("sandboxed command");
 
     assert_eq!(output.exit_code, 0, "{}", output.stderr);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn private_proc_exposes_only_isolated_namespaces() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let host_namespaces = ["user", "pid", "net"].map(|namespace| {
+        std::fs::read_link(format!("/proc/self/ns/{namespace}")).expect("host namespace")
+    });
+    let output = local_sandbox(workspace.path())
+        .execute(
+            "test -f /proc/self/status && readlink /proc/self/ns/user /proc/self/ns/pid /proc/self/ns/net",
+            SandboxMode::WorkspaceWrite,
+            NetworkAccess::Denied,
+            CommandMode::Foreground,
+            CommandOutputSink::default(),
+        )
+        .await
+        .expect("private proc command");
+
+    assert_eq!(output.exit_code, 0, "{}", output.stderr);
+    let namespaces = output.stdout.lines().collect::<Vec<_>>();
+    assert_eq!(namespaces.len(), host_namespaces.len());
+    for (namespace, host_namespace) in namespaces.into_iter().zip(host_namespaces) {
+        assert_ne!(Path::new(namespace), host_namespace);
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn private_proc_mount_denial_requires_explicit_host_policy() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let helpers = tempfile::tempdir().expect("trusted helper directory");
+    let helper = helpers.path().join("bwrap");
+    std::fs::write(
+        &helper,
+        "#!/bin/sh\nprintf 'called\\n' >> \"$0.calls\"\nprintf 'bwrap: Cannot mount proc on /newroot/proc: Operation not permitted\\n' >&2\nexit 1\n",
+    )
+    .expect("helper");
+    std::fs::set_permissions(&helper, crate::owner_only::dir()).expect("executable helper");
+    let sandbox = local_sandbox(workspace.path())
+        .bubblewrap_executable(&helper)
+        .expect("trusted helper");
+    let error = sandbox
+        .execute(
+            "touch must-not-run",
+            SandboxMode::WorkspaceWrite,
+            NetworkAccess::Denied,
+            CommandMode::Foreground,
+            CommandOutputSink::default(),
+        )
+        .await
+        .expect_err("private proc mount denial");
+    assert!(
+        matches!(error, Error::Sandbox(ref message) if message.contains("ProcfsMode::Empty") && message.contains("PID isolation"))
+    );
+    let output = sandbox
+        .procfs_mode(ProcfsMode::Empty)
+        .execute(
+            "touch must-not-run",
+            SandboxMode::WorkspaceWrite,
+            NetworkAccess::Denied,
+            CommandMode::Foreground,
+            CommandOutputSink::default(),
+        )
+        .await
+        .expect("explicit empty mode keeps command failures");
+
+    assert_eq!(output.exit_code, 1);
+    assert!(!workspace.path().join("must-not-run").exists());
+    assert_eq!(
+        std::fs::read_to_string(helpers.path().join("bwrap.calls")).expect("helper invocations"),
+        "called\ncalled\n",
+        "a failed private mount must never automatically rerun with weaker policy"
+    );
 }
 
 #[cfg(unix)]
@@ -1386,4 +1524,170 @@ fn private_temporary_storage_cannot_be_exposed_as_a_workspace_or_read_root() {
             .allow_read_root(private_parent)
             .is_err()
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn isolated_home_supports_a_configured_posix_shell() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let sandbox = local_sandbox(workspace.path())
+        .shell_executable("/bin/sh")
+        .expect("configured POSIX shell")
+        .isolated_home();
+    for mode in [SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess] {
+        let output = sandbox
+            .execute(
+                "test \"$HOME\" = \"$TMPDIR\" && printf posix",
+                mode,
+                NetworkAccess::Denied,
+                CommandMode::Foreground,
+                CommandOutputSink::default(),
+            )
+            .await
+            .expect("POSIX shell launch");
+        assert_eq!(output.exit_code, 0, "{}", output.stderr);
+        assert_eq!(output.stdout, "posix");
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn configured_command_policy_controls_launch_and_survives_child_execution() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let sandbox = local_sandbox(workspace.path())
+        .shell_executable("/bin/bash")
+        .expect("configured shell")
+        .command_output_limit(5)
+        .expect("configured output limit")
+        .allow_environment("MOBIUS_POLICY_TEST")
+        .expect("allowed identifier")
+        .deny_environment("MOBIUS_POLICY_TEST");
+    let child = sandbox.isolated_execution().expect("child");
+    assert_eq!(child.shell_executable, sandbox.shell_executable);
+    assert_eq!(child.command_output_limit, 5);
+    let output = child
+        .execute(
+            "printf '123456789'",
+            SandboxMode::DangerFullAccess,
+            NetworkAccess::Denied,
+            CommandMode::Foreground,
+            CommandOutputSink::default(),
+        )
+        .await
+        .expect("execute");
+    assert!(output.stdout.starts_with("12345"));
+    assert!(!output.stdout.contains("6789"));
+    assert!(output.stdout_truncated);
+    let command = child
+        .command(
+            &Invocation::Shell {
+                script: "true",
+                executable: &child.shell_executable,
+            },
+            CommandIsolation {
+                sandbox_mode: SandboxMode::DangerFullAccess,
+                network_access: NetworkAccess::Denied,
+                workspace_access: WorkspaceAccess::Writable,
+            },
+            (&[("MOBIUS_POLICY_TEST", "secret")], &[]),
+        )
+        .expect("command");
+    assert!(
+        command
+            .as_std()
+            .get_envs()
+            .any(|(name, value)| name == "MOBIUS_POLICY_TEST" && value.is_none())
+    );
+    assert!(
+        local_sandbox(workspace.path())
+            .shell_executable("relative/bash")
+            .is_err()
+    );
+    assert!(
+        local_sandbox(workspace.path())
+            .allow_environment("BAD=NAME")
+            .is_err()
+    );
+    assert!(
+        local_sandbox(workspace.path())
+            .command_output_limit(0)
+            .is_err()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn configured_isolation_executable_cannot_be_writable_by_the_sandbox() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let helper_root = tempfile::tempdir().expect("trusted helper directory");
+    let helper = helper_root.path().join("bwrap");
+    std::fs::write(&helper, "#!/bin/bash\nexit 0\n").expect("helper");
+    std::fs::set_permissions(&helper, crate::owner_only::dir()).expect("executable");
+    let writable_helper = workspace.path().join("bwrap");
+    std::fs::copy(&helper, &writable_helper).expect("workspace helper");
+    assert!(
+        local_sandbox(workspace.path())
+            .bubblewrap_executable(&writable_helper)
+            .is_err()
+    );
+
+    let sandbox = local_sandbox(workspace.path())
+        .bubblewrap_executable(&helper)
+        .expect("trusted helper");
+    let helper = std::fs::canonicalize(helper).expect("canonical helper");
+    sandbox
+        .validate_trusted_executable(&helper)
+        .expect("outside writable roots");
+    let sandbox = sandbox
+        .allow_workspace_root(helper_root.path())
+        .expect("attached workspace");
+    assert!(sandbox.validate_trusted_executable(&helper).is_err());
+    #[cfg(target_os = "linux")]
+    assert!(sandbox.trusted_bubblewrap().is_err());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn configured_shell_is_rechecked_after_filesystem_policy_changes() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let helpers = tempfile::tempdir().expect("trusted helper directory");
+    let shell = helpers.path().join("bash");
+    std::fs::write(&shell, "#!/bin/bash\nexec /bin/bash \"$@\"\n").expect("shell");
+    std::fs::set_permissions(&shell, crate::owner_only::dir()).expect("executable");
+    let writable_shell = workspace.path().join("bash");
+    std::fs::copy(&shell, &writable_shell).expect("workspace shell");
+    assert!(
+        local_sandbox(workspace.path())
+            .shell_executable(&writable_shell)
+            .is_err()
+    );
+    let private = local_sandbox(workspace.path());
+    let private_shell = private.temporary_directory().join("bash");
+    std::fs::copy(&shell, &private_shell).expect("private temporary shell");
+    assert!(private.shell_executable(&private_shell).is_err());
+
+    for protected in [false, true] {
+        let sandbox = local_sandbox(workspace.path())
+            .shell_executable(&shell)
+            .expect("trusted shell");
+        let sandbox = if protected {
+            sandbox
+                .deny_read(helpers.path())
+                .expect("protected helpers")
+        } else {
+            sandbox
+                .allow_workspace_root(helpers.path())
+                .expect("writable helpers")
+        };
+        assert!(matches!(
+            sandbox.execute(
+                "printf unsafe",
+                SandboxMode::DangerFullAccess,
+                NetworkAccess::Denied,
+                CommandMode::Foreground,
+                CommandOutputSink::default(),
+            ).await,
+            Err(Error::Config(message)) if message.contains("execution helper")
+        ));
+    }
 }

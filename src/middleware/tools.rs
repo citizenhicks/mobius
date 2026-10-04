@@ -50,10 +50,7 @@ mod text {
         pub(super) render_load: String,
     }
     pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
-        std::sync::LazyLock::new(|| {
-            toml::from_str(include_str!("tools.toml"))
-                .expect("bundled tools definition must be valid")
-        });
+        std::sync::LazyLock::new(|| crate::config::embedded(include_str!("tools.toml")));
 }
 mod coding;
 mod commands;
@@ -68,7 +65,6 @@ use commands::{Bash, ManageCommand};
 #[cfg(test)]
 use patch::{apply_patch_document, parse_patch_document, validate_patch_complexity};
 
-const MAX_TOOL_OUTPUT_BYTES: usize = 40_000;
 const MAX_TOOL_UI_BYTES: usize = 512;
 const MAX_TOOL_UI_LINES: usize = 5;
 const MAX_TOOL_SEARCH_QUERY_BYTES: usize = 512;
@@ -595,13 +591,16 @@ impl Catalog {
         &self,
         calls: &[ToolCall],
         tools: &PreparedToolSet,
+        output_limit: usize,
     ) -> (Vec<BoundToolCall>, Vec<ToolResult>) {
         let mut bound = Vec::with_capacity(calls.len());
         let mut rejected = Vec::new();
         for call in calls {
             match self.bind_prepared(call.clone(), tools) {
                 Ok(call) => bound.push(call),
-                Err(error) => rejected.push(ToolResult::error(call, error.to_string())),
+                Err(error) => {
+                    rejected.push(ToolResult::error(call, error.to_string(), output_limit))
+                }
             }
         }
         (bound, rejected)
@@ -960,31 +959,33 @@ pub struct ToolResult {
     pub(crate) handler_executed: bool,
     pub(crate) additional_input: Vec<Value>,
     pub(crate) events: Vec<EventMsg>,
+    output_limit: usize,
 }
 
 impl ToolResult {
-    pub(crate) fn error(call: &ToolCall, output: impl AsRef<str>) -> Self {
+    pub(crate) fn error(call: &ToolCall, output: impl AsRef<str>, output_limit: usize) -> Self {
         Self {
             call_id: call.call_id.clone(),
             name: call.name.clone(),
-            output: capped(output.as_ref(), MAX_TOOL_OUTPUT_BYTES).into(),
+            output: capped(output.as_ref(), output_limit).into(),
             is_error: true,
             usage: None,
             handler_executed: false,
             additional_input: Vec::new(),
             events: Vec::new(),
+            output_limit,
         }
     }
 
     pub(crate) fn replace(&mut self, output: impl AsRef<str>) {
-        self.output = capped(output.as_ref(), MAX_TOOL_OUTPUT_BYTES).into();
+        self.output = capped(output.as_ref(), self.output_limit).into();
     }
 
     fn with_usage(mut self, pending_usage: ToolUsage, model_route: &str) -> Self {
         match pending_usage.take() {
             Ok(usage) => self.usage = usage.map(|usage| (model_route.into(), usage)),
             Err(error) => {
-                self.output = error.to_string().into();
+                self.replace(error.to_string());
                 self.is_error = true;
             }
         }
@@ -1059,6 +1060,7 @@ pub(crate) async fn execute_call(
     model_route: &str,
     author: &crate::protocol::MessageAuthor,
 ) -> ToolResult {
+    let output_limit = sandbox.output_limit();
     let BoundToolCall {
         call,
         materialized,
@@ -1075,11 +1077,11 @@ pub(crate) async fn execute_call(
     let pending_input = context.input.clone();
     let pending_usage = context.usage.clone();
     let Some(tool) = catalog.get(&call.name) else {
-        return ToolResult::error(&call, format!("unknown tool `{}`", call.name));
+        return ToolResult::error(&call, format!("unknown tool `{}`", call.name), output_limit);
     };
     let catalog_revision = match catalog.revision() {
         Ok(revision) => revision.to_owned(),
-        Err(error) => return ToolResult::error(&call, error.to_string()),
+        Err(error) => return ToolResult::error(&call, error.to_string(), output_limit),
     };
     match tool.exposure {
         ToolExposure::Direct => {}
@@ -1091,17 +1093,23 @@ pub(crate) async fn execute_call(
                     "tool `{}` was not materialized for this model step",
                     call.name
                 ),
+                output_limit,
             );
         }
         ToolExposure::Hidden => {
             return ToolResult::error(
                 &call,
                 format!("tool `{}` is hidden from the model", call.name),
+                output_limit,
             );
         }
     }
     if tool.approval == ApprovalRequirement::Always && !context.permissions.allows_mutation() {
-        return ToolResult::error(&call, "tool call is not authorized to mutate state");
+        return ToolResult::error(
+            &call,
+            "tool call is not authorized to mutate state",
+            output_limit,
+        );
     }
     let ToolCall {
         call_id,
@@ -1132,12 +1140,13 @@ pub(crate) async fn execute_call(
                     return ToolResult {
                         call_id,
                         name,
-                        output: capped(&error.to_string(), MAX_TOOL_OUTPUT_BYTES).into(),
+                        output: capped(&error.to_string(), output_limit).into(),
                         is_error: true,
                         usage: None,
                         handler_executed: true,
                         additional_input: Vec::new(),
                         events: Vec::new(),
+                        output_limit,
                     }
                     .with_usage(pending_usage, model_route);
                 }
@@ -1148,33 +1157,36 @@ pub(crate) async fn execute_call(
             ToolResult {
                 call_id,
                 name,
-                output: cap_content(output.content.content),
+                output: cap_content(output.content.content, output_limit),
                 is_error: output.content.is_error,
                 usage: None,
                 handler_executed: true,
                 additional_input,
                 events: effects.events,
+                output_limit,
             }
         }
         Ok(Err(error)) => ToolResult {
             call_id,
             name,
-            output: capped(&error.to_string(), MAX_TOOL_OUTPUT_BYTES).into(),
+            output: capped(&error.to_string(), output_limit).into(),
             is_error: true,
             usage: None,
             handler_executed: true,
             additional_input: Vec::new(),
             events: Vec::new(),
+            output_limit,
         },
         Err(_) => ToolResult {
             call_id,
             name,
-            output: "tool panicked".into(),
+            output: capped("tool panicked", output_limit).into(),
             is_error: true,
             usage: None,
             handler_executed: true,
             additional_input: Vec::new(),
             events: Vec::new(),
+            output_limit,
         },
     }
     .with_usage(pending_usage, model_route)
@@ -1227,8 +1239,11 @@ fn tools_search(
     })
 }
 
-fn cap_content(mut content: crate::protocol::ToolContent) -> crate::protocol::ToolContent {
-    let mut remaining = MAX_TOOL_OUTPUT_BYTES;
+fn cap_content(
+    mut content: crate::protocol::ToolContent,
+    output_limit: usize,
+) -> crate::protocol::ToolContent {
+    let mut remaining = output_limit;
     for part in &mut content.0 {
         if let crate::protocol::ContentPart::Text { text } = part {
             *text = capped(text, remaining);

@@ -1,0 +1,17 @@
+http_connect_timeout_ms = 10000
+http_idle_timeout_ms = 180000
+socket_connect_timeout_ms = 15000
+socket_io_timeout_ms = 5000
+socket_idle_timeout_ms = 300000
+stream_retry_limit = 5
+stream_retry_backoff_ms = 200
+stream_retry_max_backoff_ms = 3200
+compaction_retry_limit = 2
+compaction_retry_backoff_ms = 200
+voice_start_timeout_ms = 30000
+voice_io_timeout_ms = 5000
+voice_call_timeout_ms = 3600000
+oauth_request_timeout_ms = 30000
+oauth_callback_timeout_ms = 900000
+oauth_callback_request_timeout_ms = 5000
+device_code_timeout_ms = 900000

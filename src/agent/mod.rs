@@ -96,6 +96,7 @@ pub struct AgentConfig {
     model_route_configured: bool,
     initial_replay_batches: usize,
     max_model_steps: usize,
+    token_estimate: crate::middleware::TokenEstimate,
     role: AgentRole,
 }
 
@@ -128,6 +129,7 @@ impl AgentConfig {
             model_route_configured: false,
             initial_replay_batches: DEFAULT_INITIAL_REPLAY_BATCHES,
             max_model_steps: DEFAULT_MAX_MODEL_STEPS,
+            token_estimate: crate::middleware::TokenEstimate::default(),
             role: AgentRole::Main,
         }
     }
@@ -166,6 +168,13 @@ impl AgentConfig {
     #[must_use]
     pub fn catalog_visible(mut self, visible: bool) -> Self {
         self.catalog_visible = visible;
+        self
+    }
+
+    /// Sets the workload-specific byte estimate shared by all context policies.
+    #[must_use]
+    pub fn token_estimate(mut self, estimate: crate::middleware::TokenEstimate) -> Self {
+        self.token_estimate = estimate;
         self
     }
 

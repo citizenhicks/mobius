@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use super::Middleware;
 use super::ModelContext;
-use super::approximate_item_tokens;
+use super::TokenEstimate;
 use super::manifest::{
     MiddlewareManifest, MiddlewareSettingChoice, MiddlewareSettingChoices,
     MiddlewareSettingManifest,
@@ -45,6 +45,36 @@ mod text {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(super) struct Definition {
+        pub(super) summary_tool_call_label: String,
+        pub(super) summary_tool_result_label: String,
+        pub(super) summary_reasoning_label: String,
+        pub(super) summary_assistant_label: String,
+        pub(super) summary_user_label: String,
+        pub(super) prompt_visual_evidence: String,
+        pub(super) prompt_compacted_context: String,
+        pub(super) handoff_notes_parameter_description: String,
+        pub(super) handoff_saved_result: String,
+        pub(super) handoff_requested_result: String,
+        pub(super) handoff_saved_context: String,
+        pub(super) handoff_requested_context: String,
+        pub(super) defaults_keep_recent_tokens: i64,
+        pub(super) setting_keep_recent_tokens_label: String,
+        pub(super) setting_keep_recent_tokens_description: String,
+        pub(super) defaults_native_retained_tokens: i64,
+        pub(super) setting_native_retained_tokens_label: String,
+        pub(super) setting_native_retained_tokens_description: String,
+        pub(super) defaults_reserve_tokens: i64,
+        pub(super) setting_reserve_tokens_label: String,
+        pub(super) setting_reserve_tokens_description: String,
+        pub(super) defaults_handoff_reserve_divisor: i64,
+        pub(super) setting_handoff_reserve_divisor_label: String,
+        pub(super) setting_handoff_reserve_divisor_description: String,
+        pub(super) defaults_handoff_warning_reserves: i64,
+        pub(super) setting_handoff_warning_reserves_label: String,
+        pub(super) setting_handoff_warning_reserves_description: String,
+        pub(super) defaults_handoff_urgent_reserves: i64,
+        pub(super) setting_handoff_urgent_reserves_label: String,
+        pub(super) setting_handoff_urgent_reserves_description: String,
         pub(super) default_enabled: bool,
         pub(super) default_mode: CompactionMode,
         pub(super) defaults_compaction_tokens: i64,
@@ -72,10 +102,18 @@ mod text {
     }
     pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
         std::sync::LazyLock::new(|| {
-            let definition: Definition = toml::from_str(include_str!("compaction.toml"))
-                .expect("bundled compaction definition must be valid");
+            let definition: Definition = crate::config::embedded(include_str!("compaction.toml"));
 
             assert!(definition.defaults_compaction_tokens >= 1);
+            assert!(definition.defaults_keep_recent_tokens > 0);
+            assert!(definition.defaults_native_retained_tokens > 0);
+            assert!(definition.defaults_reserve_tokens > 0);
+            assert!(definition.defaults_handoff_reserve_divisor > 0);
+            assert!(definition.defaults_handoff_urgent_reserves > 0);
+            assert!(
+                definition.defaults_handoff_warning_reserves
+                    > definition.defaults_handoff_urgent_reserves
+            );
             assert!(definition.setting_at_tokens_step > 0);
 
             definition
@@ -83,10 +121,7 @@ mod text {
 }
 mod handoff;
 
-const KEEP_RECENT_TOKENS: usize = 20_000;
-const NATIVE_RETAINED_TOKENS: usize = 64_000;
 const MAX_SUMMARY_TOOL_RESULT_CHARS: usize = 2_000;
-const COMPACTION_RESERVE_TOKENS: i64 = 16_384;
 
 /// Default compaction trigger for middleware instances without an override.
 pub fn default_compaction_tokens() -> i64 {
@@ -134,6 +169,78 @@ static SETTINGS: std::sync::LazyLock<Vec<MiddlewareSettingManifest>> =
                 max: None,
                 step: text::DEFINITION.setting_at_tokens_step,
                 default: default_compaction_tokens(),
+            },
+            MiddlewareSettingManifest::Integer {
+                id: "keep_recent_tokens",
+                label: text::DEFINITION.setting_keep_recent_tokens_label.as_str(),
+                description: text::DEFINITION
+                    .setting_keep_recent_tokens_description
+                    .as_str(),
+                min: 1,
+                max: None,
+                step: 1,
+                default: text::DEFINITION.defaults_keep_recent_tokens,
+            },
+            MiddlewareSettingManifest::Integer {
+                id: "native_retained_tokens",
+                label: text::DEFINITION
+                    .setting_native_retained_tokens_label
+                    .as_str(),
+                description: text::DEFINITION
+                    .setting_native_retained_tokens_description
+                    .as_str(),
+                min: 1,
+                max: None,
+                step: 1,
+                default: text::DEFINITION.defaults_native_retained_tokens,
+            },
+            MiddlewareSettingManifest::Integer {
+                id: "reserve_tokens",
+                label: text::DEFINITION.setting_reserve_tokens_label.as_str(),
+                description: text::DEFINITION.setting_reserve_tokens_description.as_str(),
+                min: 1,
+                max: None,
+                step: 1,
+                default: text::DEFINITION.defaults_reserve_tokens,
+            },
+            MiddlewareSettingManifest::Integer {
+                id: "handoff_reserve_divisor",
+                label: text::DEFINITION
+                    .setting_handoff_reserve_divisor_label
+                    .as_str(),
+                description: text::DEFINITION
+                    .setting_handoff_reserve_divisor_description
+                    .as_str(),
+                min: 1,
+                max: None,
+                step: 1,
+                default: text::DEFINITION.defaults_handoff_reserve_divisor,
+            },
+            MiddlewareSettingManifest::Integer {
+                id: "handoff_warning_reserves",
+                label: text::DEFINITION
+                    .setting_handoff_warning_reserves_label
+                    .as_str(),
+                description: text::DEFINITION
+                    .setting_handoff_warning_reserves_description
+                    .as_str(),
+                min: 1,
+                max: None,
+                step: 1,
+                default: text::DEFINITION.defaults_handoff_warning_reserves,
+            },
+            MiddlewareSettingManifest::Integer {
+                id: "handoff_urgent_reserves",
+                label: text::DEFINITION
+                    .setting_handoff_urgent_reserves_label
+                    .as_str(),
+                description: text::DEFINITION
+                    .setting_handoff_urgent_reserves_description
+                    .as_str(),
+                min: 1,
+                max: None,
+                step: 1,
+                default: text::DEFINITION.defaults_handoff_urgent_reserves,
             },
         ]
     });
@@ -189,6 +296,12 @@ pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
 pub struct Compaction {
     at_tokens: i64,
     mode: CompactionMode,
+    keep_recent_tokens: usize,
+    native_retained_tokens: usize,
+    reserve_tokens: i64,
+    handoff_reserve_divisor: i64,
+    handoff_warning_reserves: i64,
+    handoff_urgent_reserves: i64,
 }
 
 impl Default for Compaction {
@@ -196,6 +309,16 @@ impl Default for Compaction {
         Self {
             at_tokens: default_compaction_tokens(),
             mode: CompactionMode::default(),
+            keep_recent_tokens: usize::try_from(text::DEFINITION.defaults_keep_recent_tokens)
+                .expect("bundled recent budget must fit"),
+            native_retained_tokens: usize::try_from(
+                text::DEFINITION.defaults_native_retained_tokens,
+            )
+            .expect("bundled native budget must fit"),
+            reserve_tokens: text::DEFINITION.defaults_reserve_tokens,
+            handoff_reserve_divisor: text::DEFINITION.defaults_handoff_reserve_divisor,
+            handoff_warning_reserves: text::DEFINITION.defaults_handoff_warning_reserves,
+            handoff_urgent_reserves: text::DEFINITION.defaults_handoff_urgent_reserves,
         }
     }
 }
@@ -213,8 +336,55 @@ impl Compaction {
         }
         Ok(Self {
             at_tokens,
-            mode: CompactionMode::default(),
+            ..Self::default()
         })
+    }
+
+    /// Sets the trailing complete conversation budget retained after summary compaction.
+    /// # Errors
+    /// Returns an error for a zero budget or one outside the supported integer range.
+    pub fn keep_recent_tokens(mut self, tokens: usize) -> Result<Self> {
+        positive_token_budget(tokens)?;
+        self.keep_recent_tokens = tokens;
+        Ok(self)
+    }
+
+    /// Sets the recent user-message budget retained beside native compaction output.
+    /// # Errors
+    /// Returns an error for a zero budget or one outside the supported integer range.
+    pub fn native_retained_tokens(mut self, tokens: usize) -> Result<Self> {
+        positive_token_budget(tokens)?;
+        self.native_retained_tokens = tokens;
+        Ok(self)
+    }
+
+    /// Sets the maximum reserve for one model response or handoff step.
+    /// # Errors
+    /// Returns an error unless the reserve is positive.
+    pub fn reserve_tokens(mut self, tokens: i64) -> Result<Self> {
+        if tokens <= 0 {
+            return Err(Error::Config("compaction reserve must be positive".into()));
+        }
+        self.reserve_tokens = tokens;
+        Ok(self)
+    }
+
+    /// Selects the context-window fraction and warning/urgent margins for handoffs.
+    /// # Errors
+    /// Returns an error unless all values are positive and warning exceeds urgent.
+    pub fn handoff_policy(
+        mut self,
+        reserve_divisor: i64,
+        warning_reserves: i64,
+        urgent_reserves: i64,
+    ) -> Result<Self> {
+        if reserve_divisor <= 0 || urgent_reserves <= 0 || warning_reserves <= urgent_reserves {
+            return Err(Error::Config("handoff policy requires a positive divisor and warning reserves greater than positive urgent reserves".into()));
+        }
+        self.handoff_reserve_divisor = reserve_divisor;
+        self.handoff_warning_reserves = warning_reserves;
+        self.handoff_urgent_reserves = urgent_reserves;
+        Ok(self)
     }
 
     /// Selects the context continuation policy for every model using this middleware.
@@ -230,9 +400,9 @@ impl Compaction {
         match self.mode {
             CompactionMode::Automatic => self
                 .at_tokens
-                .min(context_window.saturating_sub(COMPACTION_RESERVE_TOKENS))
+                .min(context_window.saturating_sub(self.reserve_tokens))
                 .max(1),
-            CompactionMode::Handoff => handoff::warning_tokens(self.at_tokens, context_window),
+            CompactionMode::Handoff => handoff::warning_tokens(self, context_window),
         }
     }
 }
@@ -330,7 +500,7 @@ impl Middleware for Compaction {
     fn pre_model<'a>(&'a self, context: &'a mut ModelContext<'_>) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             if self.mode == CompactionMode::Handoff {
-                return handoff::prepare(context, self.at_tokens).await;
+                return handoff::prepare(context, self).await;
             }
             let estimated = context.estimated_input_tokens();
             let observed = context
@@ -376,14 +546,20 @@ impl Middleware for Compaction {
                 };
                 context.model.compact(context.provider, request).await?
             } else {
-                summarize(context).await?
+                summarize(context, self.keep_recent_tokens).await?
             };
             if output.output.is_empty() {
                 return Err(Error::Provider(
                     "compaction returned an empty context".into(),
                 ));
             }
-            apply_compaction(context, output.output, Some(output.usage)).await?;
+            apply_compaction(
+                context,
+                output.output,
+                Some(output.usage),
+                self.native_retained_tokens,
+            )
+            .await?;
             Ok(())
         })
     }
@@ -393,6 +569,7 @@ async fn apply_compaction(
     context: &mut ModelContext<'_>,
     output: Vec<Value>,
     usage: Option<crate::protocol::TokenUsage>,
+    native_retained_tokens: usize,
 ) -> Result<()> {
     let tool_load = retained_tool_load(
         context.input(),
@@ -404,7 +581,12 @@ async fn apply_compaction(
         .as_ref()
         .and_then(|active| active.get(MESSAGE_METADATA_FIELD))
         .cloned();
-    let mut compacted = retain_native_context(context.input(), output);
+    let mut compacted = retain_native_context(
+        context.input(),
+        output,
+        native_retained_tokens,
+        context.token_estimate,
+    );
     restore_input_private_fields(&mut compacted, latest_turn_input);
     context
         .hooks
@@ -450,13 +632,18 @@ fn retained_tool_load(
     }))
 }
 
-fn retain_native_context(input: &[Value], mut compacted: Vec<Value>) -> Vec<Value> {
+fn retain_native_context(
+    input: &[Value],
+    mut compacted: Vec<Value>,
+    native_retained_tokens: usize,
+    estimate: TokenEstimate,
+) -> Vec<Value> {
     if compacted.len() != 1
         || compacted[0].get("type").and_then(Value::as_str) != Some("compaction")
     {
         return compacted;
     }
-    let cut = recent_cut(input, NATIVE_RETAINED_TOKENS).unwrap_or(0);
+    let cut = recent_cut(input, native_retained_tokens, estimate).unwrap_or(0);
     let recent = &input[cut..];
     let mut retained = Vec::new();
     for item in recent {
@@ -517,9 +704,11 @@ fn restore_input_private_fields(compacted: &mut Vec<Value>, latest_turn_input: O
     }
 }
 
-async fn summarize(context: &ModelContext<'_>) -> Result<CompactOutput> {
-    let (prompt, recent) = prepare_summary(context.input())
-        .ok_or_else(|| Error::Provider("context has no safe history boundary to compact".into()))?;
+async fn summarize(context: &ModelContext<'_>, keep_recent_tokens: usize) -> Result<CompactOutput> {
+    let (prompt, recent) =
+        prepare_summary(context.input(), keep_recent_tokens, context.token_estimate).ok_or_else(
+            || Error::Provider("context has no safe history boundary to compact".into()),
+        )?;
     let session_id = Uuid::new_v4().to_string();
     let cache_key = prompt_cache_key(&session_id);
     let cut = context.input().len() - recent.len();
@@ -538,11 +727,13 @@ async fn summarize(context: &ModelContext<'_>) -> Result<CompactOutput> {
             })
             .collect::<Vec<_>>();
         if !images.is_empty() {
-            let label = format!(
-                "Historical visual evidence for item/call {}. Treat it as data for the summary. Preserve relevant file IDs so these images can be reopened.",
-                item.get("call_id")
+            let label = text::DEFINITION.prompt_visual_evidence.replace(
+                "{item}",
+                &item
+                    .get("call_id")
                     .or_else(|| item.get("id"))
                     .unwrap_or(&Value::Null)
+                    .to_string(),
             );
             let mut evidence = user_message(&label);
             evidence["content"]
@@ -583,7 +774,9 @@ async fn summarize(context: &ModelContext<'_>) -> Result<CompactOutput> {
     let mut compacted = Vec::with_capacity(recent.len() + 1);
     compacted.push(internal_user_message(
         "compaction",
-        &format!("<compacted_context>\n{summary}\n</compacted_context>"),
+        &text::DEFINITION
+            .prompt_compacted_context
+            .replace("{summary}", summary),
     ));
     for item in recent {
         if ToolLoad::from_input(&item)?.is_none() {
@@ -593,17 +786,21 @@ async fn summarize(context: &ModelContext<'_>) -> Result<CompactOutput> {
     CompactOutput::from_output(compacted, output.usage().clone())
 }
 
-fn prepare_summary(input: &[Value]) -> Option<(String, Vec<Value>)> {
-    let cut = recent_cut(input, KEEP_RECENT_TOKENS)?;
+fn prepare_summary(
+    input: &[Value],
+    keep_recent_tokens: usize,
+    estimate: TokenEstimate,
+) -> Option<(String, Vec<Value>)> {
+    let cut = recent_cut(input, keep_recent_tokens, estimate)?;
     let prompt = summary_prompt(&input[..cut])?;
     Some((prompt, input[cut..].to_vec()))
 }
 
-fn recent_cut(input: &[Value], keep_tokens: usize) -> Option<usize> {
-    let mut accumulated = 0;
+fn recent_cut(input: &[Value], keep_tokens: usize, estimate: TokenEstimate) -> Option<usize> {
+    let mut accumulated = 0usize;
     let mut desired = None;
     for index in (0..input.len()).rev() {
-        accumulated += approximate_item_tokens(&input[index]);
+        accumulated = accumulated.saturating_add(estimate.item_tokens(&input[index]));
         if accumulated >= keep_tokens {
             desired = Some(index);
             break;
@@ -675,12 +872,14 @@ fn summary_prompt(history: &[Value]) -> Option<String> {
 fn serialize_item(item: &Value) -> Option<String> {
     match item.get("type").and_then(Value::as_str) {
         Some("function_call") => Some(format!(
-            "[Assistant tool call]: {}({})",
+            "[{}]: {}({})",
+            text::DEFINITION.summary_tool_call_label,
             item.get("name").and_then(Value::as_str).unwrap_or("tool"),
             value_text(item.get("arguments"))
         )),
         Some("function_call_output") => Some(format!(
-            "[Tool result]: {}",
+            "[{}]: {}",
+            text::DEFINITION.summary_tool_result_label,
             truncate_chars(
                 &content_text(item.get("output")),
                 MAX_SUMMARY_TOOL_RESULT_CHARS
@@ -688,16 +887,17 @@ fn serialize_item(item: &Value) -> Option<String> {
         )),
         Some("reasoning") => {
             let text = content_text(item.get("summary"));
-            (!text.is_empty()).then(|| format!("[Assistant reasoning]: {text}"))
+            (!text.is_empty())
+                .then(|| format!("[{}]: {text}", text::DEFINITION.summary_reasoning_label))
         }
         Some("message") | None => {
             let role = item.get("role").and_then(Value::as_str)?;
             let text = content_text(item.get("content"));
             (!text.is_empty()).then(|| {
                 let label = if role == "assistant" {
-                    "Assistant"
+                    text::DEFINITION.summary_assistant_label.as_str()
                 } else {
-                    "User"
+                    text::DEFINITION.summary_user_label.as_str()
                 };
                 format!("[{label}]: {text}")
             })
@@ -743,9 +943,60 @@ fn truncate_chars(text: &str, limit: usize) -> String {
         .map_or_else(|| text.to_string(), |(end, _)| format!("{}…", &text[..end]))
 }
 
+fn positive_token_budget(tokens: usize) -> Result<()> {
+    if tokens == 0 || i64::try_from(tokens).is_err() {
+        return Err(Error::Config(
+            "retained token budget must be a positive signed integer".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owner_local_defaults_preserve_retention_and_handoff_policy() {
+        let policy = Compaction::default();
+        assert_eq!(policy.at_tokens, 250_000);
+        assert_eq!(policy.keep_recent_tokens, 20_000);
+        assert_eq!(policy.native_retained_tokens, 64_000);
+        assert_eq!(policy.reserve_tokens, 16_384);
+        assert_eq!(policy.handoff_reserve_divisor, 8);
+        assert_eq!(policy.handoff_warning_reserves, 3);
+        assert_eq!(policy.handoff_urgent_reserves, 2);
+        assert_eq!(policy.mode, CompactionMode::Automatic);
+    }
+
+    #[test]
+    fn configured_compaction_reserves_and_retention_change_behavior() {
+        let policy = Compaction::new(900)
+            .unwrap()
+            .reserve_tokens(100)
+            .unwrap()
+            .keep_recent_tokens(1)
+            .unwrap()
+            .native_retained_tokens(1)
+            .unwrap()
+            .handoff_policy(10, 4, 2)
+            .unwrap();
+        assert_eq!(policy.trigger_tokens(1000), 900);
+        assert_eq!(
+            policy.mode(CompactionMode::Handoff).trigger_tokens(1000),
+            600
+        );
+        assert!(Compaction::default().handoff_policy(8, 2, 3).is_err());
+        let input = vec![user_message("old request"), user_message("latest request")];
+        let native =
+            vec![serde_json::json!({"type":"compaction", "encrypted_content":"checkpoint"})];
+        let retained = retain_native_context(&input, native, 1, TokenEstimate::default());
+        assert_eq!(retained.len(), 2);
+        assert_eq!(retained[0], input[1]);
+        assert!(prepare_summary(&input, 1000, TokenEstimate::default()).is_none());
+        assert!(prepare_summary(&input, 1, TokenEstimate::default()).is_some());
+    }
+
     use crate::backend::model::tool_output;
 
     #[test]
@@ -815,7 +1066,7 @@ mod tests {
             tool_output("b", "done", false),
         ];
 
-        assert_eq!(recent_cut(&input, 10), Some(1));
+        assert_eq!(recent_cut(&input, 10, TokenEstimate::default()), Some(1));
     }
 
     #[test]
@@ -896,7 +1147,12 @@ mod tests {
             "type": "compaction",
             "encrypted_content": "opaque"
         })];
-        let mut compacted = retain_native_context(&input, compacted);
+        let mut compacted = retain_native_context(
+            &input,
+            compacted,
+            Compaction::default().native_retained_tokens,
+            TokenEstimate::default(),
+        );
         restore_input_private_fields(&mut compacted, latest_turn_input(&input));
 
         assert_eq!(compacted.len(), 2);

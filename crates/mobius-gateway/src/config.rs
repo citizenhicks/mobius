@@ -1,5 +1,6 @@
 //! Validated gateway configuration and owner-only persistence.
 
+mod runtime;
 mod store;
 mod validation;
 mod workspace;
@@ -32,6 +33,7 @@ use crate::wire::{
 };
 use crate::{Error, Result};
 
+pub use self::runtime::RuntimeConfig;
 use self::store::*;
 pub use self::store::{
     ConfigStore, CredentialStore, ResolvedCredential, load_secret_file, state_dir,
@@ -45,8 +47,24 @@ pub(crate) use self::validation::{
 pub(crate) use self::workspace::{
     create_workspace_directory, local_user_name, validate_chat_workspace, workspace_id,
 };
+pub use crate::server::ConnectionPolicy;
 
 const CONFIG_VERSION: u32 = 26;
+pub(crate) const MAX_CAPACITY: usize = 4_096;
+
+pub(crate) fn bounded<T>(name: &str, value: T, range: std::ops::RangeInclusive<T>) -> Result<()>
+where
+    T: Copy + PartialOrd + std::fmt::Display,
+{
+    if !range.contains(&value) {
+        return Err(Error::Config(format!(
+            "{name} must be between {} and {}",
+            range.start(),
+            range.end()
+        )));
+    }
+    Ok(())
+}
 const CHAT_SPEC_VERSION: u32 = 15;
 pub(crate) const CHAT_SPEC_METADATA_KEY: &str = "mobius_gateway.chat";
 const CONFIG_FILE: &str = "gateway.toml";
@@ -103,13 +121,28 @@ pub enum CloudflareConfig {
 }
 
 /// Durable machine-wide settings and defaults for one gateway process.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GatewayConfig {
     version: u32,
     /// Gateway lifecycle and private ingress.
     #[serde(default)]
-    pub runtime: crate::telemetry::RuntimeConfig,
+    pub runtime: RuntimeConfig,
+    /// Connection and active-chat resource limits.
+    #[serde(default)]
+    pub connections: ConnectionPolicy,
+    /// Operator-controlled pairing policy.
+    #[serde(default)]
+    pub auth: crate::auth::AuthConfig,
+    /// Computer runtime and desktop launch options.
+    #[serde(default)]
+    pub computer: crate::computer_runtime::ComputerConfig,
+    /// Model network and retry policy.
+    #[serde(default)]
+    pub model_transport: mobius::backend::model::ModelTransportSettings,
+    /// Host execution policy independent of Bot permissions.
+    #[serde(default)]
+    pub execution: crate::sandbox::ExecutionConfig,
     /// Explicit outbound collectors.
     #[serde(default)]
     pub telemetry: crate::telemetry::TelemetryConfig,
@@ -206,6 +239,11 @@ impl GatewayConfig {
         let config = Self {
             version: CONFIG_VERSION,
             runtime: Default::default(),
+            connections: Default::default(),
+            auth: Default::default(),
+            computer: Default::default(),
+            model_transport: Default::default(),
+            execution: Default::default(),
             telemetry: Default::default(),
             listen,
             tls,
@@ -393,28 +431,12 @@ impl GatewayConfig {
             )));
         }
         validate_telemetry(&self.telemetry)?;
-        if self
-            .runtime
-            .storage_limit_bytes
-            .is_some_and(|limit| limit < 64 * 1024 * 1024)
-        {
-            return Err(Error::Config(
-                "storage_limit_bytes must be at least 64 MiB".into(),
-            ));
-        }
-        if self
-            .runtime
-            .hold_socket
-            .as_ref()
-            .is_some_and(|path| !path.is_absolute())
-        {
-            return Err(Error::Config("hold_socket must be an absolute path".into()));
-        }
-        if self.runtime.idle_exit_seconds < 60 {
-            return Err(Error::Config(
-                "idle_exit_seconds must be at least 60".into(),
-            ));
-        }
+        self.runtime.validate()?;
+        self.connections.validate()?;
+        self.auth.validate()?;
+        self.computer.validate()?;
+        self.model_transport.validate()?;
+        self.execution.validate()?;
         if let Some(ingress) = self.runtime.ingress
             && (ingress == self.listen
                 || ingress.port() == 0
@@ -471,7 +493,10 @@ impl GatewayConfig {
                     "configuration revision must be positive".into(),
                 ));
             }
-            validate_agent_composition(&default.config)?;
+            validate_agent_composition_with_ceilings(
+                &default.config,
+                self.execution.subagent_ceilings()?,
+            )?;
             self.validate_provider_selection(&default.config.provider)?;
             for (middleware, setting, route) in
                 crate::middleware_manifest::configured_model_routes(&default.config.middleware)
@@ -582,7 +607,7 @@ impl ChatSpec {
         let root = state_dir.with_extension("workspaces").join(&self.bot_id);
         fs::create_dir_all(&root)?;
         #[cfg(unix)]
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
+        fs::set_permissions(&root, mobius::owner_only::dir())?;
         validate_chat_workspace(&root, state_dir, tls)
     }
 
@@ -742,7 +767,7 @@ impl CloudflareConfig {
                 || !hostname.is_ascii()
                 || hostname != &hostname.to_ascii_lowercase()
                 || !hostname.contains('.')
-                || !hostname.split('.').all(valid_hostname_label))
+                || !hostname.split('.').all(crate::hostnames::valid_label))
         {
             return Err(invalid_cloudflare_hostname());
         }

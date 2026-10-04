@@ -324,8 +324,16 @@ mod tests {
                 Some("https://custom.example/v1"),
                 Some("https://custom.example/v1"),
             ),
-            ("openai_codex", None, None),
-            ("openai_codex", Some("https://custom.example/v1"), None),
+            (
+                "openai_codex",
+                None,
+                provider("openai_codex").expect("Codex").default_base_url(),
+            ),
+            (
+                "openai_codex",
+                Some("https://custom.example/v1"),
+                Some("https://custom.example/v1"),
+            ),
         ] {
             let mut selection = crate::wire::AgentComposition::default().provider;
             selection.provider = provider_id.into();

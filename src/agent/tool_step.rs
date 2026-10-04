@@ -45,7 +45,11 @@ impl Runner {
         input: &mut Vec<serde_json::Value>,
     ) -> Result<Option<ToolResult>> {
         if let Err(error) = self.catalog.bind_prepared(call.clone(), tools) {
-            return Ok(Some(ToolResult::error(call, error.to_string())));
+            return Ok(Some(ToolResult::error(
+                call,
+                error.to_string(),
+                self.config.sandbox.output_limit(),
+            )));
         }
         let mut context = PreToolUseContext {
             turn: self.turn_identity(turn_id)?,
@@ -62,6 +66,7 @@ impl Runner {
             return Ok(Some(ToolResult::error(
                 call,
                 format!("tool call denied: {reason}"),
+                self.config.sandbox.output_limit(),
             )));
         }
         Ok(None)
@@ -102,7 +107,9 @@ impl Runner {
         permissions: SandboxPermissions,
     ) -> Result<Wait<ToolCompletion>> {
         let tools = self.live_tools().await?;
-        let (bound_calls, mut unavailable_results) = self.catalog.bind_live_batch(calls, &tools);
+        let (bound_calls, mut unavailable_results) =
+            self.catalog
+                .bind_live_batch(calls, &tools, self.config.sandbox.output_limit());
         let callable = bound_calls
             .iter()
             .map(|call| call.as_call().clone())
@@ -134,6 +141,7 @@ impl Runner {
             let mut results = interrupted_results(
                 &callable,
                 "execution cancelled before start because newer input is ready",
+                self.config.sandbox.output_limit(),
             );
             results.append(&mut unavailable_results);
             return Ok(Wait::Ready {
@@ -165,58 +173,63 @@ impl Runner {
                     value: interrupted_results(
                         &callable,
                         "execution cancelled by newer input; result unknown",
+                        self.config.sandbox.output_limit(),
                     ),
                     input_changed: true,
                 };
             }
             tokio::select! {
-                biased;
-                results = &mut execution => {
-                    let drained = self.drain_submissions(inbox, turn_id).await?;
-                    input_changed |= drained.input_changed;
-                    if let Some(submission_id) = drained.interrupted {
-                        break Wait::Interrupted { submission_id };
-                    }
-                    if cancel_on_input && drained.input_changed {
-                        break Wait::Ready {
-                            value: interrupted_results(
-                                &callable,
-                                "execution cancelled by newer input; result unknown",
-                            ),
-                            input_changed: true,
-                        };
-                    }
-                    executed = true;
-                    break Wait::Ready { value: results, input_changed };
-                }
-                submission = inbox.recv() => {
-                    let Some(submission) = submission else {
-                        return Err(Error::Stopped("frontend disconnected".into()));
-                    };
-                    match self.route_active_submission(submission, turn_id, None).await? {
-                        ActiveRoute::Continue {
-                            input_changed: changed,
-                        } => {
-                            if changed {
-                                if cancel_on_input {
+                            biased;
+                            results = &mut execution => {
+                                let drained = self.drain_submissions(inbox, turn_id).await?;
+                                input_changed |= drained.input_changed;
+                                if let Some(submission_id) = drained.interrupted {
+                                    break Wait::Interrupted { submission_id };
+                                }
+                                if cancel_on_input && drained.input_changed {
                                     break Wait::Ready {
                                         value: interrupted_results(
                                             &callable,
                                             "execution cancelled by newer input; result unknown",
-                                        ),
+
+            self.config.sandbox.output_limit(),
+            ),
                                         input_changed: true,
                                     };
                                 }
-                                input_changed = true;
+                                executed = true;
+                                break Wait::Ready { value: results, input_changed };
+                            }
+                            submission = inbox.recv() => {
+                                let Some(submission) = submission else {
+                                    return Err(Error::Stopped("frontend disconnected".into()));
+                                };
+                                match self.route_active_submission(submission, turn_id, None).await? {
+                                    ActiveRoute::Continue {
+                                        input_changed: changed,
+                                    } => {
+                                        if changed {
+                                            if cancel_on_input {
+                                                break Wait::Ready {
+                                                    value: interrupted_results(
+                                                        &callable,
+                                                        "execution cancelled by newer input; result unknown",
+
+            self.config.sandbox.output_limit(),
+            ),
+                                                    input_changed: true,
+                                                };
+                                            }
+                                            input_changed = true;
+                                        }
+                                    }
+                                    ActiveRoute::Interrupted { submission_id } => {
+                                        break Wait::Interrupted { submission_id };
+                                    }
+                                    ActiveRoute::Approval { .. } => {}
+                                }
                             }
                         }
-                        ActiveRoute::Interrupted { submission_id } => {
-                            break Wait::Interrupted { submission_id };
-                        }
-                        ActiveRoute::Approval { .. } => {}
-                    }
-                }
-            }
         };
         let (mut results, input_changed) = match results {
             Wait::Ready {
@@ -356,6 +369,7 @@ impl Runner {
         let results = interrupted_results(
             &calls,
             &format!("execution interrupted; result unknown: {reason}"),
+            self.config.sandbox.output_limit(),
         );
         if results.is_empty() {
             return Ok(Vec::new());
@@ -414,10 +428,10 @@ fn tool_result_events(submission_id: &str, turn_id: &str, results: &[ToolResult]
     events
 }
 
-fn interrupted_results(calls: &[ToolCall], message: &str) -> Vec<ToolResult> {
+fn interrupted_results(calls: &[ToolCall], message: &str, output_limit: usize) -> Vec<ToolResult> {
     calls
         .iter()
-        .map(|call| ToolResult::error(call, message))
+        .map(|call| ToolResult::error(call, message, output_limit))
         .collect()
 }
 
@@ -447,6 +461,7 @@ mod tests {
                         arguments: serde_json::Value::Null,
                     },
                     "",
+                    crate::backend::sandbox::default_tool_output_limit(),
                 )
             })
             .collect::<Vec<_>>();
@@ -470,7 +485,11 @@ mod tests {
             arguments: serde_json::json!({}),
         }];
 
-        let results = interrupted_results(&calls, "execution interrupted; result unknown");
+        let results = interrupted_results(
+            &calls,
+            "execution interrupted; result unknown",
+            crate::backend::sandbox::default_tool_output_limit(),
+        );
 
         assert_eq!(
             results[0].output.text(),

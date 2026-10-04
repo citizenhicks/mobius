@@ -26,10 +26,9 @@ struct Definition {
     schedule_interval: String,
     schedule_ends_at: String,
 }
-static TEXT: std::sync::LazyLock<Definition> = std::sync::LazyLock::new(|| {
-    toml::from_str(include_str!("persistent_chat.toml"))
-        .expect("bundled Persistent Chat definition")
-});
+mobius::embedded_config! {
+    static TEXT: Definition = include_str!("persistent_chat.toml");
+}
 pub(crate) static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
     std::sync::LazyLock::new(|| MiddlewareManifest {
         id: "persistent_chat",

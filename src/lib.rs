@@ -154,8 +154,13 @@ use std::pin::Pin;
 
 pub mod agent;
 pub mod backend;
+pub mod config;
+pub mod identifier;
 pub mod middleware;
+#[cfg(unix)]
+pub mod owner_only;
 pub mod protocol;
+pub mod sync;
 
 /// A boxed asynchronous operation used by runtime-pluggable interfaces.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;

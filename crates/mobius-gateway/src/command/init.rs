@@ -18,15 +18,15 @@ pub(super) fn initialize(options: InitOptions) -> Result<()> {
         }
         None => ConfigStore::initialize(options.state_dir, options.listen, options.tls)?,
     };
-    initialize_auth(&store)?;
+    initialize_auth(&store, config.auth)?;
     println!("initialized möbius gateway");
     print_listener(&config, None);
     println!("run `mobius-gateway connect` to pair a client");
     Ok(())
 }
 
-pub(super) fn initialize_auth(store: &ConfigStore) -> Result<()> {
-    if let Err(error) = AuthStore::initialize(store.auth_path()) {
+pub(super) fn initialize_auth(store: &ConfigStore, policy: crate::auth::AuthConfig) -> Result<()> {
+    if let Err(error) = AuthStore::initialize(store.auth_path(), policy) {
         return cleanup_failed_initialization(store, error);
     }
     Ok(())
@@ -37,11 +37,12 @@ pub(super) fn initialize_bootstrap(
     save_local_client: fn(&Endpoint, String) -> Result<()>,
 ) -> Result<()> {
     let (store, config) = ConfigStore::initialize(state_dir, DEFAULT_LISTEN, None)?;
-    let initialized = AuthStore::initialize(store.auth_path()).and_then(|(auth, _)| {
-        let endpoint = direct_loopback_endpoint(&config)?;
-        let issued = auth.provision_local_client()?;
-        save_local_client(&endpoint, issued.token)
-    });
+    let initialized =
+        AuthStore::initialize(store.auth_path(), config.auth).and_then(|(auth, _)| {
+            let endpoint = direct_loopback_endpoint(&config)?;
+            let issued = auth.provision_local_client()?;
+            save_local_client(&endpoint, issued.token)
+        });
     if let Err(error) = initialized {
         return cleanup_failed_initialization(&store, error);
     }

@@ -338,16 +338,25 @@ impl ExtensionSource {
         }
         let parsed = Url::parse(&self.url)
             .map_err(|error| Error::Config(format!("invalid extension URL: {error}")))?;
-        if parsed.scheme() != "https"
-            || parsed.host_str().is_none()
-            || !parsed.username().is_empty()
+        let ssh = parsed.scheme() == "ssh";
+        let invalid_username = if ssh {
+            parsed.username().starts_with('-')
+                || !parsed
+                    .username()
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+        } else {
+            !parsed.username().is_empty()
+        };
+        if !matches!(parsed.scheme(), "https" | "ssh")
+            || parsed.host_str().is_none_or(|host| host.starts_with('-'))
+            || invalid_username
             || parsed.password().is_some()
-            || parsed.port().is_some()
             || parsed.query().is_some()
             || parsed.fragment().is_some()
         {
             return Err(Error::Config(
-                "extension source must be a credential-free HTTPS Git URL".into(),
+                "extension source must be an HTTPS or SSH Git URL without a password, query, or fragment".into(),
             ));
         }
         if self.reference.as_ref().is_some_and(|reference| {
@@ -533,30 +542,22 @@ async fn git_revision(checkout: &Path) -> Result<String> {
 }
 
 fn git_command() -> Command {
-    let mut command = Command::new("git");
+    let mut command = Command::from(crate::git::command(crate::git::Environment::Isolated));
     command
         .kill_on_drop(true)
-        .env_clear()
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_LFS_SKIP_SMUDGE", "1")
-        .env("GIT_OPTIONAL_LOCKS", "0")
         .arg("-c")
         .arg("core.hooksPath=/dev/null")
         .arg("-c")
-        .arg("credential.helper=");
-    for name in [
-        "PATH",
-        "SSL_CERT_FILE",
-        "SSL_CERT_DIR",
-        "HTTPS_PROXY",
-        "HTTP_PROXY",
-        "NO_PROXY",
-        "https_proxy",
-        "http_proxy",
-        "no_proxy",
-    ] {
+        .arg("credential.helper=")
+        .arg("-c")
+        .arg("core.sshCommand=ssh -o BatchMode=yes");
+    crate::process_environment::forward_network_environment(&mut command, |name| {
+        std::env::var_os(name)
+    });
+    for name in ["PATH", "HOME", "SSH_AUTH_SOCK"] {
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);
         }
@@ -775,8 +776,7 @@ fn prepare_private_directory(path: &Path) -> Result<()> {
     fs::create_dir_all(path)?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+        fs::set_permissions(path, mobius::owner_only::dir())?;
     }
     Ok(())
 }
@@ -785,12 +785,12 @@ fn preserve_executable(source: &fs::Metadata, destination: &Path) -> Result<()> 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        let mode = if source.permissions().mode() & 0o111 == 0 {
-            0o600
+        let permissions = if source.permissions().mode() & 0o111 == 0 {
+            mobius::owner_only::file()
         } else {
-            0o700
+            mobius::owner_only::dir()
         };
-        fs::set_permissions(destination, fs::Permissions::from_mode(mode))?;
+        fs::set_permissions(destination, permissions)?;
     }
     Ok(())
 }
@@ -826,13 +826,13 @@ fn set_read_only(path: &Path, read_only: bool) -> Result<()> {
         use std::os::unix::fs::PermissionsExt as _;
         let metadata = fs::symlink_metadata(path)?;
         let executable = metadata.is_dir() || is_executable(&metadata);
-        let mode = match (read_only, executable) {
-            (true, true) => 0o500,
-            (true, false) => 0o400,
-            (false, true) => 0o700,
-            (false, false) => 0o600,
+        let permissions = match (read_only, executable) {
+            (true, true) => fs::Permissions::from_mode(0o500),
+            (true, false) => fs::Permissions::from_mode(0o400),
+            (false, true) => mobius::owner_only::dir(),
+            (false, false) => mobius::owner_only::file(),
         };
-        fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+        fs::set_permissions(path, permissions)?;
     }
     #[cfg(not(unix))]
     {

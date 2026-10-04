@@ -1,5 +1,8 @@
 //! One-time pairing and independent bearer-token authentication.
 
+mod config;
+pub use config::AuthConfig;
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,11 +19,13 @@ use crate::{Error, Result};
 /// Maximum UTF-8 byte length of one gateway client bearer credential.
 pub const MAX_CLIENT_CREDENTIAL_BYTES: usize = 512;
 const MAX_CLIENT_LABEL_BYTES: usize = 128;
-const MAX_CLIENTS: usize = 32;
-const PAIRING_LIFETIME_SECONDS: i64 = 10 * 60;
 const REVOKED_PAIRING_EXPIRY: i64 = 0;
 const LOCAL_CLIENT_ID: &str = "00000000-0000-0000-0000-000000000001";
 const LOCAL_CLIENT_LABEL: &str = "Local möbius CLI";
+
+pub(crate) fn is_local_operator(id: &str) -> bool {
+    id == LOCAL_CLIENT_ID
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -85,21 +90,25 @@ pub struct AuthStore {
     path: PathBuf,
     state: Mutex<AuthState>,
     channel_identity: crate::channel::Identity,
+    config: AuthConfig,
 }
 
 impl AuthStore {
-    /// Creates fresh auth state and returns the short-lived bootstrap code.
+    /// Initializes authentication with the required operator pairing policy.
     /// # Errors
-    ///
-    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
-    pub fn initialize(path: impl Into<PathBuf>) -> Result<(Self, PairingGrant)> {
+    /// Returns an error for invalid policy or inaccessible authentication state.
+    pub fn initialize(
+        path: impl Into<PathBuf>,
+        config: AuthConfig,
+    ) -> Result<(Self, PairingGrant)> {
+        config.validate()?;
         let path = path.into();
         fs::create_dir_all(
             path.parent()
                 .ok_or_else(|| Error::Config("authentication path has no parent".into()))?,
         )?;
         let channel_identity = crate::channel::Identity::open(&path)?;
-        let grant = new_pairing_grant(&channel_identity)?;
+        let grant = new_pairing_grant(&channel_identity, config.pairing_lifetime_seconds)?;
         let state = AuthState {
             pending_pairing: Some(PendingPairing {
                 digest: digest(&grant.code),
@@ -113,19 +122,21 @@ impl AuthStore {
                 path,
                 state: Mutex::new(state),
                 channel_identity,
+                config,
             },
             grant,
         ))
     }
 
-    /// Opens previously initialized authentication state.
+    /// Opens authentication with the required operator pairing policy.
+    /// Existing clients remain valid when the configured limit is reduced.
     /// # Errors
-    ///
-    /// Returns an error if the resource cannot be read, decoded, or validated.
-    pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
+    /// Returns an error for invalid policy, corrupt state, or inaccessible files.
+    pub fn open(path: impl Into<PathBuf>, config: AuthConfig) -> Result<Self> {
+        config.validate()?;
         let path = path.into();
         let contents = fs::read(&path)?;
-        if contents.len() > 64 * 1024 {
+        if contents.len() > 2 * 1024 * 1024 {
             return Err(Error::Config("authentication state is too large".into()));
         }
         let state: AuthState = serde_json::from_slice(&contents)?;
@@ -135,6 +146,7 @@ impl AuthStore {
             path,
             state: Mutex::new(state),
             channel_identity,
+            config,
         })
     }
 
@@ -155,7 +167,7 @@ impl AuthStore {
         if pending.expires_at <= now || !credential_matches(code, &pending.digest) {
             return Err(Error::Unauthorized);
         }
-        if state.clients.len() == MAX_CLIENTS {
+        if state.clients.len() >= self.config.paired_clients {
             return Err(Error::Config("paired client limit reached".into()));
         }
 
@@ -229,7 +241,7 @@ impl AuthStore {
             client.digest = digest(&token);
             client.created_at = now;
         } else {
-            if next.clients.len() == MAX_CLIENTS {
+            if next.clients.len() >= self.config.paired_clients {
                 return Err(Error::Config("paired client limit reached".into()));
             }
             next.clients.push(ClientToken {
@@ -253,7 +265,8 @@ impl AuthStore {
     /// Returns an error if validation or an operation required by this function fails.
     pub fn create_pairing_code(&self) -> Result<PairingGrant> {
         let mut state = self.lock_state()?;
-        let grant = new_pairing_grant(&self.channel_identity)?;
+        let grant =
+            new_pairing_grant(&self.channel_identity, self.config.pairing_lifetime_seconds)?;
         let mut next = state.clone();
         next.pending_pairing = Some(PendingPairing {
             digest: digest(&grant.code),
@@ -383,7 +396,7 @@ fn validate_client_label(label: &str) -> Result<()> {
 }
 
 fn validate_auth_state(state: &AuthState) -> Result<()> {
-    if state.clients.len() > MAX_CLIENTS {
+    if state.clients.len() > crate::config::MAX_CAPACITY {
         return Err(Error::Config(
             "authentication state exceeds the client limit".into(),
         ));
@@ -435,11 +448,17 @@ fn pairing_client_id(code: &str) -> String {
     Uuid::from_bytes(bytes).to_string()
 }
 
-fn new_pairing_grant(identity: &crate::channel::Identity) -> Result<PairingGrant> {
+fn new_pairing_grant(
+    identity: &crate::channel::Identity,
+    lifetime_seconds: u64,
+) -> Result<PairingGrant> {
     Ok(PairingGrant {
         code: identity.credential(&random_secret(1)),
         expires_at: unix_timestamp()?
-            .checked_add(PAIRING_LIFETIME_SECONDS)
+            .checked_add(
+                i64::try_from(lifetime_seconds)
+                    .map_err(|_| Error::Config("pairing lifetime is too large".into()))?,
+            )
             .ok_or_else(|| Error::Config("pairing expiry overflow".into()))?,
     })
 }
@@ -499,7 +518,8 @@ mod tests {
     fn pairing_three_clients_keeps_every_issued_token_valid() {
         let directory = tempfile::tempdir().expect("state directory");
         let path = directory.path().join("auth.json");
-        let (auth, first) = AuthStore::initialize(&path).expect("initialize auth");
+        let (auth, first) =
+            AuthStore::initialize(&path, AuthConfig::default()).expect("initialize auth");
         let first = auth.pair(&first.code, "Mac").expect("pair Mac");
         let second_code = auth.create_pairing_code().expect("second code");
         let second = auth.pair(&second_code.code, "iPhone").expect("pair iPhone");
@@ -515,7 +535,8 @@ mod tests {
     fn provisioning_local_client_preserves_remote_pairing() {
         let directory = tempfile::tempdir().expect("state directory");
         let path = directory.path().join("auth.json");
-        let (auth, grant) = AuthStore::initialize(path).expect("initialize auth");
+        let (auth, grant) =
+            AuthStore::initialize(path, AuthConfig::default()).expect("initialize auth");
 
         let local = auth
             .provision_local_client()
@@ -530,7 +551,8 @@ mod tests {
     fn paired_clients_are_listed_without_credentials() {
         let directory = tempfile::tempdir().expect("state directory");
         let path = directory.path().join("auth.json");
-        let (auth, grant) = AuthStore::initialize(&path).expect("initialize auth");
+        let (auth, grant) =
+            AuthStore::initialize(&path, AuthConfig::default()).expect("initialize auth");
         auth.pair(&grant.code, "Mac").expect("pair Mac");
 
         assert_eq!(
@@ -546,7 +568,8 @@ mod tests {
     fn pairing_rejects_noncanonical_client_labels_without_consuming_the_code() {
         let directory = tempfile::tempdir().expect("state directory");
         let path = directory.path().join("auth.json");
-        let (auth, grant) = AuthStore::initialize(path).expect("initialize auth");
+        let (auth, grant) =
+            AuthStore::initialize(path, AuthConfig::default()).expect("initialize auth");
 
         for label in [" Mac", "Mac ", "Mac\nterminal"] {
             let error = auth
@@ -562,7 +585,8 @@ mod tests {
     fn pairing_rejects_the_code_at_its_exact_expiry() {
         let directory = tempfile::tempdir().expect("state directory");
         let path = directory.path().join("auth.json");
-        let (auth, grant) = AuthStore::initialize(path).expect("initialize auth");
+        let (auth, grant) =
+            AuthStore::initialize(path, AuthConfig::default()).expect("initialize auth");
 
         assert!(matches!(
             auth.pair_at(&grant.code, "Mac", grant.expires_at),
@@ -596,7 +620,7 @@ mod tests {
 
         for (clients, expected) in cases {
             write_auth_state(&path, clients);
-            let error = match AuthStore::open(&path) {
+            let error = match AuthStore::open(&path, AuthConfig::default()) {
                 Ok(_) => panic!("invalid auth state must fail"),
                 Err(error) => error,
             };
@@ -608,7 +632,8 @@ mod tests {
     fn unpairing_revokes_the_token_and_blocks_the_stale_client() {
         let directory = tempfile::tempdir().expect("state directory");
         let path = directory.path().join("auth.json");
-        let (auth, first_code) = AuthStore::initialize(&path).expect("initialize auth");
+        let (auth, first_code) =
+            AuthStore::initialize(&path, AuthConfig::default()).expect("initialize auth");
         let first = auth.pair(&first_code.code, "Mac").expect("pair Mac");
         let second_code = auth.create_pairing_code().expect("second code");
         let second = auth.pair(&second_code.code, "iPhone").expect("pair iPhone");
@@ -621,7 +646,7 @@ mod tests {
         let stale_removal = auth
             .unpair_client(&second.client_id, &third.client_id)
             .expect("reject stale client");
-        let reopened = AuthStore::open(path).expect("reopen auth");
+        let reopened = AuthStore::open(path, AuthConfig::default()).expect("reopen auth");
 
         assert_eq!(
             (
@@ -639,7 +664,8 @@ mod tests {
     fn creating_a_new_pairing_code_invalidates_the_previous_code_only() {
         let directory = tempfile::tempdir().expect("state directory");
         let path = directory.path().join("auth.json");
-        let (auth, bootstrap) = AuthStore::initialize(&path).expect("initialize auth");
+        let (auth, bootstrap) =
+            AuthStore::initialize(&path, AuthConfig::default()).expect("initialize auth");
         let replacement = auth.create_pairing_code().expect("replacement code");
 
         let error = auth
@@ -659,10 +685,11 @@ mod tests {
     fn pairing_status_tracks_a_durable_client_issuance() {
         let directory = tempfile::tempdir().expect("state directory");
         let path = directory.path().join("auth.json");
-        let (auth, grant) = AuthStore::initialize(&path).expect("initialize auth");
+        let (auth, grant) =
+            AuthStore::initialize(&path, AuthConfig::default()).expect("initialize auth");
         let pending = auth.pairing_status(&grant.code).expect("pending status");
         auth.pair(&grant.code, "iPhone").expect("pair iPhone");
-        let reopened = AuthStore::open(path).expect("reopen auth");
+        let reopened = AuthStore::open(path, AuthConfig::default()).expect("reopen auth");
         let replacement = reopened.create_pairing_code().expect("replacement code");
         let consumed = reopened
             .pairing_status(&grant.code)
@@ -684,7 +711,8 @@ mod tests {
     fn revoking_a_pairing_code_does_not_revoke_its_replacement() {
         let directory = tempfile::tempdir().expect("state directory");
         let path = directory.path().join("auth.json");
-        let (auth, revoked) = AuthStore::initialize(path).expect("initialize auth");
+        let (auth, revoked) =
+            AuthStore::initialize(path, AuthConfig::default()).expect("initialize auth");
 
         auth.revoke_pairing_code(&revoked.code)
             .expect("revoke code");
@@ -700,14 +728,16 @@ mod tests {
     fn repairing_at_the_client_limit_rotates_the_existing_client() {
         let directory = tempfile::tempdir().expect("state directory");
         let path = directory.path().join("auth.json");
-        let (auth, mut grant) = AuthStore::initialize(path).expect("initialize auth");
+        let (auth, mut grant) =
+            AuthStore::initialize(path, AuthConfig::default()).expect("initialize auth");
+        let capacity = AuthConfig::default().paired_clients;
         let mut first = None;
-        for index in 0..MAX_CLIENTS {
+        for index in 0..capacity {
             let issued = auth
                 .pair(&grant.code, &format!("client {index}"))
                 .expect("pair client");
             first.get_or_insert(issued);
-            if index + 1 < MAX_CLIENTS {
+            if index + 1 < capacity {
                 grant = auth.create_pairing_code().expect("next code");
             }
         }
@@ -723,7 +753,7 @@ mod tests {
 
         assert!(error.to_string().contains("client limit"));
         assert_eq!(repaired.client_id, first.client_id);
-        assert_eq!(auth.clients().expect("clients").len(), MAX_CLIENTS);
+        assert_eq!(auth.clients().expect("clients").len(), capacity);
         assert!(auth.authenticate(&first.token).is_err());
         assert!(auth.authenticate(&repaired.token).is_ok());
     }
@@ -733,7 +763,7 @@ mod tests {
     fn auth_state_is_owner_only() {
         let directory = tempfile::tempdir().expect("state directory");
         let path = directory.path().join("auth.json");
-        AuthStore::initialize(&path).expect("initialize auth");
+        AuthStore::initialize(&path, AuthConfig::default()).expect("initialize auth");
 
         let mode = fs::metadata(path)
             .expect("auth metadata")
@@ -748,7 +778,8 @@ mod tests {
     fn adding_channel_identity_preserves_existing_authentication_state() {
         let directory = tempfile::tempdir().expect("state directory");
         let path = directory.path().join("auth.json");
-        let (auth, grant) = AuthStore::initialize(&path).expect("initialize auth");
+        let (auth, grant) =
+            AuthStore::initialize(&path, AuthConfig::default()).expect("initialize auth");
         let issued = auth.pair(&grant.code, "existing client").expect("pair");
         let legacy_token = "existing-opaque-token";
         let mut state = auth.lock_state().unwrap().clone();
@@ -756,7 +787,8 @@ mod tests {
         save_auth_state(&path, &state, false).unwrap();
         let original = fs::read(&path).unwrap();
         fs::remove_file(path.with_extension("channel-key")).unwrap();
-        let reopened = AuthStore::open(&path).expect("open existing auth state");
+        let reopened =
+            AuthStore::open(&path, AuthConfig::default()).expect("open existing auth state");
         assert_eq!(fs::read(&path).unwrap(), original);
         assert_eq!(
             reopened.authenticate(legacy_token).unwrap().id,
@@ -766,7 +798,7 @@ mod tests {
         let key = crate::channel::credential_key(&grant.code).unwrap();
         let paired = reopened.pair(&grant.code, "encrypted client").unwrap();
         assert_eq!(crate::channel::credential_key(&paired.token).unwrap(), key);
-        let reopened = AuthStore::open(&path).unwrap();
+        let reopened = AuthStore::open(&path, AuthConfig::default()).unwrap();
         assert_eq!(
             crate::channel::credential_key(&reopened.create_pairing_code().unwrap().code).unwrap(),
             key
@@ -776,5 +808,40 @@ mod tests {
             .unwrap();
         assert!(reopened.authenticate(&paired.token).is_err());
         assert!(reopened.authenticate(legacy_token).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod configured_policy_tests {
+    use super::*;
+    #[test]
+    fn custom_pairing_policy_changes_lifetime_and_capacity_without_deleting_clients() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("auth.json");
+        let policy = AuthConfig {
+            paired_clients: 1,
+            pairing_lifetime_seconds: 30,
+        };
+        let (auth, grant) = AuthStore::initialize(&path, policy).unwrap();
+        let now = i64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+        .unwrap();
+        assert!((29..=30).contains(&(grant.expires_at - now)));
+        auth.pair(&grant.code, "first").unwrap();
+        let second = auth.create_pairing_code().unwrap();
+        assert!(auth.pair(&second.code, "second").is_err());
+        let opened = AuthStore::open(
+            &path,
+            AuthConfig {
+                paired_clients: 2,
+                ..policy
+            },
+        )
+        .unwrap();
+        opened.pair(&second.code, "second").unwrap();
     }
 }

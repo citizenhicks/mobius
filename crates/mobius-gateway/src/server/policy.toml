@@ -1,0 +1,5 @@
+authenticated = 32
+pre_authentication = 8
+authentication_timeout_seconds = 5
+active_sessions = 32
+pending_uploads = 8

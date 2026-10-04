@@ -348,6 +348,11 @@ impl StoredBot {
     fn record(&self) -> Result<BotRecord> {
         let (accepts_file_attachments, routine_interaction_policy) =
             crate::assembly::bot_semantics(&self.config.config)?;
+        let mut config = self.config.clone();
+        crate::middleware_manifest::materialize_integer_defaults(
+            &mut config.config.middleware,
+            None,
+        );
         Ok(BotRecord {
             conversation_session_id: conversation_session_id(&self.id),
             id: self.id.clone(),
@@ -356,7 +361,7 @@ impl StoredBot {
             description: self.description.clone(),
             tint: self.tint,
             shape: self.shape,
-            config: self.config.clone(),
+            config,
             accepts_file_attachments,
             routine_interaction_policy,
         })
@@ -1690,12 +1695,12 @@ fn next_shape(state: &BotState) -> BotShape {
 
 fn validate_handle(handle: &str) -> Result<String> {
     let handle = handle.trim();
-    if handle.is_empty()
-        || handle.len() > MAX_HANDLE_BYTES
-        || !handle.bytes().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
-        })
-    {
+    if !mobius::identifier::valid_ascii_identifier(
+        handle,
+        MAX_HANDLE_BYTES,
+        mobius::identifier::AsciiCase::Lower,
+        b"_-",
+    ) {
         return Err(Error::Config(format!(
             "Bot handle must be 1–{MAX_HANDLE_BYTES} lowercase ASCII letters, digits, dashes, or underscores"
         )));
@@ -2066,10 +2071,10 @@ fn open_private_lock(path: PathBuf) -> Result<File> {
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
     #[cfg(unix)]
-    options.mode(0o600);
+    options.mode(mobius::owner_only::file().mode());
     let file = options.open(path)?;
     #[cfg(unix)]
-    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    file.set_permissions(mobius::owner_only::file())?;
     Ok(file)
 }
 
@@ -2083,7 +2088,7 @@ fn private_routines_dir(state_dir: &Path) -> Result<PathBuf> {
         ));
     }
     #[cfg(unix)]
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+    std::fs::set_permissions(&path, mobius::owner_only::dir())?;
     Ok(path)
 }
 

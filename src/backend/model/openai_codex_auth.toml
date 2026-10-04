@@ -1,0 +1,19 @@
+label = "ChatGPT"
+client_id = "app_EMoamEEZ73f0CkXaXp7hrann"
+authorize_url = "https://auth.openai.com/oauth/authorize"
+token_url = "https://auth.openai.com/oauth/token"
+redirect_uri = "http://localhost:1455/auth/callback"
+device_user_code_url = "https://auth.openai.com/api/accounts/deviceauth/usercode"
+device_token_url = "https://auth.openai.com/api/accounts/deviceauth/token"
+device_verification_url = "https://auth.openai.com/codex/device"
+device_redirect_uri = "https://auth.openai.com/deviceauth/callback"
+usage_url = "https://chatgpt.com/backend-api/wham/usage"
+scope = "openid profile email offline_access"
+jwt_auth_claim = "https://api.openai.com/auth"
+
+[headers]
+originator = "mobius"
+version = "0.159.1"
+
+[websocket_headers]
+openai-beta = "responses_websockets=2026-02-06"

@@ -586,10 +586,8 @@ fn configure_connection(connection: &Connection) -> Result<()> {
 fn protect_database_files(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt as _;
-
         if let Some(parent) = path.parent() {
-            fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+            fs::set_permissions(parent, mobius::owner_only::dir())?;
         }
         for candidate in [
             path.to_owned(),
@@ -597,7 +595,7 @@ fn protect_database_files(path: &Path) -> Result<()> {
             PathBuf::from(format!("{}-shm", path.display())),
         ] {
             if candidate.exists() {
-                fs::set_permissions(candidate, fs::Permissions::from_mode(0o600))?;
+                fs::set_permissions(candidate, mobius::owner_only::file())?;
             }
         }
     }

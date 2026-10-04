@@ -10,8 +10,106 @@ use crate::Result;
 pub(super) const MAX_ERROR_BYTES: usize = 64 * 1024;
 pub(super) const MAX_SSE_FRAME_BYTES: usize = 8 * 1024 * 1024;
 pub(super) const MAX_STREAM_BYTES: usize = 64 * 1024 * 1024;
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
+crate::embedded_config! {
+    copy;
+    /// Runtime policy for model HTTP, sockets, voice and authentication.
+    /// Millisecond units allow short local test deadlines without changing wire protocols.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ModelTransportSettings {
+        /// HTTP connection deadline.
+        pub http_connect_timeout_ms: u64,
+        /// Maximum gap between HTTP response chunks.
+        pub http_idle_timeout_ms: u64,
+        /// WebSocket connection deadline.
+        pub socket_connect_timeout_ms: u64,
+        /// WebSocket write and close deadline.
+        pub socket_io_timeout_ms: u64,
+        /// Maximum gap between WebSocket stream events.
+        pub socket_idle_timeout_ms: u64,
+        /// Retries before a model stream fails.
+        pub stream_retry_limit: u32,
+        /// Initial stream retry backoff.
+        pub stream_retry_backoff_ms: u64,
+        /// Ceiling for local exponential stream backoff.
+        pub stream_retry_max_backoff_ms: u64,
+        /// Retries before native compaction fails.
+        pub compaction_retry_limit: u32,
+        /// Initial native compaction retry backoff.
+        pub compaction_retry_backoff_ms: u64,
+        /// Voice negotiation deadline.
+        pub voice_start_timeout_ms: u64,
+        /// Voice socket write and cleanup deadline.
+        pub voice_io_timeout_ms: u64,
+        /// Maximum duration of one voice call.
+        pub voice_call_timeout_ms: u64,
+        /// OAuth HTTP request deadline.
+        pub oauth_request_timeout_ms: u64,
+        /// Browser OAuth completion deadline.
+        pub oauth_callback_timeout_ms: u64,
+        /// Deadline for reading one OAuth callback request.
+        pub oauth_callback_request_timeout_ms: u64,
+        /// Device-code authentication completion deadline.
+        pub device_code_timeout_ms: u64,
+    }
+    defaults = include_str!("transport.toml");
+}
+
+impl ModelTransportSettings {
+    /// Rejects zero deadlines, excessive retry budgets and overflowing backoff policy.
+    /// # Errors
+    /// Returns a configuration error for invalid operational policy.
+    pub fn validate(&self) -> Result<()> {
+        let deadlines = [
+            self.http_connect_timeout_ms,
+            self.http_idle_timeout_ms,
+            self.socket_connect_timeout_ms,
+            self.socket_io_timeout_ms,
+            self.socket_idle_timeout_ms,
+            self.stream_retry_backoff_ms,
+            self.stream_retry_max_backoff_ms,
+            self.compaction_retry_backoff_ms,
+            self.voice_start_timeout_ms,
+            self.voice_io_timeout_ms,
+            self.voice_call_timeout_ms,
+            self.oauth_request_timeout_ms,
+            self.oauth_callback_timeout_ms,
+            self.oauth_callback_request_timeout_ms,
+            self.device_code_timeout_ms,
+        ];
+        if deadlines
+            .into_iter()
+            .any(|value| value == 0 || value > 365 * 24 * 60 * 60 * 1_000)
+        {
+            return Err(Error::Config(
+                "model transport deadlines must be positive and at most one year".into(),
+            ));
+        }
+        if self.stream_retry_limit > 100 || self.compaction_retry_limit > 100 {
+            return Err(Error::Config(
+                "model transport retry limits must be at most 100".into(),
+            ));
+        }
+        if self.stream_retry_backoff_ms > self.stream_retry_max_backoff_ms {
+            return Err(Error::Config(
+                "initial model retry backoff exceeds its ceiling".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Builds an HTTP streaming pool from this validated policy.
+    /// # Errors
+    /// Returns invalid configuration or HTTP client construction errors.
+    pub fn streaming_client(&self) -> Result<Client> {
+        self.validate()?;
+        Ok(Client::builder()
+            // Provider credentials and account headers must never follow redirects.
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_millis(self.http_connect_timeout_ms))
+            .read_timeout(Duration::from_millis(self.http_idle_timeout_ms))
+            .build()?)
+    }
+}
 
 /// Builds the streaming HTTP client shared by provider construction.
 ///
@@ -20,14 +118,16 @@ const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 ///
 /// Returns an error if validation or an operation required by this function fails.
 pub fn streaming_client() -> Result<Client> {
-    streaming_client_with_idle_timeout(STREAM_IDLE_TIMEOUT)
+    ModelTransportSettings::default().streaming_client()
 }
 
+#[cfg(test)]
 fn streaming_client_with_idle_timeout(idle_timeout: Duration) -> Result<Client> {
-    Ok(Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .read_timeout(idle_timeout)
-        .build()?)
+    ModelTransportSettings {
+        http_idle_timeout_ms: u64::try_from(idle_timeout.as_millis()).expect("test timeout fits"),
+        ..ModelTransportSettings::default()
+    }
+    .streaming_client()
 }
 
 #[cfg(test)]
@@ -391,5 +491,88 @@ mod tests {
         server.abort();
 
         assert!(error.is_timeout());
+    }
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+
+    #[test]
+    fn embedded_policy_preserves_transport_deadlines_and_retry_budgets() {
+        assert_eq!(
+            ModelTransportSettings::default(),
+            ModelTransportSettings {
+                http_connect_timeout_ms: 10_000,
+                http_idle_timeout_ms: 180_000,
+                socket_connect_timeout_ms: 15_000,
+                socket_io_timeout_ms: 5_000,
+                socket_idle_timeout_ms: 300_000,
+                stream_retry_limit: 5,
+                stream_retry_backoff_ms: 200,
+                stream_retry_max_backoff_ms: 3_200,
+                compaction_retry_limit: 2,
+                compaction_retry_backoff_ms: 200,
+                voice_start_timeout_ms: 30_000,
+                voice_io_timeout_ms: 5_000,
+                voice_call_timeout_ms: 3_600_000,
+                oauth_request_timeout_ms: 30_000,
+                oauth_callback_timeout_ms: 900_000,
+                oauth_callback_request_timeout_ms: 5_000,
+                device_code_timeout_ms: 900_000,
+            }
+        );
+    }
+
+    #[test]
+    fn partial_policy_inherits_defaults_and_rejects_invalid_deadlines() {
+        let settings: ModelTransportSettings =
+            toml::from_str("http_idle_timeout_ms = 17\nstream_retry_limit = 0")
+                .expect("partial settings");
+        assert_eq!(settings.http_idle_timeout_ms, 17);
+        assert_eq!(settings.stream_retry_limit, 0);
+        assert_eq!(
+            settings.socket_io_timeout_ms,
+            ModelTransportSettings::default().socket_io_timeout_ms
+        );
+        settings.validate().expect("valid policy");
+        let invalid = ModelTransportSettings {
+            socket_io_timeout_ms: 0,
+            ..settings
+        };
+        assert!(invalid.streaming_client().is_err());
+        assert!(toml::from_str::<ModelTransportSettings>("socket_io_timout_ms = 5").is_err());
+    }
+
+    #[tokio::test]
+    async fn authenticated_streaming_clients_do_not_follow_redirects() {
+        use tokio::io::AsyncWriteExt as _;
+        let destination = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("destination");
+        let target = destination.local_addr().expect("destination address");
+        let source = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("source");
+        let address = source.local_addr().expect("source address");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = source.accept().await.expect("source connection");
+            stream.write_all(format!("HTTP/1.1 302 Found\r\nLocation: http://{target}/secret\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.expect("redirect response");
+        });
+        let response = streaming_client()
+            .expect("client")
+            .get(format!("http://{address}"))
+            .bearer_auth("test-token")
+            .header("chatgpt-account-id", "test-account")
+            .send()
+            .await
+            .expect("first response");
+        assert_eq!(response.status(), reqwest::StatusCode::FOUND);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), destination.accept())
+                .await
+                .is_err()
+        );
+        server.await.expect("source server");
     }
 }

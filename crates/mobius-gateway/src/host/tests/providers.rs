@@ -82,6 +82,101 @@ async fn provider_removal_gateway(
 }
 
 #[tokio::test]
+async fn browser_proxy_registration_requires_operator_and_allows_trusted_root_reuse() {
+    use base64::Engine as _;
+    let root = tempfile::tempdir().expect("root");
+    let (gateway, _, _, _) = provider_removal_gateway(&root).await;
+    let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+        serde_json::to_vec(&serde_json::json!({
+            "https://api.openai.com/auth": {"chatgpt_account_id": "test-account"}
+        }))
+        .expect("test claims"),
+    );
+    let auth_path = gateway.state.lock().await.store.provider_auth_path();
+    std::fs::write(
+        &auth_path,
+        serde_json::to_vec(&serde_json::json!({
+            "openai_codex": {
+                "access": format!("e30.{claims}.signature"),
+                "refresh": "test-refresh",
+                "expires": u64::MAX,
+                "account_id": "test-account"
+            }
+        }))
+        .expect("test credential"),
+    )
+    .expect("write test credential");
+    let mut selection = ProviderConfig {
+        instance: "trusted-codex".into(),
+        provider: "openai_codex".into(),
+        model: "gpt-6-luna".into(),
+        base_url: Some("https://operator-proxy.example/native".into()),
+        endpoint_auth: ProviderEndpointAuth::ProviderDefault,
+        reasoning_effort: None,
+        service_tier: None,
+        web_search: mobius::backend::model::provider::HostedWebSearch::Off,
+    };
+    let error = gateway
+        .register_provider(
+            false,
+            selection.clone(),
+            "Proxy".into(),
+            Default::default(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await
+        .expect_err("paired clients cannot introduce an authentication destination");
+    assert_eq!(error.code, "operator_required");
+    gateway
+        .register_provider(
+            true,
+            selection.clone(),
+            "Proxy".into(),
+            Default::default(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await
+        .expect("operator registers native proxy");
+    selection.instance = "reused-codex".into();
+    selection.base_url = Some("https://operator-proxy.example/native/".into());
+    gateway
+        .register_provider(
+            false,
+            selection.clone(),
+            "Reused".into(),
+            Default::default(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await
+        .expect("paired client can reuse an operator-approved root");
+    selection.base_url = Some("https://client-controlled.example/native".into());
+    let error = gateway
+        .register_provider(
+            false,
+            selection,
+            "Retargeted".into(),
+            Default::default(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await
+        .expect_err("paired client cannot retarget an approved instance");
+    assert_eq!(error.code, "operator_required");
+    let (_, persisted) = ConfigStore::open(root.path().join("state")).expect("saved config");
+    assert_eq!(
+        persisted.configured_providers["reused-codex"]
+            .selection
+            .base_url
+            .as_deref(),
+        Some("https://operator-proxy.example/native/")
+    );
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
 async fn provider_removal_rejects_bot_defaults_without_changes() {
     let root = tempfile::tempdir().expect("root");
     let (gateway, credentials, primary, secondary) = provider_removal_gateway(&root).await;
@@ -352,7 +447,7 @@ async fn provider_registration_commits_against_latest_usage() {
 }
 
 #[tokio::test]
-async fn credential_endpoints_are_validated_and_persisted() {
+async fn api_key_endpoints_are_persisted_and_browser_providers_reject_api_keys() {
     let root = tempfile::tempdir().expect("root");
     let workspace = root.path().join("workspace");
     let state = root.path().join("state");
@@ -394,12 +489,12 @@ async fn credential_endpoints_are_validated_and_persisted() {
         .set_credential(
             "openai_codex".into(),
             "openai_codex".into(),
-            "fixed-secret".into(),
+            "invalid-browser-secret".into(),
             Some(custom_endpoint.into()),
             None,
         )
         .await
-        .expect_err("fixed provider endpoint must be rejected");
+        .expect_err("browser provider must reject API keys even for a configurable endpoint");
 
     assert_eq!(
         credentials
@@ -416,7 +511,14 @@ async fn credential_endpoints_are_validated_and_persisted() {
         None
     );
     assert_eq!(error.code, "invalid_config");
-    assert!(error.message.contains("fixed API endpoint"));
+    assert!(error.message.contains("does not accept an API key"));
+    assert!(
+        credentials
+            .get("openai_codex", "openai_codex", Some(custom_endpoint))
+            .expect("browser credential lookup")
+            .is_none(),
+        "rejected API keys must not be persisted"
+    );
     assert_eq!(
         credentials
             .get("openai_socket", "openai_socket", Some(custom_endpoint))
@@ -443,6 +545,7 @@ async fn explicit_key_replaces_credentialless_endpoint_auth() {
 
     gateway
         .register_provider(
+            false,
             ProviderConfig {
                 instance: "openrouter-managed".into(),
                 provider: "openrouter".into(),
@@ -515,6 +618,7 @@ async fn credential_update_prepares_once_when_matching_chats_are_next_used() {
         .expect("gateway");
     gateway
         .register_provider(
+            false,
             ProviderConfig {
                 instance: "kimi".into(),
                 provider: "kimi".into(),
@@ -1076,6 +1180,7 @@ async fn provider_presentation_edits_do_not_prepare_or_assemble() {
     let before = operations.counts();
     let ready = gateway
         .register_provider(
+            false,
             primary.clone(),
             "Renamed".into(),
             ProviderTint::Purple,
@@ -1162,15 +1267,17 @@ async fn credential_refresh_retries_an_inflight_bot_preparation() {
     .expect("preparation started and is waiting for the runtime installer");
     gateway.clear_credential(removable.instance).await.unwrap();
     // Release installation without downloading dependencies or running a browser.
-    for file in [
-        "node",
-        "worker.cjs",
-        "computer-control.md",
-        "node_modules/playwright/package.json",
-    ] {
+    crate::computer_runtime::export_resources(&runtime).unwrap();
+    for file in ["node", "node_modules/playwright/package.json"] {
         let path = runtime.join(file);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, "").unwrap();
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(runtime.join("node"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
     }
     std::fs::create_dir(runtime.join("browsers")).unwrap();
     drop(install_lock);

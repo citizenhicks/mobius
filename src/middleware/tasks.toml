@@ -7,3 +7,4 @@ prompt_main = "Use `write_todos` only for genuinely multi-step work. Keep the li
 render_empty = "No tasks."
 render_heading = "Tasks"
 tool_write_todos_description = "Replace the session todo list; an empty list clears it."
+prompt_projection = "<tasks>\nCurrent saved todo list replaces all prior task-list state:\n{todos}\n</tasks>"

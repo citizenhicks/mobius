@@ -1072,10 +1072,7 @@ impl SessionFileReservation {
         if !self.active {
             return;
         }
-        let mut reservations = self
-            .reservations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut reservations = crate::sync::recover_lock(&self.reservations);
         let remove = if let Some(pending) = reservations.get_mut(&self.session_id) {
             pending.files = pending.files.saturating_sub(1);
             pending.bytes = pending.bytes.saturating_sub(self.size);

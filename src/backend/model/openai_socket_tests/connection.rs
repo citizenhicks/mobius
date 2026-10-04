@@ -246,6 +246,7 @@ async fn connection_limit_closes_other_idle_connections() {
         &socket_url,
         "test-model",
         reqwest::Client::new(),
+        crate::backend::model::ModelTransportSettings::default(),
     )
     .expect("provider");
     let (idle_socket, _) = connect_async(&socket_url)

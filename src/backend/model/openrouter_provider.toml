@@ -1,0 +1,8 @@
+symbol = "route"
+label = "OpenRouter"
+description = "Responses API across multiple model vendors"
+base_url = "https://openrouter.ai/api/v1"
+tool_discovery = "native"
+search = ["off", "live"]
+credential_env = "OPENROUTER_API_KEY"
+custom_endpoint_tool_discovery = "rebuild"

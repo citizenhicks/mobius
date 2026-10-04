@@ -8,11 +8,14 @@ const TEST: &str = "host::tests::descriptors::resident_chats_share_pinned_skill_
 #[tokio::test]
 async fn resident_chats_share_pinned_skill_handles() {
     if std::env::var_os(CHILD).is_none() {
+        let isolated_home = tempfile::tempdir().expect("isolated skill discovery home");
         let output = std::process::Command::new("/bin/sh")
             .args(["-c", "ulimit -n 256; exec \"$@\"", "descriptor-test"])
             .arg(std::env::current_exe().expect("test executable"))
             .args([TEST, "--exact", "--nocapture"])
             .env(CHILD, "1")
+            .env("HOME", isolated_home.path())
+            .env_remove("CODEX_HOME")
             .output()
             .expect("run isolated descriptor test");
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -39,6 +42,7 @@ async fn resident_chats_share_pinned_skill_handles() {
         None,
     )
     .expect("config");
+    let session_capacity = config.connections.active_sessions;
     let credentials =
         Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
     let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
@@ -56,7 +60,7 @@ async fn resident_chats_share_pinned_skill_handles() {
         .expect("Bot");
     let mut sessions = Vec::new();
     let mut first_count = 0;
-    for index in 1..=MAX_ACTIVE_SESSIONS {
+    for index in 1..=session_capacity {
         sessions.push(
             gateway
                 .create_session(&workspace, &bot.id)
@@ -72,12 +76,12 @@ async fn resident_chats_share_pinned_skill_handles() {
         if index == 1 {
             first_count = count;
         }
-        if [1, 6, MAX_ACTIVE_SESSIONS].contains(&index) {
+        if [1, 6, session_capacity].contains(&index) {
             println!("resident chats={index}, descriptors={count}");
         }
     }
     assert!(
-        descriptors() <= first_count + 2 * (MAX_ACTIVE_SESSIONS - 1),
+        descriptors() <= first_count + 2 * (session_capacity - 1),
         "resident chats duplicated shared directory handles"
     );
     drop(sessions);

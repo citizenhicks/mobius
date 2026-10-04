@@ -1,5 +1,6 @@
 //! Standalone skills and activated Agent Plugin packages.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::env;
@@ -58,10 +59,7 @@ mod text {
         pub(super) prompt_default: String,
     }
     pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
-        std::sync::LazyLock::new(|| {
-            toml::from_str(include_str!("extensions.toml"))
-                .expect("bundled extensions definition must be valid")
-        });
+        std::sync::LazyLock::new(|| crate::config::embedded(include_str!("extensions.toml")));
 }
 const MAX_SKILLS: usize = 64;
 const MAX_SKILL_BYTES: u64 = 40_000;
@@ -153,7 +151,7 @@ pub struct Extensions {
     plugins: BTreeSet<String>,
     hooks: Vec<AuthorizedHooks>,
     hook_runtime: Option<hooks::HookRuntime>,
-    prompt: String,
+    prompt: Cow<'static, str>,
 }
 
 impl Extensions {
@@ -169,7 +167,7 @@ impl Extensions {
             plugins: BTreeSet::new(),
             hooks: Vec::new(),
             hook_runtime: None,
-            prompt: text::DEFINITION.prompt_default.clone(),
+            prompt: Cow::Borrowed(text::DEFINITION.prompt_default.as_str()),
         })
     }
 
@@ -291,7 +289,7 @@ impl Extensions {
         if prompt.trim().is_empty() {
             return Err(Error::Config("extensions prompt cannot be empty".into()));
         }
-        self.prompt = prompt;
+        self.prompt = Cow::Owned(prompt);
         Ok(self)
     }
 
@@ -527,7 +525,10 @@ fn discover_roots(
             let content = read_skill_resource(&directory, Path::new(SKILL_FILE))?;
             let skill_path = skill_root.join(SKILL_FILE);
             let (name, description) = skill_metadata(&skill_path, &content);
-            let name = namespace.map_or(name.clone(), |namespace| format!("{namespace}:{name}"));
+            let name = match namespace {
+                Some(namespace) => format!("{namespace}:{name}"),
+                None => name,
+            };
             if skills.contains_key(&name) {
                 if installed {
                     continue;
@@ -555,9 +556,7 @@ fn prompt_value(value: &str) -> String {
 }
 
 fn installed_skill_roots() -> Vec<PathBuf> {
-    let home = env::var_os("HOME")
-        .or_else(|| env::var_os("USERPROFILE"))
-        .map(PathBuf::from);
+    let home = env::home_dir();
     let codex_home = env::var_os("CODEX_HOME").map(PathBuf::from);
     installed_skill_roots_from(home, codex_home)
 }
@@ -1127,8 +1126,9 @@ fn skill_metadata(path: &std::path::Path, content: &str) -> (String, String) {
     (
         name.filter(|value| !value.is_empty()).unwrap_or(fallback),
         description
+            .as_deref()
             .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| text::DEFINITION.fallback_skill_description.clone())
+            .unwrap_or(text::DEFINITION.fallback_skill_description.as_str())
             .chars()
             .take(500)
             .collect(),

@@ -302,9 +302,7 @@ fn token_path() -> Result<PathBuf> {
     if let Some(path) = env::var_os("MOBIUS_GATEWAY_TOKEN_FILE") {
         return Ok(path.into());
     }
-    env::var_os("HOME")
-        .or_else(|| env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
+    env::home_dir()
         .map(|path| path.join(".mobius").join("gateway-tokens.json"))
         .ok_or_else(|| {
             Error::Config("cannot determine token path; set MOBIUS_GATEWAY_TOKEN_FILE".into())
@@ -318,8 +316,7 @@ fn parent(path: &Path) -> Result<&Path> {
 
 fn secure(file: &tempfile::NamedTempFile) -> Result<()> {
     #[cfg(unix)]
-    file.as_file()
-        .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    file.as_file().set_permissions(mobius::owner_only::file())?;
     Ok(())
 }
 
@@ -395,8 +392,7 @@ mod tests {
         let path = directory.path().join("tokens.json");
         std::fs::write(&path, r#"{"tcp://127.0.0.1:8741":"token"}"#).expect("legacy token map");
         #[cfg(unix)]
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-            .expect("private permissions");
+        std::fs::set_permissions(&path, mobius::owner_only::file()).expect("private permissions");
 
         let error = GatewayAccounts::load_from(path).expect_err("old format must fail");
 

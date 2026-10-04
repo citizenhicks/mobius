@@ -2,7 +2,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use mobius::middleware::manifest::MiddlewareManifest;
+use mobius::middleware::manifest::{MiddlewareManifest, MiddlewareSettingManifest};
+use mobius::middleware::subagents::SubagentCeilings;
 use mobius::protocol::{FrontendSettingValue, MiddlewareFeature, ModelChoice};
 
 use crate::wire::MiddlewareConfig;
@@ -104,9 +105,26 @@ pub(crate) static MIDDLEWARE: std::sync::LazyLock<[MiddlewareRegistration; 16]> 
     });
 
 pub(crate) fn features(models: &[ModelChoice]) -> Vec<MiddlewareFeature> {
+    features_with_ceilings(models, SubagentCeilings::default())
+}
+
+pub(crate) fn features_with_ceilings(
+    models: &[ModelChoice],
+    ceilings: SubagentCeilings,
+) -> Vec<MiddlewareFeature> {
     MIDDLEWARE
         .iter()
-        .map(|entry| entry.manifest.feature(models))
+        .map(|entry| {
+            let mut feature = entry.manifest.feature(models);
+            if matches!(entry.kind, BuiltinMiddleware::Subagents) {
+                feature.settings = ceilings
+                    .settings()
+                    .iter()
+                    .map(|setting| setting.schema(models))
+                    .collect();
+            }
+            feature
+        })
         .collect()
 }
 
@@ -127,8 +145,44 @@ pub(crate) fn default_config() -> MiddlewareConfig {
     config
 }
 
+pub(crate) fn materialize_integer_defaults(
+    config: &mut MiddlewareConfig,
+    ceilings: Option<SubagentCeilings>,
+) {
+    let subagent_settings = ceilings.map(SubagentCeilings::settings);
+    for entry in MIDDLEWARE.iter() {
+        let settings = if matches!(entry.kind, BuiltinMiddleware::Subagents) {
+            let Some(settings) = subagent_settings.as_deref() else {
+                continue;
+            };
+            settings
+        } else {
+            entry.manifest.settings
+        };
+        for setting in settings {
+            if let MiddlewareSettingManifest::Integer { id, default, .. } = *setting
+                && config.setting(entry.manifest.id, id).is_none()
+            {
+                config.set_setting(
+                    entry.manifest.id,
+                    id,
+                    Some(FrontendSettingValue::Integer(default)),
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn validate(config: &MiddlewareConfig) -> Result<()> {
-    let features = features(&[]);
+    validate_with_ceilings(config, SubagentCeilings::default())
+}
+
+pub(crate) fn validate_with_ceilings(
+    config: &MiddlewareConfig,
+    ceilings: SubagentCeilings,
+) -> Result<()> {
+    let features = features_with_ceilings(&[], ceilings);
     for id in config.entries() {
         if let Some(policy) = config.disabled_by(&features, id, None) {
             return Err(Error::Config(format!(
@@ -164,20 +218,28 @@ pub(crate) fn validate(config: &MiddlewareConfig) -> Result<()> {
         }
     }
     for entry in MIDDLEWARE.iter() {
-        for setting in entry.manifest.settings {
+        let subagent_settings;
+        let settings = if matches!(entry.kind, BuiltinMiddleware::Subagents) {
+            subagent_settings = ceilings.settings();
+            &subagent_settings
+        } else {
+            entry.manifest.settings
+        };
+        for setting in settings {
+            let default = match setting {
+                MiddlewareSettingManifest::Integer { .. } => setting.default_value(),
+                MiddlewareSettingManifest::Select { .. } => None,
+            };
             setting.validate(
                 entry.manifest.id,
-                config.setting(entry.manifest.id, setting.id()),
+                config
+                    .setting(entry.manifest.id, setting.id())
+                    .or(default.as_ref()),
             )?;
         }
     }
-    let max_depth = u8::try_from(integer_setting(config, "subagents", "max_depth")?)
-        .map_err(|_| Error::Config("subagent max depth must fit an unsigned byte".into()))?;
-    mobius::middleware::subagents::validate_limits(
-        max_depth,
-        usize_setting(config, "subagents", "max_concurrency")?,
-        usize_setting(config, "subagents", "max_agents")?,
-    )?;
+    subagent_limits(config, ceilings)?;
+    crate::assembly::configured_compaction(config)?;
     Ok(())
 }
 
@@ -232,13 +294,50 @@ pub(crate) fn integer_setting(
     middleware: &str,
     setting: &str,
 ) -> Result<i64> {
+    integer_setting_from_manifest(
+        config,
+        middleware,
+        setting,
+        definition(middleware)?.manifest.settings,
+    )
+}
+
+fn integer_setting_from_manifest(
+    config: &MiddlewareConfig,
+    middleware: &str,
+    setting: &str,
+    manifest: &[MiddlewareSettingManifest],
+) -> Result<i64> {
     match config.setting(middleware, setting) {
         Some(FrontendSettingValue::Integer(value)) => Ok(*value),
         Some(FrontendSettingValue::String(_)) => Err(setting_type(middleware, setting, "integer")),
-        None => Err(Error::Config(format!(
-            "missing middleware setting `{middleware}.{setting}`"
-        ))),
+        None => {
+            let declared = manifest.iter().find(|entry| entry.id() == setting);
+            match declared.and_then(|entry| entry.default_value()) {
+                Some(FrontendSettingValue::Integer(value)) => Ok(value),
+                _ => Err(Error::Config(format!(
+                    "missing integer middleware setting `{middleware}.{setting}`"
+                ))),
+            }
+        }
     }
+}
+
+pub(crate) fn subagent_limits(
+    config: &MiddlewareConfig,
+    ceilings: SubagentCeilings,
+) -> Result<(u8, usize, usize)> {
+    let settings = ceilings.settings();
+    let value = |id| integer_setting_from_manifest(config, "subagents", id, &settings);
+    let max_depth = u8::try_from(value("max_depth")?)
+        .map_err(|_| Error::Config("subagent max depth must fit an unsigned byte".into()))?;
+    let max_concurrency = usize::try_from(value("max_concurrency")?).map_err(|_| {
+        Error::Config("subagent max concurrency must fit an unsigned integer".into())
+    })?;
+    let max_agents = usize::try_from(value("max_agents")?)
+        .map_err(|_| Error::Config("subagent max agents must fit an unsigned integer".into()))?;
+    ceilings.validate(max_depth, max_concurrency, max_agents)?;
+    Ok((max_depth, max_concurrency, max_agents))
 }
 
 pub(crate) fn usize_setting(
@@ -460,7 +559,11 @@ mod tests {
                 .iter()
                 .map(|setting| setting.id.as_str())
                 .collect::<Vec<_>>(),
-            ["approval_policy"]
+            [
+                "approval_policy",
+                "tool_output_bytes",
+                "background_commands"
+            ]
         );
     }
 
@@ -477,6 +580,13 @@ mod tests {
             Some(FrontendSettingValue::String("50000".into())),
         );
         assert!(validate(&config).is_err());
+        let mut config = default_config();
+        config.set_setting(
+            "compaction",
+            "handoff_warning_reserves",
+            Some(FrontendSettingValue::Integer(1)),
+        );
+        assert!(validate(&config).is_err());
 
         let mut config = default_config();
         config.set_setting(
@@ -485,5 +595,114 @@ mod tests {
             Some(FrontendSettingValue::Integer(2)),
         );
         assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn operator_subagent_ceilings_control_the_catalog_and_client_settings() {
+        let ceilings = SubagentCeilings::new(32, 128, 512).expect("operator policy");
+        let mut config = default_config();
+        for (id, value) in [
+            ("max_depth", 24),
+            ("max_concurrency", 96),
+            ("max_agents", 300),
+        ] {
+            config.set_setting("subagents", id, Some(FrontendSettingValue::Integer(value)));
+        }
+        assert!(validate(&config).is_err());
+        validate_with_ceilings(&config, ceilings).expect("operator permits larger agent tree");
+        let feature = features_with_ceilings(&[], ceilings)
+            .into_iter()
+            .find(|feature| feature.id == "subagents")
+            .expect("subagents");
+        for (id, expected) in [
+            ("max_depth", 32),
+            ("max_concurrency", 128),
+            ("max_agents", 512),
+        ] {
+            let setting = feature
+                .settings
+                .iter()
+                .find(|setting| setting.id == id)
+                .expect("setting");
+            assert!(
+                matches!(setting.kind, FrontendSettingKind::Integer { max: Some(max), .. } if max == expected)
+            );
+        }
+        config.set_setting(
+            "subagents",
+            "max_depth",
+            Some(FrontendSettingValue::Integer(33)),
+        );
+        assert!(validate_with_ceilings(&config, ceilings).is_err());
+    }
+
+    #[test]
+    fn lower_subagent_ceilings_resolve_absent_values_and_reject_saved_overrides() {
+        let ceilings = SubagentCeilings::new(1, 2, 3).expect("small operator policy");
+        let mut config = default_config();
+        config.settings.remove("subagents");
+        validate_with_ceilings(&config, ceilings).expect("absent values inherit operator bounds");
+        assert_eq!(
+            subagent_limits(&config, ceilings).expect("runtime limits"),
+            (1, 2, 3)
+        );
+        for (id, expected) in [("max_depth", 1), ("max_concurrency", 2), ("max_agents", 3)] {
+            let settings = ceilings.settings();
+            let setting = settings
+                .iter()
+                .find(|setting| setting.id() == id)
+                .expect("control");
+            assert_eq!(
+                setting.default_value(),
+                Some(FrontendSettingValue::Integer(expected))
+            );
+        }
+        materialize_integer_defaults(&mut config, None);
+        assert!(config.setting("subagents", "max_agents").is_none());
+        materialize_integer_defaults(&mut config, Some(ceilings));
+        assert_eq!(
+            subagent_limits(&config, ceilings).expect("projected limits"),
+            (1, 2, 3)
+        );
+        config.set_setting(
+            "subagents",
+            "max_depth",
+            Some(FrontendSettingValue::Integer(2)),
+        );
+        assert!(validate_with_ceilings(&config, ceilings).is_err());
+        assert!(subagent_limits(&config, ceilings).is_err());
+    }
+
+    #[test]
+    fn absent_integer_settings_resolve_to_the_owning_manifest_defaults() {
+        let mut config = default_config();
+        let defaults = config.clone();
+        config
+            .settings
+            .get_mut("sandbox")
+            .expect("sandbox")
+            .retain(|id, _| id == "approval_policy");
+        config
+            .settings
+            .get_mut("compaction")
+            .expect("compaction")
+            .retain(|id, _| id == "mode" || id == "at_tokens");
+        let encoded = serde_json::to_string(&config).expect("old persisted settings");
+        let restored = serde_json::from_str::<MiddlewareConfig>(&encoded)
+            .expect("deserialize persisted settings");
+        validate(&restored).expect("new scalar settings inherit owner defaults");
+        for middleware in ["sandbox", "compaction"] {
+            for (setting, value) in &defaults.settings[middleware] {
+                if let FrontendSettingValue::Integer(value) = value {
+                    assert_eq!(
+                        integer_setting(&restored, middleware, setting).expect("effective value"),
+                        *value
+                    );
+                }
+            }
+        }
+        let mut unknown = restored;
+        unknown.set_setting("sandbox", "unknown", Some(FrontendSettingValue::Integer(1)));
+        assert!(validate(&unknown).is_err());
     }
 }

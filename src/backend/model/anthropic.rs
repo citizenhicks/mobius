@@ -22,7 +22,6 @@ use super::TOOLS_SEARCH_NAME;
 use super::ToolDefinition;
 use super::image_input;
 use super::provider::HostedWebSearch;
-use super::provider::ProviderAuth;
 use super::provider::ProviderBuildConfig;
 use super::provider::ProviderDefinition;
 use super::provider::validate_base_url;
@@ -44,34 +43,24 @@ use crate::protocol::ToolDiscoveryMode;
 use crate::protocol::ToolLoad;
 use crate::protocol::WebSearchAction;
 
-mod manifest {
-    use crate::backend::model::provider::HostedWebSearch;
-    use crate::protocol::ToolDiscoveryMode;
-    pub const PROVIDER_LABEL: &str = "Anthropic";
-    pub const PROVIDER_DESCRIPTION: &str = "Native Messages API with adaptive thinking";
-    pub const TOOL_DISCOVERY: ToolDiscoveryMode = ToolDiscoveryMode::Rebuild;
-    pub const CUSTOM_ENDPOINT_TOOL_DISCOVERY: Option<ToolDiscoveryMode> =
-        Some(ToolDiscoveryMode::Rebuild);
-    pub const SEARCH: &[HostedWebSearch] = &[HostedWebSearch::Off, HostedWebSearch::Live];
-}
-pub(super) static CATALOG: std::sync::LazyLock<super::provider::ModelCatalog> =
+pub(super) static MANIFEST: std::sync::LazyLock<super::provider::ProviderMetadata> =
     std::sync::LazyLock::new(|| {
-        toml::from_str(include_str!("anthropic.toml"))
-            .expect("bundled anthropic model catalog must be valid")
+        super::provider::ProviderMetadata::load(include_str!("anthropic_provider.toml"))
     });
+pub(super) static CATALOG: std::sync::LazyLock<super::provider::ModelCatalog> =
+    std::sync::LazyLock::new(|| crate::config::embedded(include_str!("anthropic.toml")));
 
-const DEFAULT_BASE_URL: &str = "https://api.anthropic.com/v1";
-const API_VERSION: &str = "2023-06-01";
-const MAX_OUTPUT_TOKENS: u64 = 64_000;
 const MAX_CONTENT_BLOCKS: usize = 1_024;
 const RAW_CONTENT: &str = "_anthropic_content";
 
 /// Anthropic's native Messages API provider.
 pub struct Anthropic {
     client: Client,
+    transport: super::ModelTransportSettings,
     api_key: Option<String>,
     base_url: String,
     model: String,
+    max_output_tokens: u64,
     tool_discovery: ToolDiscoveryMode,
     reasoning_effort: Option<String>,
     web_search: bool,
@@ -90,6 +79,24 @@ impl Anthropic {
         Self::with_client(Some(api_key.into()), base_url, model, streaming_client()?)
     }
 
+    /// Creates a provider with explicit HTTP, socket and retry policy.
+    /// # Errors
+    /// Returns invalid provider policy or HTTP client construction errors.
+    pub fn new_with_transport(
+        api_key: impl Into<String>,
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+        settings: super::ModelTransportSettings,
+    ) -> Result<Self> {
+        Self::with_client(
+            Some(api_key.into()),
+            base_url,
+            model,
+            settings.streaming_client()?,
+        )?
+        .with_transport_settings(settings)
+    }
+
     fn with_client(
         api_key: Option<String>,
         base_url: impl Into<String>,
@@ -97,7 +104,7 @@ impl Anthropic {
         client: Client,
     ) -> Result<Self> {
         if api_key.as_deref().is_some_and(|key| key.trim().is_empty()) {
-            return Err(Error::Config("ANTHROPIC_API_KEY is empty".into()));
+            return Err(Error::Config("provider API key cannot be empty".into()));
         }
         let base_url = base_url.into().trim_end_matches('/').to_string();
         validate_base_url(&base_url)?;
@@ -108,13 +115,42 @@ impl Anthropic {
         let tool_discovery = provider().tool_discovery(&model, Some(&base_url));
         Ok(Self {
             client,
+            transport: super::ModelTransportSettings::default(),
             api_key,
             base_url,
             model,
+            max_output_tokens: MANIFEST
+                .max_output_tokens
+                .expect("Anthropic output default is required"),
             tool_discovery,
             reasoning_effort: None,
             web_search: false,
         })
+    }
+
+    /// Applies validated operational transport policy.
+    /// # Errors
+    /// Returns an error for invalid operational settings.
+    pub fn with_transport_settings(
+        mut self,
+        settings: super::ModelTransportSettings,
+    ) -> Result<Self> {
+        settings.validate()?;
+        self.transport = settings;
+        Ok(self)
+    }
+
+    /// Chooses the output-token budget independently from the advertised model context.
+    /// # Errors
+    /// Returns an error for a zero budget or a budget above the transport safety bound.
+    pub fn with_max_output_tokens(mut self, tokens: u64) -> Result<Self> {
+        if tokens == 0 || tokens > 1_048_576 {
+            return Err(Error::Config(
+                "Anthropic output token budget must be in 1..=1048576".into(),
+            ));
+        }
+        self.max_output_tokens = tokens;
+        Ok(self)
     }
 
     /// Enables adaptive thinking at one supported Anthropic effort level.
@@ -190,7 +226,7 @@ impl Anthropic {
         let discovery = self.tool_discovery();
         let mut body = serde_json::json!({
             "model": self.model,
-            "max_tokens": MAX_OUTPUT_TOKENS,
+            "max_tokens": self.max_output_tokens,
             "system": instructions,
             "messages": translate_messages(
                 input,
@@ -217,10 +253,10 @@ impl Anthropic {
     }
 
     async fn post(&self, body: &Value) -> Result<reqwest::Response> {
-        let mut request = self
-            .client
-            .post(format!("{}/messages", self.base_url))
-            .header("anthropic-version", API_VERSION);
+        let mut request = self.client.post(format!("{}/messages", self.base_url));
+        for (name, value) in &MANIFEST.headers {
+            request = request.header(name, value);
+        }
         if let Some(api_key) = &self.api_key {
             request = request.header("x-api-key", api_key);
         }
@@ -234,6 +270,10 @@ impl Anthropic {
 }
 
 impl Model for Anthropic {
+    fn transport_settings(&self) -> super::ModelTransportSettings {
+        self.transport
+    }
+
     fn info(&self) -> ModelInfo {
         ModelInfo {
             model: self.model.clone(),
@@ -1062,23 +1102,14 @@ fn update_i64(target: &mut i64, value: &Value, path: &str) -> Result<()> {
 }
 
 pub(super) fn provider() -> ProviderDefinition {
-    ProviderDefinition::new(
+    ProviderDefinition::from_metadata(
         "anthropic",
-        manifest::PROVIDER_LABEL,
-        "claude",
-        manifest::PROVIDER_DESCRIPTION,
-        ProviderAuth::ApiKey("ANTHROPIC_API_KEY"),
-        &CATALOG.models,
-        CATALOG.default_model.as_deref(),
-        manifest::SEARCH,
+        &MANIFEST,
+        MANIFEST.api_key_auth(),
+        Some(&CATALOG),
         build_provider,
     )
     .with_image_input()
-    .with_base_url(DEFAULT_BASE_URL)
-    .with_tool_discovery(
-        manifest::TOOL_DISCOVERY,
-        manifest::CUSTOM_ENDPOINT_TOOL_DISCOVERY,
-    )
     .with_credentialless_endpoints()
 }
 
@@ -1087,7 +1118,8 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
         .base_url
         .ok_or_else(|| Error::Config("Anthropic requires a base URL".into()))?;
     let api_key = config.credential.into_optional_api_key("anthropic")?;
-    let provider = Anthropic::with_client(api_key, base_url, config.model, config.http)?;
+    let provider = Anthropic::with_client(api_key, base_url, config.model, config.http)?
+        .with_transport_settings(config.transport)?;
     let provider = match config.reasoning_effort {
         Some(effort) => provider.with_reasoning_effort(effort)?,
         None => provider,

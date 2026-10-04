@@ -2,7 +2,9 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-process.env.PLAYWRIGHT_BROWSERS_PATH ??= path.join(__dirname, 'browsers');
+// Operator launch policy is supplied by the gateway, never by an evaluation frame.
+const browserOptions = JSON.parse(process.argv[2] ?? fs.readFileSync(path.join(__dirname, 'browser.json'), 'utf8'));
+process.env.PLAYWRIGHT_BROWSERS_PATH = path.resolve(__dirname, browserOptions.browsers_directory);
 const crypto = require('node:crypto');
 const vm = require('node:vm');
 const { Session } = require('node:inspector/promises');
@@ -132,7 +134,8 @@ async function getPage() {
   if (page && (browserKey(attached) !== browserKey(requested) || page.isClosed() || !connection?.isConnected())) await release();
   if (!page) {
     try {
-      const { chromium } = require('playwright');
+      if (!requested && browserOptions.sandbox && process.getuid?.() === 0) throw new Error(browserOptions.root_sandbox_error);
+      const { chromium } = require(browserOptions.playwright_module);
       if (requested) {
         connection = await chromium.connectOverCDP(requested.endpoint, {noDefaults:true, timeout:10000});
         if (requested.target_id == null) {
@@ -155,10 +158,14 @@ async function getPage() {
       } else {
         // Without a loopback port (a sandbox without network) the browser still runs, unwatched.
         const port = await freePort().catch(() => undefined);
-        connection = await chromium.launch(port ? {headless:true, args:['--remote-debugging-address=127.0.0.1', '--remote-debugging-port=' + port]} : {headless:true});
+        const args = [...browserOptions.arguments];
+        if (port) args.push('--remote-debugging-address=127.0.0.1', '--remote-debugging-port=' + port);
+        connection = await chromium.launch({headless:true, chromiumSandbox:browserOptions.sandbox, args,
+          ...(browserOptions.executable ? {executablePath:browserOptions.executable} : {})});
         devtools = port && 'http://127.0.0.1:' + port;
-        const context = await connection.newContext({viewport:{width:1365,height:768}, deviceScaleFactor:1});
+        const context = await connection.newContext({viewport:{width:browserOptions.viewport[0],height:browserOptions.viewport[1]}, deviceScaleFactor:1});
         page = await context.newPage();
+        if (browserOptions.start_page !== 'about:blank') await page.goto(browserOptions.start_page);
       }
       page.setDefaultTimeout(10000);
     } catch (error) {

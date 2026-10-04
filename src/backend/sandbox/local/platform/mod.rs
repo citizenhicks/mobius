@@ -12,7 +12,7 @@ mod unsupported;
 #[cfg(all(test, target_os = "linux"))]
 pub(super) use linux::validated_ssh_agent_socket;
 #[cfg(target_os = "linux")]
-pub(super) use linux::{protected_full_access_command, sandboxed_command};
+pub(super) use linux::{check_procfs_output, protected_full_access_command, sandboxed_command};
 #[cfg(target_os = "macos")]
 pub(super) use macos::{protected_full_access_command, sandboxed_command};
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -24,10 +24,10 @@ pub(super) fn append_invocation(
     isolated_home: bool,
 ) {
     match invocation {
-        Invocation::Shell(script) => {
-            command.arg("/bin/bash");
+        Invocation::Shell { script, executable } => {
+            command.arg(executable);
             if isolated_home {
-                command.args(["--noprofile", "--norc", "-c", script]);
+                command.args(["-c", script]);
             } else {
                 command.args(["-lc", script]);
             }
@@ -44,10 +44,10 @@ pub(super) fn append_invocation(
 
 pub(super) fn host_command(invocation: &Invocation<'_>, isolated_home: bool) -> Command {
     match invocation {
-        Invocation::Shell(script) => {
-            let mut command = Command::new("/bin/bash");
+        Invocation::Shell { script, executable } => {
+            let mut command = Command::new(executable);
             if isolated_home {
-                command.args(["--noprofile", "--norc", "-c", script]);
+                command.args(["-c", script]);
             } else {
                 command.args(["-lc", script]);
             }

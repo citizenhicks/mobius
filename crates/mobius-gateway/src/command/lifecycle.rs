@@ -44,7 +44,7 @@ pub(super) async fn serve(
     }
     #[cfg(unix)]
     ensure_gateway_stopped(&store, &config)?;
-    let auth = AuthStore::open(store.auth_path())?;
+    let auth = AuthStore::open(store.auth_path(), config.auth)?;
     if let Some((endpoint, token)) = provision_cloudflare_local_client(&auth, &config)? {
         save_local_client(&endpoint, token)?;
     }
@@ -136,8 +136,7 @@ pub(super) async fn start_background_gateway(
     }
 
     let log = tempfile::NamedTempFile::new_in(&state_dir)?;
-    log.as_file()
-        .set_permissions(fs::Permissions::from_mode(0o600))?;
+    log.as_file().set_permissions(mobius::owner_only::file())?;
     let mut command = TokioCommand::new(std::env::current_exe()?);
     command
         .arg("__serve")
@@ -444,7 +443,7 @@ impl ProcessRecordGuard {
             .read(true)
             .write(true)
             .open(&path)?;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        file.set_permissions(mobius::owner_only::file())?;
         file.try_lock().map_err(|error| match error {
             TryLockError::WouldBlock => Error::Config("gateway is already running".into()),
             TryLockError::Error(error) => error.into(),
@@ -487,7 +486,7 @@ impl StartupGuard {
             .read(true)
             .write(true)
             .open(path)?;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        file.set_permissions(mobius::owner_only::file())?;
         file.try_lock().map_err(|error| match error {
             TryLockError::WouldBlock => {
                 Error::Config("gateway startup is already in progress".into())

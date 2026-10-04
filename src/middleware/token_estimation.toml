@@ -1,0 +1,2 @@
+# Workload-tunable heuristic; actual provider usage remains authoritative.
+bytes_per_token = 4.0

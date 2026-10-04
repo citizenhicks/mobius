@@ -324,10 +324,7 @@ pub(super) async fn prepare_bot_session_tree_deletion(
     state: &mut GatewayState,
     bot_id: &str,
 ) -> std::result::Result<(Vec<String>, Vec<String>, SessionFileDeletion), Rejection> {
-    if state
-        .starting_sessions
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    if mobius::sync::recover_lock(&state.starting_sessions)
         .values()
         .any(|starting_bot| starting_bot == bot_id)
     {
@@ -381,10 +378,7 @@ pub(super) async fn prepare_session_tree_deletion(
             .await
             .map_err(session_file_rejection);
     }
-    if state
-        .starting_sessions
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    if mobius::sync::recover_lock(&state.starting_sessions)
         .keys()
         .any(|starting| session_ids.contains(starting))
     {

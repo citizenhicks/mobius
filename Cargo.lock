@@ -1783,6 +1783,7 @@ dependencies = [
  "base64",
  "bm25",
  "cap-std",
+ "chrono",
  "diffy",
  "futures-util",
  "image",

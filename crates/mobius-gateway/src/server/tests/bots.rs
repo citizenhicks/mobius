@@ -163,7 +163,7 @@ async fn bot_catalog_broadcasts_do_not_reintroduce_a_deleted_bot() {
             .await
             .expect("queue request");
     }
-    let (client_revocations, _) = broadcast::channel(MAX_CONNECTIONS);
+    let (client_revocations, _) = broadcast::channel(ConnectionPolicy::default().total());
     let serving = tokio::spawn(serve_connection(
         stream,
         ConnectionContext {
@@ -177,7 +177,8 @@ async fn bot_catalog_broadcasts_do_not_reintroduce_a_deleted_bot() {
             admission: ConnectionAdmission::new(1, 1).admit().await,
             access_lease: None,
         },
-        Instant::now() + PRE_AUTH_TIMEOUT,
+        Instant::now()
+            + Duration::from_secs(ConnectionPolicy::default().authentication_timeout_seconds),
         None,
     ));
     let mut deleted = false;

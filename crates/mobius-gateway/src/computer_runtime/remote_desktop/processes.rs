@@ -217,7 +217,6 @@ fn identity(pid: u32) -> Result<Option<Identity>> {
 }
 
 pub(super) fn private_directory(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
     fs::create_dir_all(path)?;
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
@@ -225,29 +224,13 @@ pub(super) fn private_directory(path: &Path) -> Result<()> {
             "desktop state must be a private directory".into(),
         ));
     }
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    fs::set_permissions(path, mobius::owner_only::dir())?;
     Ok(())
 }
 
 pub(super) fn private_file(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    fs::set_permissions(path, mobius::owner_only::file())?;
     Ok(())
-}
-
-pub(super) fn executable(names: &[&str]) -> Result<PathBuf> {
-    for name in names {
-        for directory in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
-            let path = directory.join(name);
-            if path.is_file() {
-                return Ok(fs::canonicalize(path)?);
-            }
-        }
-    }
-    Err(Error::Config(format!(
-        "desktop requires {}",
-        names.join(" or ")
-    )))
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 //! ChatGPT OAuth login, credential persistence, and request authorization.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fs;
@@ -7,8 +8,6 @@ use std::fs::File;
 use std::fs::OpenOptions;
 use std::io;
 use std::io::Write;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -39,33 +38,35 @@ use uuid::Uuid;
 use super::super::openai_auth::OpenAiAuthorization;
 use super::super::openai_auth::ResolvedAuthorization;
 use super::super::provider::BrowserAuth;
-use super::super::provider::BrowserLogin;
-use super::super::provider::DeviceLogin;
 use super::super::provider::ProviderCredential;
 use super::super::provider::UsageLimit;
 use super::PROVIDER_ID;
-use super::USAGE_URL;
-use super::manifest;
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
 
-// Match the Codex release that introduced GPT-6.1 Sol.
-const CODEX_COMPAT_VERSION: &str = "0.159.1";
-const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
-const AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
-const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
-const REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
-const DEVICE_USER_CODE_URL: &str = "https://auth.openai.com/api/accounts/deviceauth/usercode";
-const DEVICE_TOKEN_URL: &str = "https://auth.openai.com/api/accounts/deviceauth/token";
-const DEVICE_VERIFICATION_URL: &str = "https://auth.openai.com/codex/device";
-const DEVICE_REDIRECT_URI: &str = "https://auth.openai.com/deviceauth/callback";
-const SCOPE: &str = "openid profile email offline_access";
-const JWT_AUTH_CLAIM: &str = "https://api.openai.com/auth";
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthManifest {
+    label: String,
+    client_id: String,
+    authorize_url: String,
+    token_url: String,
+    redirect_uri: String,
+    device_user_code_url: String,
+    device_token_url: String,
+    device_verification_url: String,
+    device_redirect_uri: String,
+    usage_url: String,
+    scope: String,
+    jwt_auth_claim: String,
+    headers: BTreeMap<String, String>,
+    websocket_headers: BTreeMap<String, String>,
+}
+
+static MANIFEST: std::sync::LazyLock<AuthManifest> =
+    std::sync::LazyLock::new(|| crate::config::embedded(include_str!("openai_codex_auth.toml")));
 const CALLBACK_LIMIT: usize = 16 * 1024;
-const CALLBACK_TIMEOUT: Duration = Duration::from_secs(15 * 60);
-const CALLBACK_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const REFRESH_LEEWAY: Duration = Duration::from_secs(60);
 const TOKEN_LIMIT: usize = 64 * 1024;
 const MAX_USAGE_LABEL_BYTES: usize = 128;
@@ -78,7 +79,9 @@ pub(super) struct ChatGptAuth {
     credential: Mutex<OAuthCredential>,
 }
 
-struct ChatGptLogin {
+/// A pending ChatGPT browser login that owns its callback listener.
+pub struct BrowserLogin {
+    settings: super::super::ModelTransportSettings,
     listener: TcpListener,
     verifier: String,
     state: String,
@@ -86,7 +89,9 @@ struct ChatGptLogin {
     client: Client,
 }
 
-struct ChatGptDeviceLogin {
+/// A pending ChatGPT device login that owns its code and polling client.
+pub struct DeviceLogin {
+    settings: super::super::ModelTransportSettings,
     user_code: String,
     device_auth_id: String,
     interval: Duration,
@@ -138,12 +143,20 @@ struct DeviceTokenResponse {
 type AuthFile = BTreeMap<String, OAuthCredential>;
 
 impl ChatGptAuth {
+    #[cfg(test)]
     fn load(path: impl Into<PathBuf>) -> Result<Self> {
+        Self::load_with_transport(path, super::super::ModelTransportSettings::default())
+    }
+
+    fn load_with_transport(
+        path: impl Into<PathBuf>,
+        settings: super::super::ModelTransportSettings,
+    ) -> Result<Self> {
         let path = path.into();
         let credential = read_credential(&path)?;
         Ok(Self {
             path,
-            client: http_client()?,
+            client: http_client_with_settings(&settings)?,
             credential: Mutex::new(credential),
         })
     }
@@ -184,32 +197,33 @@ impl ChatGptAuth {
 
         let refreshed = refresh_token(&self.client, &saved.refresh).await?;
         let path = self.path.clone();
-        let saved = refreshed.clone();
-        tokio::task::spawn_blocking(move || write_credential(&path, &saved))
-            .await
-            .map_err(|error| Error::Auth(format!("credential save task failed: {error}")))??;
+        let refreshed = tokio::task::spawn_blocking(move || {
+            write_credential(&path, &refreshed)?;
+            Ok::<_, Error>(refreshed)
+        })
+        .await
+        .map_err(|error| Error::Auth(format!("credential save task failed: {error}")))??;
         *credential = refreshed;
         drop(lock);
         Ok(resolved(&credential))
     }
 
     async fn usage_limits(&self) -> Result<Vec<UsageLimit>> {
-        self.usage_limits_at(USAGE_URL).await
+        self.usage_limits_at(MANIFEST.usage_url.as_str()).await
     }
 
     async fn usage_limits_at(&self, url: &str) -> Result<Vec<UsageLimit>> {
         for attempt in 0..2 {
             let authorization =
                 <Self as OpenAiAuthorization>::authorize_http(self, false, None).await?;
-            let rejected_token = authorization.token.clone();
-            let mut request = self.client.get(url).bearer_auth(authorization.token);
+            let mut request = self.client.get(url).bearer_auth(&authorization.token);
             for (name, value) in authorization.headers {
-                request = request.header(name, value);
+                request = request.header(name, value.as_ref());
             }
             let response = request.send().await?;
             if response.status() == StatusCode::UNAUTHORIZED
                 && attempt == 0
-                && <Self as OpenAiAuthorization>::recover_unauthorized(self, &rejected_token)
+                && <Self as OpenAiAuthorization>::recover_unauthorized(self, &authorization.token)
                     .await?
             {
                 continue;
@@ -226,20 +240,31 @@ impl ChatGptAuth {
     }
 }
 
-impl ChatGptLogin {
-    async fn start() -> Result<Self> {
+impl BrowserLogin {
+    async fn start(settings: super::super::ModelTransportSettings) -> Result<Self> {
+        settings.validate()?;
         let (verifier, challenge) = pkce();
         let state = Uuid::new_v4().simple().to_string();
-        let listener = TcpListener::bind(("127.0.0.1", 1455))
+        let redirect = reqwest::Url::parse(&MANIFEST.redirect_uri)
+            .map_err(|_| Error::Config("invalid OAuth redirect URI".into()))?;
+        if redirect.scheme() != "http" || redirect.host_str() != Some("localhost") {
+            return Err(Error::Config(
+                "OAuth callback must use HTTP localhost".into(),
+            ));
+        }
+        let port = redirect
+            .port_or_known_default()
+            .ok_or_else(|| Error::Config("OAuth callback omitted its port".into()))?;
+        let listener = TcpListener::bind(("127.0.0.1", port))
             .await
-            .map_err(|error| Error::Auth(format!("cannot listen on localhost:1455: {error}")))?;
-        let mut url = reqwest::Url::parse(AUTHORIZE_URL)
+            .map_err(|error| Error::Auth(format!("cannot listen for OAuth callback: {error}")))?;
+        let mut url = reqwest::Url::parse(MANIFEST.authorize_url.as_str())
             .map_err(|error| Error::Auth(format!("invalid authorization URL: {error}")))?;
         url.query_pairs_mut()
             .append_pair("response_type", "code")
-            .append_pair("client_id", CLIENT_ID)
-            .append_pair("redirect_uri", REDIRECT_URI)
-            .append_pair("scope", SCOPE)
+            .append_pair("client_id", MANIFEST.client_id.as_str())
+            .append_pair("redirect_uri", MANIFEST.redirect_uri.as_str())
+            .append_pair("scope", MANIFEST.scope.as_str())
             .append_pair("code_challenge", &challenge)
             .append_pair("code_challenge_method", "S256")
             .append_pair("state", &state)
@@ -251,37 +276,55 @@ impl ChatGptLogin {
             verifier,
             state,
             url: url.into(),
-            client: http_client()?,
+            client: http_client_with_settings(&settings)?,
+            settings,
         })
     }
 
-    fn url(&self) -> &str {
+    /// Returns the authorization URL to display or open in a browser.
+    #[must_use]
+    pub fn url(&self) -> &str {
         &self.url
     }
 
-    fn open_browser(&self) {
+    /// Opens the authorization URL with the platform's default browser.
+    pub fn open_browser(&self) {
         let _ = open_browser(&self.url);
     }
 
-    async fn finish(self, path: PathBuf) -> Result<()> {
+    /// Completes authentication and stores the credential at the given path.
+    /// # Errors
+    /// Returns callback, provider, timeout, or credential-storage errors.
+    pub async fn complete(self, path: PathBuf) -> Result<()> {
         let code = timeout(
-            CALLBACK_TIMEOUT,
-            wait_for_callback(self.listener, &self.state),
+            Duration::from_millis(self.settings.oauth_callback_timeout_ms),
+            wait_for_callback_with_settings(
+                self.listener,
+                &self.state,
+                Duration::from_millis(self.settings.oauth_callback_request_timeout_ms),
+            ),
         )
         .await
         .map_err(|_| Error::Auth("ChatGPT login timed out".into()))??;
-        let credential = exchange_code(&self.client, &code, &self.verifier, REDIRECT_URI).await?;
+        let credential = exchange_code(
+            &self.client,
+            &code,
+            &self.verifier,
+            MANIFEST.redirect_uri.as_str(),
+        )
+        .await?;
         save_login_credential(path, credential).await
     }
 }
 
-impl ChatGptDeviceLogin {
-    async fn start() -> Result<Self> {
-        let client = http_client()?;
+impl DeviceLogin {
+    async fn start(settings: super::super::ModelTransportSettings) -> Result<Self> {
+        settings.validate()?;
+        let client = http_client_with_settings(&settings)?;
         let response = client
-            .post(DEVICE_USER_CODE_URL)
+            .post(MANIFEST.device_user_code_url.as_str())
             .json(&DeviceUserCodeRequest {
-                client_id: CLIENT_ID,
+                client_id: MANIFEST.client_id.as_str(),
             })
             .send()
             .await?;
@@ -308,15 +351,40 @@ impl ChatGptDeviceLogin {
             device_auth_id: response.device_auth_id,
             interval: Duration::from_secs(interval),
             client,
+            settings,
         })
     }
 
-    async fn finish(self, path: PathBuf) -> Result<()> {
+    /// Returns the page where the user enters the device code.
+    #[must_use]
+    pub fn verification_url(&self) -> &str {
+        MANIFEST.device_verification_url.as_str()
+    }
+
+    /// Returns the code to enter on the verification page.
+    #[must_use]
+    pub fn user_code(&self) -> &str {
+        &self.user_code
+    }
+
+    /// Polls authentication and stores the credential at the given path.
+    /// # Errors
+    /// Returns provider, timeout, or credential-storage errors.
+    pub async fn complete(self, path: PathBuf) -> Result<()> {
+        timeout(
+            Duration::from_millis(self.settings.device_code_timeout_ms),
+            self.finish_inner(path),
+        )
+        .await
+        .map_err(|_| Error::Auth("ChatGPT device-code login timed out".into()))?
+    }
+
+    async fn finish_inner(self, path: PathBuf) -> Result<()> {
         let started = Instant::now();
         let response = loop {
             let response = self
                 .client
-                .post(DEVICE_TOKEN_URL)
+                .post(MANIFEST.device_token_url.as_str())
                 .json(&DeviceTokenRequest {
                     device_auth_id: &self.device_auth_id,
                     user_code: &self.user_code,
@@ -332,7 +400,8 @@ impl ChatGptDeviceLogin {
                     "ChatGPT device-code login failed with HTTP {status}"
                 )));
             }
-            let remaining = CALLBACK_TIMEOUT.saturating_sub(started.elapsed());
+            let remaining = Duration::from_millis(self.settings.device_code_timeout_ms)
+                .saturating_sub(started.elapsed());
             if remaining.is_zero() {
                 return Err(Error::Auth("ChatGPT device-code login timed out".into()));
             }
@@ -350,7 +419,7 @@ impl ChatGptDeviceLogin {
             &self.client,
             &response.authorization_code,
             &response.code_verifier,
-            DEVICE_REDIRECT_URI,
+            MANIFEST.device_redirect_uri.as_str(),
         )
         .await?;
         save_login_credential(path, credential).await
@@ -383,9 +452,10 @@ async fn save_login_credential(path: PathBuf, credential: OAuthCredential) -> Re
     .map_err(|error| Error::Auth(format!("credential lock task failed: {error}")))?
 }
 
-fn http_client() -> Result<Client> {
+fn http_client_with_settings(settings: &super::super::ModelTransportSettings) -> Result<Client> {
+    settings.validate()?;
     Ok(Client::builder()
-        .timeout(REQUEST_TIMEOUT)
+        .timeout(Duration::from_millis(settings.oauth_request_timeout_ms))
         .redirect(reqwest::redirect::Policy::none())
         .build()?)
 }
@@ -515,21 +585,38 @@ fn pkce() -> (String, String) {
     (verifier, challenge)
 }
 
+#[cfg(test)]
 async fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Result<String> {
+    wait_for_callback_with_settings(
+        listener,
+        expected_state,
+        Duration::from_millis(
+            super::super::ModelTransportSettings::default().oauth_callback_request_timeout_ms,
+        ),
+    )
+    .await
+}
+
+async fn wait_for_callback_with_settings(
+    listener: TcpListener,
+    expected_state: &str,
+    request_timeout: Duration,
+) -> Result<String> {
     loop {
         let (mut stream, peer) = listener.accept().await?;
         if !peer.ip().is_loopback() {
             continue;
         }
-        let request =
-            match read_callback_request_with_timeout(&mut stream, CALLBACK_REQUEST_TIMEOUT).await {
-                Ok(request) => request,
-                Err(error) => {
-                    respond(&mut stream, "400 Bad Request", "Invalid callback request.").await?;
-                    return Err(error);
-                }
-            };
-        if request.path() != "/auth/callback" {
+        let request = match read_callback_request_with_timeout(&mut stream, request_timeout).await {
+            Ok(request) => request,
+            Err(error) => {
+                respond(&mut stream, "400 Bad Request", "Invalid callback request.").await?;
+                return Err(error);
+            }
+        };
+        let redirect = reqwest::Url::parse(&MANIFEST.redirect_uri)
+            .map_err(|_| Error::Config("invalid OAuth redirect URI".into()))?;
+        if request.path() != redirect.path() {
             respond(&mut stream, "404 Not Found", "Callback route not found.").await?;
             continue;
         }
@@ -646,7 +733,7 @@ async fn exchange_code(
         client,
         &[
             ("grant_type", "authorization_code"),
-            ("client_id", CLIENT_ID),
+            ("client_id", MANIFEST.client_id.as_str()),
             ("code", code),
             ("code_verifier", verifier),
             ("redirect_uri", redirect_uri),
@@ -662,7 +749,7 @@ async fn refresh_token(client: &Client, refresh: &str) -> Result<OAuthCredential
         &[
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh),
-            ("client_id", CLIENT_ID),
+            ("client_id", MANIFEST.client_id.as_str()),
         ],
         "refresh",
     )
@@ -674,7 +761,11 @@ async fn token_request(
     form: &[(&str, &str)],
     operation: &str,
 ) -> Result<OAuthCredential> {
-    let mut response = client.post(TOKEN_URL).form(form).send().await?;
+    let mut response = client
+        .post(MANIFEST.token_url.as_str())
+        .form(form)
+        .send()
+        .await?;
     let status = response.status();
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await? {
@@ -746,7 +837,7 @@ fn account_id(access_token: &str) -> Result<String> {
     let payload: Value = serde_json::from_slice(&payload)
         .map_err(|_| Error::Auth("ChatGPT access token payload was invalid".into()))?;
     payload
-        .get(JWT_AUTH_CLAIM)
+        .get(MANIFEST.jwt_auth_claim.as_str())
         .and_then(|claim| claim.get("chatgpt_account_id"))
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
@@ -775,11 +866,10 @@ fn resolved(credential: &OAuthCredential) -> (String, String) {
 
 fn read_credential(path: &Path) -> Result<OAuthCredential> {
     let contents = fs::read(path)?;
-    let auth: AuthFile = serde_json::from_slice(&contents)
+    let mut auth: AuthFile = serde_json::from_slice(&contents)
         .map_err(|_| Error::Auth(format!("{} is not a valid auth file", path.display())))?;
     let credential = auth
-        .get(PROVIDER_ID)
-        .cloned()
+        .remove(PROVIDER_ID)
         .ok_or_else(|| Error::Auth("ChatGPT login is required".into()))?;
     validate_credential(credential)
 }
@@ -812,7 +902,7 @@ fn acquire_lock(path: &Path) -> Result<File> {
         .truncate(false)
         .open(lock_path)?;
     #[cfg(unix)]
-    lock.set_permissions(fs::Permissions::from_mode(0o600))?;
+    lock.set_permissions(crate::owner_only::file())?;
     lock.lock()?;
     Ok(lock)
 }
@@ -833,8 +923,7 @@ fn write_credential(path: &Path, credential: &OAuthCredential) -> Result<()> {
     let parent_file = File::open(parent)?;
     let mut file = tempfile::NamedTempFile::new_in(parent)?;
     #[cfg(unix)]
-    file.as_file()
-        .set_permissions(fs::Permissions::from_mode(0o600))?;
+    file.as_file().set_permissions(crate::owner_only::file())?;
     file.write_all(&contents)?;
     file.as_file().sync_all()?;
     file.persist(path).map_err(|error| error.error)?;
@@ -848,7 +937,7 @@ fn secure_parent(path: &Path) -> Result<()> {
         .ok_or_else(|| Error::Auth("auth path has no parent".into()))?;
     fs::create_dir_all(parent)?;
     #[cfg(unix)]
-    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+    fs::set_permissions(parent, crate::owner_only::dir())?;
     Ok(())
 }
 
@@ -883,53 +972,57 @@ impl OpenAiAuthorization for ChatGptAuth {
         &'a self,
         streaming: bool,
         session_id: Option<&'a str>,
-    ) -> BoxFuture<'a, Result<ResolvedAuthorization>> {
+    ) -> BoxFuture<'a, Result<ResolvedAuthorization<'a>>> {
         Box::pin(async move {
             let (token, account_id) = self.authorization().await?;
-            let mut headers = vec![
-                ("chatgpt-account-id".into(), account_id),
-                ("originator".into(), "mobius".into()),
-                ("version".into(), CODEX_COMPAT_VERSION.into()),
-                (
-                    "user-agent".into(),
-                    concat!("mobius/", env!("CARGO_PKG_VERSION")).into(),
-                ),
-            ];
+            let mut headers = MANIFEST
+                .headers
+                .iter()
+                .map(|(name, value)| (name.as_str(), Cow::Borrowed(value.as_str())))
+                .collect::<Vec<_>>();
+            headers.push(("chatgpt-account-id", account_id.into()));
+            headers.push((
+                "user-agent",
+                concat!("mobius/", env!("CARGO_PKG_VERSION")).into(),
+            ));
             if let Some(session_id) = session_id {
-                headers.push(("session-id".into(), session_id.into()));
-                headers.push(("thread-id".into(), session_id.into()));
+                headers.push(("session-id", Cow::Borrowed(session_id)));
+                headers.push(("thread-id", Cow::Borrowed(session_id)));
                 if streaming {
-                    headers.push(("x-client-request-id".into(), session_id.into()));
+                    headers.push(("x-client-request-id", Cow::Borrowed(session_id)));
                 }
             }
-            Ok(ResolvedAuthorization { token, headers })
+            Ok(ResolvedAuthorization {
+                token: token.into(),
+                headers,
+            })
         })
     }
 
     fn authorize_websocket<'a>(
         &'a self,
         session_id: &'a str,
-    ) -> BoxFuture<'a, Result<ResolvedAuthorization>> {
+    ) -> BoxFuture<'a, Result<ResolvedAuthorization<'a>>> {
         Box::pin(async move {
             let (token, account_id) = self.authorization().await?;
             Ok(ResolvedAuthorization {
-                token,
-                headers: vec![
-                    ("chatgpt-account-id".into(), account_id),
-                    ("originator".into(), "mobius".into()),
-                    ("version".into(), CODEX_COMPAT_VERSION.into()),
-                    (
-                        "user-agent".into(),
-                        concat!("mobius/", env!("CARGO_PKG_VERSION")).into(),
-                    ),
-                    (
-                        "openai-beta".into(),
-                        "responses_websockets=2026-02-06".into(),
-                    ),
-                    ("session-id".into(), session_id.into()),
-                    ("thread-id".into(), session_id.into()),
-                    ("x-client-request-id".into(), session_id.into()),
-                ],
+                token: token.into(),
+                headers: MANIFEST
+                    .headers
+                    .iter()
+                    .chain(&MANIFEST.websocket_headers)
+                    .map(|(name, value)| (name.as_str(), Cow::Borrowed(value.as_str())))
+                    .chain([
+                        ("chatgpt-account-id", account_id.into()),
+                        (
+                            "user-agent",
+                            concat!("mobius/", env!("CARGO_PKG_VERSION")).into(),
+                        ),
+                        ("session-id", Cow::Borrowed(session_id)),
+                        ("thread-id", Cow::Borrowed(session_id)),
+                        ("x-client-request-id", Cow::Borrowed(session_id)),
+                    ])
+                    .collect(),
             })
         })
     }
@@ -942,65 +1035,50 @@ impl OpenAiAuthorization for ChatGptAuth {
     }
 }
 
-impl BrowserLogin for ChatGptLogin {
-    fn url(&self) -> &str {
-        self.url()
-    }
-
-    fn open_browser(&self) {
-        self.open_browser();
-    }
-
-    fn complete(self: Box<Self>, path: PathBuf) -> BoxFuture<'static, Result<()>> {
-        Box::pin(async move { self.finish(path).await })
-    }
-}
-
-impl DeviceLogin for ChatGptDeviceLogin {
-    fn verification_url(&self) -> &str {
-        DEVICE_VERIFICATION_URL
-    }
-
-    fn user_code(&self) -> &str {
-        &self.user_code
-    }
-
-    fn complete(self: Box<Self>, path: PathBuf) -> BoxFuture<'static, Result<()>> {
-        Box::pin(async move { self.finish(path).await })
-    }
-}
-
-pub(super) static BROWSER_AUTH: BrowserAuth = BrowserAuth::new(
-    manifest::AUTH_LABEL,
-    browser_configured,
-    browser_credential,
-    browser_login,
-)
-.with_device_login(device_login)
-.with_usage_limits(browser_usage_limits);
+pub(super) static BROWSER_AUTH: std::sync::LazyLock<BrowserAuth> = std::sync::LazyLock::new(|| {
+    BrowserAuth::new(
+        &MANIFEST.label,
+        browser_configured,
+        browser_credential,
+        browser_login,
+    )
+    .with_device_login(device_login)
+    .with_usage_limits(browser_usage_limits)
+});
 
 fn browser_configured(path: &Path) -> Result<bool> {
     ChatGptAuth::configured(path)
 }
 
-fn browser_credential(path: &Path) -> Result<ProviderCredential> {
-    Ok(ProviderCredential::Browser(Arc::new(ChatGptAuth::load(
-        path,
-    )?)))
+fn browser_credential(
+    path: &Path,
+    settings: super::super::ModelTransportSettings,
+) -> Result<ProviderCredential> {
+    Ok(ProviderCredential::Browser(Arc::new(
+        ChatGptAuth::load_with_transport(path, settings)?,
+    )))
 }
 
-fn browser_login() -> BoxFuture<'static, Result<Box<dyn BrowserLogin>>> {
-    Box::pin(async { Ok(Box::new(ChatGptLogin::start().await?) as Box<dyn BrowserLogin>) })
+fn browser_login(
+    settings: super::super::ModelTransportSettings,
+) -> BoxFuture<'static, Result<BrowserLogin>> {
+    Box::pin(BrowserLogin::start(settings))
 }
 
-fn device_login() -> BoxFuture<'static, Result<Box<dyn DeviceLogin>>> {
-    Box::pin(async { Ok(Box::new(ChatGptDeviceLogin::start().await?) as Box<dyn DeviceLogin>) })
+fn device_login(
+    settings: super::super::ModelTransportSettings,
+) -> BoxFuture<'static, Result<DeviceLogin>> {
+    Box::pin(DeviceLogin::start(settings))
 }
 
-fn browser_usage_limits(path: &Path) -> BoxFuture<'static, Result<Vec<UsageLimit>>> {
+fn browser_usage_limits(
+    path: &Path,
+    settings: super::super::ModelTransportSettings,
+) -> BoxFuture<'static, Result<Vec<UsageLimit>>> {
     let path = path.to_path_buf();
     Box::pin(async move {
-        let auth = ChatGptAuth::load(path)?;
+        settings.validate()?;
+        let auth = ChatGptAuth::load_with_transport(path, settings)?;
         auth.usage_limits().await
     })
 }

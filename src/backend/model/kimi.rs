@@ -16,7 +16,7 @@ use super::REPLAY_REASONING_FIELD;
 use super::ToolDefinition;
 use super::image_data_url;
 use super::image_input;
-use super::provider::{ProviderAuth, ProviderBuildConfig, ProviderDefinition, validate_base_url};
+use super::provider::{ProviderBuildConfig, ProviderDefinition, validate_base_url};
 use super::transport::SseDecoder;
 use super::transport::frame_data;
 use super::transport::status_error;
@@ -29,25 +29,17 @@ use crate::protocol::ModelEvent;
 use crate::protocol::ModelInfo;
 use crate::protocol::TokenUsage;
 
-mod manifest {
-    use crate::backend::model::provider::HostedWebSearch;
-    use crate::protocol::ToolDiscoveryMode;
-    pub const PROVIDER_LABEL: &str = "Kimi";
-    pub const PROVIDER_DESCRIPTION: &str = "Kimi Chat Completions API";
-    pub const TOOL_DISCOVERY: ToolDiscoveryMode = ToolDiscoveryMode::Rebuild;
-    pub const CUSTOM_ENDPOINT_TOOL_DISCOVERY: Option<ToolDiscoveryMode> = None;
-    pub const SEARCH: &[HostedWebSearch] = &[HostedWebSearch::Off];
-}
-pub(super) static CATALOG: std::sync::LazyLock<super::provider::ModelCatalog> =
+pub(super) static MANIFEST: std::sync::LazyLock<super::provider::ProviderMetadata> =
     std::sync::LazyLock::new(|| {
-        toml::from_str(include_str!("kimi.toml")).expect("bundled kimi model catalog must be valid")
+        super::provider::ProviderMetadata::load(include_str!("kimi_provider.toml"))
     });
-
-const DEFAULT_BASE_URL: &str = "https://api.moonshot.ai/v1";
+pub(super) static CATALOG: std::sync::LazyLock<super::provider::ModelCatalog> =
+    std::sync::LazyLock::new(|| crate::config::embedded(include_str!("kimi.toml")));
 
 /// Kimi's native Chat Completions provider.
 pub struct Kimi {
     client: Client,
+    transport: super::ModelTransportSettings,
     api_key: Option<String>,
     base_url: String,
     model: String,
@@ -67,6 +59,24 @@ impl Kimi {
         Self::with_client(Some(api_key.into()), base_url, model, streaming_client()?)
     }
 
+    /// Creates a provider with explicit HTTP, socket and retry policy.
+    /// # Errors
+    /// Returns invalid provider policy or HTTP client construction errors.
+    pub fn new_with_transport(
+        api_key: impl Into<String>,
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+        settings: super::ModelTransportSettings,
+    ) -> Result<Self> {
+        Self::with_client(
+            Some(api_key.into()),
+            base_url,
+            model,
+            settings.streaming_client()?,
+        )?
+        .with_transport_settings(settings)
+    }
+
     fn with_client(
         api_key: Option<String>,
         base_url: impl Into<String>,
@@ -74,7 +84,7 @@ impl Kimi {
         client: Client,
     ) -> Result<Self> {
         if api_key.as_deref().is_some_and(|key| key.trim().is_empty()) {
-            return Err(Error::Config("MOONSHOT_API_KEY is empty".into()));
+            return Err(Error::Config("provider API key cannot be empty".into()));
         }
         let base_url = base_url.into().trim_end_matches('/').to_string();
         validate_base_url(&base_url)?;
@@ -84,6 +94,7 @@ impl Kimi {
         }
         Ok(Self {
             client,
+            transport: super::ModelTransportSettings::default(),
             api_key,
             base_url,
             model,
@@ -91,10 +102,21 @@ impl Kimi {
         })
     }
 
+    /// Applies validated operational transport policy.
+    /// # Errors
+    /// Returns an error for invalid operational settings.
+    pub fn with_transport_settings(
+        mut self,
+        settings: super::ModelTransportSettings,
+    ) -> Result<Self> {
+        settings.validate()?;
+        self.transport = settings;
+        Ok(self)
+    }
+
     /// Selects an effort advertised for this Kimi model.
     /// # Errors
-    ///
-    /// Returns an error if validation or an operation required by this function fails.
+    /// Returns an error when the model does not advertise that effort.
     pub fn with_reasoning_effort(mut self, effort: impl Into<String>) -> Result<Self> {
         let effort = effort.into();
         let supported = CATALOG
@@ -173,6 +195,10 @@ impl Kimi {
 }
 
 impl Model for Kimi {
+    fn transport_settings(&self) -> super::ModelTransportSettings {
+        self.transport
+    }
+
     fn info(&self) -> ModelInfo {
         ModelInfo {
             model: self.model.clone(),
@@ -186,6 +212,15 @@ impl Model for Kimi {
 
     fn prompt_cache_capability(&self) -> PromptCacheMode {
         PromptCacheMode::Implicit
+    }
+
+    fn pricing(&self) -> Option<super::ModelPricing> {
+        super::provider::uses_default_endpoint(
+            Some(MANIFEST.base_url.as_str()),
+            Some(&self.base_url),
+        )
+        .then(|| CATALOG.pricing(&self.model))
+        .flatten()
     }
 
     fn respond<'a>(
@@ -529,7 +564,7 @@ fn decode_usage(usage: Option<&Value>) -> Result<TokenUsage> {
     Ok(TokenUsage {
         input_tokens: value("/prompt_tokens")?,
         cached_input_tokens,
-        cache_write_input_tokens: 0,
+        cache_write_input_tokens: value("/prompt_tokens_details/cache_write_tokens")?,
         output_tokens: value("/completion_tokens")?,
         reasoning_output_tokens: value("/completion_tokens_details/reasoning_tokens")?,
         total_tokens: value("/total_tokens")?,
@@ -537,23 +572,14 @@ fn decode_usage(usage: Option<&Value>) -> Result<TokenUsage> {
 }
 
 pub(super) fn provider() -> ProviderDefinition {
-    ProviderDefinition::new(
+    ProviderDefinition::from_metadata(
         "kimi",
-        manifest::PROVIDER_LABEL,
-        "kimi",
-        manifest::PROVIDER_DESCRIPTION,
-        ProviderAuth::ApiKey("MOONSHOT_API_KEY"),
-        &CATALOG.models,
-        CATALOG.default_model.as_deref(),
-        manifest::SEARCH,
+        &MANIFEST,
+        MANIFEST.api_key_auth(),
+        Some(&CATALOG),
         build_provider,
     )
     .with_image_input()
-    .with_tool_discovery(
-        manifest::TOOL_DISCOVERY,
-        manifest::CUSTOM_ENDPOINT_TOOL_DISCOVERY,
-    )
-    .with_base_url(DEFAULT_BASE_URL)
     .with_credentialless_endpoints()
 }
 
@@ -562,7 +588,8 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
         .base_url
         .ok_or_else(|| Error::Config("Kimi requires a base URL".into()))?;
     let api_key = config.credential.into_optional_api_key("kimi")?;
-    let provider = Kimi::with_client(api_key, base_url, config.model, config.http)?;
+    let provider = Kimi::with_client(api_key, base_url, config.model, config.http)?
+        .with_transport_settings(config.transport)?;
     let provider = match config.reasoning_effort {
         Some(effort) => provider.with_reasoning_effort(effort)?,
         None => provider,

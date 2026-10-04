@@ -117,7 +117,8 @@ the loop.
 
 ## Checks
 
-Rust 1.98 or newer is required. Before handing off a change, run:
+Rust 1.99.0 or newer is required. The repository pins Rust 1.99.0 with Clippy and
+rustfmt in `rust-toolchain.toml`. Before handing off a change, run:
 
 ```sh
 cargo fmt --all -- --check

@@ -21,6 +21,7 @@ mod text {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(super) struct Definition {
+        pub(super) tool_publish_file_id_description: String,
         pub(super) default_enabled: bool,
         pub(super) manifest_description: String,
         pub(super) manifest_label: String,
@@ -31,10 +32,7 @@ mod text {
         pub(super) tool_send_artifact_parameter_path_description: String,
     }
     pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
-        std::sync::LazyLock::new(|| {
-            toml::from_str(include_str!("artifacts.toml"))
-                .expect("bundled artifacts definition must be valid")
-        });
+        std::sync::LazyLock::new(|| crate::config::embedded(include_str!("artifacts.toml")));
 }
 /// Configuration metadata for agent-published files.
 pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
@@ -142,7 +140,7 @@ impl Tool for SendArtifact {
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "file_id": {"type":"string", "description":"Authorized stored file ID to publish without copying bytes."},
+                    "file_id": {"type":"string", "description":text::DEFINITION.tool_publish_file_id_description.as_str()},
                     "path": {
                         "type": "string",
                         "description": text::DEFINITION.tool_send_artifact_parameter_path_description.as_str()

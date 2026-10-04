@@ -1,0 +1,2 @@
+paired_clients = 32
+pairing_lifetime_seconds = 600

@@ -38,3 +38,6 @@ tool_spawn_agent_parameter_model_description = "Registered route; defaults to th
 tool_spawn_agent_parameter_reasoning_effort_description = "Reasoning effort for the selected model; defaults to middleware configuration."
 tool_spawn_agent_parameter_task_name_description = "1-64 lowercase letters, digits, or underscores."
 tool_wait_agent_description = "Wait for an update from this chat's subagent task tree."
+ceilings_max_depth = 16
+ceilings_max_concurrency = 64
+ceilings_max_agents = 256

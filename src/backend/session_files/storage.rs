@@ -342,11 +342,7 @@ pub(super) async fn validate_content_blob(
             modified,
         });
     let cached = stamp.is_some_and(|stamp| {
-        validated_blobs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(content_hash)
-            == Some(&stamp)
+        crate::sync::recover_lock(validated_blobs).get(content_hash) == Some(&stamp)
     });
     if cached {
         return Ok(());
@@ -367,9 +363,7 @@ pub(super) fn remember_validated_blob(
     content_hash: &str,
     stamp: BlobValidationStamp,
 ) {
-    let mut validated_blobs = validated_blobs
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut validated_blobs = crate::sync::recover_lock(validated_blobs);
     if validated_blobs.len() >= MAX_VALIDATED_BLOBS && !validated_blobs.contains_key(content_hash) {
         validated_blobs.pop_first();
     }
@@ -481,8 +475,7 @@ pub(super) async fn ensure_private_dir(path: &Path) -> Result<()> {
 
 #[cfg(unix)]
 async fn set_private_dir(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-    tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).await?;
+    tokio::fs::set_permissions(path, crate::owner_only::dir()).await?;
     Ok(())
 }
 
@@ -493,8 +486,7 @@ async fn set_private_dir(_path: &Path) -> Result<()> {
 
 #[cfg(unix)]
 pub(super) async fn set_private_file(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-    tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await?;
+    tokio::fs::set_permissions(path, crate::owner_only::file()).await?;
     Ok(())
 }
 

@@ -49,6 +49,7 @@ impl GatewayHost {
         }
         let mut config = live.clone();
         config.telemetry = TelemetryConfig {
+            policy: live.telemetry.policy,
             revision: expected
                 .checked_add(1)
                 .ok_or_else(|| invalid_config("telemetry revision overflow"))?,
@@ -122,8 +123,7 @@ impl GatewayHost {
             } else {
                 crate::telemetry::SinkAuth::None
             };
-            sink.bearer_env = None;
-            sink.bearer_file = None;
+            sink.redact_report()?;
             reports.push(TelemetrySinkReport { sink, auth, status });
         }
         Ok((config.revision, reports))

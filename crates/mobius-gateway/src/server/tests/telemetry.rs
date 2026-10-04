@@ -17,8 +17,7 @@ async fn telemetry_delivers_headers_snapshots_and_tracks_failures() {
     fs::write(&token_path, "test-token").unwrap();
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(&token_path, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::set_permissions(&token_path, mobius::owner_only::file()).unwrap();
     }
     endpoint.bearer_file = Some("telemetry-token".into());
     server
@@ -110,7 +109,7 @@ async fn telemetry_configuration_rejects_stale_revisions_and_secrets_in_headers(
             .is_err()
     );
     endpoint.headers.clear();
-    endpoint.bearer_env = Some("PRIVATE_TOKEN_NAME".into());
+    endpoint.bearer_env = Some("MOBIUS_PRIVATE_TOKEN_NAME".into());
     server
         .host
         .configure_telemetry(0, vec![endpoint], &[])
@@ -126,7 +125,16 @@ async fn telemetry_configuration_rejects_stale_revisions_and_secrets_in_headers(
     let (_, report) = server.host.telemetry_report().await.unwrap();
     assert_eq!(report[0].auth, SinkAuth::BearerEnv);
     assert!(report[0].sink.bearer_env.is_none());
-    let mut edited = report[0].sink.clone();
+    assert!(
+        server
+            .host
+            .configure_telemetry(1, vec![report[0].sink.clone()], &["test".into()])
+            .await
+            .is_err()
+    );
+    // The local operator edits the complete destination from private configuration.
+    let mut edited = server.host.telemetry.config().unwrap().sinks[0].clone();
+    edited.bearer_env = None;
     edited.enabled = false;
     server
         .host
@@ -136,7 +144,7 @@ async fn telemetry_configuration_rejects_stale_revisions_and_secrets_in_headers(
     let saved = server.host.telemetry.config().unwrap();
     assert_eq!(
         saved.sinks[0].bearer_env.as_deref(),
-        Some("PRIVATE_TOKEN_NAME")
+        Some("MOBIUS_PRIVATE_TOKEN_NAME")
     );
     server.host.shutdown().await;
 }
@@ -262,33 +270,6 @@ async fn ingress_rejects_raw_frames_and_accepts_noise_websockets() {
         .unwrap();
     stop.send(()).unwrap();
     serving.await.unwrap().unwrap();
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn sprite_hold_uses_provider_socket_without_an_exec_helper() {
-    use tokio::net::UnixListener;
-    let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("hold.sock");
-    let listener = UnixListener::bind(&path).unwrap();
-    let receiver = tokio::spawn(async move {
-        for method in ["PUT", "DELETE"] {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut buffer = [0; 1024];
-            let count = stream.read(&mut buffer).await.unwrap();
-            let request = String::from_utf8_lossy(&buffer[..count]);
-            assert!(request.starts_with(&format!("{method} /v1/tasks/mobius-gateway HTTP/1.1")));
-            stream
-                .write_all(
-                    b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                )
-                .await
-                .unwrap();
-        }
-    });
-    crate::telemetry::update_hold(&path, true).await.unwrap();
-    crate::telemetry::update_hold(&path, false).await.unwrap();
-    receiver.await.unwrap();
 }
 
 #[tokio::test]
@@ -455,7 +436,7 @@ async fn telemetry_source_failure_does_not_stop_serve_or_drop_request_transport(
     ] {
         let mut bytes = Vec::new();
         assert!(
-            dispatch::handle_runtime_message(request, &server.host, &mut bytes)
+            dispatch::handle_runtime_message(request, &server.host, true, &mut bytes)
                 .await
                 .unwrap()
                 .is_none()
@@ -547,6 +528,7 @@ async fn storage_request_rejects_repeat_walks_without_disconnecting() {
                 request_id: id.into(),
             },
             &server.host,
+            false,
             &mut bytes,
         )
         .await
@@ -708,5 +690,155 @@ async fn telemetry_transport_diagnostic_preserves_cause_without_collector_url() 
     assert!(error.contains("connect"), "{error}");
     assert!(!error.contains("private-path"), "{error}");
     assert!(!error.contains("private-token"), "{error}");
+    server.host.shutdown().await;
+}
+
+#[tokio::test]
+async fn paired_clients_cannot_redirect_collectors_or_select_host_credentials() {
+    let root = tempfile::tempdir().unwrap();
+    let (server, _) = configured_test_server(root.path().join("state")).await;
+    let mut endpoint = sink("https://client-controlled.example/collect".into());
+    endpoint.bearer_env = Some("OPENAI_API_KEY".into());
+    let mut bytes = Vec::new();
+    dispatch::handle_runtime_message(
+        ClientMessage::ConfigureTelemetry {
+            request_id: "attempt".into(),
+            expected_revision: 0,
+            sinks: vec![endpoint],
+            preserve_auth: vec![],
+        },
+        &server.host,
+        false,
+        &mut bytes,
+    )
+    .await
+    .unwrap();
+    let frame = read_frame::<ServerFrame>(&mut crate::wire::FrameReader::new(bytes.as_slice()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(frame.message, ServerMessage::Rejected { ref code, fatal: false, .. } if code == "operator_required")
+    );
+    let (_, saved) = ConfigStore::open(root.path().join("state")).unwrap();
+    assert!(saved.telemetry.sinks.is_empty());
+    assert_eq!(saved.telemetry.revision, 0);
+    server.host.shutdown().await;
+}
+
+#[tokio::test]
+async fn telemetry_mutation_requires_authenticated_local_operator_identity_on_wire() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut server, grant) = configured_test_server(root.path().join("state")).await;
+    let operator = server.auth.provision_local_client().unwrap();
+    let paired = server
+        .auth
+        .pair(&grant.code, "local gateway operator")
+        .unwrap();
+    let endpoint: Endpoint = format!("tcp://{}", server.config.listen).parse().unwrap();
+    let ready = server.notify_ready();
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let serving = tokio::spawn(server.serve_until(async {
+        let _ = stopped.await;
+    }));
+    ready.await.unwrap();
+    for (token, authorized) in [(paired.token, false), (operator.token, true)] {
+        let client = GatewayClient::connect(&endpoint, &token, ClientKind::GatewayDashboard)
+            .await
+            .unwrap();
+        let (sender, mut events) = client.into_parts();
+        wait_gateway_ready(&mut events).await;
+        sender
+            .send(ClientMessage::ConfigureTelemetry {
+                request_id: "policy".into(),
+                expected_revision: 0,
+                sinks: vec![],
+                preserve_auth: vec![],
+            })
+            .await
+            .unwrap();
+        loop {
+            match next_gateway_message(&mut events).await {
+                ServerMessage::Rejected {
+                    request_id: id,
+                    code,
+                    fatal,
+                    ..
+                } if id == "policy" => {
+                    assert!(!authorized);
+                    assert_eq!(code, "operator_required");
+                    assert!(!fatal);
+                    break;
+                }
+                ServerMessage::Telemetry {
+                    request_id,
+                    revision,
+                    ..
+                } if request_id == "policy" => {
+                    assert!(authorized);
+                    assert_eq!(revision, 1);
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+    stop.send(()).unwrap();
+    serving.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn public_telemetry_reports_hide_url_and_custom_header_credentials() {
+    let root = tempfile::tempdir().unwrap();
+    let (server, _) = configured_test_server(root.path().join("state")).await;
+    let mut endpoint = sink("https://collector.example/secret-path?key=secret-query".into());
+    endpoint
+        .headers
+        .insert("x-api-key".into(), "secret-header".into());
+    let original = endpoint.clone();
+    server
+        .host
+        .configure_telemetry(0, vec![endpoint], &[])
+        .await
+        .unwrap();
+    let (_, reports) = server.host.telemetry_report().await.unwrap();
+    assert_eq!(reports[0].sink.url, "https://collector.example");
+    assert!(reports[0].sink.headers.is_empty());
+    assert_eq!(server.host.telemetry.config().unwrap().sinks[0], original);
+    server.host.shutdown().await;
+}
+
+#[tokio::test]
+async fn collector_failure_body_cannot_echo_credentials_into_public_status() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let root = tempfile::tempdir().unwrap();
+    let (server, _) = configured_test_server(root.path().join("state")).await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut endpoint = sink(format!("http://{}", listener.local_addr().unwrap()));
+    endpoint
+        .headers
+        .insert("x-api-key".into(), "synthetic-secret".into());
+    server
+        .host
+        .configure_telemetry(0, vec![endpoint], &[])
+        .await
+        .unwrap();
+    let receiver = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0; 8192];
+        let received = stream.read(&mut request).await.unwrap();
+        assert!(received > 0, "collector received no request");
+        let response = "HTTP/1.1 401 Unauthorized\r\nContent-Length: 16\r\nConnection: close\r\n\r\nsynthetic-secret";
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+    let mut tasks = JoinSet::new();
+    Telemetry::tick(&server.host, 0, Trigger::Manual, &mut tasks).await;
+    while tasks.join_next().await.is_some() {}
+    let (_, reports) = server.host.telemetry_report().await.unwrap();
+    assert_eq!(
+        reports[0].status.last_error.as_deref(),
+        Some("telemetry collector returned HTTP 401")
+    );
+    receiver.await.unwrap();
     server.host.shutdown().await;
 }

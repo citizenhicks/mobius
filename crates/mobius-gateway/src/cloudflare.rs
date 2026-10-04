@@ -158,22 +158,13 @@ fn quick_endpoint(candidate: &str) -> Option<Endpoint> {
         || !matches!(url.path(), "" | "/")
         || label.is_empty()
         || label.contains('.')
-        || !valid_hostname_label(label)
+        || !crate::hostnames::valid_label(label)
         || (candidate != format!("https://{hostname}")
             && candidate != format!("https://{hostname}/"))
     {
         return None;
     }
     format!("wss://{hostname}").parse().ok()
-}
-
-fn valid_hostname_label(label: &str) -> bool {
-    label.len() <= 63
-        && !label.starts_with('-')
-        && !label.ends_with('-')
-        && label
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 fn quick_tunnel_command(program: impl Into<OsString>, listen: SocketAddr) -> Command {

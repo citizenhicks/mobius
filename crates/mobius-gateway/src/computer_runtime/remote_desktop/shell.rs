@@ -1,10 +1,12 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use tokio::process::Command;
 
-use super::processes::{OwnedProcess, executable, private_directory, private_file};
+use super::processes::{OwnedProcess, private_directory, private_file};
+use crate::computer_runtime::{ComputerConfig, config};
 use crate::{Error, Result};
+use config::ApplicationRole;
 
 pub(super) async fn start(
     directory: &Path,
@@ -13,111 +15,203 @@ pub(super) async fn start(
     chromium: &Path,
     profile: &Path,
     children: &mut Vec<OwnedProcess>,
+    settings: &ComputerConfig,
 ) -> Result<()> {
-    let config = directory.join("config");
-    private_directory(&config)?;
-    let wallpaper = directory.join("wallpaper.png");
-    fs::write(&wallpaper, include_bytes!("wallpaper.png"))?;
-    private_file(&wallpaper)?;
-    let logo = directory.join("logo.png");
-    fs::write(&logo, include_bytes!("logo.png"))?;
-    private_file(&logo)?;
-    // Explicit paths survive minimal sandbox images that omit the OS icon theme at runtime.
-    let terminal_icon = directory.join("terminal.png");
-    fs::write(&terminal_icon, include_bytes!("terminal.png"))?;
-    private_file(&terminal_icon)?;
-    let files_icon = directory.join("files.png");
-    fs::write(&files_icon, include_bytes!("files.png"))?;
-    private_file(&files_icon)?;
-    super::run_short(
-        Command::new(executable(&["feh"])?)
-            .args(["--no-fehbg", "--bg-fill"])
-            .arg(&wallpaper)
-            .env("DISPLAY", display)
-            .env("XAUTHORITY", authority),
-    )
-    .await?;
-
-    let setpriv = executable(&["setpriv"])?;
-    let icon = chromium
-        .parent()
-        .map(|directory| directory.join("product_logo_48.png"))
-        .filter(|path| path.is_file())
-        .map_or_else(|| "web-browser".into(), |path| path.display().to_string());
-    for (id, name, icon, program, arguments) in [
-        (
-            "chrome",
-            "Chrome",
-            icon,
-            chromium.to_path_buf(),
-            super::browser_arguments(profile),
-        ),
+    let branding = &settings.desktop.branding;
+    let wallpaper = artwork(
+        directory,
+        "wallpaper.png",
+        branding.wallpaper.as_deref(),
+        include_bytes!("wallpaper.png"),
+    )?;
+    if let Some((program, arguments)) =
+        config::application(&settings.desktop.wallpaper, ApplicationRole::Wallpaper)?
+    {
+        super::run_short(
+            Command::new(program)
+                .args(arguments)
+                .arg(wallpaper)
+                .env("DISPLAY", display)
+                .env("XAUTHORITY", authority),
+        )
+        .await?;
+    }
+    let Some((panel, arguments)) =
+        config::application(&settings.desktop.panel, ApplicationRole::Panel)?
+    else {
+        return Ok(());
+    };
+    let setpriv = config::resolve_executable(Path::new(settings.desktop.tools.setpriv.as_ref()))?;
+    let config_directory = directory.join("config");
+    private_directory(&config_directory)?;
+    artwork(
+        directory,
+        "logo.png",
+        branding.logo.as_deref(),
+        include_bytes!("logo.png"),
+    )?;
+    let terminal_icon = artwork(
+        directory,
+        "terminal.png",
+        branding.terminal_icon.as_deref(),
+        include_bytes!("terminal.png"),
+    )?;
+    let files_icon = artwork(
+        directory,
+        "files.png",
+        branding.files_icon.as_deref(),
+        include_bytes!("files.png"),
+    )?;
+    let browser_icon = if let Some(source) = &branding.browser_icon {
+        artwork(directory, "browser.png", Some(source), &[])?
+            .display()
+            .to_string()
+    } else {
+        chromium
+            .parent()
+            .map(|directory| directory.join("product_logo_48.png"))
+            .filter(|path| path.is_file())
+            .map_or_else(|| "web-browser".into(), |path| path.display().to_string())
+    };
+    launcher(
+        directory,
+        "browser",
+        &branding.browser_label,
+        &browser_icon,
+        chromium,
+        &settings.browser.headed_arguments(profile),
+        &setpriv,
+    )?;
+    for (id, name, icon, application, role) in [
         (
             "terminal",
-            "Terminal",
-            terminal_icon.display().to_string(),
-            executable(&["xterm"])?,
-            vec![
-                "-title".into(),
-                "Terminal".into(),
-                "-fa".into(),
-                "Liberation Mono".into(),
-                "-fs".into(),
-                "12".into(),
-            ],
+            branding.terminal_label.as_ref(),
+            terminal_icon,
+            &settings.desktop.terminal,
+            ApplicationRole::Terminal,
         ),
         (
             "files",
-            "Files",
-            files_icon.display().to_string(),
-            executable(&["pcmanfm"])?,
-            vec!["--new-win".into(), "--profile=mobius".into()],
+            branding.files_label.as_ref(),
+            files_icon,
+            &settings.desktop.files,
+            ApplicationRole::Files,
         ),
     ] {
-        let command = [
-            setpriv.display().to_string(),
-            "--pdeathsig".into(),
-            "TERM".into(),
-            program.display().to_string(),
-        ]
-        .into_iter()
-        .chain(arguments)
-        .map(|argument| quote(&argument))
-        .collect::<Result<Vec<_>>>()?
-        .join(" ");
-        let path = directory.join(format!("{id}.desktop"));
-        // tint2 detaches launchers with setsid. exec keeps its child as the native
-        // app's parent, so setpriv closes that app when the owned panel stops.
-        fs::write(
-            &path,
-            format!(
-                "[Desktop Entry]\nType=Application\nName={name}\nIcon={icon}\nExec=exec {command}\nTerminal=false\nStartupNotify=false\n"
-            ),
-        )?;
-        private_file(&path)?;
+        let destination = directory.join(format!("{id}.desktop"));
+        if let Some((program, arguments)) = config::application(application, role)? {
+            launcher(
+                directory,
+                id,
+                name,
+                &icon.display().to_string(),
+                &program,
+                arguments,
+                &setpriv,
+            )?;
+        } else if destination.exists() {
+            fs::remove_file(destination)?;
+        }
     }
-    let directory_text = directory.to_str().ok_or_else(invalid_path)?;
-    if directory_text.contains(['\n', '\r']) {
-        return Err(invalid_path());
-    }
-    for (name, template) in [
-        ("status", include_str!("status.tint2rc")),
-        ("panel", include_str!("panel.tint2rc")),
+    for (name, source, bundled) in [
+        (
+            "status",
+            branding.status_config.as_deref(),
+            include_str!("status.tint2rc"),
+        ),
+        (
+            "panel",
+            branding.panel_config.as_deref(),
+            include_str!("panel.tint2rc"),
+        ),
     ] {
-        let path = directory.join(format!("{name}.tint2rc"));
-        fs::write(&path, template.replace("@DIRECTORY@", directory_text))?;
-        private_file(&path)?;
+        let path = panel_config(directory, name, source, bundled)?;
         children.push(OwnedProcess::spawn(
-            Command::new(executable(&["tint2"])?)
+            Command::new(&panel)
+                .args(arguments)
                 .arg("-c")
-                .arg(&path)
+                .arg(path)
                 .env("DISPLAY", display)
                 .env("XAUTHORITY", authority)
-                .env("XDG_CONFIG_HOME", &config),
+                .env("XDG_CONFIG_HOME", &config_directory),
             directory.join(format!("{name}.json")),
         )?);
     }
     Ok(())
+}
+
+fn artwork(directory: &Path, name: &str, source: Option<&Path>, bundled: &[u8]) -> Result<PathBuf> {
+    let path = directory.join(name);
+    match source {
+        Some(source) => {
+            fs::copy(source, &path)?;
+        }
+        None => fs::write(&path, bundled)?,
+    }
+    private_file(&path)?;
+    Ok(path)
+}
+
+fn launcher(
+    directory: &Path,
+    id: &str,
+    name: &str,
+    icon: &str,
+    program: &Path,
+    arguments: &[impl AsRef<str>],
+    setpriv: &Path,
+) -> Result<()> {
+    let program = program.to_string_lossy();
+    let setpriv = setpriv.to_string_lossy();
+    let command = [setpriv.as_ref(), "--pdeathsig", "TERM", program.as_ref()]
+        .into_iter()
+        .chain(arguments.iter().map(AsRef::as_ref))
+        .map(quote)
+        .collect::<Result<Vec<_>>>()?
+        .join(" ");
+    let path = directory.join(format!("{id}.desktop"));
+    // tint2 detaches launchers with setsid. exec preserves the panel parent,
+    // so setpriv closes a launched app when its owned panel stops.
+    fs::write(
+        &path,
+        format!(
+            "[Desktop Entry]\nType=Application\nName={name}\nIcon={icon}\nExec=exec {command}\nTerminal=false\nStartupNotify=false\n"
+        ),
+    )?;
+    private_file(&path)
+}
+
+fn panel_config(
+    directory: &Path,
+    name: &str,
+    source: Option<&Path>,
+    bundled: &str,
+) -> Result<PathBuf> {
+    let directory_text = directory.to_str().ok_or_else(invalid_path)?;
+    if directory_text.contains(['\n', '\r']) {
+        return Err(invalid_path());
+    }
+    let template = match source {
+        Some(source) => fs::read_to_string(source)?,
+        None => bundled.to_owned(),
+    };
+    let template = template.replace("@DIRECTORY@", directory_text);
+    let template = if source.is_none() {
+        template
+            .lines()
+            .filter(|line| {
+                line.strip_prefix("launcher_item_app = ")
+                    .is_none_or(|path| Path::new(path).is_file())
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        template
+    };
+    let path = directory.join(format!("{name}.tint2rc"));
+    fs::write(&path, template)?;
+    private_file(&path)?;
+    Ok(path)
 }
 
 fn quote(value: &str) -> Result<String> {
@@ -132,4 +226,76 @@ fn quote(value: &str) -> Result<String> {
 
 fn invalid_path() -> Error {
     Error::Config("invalid desktop launcher path".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn disabled_components_do_not_require_desktop_packages() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut settings = ComputerConfig::default();
+        settings.desktop.wallpaper.enabled = false;
+        settings.desktop.panel.enabled = false;
+        let mut children = Vec::new();
+        start(
+            directory.path(),
+            ":100",
+            &directory.path().join("Xauthority"),
+            Path::new("/unavailable/chromium"),
+            &directory.path().join("profile"),
+            &mut children,
+            &settings,
+        )
+        .await
+        .unwrap();
+        assert!(children.is_empty());
+    }
+
+    #[test]
+    fn bundled_panel_contains_only_available_launchers() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("browser.desktop"), "browser").unwrap();
+        let panel = panel_config(
+            directory.path(),
+            "panel",
+            None,
+            include_str!("panel.tint2rc"),
+        )
+        .unwrap();
+        let text = fs::read_to_string(panel).unwrap();
+        assert!(text.contains("browser.desktop"));
+        assert!(!text.contains("terminal.desktop"));
+        assert!(!text.contains("files.desktop"));
+    }
+
+    #[test]
+    fn launcher_keeps_configured_browser_switches_and_lifecycle_guard() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut settings = ComputerConfig::default();
+        settings.browser.sandbox = false;
+        settings
+            .browser
+            .arguments
+            .to_mut()
+            .push("--force-color-profile=srgb".into());
+        launcher(
+            directory.path(),
+            "browser",
+            "Browser",
+            "web-browser",
+            Path::new("/opt/chromium"),
+            &settings
+                .browser
+                .headed_arguments(Path::new("/private/profile")),
+            Path::new("/usr/bin/setpriv"),
+        )
+        .unwrap();
+        let text = fs::read_to_string(directory.path().join("browser.desktop")).unwrap();
+        assert!(text.contains("--pdeathsig"));
+        assert!(text.contains("--no-sandbox"));
+        assert!(text.contains("--force-color-profile=srgb"));
+        assert!(text.contains("--remote-debugging-address=127.0.0.1"));
+    }
 }

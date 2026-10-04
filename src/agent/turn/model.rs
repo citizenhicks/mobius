@@ -16,7 +16,7 @@ use crate::backend::checkpoint::{
 };
 use crate::backend::model::{
     MAX_TOOL_CALLS, ModelEventSink, ModelOutput, ModelRequest, PromptCacheIdentity,
-    STREAM_RETRY_LIMIT, StreamingToolCalls, ToolDefinition, durable_visible_message_index,
+    StreamingToolCalls, ToolDefinition, durable_visible_message_index,
     insert_before_open_tool_calls, internal_user_message, prompt_cache_key,
 };
 use crate::backend::sandbox::SandboxAuthorization;
@@ -28,9 +28,6 @@ use crate::protocol::{
     SubmissionRejectedEvent, TokenUsage, ToolCall,
 };
 use crate::{Error, Result};
-
-const STREAM_RETRY_BASE_DELAY_MS: u64 = 200;
-const STREAM_RETRY_MAX_DELAY_MS: u64 = 3_200;
 
 /// Outcome of `Runner::prepare_model_phase`.
 enum PreparedModel {
@@ -227,6 +224,7 @@ impl Runner {
         let middleware = self.config.middleware.clone();
         let author = self.active_author()?.clone();
         let prepare_model = middleware.prepare_model(ModelContext {
+            token_estimate: self.config.token_estimate,
             author: &author,
             model: &model,
             provider: &provider,
@@ -615,9 +613,18 @@ impl Runner {
                     value: Err(Error::Provider(error)),
                     input_changed,
                 }) if error.is_stream_interrupted() && streamed.originals.is_empty() => {
-                    let delay = if stream_retries < STREAM_RETRY_LIMIT {
-                        let delay =
-                            stream_retry_delay(&error, stream_retries, &started.model_step_id);
+                    let transport = model.transport_settings_for(&provider)?;
+                    let retry_limit =
+                        usize::try_from(transport.stream_retry_limit).map_err(|_| {
+                            Error::Config("stream retry limit exceeds platform range".into())
+                        })?;
+                    let delay = if stream_retries < retry_limit {
+                        let delay = stream_retry_delay(
+                            &error,
+                            stream_retries,
+                            &started.model_step_id,
+                            &transport,
+                        );
                         stream_retries += 1;
                         delay
                     } else {
@@ -791,7 +798,11 @@ impl Runner {
             }
             match self.catalog.bind_prepared(call.clone(), &step.tools) {
                 Ok(call) => executable_calls.push(call.into_call()),
-                Err(error) => denied_results.push(ToolResult::error(call, error.to_string())),
+                Err(error) => denied_results.push(ToolResult::error(
+                    call,
+                    error.to_string(),
+                    self.config.sandbox.output_limit(),
+                )),
             }
         }
         if step.output.tool_calls != original_tool_calls
@@ -1027,7 +1038,9 @@ impl Runner {
         calls: Vec<ToolCall>,
     ) -> Result<bool> {
         let live_tools = self.live_tools().await?;
-        let (live_calls, unavailable_results) = self.catalog.bind_live_batch(&calls, &live_tools);
+        let (live_calls, unavailable_results) =
+            self.catalog
+                .bind_live_batch(&calls, &live_tools, self.config.sandbox.output_limit());
         if !unavailable_results.is_empty() {
             self.persist_tool_results(submission_id, turn_id, unavailable_results)
                 .await?;
@@ -1256,19 +1269,31 @@ fn extend_rewrite_reasons(
     }
 }
 
-fn stream_retry_delay(error: &crate::ProviderError, retry: usize, model_step_id: &str) -> Duration {
-    let exponential_ms = STREAM_RETRY_BASE_DELAY_MS
-        .saturating_mul(1_u64 << retry.min(4))
-        .min(STREAM_RETRY_MAX_DELAY_MS);
-    let jitter = model_step_id.bytes().fold(retry as u64, |value, byte| {
-        value.wrapping_mul(16_777_619).wrapping_add(u64::from(byte))
-    });
+fn stream_retry_delay(
+    error: &crate::ProviderError,
+    retry: usize,
+    model_step_id: &str,
+    transport: &crate::backend::model::ModelTransportSettings,
+) -> Duration {
+    let multiplier = 1_u64
+        .checked_shl(u32::try_from(retry).unwrap_or(u32::MAX))
+        .unwrap_or(u64::MAX);
+    let exponential_ms = transport
+        .stream_retry_backoff_ms
+        .saturating_mul(multiplier)
+        .min(transport.stream_retry_max_backoff_ms);
+    let jitter = model_step_id
+        .bytes()
+        .fold(u64::try_from(retry).unwrap_or(u64::MAX), |value, byte| {
+            value.wrapping_mul(16_777_619).wrapping_add(u64::from(byte))
+        });
     let jitter_percent = 80 + jitter % 41;
     let backoff = Duration::from_millis(exponential_ms.saturating_mul(jitter_percent) / 100);
     error
         .retry_after()
         .and_then(|value| value.trim().parse::<u64>().ok())
         .map(Duration::from_secs)
+        .filter(|duration| std::time::Instant::now().checked_add(*duration).is_some())
         .map_or(backoff, |retry_after| retry_after.max(backoff))
 }
 
@@ -1330,11 +1355,24 @@ mod tests {
     }
 
     #[test]
+    fn overflowing_retry_after_uses_configured_backoff() {
+        let error = crate::ProviderError::stream_interrupted(Some(u64::MAX.to_string()));
+        let transport = crate::backend::model::ModelTransportSettings::default();
+        let delay = stream_retry_delay(&error, 0, "step-1", &transport);
+        assert!(delay < Duration::from_secs(1));
+    }
+
+    #[test]
     fn stream_retry_delay_respects_server_seconds() {
         let error = crate::ProviderError::stream_interrupted(Some("30".into()));
 
         assert_eq!(
-            stream_retry_delay(&error, 0, "step-1"),
+            stream_retry_delay(
+                &error,
+                0,
+                "step-1",
+                &crate::backend::model::ModelTransportSettings::default()
+            ),
             Duration::from_secs(30)
         );
     }

@@ -1,0 +1,71 @@
+mode = "managed"
+install_timeout_seconds = 600
+node_download_base_url = "https://nodejs.org/dist"
+tar_executable = "tar"
+download_connect_timeout_seconds = 30
+download_timeout_seconds = 180
+
+[node]
+version = "26.8.1"
+
+[node.distributions.macos-aarch64]
+platform = "darwin-arm64"
+checksum = "6e577fd0d9db776db82306629e441a9dace416702622aebdd171c9dfaa41f4d2"
+
+[node.distributions.macos-x86_64]
+platform = "darwin-x64"
+checksum = "fe9c6dbf9c8e1b4443803d75e2a20366e420dae650c747dbb116b22975751baf"
+
+[node.distributions.linux-aarch64]
+platform = "linux-arm64"
+checksum = "d5f973ce975e4bd03e6c2038260f7e9201615aa8e1ee293c72f8dcc2a6d9fddb"
+
+[node.distributions.linux-x86_64]
+platform = "linux-x64"
+checksum = "b2b76660fa4ded4e0b2a41ee3c0c651cd52ea8170ead91ebac1e147ac3d55643"
+
+[browser]
+sandbox = true
+arguments = ["--no-first-run", "--no-default-browser-check", "--disable-infobars"]
+window_size = [1200, 640]
+window_position = [80, 42]
+start_page = "about:blank"
+viewport = [1365, 768]
+
+[desktop]
+resolution = [1365, 768]
+depth = 24
+display_start = 100
+display_end = 200
+startup_timeout_seconds = 15
+
+[desktop.tools]
+xauth = "xauth"
+xvnc = ["Xtigervnc", "Xvnc"]
+vncconfig = ["tigervncconfig", "vncconfig"]
+setpriv = "setpriv"
+
+[applications.window_manager]
+executable = "openbox"
+arguments = []
+
+[applications.panel]
+executable = "tint2"
+arguments = []
+
+[applications.wallpaper]
+executable = "feh"
+arguments = ["--no-fehbg", "--bg-fill"]
+
+[applications.terminal]
+executable = "xterm"
+arguments = ["-title", "Terminal", "-fa", "Liberation Mono", "-fs", "12"]
+
+[applications.files]
+executable = "pcmanfm"
+arguments = ["--new-win", "--profile=mobius"]
+
+[labels]
+browser = "Browser"
+terminal = "Terminal"
+files = "Files"

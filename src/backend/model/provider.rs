@@ -2,7 +2,6 @@
 
 use std::any::Any;
 use std::path::Path;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -16,15 +15,52 @@ use crate::protocol::FrontendSymbol;
 use crate::protocol::ModelCapability;
 use crate::protocol::ToolDiscoveryMode;
 
-mod text {
-    pub const SEARCH_CACHED_DESCRIPTION: &str = "Allow cached provider-hosted search";
-    pub const SEARCH_CACHED_LABEL: &str = "Cached";
-    pub const SEARCH_LIVE_DESCRIPTION: &str = "Allow live provider-hosted search";
-    pub const SEARCH_LIVE_LABEL: &str = "Live";
-    pub const SEARCH_OFF_DESCRIPTION: &str = "Do not use provider-hosted web search";
-    pub const SEARCH_OFF_LABEL: &str = "Off";
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ProviderMetadata {
+    pub(super) label: String,
+    pub(super) symbol: String,
+    pub(super) description: String,
+    pub(super) base_url: String,
+    pub(super) credential_env: Option<String>,
+    pub(super) tool_discovery: ToolDiscoveryMode,
+    pub(super) custom_endpoint_tool_discovery: Option<ToolDiscoveryMode>,
+    pub(super) search: Vec<HostedWebSearch>,
+    #[serde(default)]
+    pub(super) headers: std::collections::BTreeMap<String, String>,
+    pub(super) max_output_tokens: Option<u64>,
 }
+
+impl ProviderMetadata {
+    pub(super) fn load(text: &str) -> Self {
+        crate::config::embedded(text)
+    }
+
+    pub(super) fn api_key_auth(&'static self) -> ProviderAuth {
+        ProviderAuth::ApiKey(
+            self.credential_env
+                .as_deref()
+                .expect("embedded API-key provider requires a credential environment name"),
+        )
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SearchText {
+    off_label: String,
+    off_description: String,
+    cached_label: String,
+    cached_description: String,
+    live_label: String,
+    live_description: String,
+}
+
+static SEARCH_TEXT: std::sync::LazyLock<SearchText> =
+    std::sync::LazyLock::new(|| crate::config::embedded(include_str!("provider.toml")));
 pub use super::transport::streaming_client;
+/// Additional trust roots for shared HTTP clients.
+pub use reqwest::Certificate as HttpCertificate;
 pub use reqwest::Client as HttpClient;
 /// Redirect policy for shared HTTP clients.
 pub use reqwest::redirect::Policy as HttpRedirectPolicy;
@@ -138,21 +174,21 @@ impl HostedWebSearch {
 
     /// Returns the user-facing setup label.
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
-            Self::Off => text::SEARCH_OFF_LABEL,
-            Self::Cached => text::SEARCH_CACHED_LABEL,
-            Self::Live => text::SEARCH_LIVE_LABEL,
+            Self::Off => &SEARCH_TEXT.off_label,
+            Self::Cached => &SEARCH_TEXT.cached_label,
+            Self::Live => &SEARCH_TEXT.live_label,
         }
     }
 
     /// Returns the user-facing setup description.
     #[must_use]
-    pub const fn description(self) -> &'static str {
+    pub fn description(self) -> &'static str {
         match self {
-            Self::Off => text::SEARCH_OFF_DESCRIPTION,
-            Self::Cached => text::SEARCH_CACHED_DESCRIPTION,
-            Self::Live => text::SEARCH_LIVE_DESCRIPTION,
+            Self::Off => &SEARCH_TEXT.off_description,
+            Self::Cached => &SEARCH_TEXT.cached_description,
+            Self::Live => &SEARCH_TEXT.live_description,
         }
     }
 }
@@ -187,39 +223,28 @@ pub struct ProviderBuildConfig {
     /// The web search.
     pub web_search: HostedWebSearch,
     /// Shared HTTP client; one per assembly keeps provider clones on one pool.
+    /// Use `ModelTransportSettings::streaming_client` or disable redirects on custom
+    /// clients: authenticated provider requests must not follow another origin.
     pub http: HttpClient,
+    /// Operational transport policy, validated before construction.
+    pub transport: super::ModelTransportSettings,
 }
 
-/// One provider-owned browser authentication flow.
-pub trait BrowserLogin: Send {
-    /// Returns the URL.
-    fn url(&self) -> &str;
-    /// Opens browser.
-    fn open_browser(&self);
-    /// Completes browser authentication and stores the credential.
-    fn complete(self: Box<Self>, path: PathBuf) -> BoxFuture<'static, Result<()>>;
-}
+/// Concrete pending browser and device authentication flows.
+pub use super::openai_codex::{BrowserLogin, DeviceLogin};
 
-type BrowserLoginStart = fn() -> BoxFuture<'static, Result<Box<dyn BrowserLogin>>>;
-
-/// One provider-owned device-code authentication flow.
-pub trait DeviceLogin: Send {
-    /// Returns the verification URL.
-    fn verification_url(&self) -> &str;
-    /// Returns the user code.
-    fn user_code(&self) -> &str;
-    /// Completes device authentication and stores the credential.
-    fn complete(self: Box<Self>, path: PathBuf) -> BoxFuture<'static, Result<()>>;
-}
-
-type DeviceLoginStart = fn() -> BoxFuture<'static, Result<Box<dyn DeviceLogin>>>;
-type BrowserUsageRead = fn(&Path) -> BoxFuture<'static, Result<Vec<UsageLimit>>>;
+type BrowserLoginStart =
+    fn(super::ModelTransportSettings) -> BoxFuture<'static, Result<BrowserLogin>>;
+type DeviceLoginStart =
+    fn(super::ModelTransportSettings) -> BoxFuture<'static, Result<DeviceLogin>>;
+type BrowserUsageRead =
+    fn(&Path, super::ModelTransportSettings) -> BoxFuture<'static, Result<Vec<UsageLimit>>>;
 
 /// Provider-owned browser authentication hooks consumed generically by applications.
 pub struct BrowserAuth {
     label: &'static str,
     configured: fn(&Path) -> Result<bool>,
-    load: fn(&Path) -> Result<ProviderCredential>,
+    load: fn(&Path, super::ModelTransportSettings) -> Result<ProviderCredential>,
     start: BrowserLoginStart,
     start_device: Option<DeviceLoginStart>,
     usage_limits: Option<BrowserUsageRead>,
@@ -227,10 +252,10 @@ pub struct BrowserAuth {
 
 impl BrowserAuth {
     /// Creates a new instance.
-    pub const fn new(
+    pub(super) const fn new(
         label: &'static str,
         configured: fn(&Path) -> Result<bool>,
-        load: fn(&Path) -> Result<ProviderCredential>,
+        load: fn(&Path, super::ModelTransportSettings) -> Result<ProviderCredential>,
         start: BrowserLoginStart,
     ) -> Self {
         Self {
@@ -245,14 +270,14 @@ impl BrowserAuth {
 
     /// Adds a cross-device login flow for headless provider hosts.
     #[must_use]
-    pub const fn with_device_login(mut self, start: DeviceLoginStart) -> Self {
+    pub(super) const fn with_device_login(mut self, start: DeviceLoginStart) -> Self {
         self.start_device = Some(start);
         self
     }
 
     /// Adds a passive account-usage reader for this browser-authenticated provider.
     #[must_use]
-    pub const fn with_usage_limits(mut self, usage_limits: BrowserUsageRead) -> Self {
+    pub(super) const fn with_usage_limits(mut self, usage_limits: BrowserUsageRead) -> Self {
         self.usage_limits = Some(usage_limits);
         self
     }
@@ -276,12 +301,47 @@ impl BrowserAuth {
     ///
     /// Returns an error if the resource cannot be read, decoded, or validated.
     pub fn load(&self, path: &Path) -> Result<ProviderCredential> {
-        (self.load)(path)
+        (self.load)(path, super::ModelTransportSettings::default())
+    }
+
+    /// Loads credentials with explicit authentication transport policy.
+    /// # Errors
+    /// Returns invalid policy or stored credential errors.
+    pub fn load_with_transport(
+        &self,
+        path: &Path,
+        settings: super::ModelTransportSettings,
+    ) -> Result<ProviderCredential> {
+        settings.validate()?;
+        (self.load)(path, settings)
+    }
+
+    /// Starts browser authentication with explicit operational policy.
+    pub fn start_with_transport(
+        &self,
+        settings: super::ModelTransportSettings,
+    ) -> BoxFuture<'static, Result<BrowserLogin>> {
+        (self.start)(settings)
+    }
+
+    /// Starts device authentication with explicit operational policy.
+    pub fn start_device_with_transport(
+        &self,
+        settings: super::ModelTransportSettings,
+    ) -> BoxFuture<'static, Result<DeviceLogin>> {
+        match self.start_device {
+            Some(start) => start(settings),
+            None => Box::pin(async {
+                Err(Error::Config(
+                    "provider does not support device login".into(),
+                ))
+            }),
+        }
     }
 
     /// Starts browser authentication.
-    pub fn start(&self) -> BoxFuture<'static, Result<Box<dyn BrowserLogin>>> {
-        (self.start)()
+    pub fn start(&self) -> BoxFuture<'static, Result<BrowserLogin>> {
+        (self.start)(super::ModelTransportSettings::default())
     }
 
     /// Reports whether the provider supports cross-device authentication.
@@ -291,9 +351,9 @@ impl BrowserAuth {
     }
 
     /// Starts a cross-device login without binding a browser callback on the host.
-    pub fn start_device(&self) -> BoxFuture<'static, Result<Box<dyn DeviceLogin>>> {
+    pub fn start_device(&self) -> BoxFuture<'static, Result<DeviceLogin>> {
         match self.start_device {
-            Some(start) => start(),
+            Some(start) => start(super::ModelTransportSettings::default()),
             None => Box::pin(async {
                 Err(Error::Auth(
                     "provider does not support device-code login".into(),
@@ -304,7 +364,17 @@ impl BrowserAuth {
 
     /// Reads provider-reported account usage, when supported.
     pub fn usage_limits(&self, path: &Path) -> Option<BoxFuture<'static, Result<Vec<UsageLimit>>>> {
-        self.usage_limits.map(|usage_limits| usage_limits(path))
+        self.usage_limits_with_transport(path, super::ModelTransportSettings::default())
+    }
+
+    /// Reads account usage with explicit authentication transport policy, when supported.
+    pub fn usage_limits_with_transport(
+        &self,
+        path: &Path,
+        settings: super::ModelTransportSettings,
+    ) -> Option<BoxFuture<'static, Result<Vec<UsageLimit>>>> {
+        self.usage_limits
+            .map(|usage_limits| usage_limits(path, settings))
     }
 }
 
@@ -405,36 +475,28 @@ pub struct ProviderDefinition {
 }
 
 impl ProviderDefinition {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a provider manifest keeps its required fields explicit at the registry entry"
-    )]
-    pub(crate) const fn new(
+    pub(super) fn from_metadata(
         id: &'static str,
-        label: &'static str,
-        symbol: &'static str,
-        description: &'static str,
+        metadata: &'static ProviderMetadata,
         auth: ProviderAuth,
-        models: &'static [ModelPreset],
-        default_model: Option<&'static str>,
-        web_search: &'static [HostedWebSearch],
+        catalog: Option<&'static ModelCatalog>,
         builder: ProviderBuilder,
     ) -> Self {
         Self {
             id,
-            label,
-            symbol,
-            description,
+            label: &metadata.label,
+            symbol: &metadata.symbol,
+            description: &metadata.description,
             auth,
-            models,
-            default_model,
-            web_search,
+            models: catalog.map_or(&[], |catalog| catalog.models.as_slice()),
+            default_model: catalog.and_then(|catalog| catalog.default_model.as_deref()),
+            web_search: &metadata.search,
             supports_image_input: false,
             supports_image_generation: false,
             realtime_voices: &[],
-            tool_discovery: ToolDiscoveryMode::Rebuild,
-            custom_endpoint_tool_discovery: None,
-            default_base_url: None,
+            tool_discovery: metadata.tool_discovery,
+            custom_endpoint_tool_discovery: metadata.custom_endpoint_tool_discovery,
+            default_base_url: Some(&metadata.base_url),
             native_custom_endpoints: false,
             credentialless_endpoints: false,
             builder,
@@ -460,14 +522,8 @@ impl ProviderDefinition {
         self
     }
 
-    pub(crate) const fn with_base_url(mut self, default_base_url: &'static str) -> Self {
-        self.default_base_url = Some(default_base_url);
-        self
-    }
-
     /// Custom roots for this provider implement its native API, including images and voice.
-    pub(crate) const fn with_native_base_url(mut self, default_base_url: &'static str) -> Self {
-        self.default_base_url = Some(default_base_url);
+    pub(crate) const fn with_native_custom_endpoints(mut self) -> Self {
         self.native_custom_endpoints = true;
         self
     }
@@ -476,17 +532,6 @@ impl ProviderDefinition {
     #[must_use]
     pub const fn native_custom_endpoints(&self) -> bool {
         self.native_custom_endpoints
-    }
-
-    #[must_use]
-    pub(crate) const fn with_tool_discovery(
-        mut self,
-        mode: ToolDiscoveryMode,
-        custom_endpoint_mode: Option<ToolDiscoveryMode>,
-    ) -> Self {
-        self.tool_discovery = mode;
-        self.custom_endpoint_tool_discovery = custom_endpoint_mode;
-        self
     }
 
     /// Allows explicitly configured non-default endpoints to omit provider credentials.
@@ -635,8 +680,12 @@ impl ProviderDefinition {
     ///
     /// Returns an error if validation or an operation required by this function fails.
     pub fn build(&self, mut config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
+        config.transport.validate()?;
         if matches!(config.credential, ProviderCredential::Credentialless) {
             self.validate_credentialless_endpoint(config.base_url.as_deref())?;
+        }
+        if config.base_url.is_none() {
+            config.base_url = self.default_base_url.map(str::to_owned);
         }
         if config.reasoning_effort.is_none() {
             config.reasoning_effort = self
@@ -705,7 +754,7 @@ impl ProviderDefinition {
         Ok(())
     }
 
-    /// Validates this provider's base-URL boundary.
+    /// Validates this provider's base-URL boundary, resolving an omitted URL to its default.
     /// # Errors
     ///
     /// Returns an error if the supplied value is invalid.
@@ -715,10 +764,7 @@ impl ProviderDefinition {
                 "provider `{}` has a fixed API endpoint",
                 self.id
             ))),
-            (Some(_), None) => Err(Error::Config(format!(
-                "provider `{}` requires a base URL",
-                self.id
-            ))),
+            (Some(default), None) => validate_base_url(default),
             (Some(_), Some(base_url)) => validate_base_url(base_url),
             (None, None) => Ok(()),
         }
@@ -833,6 +879,129 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+
+    #[test]
+    fn embedded_provider_metadata_preserves_setup_defaults() {
+        use HostedWebSearch::{Cached, Live, Off};
+        use ToolDiscoveryMode::{Native, Rebuild};
+
+        for (id, label, symbol, description, base_url, environment, discovery, search) in [
+            (
+                "responses",
+                "Local",
+                "storage",
+                "Any local or remote OpenAI-compatible Responses endpoint",
+                "https://api.openai.com/v1",
+                Some("OPENAI_API_KEY"),
+                Rebuild,
+                &[Off][..],
+            ),
+            (
+                "openai_socket",
+                "OpenAI",
+                "chat_gpt",
+                "Persistent Responses WebSocket with native compaction",
+                "https://api.openai.com/v1",
+                Some("OPENAI_API_KEY"),
+                Native,
+                &[Off, Cached, Live][..],
+            ),
+            (
+                "openai_codex",
+                "Codex",
+                "chat_gpt",
+                "Use a ChatGPT Plus or Pro subscription",
+                "https://chatgpt.com/backend-api/codex",
+                None,
+                Native,
+                &[Off, Cached, Live][..],
+            ),
+            (
+                "anthropic",
+                "Anthropic",
+                "claude",
+                "Native Messages API with adaptive thinking",
+                "https://api.anthropic.com/v1",
+                Some("ANTHROPIC_API_KEY"),
+                Rebuild,
+                &[Off, Live][..],
+            ),
+            (
+                "deepseek",
+                "DeepSeek",
+                "deepseek",
+                "DeepSeek Responses API",
+                "https://api.deepseek.com",
+                Some("DEEPSEEK_API_KEY"),
+                Rebuild,
+                &[Off, Live][..],
+            ),
+            (
+                "kimi",
+                "Kimi",
+                "kimi",
+                "Kimi Chat Completions API",
+                "https://api.moonshot.ai/v1",
+                Some("MOONSHOT_API_KEY"),
+                Rebuild,
+                &[Off][..],
+            ),
+            (
+                "openrouter",
+                "OpenRouter",
+                "route",
+                "Responses API across multiple model vendors",
+                "https://openrouter.ai/api/v1",
+                Some("OPENROUTER_API_KEY"),
+                Native,
+                &[Off, Live][..],
+            ),
+        ] {
+            let definition = provider(id).expect("provider");
+            let credential_environment = match definition.auth() {
+                ProviderAuth::ApiKey(environment) => Some(environment),
+                ProviderAuth::Browser(_) => None,
+            };
+            assert_eq!(
+                (
+                    definition.label(),
+                    definition.symbol().as_str(),
+                    definition.description(),
+                    definition.default_base_url(),
+                    credential_environment,
+                    definition.default_tool_discovery(),
+                    definition.web_search(),
+                ),
+                (
+                    label,
+                    symbol,
+                    description,
+                    Some(base_url),
+                    environment,
+                    discovery,
+                    search
+                ),
+                "{id} setup defaults"
+            );
+        }
+        assert_eq!(
+            (
+                super::super::anthropic::MANIFEST.max_output_tokens,
+                super::super::anthropic::MANIFEST
+                    .headers
+                    .get("anthropic-version")
+                    .map(String::as_str),
+            ),
+            (Some(64_000), Some("2023-06-01"))
+        );
+        for (mode, label, description) in [
+            (Off, "Off", "Do not use provider-hosted web search"),
+            (Cached, "Cached", "Allow cached provider-hosted search"),
+            (Live, "Live", "Allow live provider-hosted search"),
+        ] {
+            assert_eq!((mode.label(), mode.description()), (label, description));
+        }
+    }
 
     #[test]
     fn provider_manifest_ids_are_unique() {
@@ -964,7 +1133,7 @@ mod tests {
             Some("https://proxy.example/api/native/v1")
         ));
         assert!(
-            !provider("openai_codex")
+            provider("openai_codex")
                 .expect("Codex")
                 .native_custom_endpoints()
         );
@@ -972,7 +1141,7 @@ mod tests {
             provider("openai_codex")
                 .expect("Codex")
                 .validate_base_url(Some("https://proxy.example/v1"))
-                .is_err()
+                .is_ok()
         );
         assert!(
             provider("responses")
@@ -1047,6 +1216,35 @@ mod tests {
     }
 
     #[test]
+    fn omitted_provider_endpoints_resolve_to_advertised_defaults() {
+        for definition in providers() {
+            let model = definition.default_model().unwrap_or("test-model");
+            definition
+                .build_config_is_valid(model, None, None, HostedWebSearch::Off)
+                .expect("omitted URL selects the advertised default");
+            if matches!(definition.auth(), ProviderAuth::ApiKey(_)) {
+                definition
+                    .build(ProviderBuildConfig {
+                        credential: ProviderCredential::ApiKey("test-secret".into()),
+                        model: model.into(),
+                        base_url: None,
+                        reasoning_effort: None,
+                        service_tier: None,
+                        web_search: HostedWebSearch::Off,
+                        http: reqwest::Client::new(),
+                        transport: super::super::ModelTransportSettings::default(),
+                    })
+                    .expect("provider constructor receives its advertised default");
+            }
+            if definition.supports_credentialless_endpoints() {
+                definition
+                    .validate_credentialless_endpoint(None)
+                    .expect_err("credentialless endpoints still require an explicit custom URL");
+            }
+        }
+    }
+
+    #[test]
     fn credentialless_providers_build_without_a_credential() {
         let credentialless = providers()
             .iter()
@@ -1090,6 +1288,7 @@ mod tests {
                     service_tier: None,
                     web_search: HostedWebSearch::Off,
                     http: reqwest::Client::new(),
+                    transport: crate::backend::model::ModelTransportSettings::default(),
                 })
                 .expect("credentialless provider builds without a credential");
         }

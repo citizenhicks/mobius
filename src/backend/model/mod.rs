@@ -36,6 +36,7 @@ mod router;
 pub use image_generation::{GeneratedImage, ImageGenerationReference, ImageGenerationRequest};
 pub use media::ImageInputLimits;
 mod transport;
+pub use transport::ModelTransportSettings;
 
 pub use self::realtime::{
     RealtimeVoiceCall, RealtimeVoiceCommand, RealtimeVoiceEvent, RealtimeVoiceRequest,
@@ -55,7 +56,6 @@ const MAX_MODEL_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_TOOL_CALLS: usize = 128;
 const MAX_TOOL_ARGUMENT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_TOOL_CALL_ID_BYTES: usize = 4 * 1024;
-pub(crate) const STREAM_RETRY_LIMIT: usize = 5;
 /// Stable semantic name of the core deferred-tool discovery function.
 pub const TOOLS_SEARCH_NAME: &str = "tools_search";
 
@@ -747,6 +747,12 @@ impl CompactOutput {
 
 /// A model provider Adapter used by the agent loop.
 pub trait Model: Send + Sync {
+    /// Validated operational policy for this route; custom providers inherit owner defaults.
+    /// Overrides must validate settings during provider construction.
+    fn transport_settings(&self) -> ModelTransportSettings {
+        ModelTransportSettings::default()
+    }
+
     /// Returns stable display metadata without exposing credentials.
     fn info(&self) -> ModelInfo {
         ModelInfo::default()
@@ -1052,9 +1058,9 @@ struct MessageText {
     external: String,
 }
 
-static MESSAGE_TEXT: std::sync::LazyLock<MessageText> = std::sync::LazyLock::new(|| {
-    toml::from_str(include_str!("message.toml")).expect("bundled message instructions")
-});
+crate::embedded_config! {
+    static MESSAGE_TEXT: MessageText = include_str!("message.toml");
+}
 
 /// Creates provider-neutral model input carrying one typed conversation message.
 pub(crate) fn message_input(event: &MessageEvent) -> Result<Value> {

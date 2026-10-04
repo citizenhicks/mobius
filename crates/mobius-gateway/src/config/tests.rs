@@ -465,6 +465,71 @@ fn configured_custom_provider_keeps_its_endpoint_and_model() {
 }
 
 #[test]
+fn browser_authenticated_bot_selections_are_bound_to_the_registered_endpoint() {
+    let definition = provider("openai_codex").expect("browser-auth provider");
+    for endpoint in [None, Some("https://operator.example/codex")] {
+        let selection = ProviderConfig {
+            instance: "codex".into(),
+            provider: definition.id().into(),
+            model: definition
+                .models()
+                .first()
+                .expect("preset model")
+                .id
+                .clone(),
+            base_url: endpoint.map(str::to_owned),
+            endpoint_auth: ProviderEndpointAuth::ProviderDefault,
+            reasoning_effort: None,
+            service_tier: None,
+            web_search: mobius::backend::model::provider::HostedWebSearch::Off,
+        };
+        let gateway = GatewayConfig::new(DEFAULT_LISTEN, None)
+            .expect("gateway")
+            .registering_provider(
+                selection.clone(),
+                "Codex".into(),
+                Default::default(),
+                Vec::new(),
+                Vec::new(),
+            )
+            .expect("trusted operator registration");
+        gateway
+            .validate_provider_selection(&selection)
+            .expect("registered endpoint is allowed");
+        let mut bot = gateway
+            .bot_defaults
+            .as_ref()
+            .expect("defaults")
+            .config
+            .clone();
+        bot.provider.base_url = Some("https://attacker.example/codex".into());
+        assert!(
+            validate_agent_composition(&bot).is_ok(),
+            "structural URL validation cannot authorize credential destinations"
+        );
+        assert!(
+            validate_bot_compatibility(&gateway, &bot, &[])
+                .expect_err("Bot cannot redirect browser credentials")
+                .to_string()
+                .contains("operator-registered")
+        );
+        bot.provider.base_url = Some(format!(
+            "{}/",
+            crate::provider_catalog::selected_base_url(definition, &selection)
+                .expect("effective endpoint")
+        ));
+        validate_bot_compatibility(&gateway, &bot, &[]).expect("normalized registered endpoint");
+        if endpoint.is_some() {
+            bot.provider.base_url = None;
+            assert!(
+                validate_bot_compatibility(&gateway, &bot, &[]).is_err(),
+                "implicit native endpoint cannot replace the registered proxy"
+            );
+        }
+    }
+}
+
+#[test]
 fn openrouter_accepts_a_credentialless_custom_https_endpoint() {
     let selection = ProviderConfig {
         instance: "openrouter".into(),
@@ -1731,7 +1796,7 @@ fn cloudflare_token_loader_rejects_a_symlink() {
     let target = directory.path().join("target");
     let link = directory.path().join("token");
     fs::write(&target, "secret-tunnel-token").expect("token");
-    fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).expect("token permissions");
+    fs::set_permissions(&target, mobius::owner_only::file()).expect("token permissions");
     std::os::unix::fs::symlink(target, &link).expect("token symlink");
 
     let error = load_secret_file(&link).expect_err("symlink must fail");
@@ -1873,7 +1938,7 @@ fn new_gateway_bot_defaults_use_full_access() {
 }
 
 #[test]
-fn runtime_storage_allowance_requires_at_least_64_mib() {
+fn runtime_storage_allowance_preserves_the_64_mib_floor() {
     let mut config = GatewayConfig::new(DEFAULT_LISTEN, None).unwrap();
     for limit in [None, Some(64 * 1024 * 1024), Some(5 * 1024 * 1024 * 1024)] {
         config.runtime.storage_limit_bytes = limit;
@@ -1889,4 +1954,97 @@ fn runtime_storage_allowance_requires_at_least_64_mib() {
                 .contains("at least 64 MiB")
         );
     }
+}
+
+#[test]
+fn additive_operator_sections_preserve_existing_version_and_reject_typos() {
+    let config = GatewayConfig::new(DEFAULT_LISTEN, None).unwrap();
+    let mut value = toml::Value::try_from(&config).unwrap();
+    for section in [
+        "connections",
+        "auth",
+        "computer",
+        "execution",
+        "model_transport",
+        "runtime",
+        "telemetry",
+    ] {
+        value.as_table_mut().unwrap().remove(section);
+    }
+    let old = toml::to_string(&value).unwrap();
+    let loaded: GatewayConfig = toml::from_str(&old).unwrap();
+    loaded.validate().unwrap();
+    assert_eq!(loaded.version, CONFIG_VERSION);
+    assert_eq!(
+        loaded.connections,
+        crate::server::ConnectionPolicy::default()
+    );
+    assert_eq!(loaded.execution, crate::sandbox::ExecutionConfig::default());
+    let partial: GatewayConfig = toml::from_str(&format!("{old}\n[execution]\ncommand_timeout_seconds = 900\n[connections]\nauthenticated = 96\n[computer.browser]\nviewport = [1920, 1080]\n")).unwrap();
+    partial.validate().unwrap();
+    assert_eq!(partial.execution.command_timeout_seconds, 900);
+    assert_eq!(partial.connections.authenticated, 96);
+    assert_eq!(partial.computer.browser.viewport, [1920, 1080]);
+    assert!(
+        toml::from_str::<GatewayConfig>(&(old + "\n[execution]\ncommand_timeout_second = 900\n"))
+            .is_err()
+    );
+}
+
+#[test]
+fn explicit_operator_policy_allows_private_http_collectors() {
+    let mut config = GatewayConfig::new(DEFAULT_LISTEN, None).unwrap();
+    let mut sink = serde_json::from_value::<crate::telemetry::TelemetrySink>(serde_json::json!({"id": "private", "url": "http://10.0.0.4:9000/collect", "every_seconds": 15, "sections": ["activity"]})).unwrap();
+    sink.bearer_env = Some("MOBIUS_COLLECTOR_TOKEN".into());
+    config.telemetry.sinks.push(sink);
+    assert!(config.validate().is_err());
+    config.telemetry.policy.allow_insecure_http = true;
+    config.validate().unwrap();
+}
+
+#[test]
+fn telemetry_credentials_require_a_dedicated_gateway_namespace() {
+    let mut config = GatewayConfig::new(DEFAULT_LISTEN, None).unwrap();
+    config.telemetry.sinks.push(
+        serde_json::from_value(serde_json::json!({
+            "id": "collector", "url": "https://collector.example/ingest", "every_seconds": 15
+        }))
+        .unwrap(),
+    );
+    for name in [
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "AWS_SECRET_ACCESS_KEY",
+        "MOBIUS_",
+        "MOBIUS_GATEWAY_TOKEN",
+    ] {
+        config.telemetry.sinks[0].bearer_env = Some(name.into());
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("bearer_env")
+        );
+    }
+    config.telemetry.sinks[0].bearer_env = Some("MOBIUS_COLLECTOR_TOKEN".into());
+    config.validate().unwrap();
+}
+
+#[test]
+fn shipped_gateway_policy_defaults_preserve_existing_behavior() {
+    let config = GatewayConfig::new(DEFAULT_LISTEN, None).unwrap();
+    assert_eq!(config.connections.authenticated, 32);
+    assert_eq!(config.connections.pre_authentication, 8);
+    assert_eq!(config.connections.authentication_timeout_seconds, 5);
+    assert_eq!(config.connections.active_sessions, 32);
+    assert_eq!(config.connections.pending_uploads, 8);
+    assert_eq!(config.auth.paired_clients, 32);
+    assert_eq!(config.auth.pairing_lifetime_seconds, 600);
+    assert_eq!(config.runtime.idle_exit_seconds, 259_200);
+    assert!(!config.runtime.require_access_lease);
+    assert_eq!(config.runtime.access_grace_seconds, 0);
+    assert!(!config.telemetry.policy.allow_insecure_http);
+    assert_eq!(config.telemetry.policy.request_timeout_seconds, 10);
+    assert_eq!(config.telemetry.policy.upload_admission_timeout_seconds, 10);
 }

@@ -93,7 +93,6 @@ const MAX_REPLAY_BYTES: usize = MAX_FRAME_BYTES;
 const SESSION_PAGE_SIZE: usize = 100;
 const MAX_SESSION_DELETE_ROOTS: usize = 1_024;
 const RECENT_RUN_LIMIT: usize = 30;
-pub(crate) const MAX_ACTIVE_SESSIONS: usize = 32;
 
 type SessionActivities = Arc<Mutex<catalog::SessionCatalog>>;
 
@@ -192,6 +191,15 @@ pub(crate) struct Rejection {
 pub(crate) type HostAccess = Arc<dyn Fn() -> Result<GatewayHost> + Send + Sync>;
 
 impl GatewayHost {
+    pub(crate) async fn pending_upload_capacity(&self) -> Result<usize> {
+        let state = self.state.lock().await;
+        let config = state
+            .config
+            .lock()
+            .map_err(|_| Error::Config("gateway configuration lock is poisoned".into()))?;
+        Ok(config.connections.pending_uploads)
+    }
+
     fn access(&self) -> HostAccess {
         let state = Arc::downgrade(&self.state);
         let desktop = Arc::clone(&self.desktop);
@@ -251,6 +259,7 @@ impl GatewayHost {
         let remote_desktop = Arc::new(RemoteDesktop::new(
             store.state_dir(),
             config.desktop_enabled,
+            config.computer.clone(),
         ));
         let telemetry = Arc::new(crate::telemetry::Telemetry::new(
             &config.telemetry,
@@ -548,7 +557,7 @@ impl GatewayHost {
         identity: crate::bots::BotIdentity<'_>,
         config: AgentComposition,
     ) -> std::result::Result<crate::wire::BotRecord, Rejection> {
-        let (store, runtime_changed) = {
+        let (store, computer, runtime_changed) = {
             let _access = self.begin_mutation().await?;
             let state = self.state.lock().await;
             validate_bot_config(&state, &config)?;
@@ -565,12 +574,13 @@ impl GatewayHost {
             }
             (
                 state.store.clone(),
+                Arc::clone(self.remote_desktop.configuration()),
                 previous.description != identity.description || previous.config.config != config,
             )
         };
         // Installation can take minutes. Do not hold gateway locks or save the Bot yet.
         if runtime_changed {
-            crate::computer_runtime::prepare(store.state_dir(), &config.middleware)
+            crate::computer_runtime::prepare(store.state_dir(), &config.middleware, &computer)
                 .await
                 .map_err(invalid_config)?;
         }
@@ -595,6 +605,7 @@ impl GatewayHost {
                     &state.credentials,
                     state.session_files.clone(),
                     state.provider_epoch.load(Ordering::Acquire),
+                    Arc::clone(self.remote_desktop.configuration()),
                 )
                 .await
                 .map_err(invalid_config)?,
@@ -1073,10 +1084,7 @@ struct SessionStartGuard {
 
 impl Drop for SessionStartGuard {
     fn drop(&mut self) {
-        self.starting
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&self.id);
+        mobius::sync::recover_lock(&self.starting).remove(&self.id);
     }
 }
 
@@ -1105,13 +1113,10 @@ impl GatewayState {
         id: &str,
         bot_id: &str,
     ) -> std::result::Result<SessionStartGuard, Rejection> {
-        if self.resident_sessions() >= MAX_ACTIVE_SESSIONS {
-            return Err(session_limit());
+        if self.resident_sessions() >= self.session_capacity()? {
+            return Err(session_limit(self.session_capacity()?));
         }
-        let mut starting = self
-            .starting_sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut starting = mobius::sync::recover_lock(&self.starting_sessions);
         if starting.contains_key(id) {
             return Err(Rejection {
                 code: "session_starting",
@@ -1127,12 +1132,14 @@ impl GatewayState {
     }
 
     fn resident_sessions(&self) -> usize {
-        self.sessions.len()
-            + self
-                .starting_sessions
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .len()
+        self.sessions.len() + mobius::sync::recover_lock(&self.starting_sessions).len()
+    }
+
+    fn session_capacity(&self) -> std::result::Result<usize, Rejection> {
+        self.config
+            .lock()
+            .map(|config| config.connections.active_sessions)
+            .map_err(|_| internal("gateway configuration lock is poisoned"))
     }
 }
 
@@ -1147,7 +1154,7 @@ impl GatewayHost {
         for attempt in 0..2 {
             let candidates = {
                 let state = self.state.lock().await;
-                if state.resident_sessions() < MAX_ACTIVE_SESSIONS {
+                if state.resident_sessions() < state.session_capacity()? {
                     return Ok(capacity);
                 }
                 state
@@ -1170,7 +1177,8 @@ impl GatewayHost {
                     continue;
                 };
                 if host.stop_if_idle().await {
-                    if self.state.lock().await.resident_sessions() < MAX_ACTIVE_SESSIONS {
+                    let state = self.state.lock().await;
+                    if state.resident_sessions() < state.session_capacity()? {
                         return Ok(capacity);
                     }
                 } else {
@@ -1182,16 +1190,14 @@ impl GatewayHost {
                 tokio::task::yield_now().await;
             }
         }
-        Err(session_limit())
+        Err(session_limit(self.state.lock().await.session_capacity()?))
     }
 }
 
-fn session_limit() -> Rejection {
+fn session_limit(capacity: usize) -> Rejection {
     Rejection {
         code: "session_limit",
-        message: format!(
-            "this gateway already has {MAX_ACTIVE_SESSIONS} connected or running chats"
-        ),
+        message: format!("this gateway already has {capacity} connected or running chats"),
         fatal: false,
     }
 }

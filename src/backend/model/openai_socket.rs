@@ -24,8 +24,6 @@ use tokio_tungstenite::tungstenite::Message;
 use self::connection::Exchange;
 use self::connection::OpenAiWsConnection;
 #[cfg(test)]
-use self::connection::STREAM_IDLE_TIMEOUT;
-#[cfg(test)]
 use self::connection::SocketEvent;
 use self::connection::connect;
 use self::connection::exchange;
@@ -54,7 +52,6 @@ use super::openai_auth::OpenAiAuthorization;
 #[cfg(test)]
 use super::openai_auth::ResolvedAuthorization;
 use super::provider::HostedWebSearch;
-use super::provider::ProviderAuth;
 use super::provider::ProviderBuildConfig;
 use super::provider::ProviderDefinition;
 use super::{RealtimeVoiceCall, RealtimeVoiceRequest};
@@ -67,28 +64,17 @@ use crate::protocol::ToolDiscoveryMode;
 
 mod connection;
 
-mod manifest {
-    use crate::backend::model::provider::HostedWebSearch;
-    use crate::protocol::ToolDiscoveryMode;
-    pub const PROVIDER_LABEL: &str = "OpenAI";
-    pub const PROVIDER_DESCRIPTION: &str = "Persistent Responses WebSocket with native compaction";
-    pub const TOOL_DISCOVERY: ToolDiscoveryMode = ToolDiscoveryMode::Native;
-    pub const CUSTOM_ENDPOINT_TOOL_DISCOVERY: Option<ToolDiscoveryMode> = None;
-    pub const SEARCH: &[HostedWebSearch] = &[
-        HostedWebSearch::Off,
-        HostedWebSearch::Cached,
-        HostedWebSearch::Live,
-    ];
-}
+pub(super) static MANIFEST: std::sync::LazyLock<super::provider::ProviderMetadata> =
+    std::sync::LazyLock::new(|| {
+        super::provider::ProviderMetadata::load(include_str!("openai_socket_provider.toml"))
+    });
 
-const OPENAI_HTTP_URL: &str = "https://api.openai.com/v1";
 const MAX_SESSION_ENTRIES: usize = 128;
-const COMPACTION_STREAM_RETRY_LIMIT: usize = 2;
-const COMPACTION_RETRY_BASE_DELAY: Duration = Duration::from_millis(200);
 
 /// OpenAI's persistent Responses WebSocket transport.
 pub struct OpenAiSocket {
     auth: Arc<dyn OpenAiAuthorization>,
+    transport: super::ModelTransportSettings,
     socket_url: String,
     model: String,
     reasoning_effort: Option<String>,
@@ -120,9 +106,28 @@ impl OpenAiSocket {
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Result<Self> {
         Self::with_client(
             api_key,
-            OPENAI_HTTP_URL,
+            MANIFEST.base_url.as_str(),
             model,
             super::transport::streaming_client()?,
+            super::ModelTransportSettings::default(),
+        )
+    }
+
+    /// Creates a native Responses provider with explicit operational policy.
+    /// # Errors
+    /// Returns invalid policy or HTTP client construction errors.
+    pub fn new_with_transport(
+        api_key: impl Into<String>,
+        base_url: &str,
+        model: impl Into<String>,
+        settings: super::ModelTransportSettings,
+    ) -> Result<Self> {
+        Self::with_client(
+            api_key,
+            base_url,
+            model,
+            settings.streaming_client()?,
+            settings,
         )
     }
 
@@ -131,11 +136,12 @@ impl OpenAiSocket {
         base_url: &str,
         model: impl Into<String>,
         client: reqwest::Client,
+        settings: super::ModelTransportSettings,
     ) -> Result<Self> {
         let api_key = api_key.into();
         let model = model.into();
         if api_key.trim().is_empty() {
-            return Err(Error::Config("OPENAI_API_KEY is empty".into()));
+            return Err(Error::Config("provider API key cannot be empty".into()));
         }
         super::provider::validate_base_url(base_url)?;
         let mut socket_url =
@@ -155,6 +161,7 @@ impl OpenAiSocket {
             socket_url.as_str(),
             model,
             client,
+            settings,
         )?;
         provider.http = provider.http.with_native_openai_api()?;
         Ok(provider.with_explicit_prompt_cache())
@@ -166,12 +173,20 @@ impl OpenAiSocket {
         socket_url: impl Into<String>,
         model: impl Into<String>,
         client: reqwest::Client,
+        settings: super::ModelTransportSettings,
     ) -> Result<Self> {
         let model = model.into();
-        let http = OpenAi::with_authorization(Arc::clone(&auth), http_url, model.clone(), client)?
-            .with_tool_discovery(ToolDiscoveryMode::Native);
+        let http = OpenAi::with_authorization(
+            Arc::clone(&auth),
+            http_url,
+            model.clone(),
+            client,
+            settings,
+        )?
+        .with_tool_discovery(ToolDiscoveryMode::Native);
         Ok(Self {
             auth,
+            transport: settings,
             socket_url: socket_url.into(),
             model,
             reasoning_effort: None,
@@ -187,8 +202,20 @@ impl OpenAiSocket {
         self
     }
 
-    pub(super) fn with_codex_realtime_voice(mut self) -> Result<Self> {
-        self.http = self.http.with_codex_realtime_voice()?;
+    /// Configures validated model sockets, compaction retries and realtime calls.
+    /// # Errors
+    /// Returns an error for invalid operational settings.
+    pub fn with_transport_settings(
+        mut self,
+        settings: super::ModelTransportSettings,
+    ) -> Result<Self> {
+        self.http = self.http.with_transport_settings(settings)?;
+        self.transport = settings;
+        Ok(self)
+    }
+
+    pub(super) fn with_codex_realtime_voice(mut self, base_url: &str) -> Result<Self> {
+        self.http = self.http.with_codex_realtime_voice(base_url)?;
         Ok(self)
     }
 
@@ -275,7 +302,14 @@ impl OpenAiSocket {
                         connection.close().await;
                     }
                     state.continuation = None;
-                    match connect(self.auth.as_ref(), &self.socket_url, request.session_id).await {
+                    match connect(
+                        self.auth.as_ref(),
+                        &self.socket_url,
+                        request.session_id,
+                        &self.transport,
+                    )
+                    .await
+                    {
                         Ok(connection) => connection,
                         Err(Error::Provider(error)) if error.status() == Some(426) => {
                             state.use_http = true;
@@ -413,11 +447,15 @@ impl OpenAiSocket {
                 Ok(output) => break output,
                 Err(Error::Provider(error))
                     if error.is_stream_interrupted()
-                        && (retries < COMPACTION_STREAM_RETRY_LIMIT
+                        && (retries < self.transport.compaction_retry_limit
                             || self.fallback_transport(request.session_id).await?) =>
                 {
-                    let delay = if retries < COMPACTION_STREAM_RETRY_LIMIT {
-                        let delay = compaction_retry_delay(&error, retries);
+                    let delay = if retries < self.transport.compaction_retry_limit {
+                        let delay = compaction_retry_delay(
+                            &error,
+                            retries,
+                            Duration::from_millis(self.transport.compaction_retry_backoff_ms),
+                        );
                         retries += 1;
                         delay
                     } else {
@@ -430,10 +468,9 @@ impl OpenAiSocket {
             }
         };
         let compaction = output
-            .output()
-            .iter()
+            .output
+            .into_iter()
             .filter(|item| item.get("type").and_then(Value::as_str) == Some("compaction"))
-            .cloned()
             .collect::<Vec<_>>();
         if compaction.len() != 1 {
             return Err(Error::Provider(
@@ -444,7 +481,7 @@ impl OpenAiSocket {
                 .into(),
             ));
         }
-        CompactOutput::from_output(compaction, output.usage().clone())
+        CompactOutput::from_output(compaction, output.usage)
     }
 
     async fn session(&self, session_id: &str) -> Result<Arc<Mutex<SocketState>>> {
@@ -509,12 +546,17 @@ impl OpenAiSocket {
     }
 }
 
-fn compaction_retry_delay(error: &crate::ProviderError, retry: usize) -> Duration {
-    let backoff = COMPACTION_RETRY_BASE_DELAY.saturating_mul(1_u32 << retry.min(4));
+fn compaction_retry_delay(
+    error: &crate::ProviderError,
+    retry: u32,
+    base_delay: Duration,
+) -> Duration {
+    let backoff = base_delay.saturating_mul(1_u32 << retry.min(4));
     error
         .retry_after()
         .and_then(|value| value.trim().parse::<u64>().ok())
         .map(Duration::from_secs)
+        .filter(|duration| Instant::now().checked_add(*duration).is_some())
         .map_or(backoff, |retry_after| retry_after.max(backoff))
 }
 
@@ -542,6 +584,10 @@ fn response_input<'a>(
 }
 
 impl Model for OpenAiSocket {
+    fn transport_settings(&self) -> super::ModelTransportSettings {
+        self.transport
+    }
+
     fn info(&self) -> ModelInfo {
         ModelInfo {
             model: self.model.clone(),
@@ -734,35 +780,34 @@ impl Write for HasherWriter<'_> {
     }
 }
 
-pub(super) const SEARCH: &[HostedWebSearch] = manifest::SEARCH;
-
 pub(super) fn provider() -> ProviderDefinition {
-    ProviderDefinition::new(
+    ProviderDefinition::from_metadata(
         "openai_socket",
-        manifest::PROVIDER_LABEL,
-        "chat_gpt",
-        manifest::PROVIDER_DESCRIPTION,
-        ProviderAuth::ApiKey("OPENAI_API_KEY"),
-        &CATALOG.models,
-        CATALOG.default_model.as_deref(),
-        SEARCH,
+        &MANIFEST,
+        MANIFEST.api_key_auth(),
+        Some(&CATALOG),
         build_provider,
     )
     .with_image_input()
     .with_image_generation()
-    .with_realtime_voices(super::realtime::VOICES)
-    .with_native_base_url(OPENAI_HTTP_URL)
-    .with_tool_discovery(
-        manifest::TOOL_DISCOVERY,
-        manifest::CUSTOM_ENDPOINT_TOOL_DISCOVERY,
-    )
+    .with_realtime_voices(&super::realtime::VOICES)
+    .with_native_custom_endpoints()
 }
 
 fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
     let api_key = config.credential.into_api_key("openai_socket")?;
-    let base_url = config.base_url.as_deref().unwrap_or(OPENAI_HTTP_URL);
-    let provider = OpenAiSocket::with_client(api_key, base_url, config.model, config.http)?
-        .with_service_tier(config.service_tier);
+    let base_url = config
+        .base_url
+        .as_deref()
+        .unwrap_or(MANIFEST.base_url.as_str());
+    let provider = OpenAiSocket::with_client(
+        api_key,
+        base_url,
+        config.model,
+        config.http,
+        config.transport,
+    )?
+    .with_service_tier(config.service_tier);
     let provider = match config.reasoning_effort {
         Some(effort) => provider.with_reasoning_effort(effort)?,
         None => provider,

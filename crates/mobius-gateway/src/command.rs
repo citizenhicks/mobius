@@ -16,8 +16,6 @@ use std::io::Write;
 use std::io::{Read as _, Seek as _, SeekFrom};
 use std::net::SocketAddr;
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt as _;
-#[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
@@ -136,6 +134,24 @@ pub async fn run_cli(
     load_local_client: fn(&Endpoint) -> Result<Option<String>>,
 ) -> Result<()> {
     match cli.into_command()? {
+        Command::PrintDefaultConfig => {
+            println!(
+                "{}",
+                toml::to_string_pretty(&GatewayConfig::new(crate::config::DEFAULT_LISTEN, None)?)
+                    .map_err(|error| Error::Config(format!(
+                    "cannot encode default gateway configuration: {error}"
+                )))?
+            );
+            Ok(())
+        }
+        Command::CheckConfig { state_dir } => {
+            ConfigStore::open(state_dir)?;
+            println!("gateway configuration is valid");
+            Ok(())
+        }
+        Command::ExportComputerResources { directory } => {
+            crate::computer_runtime::export_resources(&directory)
+        }
         Command::Telemetry { state_dir, command } => {
             telemetry::run(state_dir, command, load_local_client).await
         }
@@ -144,9 +160,7 @@ pub async fn run_cli(
             idle_exit_seconds,
             storage_limit_bytes,
             ingress,
-            hold_socket,
             clear_ingress,
-            clear_hold_socket,
             clear_storage_limit,
         } => {
             let (store, mut config) = ConfigStore::open(state_dir)?;
@@ -160,14 +174,8 @@ pub async fn run_cli(
             if let Some(address) = ingress {
                 config.runtime.ingress = Some(address);
             }
-            if let Some(socket) = hold_socket {
-                config.runtime.hold_socket = Some(socket);
-            }
             if clear_ingress {
                 config.runtime.ingress = None;
-            }
-            if clear_hold_socket {
-                config.runtime.hold_socket = None;
             }
             if clear_storage_limit {
                 config.runtime.storage_limit_bytes = None;

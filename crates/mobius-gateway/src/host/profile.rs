@@ -50,7 +50,8 @@ pub(super) async fn provider_usage(
         {
             continue;
         }
-        let Some(fetch) = auth.usage_limits(&auth_path) else {
+        let Some(fetch) = auth.usage_limits_with_transport(&auth_path, config.model_transport)
+        else {
             continue;
         };
         requests.push((provider_id, fetch));
@@ -244,7 +245,20 @@ pub(super) async fn gateway_ready(
         .into_iter()
         .map(|route| (route.choice.route, route.provider.instance))
         .collect();
-    let middleware_features = crate::middleware_manifest::features(&models);
+    let subagent_ceilings = state
+        .config
+        .execution
+        .subagent_ceilings()
+        .map_err(internal)?;
+    let middleware_features =
+        crate::middleware_manifest::features_with_ceilings(&models, subagent_ceilings);
+    let mut bots = state.bots.bots().map_err(internal)?;
+    for bot in &mut bots {
+        crate::middleware_manifest::materialize_integer_defaults(
+            &mut bot.config.config.middleware,
+            Some(subagent_ceilings),
+        );
+    }
     let extensions = crate::extensions::records(&state.config);
     let mut contributions = state.contributions.clone();
     contributions.push(
@@ -267,18 +281,24 @@ pub(super) async fn gateway_ready(
             crate::wire::ComputerView::EmbeddedBrowser
         },
         machine_name: local_machine_name().map_err(internal)?,
-        bots: state.bots.bots().map_err(internal)?,
+        bots,
         sessions,
         background_approvals,
         providers: provider_statuses(),
         provider_instances,
         models,
         model_providers,
-        bot_defaults: state.config.bot_defaults.clone(),
+        bot_defaults: state.config.bot_defaults.clone().map(|mut defaults| {
+            crate::middleware_manifest::materialize_integer_defaults(
+                &mut defaults.config.middleware,
+                Some(subagent_ceilings),
+            );
+            defaults
+        }),
         middleware_features,
         extensions,
         contributions,
-        max_active_sessions: MAX_ACTIVE_SESSIONS,
+        max_active_sessions: state.config.connections.active_sessions,
         session_file_limits: session_file_limits(),
         revisions: BTreeMap::new(),
         omitted: BTreeSet::new(),

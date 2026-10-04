@@ -186,6 +186,7 @@ async fn each_call_receives_its_own_permissions() {
                 handler_executed: true,
                 additional_input: Vec::new(),
                 events: Vec::new(),
+                output_limit: crate::backend::sandbox::default_tool_output_limit(),
             },
             ToolResult {
                 call_id: "allowed".into(),
@@ -196,6 +197,7 @@ async fn each_call_receives_its_own_permissions() {
                 handler_executed: true,
                 additional_input: Vec::new(),
                 events: Vec::new(),
+                output_limit: crate::backend::sandbox::default_tool_output_limit(),
             },
         ]
     );
@@ -246,6 +248,7 @@ async fn parallel_tool_panic_preserves_call_identity() {
             handler_executed: true,
             additional_input: Vec::new(),
             events: Vec::new(),
+            output_limit: crate::backend::sandbox::default_tool_output_limit(),
         }]
     );
 }
@@ -294,4 +297,55 @@ async fn approval_required_handler_cannot_run_without_exact_call_authority() {
         ),
         (true, false, "tool call is not authorized to mutate state")
     );
+}
+
+struct LargeOutput;
+
+impl Tool for LargeOutput {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "large_output".into(),
+            description: "Returns test text".into(),
+            parameters: serde_json::json!({"type":"object", "properties":{}, "additionalProperties":false}),
+        }
+    }
+
+    fn call<'a>(
+        &'a self,
+        _context: ToolContext,
+        _arguments: Value,
+    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+        Box::pin(async { Ok("x".repeat(50_000).into()) })
+    }
+}
+
+#[tokio::test]
+async fn dispatch_uses_the_execution_boundary_output_budget() {
+    let mut catalog = Catalog::default();
+    catalog.register(Arc::new(LargeOutput)).unwrap();
+    let calls = finalize_and_bind(
+        &mut catalog,
+        &[ToolCall {
+            call_id: "large".into(),
+            name: "large_output".into(),
+            arguments: serde_json::json!({}),
+        }],
+    );
+    let backend = Arc::new(crate::backend::sandbox::local::LocalSandbox::new(".").unwrap());
+    let sandbox = Arc::new(
+        Sandbox::new(backend, crate::backend::sandbox::ApprovalPolicy::Ask)
+            .tool_output_limit(60_000)
+            .unwrap(),
+    );
+    let results = execute_batch(
+        &catalog,
+        &calls,
+        sandbox,
+        &test_permissions(&[]),
+        "turn",
+        "test",
+        &crate::protocol::MessageAuthor::User,
+    )
+    .await;
+    assert_eq!(results[0].output.text().len(), 50_000);
 }

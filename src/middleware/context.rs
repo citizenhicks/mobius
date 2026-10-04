@@ -7,7 +7,7 @@ use serde_json::Value;
 use super::MiddlewareStack;
 use super::tools::Catalog;
 use super::tools::ToolResult;
-use super::{approximate_item_tokens, approximate_tokens, serialized_len};
+use super::{TokenEstimate, serialized_len};
 use crate::agent::{AgentRole, WeakAgentSender};
 use crate::backend::checkpoint::{
     Checkpoint, CheckpointStore, ContextRewriteReason, ExecutionOutcome, MAX_QUEUED_MESSAGES,
@@ -434,6 +434,8 @@ pub struct ModelContext<'a> {
     pub model_step: usize,
     /// The context window.
     pub context_window: i64,
+    /// Shared byte-based estimate used by context policies.
+    pub token_estimate: TokenEstimate,
     /// The instructions.
     pub instructions: &'a str,
     pub(crate) checkpoint_sequence: u64,
@@ -553,7 +555,7 @@ impl ModelContext<'_> {
         provisional_message_target(self.checkpoint_sequence, self.transcript_delta.len())
     }
 
-    /// Estimates visible history, instructions, and tool schemas at four bytes per token.
+    /// Estimates visible history, instructions, and tool schemas using the session policy.
     #[must_use]
     pub fn estimated_input_tokens(&self) -> i64 {
         let Ok(tools) = self
@@ -578,11 +580,14 @@ impl ModelContext<'_> {
         let history = self
             .durable_input
             .iter()
-            .map(approximate_item_tokens)
+            .map(|item| self.token_estimate.item_tokens(item))
             .fold(0usize, usize::saturating_add);
-        i64::try_from(history.saturating_add(approximate_tokens(
-            tool_bytes.saturating_add(self.instructions.len()),
-        )))
+        i64::try_from(
+            history.saturating_add(
+                self.token_estimate
+                    .tokens(tool_bytes.saturating_add(self.instructions.len())),
+            ),
+        )
         .unwrap_or(i64::MAX)
     }
 

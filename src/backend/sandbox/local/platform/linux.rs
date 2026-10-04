@@ -8,10 +8,12 @@ use tokio::process::Command;
 use super::super::Invocation;
 use super::super::LocalSandbox;
 use super::super::NetworkAccess;
+use super::super::ProcfsMode;
 use super::super::WorkspaceAccess;
 use super::append_invocation;
 use crate::Error;
 use crate::Result;
+use crate::backend::sandbox::CommandOutput;
 
 pub(crate) fn sandboxed_command(
     sandbox: &LocalSandbox,
@@ -20,7 +22,7 @@ pub(crate) fn sandboxed_command(
     workspace_access: WorkspaceAccess,
 ) -> Result<Command> {
     let bwrap = sandbox
-        .find_executable("bwrap")
+        .trusted_bubblewrap()
         .map_err(|_| Error::Sandbox("bubblewrap (`bwrap`) is required on Linux".into()))?;
     let mut command = Command::new(bwrap);
     command.args([
@@ -96,10 +98,9 @@ pub(crate) fn sandboxed_command(
         command.arg("--unshare-net");
     }
     command
-        .arg(if sandbox.empty_proc {
-            "--tmpfs"
-        } else {
-            "--proc"
+        .arg(match sandbox.procfs_mode {
+            ProcfsMode::Private => "--proc",
+            ProcfsMode::Empty => "--tmpfs",
         })
         .args(["/proc", "--chdir"]);
     command.arg(&sandbox.root);
@@ -113,7 +114,7 @@ pub(crate) fn protected_full_access_command(
     invocation: &Invocation<'_>,
 ) -> Result<Command> {
     let bwrap = sandbox
-        .find_executable("bwrap")
+        .trusted_bubblewrap()
         .map_err(|_| Error::Sandbox("bubblewrap (`bwrap`) is required on Linux".into()))?;
     let mut command = Command::new(bwrap);
     command.args([
@@ -135,15 +136,31 @@ pub(crate) fn protected_full_access_command(
     }
     command.args(["--unshare-user", "--unshare-pid"]);
     command
-        .arg(if sandbox.empty_proc {
-            "--tmpfs"
-        } else {
-            "--proc"
+        .arg(match sandbox.procfs_mode {
+            ProcfsMode::Private => "--proc",
+            ProcfsMode::Empty => "--tmpfs",
         })
         .args(["/proc", "--chdir"]);
     command.arg(&sandbox.root).arg("--");
     append_invocation(&mut command, invocation, sandbox.isolated_home);
     Ok(command)
+}
+
+pub(crate) fn check_procfs_output(mode: ProcfsMode, output: &CommandOutput) -> Result<()> {
+    if mode == ProcfsMode::Private
+        && output.exit_code != 0
+        && output.stderr.lines().any(|line| {
+            line.starts_with("bwrap:")
+                && line.contains("/proc")
+                && (line.contains("Operation not permitted") || line.contains("Permission denied"))
+        })
+    {
+        return Err(Error::Sandbox(
+            "the host denied Bubblewrap's private /proc mount; enable private proc mounts, or explicitly select ProcfsMode::Empty only when the host already provides PID isolation"
+                .into(),
+        ));
+    }
+    Ok(())
 }
 
 fn ssh_agent_socket(sandbox: &LocalSandbox) -> Option<PathBuf> {

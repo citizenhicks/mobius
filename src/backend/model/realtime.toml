@@ -1,0 +1,13 @@
+[openai]
+model = "gpt-live-1"
+voices = ["marin", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "cedar", "quartz", "ripple", "vesper", "willow", "stone", "gleam", "meridian", "bossa", "tempo", "beacon", "delta", "cinder"]
+calls_path = "live/sessions"
+
+[codex]
+model = "gpt-live-1-codex"
+voices = ["cove", "juniper", "maple", "spruce", "ember", "vale", "breeze", "arbor", "sol"]
+calls_path = "realtime/calls?intent=quicksilver&architecture=avas"
+sideband_base_url = "https://api.openai.com/v1/live"
+
+[codex.headers]
+openai-alpha = "quicksilver=v2"

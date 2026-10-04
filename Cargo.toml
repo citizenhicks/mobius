@@ -30,7 +30,7 @@ resolver = "3"
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.98"
+rust-version = "1.99.0"
 license = "Apache-2.0"
 repository = "https://github.com/citizenhicks/mobius"
 publish = ["crates-io"]
@@ -56,6 +56,7 @@ uuid = { version = "1", features = ["v4"] }
 base64.workspace = true
 bm25 = "2.3.2"
 cap-std = "4"
+chrono.workspace = true
 diffy.workspace = true
 futures-util.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }

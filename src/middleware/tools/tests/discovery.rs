@@ -457,6 +457,18 @@ fn binding_enforces_current_exposure_and_step_materialization() {
             .to_string(),
         "tool error: unknown tool `missing`"
     );
+    let prepared = catalog
+        .prepare(&[], BTreeSet::from(["direct".into()]))
+        .expect("active tool catalog");
+    let calls = [function_call("missing")];
+    let (bound, mut rejected) = catalog.bind_live_batch(&calls, &prepared, 8);
+    assert!(bound.is_empty());
+    assert_eq!(rejected.len(), 1);
+    assert_eq!(rejected[0].call_id, calls[0].call_id);
+    assert!(rejected[0].is_error);
+    assert_eq!(rejected[0].output.text(), "tool err");
+    rejected[0].replace("éééééé");
+    assert_eq!(rejected[0].output.text(), "éééé");
 }
 
 #[tokio::test]

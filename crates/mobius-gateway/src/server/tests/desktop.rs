@@ -5,9 +5,12 @@ use super::*;
 async fn encrypted_observers_receive_current_hold_and_release_without_a_desktop_stream() {
     let root = tempfile::tempdir().unwrap();
     let (mut server, grant) = configured_test_server(root.path().join("state")).await;
-    server.host.remote_desktop = Arc::new(
-        crate::computer_runtime::remote_desktop::RemoteDesktop::new(root.path(), true),
-    );
+    server.host.remote_desktop =
+        Arc::new(crate::computer_runtime::remote_desktop::RemoteDesktop::new(
+            root.path(),
+            true,
+            crate::computer_runtime::ComputerConfig::default(),
+        ));
     let remote = Arc::clone(&server.host.remote_desktop);
     remote.begin_takeover().unwrap();
     let identity = server.auth.pair(&grant.code, "encrypted observer").unwrap();
@@ -29,7 +32,8 @@ async fn encrypted_observers_receive_current_hold_and_release_without_a_desktop_
     let serving = tokio::spawn(serve_connection(
         stream,
         context,
-        Instant::now() + PRE_AUTH_TIMEOUT,
+        Instant::now()
+            + Duration::from_secs(ConnectionPolicy::default().authentication_timeout_seconds),
         None,
     ));
     write_frame(
@@ -97,9 +101,12 @@ async fn encrypted_observers_receive_current_hold_and_release_without_a_desktop_
 async fn authenticated_viewers_connect_during_desktop_execution_hold() {
     let root = tempfile::tempdir().unwrap();
     let (mut server, grant) = configured_test_server(root.path().join("state")).await;
-    server.host.remote_desktop = Arc::new(
-        crate::computer_runtime::remote_desktop::RemoteDesktop::new(root.path(), true),
-    );
+    server.host.remote_desktop =
+        Arc::new(crate::computer_runtime::remote_desktop::RemoteDesktop::new(
+            root.path(),
+            true,
+            crate::computer_runtime::ComputerConfig::default(),
+        ));
     let remote = Arc::clone(&server.host.remote_desktop);
     let host = server.host.clone();
     let identity = server.auth.pair(&grant.code, "desktop viewer").unwrap();
@@ -159,9 +166,12 @@ async fn open_computer_pumps_the_same_local_renderer_connection() {
     let workspace = root.path().join("workspace");
     fs::create_dir(&workspace).unwrap();
     let (mut server, grant) = configured_test_server(root.path().join("state")).await;
-    server.host.remote_desktop = Arc::new(
-        crate::computer_runtime::remote_desktop::RemoteDesktop::new(root.path(), true),
-    );
+    server.host.remote_desktop =
+        Arc::new(crate::computer_runtime::remote_desktop::RemoteDesktop::new(
+            root.path(),
+            true,
+            crate::computer_runtime::ComputerConfig::default(),
+        ));
     let bot = server
         .host
         .create_bot("Computer", "Same renderer connection")
@@ -192,7 +202,8 @@ async fn open_computer_pumps_the_same_local_renderer_connection() {
     let serving = tokio::spawn(serve_connection(
         stream,
         context,
-        Instant::now() + PRE_AUTH_TIMEOUT,
+        Instant::now()
+            + Duration::from_secs(ConnectionPolicy::default().authentication_timeout_seconds),
         None,
     ));
     write_frame(

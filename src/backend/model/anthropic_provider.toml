@@ -1,0 +1,12 @@
+symbol = "claude"
+label = "Anthropic"
+description = "Native Messages API with adaptive thinking"
+base_url = "https://api.anthropic.com/v1"
+tool_discovery = "rebuild"
+search = ["off", "live"]
+credential_env = "ANTHROPIC_API_KEY"
+custom_endpoint_tool_discovery = "rebuild"
+max_output_tokens = 64000
+
+[headers]
+anthropic-version = "2023-06-01"

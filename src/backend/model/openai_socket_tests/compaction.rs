@@ -2,6 +2,27 @@ use super::super::*;
 use super::support::completed_events;
 use crate::backend::model::PromptCacheIdentity;
 
+#[test]
+fn compaction_retry_ignores_overflowing_server_delays_and_preserves_valid_hints() {
+    let base = Duration::from_millis(200);
+    assert_eq!(
+        compaction_retry_delay(
+            &ProviderError::stream_interrupted(Some(u64::MAX.to_string())),
+            1,
+            base,
+        ),
+        Duration::from_millis(400),
+    );
+    assert_eq!(
+        compaction_retry_delay(
+            &ProviderError::stream_interrupted(Some("30".into())),
+            1,
+            base,
+        ),
+        Duration::from_secs(30),
+    );
+}
+
 #[tokio::test]
 async fn native_compaction_reuses_the_websocket_with_a_v2_trigger() {
     use futures_util::SinkExt as _;
@@ -78,6 +99,7 @@ async fn native_compaction_reuses_the_websocket_with_a_v2_trigger() {
         format!("ws://{address}/responses"),
         "test-model",
         reqwest::Client::new(),
+        crate::backend::model::ModelTransportSettings::default(),
     )
     .expect("provider");
     let initial_input = vec![serde_json::json!({"role": "user", "content": "one"})];
@@ -195,6 +217,7 @@ async fn native_compaction_retries_an_interrupted_websocket() {
         format!("ws://{address}/responses"),
         "test-model",
         reqwest::Client::new(),
+        crate::backend::model::ModelTransportSettings::default(),
     )
     .expect("provider");
     let input = vec![serde_json::json!({"role": "user", "content": "one"})];

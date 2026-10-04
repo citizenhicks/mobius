@@ -3,6 +3,8 @@
 use crate::host::session_file_rejection;
 
 mod desktop;
+mod policy;
+pub use policy::ConnectionPolicy;
 mod dispatch;
 mod responses;
 mod transport;
@@ -55,16 +57,10 @@ use self::responses::*;
 use self::transport::*;
 use self::view::ClientView;
 
-const PRE_AUTH_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_AUTHENTICATED_CONNECTIONS: usize = 32;
-const MAX_PRE_AUTH_CONNECTIONS: usize = 8;
-const MAX_CONNECTIONS: usize = MAX_AUTHENTICATED_CONNECTIONS + MAX_PRE_AUTH_CONNECTIONS;
 const ROUTINE_TICK: Duration = Duration::from_secs(15);
 const MAX_DIRECTORY_ENTRIES: usize = 512;
-const MAX_PENDING_UPLOADS: usize = 8;
 const WEBSOCKET_BRIDGE_BYTES: usize = 16 * 1024;
 const ACCESS_EXPIRY_ENV: &str = "MOBIUS_GATEWAY_ACCESS_EXPIRES_AT";
-const ACCESS_GRACE: Duration = Duration::from_secs(5 * 60);
 
 const _: () = assert!(MAX_FRAME_BYTES <= u32::MAX as usize);
 
@@ -102,7 +98,7 @@ impl GatewayServer {
         let listen = listener.local_addr()?;
         let (store, config) = ConfigStore::initialize(state_dir, listen, None)?;
         let initialized_state = store.state_dir().to_path_buf();
-        let result = match AuthStore::initialize(store.auth_path()) {
+        let result = match AuthStore::initialize(store.auth_path(), config.auth) {
             Ok((_, grant)) => Self::assemble(store, config, listener)
                 .await
                 .map(|server| (server, grant)),
@@ -127,8 +123,8 @@ impl GatewayServer {
         config: GatewayConfig,
         listener: TcpListener,
     ) -> Result<Self> {
-        let access_lease = configured_access_lease()?;
-        let auth = Arc::new(AuthStore::open(store.auth_path())?);
+        let access_lease = configured_access_lease(&config.runtime)?;
+        let auth = Arc::new(AuthStore::open(store.auth_path(), config.auth)?);
         let credentials = Arc::new(CredentialStore::open(store.credentials_path())?);
         let bots = Arc::new(BotStore::open(store.state_dir())?);
         bots.sync_telemetry_cursors(&config.telemetry.sinks)?;
@@ -255,12 +251,12 @@ impl GatewayServer {
         let mut connections = JoinSet::new();
         let mut routine_dispatchers = JoinSet::new();
         let mut next_nudge = Instant::now();
-        let mut next_hold = Instant::now();
-        let mut hold_active = true;
-        let connection_admission =
-            ConnectionAdmission::new(MAX_PRE_AUTH_CONNECTIONS, MAX_AUTHENTICATED_CONNECTIONS);
+        let connection_admission = ConnectionAdmission::new(
+            self.config.connections.pre_authentication,
+            self.config.connections.authenticated,
+        );
         let client_connections = Arc::new(ClientConnections::default());
-        let (client_revocations, _) = broadcast::channel(MAX_CONNECTIONS);
+        let (client_revocations, _) = broadcast::channel(self.config.connections.total());
         let mut has_active_routines = self.bots.has_active_routines(Utc::now().timestamp())?
             || self.bots.has_pending_deliveries()?
             || self.bots.has_monitored_sessions()?;
@@ -305,21 +301,6 @@ impl GatewayServer {
                         break Ok(());
                     }
                     self.tick_telemetry(&client_connections, Trigger::Interval, &mut telemetry_tasks).await;
-                    #[cfg(unix)]
-                    if let Some(socket) = &self.config.runtime.hold_socket
-                        && Instant::now() >= next_hold {
-                        let busy = match (self.host.runtime_activity().await, client_connections.native_count()) {
-                            (Ok(activity), Ok(clients)) => !activity.idle || clients > 0,
-                            _ => { eprintln!("provider hold activity unavailable; retaining hold"); true }
-                        };
-                        if busy || hold_active {
-                            match crate::telemetry::update_hold(socket, busy).await {
-                                Ok(()) => hold_active = busy,
-                                Err(error) => eprintln!("provider hold update failed: {error}"),
-                            }
-                        }
-                        next_hold = Instant::now() + Duration::from_secs(60);
-                    }
                     // Keep reservation and the shutdown decision under the same
                     // admission gate; future schedules alone do not keep it open.
                     let Ok(_admission) = self.host.begin_mutation().await else { continue; };
@@ -363,7 +344,7 @@ impl GatewayServer {
                         accepted = self.listener.accept() => accepted.map(|accepted| (accepted, admission, false)),
                         accepted = async { match &ingress { Some(listener) => listener.accept().await, None => std::future::pending().await } } => accepted.map(|accepted| (accepted, admission, true)),
                     }
-                }, if connections.len() < MAX_CONNECTIONS => {
+                }, if connections.len() < self.config.connections.total() => {
                     let ((stream, peer), admission, ingress_connection) = accepted?;
                     if self.access_lease.is_some_and(AccessLease::expired) {
                         access_expired = true;
@@ -377,7 +358,7 @@ impl GatewayServer {
                     let tls = tls.clone();
                     let websocket_host = websocket_host.clone();
                     connections.spawn(async move {
-                        let auth_deadline = Instant::now() + PRE_AUTH_TIMEOUT;
+                        let auth_deadline = Instant::now() + Duration::from_secs(self.config.connections.authentication_timeout_seconds);
                         let connection = ConnectionContext {
                             local: peer.ip().is_loopback(),
                             desktop_transport: tls.is_some(),
@@ -425,7 +406,7 @@ impl GatewayServer {
                         }
                     });
                 }
-                () = &mut inactivity, if connections.is_empty() && !has_active_routines && (!cfg!(unix) || self.config.runtime.hold_socket.is_none()) => {
+                () = &mut inactivity, if connections.is_empty() && !has_active_routines && self.config.runtime.idle_exit_seconds != 0 => {
                     has_active_routines = self.bots.has_active_routines(Utc::now().timestamp())? || self.bots.has_pending_deliveries()? || self.bots.has_monitored_sessions()?;
                     if !has_active_routines {
                         if crate::telemetry::Telemetry::pending(&self.host).await {
@@ -455,13 +436,6 @@ impl GatewayServer {
             stop_cause
         };
         crate::telemetry::Telemetry::stop(&self.host, cause, &mut telemetry_tasks).await;
-        #[cfg(unix)]
-        if let Some(socket) = &self.config.runtime.hold_socket
-            && hold_active
-            && let Err(error) = crate::telemetry::update_hold(socket, false).await
-        {
-            eprintln!("provider hold release failed: {error}");
-        }
         result
     }
 
@@ -512,27 +486,28 @@ impl AccessLease {
     }
 }
 
-fn configured_access_lease() -> Result<Option<AccessLease>> {
+fn configured_access_lease(runtime: &crate::config::RuntimeConfig) -> Result<Option<AccessLease>> {
     let expires_at = match std::env::var(ACCESS_EXPIRY_ENV) {
         Ok(value) => Some(value),
         Err(std::env::VarError::NotPresent) => None,
         Err(_) => return Err(Error::Config("gateway access expiry is invalid".into())),
     };
-    // Cloud Sprites already set this version marker; a missing lease must stop them.
     access_lease(
         expires_at.as_deref(),
-        std::env::var_os("MOBIUS_GATEWAY_VERSION").is_some(),
+        runtime.require_access_lease,
+        Duration::from_secs(runtime.access_grace_seconds),
         SystemTime::now(),
     )
 }
 
 fn access_lease(
     expires_at: Option<&str>,
-    cloud_managed: bool,
+    required: bool,
+    grace: Duration,
     now: SystemTime,
 ) -> Result<Option<AccessLease>> {
     let Some(expires_at) = expires_at else {
-        return if cloud_managed {
+        return if required {
             Err(Error::Config("gateway access expiry is required".into()))
         } else {
             Ok(None)
@@ -546,7 +521,7 @@ fn access_lease(
         .map_err(|_| Error::Config("gateway access expiry is invalid".into()))?;
     let expires_at = UNIX_EPOCH
         .checked_add(Duration::from_secs(seconds))
-        .and_then(|expiry| expiry.checked_add(ACCESS_GRACE))
+        .and_then(|expiry| expiry.checked_add(grace))
         .ok_or_else(|| Error::Config("gateway access expiry is invalid".into()))?;
     let remaining = expires_at
         .duration_since(now)

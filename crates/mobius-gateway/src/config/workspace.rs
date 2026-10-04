@@ -68,15 +68,10 @@ pub(crate) fn create_workspace_directory(
 }
 
 fn initialize_workspace_repository(path: &Path) -> Result<()> {
-    let mut command = std::process::Command::new("git");
+    let mut command = crate::git::command(crate::git::Environment::Inherited);
     command
         .args(["init", "--quiet", "--initial-branch", "main"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
         .current_dir(path);
-    for name in crate::sandbox::REPOSITORY_LOCAL_GIT_ENVIRONMENT {
-        command.env_remove(name);
-    }
     let output = command.output()?;
     if !output.status.success() {
         return Err(Error::Config(

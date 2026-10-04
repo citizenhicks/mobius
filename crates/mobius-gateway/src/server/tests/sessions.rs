@@ -166,7 +166,8 @@ async fn catalogue_mutations_do_not_require_selecting_the_target_chat() {
         )
         .expect("register provider");
     store.save(&config).expect("save provider");
-    let (_, grant) = AuthStore::initialize(store.auth_path()).expect("initialize auth");
+    let (_, grant) =
+        AuthStore::initialize(store.auth_path(), config.auth).expect("initialize auth");
     let server = GatewayServer::assemble(store, config, listener)
         .await
         .expect("assemble gateway");
@@ -620,7 +621,8 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
         )
         .expect("register provider");
     store.save(&config).expect("save provider");
-    let (_, grant) = AuthStore::initialize(store.auth_path()).expect("initialize auth");
+    let (_, grant) =
+        AuthStore::initialize(store.auth_path(), config.auth).expect("initialize auth");
     let server = GatewayServer::assemble(store, config, listener)
         .await
         .expect("assemble gateway");
@@ -1333,7 +1335,7 @@ async fn shutdown_stops_a_blocked_routine_and_fails_its_durable_run() {
             None,
         )
         .expect("store provider credential");
-    let (_, grant) = AuthStore::initialize(store.auth_path()).expect("authentication");
+    let (_, grant) = AuthStore::initialize(store.auth_path(), config.auth).expect("authentication");
     let server = GatewayServer::assemble(store, config, listener)
         .await
         .expect("gateway");
@@ -1846,7 +1848,7 @@ async fn storage_mutations_keep_composer_removal_available_during_active_turns()
             None,
         )
         .expect("store provider credential");
-    let (_, grant) = AuthStore::initialize(store.auth_path()).expect("authentication");
+    let (_, grant) = AuthStore::initialize(store.auth_path(), config.auth).expect("authentication");
     let server = GatewayServer::assemble(store, config, listener)
         .await
         .expect("gateway");

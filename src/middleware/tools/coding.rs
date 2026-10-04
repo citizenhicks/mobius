@@ -4,8 +4,8 @@ use serde_json::Value;
 
 use super::patch::{apply_patch_document, parse_patch_document};
 use super::{
-    ApprovalRequirement, ExecutionMode, HookIdentity, MAX_MUTATION_BYTES, MAX_TOOL_OUTPUT_BYTES,
-    Tool, ToolContext, ToolExposure,
+    ApprovalRequirement, ExecutionMode, HookIdentity, MAX_MUTATION_BYTES, Tool, ToolContext,
+    ToolExposure,
 };
 use crate::backend::model::ToolDefinition;
 use crate::backend::session_files::SessionFileStore;
@@ -23,9 +23,8 @@ struct Definition {
     write_file: super::ToolSpec,
     apply_patch: super::ToolSpec,
 }
-static DEFINITION: std::sync::LazyLock<Definition> = std::sync::LazyLock::new(|| {
-    toml::from_str(include_str!("coding.toml")).expect("bundled coding tools must be valid")
-});
+static DEFINITION: std::sync::LazyLock<Definition> =
+    std::sync::LazyLock::new(|| crate::config::embedded(include_str!("coding.toml")));
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -361,7 +360,7 @@ impl Tool for ApplyPatch {
                 .sandbox
                 .write(&document.path, &updated, &context.permissions)
                 .await?;
-            Ok((if diff.len() <= MAX_TOOL_OUTPUT_BYTES {
+            Ok((if diff.len() <= context.sandbox.output_limit() {
                 diff
             } else {
                 format!("patched {} (diff too large to display)", document.path)

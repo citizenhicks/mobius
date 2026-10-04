@@ -38,82 +38,156 @@ pub(crate) const MAX_FILE_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_BINARY_FILE_BYTES: usize = 50 * 1024 * 1024;
 
 mod text {
-    pub const APPROVAL_POLICY_ALLOW_DESCRIPTION: &str =
-        "Run approval-required actions without network access";
-    pub const APPROVAL_POLICY_ALLOW_LABEL: &str = "Allow · no network";
-    pub const APPROVAL_POLICY_ALLOW_NETWORK_DESCRIPTION: &str =
-        "Run approval-required actions with network access";
-    pub const APPROVAL_POLICY_ALLOW_NETWORK_LABEL: &str = "Allow · network";
-    pub const APPROVAL_POLICY_ASK_DESCRIPTION: &str =
-        "Pause approval-required actions for a human decision";
-    pub const APPROVAL_POLICY_ASK_LABEL: &str = "Ask";
-    pub const APPROVAL_POLICY_FULL_ACCESS_DESCRIPTION: &str = "Run file operations and shell commands with host filesystem and network access without approval";
-    pub const APPROVAL_POLICY_FULL_ACCESS_LABEL: &str = "Full access";
-    pub const DEFAULTS_APPROVAL_POLICY: &str = "ask";
-    pub const MANIFEST_DESCRIPTION: &str = "Control mutation approval and sandbox isolation";
-    pub const MANIFEST_LABEL: &str = "Sandbox";
-    pub const PROMPT_LINUX: &str = "möbius is running on Linux.";
-    pub const PROMPT_MACOS: &str = "möbius is running on macOS.";
-    pub const PROMPT_OTHER: &str = "möbius is running on an unsupported operating system.";
-    pub const SETTING_APPROVAL_POLICY_DESCRIPTION: &str =
-        "How approval-required actions receive mutation authority";
-    pub const SETTING_APPROVAL_POLICY_LABEL: &str = "Approval policy";
+    use super::{MAX_BACKGROUND_COMMANDS, MAX_TOOL_OUTPUT_BYTES};
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct Definition {
+        pub(super) prompt_workspace: String,
+        pub(super) prompt_attached_folders: String,
+        pub(super) prompt_temporary_directory: String,
+        pub(super) setting_tool_output_bytes_label: String,
+        pub(super) setting_tool_output_bytes_description: String,
+        pub(super) setting_background_commands_label: String,
+        pub(super) setting_background_commands_description: String,
+        pub(super) approval_policy_allow_description: String,
+        pub(super) approval_policy_allow_label: String,
+        pub(super) approval_policy_allow_network_description: String,
+        pub(super) approval_policy_allow_network_label: String,
+        pub(super) approval_policy_ask_description: String,
+        pub(super) approval_policy_ask_label: String,
+        pub(super) approval_policy_full_access_description: String,
+        pub(super) approval_policy_full_access_label: String,
+        pub(super) defaults_approval_policy: String,
+        pub(super) manifest_description: String,
+        pub(super) manifest_label: String,
+        pub(super) prompt_linux: String,
+        pub(super) prompt_macos: String,
+        pub(super) prompt_other: String,
+        pub(super) setting_approval_policy_description: String,
+        pub(super) setting_approval_policy_label: String,
+        pub(super) defaults_tool_output_bytes: usize,
+        pub(super) defaults_background_commands: usize,
+        pub(super) defaults_command_timeout_seconds: u64,
+        pub(super) defaults_procfs_mode: super::ProcfsMode,
+        pub(super) defaults_shell: String,
+        pub(super) defaults_environment: Vec<String>,
+        pub(super) setting_tool_output_bytes_step: i64,
+        pub(super) setting_background_commands_step: i64,
+    }
+    pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
+        std::sync::LazyLock::new(|| {
+            let definition: Definition = crate::config::embedded(include_str!("sandbox.toml"));
+            assert!((1..=MAX_TOOL_OUTPUT_BYTES).contains(&definition.defaults_tool_output_bytes));
+            assert!(
+                (1..=MAX_BACKGROUND_COMMANDS).contains(&definition.defaults_background_commands)
+            );
+            assert!(definition.defaults_command_timeout_seconds > 0);
+            assert!(definition.setting_tool_output_bytes_step > 0);
+            assert!(definition.setting_background_commands_step > 0);
+            assert!(std::path::Path::new(&definition.defaults_shell).is_absolute());
+            definition
+        });
 }
-const APPROVAL_POLICIES: &[MiddlewareSettingChoice] = &[
-    MiddlewareSettingChoice {
-        disables: &[],
-        value: "ask",
-        label: text::APPROVAL_POLICY_ASK_LABEL,
-        description: text::APPROVAL_POLICY_ASK_DESCRIPTION,
-        symbol: Some("shield_check"),
-        tone: FrontendTone::Neutral,
-    },
-    MiddlewareSettingChoice {
-        disables: &[],
-        value: "allow",
-        label: text::APPROVAL_POLICY_ALLOW_LABEL,
-        description: text::APPROVAL_POLICY_ALLOW_DESCRIPTION,
-        symbol: Some("shield"),
-        tone: FrontendTone::Warning,
-    },
-    MiddlewareSettingChoice {
-        disables: &[],
-        value: "allow_network",
-        label: text::APPROVAL_POLICY_ALLOW_NETWORK_LABEL,
-        description: text::APPROVAL_POLICY_ALLOW_NETWORK_DESCRIPTION,
-        symbol: Some("shield_alert"),
-        tone: FrontendTone::Warning,
-    },
-    MiddlewareSettingChoice {
-        disables: &[],
-        value: "full_access",
-        label: text::APPROVAL_POLICY_FULL_ACCESS_LABEL,
-        description: text::APPROVAL_POLICY_FULL_ACCESS_DESCRIPTION,
-        symbol: Some("shield_off"),
-        tone: FrontendTone::Error,
-    },
-];
-const SETTINGS: &[MiddlewareSettingManifest] = &[MiddlewareSettingManifest::Select {
-    id: "approval_policy",
-    label: text::SETTING_APPROVAL_POLICY_LABEL,
-    description: text::SETTING_APPROVAL_POLICY_DESCRIPTION,
-    choices: MiddlewareSettingChoices::Static(APPROVAL_POLICIES),
-    unset_label: None,
-    default: Some(text::DEFAULTS_APPROVAL_POLICY),
-    max_bytes: 32,
-    composer: true,
-}];
+static APPROVAL_POLICIES: std::sync::LazyLock<Vec<MiddlewareSettingChoice>> =
+    std::sync::LazyLock::new(|| {
+        vec![
+            MiddlewareSettingChoice {
+                disables: &[],
+                value: "ask",
+                label: text::DEFINITION.approval_policy_ask_label.as_str(),
+                description: text::DEFINITION.approval_policy_ask_description.as_str(),
+                symbol: Some("shield_check"),
+                tone: FrontendTone::Neutral,
+            },
+            MiddlewareSettingChoice {
+                disables: &[],
+                value: "allow",
+                label: text::DEFINITION.approval_policy_allow_label.as_str(),
+                description: text::DEFINITION.approval_policy_allow_description.as_str(),
+                symbol: Some("shield"),
+                tone: FrontendTone::Warning,
+            },
+            MiddlewareSettingChoice {
+                disables: &[],
+                value: "allow_network",
+                label: text::DEFINITION
+                    .approval_policy_allow_network_label
+                    .as_str(),
+                description: text::DEFINITION
+                    .approval_policy_allow_network_description
+                    .as_str(),
+                symbol: Some("shield_alert"),
+                tone: FrontendTone::Warning,
+            },
+            MiddlewareSettingChoice {
+                disables: &[],
+                value: "full_access",
+                label: text::DEFINITION.approval_policy_full_access_label.as_str(),
+                description: text::DEFINITION
+                    .approval_policy_full_access_description
+                    .as_str(),
+                symbol: Some("shield_off"),
+                tone: FrontendTone::Error,
+            },
+        ]
+    });
+static SETTINGS: std::sync::LazyLock<Vec<MiddlewareSettingManifest>> =
+    std::sync::LazyLock::new(|| {
+        vec![
+            MiddlewareSettingManifest::Select {
+                id: "approval_policy",
+                label: text::DEFINITION.setting_approval_policy_label.as_str(),
+                description: text::DEFINITION
+                    .setting_approval_policy_description
+                    .as_str(),
+                choices: MiddlewareSettingChoices::Static(&APPROVAL_POLICIES),
+                unset_label: None,
+                default: Some(text::DEFINITION.defaults_approval_policy.as_str()),
+                max_bytes: 32,
+                composer: true,
+            },
+            MiddlewareSettingManifest::Integer {
+                id: "tool_output_bytes",
+                label: text::DEFINITION.setting_tool_output_bytes_label.as_str(),
+                description: text::DEFINITION
+                    .setting_tool_output_bytes_description
+                    .as_str(),
+                min: 1,
+                max: Some(
+                    i64::try_from(MAX_TOOL_OUTPUT_BYTES).expect("output safety bound must fit"),
+                ),
+                step: text::DEFINITION.setting_tool_output_bytes_step,
+                default: i64::try_from(default_tool_output_limit())
+                    .expect("validated output default must fit"),
+            },
+            MiddlewareSettingManifest::Integer {
+                id: "background_commands",
+                label: text::DEFINITION.setting_background_commands_label.as_str(),
+                description: text::DEFINITION
+                    .setting_background_commands_description
+                    .as_str(),
+                min: 1,
+                max: Some(
+                    i64::try_from(MAX_BACKGROUND_COMMANDS).expect("command safety bound must fit"),
+                ),
+                step: text::DEFINITION.setting_background_commands_step,
+                default: i64::try_from(default_background_command_limit())
+                    .expect("validated command default must fit"),
+            },
+        ]
+    });
 
 /// Configuration and presentation metadata for sandbox approval policy.
-pub const MANIFEST: MiddlewareManifest = MiddlewareManifest {
-    id: "sandbox",
-    label: text::MANIFEST_LABEL,
-    description: text::MANIFEST_DESCRIPTION,
-    required: true,
-    default_enabled: true,
-    required_model_capability: None,
-    settings: SETTINGS,
-};
+pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
+    std::sync::LazyLock::new(|| MiddlewareManifest {
+        id: "sandbox",
+        label: text::DEFINITION.manifest_label.as_str(),
+        description: text::DEFINITION.manifest_description.as_str(),
+        required: true,
+        default_enabled: true,
+        required_model_capability: None,
+        settings: &SETTINGS,
+    });
 
 pub use approval::ApprovalPolicy;
 #[cfg(target_os = "macos")]
@@ -127,6 +201,36 @@ pub(crate) use background::BackgroundCommandPoll;
 #[cfg(test)]
 pub(crate) use background::BackgroundCommandStatus;
 use background::BackgroundCommands;
+
+const MAX_TOOL_OUTPUT_BYTES: usize = 1024 * 1024;
+const MAX_BACKGROUND_COMMANDS: usize = 256;
+
+/// Default foreground shell command deadline in seconds.
+#[must_use]
+pub fn default_command_timeout_seconds() -> u64 {
+    text::DEFINITION.defaults_command_timeout_seconds
+}
+
+/// Default retained text budget for command execution and tool dispatch.
+#[must_use]
+pub fn default_tool_output_limit() -> usize {
+    text::DEFINITION.defaults_tool_output_bytes
+}
+
+/// Default number of tracked background commands per execution boundary.
+#[must_use]
+pub fn default_background_command_limit() -> usize {
+    text::DEFINITION.defaults_background_commands
+}
+
+fn validate_tool_output_limit(bytes: usize) -> Result<()> {
+    if !(1..=MAX_TOOL_OUTPUT_BYTES).contains(&bytes) {
+        return Err(Error::Config(format!(
+            "tool output limit must be between 1 and {MAX_TOOL_OUTPUT_BYTES} bytes"
+        )));
+    }
+    Ok(())
+}
 
 /// Deny-by-default macOS Seatbelt prelude shared by first-party sandbox backends.
 ///
@@ -160,6 +264,24 @@ pub enum SandboxMode {
     WorkspaceWrite,
     /// Selects the danger full access case.
     DangerFullAccess,
+}
+
+/// How Linux commands see `/proc` while retaining user and PID namespace isolation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcfsMode {
+    /// Mounts a private proc filesystem for the command's PID namespace.
+    Private,
+    /// Masks `/proc` with an empty filesystem.
+    ///
+    /// Select this explicitly only when the host already provides PID isolation.
+    Empty,
+}
+
+impl Default for ProcfsMode {
+    fn default() -> Self {
+        text::DEFINITION.defaults_procfs_mode
+    }
 }
 
 /// Bounded output from a sandboxed command.
@@ -362,6 +484,7 @@ pub struct Sandbox {
     background: BackgroundCommands,
     workers: worker::Workers,
     workspace_prompt: Option<String>,
+    tool_output_limit: usize,
 }
 
 impl Sandbox {
@@ -374,6 +497,7 @@ impl Sandbox {
             background: BackgroundCommands::default(),
             workers: worker::Workers::default(),
             workspace_prompt: None,
+            tool_output_limit: default_tool_output_limit(),
         }
     }
 
@@ -384,15 +508,48 @@ impl Sandbox {
     pub fn isolated_execution(&self) -> Result<Self> {
         let mut scoped = Self::new(self.backend.isolated_execution()?, self.approval_policy());
         scoped.workspace_prompt = self.workspace_prompt.clone();
+        scoped.tool_output_limit = self.tool_output_limit;
+        scoped.background = BackgroundCommands::new(self.background.limit());
         Ok(scoped)
+    }
+
+    /// Sets the retained text budget for tool dispatch.
+    /// # Errors
+    /// Returns an error for a zero budget or one above the internal safety bound.
+    pub fn tool_output_limit(mut self, bytes: usize) -> Result<Self> {
+        validate_tool_output_limit(bytes)?;
+        self.tool_output_limit = bytes;
+        Ok(self)
+    }
+
+    /// Returns the configured tool text budget in UTF-8 bytes.
+    #[must_use]
+    pub const fn output_limit(&self) -> usize {
+        self.tool_output_limit
+    }
+
+    /// Sets the maximum tracked background commands per execution boundary.
+    /// # Errors
+    /// Returns an error outside the supported range.
+    pub fn background_command_limit(mut self, commands: usize) -> Result<Self> {
+        if !(1..=MAX_BACKGROUND_COMMANDS).contains(&commands) {
+            return Err(Error::Config(format!(
+                "background command limit must be between 1 and {MAX_BACKGROUND_COMMANDS}"
+            )));
+        }
+        self.background = BackgroundCommands::new(commands);
+        Ok(self)
     }
 
     /// Adds the primary workspace and attached folder paths to the model prompt.
     #[must_use]
     pub fn attached_folders(mut self, primary: PathBuf, attached: Vec<PathBuf>) -> Self {
-        let mut prompt = format!("Primary workspace cwd: {primary:?}.");
+        let mut prompt = text::DEFINITION
+            .prompt_workspace
+            .replace("{path}", &format!("{primary:?}"));
         if !attached.is_empty() {
-            prompt.push_str("\nAttached writable folders (use absolute paths):");
+            prompt.push('\n');
+            prompt.push_str(&text::DEFINITION.prompt_attached_folders);
             for path in attached {
                 prompt.push_str(&format!("\n- {path:?}"));
             }
@@ -403,11 +560,11 @@ impl Sandbox {
 
     pub(crate) fn platform_prompt() -> &'static str {
         if cfg!(target_os = "linux") {
-            text::PROMPT_LINUX
+            text::DEFINITION.prompt_linux.as_str()
         } else if cfg!(target_os = "macos") {
-            text::PROMPT_MACOS
+            text::DEFINITION.prompt_macos.as_str()
         } else {
-            text::PROMPT_OTHER
+            text::DEFINITION.prompt_other.as_str()
         }
     }
 
@@ -628,7 +785,12 @@ impl Middleware for Sandbox {
             prompt.push_str(workspace);
         }
         if let Some(temp) = self.backend.temporary_directory() {
-            prompt.push_str(&format!("\nPrivate temporary directory: {}. Shell and file tools share it across calls; child agents have separate temporary files. It is removed when this execution lifetime ends. Recorded images remain in history.", temp.display()));
+            prompt.push('\n');
+            prompt.push_str(
+                &text::DEFINITION
+                    .prompt_temporary_directory
+                    .replace("{path}", &temp.display().to_string()),
+            );
         }
         Ok(Some(PromptSection::new(prompt)))
     }

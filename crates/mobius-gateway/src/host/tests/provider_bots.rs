@@ -63,6 +63,65 @@ async fn gateway_with_providers(
 }
 
 #[tokio::test]
+async fn bot_updates_obey_operator_subagent_ceilings_and_persist_larger_trees() {
+    let (root, gateway) =
+        gateway_with_providers(selection("primary", "responses", "custom-model"), None).await;
+    let bot = gateway.bots().await.expect("Bots").remove(0);
+    let mut config = bot.config.config.clone();
+    for (id, value) in [
+        ("max_depth", 24),
+        ("max_concurrency", 96),
+        ("max_agents", 300),
+    ] {
+        config.middleware.set_setting(
+            "subagents",
+            id,
+            Some(mobius::protocol::FrontendSettingValue::Integer(value)),
+        );
+    }
+    let identity = || crate::bots::BotIdentity {
+        name: &bot.name,
+        description: &bot.description,
+        tint: bot.tint,
+        shape: bot.shape,
+    };
+    gateway
+        .update_bot(&bot.id, bot.config.revision, identity(), config.clone())
+        .await
+        .expect_err("paired-client update cannot exceed default host ceilings");
+    {
+        let state = gateway.state.lock().await;
+        let mut operator = state.config.lock().expect("gateway configuration");
+        operator.execution.subagent_max_depth = 32;
+        operator.execution.subagent_max_concurrency = 128;
+        operator.execution.subagent_max_agents = 512;
+        state
+            .store
+            .save(&operator)
+            .expect("save trusted operator configuration");
+    }
+    let updated = gateway
+        .update_bot(&bot.id, bot.config.revision, identity(), config.clone())
+        .await
+        .expect("trusted host ceiling permits larger tree");
+    config.middleware.set_setting(
+        "subagents",
+        "max_depth",
+        Some(mobius::protocol::FrontendSettingValue::Integer(33)),
+    );
+    gateway
+        .update_bot(&bot.id, updated.config.revision, identity(), config)
+        .await
+        .expect_err("paired-client update cannot raise the host ceiling");
+    let persisted = BotStore::open(&root.path().join("state")).expect("reopen Bot storage");
+    assert_eq!(
+        persisted.bot(&bot.id).expect("saved Bot").config,
+        updated.config
+    );
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
 async fn saved_bot_routes_survive_missing_credentials_without_advertising_unavailable_models() {
     let root = tempfile::tempdir().expect("root");
     let (store, config) = ConfigStore::initialize(
@@ -227,6 +286,7 @@ async fn provider_replacement_rejects_a_bot_reference_without_changing_either_st
 
     let error = gateway
         .register_provider(
+            false,
             replacement.clone(),
             "Secondary".into(),
             ProviderTint::default(),

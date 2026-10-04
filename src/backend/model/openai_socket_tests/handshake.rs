@@ -60,6 +60,7 @@ async fn native_root_keeps_capabilities_and_websocket_denials_do_not_fallback() 
             service_tier: Some("default".into()),
             web_search: HostedWebSearch::Off,
             http: reqwest::Client::new(),
+            transport: crate::backend::model::ModelTransportSettings::default(),
         })
         .expect("native provider");
     assert!(provider.supports_image_generation());
@@ -108,6 +109,7 @@ async fn native_http_fallback_preserves_root_and_payment_denial() {
         &format!("http://{address}/api/native/v1/"),
         "gpt-6.1-sol",
         reqwest::Client::new(),
+        crate::backend::model::ModelTransportSettings::default(),
     )
     .expect("provider");
     provider
@@ -158,7 +160,14 @@ async fn handshake_rejection_preserves_status_and_payment_message() {
         });
         let auth = ApiKeyAuthorization::new("test-key".into());
 
-        let error = match connect(&auth, &format!("ws://{address}/responses"), "session").await {
+        let error = match connect(
+            &auth,
+            &format!("ws://{address}/responses"),
+            "session",
+            &crate::backend::model::ModelTransportSettings::default(),
+        )
+        .await
+        {
             Ok(connection) => {
                 connection.close().await;
                 panic!("handshake unexpectedly succeeded");
@@ -200,7 +209,14 @@ async fn not_found_handshake_rejection_does_not_trigger_http_fallback() {
     });
     let auth = ApiKeyAuthorization::new("test-key".into());
 
-    let error = match connect(&auth, &format!("ws://{address}/responses"), "session").await {
+    let error = match connect(
+        &auth,
+        &format!("ws://{address}/responses"),
+        "session",
+        &crate::backend::model::ModelTransportSettings::default(),
+    )
+    .await
+    {
         Ok(connection) => {
             connection.close().await;
             panic!("404 handshake unexpectedly succeeded");
@@ -219,7 +235,14 @@ async fn not_found_handshake_rejection_does_not_trigger_http_fallback() {
 #[tokio::test]
 async fn malformed_socket_url_diagnostic_does_not_echo_the_url() {
     let auth = ApiKeyAuthorization::new("test-key".into());
-    let error = match connect(&auth, "ws://secret.example/[", "session").await {
+    let error = match connect(
+        &auth,
+        "ws://secret.example/[",
+        "session",
+        &crate::backend::model::ModelTransportSettings::default(),
+    )
+    .await
+    {
         Ok(connection) => {
             connection.close().await;
             panic!("malformed URL unexpectedly connected");
@@ -245,12 +268,12 @@ impl RefreshingAuthorization {
         }
     }
 
-    fn resolve(&self) -> BoxFuture<'_, Result<ResolvedAuthorization>> {
+    fn resolve(&self) -> BoxFuture<'_, Result<ResolvedAuthorization<'_>>> {
         Box::pin(async move {
             let token = self.token.lock().await.clone();
             self.authorizations.lock().await.push(token.clone());
             Ok(ResolvedAuthorization {
-                token,
+                token: token.into(),
                 headers: Vec::new(),
             })
         })
@@ -262,14 +285,14 @@ impl OpenAiAuthorization for RefreshingAuthorization {
         &'a self,
         _streaming: bool,
         _session_id: Option<&'a str>,
-    ) -> BoxFuture<'a, Result<ResolvedAuthorization>> {
+    ) -> BoxFuture<'a, Result<ResolvedAuthorization<'a>>> {
         self.resolve()
     }
 
     fn authorize_websocket<'a>(
         &'a self,
         _session_id: &'a str,
-    ) -> BoxFuture<'a, Result<ResolvedAuthorization>> {
+    ) -> BoxFuture<'a, Result<ResolvedAuthorization<'a>>> {
         self.resolve()
     }
 
@@ -323,9 +346,14 @@ async fn websocket_unauthorized_refreshes_and_retries_once() {
 
     let auth = RefreshingAuthorization::new();
     let socket_url = format!("ws://{address}/responses");
-    let socket = connect(&auth, &socket_url, "session-1")
-        .await
-        .expect("connection should recover");
+    let socket = connect(
+        &auth,
+        &socket_url,
+        "session-1",
+        &crate::backend::model::ModelTransportSettings::default(),
+    )
+    .await
+    .expect("connection should recover");
     drop(socket);
     drop(server.await.expect("WebSocket server"));
 

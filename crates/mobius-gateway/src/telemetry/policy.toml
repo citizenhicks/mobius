@@ -1,0 +1,3 @@
+allow_insecure_http = false
+request_timeout_seconds = 10
+upload_admission_timeout_seconds = 10

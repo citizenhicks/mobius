@@ -57,7 +57,63 @@ pub use context::{
 pub(crate) use context::{MessageSubmitResult, PreparedMessage};
 use tools::Catalog;
 
-const ESTIMATED_BYTES_PER_TOKEN: usize = 4;
+/// Configurable heuristic for text context budgets, not a model tokenizer.
+/// Observed provider token usage still takes precedence when it is larger.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TokenEstimate {
+    bytes_per_token: f64,
+}
+
+impl Default for TokenEstimate {
+    fn default() -> Self {
+        #[derive(serde::Deserialize)]
+        struct Defaults {
+            bytes_per_token: f64,
+        }
+        static DEFAULTS: std::sync::LazyLock<Defaults> = std::sync::LazyLock::new(|| {
+            crate::config::embedded(include_str!("token_estimation.toml"))
+        });
+        Self::new(DEFAULTS.bytes_per_token)
+            .expect("bundled token estimate must be positive and finite")
+    }
+}
+
+impl TokenEstimate {
+    /// Creates a byte-based estimate suitable for the workload's language and models.
+    /// # Errors
+    /// Returns an error for a nonfinite or nonpositive ratio.
+    pub fn new(bytes_per_token: f64) -> Result<Self> {
+        if !bytes_per_token.is_finite() || bytes_per_token <= 0.0 {
+            return Err(Error::Config(
+                "bytes per token must be positive and finite".into(),
+            ));
+        }
+        Ok(Self { bytes_per_token })
+    }
+
+    /// Returns the configured UTF-8 byte ratio.
+    #[must_use]
+    pub const fn bytes_per_token(self) -> f64 {
+        self.bytes_per_token
+    }
+
+    /// Estimates tokens from serialized UTF-8 bytes, rounding up and saturating.
+    #[must_use]
+    pub fn tokens(self, bytes: usize) -> usize {
+        let tokens = (bytes as f64 / self.bytes_per_token).ceil();
+        if tokens >= usize::MAX as f64 {
+            return usize::MAX;
+        }
+        // The ratio is positive and finite; this branch is within usize's range.
+        tokens as usize
+    }
+
+    /// Estimates one public model item, retaining conservative image tile estimates.
+    #[must_use]
+    pub fn item_tokens(self, item: &Value) -> usize {
+        approximate_item_tokens(item, self)
+    }
+}
 
 /// Result of a middleware-owned frontend command.
 pub struct MiddlewareCommandOutput {
@@ -1016,11 +1072,7 @@ fn validate_actions(actions: &[crate::protocol::FrontendAction]) -> Result<()> {
     Ok(())
 }
 
-pub(crate) const fn approximate_tokens(bytes: usize) -> usize {
-    bytes / ESTIMATED_BYTES_PER_TOKEN
-}
-
-pub(crate) fn approximate_item_tokens(item: &Value) -> usize {
+fn approximate_item_tokens(item: &Value, estimate: TokenEstimate) -> usize {
     let has_image = crate::protocol::content_parts(item).is_some_and(|parts| {
         parts
             .iter()
@@ -1028,7 +1080,7 @@ pub(crate) fn approximate_item_tokens(item: &Value) -> usize {
     });
     if !has_image {
         return serialized_len(&PublicItem(item))
-            .map_or(0, approximate_tokens)
+            .map_or(0, |bytes| estimate.tokens(bytes))
             .max(1);
     }
     let mut item = item.clone();
@@ -1054,7 +1106,7 @@ pub(crate) fn approximate_item_tokens(item: &Value) -> usize {
         fields.retain(|name, _| !name.starts_with('_'));
     }
     serialized_len(&item)
-        .map_or(0, approximate_tokens)
+        .map_or(0, |bytes| estimate.tokens(bytes))
         .saturating_add(image_tokens)
         .max(1)
 }

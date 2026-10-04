@@ -421,6 +421,7 @@ fn custom_openai_roots_require_endpoint_bound_stored_credentials() {
             selection.base_url.as_deref(),
             &store,
             &credentials,
+            &mobius::backend::model::ModelTransportSettings::default(),
         )
         .err()
         .expect("custom provider must require stored credentials");
@@ -447,6 +448,7 @@ fn custom_openai_roots_require_endpoint_bound_stored_credentials() {
                 selection.base_url.as_deref(),
                 &store,
                 &credentials,
+                &mobius::backend::model::ModelTransportSettings::default(),
             )
             .is_err()
         );
@@ -465,6 +467,7 @@ fn custom_openai_roots_require_endpoint_bound_stored_credentials() {
             selection.base_url.as_deref(),
             &store,
             &credentials,
+            &mobius::backend::model::ModelTransportSettings::default(),
         )
         .expect("resolve endpoint credential");
         assert!(matches!(credential, ProviderCredential::ApiKey(key) if key == "endpoint-token"));
@@ -552,6 +555,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         &credentials,
         SessionFileStore::new(store.state_dir(), None),
         0,
+        Arc::new(gateway.computer.clone()),
     )
     .await
     .expect("prepare original Bot");
@@ -571,6 +575,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
             Arc::new(crate::computer_runtime::remote_desktop::RemoteDesktop::new(
                 store.state_dir(),
                 false,
+                crate::computer_runtime::ComputerConfig::default(),
             )),
             Some("chat".into()),
             "test",
@@ -592,6 +597,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
             Arc::new(crate::computer_runtime::remote_desktop::RemoteDesktop::new(
                 store.state_dir(),
                 false,
+                crate::computer_runtime::ComputerConfig::default(),
             )),
             Some("sibling".into()),
             "test",
@@ -657,6 +663,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         &credentials,
         SessionFileStore::new(store.state_dir(), None),
         0,
+        Arc::clone(&prepared.computer_config),
     )
     .await
     .expect("prepare updated Bot");
@@ -674,6 +681,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         Arc::new(crate::computer_runtime::remote_desktop::RemoteDesktop::new(
             store.state_dir(),
             false,
+            crate::computer_runtime::ComputerConfig::default(),
         )),
         Some("chat".into()),
         "test",

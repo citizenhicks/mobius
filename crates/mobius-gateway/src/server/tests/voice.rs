@@ -62,7 +62,7 @@ async fn signaling_requires_the_selected_session_is_ephemeral_and_keeps_chat_usa
         )
         .expect("register unavailable local provider");
     store.save(&config).expect("save configuration");
-    let (_, grant) = AuthStore::initialize(store.auth_path()).expect("authentication");
+    let (_, grant) = AuthStore::initialize(store.auth_path(), config.auth).expect("authentication");
     let server = GatewayServer::assemble(store, config, listener)
         .await
         .expect("gateway");

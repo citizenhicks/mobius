@@ -354,6 +354,7 @@ async fn interrupted_stream_exhaustion_surfaces_only_the_safe_provider_error() {
             .expect("checkpoint store"),
     );
     let model = Arc::new(InterruptedStreamModel {
+        transport: ModelTransportSettings::default(),
         calls: AtomicUsize::new(0),
         retry_after: None,
     });
@@ -384,19 +385,19 @@ async fn interrupted_stream_exhaustion_surfaces_only_the_safe_provider_error() {
         }
     }
 
-    assert_eq!(model.calls.load(Ordering::SeqCst), STREAM_RETRY_LIMIT + 1);
-    assert_eq!(started.len(), STREAM_RETRY_LIMIT + 1);
+    assert_eq!(model.calls.load(Ordering::SeqCst), stream_retry_limit() + 1);
+    assert_eq!(started.len(), stream_retry_limit() + 1);
     assert!(started.windows(2).all(|steps| {
         steps[0].model_step_id != steps[1].model_step_id
             && steps[0].step_index == steps[1].step_index
     }));
-    assert_eq!(outcomes.len(), STREAM_RETRY_LIMIT + 1);
+    assert_eq!(outcomes.len(), stream_retry_limit() + 1);
     assert!(
-        outcomes[..STREAM_RETRY_LIMIT]
+        outcomes[..stream_retry_limit()]
             .iter()
             .all(|outcome| *outcome == ModelStepOutcome::Retrying)
     );
-    assert_eq!(outcomes[STREAM_RETRY_LIMIT], ModelStepOutcome::Failed);
+    assert_eq!(outcomes[stream_retry_limit()], ModelStepOutcome::Failed);
     let failure = failure.expect("terminal provider error");
     assert_eq!(failure.kind, ErrorKind::Provider);
     assert!(failure.retryable);
@@ -414,6 +415,7 @@ async fn interrupt_during_stream_retry_backoff_cancels_the_retry() {
             .expect("checkpoint store"),
     );
     let model = Arc::new(InterruptedStreamModel {
+        transport: ModelTransportSettings::default(),
         calls: AtomicUsize::new(0),
         retry_after: Some("30".into()),
     });
@@ -618,9 +620,9 @@ async fn stream_exhaustion_switches_transport_once_and_resets_the_retry_budget()
         assert_eq!(
             model.calls.load(Ordering::SeqCst),
             if recover {
-                STREAM_RETRY_LIMIT + 2
+                stream_retry_limit() + 2
             } else {
-                2 * (STREAM_RETRY_LIMIT + 1)
+                2 * (stream_retry_limit() + 1)
             },
         );
     }
@@ -669,11 +671,50 @@ async fn fallback_error_closes_the_failed_model_step() {
             _ => {}
         }
     }
-    assert_eq!(started, STREAM_RETRY_LIMIT + 1);
+    assert_eq!(started, stream_retry_limit() + 1);
     assert_eq!(outcomes.last(), Some(&ModelStepOutcome::Failed));
     assert_eq!(
         started,
         outcomes.len(),
         "every started model step must have a terminal event"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn configured_stream_retry_limit_controls_actual_model_attempts() {
+    for retries in [0, 2] {
+        let workspace = tempfile::tempdir().unwrap();
+        let checkpoints: Arc<dyn CheckpointStore> =
+            Arc::new(SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3")).unwrap());
+        let model = Arc::new(InterruptedStreamModel {
+            transport: ModelTransportSettings {
+                stream_retry_limit: retries,
+                stream_retry_backoff_ms: 1,
+                stream_retry_max_backoff_ms: 1,
+                ..Default::default()
+            },
+            calls: AtomicUsize::new(0),
+            retry_after: None,
+        });
+        let mut agent = create_agent(config_with_model(
+            workspace.path(),
+            checkpoints,
+            "custom-retries",
+            "test",
+            model.clone(),
+        ))
+        .await
+        .unwrap();
+        agent.sender().submit(user_op("hello")).unwrap();
+        while let Some(event) = agent.next_event().await {
+            if matches!(event.msg, EventMsg::TurnAborted(_)) {
+                break;
+            }
+        }
+        assert_eq!(
+            model.calls.load(Ordering::SeqCst),
+            usize::try_from(retries).unwrap() + 1
+        );
+        drop(agent);
+    }
 }

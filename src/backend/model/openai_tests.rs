@@ -1143,9 +1143,9 @@ impl HttpRefreshingAuthorization {
         }
     }
 
-    fn resolved(&self) -> ResolvedAuthorization {
+    fn resolved(&self) -> ResolvedAuthorization<'static> {
         ResolvedAuthorization {
-            token: self.token.lock().expect("token lock").clone(),
+            token: self.token.lock().expect("token lock").clone().into(),
             headers: Vec::new(),
         }
     }
@@ -1156,7 +1156,7 @@ impl OpenAiAuthorization for HttpRefreshingAuthorization {
         &'a self,
         _streaming: bool,
         _session_id: Option<&'a str>,
-    ) -> BoxFuture<'a, Result<ResolvedAuthorization>> {
+    ) -> BoxFuture<'a, Result<ResolvedAuthorization<'a>>> {
         let authorization = self.resolved();
         Box::pin(async move { Ok(authorization) })
     }
@@ -1164,7 +1164,7 @@ impl OpenAiAuthorization for HttpRefreshingAuthorization {
     fn authorize_websocket<'a>(
         &'a self,
         _session_id: &'a str,
-    ) -> BoxFuture<'a, Result<ResolvedAuthorization>> {
+    ) -> BoxFuture<'a, Result<ResolvedAuthorization<'a>>> {
         let authorization = self.resolved();
         Box::pin(async move { Ok(authorization) })
     }
@@ -1331,6 +1331,7 @@ async fn http_unauthorized_refreshes_and_retries_once() {
         format!("http://{address}"),
         "test-model",
         reqwest::Client::new(),
+        crate::backend::model::ModelTransportSettings::default(),
     )
     .expect("provider");
     let response = provider
@@ -1398,6 +1399,7 @@ async fn http_transport_failure_does_not_replay_accepted_post() {
         format!("http://{address}"),
         "test-model",
         reqwest::Client::new(),
+        crate::backend::model::ModelTransportSettings::default(),
     )
     .expect("provider");
 
@@ -1420,6 +1422,7 @@ async fn credentialless_http_omits_authorization() {
         format!("http://{address}"),
         "test-model",
         reqwest::Client::new(),
+        crate::backend::model::ModelTransportSettings::default(),
     )
     .expect("credentialless provider");
 
@@ -1495,6 +1498,7 @@ async fn native_images_use_json_for_generation_and_multipart_for_public_edits() 
         format!("http://{address}/api/native/v1/"),
         "chat-model",
         reqwest::Client::new(),
+        crate::backend::model::ModelTransportSettings::default(),
     )
     .expect("provider")
     .with_native_openai_api()

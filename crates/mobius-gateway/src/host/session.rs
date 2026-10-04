@@ -822,6 +822,7 @@ async fn start_agent(
                 &credentials,
                 session_files.clone(),
                 epoch,
+                Arc::clone(remote_desktop.configuration()),
             )
             .await;
             let mut cache = bots.prepared.lock().await;

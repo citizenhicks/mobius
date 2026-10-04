@@ -24,6 +24,25 @@ mod text {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(super) struct Definition {
+        pub(super) voice_user_label: String,
+        pub(super) voice_speaker_label: String,
+        pub(super) voice_workspace_label: String,
+        pub(super) voice_retained_context: String,
+        pub(super) voice_clarify_request: String,
+        pub(super) voice_delegation_policy: String,
+        pub(super) voice_current_request_heading: String,
+        pub(super) voice_recent_discussion_heading: String,
+        pub(super) voice_latest_request: String,
+        pub(super) voice_tool_started: String,
+        pub(super) voice_tool_result: String,
+        pub(super) voice_tool_failed: String,
+        pub(super) voice_tool_finished: String,
+        pub(super) voice_work_stopped: String,
+        pub(super) voice_request_failed: String,
+        pub(super) voice_request_empty: String,
+        pub(super) voice_instructions: String,
+        pub(super) voice_workspace_heading: String,
+        pub(super) voice_previous_heading: String,
         pub(super) default_enabled: bool,
         pub(super) default_delivery: ActiveMessageDelivery,
         pub(super) defaults_max_pending: i64,
@@ -41,8 +60,7 @@ mod text {
     }
     pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
         std::sync::LazyLock::new(|| {
-            let definition: Definition = toml::from_str(include_str!("messages.toml"))
-                .expect("bundled messages definition must be valid");
+            let definition: Definition = crate::config::embedded(include_str!("messages.toml"));
 
             assert!(definition.defaults_max_pending >= 1);
             assert!(definition.defaults_max_pending <= MAX_PENDING_MESSAGES as i64);

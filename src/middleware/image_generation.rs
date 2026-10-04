@@ -32,10 +32,8 @@ struct Definition {
     tool: ToolDefinition,
 }
 
-static DEFINITION: LazyLock<Definition> = LazyLock::new(|| {
-    toml::from_str(include_str!("image_generation.toml"))
-        .expect("bundled image generation definition must be valid")
-});
+static DEFINITION: LazyLock<Definition> =
+    LazyLock::new(|| crate::config::embedded(include_str!("image_generation.toml")));
 
 /// Configuration metadata for native image generation.
 pub static MANIFEST: LazyLock<MiddlewareManifest> = LazyLock::new(|| MiddlewareManifest {

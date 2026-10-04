@@ -1,13 +1,14 @@
 //! Authorization contract shared by OpenAI-compatible transports.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use crate::BoxFuture;
 use crate::Result;
 
-pub(super) struct ResolvedAuthorization {
-    pub token: String,
-    pub headers: Vec<(String, String)>,
+pub(super) struct ResolvedAuthorization<'a> {
+    pub token: Cow<'a, str>,
+    pub headers: Vec<(&'static str, Cow<'a, str>)>,
 }
 
 pub(super) trait OpenAiAuthorization: Send + Sync {
@@ -15,12 +16,12 @@ pub(super) trait OpenAiAuthorization: Send + Sync {
         &'a self,
         streaming: bool,
         session_id: Option<&'a str>,
-    ) -> BoxFuture<'a, Result<ResolvedAuthorization>>;
+    ) -> BoxFuture<'a, Result<ResolvedAuthorization<'a>>>;
 
     fn authorize_websocket<'a>(
         &'a self,
         session_id: &'a str,
-    ) -> BoxFuture<'a, Result<ResolvedAuthorization>>;
+    ) -> BoxFuture<'a, Result<ResolvedAuthorization<'a>>>;
 
     fn recover_unauthorized<'a>(&'a self, rejected_token: &'a str) -> BoxFuture<'a, Result<bool>>;
 }
@@ -38,14 +39,14 @@ impl OpenAiAuthorization for ApiKeyAuthorization {
         &'a self,
         _streaming: bool,
         _session_id: Option<&'a str>,
-    ) -> BoxFuture<'a, Result<ResolvedAuthorization>> {
+    ) -> BoxFuture<'a, Result<ResolvedAuthorization<'a>>> {
         self.resolved()
     }
 
     fn authorize_websocket<'a>(
         &'a self,
         _session_id: &'a str,
-    ) -> BoxFuture<'a, Result<ResolvedAuthorization>> {
+    ) -> BoxFuture<'a, Result<ResolvedAuthorization<'a>>> {
         self.resolved()
     }
 
@@ -55,10 +56,10 @@ impl OpenAiAuthorization for ApiKeyAuthorization {
 }
 
 impl ApiKeyAuthorization {
-    fn resolved(&self) -> BoxFuture<'_, Result<ResolvedAuthorization>> {
+    fn resolved(&self) -> BoxFuture<'_, Result<ResolvedAuthorization<'_>>> {
         Box::pin(async move {
             Ok(ResolvedAuthorization {
-                token: self.0.to_string(),
+                token: Cow::Borrowed(&self.0),
                 headers: Vec::new(),
             })
         })

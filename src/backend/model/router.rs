@@ -77,6 +77,13 @@ impl ModelRouter {
         Ok(self)
     }
 
+    /// Returns operational policy for the selected route.
+    /// # Errors
+    /// Returns an error if the route is unknown.
+    pub fn transport_settings_for(&self, route: &str) -> Result<super::ModelTransportSettings> {
+        Ok(self.provider(route)?.transport_settings())
+    }
+
     /// Reports whether the route accepts images associated with a tool call.
     /// # Errors
     ///
@@ -305,10 +312,14 @@ impl ModelRouter {
         request: super::RealtimeVoiceRequest,
     ) -> Result<super::RealtimeVoiceCall> {
         let route = self.route(provider)?;
+        let settings = self.transport_settings_for(provider)?;
         let mut credential = route.credential.clone();
-        credential.expires_at = credential
-            .expires_at
-            .map(super::RealtimeVoiceCall::cleanup_deadline);
+        credential.expires_at = credential.expires_at.map(|expires_at| {
+            super::RealtimeVoiceCall::cleanup_deadline(
+                expires_at,
+                std::time::Duration::from_millis(settings.voice_io_timeout_ms),
+            )
+        });
         let mut call =
             while_valid(&credential, || route.provider.start_realtime_voice(request)).await?;
         call.limit_credential(credential);

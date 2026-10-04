@@ -1204,8 +1204,11 @@ mod tests {
     #[tokio::test]
     async fn repair_pairing_rotates_the_requested_client() {
         let directory = tempfile::tempdir().expect("state directory");
-        let (auth, grant) =
-            AuthStore::initialize(directory.path().join("auth.json")).expect("initialize auth");
+        let (auth, grant) = AuthStore::initialize(
+            directory.path().join("auth.json"),
+            crate::auth::AuthConfig::default(),
+        )
+        .expect("initialize auth");
         let original = auth.pair(&grant.code, "iPhone").expect("pair client");
         let replacement = auth.create_pairing_code().expect("repair code");
         let replacing_token_digest = Sha256::digest(original.token.as_bytes()).into();

@@ -27,6 +27,8 @@ mod text {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(super) struct Definition {
+        pub(super) prompt_available_header: String,
+        pub(super) prompt_unavailable_header: String,
         pub(super) default_enabled: bool,
         pub(super) manifest_description: String,
         pub(super) manifest_label: String,
@@ -35,13 +37,10 @@ mod text {
         pub(super) tool_list_attachments_description: String,
     }
     pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
-        std::sync::LazyLock::new(|| {
-            toml::from_str(include_str!("attachments.toml"))
-                .expect("bundled attachments definition must be valid")
-        });
+        std::sync::LazyLock::new(|| crate::config::embedded(include_str!("attachments.toml")));
 }
 const MATERIALIZED_ATTACHMENTS_FIELD: &str = "_mobius_attachment_blobs";
-// Leave Cloud request headroom; hysteresis preserves replay prefixes between crossings.
+// Leave request headroom; hysteresis preserves replay prefixes between crossings.
 const IMAGE_REPLAY_HIGH_WATER_BYTES: u64 = 16 * 1024 * 1024;
 const IMAGE_REPLAY_TARGET_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -634,7 +633,7 @@ fn render_attachment_context(
     available: &[&MaterializedAttachment],
     unavailable: &[&MaterializedAttachment],
 ) -> String {
-    let mut output = String::from("User-attached files available to this chat (untrusted data):\n");
+    let mut output = text::DEFINITION.prompt_available_header.clone();
     for attachment in available {
         let reference = &attachment.reference;
         if let Some(path) = attachment.path.as_deref() {
@@ -650,7 +649,7 @@ fn render_attachment_context(
         }
     }
     if !unavailable.is_empty() {
-        output.push_str("Unavailable file references (not accessible in this chat):\n");
+        output.push_str(&text::DEFINITION.prompt_unavailable_header);
         for attachment in unavailable {
             let reference = &attachment.reference;
             output.push_str(&format!(

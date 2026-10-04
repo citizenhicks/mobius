@@ -38,7 +38,7 @@ pub(super) async fn connect(
     let mut interrupts = signal(SignalKind::interrupt())?;
     let mut terminations = signal(SignalKind::terminate())?;
 
-    let auth = AuthStore::open(store.auth_path())?;
+    let auth = AuthStore::open(store.auth_path(), config.auth)?;
     let grant = auth.create_pairing_code()?;
     let deadline = pairing_deadline(grant.expires_at)?;
     let process = match start_background_gateway(
@@ -51,13 +51,13 @@ pub(super) async fn connect(
     {
         Ok(Some(process)) => process,
         Ok(None) => {
-            AuthStore::open(store.auth_path())?.revoke_pairing_code(&grant.code)?;
+            AuthStore::open(store.auth_path(), config.auth)?.revoke_pairing_code(&grant.code)?;
             println!("connection cancelled");
             return Ok(());
         }
         Err(error) => {
             if let Err(revoke) =
-                AuthStore::open(store.auth_path())?.revoke_pairing_code(&grant.code)
+                AuthStore::open(store.auth_path(), config.auth)?.revoke_pairing_code(&grant.code)
             {
                 return Err(Error::Config(format!(
                     "{error}; failed to revoke one-time code: {revoke}"
@@ -73,7 +73,7 @@ pub(super) async fn connect(
             .ok_or_else(|| Error::Config("gateway did not publish its runtime endpoint".into()))
     }) {
         Ok(endpoint) => endpoint,
-        Err(error) => return stop_connect_gateway(&store, pid, &grant.code, error),
+        Err(error) => return stop_connect_gateway(&store, config.auth, pid, &grant.code, error),
     };
     drop(startup);
 
@@ -94,7 +94,7 @@ pub(super) async fn connect(
         .map(|_| loopback_endpoint(&config))
         .transpose()?;
     if let Err(error) = print_connection(&endpoint, local_endpoint.as_ref(), &grant.code) {
-        return stop_connect_gateway(&store, pid, &grant.code, error.into());
+        return stop_connect_gateway(&store, config.auth, pid, &grant.code, error.into());
     }
     println!("waiting for a client…");
 
@@ -102,7 +102,9 @@ pub(super) async fn connect(
     loop {
         let running = match running_process_pid(&process_path) {
             Ok(running) => running,
-            Err(error) => return stop_connect_gateway(&store, pid, &grant.code, error),
+            Err(error) => {
+                return stop_connect_gateway(&store, config.auth, pid, &grant.code, error);
+            }
         };
         match running {
             Some(running) if running == pid => {}
@@ -114,6 +116,7 @@ pub(super) async fn connect(
             None => {
                 return stop_connect_gateway(
                     &store,
+                    config.auth,
                     pid,
                     &grant.code,
                     Error::Config("gateway stopped before a client paired".into()),
@@ -121,11 +124,13 @@ pub(super) async fn connect(
             }
         }
 
-        let pairing = match AuthStore::open(store.auth_path())
+        let pairing = match AuthStore::open(store.auth_path(), config.auth)
             .and_then(|auth| auth.pairing_status(&grant.code))
         {
             Ok(pairing) => pairing,
-            Err(error) => return stop_connect_gateway(&store, pid, &grant.code, error),
+            Err(error) => {
+                return stop_connect_gateway(&store, config.auth, pid, &grant.code, error);
+            }
         };
         match pairing {
             PairingStatus::Consumed => {
@@ -142,6 +147,7 @@ pub(super) async fn connect(
         if Instant::now() >= deadline {
             return stop_connect_gateway(
                 &store,
+                config.auth,
                 pid,
                 &grant.code,
                 Error::Config("one-time code expired before a client paired".into()),
@@ -150,7 +156,7 @@ pub(super) async fn connect(
 
         tokio::select! {
             () = shutdown_signal(&mut interrupts, &mut terminations) => {
-                cleanup_connect(&store, pid, &grant.code)?;
+                cleanup_connect(&store, config.auth, pid, &grant.code)?;
                 println!("connection cancelled");
                 return Ok(());
             }
@@ -313,11 +319,12 @@ pub(super) fn pairing_deadline(expires_at: i64) -> Result<Instant> {
 #[cfg(unix)]
 pub(super) fn stop_connect_gateway<T>(
     store: &ConfigStore,
+    policy: crate::auth::AuthConfig,
     pid: u32,
     code: &str,
     error: Error,
 ) -> Result<T> {
-    match cleanup_connect(store, pid, code) {
+    match cleanup_connect(store, policy, pid, code) {
         Ok(()) => Err(error),
         Err(stop) => Err(Error::Config(format!(
             "{error}; failed to clean up connection: {stop}"
@@ -326,9 +333,14 @@ pub(super) fn stop_connect_gateway<T>(
 }
 
 #[cfg(unix)]
-pub(super) fn cleanup_connect(store: &ConfigStore, pid: u32, code: &str) -> Result<()> {
+pub(super) fn cleanup_connect(
+    store: &ConfigStore,
+    policy: crate::auth::AuthConfig,
+    pid: u32,
+    code: &str,
+) -> Result<()> {
     stop_gateway(store.state_dir(), Some(pid))?;
-    AuthStore::open(store.auth_path())?.revoke_pairing_code(code)
+    AuthStore::open(store.auth_path(), policy)?.revoke_pairing_code(code)
 }
 
 #[cfg(unix)]

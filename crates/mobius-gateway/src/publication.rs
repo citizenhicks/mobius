@@ -1,7 +1,5 @@
 use std::fs;
 use std::io::Write as _;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 
 use crate::Result;
@@ -13,8 +11,7 @@ pub(crate) fn publish(path: &Path, contents: &[u8], create_new: bool) -> Result<
     let parent_file = fs::File::open(parent)?;
     let mut file = tempfile::NamedTempFile::new_in(parent)?;
     #[cfg(unix)]
-    file.as_file()
-        .set_permissions(fs::Permissions::from_mode(0o600))?;
+    file.as_file().set_permissions(mobius::owner_only::file())?;
     file.write_all(contents)?;
     file.as_file().sync_all()?;
     if create_new {

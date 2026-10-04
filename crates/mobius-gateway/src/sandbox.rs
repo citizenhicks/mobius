@@ -1,11 +1,11 @@
 //! Gateway sandbox with protected and host-wide command modes.
 
+mod config;
+pub use config::ExecutionConfig;
+
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
-
-#[cfg(target_os = "linux")]
-use std::ffi::OsStr;
 
 use mobius::backend::model::provider::{ProviderAuth, providers};
 use mobius::backend::sandbox::{
@@ -14,32 +14,8 @@ use mobius::backend::sandbox::{
 };
 use mobius::{BoxFuture, Error, Result};
 
-const GIT_ENVIRONMENT: [(&str, &str); 4] = [
-    ("GIT_NO_LAZY_FETCH", "1"),
-    ("GIT_TERMINAL_PROMPT", "0"),
-    ("GIT_OPTIONAL_LOCKS", "0"),
-    ("LC_ALL", "C"),
-];
-// These variables can redirect Git to an untrusted repository or inject command-scoped settings.
-pub(crate) const REPOSITORY_LOCAL_GIT_ENVIRONMENT: [&str; 17] = [
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_CEILING_DIRECTORIES",
-    "GIT_COMMON_DIR",
-    "GIT_CONFIG",
-    "GIT_CONFIG_COUNT",
-    "GIT_CONFIG_PARAMETERS",
-    "GIT_DIR",
-    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
-    "GIT_GRAFT_FILE",
-    "GIT_IMPLICIT_WORK_TREE",
-    "GIT_INDEX_FILE",
-    "GIT_NAMESPACE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_PREFIX",
-    "GIT_REPLACE_REF_BASE",
-    "GIT_SHALLOW_FILE",
-    "GIT_WORK_TREE",
-];
+use crate::git::{GIT_ENVIRONMENT, REPOSITORY_LOCAL_GIT_ENVIRONMENT};
+
 const GIT_ARGUMENTS: [&str; 7] = [
     "--no-pager",
     "-c",
@@ -56,21 +32,6 @@ const GATEWAY_CREDENTIAL_ENVIRONMENT: [&str; 5] = [
     "TUNNEL_TOKEN",
     "TUNNEL_TOKEN_FILE",
 ];
-#[cfg(target_os = "linux")]
-const SANDBOX_PROC_ENVIRONMENT: &str = "MOBIUS_GATEWAY_SANDBOX_PROC";
-
-#[cfg(target_os = "linux")]
-fn empty_proc_configured(value: Option<&OsStr>) -> Result<bool> {
-    match value {
-        None => Ok(false),
-        Some(value) if value == "private" => Ok(false),
-        Some(value) if value == "empty" => Ok(true),
-        Some(_) => Err(Error::Config(format!(
-            "{SANDBOX_PROC_ENVIRONMENT} must be `private` or `empty`"
-        ))),
-    }
-}
-
 fn provider_credential_environment() -> impl Iterator<Item = &'static str> {
     providers()
         .iter()
@@ -78,6 +39,12 @@ fn provider_credential_environment() -> impl Iterator<Item = &'static str> {
             ProviderAuth::ApiKey(environment) => Some(environment),
             ProviderAuth::Browser(_) => None,
         })
+}
+
+pub(crate) fn reserved_credential_environment() -> impl Iterator<Item = &'static str> {
+    GATEWAY_CREDENTIAL_ENVIRONMENT
+        .into_iter()
+        .chain(provider_credential_environment())
 }
 
 /// Workspace backend that protects gateway state outside full-access commands.
@@ -100,15 +67,58 @@ impl GatewaySandbox {
         tls_key: Option<&Path>,
         timeout: Duration,
     ) -> Result<Self> {
+        Self::build(
+            workspace,
+            state_dir,
+            tls_key,
+            timeout,
+            None,
+            mobius::backend::sandbox::default_tool_output_limit(),
+            &[],
+        )
+    }
+
+    /// Builds delegates with the operator's executable, output, and environment policy.
+    /// # Errors
+    /// Returns an error for invalid policy or inaccessible sandbox roots.
+    pub fn new_configured(
+        workspace: &Path,
+        state_dir: &Path,
+        tls_key: Option<&Path>,
+        policy: &ExecutionConfig,
+        output_bytes: usize,
+        credential_environment: &[&str],
+    ) -> Result<Self> {
+        policy
+            .validate()
+            .map_err(|error| Error::Config(error.to_string()))?;
+        Self::build(
+            workspace,
+            state_dir,
+            tls_key,
+            Duration::from_secs(policy.command_timeout_seconds),
+            Some(policy),
+            output_bytes,
+            credential_environment,
+        )
+    }
+
+    fn build(
+        workspace: &Path,
+        state_dir: &Path,
+        tls_key: Option<&Path>,
+        timeout: Duration,
+        policy: Option<&ExecutionConfig>,
+        output_bytes: usize,
+        credential_environment: &[&str],
+    ) -> Result<Self> {
         if timeout.is_zero() {
             return Err(Error::Config("command timeout must be positive".into()));
         }
         let root = std::fs::canonicalize(workspace)?;
         let state_dir = std::fs::canonicalize(state_dir)?;
-        let tls_key = match tls_key {
-            Some(path) => std::fs::canonicalize(path)?,
-            None => state_dir.clone(),
-        };
+        let tls_key = tls_key.map(std::fs::canonicalize).transpose()?;
+        let tls_key = tls_key.as_deref().unwrap_or(&state_dir);
         if root.starts_with(&state_dir) || state_dir.starts_with(&root) {
             return Err(Error::Config(
                 "gateway state directory and chat workspace must not overlap".into(),
@@ -127,19 +137,18 @@ impl GatewaySandbox {
         let mut delegate = LocalSandbox::new(&root)?
             .command_timeout(timeout)?
             .deny_read(&state_dir)?
-            .deny_read(&tls_key)?;
+            .deny_read(tls_key)?;
         let mut full_access_delegate = LocalSandbox::new(&root)?
             .command_timeout(timeout)?
             .share_temporary_directory(&delegate)?;
-        #[cfg(target_os = "linux")]
-        if empty_proc_configured(std::env::var_os(SANDBOX_PROC_ENVIRONMENT).as_deref())? {
-            delegate = delegate.empty_proc();
-            full_access_delegate = full_access_delegate.empty_proc();
-        }
-        for environment in GATEWAY_CREDENTIAL_ENVIRONMENT
-            .into_iter()
-            .chain(provider_credential_environment())
-        {
+        delegate = configure_execution(delegate, policy, output_bytes, credential_environment)?;
+        full_access_delegate = configure_execution(
+            full_access_delegate,
+            policy,
+            output_bytes,
+            credential_environment,
+        )?;
+        for environment in reserved_credential_environment() {
             delegate = delegate.deny_environment(environment);
             full_access_delegate = full_access_delegate.deny_environment(environment);
         }
@@ -235,6 +244,20 @@ impl GatewaySandbox {
         }
     }
 
+    pub(crate) fn deny_read_paths(
+        mut self,
+        paths: impl IntoIterator<Item = PathBuf>,
+    ) -> Result<Self> {
+        let mut delegate = std::sync::Arc::try_unwrap(self.delegate).map_err(|_| {
+            Error::Config("sandbox paths must be configured before execution".into())
+        })?;
+        for path in paths {
+            delegate = delegate.deny_read(path)?;
+        }
+        self.delegate = std::sync::Arc::new(delegate);
+        Ok(self)
+    }
+
     pub(crate) fn allow_read_roots(
         mut self,
         roots: impl IntoIterator<Item = PathBuf>,
@@ -326,6 +349,34 @@ impl GatewaySandbox {
             ) => result,
         }
     }
+}
+
+fn configure_execution(
+    mut sandbox: LocalSandbox,
+    policy: Option<&ExecutionConfig>,
+    output_bytes: usize,
+    credential_environment: &[&str],
+) -> Result<LocalSandbox> {
+    sandbox = sandbox.command_output_limit(output_bytes)?;
+    if let Some(policy) = policy {
+        #[cfg(target_os = "linux")]
+        {
+            sandbox = sandbox.procfs_mode(policy.procfs_mode);
+        }
+        if let Some(shell) = &policy.shell_executable {
+            sandbox = sandbox.shell_executable(shell)?;
+        }
+        if let Some(bubblewrap) = &policy.bubblewrap_executable {
+            sandbox = sandbox.bubblewrap_executable(bubblewrap)?;
+        }
+        for name in &policy.allow_environment {
+            sandbox = sandbox.allow_environment(name)?;
+        }
+    }
+    for name in credential_environment {
+        sandbox = sandbox.deny_environment(*name);
+    }
+    Ok(sandbox)
 }
 
 fn execution_held() -> Error {
@@ -524,9 +575,12 @@ mod tests {
     async fn isolated_backend_keeps_its_own_desktop_use_until_the_last_cleanup_reference_drops() {
         let workspace = tempfile::tempdir().unwrap();
         let state = tempfile::tempdir().unwrap();
-        let remote = std::sync::Arc::new(
-            crate::computer_runtime::remote_desktop::RemoteDesktop::new(state.path(), true),
-        );
+        let remote =
+            std::sync::Arc::new(crate::computer_runtime::remote_desktop::RemoteDesktop::new(
+                state.path(),
+                true,
+                crate::computer_runtime::ComputerConfig::default(),
+            ));
         let root =
             GatewaySandbox::new(workspace.path(), state.path(), None, Duration::from_secs(5))
                 .unwrap()
@@ -542,24 +596,6 @@ mod tests {
         assert_eq!(remote.consumer_count(), 1);
         drop(cleanup);
         assert_eq!(remote.consumer_count(), 0);
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn sandbox_proc_environment_accepts_only_private_or_empty() {
-        use std::os::unix::ffi::OsStrExt as _;
-
-        assert!(!empty_proc_configured(None).expect("default procfs"));
-        assert!(!empty_proc_configured(Some(OsStr::new("private"))).expect("private procfs"));
-        assert!(empty_proc_configured(Some(OsStr::new("empty"))).expect("empty proc"));
-        for invalid in [
-            OsStr::new(""),
-            OsStr::new("hidden"),
-            OsStr::from_bytes(&[0xff]),
-        ] {
-            let error = empty_proc_configured(Some(invalid)).expect_err("invalid proc mode");
-            assert!(error.to_string().contains(SANDBOX_PROC_ENVIRONMENT));
-        }
     }
 
     #[test]

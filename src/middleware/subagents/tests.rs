@@ -145,7 +145,7 @@ fn renders_every_subagent_tool_call() {
 }
 
 #[test]
-fn wait_agent_matches_the_sandbox_timeout_limit() {
+fn wait_agent_uses_its_bounded_wait_deadline() {
     assert_eq!(
         wait_parameters()["properties"]["timeout_ms"]["maximum"],
         serde_json::json!(120_000)
@@ -699,4 +699,24 @@ async fn detached_child_cannot_initialize_a_root_runtime() {
         retained.upgrade().is_none(),
         "failed startup must release its event sink"
     );
+}
+
+#[test]
+fn trusted_operator_ceilings_are_independent_of_per_bot_limits() {
+    let ceilings = SubagentCeilings::new(32, 128, 512).expect("operator ceilings");
+    ceilings
+        .validate(24, 96, 300)
+        .expect("within operator ceilings");
+    assert!(validate_limits(24, 96, 300).is_err());
+    assert!(ceilings.validate(33, 96, 300).is_err());
+    assert!(SubagentCeilings::new(1, 4, 3).is_err());
+    let capability = Subagents::new_with_ceilings(
+        ceilings,
+        24,
+        96,
+        300,
+        Arc::new(|_| Box::pin(async { Err(Error::Stopped("unused".into())) })),
+    )
+    .expect("configured capability");
+    assert_eq!(capability.max_depth, 24);
 }

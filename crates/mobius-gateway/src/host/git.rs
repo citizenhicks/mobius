@@ -7,7 +7,7 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::process::Command;
 use url::Url;
 
-use crate::sandbox::{GatewaySandbox, REPOSITORY_LOCAL_GIT_ENVIRONMENT};
+use crate::sandbox::GatewaySandbox;
 use crate::wire::{DiffTotals, GitDiffScope, GitStatus, MAX_FRAME_BYTES};
 
 use super::Rejection;
@@ -123,7 +123,7 @@ async fn run_credential(operation: &str, input: &[u8]) -> std::result::Result<bo
 }
 
 fn credential_command(operation: &str) -> Command {
-    let mut command = Command::new("git");
+    let mut command = Command::from(crate::git::command(crate::git::Environment::Inherited));
     command
         .args([
             "--no-pager",
@@ -139,17 +139,12 @@ fn credential_command(operation: &str) -> Command {
             operation,
         ])
         .current_dir("/")
-        .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_ASKPASS", "/usr/bin/false")
         .env("SSH_ASKPASS", "/usr/bin/false")
         .env("GCM_INTERACTIVE", "Never")
-        .env("LC_ALL", "C")
         .stdin(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true);
-    for name in REPOSITORY_LOCAL_GIT_ENVIRONMENT {
-        command.env_remove(name);
-    }
     command
 }
 
@@ -376,7 +371,7 @@ pub(super) async fn diff(
         .await
         .map_err(|_| timeout())??;
     truncate_diff(&mut diff, MAX_GIT_DIFF_BYTES);
-    Ok(String::from_utf8_lossy(&diff).into_owned())
+    Ok(String::from_utf8_lossy_owned(diff))
 }
 
 /// Exact line totals from Git's own counts, independent of the display patch budget.

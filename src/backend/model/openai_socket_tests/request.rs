@@ -1,6 +1,6 @@
 use super::super::*;
 use super::support::model_request;
-use crate::backend::model::{STREAM_RETRY_LIMIT, ToolDefinition};
+use crate::backend::model::{ModelTransportSettings, ToolDefinition};
 use crate::protocol::ToolLoad;
 
 #[test]
@@ -11,6 +11,7 @@ fn implicit_prompt_cache_omits_options() {
         "wss://example.com/v1/responses",
         "test-model",
         reqwest::Client::new(),
+        crate::backend::model::ModelTransportSettings::default(),
     )
     .expect("provider");
     let body = response_body(
@@ -145,7 +146,7 @@ fn stream_failures_do_not_enable_http_fallback() {
         last_used_at: Instant::now(),
     };
 
-    for _ in 0..STREAM_RETRY_LIMIT {
+    for _ in 0..ModelTransportSettings::default().stream_retry_limit {
         let Error::Provider(error) = websocket_failure(&mut state, None) else {
             panic!("expected provider error");
         };

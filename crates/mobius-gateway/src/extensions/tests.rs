@@ -274,8 +274,6 @@ fn startup_validation_rejects_tampered_snapshot() {
 #[cfg(unix)]
 #[test]
 fn tree_digest_has_unambiguous_path_and_content_framing() {
-    use std::os::unix::fs::PermissionsExt as _;
-
     let temporary = tempfile::tempdir().expect("temporary packages");
     let first = temporary.path().join("first");
     let second = temporary.path().join("second");
@@ -285,11 +283,30 @@ fn tree_digest_has_unambiguous_path_and_content_framing() {
     let second_file = second.join("a\u{1}");
     fs::write(&first_file, b"\0content").expect("first file");
     fs::write(&second_file, b"content").expect("second file");
-    fs::set_permissions(&first_file, fs::Permissions::from_mode(0o700)).expect("first mode");
-    fs::set_permissions(&second_file, fs::Permissions::from_mode(0o600)).expect("second mode");
+    fs::set_permissions(&first_file, mobius::owner_only::dir()).expect("first mode");
+    fs::set_permissions(&second_file, mobius::owner_only::file()).expect("second mode");
 
     assert_ne!(
         tree_digest(&first).expect("first digest"),
         tree_digest(&second).expect("second digest")
     );
+}
+
+#[test]
+fn extension_sources_support_private_ports_and_native_ssh_without_embedded_secrets() {
+    for url in [
+        "https://git.example.com:8443/team/tools.git",
+        "ssh://git@git.example.com:2222/team/tools.git",
+    ] {
+        ExtensionSource::parse(url, Some("main"), None).unwrap();
+    }
+    for url in [
+        "ssh://git:secret@git.example.com/team/tools.git",
+        "https://user@git.example.com/tools.git",
+        "ssh://-o@git.example.com/tools.git",
+        "ssh://git@git.example.com/tools.git?key=secret",
+        "file:///tmp/tools.git",
+    ] {
+        assert!(ExtensionSource::parse(url, None, None).is_err(), "{url}");
+    }
 }

@@ -34,7 +34,7 @@ async fn credentialless_post_uses_custom_path_and_omits_authorization() {
 
 #[test]
 fn responses_history_becomes_kimi_messages_and_tools() {
-    let provider = Kimi::new("test-key", DEFAULT_BASE_URL, "kimi-k3")
+    let provider = Kimi::new("test-key", MANIFEST.base_url.as_str(), "kimi-k3")
         .expect("provider")
         .with_reasoning_effort("high")
         .expect("reasoning");
@@ -224,4 +224,42 @@ async fn stream_normalizes_deltas_tools_usage_and_errors() {
         .await
         .expect_err("stream error");
     assert!(error.to_string().contains("quota"));
+}
+
+#[test]
+fn native_kimi_prices_use_verified_default_ttl_and_custom_endpoints_are_unknown() {
+    let k3 = Kimi::new("test-key", MANIFEST.base_url.as_str(), "kimi-k3").expect("K3");
+    assert_eq!(
+        k3.pricing(),
+        Some(crate::backend::model::ModelPricing::new(
+            3_000_000, 300_000, 3_000_000, 15_000_000
+        ))
+    );
+    let code = Kimi::new("test-key", MANIFEST.base_url.as_str(), "kimi-k2.7-code").expect("K2.7");
+    assert_eq!(
+        code.pricing(),
+        Some(crate::backend::model::ModelPricing::new(
+            950_000, 190_000, 0, 4_000_000
+        ))
+    );
+    let custom =
+        Kimi::new("test-key", "https://proxy.example/v1", "kimi-k3").expect("custom endpoint");
+    assert_eq!(custom.pricing(), None);
+}
+
+#[test]
+fn kimi_usage_preserves_provider_reported_cache_writes() {
+    let usage = decode_usage(Some(&json!({
+        "prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110,
+        "prompt_tokens_details": {"cached_tokens": 20, "cache_write_tokens": 30}
+    })))
+    .expect("Kimi usage");
+    assert_eq!(
+        (
+            usage.input_tokens,
+            usage.cached_input_tokens,
+            usage.cache_write_input_tokens
+        ),
+        (100, 20, 30)
+    );
 }
