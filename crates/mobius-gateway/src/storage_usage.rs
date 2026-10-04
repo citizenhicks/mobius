@@ -62,11 +62,13 @@ pub struct StorageUsage {
     pub project_count: usize,
     /// Detail rows were omitted by the measurement budget or telemetry transport limit.
     pub details_truncated: bool,
-    /// Aggregate of gateway categories only.
+    /// Aggregate bytes and file counts of gateway categories only.
+    /// Completeness also covers project discovery and measurement for upload admission.
     pub gateway_total: StorageSize,
-    /// Maximum content blob bytes; absent for self-hosted gateways.
+    /// Maximum content blob and project file bytes; absent for self-hosted gateways.
     pub limit_bytes: Option<u64>,
-    /// Content blob bytes charged against the allowance.
+    /// Content blob and project file bytes charged against the allowance.
+    /// Nested project paths are charged once; separate file copies count separately.
     pub used_bytes: u64,
 }
 impl StorageUsage {
@@ -246,16 +248,28 @@ fn gateway_categories(root: &Path, budget: &mut MeasurementBudget) -> (Vec<Stora
 }
 
 fn project_sizes(
-    projects: Vec<(String, PathBuf)>,
+    mut projects: Vec<(String, PathBuf)>,
     budget: &mut MeasurementBudget,
-) -> Vec<ProjectStorageUsage> {
-    projects
+) -> (Vec<ProjectStorageUsage>, u64) {
+    // Paths sort parents before their children, irrespective of project ID order.
+    projects.sort_by(|(_, left), (_, right)| left.cmp(right));
+    let mut charged_root = None::<PathBuf>;
+    let mut used_bytes = 0_u64;
+    let projects = projects
         .into_iter()
-        .map(|(project_id, path)| ProjectStorageUsage {
-            project_id,
-            size: measure(&path, budget),
+        .map(|(project_id, path)| {
+            let size = measure(&path, budget);
+            if charged_root
+                .as_ref()
+                .is_none_or(|root| !path.starts_with(root))
+            {
+                used_bytes = used_bytes.saturating_add(size.bytes);
+                charged_root = Some(path);
+            }
+            ProjectStorageUsage { project_id, size }
         })
-        .collect()
+        .collect();
+    (projects, used_bytes)
 }
 
 pub(crate) async fn measure_usage(
@@ -379,15 +393,19 @@ pub(crate) async fn measure_usage(
     let deadline = budget.deadline();
     let measurement = tokio::task::spawn_blocking(move || {
         let (categories, used_bytes) = gateway_categories(&root, &mut budget);
-        let projects = project_sizes(projects.into_iter().collect(), &mut budget);
-        (categories, projects, used_bytes)
+        let (projects, project_bytes) = project_sizes(projects.into_iter().collect(), &mut budget);
+        (
+            categories,
+            projects,
+            used_bytes.saturating_add(project_bytes),
+        )
     });
     let (categories, projects, used_bytes) = tokio::time::timeout_at(deadline, measurement)
         .await
         .map_err(|_| crate::Error::Config("storage measurement exceeded its time budget".into()))?
         .map_err(|error| crate::Error::Config(format!("storage measurement failed: {error}")))?;
     let mut gateway_total = StorageSize {
-        complete,
+        complete: complete && projects.iter().all(|project| project.size.complete),
         ..Default::default()
     };
     for category in &categories {
@@ -457,6 +475,47 @@ mod tests {
             super::gateway_categories(root.path(), &mut super::MeasurementBudget::new());
         assert_eq!(used, 7);
         assert_eq!(categories[0].size.bytes, 11);
+    }
+
+    #[test]
+    fn quota_includes_project_files_and_copies_but_counts_nested_paths_once() {
+        let root = tempfile::tempdir().unwrap();
+        let state = root.path().join("state");
+        let blobs = state.join("session-files/blobs");
+        let workspace = root.path().join("work");
+        let nested = workspace.join("nested");
+        let attachments = workspace.join(".mobius/attachments");
+        let sibling = root.path().join("work-other");
+        for path in [&blobs, &nested, &attachments, &sibling] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        std::fs::write(blobs.join("blob"), b"payload").unwrap();
+        std::fs::write(state.join("session-files/metadata"), b"meta").unwrap();
+        std::fs::write(workspace.join("file"), b"payload").unwrap();
+        std::fs::write(attachments.join("copy"), b"payload").unwrap();
+        std::fs::write(nested.join("file"), b"data").unwrap();
+        std::fs::write(sibling.join("file"), b"other").unwrap();
+        let mut budget = super::MeasurementBudget::new();
+        let (_, blob_bytes) = super::gateway_categories(&state, &mut budget);
+        let (projects, project_bytes) = super::project_sizes(
+            vec![
+                ("nested".into(), nested),
+                ("parent".into(), workspace.clone()),
+                ("same-path".into(), workspace),
+                ("sibling".into(), sibling),
+            ],
+            &mut budget,
+        );
+        assert_eq!(blob_bytes + project_bytes, 30);
+        assert!(projects.iter().all(|project| project.size.complete));
+        let sizes: std::collections::BTreeMap<_, _> = projects
+            .into_iter()
+            .map(|project| (project.project_id, (project.size.bytes, project.size.files)))
+            .collect();
+        assert_eq!(sizes["parent"], (18, 3));
+        assert_eq!(sizes["same-path"], (18, 3));
+        assert_eq!(sizes["nested"], (4, 1));
+        assert_eq!(sizes["sibling"], (5, 1));
     }
 
     #[cfg(unix)]

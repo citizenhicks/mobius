@@ -32,7 +32,6 @@ rejected without rewriting files.
 command_timeout_seconds = 900
 shell_executable = "/usr/bin/bash"
 procfs_mode = "private"
-allow_environment = ["LANG", "LC_ALL"]
 bytes_per_token = 3.0
 subagent_max_depth = 32
 subagent_max_concurrency = 128
@@ -220,7 +219,12 @@ An explicit required lease fails startup without a valid Unix-seconds
 listeners. Without the requirement/variable, a local gateway runs independently of an
 account or subscription. `storage_limit_bytes` is informational and separate from local
 filesystem capacity. Its existing minimum is 64 MiB when supplied. A local gateway
-may use any available space. Only an explicitly
+may use any available space. Reported quota usage counts content blobs and files in
+registered chat workspaces. Nested workspaces are charged once; separate file copies,
+including materialized attachments, count separately. Gateway databases, browser
+profiles, and other runtime state are measured but excluded from the file allowance.
+An incomplete workspace measurement makes upload admission fail closed.
+Only an explicitly
 configured telemetry collector can reject user uploads; screenshots/artifacts bypass
 admission. General symlinks count their metadata without following targets. Symlinks in
 charged blob storage make that measurement incomplete and admission fails closed.
