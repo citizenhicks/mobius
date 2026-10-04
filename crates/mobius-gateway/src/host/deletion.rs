@@ -44,8 +44,11 @@ pub(super) async fn recover_session_hook_closures(state: &GatewayState) -> Resul
 impl GatewayHost {
     pub(super) fn cleanup_session_files(&self, mut deletion: SessionFileDeletion) {
         let events = self.events.clone();
+        let storage_reads = Arc::clone(&self.storage_reads);
         tokio::spawn(async move {
-            if let Err(error) = deletion.delete().await {
+            let result = deletion.delete().await;
+            storage_reads.invalidate();
+            if let Err(error) = result {
                 let _ = events.send(ServerFrame::new(ServerMessage::Error {
                     code: "session_cleanup".into(),
                     message: error.to_string(),
@@ -239,7 +242,9 @@ impl GatewayHost {
                 prepare_session_tree_deletion(&mut state, &selected, selection).await?;
             drop(state);
             drop(_mutation);
-            deletion.delete().await.map_err(session_file_rejection)?;
+            let result = deletion.delete().await;
+            self.invalidate_storage_usage();
+            result.map_err(session_file_rejection)?;
             return Ok(selected);
         }
         for summary in &summaries {

@@ -518,30 +518,118 @@ async fn telemetry_enriches_session_without_a_surviving_bot_and_counts_without_d
 }
 
 #[tokio::test]
-async fn storage_request_rejects_repeat_walks_without_disconnecting() {
+async fn storage_request_returns_recent_measurement_when_cleanup_is_reopened() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut server, grant) = configured_test_server(root.path().join("state")).await;
+    let endpoint: Endpoint = format!("tcp://{}", server.listen_addr()).parse().unwrap();
+    let ready = server.notify_ready();
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let serving = tokio::spawn(server.serve_until(async {
+        let _ = stopped.await;
+    }));
+    ready.await.unwrap();
+    let (client, _) =
+        GatewayClient::pair(&endpoint, grant.code, "storage review", ClientKind::Macos)
+            .await
+            .unwrap();
+    let (sender, mut events) = client.into_parts();
+    wait_gateway_ready(&mut events).await;
+    let mut first = None;
+    for id in ["connected", "cleanup-open", "cleanup-reopen"] {
+        sender
+            .send(ClientMessage::GetStorageUsage {
+                request_id: id.into(),
+            })
+            .await
+            .unwrap();
+        let usage = loop {
+            match next_gateway_message(&mut events).await {
+                ServerMessage::StorageUsage { request_id, usage } if request_id == id => {
+                    break usage;
+                }
+                ServerMessage::Rejected {
+                    request_id,
+                    message,
+                    ..
+                } if request_id == id => panic!("storage request rejected: {message}"),
+                _ => {}
+            }
+        };
+        if let Some(previous) = &first {
+            assert_eq!(&usage, previous);
+        } else {
+            first = Some(usage);
+            // A second disk walk would see this change; immediate requests share
+            // the result rather than defeating the bounded measurement cache.
+            fs::write(root.path().join("state/later-file"), b"later").unwrap();
+        }
+    }
+    stop.send(()).unwrap();
+    serving.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn storage_requests_share_an_in_flight_measurement() {
     let root = tempfile::tempdir().unwrap();
     let (server, _) = configured_test_server(root.path().join("state")).await;
-    for (id, expected) in [("first", false), ("second", true)] {
-        let mut bytes = Vec::new();
-        dispatch::handle_runtime_message(
-            ClientMessage::GetStorageUsage {
-                request_id: id.into(),
-            },
-            &server.host,
-            false,
-            &mut bytes,
+    let (first, second) = tokio::join!(
+        server.host.storage_usage_request(),
+        server.host.storage_usage_request(),
+    );
+    assert_eq!(first.unwrap(), second.unwrap());
+    server.host.shutdown().await;
+}
+
+#[tokio::test]
+async fn storage_request_refreshes_after_the_completed_measurement_expires() {
+    let root = tempfile::tempdir().unwrap();
+    let (server, _) = configured_test_server(root.path().join("state")).await;
+    let first = server.host.storage_usage_request().await.unwrap();
+    fs::write(root.path().join("state/later-file"), b"later").unwrap();
+    assert_eq!(server.host.storage_usage_request().await.unwrap(), first);
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let refreshed = server.host.storage_usage_request().await.unwrap();
+    assert!(refreshed.gateway_total.bytes >= first.gateway_total.bytes + 5);
+    server.host.shutdown().await;
+}
+
+#[tokio::test]
+async fn storage_request_measures_freed_files_immediately_after_purge() {
+    use mobius::backend::session_files::{SessionFileOrigin, SessionFileSelection};
+    let root = tempfile::tempdir().unwrap();
+    let state_dir = root.path().join("state");
+    let (server, _) = configured_test_server(state_dir.clone()).await;
+    let mut checkpoint = Checkpoint::empty("storage-purge");
+    checkpoint.session_context.owner_id = server.bots.bots().unwrap().remove(0).id;
+    SqliteCheckpoint::new(state_dir.join("checkpoints.sqlite3"))
+        .unwrap()
+        .save(&checkpoint, &[], None)
+        .await
+        .unwrap();
+    let files = server.host.session_file_store().await;
+    files
+        .publish_artifact(
+            &checkpoint.session_id,
+            "result.txt".into(),
+            "text/plain".into(),
+            b"result",
         )
         .await
         .unwrap();
-        let frame = read_frame::<ServerFrame>(&mut crate::wire::FrameReader::new(bytes.as_slice()))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            matches!(frame.message, ServerMessage::Rejected { ref code, .. } if code == "rate_limited"),
-            expected
-        );
-    }
+    let first = server.host.storage_usage_request().await.unwrap();
+    assert_eq!(first.used_bytes, 6);
+    server
+        .host
+        .delete_sessions(
+            &[checkpoint.session_id],
+            SessionFileSelection::Origins(vec![SessionFileOrigin::Artifact]),
+        )
+        .await
+        .unwrap();
+    let refreshed = server.host.storage_usage_request().await.unwrap();
+    assert_eq!(refreshed.used_bytes, 0);
+    assert_eq!(refreshed.sessions[0].artifacts.files, 0);
+    assert_eq!(refreshed.session_count, first.session_count);
     server.host.shutdown().await;
 }
 

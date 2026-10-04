@@ -315,6 +315,10 @@ for reports; `--clear-storage-limit` removes it. Connected apps can inspect
 storage usage and selectively purge uploaded, generated, or screenshot files while
 keeping chat history.
 
+Paired storage requests share one bounded measurement and reuse its result for up
+to five seconds. Upload commits, purge, workspace edits and catalog changes
+invalidate that result. Telemetry snapshots and upload admission measure fresh usage.
+
 Outbound telemetry is disabled until a destination is configured. Operators can use
 `mobius-gateway telemetry add --id ID --url HTTPS_URL --sections activity,storage`
 and `mobius-gateway telemetry list` or `telemetry remove --id ID`. An endpoint can

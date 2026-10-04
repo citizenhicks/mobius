@@ -228,6 +228,7 @@ pub(super) async fn handle_message(
             return attach_session_folder(
                 writer,
                 &*connection.selected,
+                gateway,
                 request_id,
                 session_id,
                 folder,
@@ -519,7 +520,11 @@ pub(super) async fn handle_message(
                 Ok(host) => host,
                 Err(rejection) => return write_rejection(writer, request_id, rejection).await,
             };
-            return write_result(writer, request_id, host.delete_workspace_file(path).await).await;
+            let result = host.delete_workspace_file(path).await;
+            if result.is_ok() {
+                gateway.invalidate_storage_usage();
+            }
+            return write_result(writer, request_id, result).await;
         }
         ClientMessage::WriteWorkspaceFile {
             request_id,
@@ -903,6 +908,7 @@ async fn rename_session(
 async fn attach_session_folder(
     writer: &mut (impl AsyncWrite + Unpin),
     selected: &Option<SelectedChat>,
+    gateway: &GatewayHost,
     request_id: String,
     session_id: String,
     folder: PathBuf,
@@ -911,7 +917,11 @@ async fn attach_session_folder(
         Ok(host) => host,
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
-    write_result(writer, request_id, host.attach_folder(folder).await).await
+    let result = host.attach_folder(folder).await;
+    if result.is_ok() {
+        gateway.invalidate_storage_usage();
+    }
+    write_result(writer, request_id, result).await
 }
 
 async fn set_session_pinned(
@@ -1254,6 +1264,7 @@ async fn finish_session_file_upload(
     };
     match upload.finish().await {
         Ok(file) => {
+            connection.gateway.invalidate_storage_usage();
             write_frame(
                 writer,
                 &ServerFrame::new(ServerMessage::SessionFileUploadCompleted {
@@ -1601,12 +1612,11 @@ async fn write_workspace_file(
         Ok(host) => host,
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
-    write_result(
-        writer,
-        request_id,
-        host.write_workspace_file(path, content).await,
-    )
-    .await
+    let result = host.write_workspace_file(path, content).await;
+    if result.is_ok() {
+        connection.gateway.invalidate_storage_usage();
+    }
+    write_result(writer, request_id, result).await
 }
 
 async fn list_directories_response(

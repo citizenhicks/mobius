@@ -2,7 +2,29 @@ use super::*;
 use crate::telemetry::{TelemetryConfig, TelemetrySection, TelemetrySink, TelemetrySinkReport};
 use serde_json::{Value, json};
 
+#[derive(Default)]
+pub(super) struct StorageMeasurements {
+    completed: Mutex<Option<CompletedStorageMeasurement>>,
+    revision: AtomicU64,
+}
+
+struct CompletedStorageMeasurement {
+    completed_at: std::time::Instant,
+    revision: u64,
+    usage: crate::storage_usage::StorageUsage,
+}
+
+impl StorageMeasurements {
+    pub(super) fn invalidate(&self) {
+        self.revision.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
 impl GatewayHost {
+    pub(crate) fn invalidate_storage_usage(&self) {
+        self.storage_reads.invalidate();
+    }
+
     pub(crate) async fn configure_telemetry(
         &self,
         expected: u64,
@@ -92,18 +114,29 @@ impl GatewayHost {
     pub(crate) async fn storage_usage_request(
         &self,
     ) -> std::result::Result<crate::storage_usage::StorageUsage, Rejection> {
-        let busy = || Rejection {
-            code: "rate_limited",
-            message: "storage measurement is busy; retry after 5 seconds".into(),
-            fatal: false,
-        };
-        // The async guard deliberately owns the single walk; callers never queue behind it.
-        let mut previous = self.storage_reads.try_lock().map_err(|_| busy())?;
-        if previous.is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(5)) {
-            return Err(busy());
+        // The async guard serializes only the bounded walk, so simultaneous clients
+        // share its completed result instead of starting competing disk scans.
+        let mut completed = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            self.storage_reads.completed.lock(),
+        )
+        .await
+        .map_err(|_| internal("storage measurement timed out waiting for an active measurement"))?;
+        let revision = self.storage_reads.revision.load(Ordering::Acquire);
+        if let Some(previous) = completed.as_ref()
+            && previous.revision == revision
+            && previous.completed_at.elapsed() < std::time::Duration::from_secs(5)
+        {
+            // Both the retained snapshot and each wire response require owned data.
+            return Ok(previous.usage.clone());
         }
-        *previous = Some(std::time::Instant::now());
-        self.storage_usage().await.map_err(internal)
+        let usage = self.storage_usage().await.map_err(internal)?;
+        *completed = Some(CompletedStorageMeasurement {
+            completed_at: std::time::Instant::now(),
+            revision,
+            usage: usage.clone(),
+        });
+        Ok(usage)
     }
 
     pub(crate) async fn telemetry_report(&self) -> Result<(u64, Vec<TelemetrySinkReport>)> {

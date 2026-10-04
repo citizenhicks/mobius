@@ -103,7 +103,7 @@ pub(crate) struct GatewayHost {
     pub(crate) remote_desktop: Arc<RemoteDesktop>,
     state: Arc<Mutex<GatewayState>>,
     capacity_gate: Arc<Mutex<()>>,
-    storage_reads: Arc<Mutex<Option<std::time::Instant>>>,
+    storage_reads: Arc<telemetry::StorageMeasurements>,
     events: broadcast::Sender<ServerFrame>,
     work_activity: Arc<WorkActivity>,
     pub(crate) telemetry: Arc<crate::telemetry::Telemetry>,
@@ -295,7 +295,7 @@ impl GatewayHost {
                 idle_cleanup_tasks: Vec::new(),
             })),
             capacity_gate: Arc::new(Mutex::new(())),
-            storage_reads: Arc::new(Mutex::new(None)),
+            storage_reads: Arc::default(),
             events,
             work_activity: Arc::new(WorkActivity {
                 instance: Uuid::new_v4(),
@@ -1013,6 +1013,7 @@ impl GatewayHost {
     }
 
     async fn broadcast_sessions(&self) -> std::result::Result<(), Rejection> {
+        self.invalidate_storage_usage();
         let (checkpoints, activities) = {
             let state = self.state.lock().await;
             (
