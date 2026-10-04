@@ -160,6 +160,14 @@ impl Runner {
             &model_route,
             &author,
         );
+        let output_limit = self.config.sandbox.output_limit();
+        let cancelled_results = || {
+            interrupted_results(
+                &callable,
+                "execution cancelled by newer input; result unknown",
+                output_limit,
+            )
+        };
         tokio::pin!(execution);
         let mut executed = false;
         let results = loop {
@@ -170,66 +178,52 @@ impl Runner {
             }
             if cancel_on_input && drained.input_changed {
                 break Wait::Ready {
-                    value: interrupted_results(
-                        &callable,
-                        "execution cancelled by newer input; result unknown",
-                        self.config.sandbox.output_limit(),
-                    ),
+                    value: cancelled_results(),
                     input_changed: true,
                 };
             }
             tokio::select! {
-                            biased;
-                            results = &mut execution => {
-                                let drained = self.drain_submissions(inbox, turn_id).await?;
-                                input_changed |= drained.input_changed;
-                                if let Some(submission_id) = drained.interrupted {
-                                    break Wait::Interrupted { submission_id };
-                                }
-                                if cancel_on_input && drained.input_changed {
+                biased;
+                results = &mut execution => {
+                    let drained = self.drain_submissions(inbox, turn_id).await?;
+                    input_changed |= drained.input_changed;
+                    if let Some(submission_id) = drained.interrupted {
+                        break Wait::Interrupted { submission_id };
+                    }
+                    if cancel_on_input && drained.input_changed {
+                        break Wait::Ready {
+                            value: cancelled_results(),
+                            input_changed: true,
+                        };
+                    }
+                    executed = true;
+                    break Wait::Ready { value: results, input_changed };
+                }
+                submission = inbox.recv() => {
+                    let Some(submission) = submission else {
+                        return Err(Error::Stopped("frontend disconnected".into()));
+                    };
+                    match self.route_active_submission(submission, turn_id, None).await? {
+                        ActiveRoute::Continue {
+                            input_changed: changed,
+                        } => {
+                            if changed {
+                                if cancel_on_input {
                                     break Wait::Ready {
-                                        value: interrupted_results(
-                                            &callable,
-                                            "execution cancelled by newer input; result unknown",
-
-            self.config.sandbox.output_limit(),
-            ),
+                                        value: cancelled_results(),
                                         input_changed: true,
                                     };
                                 }
-                                executed = true;
-                                break Wait::Ready { value: results, input_changed };
-                            }
-                            submission = inbox.recv() => {
-                                let Some(submission) = submission else {
-                                    return Err(Error::Stopped("frontend disconnected".into()));
-                                };
-                                match self.route_active_submission(submission, turn_id, None).await? {
-                                    ActiveRoute::Continue {
-                                        input_changed: changed,
-                                    } => {
-                                        if changed {
-                                            if cancel_on_input {
-                                                break Wait::Ready {
-                                                    value: interrupted_results(
-                                                        &callable,
-                                                        "execution cancelled by newer input; result unknown",
-
-            self.config.sandbox.output_limit(),
-            ),
-                                                    input_changed: true,
-                                                };
-                                            }
-                                            input_changed = true;
-                                        }
-                                    }
-                                    ActiveRoute::Interrupted { submission_id } => {
-                                        break Wait::Interrupted { submission_id };
-                                    }
-                                    ActiveRoute::Approval { .. } => {}
-                                }
+                                input_changed = true;
                             }
                         }
+                        ActiveRoute::Interrupted { submission_id } => {
+                            break Wait::Interrupted { submission_id };
+                        }
+                        ActiveRoute::Approval { .. } => {}
+                    }
+                }
+            }
         };
         let (mut results, input_changed) = match results {
             Wait::Ready {
@@ -272,10 +266,7 @@ impl Runner {
         }
         let mut events = hook_events
             .into_iter()
-            .map(|msg| Event {
-                submission_id: Some(submission_id.to_string()),
-                msg,
-            })
+            .map(|msg| crate::agent::turn::turn_event(submission_id, msg))
             .collect::<Vec<_>>();
         events.extend(tool_result_events(submission_id, turn_id, &results));
         let tool_usage = batch_usage(&results)?;
@@ -410,20 +401,23 @@ pub(super) fn tool_call_inputs(calls: &[ToolCall]) -> Result<Vec<serde_json::Val
 fn tool_result_events(submission_id: &str, turn_id: &str, results: &[ToolResult]) -> Vec<Event> {
     let mut events = Vec::with_capacity(results.len() * 2);
     for result in results {
-        events.push(Event {
-            submission_id: Some(submission_id.to_string()),
-            msg: EventMsg::ToolCallEnd(ToolCallEndEvent {
+        events.push(crate::agent::turn::turn_event(
+            submission_id,
+            EventMsg::ToolCallEnd(ToolCallEndEvent {
                 turn_id: turn_id.to_string(),
                 call_id: result.call_id.clone(),
                 name: result.name.clone(),
                 output: result.output.clone(),
                 is_error: result.is_error,
             }),
-        });
-        events.extend(result.events.iter().cloned().map(|msg| Event {
-            submission_id: Some(submission_id.to_string()),
-            msg,
-        }));
+        ));
+        events.extend(
+            result
+                .events
+                .iter()
+                .cloned()
+                .map(|msg| crate::agent::turn::turn_event(submission_id, msg)),
+        );
     }
     events
 }

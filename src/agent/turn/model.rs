@@ -99,14 +99,17 @@ impl Runner {
                 .middleware
                 .message_submit(self.turn_identity(turn_id)?, &message, &mut hook_events)
                 .await?;
-            events.extend(hook_events.into_iter().map(|msg| Event {
-                submission_id: Some(message.submission_id.clone()),
-                msg,
-            }));
-            events.extend(message.boundary_events.drain(..).map(|msg| Event {
-                submission_id: Some(message.submission_id.clone()),
-                msg,
-            }));
+            events.extend(
+                hook_events
+                    .into_iter()
+                    .map(|msg| crate::agent::turn::turn_event(&message.submission_id, msg)),
+            );
+            events.extend(
+                message
+                    .boundary_events
+                    .drain(..)
+                    .map(|msg| crate::agent::turn::turn_event(&message.submission_id, msg)),
+            );
             if let Some(rejection) = submitted.rejection {
                 events.push(Event {
                     submission_id: Some(message.submission_id),
@@ -518,7 +521,7 @@ impl Runner {
             let model_events = ModelEventTracker::default();
             let streamed_events = model_events.clone();
             let catalog_revision = self.catalog.revision()?.to_owned();
-            let recorder = self.events.downgrade();
+            let recorder = Arc::downgrade(&self.events);
             let (response_open, response_closed) = tokio::sync::watch::channel(());
             let (ready_calls_tx, ready_calls) = tokio::sync::mpsc::channel(MAX_TOOL_CALLS);
             let call_validation = Arc::new(Mutex::new(StreamingToolCalls::default()));

@@ -192,7 +192,7 @@ impl ToolLoad {
         if input.get("type").and_then(serde_json::Value::as_str) != Some(TOOL_LOAD_MARKER) {
             return Ok(None);
         }
-        let load: Self = serde_json::from_value(input.clone())?;
+        let load: Self = serde::Deserialize::deserialize(input)?;
         if load.catalog_revision.trim().is_empty() || load.tools.is_empty() {
             return Err(crate::Error::Checkpoint(
                 "invalid tool-load control item".into(),
@@ -608,6 +608,24 @@ pub enum Op {
         /// The session identifier to reopen.
         session_id: String,
     },
+}
+
+impl Op {
+    /// Invokes a capability command without editable input or a message target.
+    #[must_use]
+    pub fn command(
+        capability: impl Into<String>,
+        command: impl Into<String>,
+        arguments: impl Into<String>,
+    ) -> Self {
+        Self::CapabilityCommand {
+            capability: capability.into(),
+            command: command.into(),
+            arguments: arguments.into(),
+            input: None,
+            target: None,
+        }
+    }
 }
 
 /// Which participant produced text in an externally hosted conversation.

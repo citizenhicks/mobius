@@ -10,10 +10,7 @@ use super::Middleware;
 use super::MiddlewareCommandContext;
 use super::MiddlewareCommandOutput;
 use super::RuntimeContext;
-use super::manifest::{MiddlewareManifest, MiddlewareSettingManifest};
-use super::tools::{
-    Catalog, ExecutionMode, Tool, ToolContext, ToolExposure, rank_bm25, render_tool_event,
-};
+use super::tools::{Catalog, ExecutionMode, Tool, ToolContext, ToolExposure, rank_bm25};
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
@@ -40,55 +37,28 @@ use crate::protocol::replay_events;
 use crate::protocol::strip_attachment_references;
 
 mod text {
-    use super::*;
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(super) struct Definition {
-        pub(super) tool_search_history_parameter_scope_description: String,
-        pub(super) tool_search_history_parameter_cursor_description: String,
-        pub(super) tool_read_history_parameter_session_description: String,
-        pub(super) tool_read_history_parameter_offset_description: String,
-        pub(super) tool_read_history_parameter_max_chars_description: String,
+        pub(super) read_history: crate::middleware::tools::ToolSpec,
+        pub(super) search_history: crate::middleware::tools::ToolSpec,
+        pub(super) message_chat: crate::middleware::tools::ToolSpec,
+        pub(super) list_chats: crate::middleware::tools::ToolSpec,
+        #[serde(deserialize_with = "crate::middleware::manifest::deserialize_settings")]
+        pub(super) settings: Vec<crate::middleware::manifest::MiddlewareSettingManifest>,
         pub(super) default_enabled: bool,
         pub(super) command_fork_description: String,
         pub(super) command_resume_description: String,
-        pub(super) defaults_page_size: i64,
         pub(super) manifest_description: String,
         pub(super) manifest_label: String,
         pub(super) picker_assistant_message: String,
         pub(super) picker_fork_chat_from_message: String,
         pub(super) picker_resume_chat: String,
         pub(super) picker_user_message: String,
-        pub(super) render_list_chats: String,
-        pub(super) render_message_chat: String,
-        pub(super) render_read_history: String,
-        pub(super) render_search_history: String,
-        pub(super) setting_page_size_description: String,
-        pub(super) setting_page_size_label: String,
-        pub(super) setting_page_size_step: i64,
-        pub(super) tool_list_chats_description: String,
-        pub(super) tool_message_chat_description: String,
-        pub(super) tool_message_chat_parameter_target_description: String,
-        pub(super) tool_message_chat_parameter_workspace_description: String,
-        pub(super) tool_read_history_description: String,
-        pub(super) tool_search_history_description: String,
-        pub(super) tool_search_history_parameter_query_description: String,
         pub(super) widget_fork_chat: String,
         pub(super) widget_more_chats: String,
     }
-    pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
-        std::sync::LazyLock::new(|| {
-            let definition: Definition = crate::config::embedded(include_str!("sessions.toml"));
-
-            assert!(definition.defaults_page_size >= 1);
-            assert!(
-                definition.defaults_page_size
-                    <= i64::try_from(MAX_PAGE_SIZE).expect("page safety bound must fit")
-            );
-            assert!(definition.setting_page_size_step > 0);
-
-            definition
-        });
+    crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("sessions.toml"); }
 }
 const MAX_PAGE_SIZE: usize = 1_000;
 const MAX_HISTORY_QUERY_BYTES: usize = 512;
@@ -104,33 +74,17 @@ const MAX_HANDLE_TITLE_BYTES: usize = 64;
 
 /// Default number of chats loaded per catalog page.
 pub fn default_page_size() -> usize {
-    usize::try_from(text::DEFINITION.defaults_page_size)
-        .expect("validated default page size must fit")
+    usize::try_from(super::manifest::integer_default(
+        &text::DEFINITION.settings,
+        "page_size",
+    ))
+    .expect("validated default page size must fit")
 }
-static SETTINGS: std::sync::LazyLock<Vec<MiddlewareSettingManifest>> =
-    std::sync::LazyLock::new(|| {
-        vec![MiddlewareSettingManifest::Integer {
-            id: "page_size",
-            label: text::DEFINITION.setting_page_size_label.as_str(),
-            description: text::DEFINITION.setting_page_size_description.as_str(),
-            min: 1,
-            max: Some(i64::try_from(MAX_PAGE_SIZE).expect("page safety bound must fit")),
-            step: text::DEFINITION.setting_page_size_step,
-            default: text::DEFINITION.defaults_page_size,
-        }]
-    });
 
+super::manifest::middleware_manifest! {
 /// Configuration and presentation metadata for durable sessions.
-pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
-    std::sync::LazyLock::new(|| MiddlewareManifest {
-        id: "sessions",
-        label: text::DEFINITION.manifest_label.as_str(),
-        description: text::DEFINITION.manifest_description.as_str(),
-        required: true,
-        default_enabled: text::DEFINITION.default_enabled,
-        required_model_capability: None,
-        settings: &SETTINGS,
-    });
+    "sessions", text::DEFINITION, required: true, capability: None, settings: &text::DEFINITION.settings
+}
 
 /// One open chat of an owner that can receive peer messages from its sibling chats.
 #[derive(Debug, PartialEq, Eq)]
@@ -302,47 +256,21 @@ impl Middleware for Sessions {
                 icon_only: true,
                 progress: None,
                 content: None,
-                action: Some(Op::CapabilityCommand {
-                    capability: MANIFEST.id.into(),
-                    command: "fork".into(),
-                    arguments: String::new(),
-                    input: None,
-                    target: None,
-                }),
+                action: Some(Op::command(MANIFEST.id, "fork", String::new())),
             }],
             references: Vec::new(),
         }
     }
 
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
-        render_tool_event(
-            event,
-            |name| {
-                matches!(
-                    name,
-                    "search_history" | "read_history" | "list_chats" | "message_chat"
-                )
-            },
-            |name, arguments| super::tools::ToolHeading {
-                title: if matches!(event, EventMsg::ToolCallEnd(_)) {
-                    name
-                } else {
-                    match name {
-                        "search_history" => text::DEFINITION.render_search_history.as_str(),
-                        "read_history" => text::DEFINITION.render_read_history.as_str(),
-                        "list_chats" => text::DEFINITION.render_list_chats.as_str(),
-                        _ => text::DEFINITION.render_message_chat.as_str(),
-                    }
-                }
-                .into(),
-                detail: arguments
-                    .get("query")
-                    .or_else(|| arguments.get("target"))
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .into(),
-            },
-        )
+        [
+            &text::DEFINITION.read_history,
+            &text::DEFINITION.search_history,
+            &text::DEFINITION.message_chat,
+            &text::DEFINITION.list_chats,
+        ]
+        .into_iter()
+        .find_map(|spec| spec.render(event))
     }
 
     fn command<'a>(
@@ -485,15 +413,7 @@ impl MessageChatArgs {
 
 impl Tool for ListChats {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "list_chats".into(),
-            description: text::DEFINITION.tool_list_chats_description.as_str().into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false
-            }),
-        }
+        text::DEFINITION.list_chats.tool.clone()
     }
 
     fn exposure(&self) -> ToolExposure {
@@ -530,31 +450,7 @@ impl Tool for ListChats {
 
 impl Tool for MessageChat {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "message_chat".into(),
-            description: text::DEFINITION
-                .tool_message_chat_description
-                .as_str()
-                .into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "target": {"type": "string", "maxLength": 512,
-                        "description": text::DEFINITION.tool_message_chat_parameter_target_description.as_str()},
-                    "workspace": {"type": "string", "minLength": 1,
-                        "description": text::DEFINITION.tool_message_chat_parameter_workspace_description.as_str()},
-                    "text": {"type": "string", "minLength": 1},
-                    "delivery": {"type": "string", "enum": ["queue", "steer"]},
-                    "interrupt_turn_id": {"type": "string", "minLength": 1}
-                },
-                "oneOf": [
-                    {"required": ["target", "text"], "not": {"anyOf": [{"required": ["workspace"]}, {"required": ["interrupt_turn_id"]}]}},
-                    {"required": ["workspace", "text"], "not": {"anyOf": [{"required": ["target"]}, {"required": ["interrupt_turn_id"]}]}},
-                    {"required": ["target", "interrupt_turn_id"], "not": {"anyOf": [{"required": ["workspace"]}, {"required": ["text"]}, {"required": ["delivery"]}]}}
-                ],
-                "additionalProperties": false
-            }),
-        }
+        text::DEFINITION.message_chat.tool.clone()
     }
 
     fn exposure(&self) -> ToolExposure {
@@ -587,23 +483,10 @@ impl Tool for MessageChat {
 
 impl Tool for SearchHistory {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "search_history".into(),
-            description: text::DEFINITION.tool_search_history_description.clone(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "maxLength": MAX_HISTORY_QUERY_BYTES,
-                        "description": text::DEFINITION.tool_search_history_parameter_query_description.as_str()},
-                    "scope": {"type": "string", "enum": ["current", "other_chats"],
-                        "description": text::DEFINITION.tool_search_history_parameter_scope_description.as_str()},
-                    "cursor": {"type": "string", "maxLength": MAX_HISTORY_CURSOR_BYTES,
-                        "description": text::DEFINITION.tool_search_history_parameter_cursor_description.as_str()}
-                },
-                "required": ["query"],
-                "additionalProperties": false
-            }),
-        }
+        let mut tool = text::DEFINITION.search_history.tool.clone();
+        tool.parameters["properties"]["query"]["maxLength"] = MAX_HISTORY_QUERY_BYTES.into();
+        tool.parameters["properties"]["cursor"]["maxLength"] = MAX_HISTORY_CURSOR_BYTES.into();
+        tool
     }
 
     fn exposure(&self) -> ToolExposure {
@@ -630,27 +513,9 @@ impl Tool for SearchHistory {
 
 impl Tool for ReadHistory {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "read_history".into(),
-            description: text::DEFINITION.tool_read_history_description.clone(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "session_id": {"type": "string", "maxLength": 512,
-                        "description": text::DEFINITION.tool_read_history_parameter_session_description.as_str()},
-                    "target": {"type": "object", "properties": {
-                        "checkpoint_sequence": {"type": "integer", "minimum": 0},
-                        "batch_item_count": {"type": "integer", "minimum": 1}
-                    }, "required": ["checkpoint_sequence", "batch_item_count"], "additionalProperties": false},
-                    "offset": {"type": "integer", "minimum": 0,
-                        "description": text::DEFINITION.tool_read_history_parameter_offset_description.as_str()},
-                    "max_chars": {"type": "integer", "minimum": 1, "maximum": MAX_HISTORY_READ_CHARS,
-                        "description": text::DEFINITION.tool_read_history_parameter_max_chars_description.as_str()}
-                },
-                "required": ["target"],
-                "additionalProperties": false
-            }),
-        }
+        let mut tool = text::DEFINITION.read_history.tool.clone();
+        tool.parameters["properties"]["max_chars"]["maximum"] = MAX_HISTORY_READ_CHARS.into();
+        tool
     }
 
     fn exposure(&self) -> ToolExposure {
@@ -1356,13 +1221,7 @@ fn resume_page_options(
             detail: String::new(),
             symbol: None,
             shows_detail: false,
-            op: Op::CapabilityCommand {
-                capability: MANIFEST.id.into(),
-                command: "resume".into(),
-                arguments: serde_json::to_string(&cursor)?,
-                input: None,
-                target: None,
-            },
+            op: Op::command(MANIFEST.id, "resume", serde_json::to_string(&cursor)?),
         });
     }
     Ok(options)
@@ -2030,13 +1889,7 @@ mod tests {
         assert_eq!(widget.symbol, Some(FrontendSymbol::Branch));
         assert_eq!(
             widget.action,
-            Some(Op::CapabilityCommand {
-                capability: "sessions".into(),
-                command: "fork".into(),
-                arguments: String::new(),
-                input: None,
-                target: None,
-            })
+            Some(Op::command("sessions", "fork", String::new()))
         );
     }
 

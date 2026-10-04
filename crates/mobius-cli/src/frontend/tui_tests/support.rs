@@ -85,13 +85,7 @@ pub(super) fn preview_messages(snapshot: &SnapshotPreview) -> Vec<&str> {
 }
 
 pub(super) fn preview_continuation(arguments: &str) -> Op {
-    Op::CapabilityCommand {
-        capability: "subagents".into(),
-        command: "subagents".into(),
-        arguments: arguments.into(),
-        input: None,
-        target: None,
-    }
+    Op::command("subagents", "subagents", arguments)
 }
 
 pub(super) fn catalog(workspace: &std::path::Path) -> UiCatalog {

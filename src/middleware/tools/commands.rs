@@ -15,8 +15,7 @@ struct Definition {
     manage_command: super::ToolSpec,
     initial_wait_ms: u64,
 }
-static DEFINITION: std::sync::LazyLock<Definition> =
-    std::sync::LazyLock::new(|| crate::config::embedded(include_str!("commands.toml")));
+crate::embedded_config! { static DEFINITION: Definition = include_str!("commands.toml"); }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

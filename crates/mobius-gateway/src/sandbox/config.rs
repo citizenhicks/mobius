@@ -16,9 +16,6 @@ pub struct ExecutionConfig {
     pub bubblewrap_executable: Option<PathBuf>,
     /// Linux procfs policy; empty procfs requires host-provided PID isolation.
     pub procfs_mode: mobius::backend::sandbox::ProcfsMode,
-    /// Additional host environment names allowed into isolated commands.
-    /// Credential removal always takes precedence.
-    pub allow_environment: Vec<String>,
     /// Configurable fallback estimate when measured token usage is unavailable.
     pub bytes_per_token: f64,
     /// Host ceiling for each Bot's subagent nesting depth.
@@ -36,7 +33,6 @@ impl Default for ExecutionConfig {
             shell_executable: None,
             bubblewrap_executable: None,
             procfs_mode: mobius::backend::sandbox::ProcfsMode::default(),
-            allow_environment: Vec::new(),
             bytes_per_token: mobius::middleware::TokenEstimate::default().bytes_per_token(),
             subagent_max_depth: ceilings.max_depth(),
             subagent_max_concurrency: ceilings.max_concurrency(),
@@ -47,7 +43,7 @@ impl Default for ExecutionConfig {
 impl ExecutionConfig {
     /// Validates execution policy before building a sandbox.
     /// # Errors
-    /// Returns an error for invalid durations, paths, variable names, or token estimates.
+    /// Returns an error for invalid durations, paths or token estimates.
     pub fn validate(&self) -> Result<()> {
         crate::config::bounded(
             "execution.command_timeout_seconds",
@@ -63,20 +59,6 @@ impl ExecutionConfig {
                     "execution executable must be an existing absolute file".into(),
                 ));
             }
-        }
-        if self.allow_environment.len() > 256
-            || self.allow_environment.iter().any(|name| {
-                !mobius::identifier::valid_ascii_identifier(
-                    name,
-                    256,
-                    mobius::identifier::AsciiCase::Any,
-                    b"_",
-                ) || name.as_bytes().first().is_some_and(u8::is_ascii_digit)
-            })
-        {
-            return Err(Error::Config(
-                "execution.allow_environment contains an invalid variable name".into(),
-            ));
         }
         mobius::middleware::TokenEstimate::new(self.bytes_per_token)?;
         self.subagent_ceilings()?;

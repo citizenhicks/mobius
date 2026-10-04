@@ -1,3 +1,4 @@
+pub(super) use crate::frontend::response::wait_ready;
 use std::io;
 use std::path::PathBuf;
 
@@ -5,8 +6,8 @@ use mobius::protocol::{EventMsg, FrontendWidgetContent, MAX_MESSAGE_BYTES, Op, S
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayClient, GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
-    ClientKind, ClientMessage, ClientStatus, ReadyPayload, ServerFrame, ServerMessage,
-    SessionActivityState, SessionRecord, apply_session_changes,
+    ClientKind, ClientMessage, ClientStatus, ServerMessage, SessionActivityState, SessionRecord,
+    apply_session_changes,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -68,30 +69,6 @@ pub(super) async fn connect(
             error: None,
         },
     ))
-}
-
-pub(super) async fn wait_ready(events: &mut GatewayEvents) -> Result<ReadyPayload> {
-    let mut events = events.scoped();
-    loop {
-        let frame = events
-            .next()
-            .await
-            .map_err(gateway_error)?
-            .ok_or_else(|| Error::Stopped("gateway disconnected before it was ready".into()))?;
-        let ServerFrame { version, message } = frame;
-        match message {
-            ServerMessage::Ready { payload } => return Ok(payload),
-            ServerMessage::Rejected { message, .. }
-            | ServerMessage::Error {
-                message,
-                fatal: true,
-                ..
-            } => return Err(Error::Stopped(message)),
-            message => events
-                .defer(ServerFrame { version, message })
-                .map_err(gateway_error)?,
-        }
-    }
 }
 
 pub(super) async fn dashboard_loop(

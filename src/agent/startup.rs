@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use super::Agent;
 use super::AgentConfig;
-use super::EventRecorder;
 use super::Runner;
 use super::SUBMISSION_QUEUE_CAPACITY;
 use super::send_event;
@@ -149,8 +148,10 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         reasoning_effort: choice.reasoning_effort,
     };
     let (sender, inbox) = submission_channel(SUBMISSION_QUEUE_CAPACITY);
-    let (event_tx, event_rx) =
-        EventRecorder::spawn(Arc::clone(&config.checkpoints), config.session_id.clone());
+    let (event_tx, event_rx) = crate::agent::recorder::RecorderIngress::spawn(
+        Arc::clone(&config.checkpoints),
+        config.session_id.clone(),
+    );
     let session = SessionConfiguredEvent {
         session_id: config.session_id.clone(),
         context: config.session_context.clone(),
@@ -221,9 +222,9 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
             .active_execution
             .as_ref()
             .ok_or_else(|| Error::Checkpoint("active model step has no execution".into()))?;
-        recovery_events.push(Event {
-            submission_id: Some(active.submission_id.clone()),
-            msg: EventMsg::ModelStepCompleted(ModelStepCompletedEvent {
+        recovery_events.push(crate::agent::turn::turn_event(
+            &active.submission_id,
+            EventMsg::ModelStepCompleted(ModelStepCompletedEvent {
                 session_id: state.session_id.clone(),
                 turn_id: active.turn_id.clone(),
                 model_step_id: step.model_step_id,
@@ -233,7 +234,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
                 outcome: ModelStepOutcome::Interrupted,
                 diagnostics: None,
             }),
-        });
+        ));
     }
     let mut recovered_tool_calls = 0;
     if uncertain_tools {
@@ -329,17 +330,18 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         {
             return Err(failed_start(&config, &runtime, error).await);
         }
-        recovery_events.extend(messages.into_iter().map(|msg| Event {
-            submission_id: Some(execution.submission_id.clone()),
-            msg,
-        }));
-        recovery_events.push(Event {
-            submission_id: Some(execution.submission_id.clone()),
-            msg: EventMsg::TurnAborted(TurnAbortedEvent {
+        recovery_events.extend(
+            messages
+                .into_iter()
+                .map(|msg| crate::agent::turn::turn_event(&execution.submission_id, msg)),
+        );
+        recovery_events.push(crate::agent::turn::turn_event(
+            &execution.submission_id,
+            EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: execution.turn_id.clone(),
                 reason: "interrupted by restart".into(),
             }),
-        });
+        ));
     }
     let finish_start = async {
         if is_new || state_changed {

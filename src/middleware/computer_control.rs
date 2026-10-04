@@ -7,7 +7,6 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::manifest::MiddlewareManifest;
 use super::tools::{ApprovalRequirement, Catalog, Tool, ToolContext, render_tool_event};
 use super::{
     FrontendEventSink, Middleware, PromptSection, RuntimeContext, SessionStartContext,
@@ -17,10 +16,9 @@ use crate::backend::model::{ToolDefinition, internal_user_message};
 use crate::backend::sandbox::{MAX_BINARY_FILE_BYTES, NetworkAccess, SandboxMode, WorkerCommand};
 use crate::backend::session_files::SessionFileStore;
 use crate::protocol::{
-    ContentPart, EventMsg, FrontendBlock, FrontendBlockFormat, FrontendBlockRole,
-    FrontendBlockState, FrontendBlockUpdate, FrontendContribution, FrontendEvent, FrontendLink,
-    FrontendSlot, FrontendTone, FrontendWidget, FrontendWidgetContent, ImageDetail, ToolContent,
-    ToolResponse,
+    ContentPart, EventMsg, FrontendBlock, FrontendBlockRole, FrontendContribution, FrontendEvent,
+    FrontendLink, FrontendSlot, FrontendTone, FrontendWidget, FrontendWidgetContent, ImageDetail,
+    ToolContent, ToolResponse,
 };
 use crate::{BoxFuture, Error, Result};
 
@@ -37,20 +35,12 @@ struct Definition {
     browser_notice: String,
     tool: ToolDefinition,
 }
-static DEFINITION: std::sync::LazyLock<Definition> =
-    std::sync::LazyLock::new(|| crate::config::embedded(include_str!("computer_control.toml")));
+crate::embedded_config! { static DEFINITION: Definition = include_str!("computer_control.toml"); }
 
+super::manifest::middleware_manifest! {
 /// Optional computer control; deployment supplies the runtime and its documentation.
-pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
-    std::sync::LazyLock::new(|| MiddlewareManifest {
-        id: "computer_control",
-        label: &DEFINITION.manifest_label,
-        description: &DEFINITION.manifest_description,
-        required: false,
-        default_enabled: DEFINITION.default_enabled,
-        required_model_capability: None,
-        settings: &[],
-    });
+    "computer_control", DEFINITION, required: false, capability: None, settings: &[]
+}
 
 /// Owns computer tools and observations; execution and approval remain in the sandbox.
 pub struct ComputerControl {
@@ -182,23 +172,14 @@ fn browser_widget(address: &str) -> FrontendWidget {
         content: Some(FrontendWidgetContent::Blocks {
             title: DEFINITION.browser_title.clone(),
             blocks: vec![FrontendBlock {
-                id: None,
-                group: None,
-                update: FrontendBlockUpdate::Replace,
-                state: FrontendBlockState::Complete,
                 role: FrontendBlockRole::Notice,
                 title: DEFINITION.browser_title.clone(),
                 text: DEFINITION.browser_notice.clone(),
-                symbol: None,
                 links: vec![FrontendLink {
                     label: "DevTools".into(),
                     href: address.into(),
                 }],
-                files: Vec::new(),
-                content: Default::default(),
-                format: FrontendBlockFormat::PlainText,
-                image_aspect: None,
-                tone: FrontendTone::Neutral,
+                ..Default::default()
             }],
         }),
         action: None,

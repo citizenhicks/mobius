@@ -1,3 +1,4 @@
+pub(super) use crate::frontend::terminal::masked_credential;
 use mobius::Result;
 use mobius::protocol::{FrontendSetting, FrontendSettingKind, FrontendSettingValue};
 use mobius_gateway::wire::{ExtensionKind, MiddlewareConfig, ProviderAuthKind};
@@ -32,7 +33,7 @@ pub(super) fn render(frame: &mut ratatui::Frame<'_>, state: &SetupState) {
         Block::default().style(theme.style(Role::Canvas)),
         frame.area(),
     );
-    let area = content_area(frame.area());
+    let area = crate::frontend::terminal::content_area(frame.area(), 82);
     let mut lines = header(state);
     lines.push(Line::from(""));
     if let Some(progress) = &state.progress {
@@ -75,16 +76,6 @@ pub(in crate::frontend) fn selection_scroll(lines: &[Line<'_>], area: Rect) -> u
     selected_end
         .saturating_sub(usize::from(area.height))
         .min(usize::from(u16::MAX)) as u16
-}
-
-pub(in crate::frontend) fn content_area(area: Rect) -> Rect {
-    let width = area.width.saturating_sub(4).min(82);
-    Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        area.y.saturating_add(1),
-        width,
-        area.height.saturating_sub(2),
-    )
 }
 
 pub(super) fn header(state: &SetupState) -> Vec<Line<'static>> {
@@ -231,7 +222,7 @@ fn render_authentication_page(lines: &mut Vec<Line<'static>>, state: &SetupState
                 format!(
                     "{} API key  {}▏",
                     if focused { "›" } else { " " },
-                    masked_credential(&state.credential)
+                    masked_credential(&state.credential, 32)
                 ),
                 theme.style(if focused { Role::Selection } else { Role::Text }),
             ));
@@ -820,15 +811,6 @@ pub(in crate::frontend) fn choice(
         ])
         .style(theme.style(role)),
     );
-}
-
-pub(super) fn masked_credential(credential: &str) -> String {
-    let count = credential.chars().count();
-    let mut masked = "•".repeat(count.min(32));
-    if count > 32 {
-        masked.push('…');
-    }
-    masked
 }
 
 pub(super) fn footer(state: &SetupState) -> &'static str {

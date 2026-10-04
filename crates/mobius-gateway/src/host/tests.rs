@@ -20,10 +20,7 @@ pub(crate) async fn ensure_test_bot(
     if let Some(bot) = state.bots.bots().map_err(internal)?.into_iter().next() {
         return Ok(bot);
     }
-    let mut config = state
-        .config
-        .lock()
-        .map_err(|_| internal("gateway configuration lock is poisoned"))?;
+    let mut config = state.config()?;
     if config.bot_defaults.is_none() {
         let next = config
             .registering_provider(

@@ -52,9 +52,7 @@ use crate::protocol::ToolLoad;
 use crate::protocol::WebSearchAction;
 
 pub(super) static MANIFEST: std::sync::LazyLock<super::provider::ProviderMetadata> =
-    std::sync::LazyLock::new(|| {
-        super::provider::ProviderMetadata::load(include_str!("openai_provider.toml"))
-    });
+    std::sync::LazyLock::new(|| crate::config::embedded(include_str!("openai_provider.toml")));
 const MAX_JSON_BYTES: usize = 16 * 1024 * 1024;
 const MAX_IMAGE_RESPONSE_BYTES: usize = 65 * 1024 * 1024;
 const MAX_STREAM_OUTPUT_ITEMS: usize = 1_024;

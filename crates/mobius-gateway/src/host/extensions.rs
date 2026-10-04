@@ -24,10 +24,7 @@ impl GatewayHost {
             let sessions_guard = self.begin_exclusive_mutation().await?;
             let state = self.state.lock().await;
             let next = {
-                let current = state
-                    .config
-                    .lock()
-                    .map_err(|_| internal("gateway configuration lock is poisoned"))?;
+                let current = state.config()?;
                 if current.installed_extensions.contains_key(&staged.id) {
                     return Err(invalid_config(Error::Config(format!(
                         "extension `{}` is already installed",
@@ -64,10 +61,7 @@ impl GatewayHost {
         let _extension_mutation = mutation.lock_owned().await;
         let installed = {
             let state = self.state.lock().await;
-            let config = state
-                .config
-                .lock()
-                .map_err(|_| internal("gateway configuration lock is poisoned"))?;
+            let config = state.config()?;
             config
                 .installed_extensions
                 .get(&id)
@@ -102,16 +96,12 @@ impl GatewayHost {
             let sessions_guard = self.begin_exclusive_mutation().await?;
             let state = self.state.lock().await;
             let next = {
-                let current = state
-                    .config
-                    .lock()
-                    .map_err(|_| internal("gateway configuration lock is poisoned"))?;
+                let current = state.config()?;
                 if current.installed_extensions.get(&id) != Some(&installed) {
-                    return Err(Rejection {
-                        code: "extension_changed",
-                        message: format!("extension `{id}` changed while its update was prepared"),
-                        fatal: false,
-                    });
+                    return Err(Rejection::new(
+                        "extension_changed",
+                        format!("extension `{id}` changed while its update was prepared"),
+                    ));
                 }
                 let mut next = current.clone();
                 next.installed_extensions
@@ -151,10 +141,7 @@ impl GatewayHost {
             .find(|bot| bot.config.config.extensions.contains(&id))
             .map(|bot| format!("Bot @{}", bot.handle));
         let next = {
-            let current = state
-                .config
-                .lock()
-                .map_err(|_| internal("gateway configuration lock is poisoned"))?;
+            let current = state.config()?;
             let selected_by = selected_by.or_else(|| {
                 current
                     .bot_defaults
@@ -163,13 +150,12 @@ impl GatewayHost {
                     .map(|_| "the default Bot template".to_owned())
             });
             if let Some(selected_by) = selected_by {
-                return Err(Rejection {
-                    code: "extension_in_use",
-                    message: format!(
+                return Err(Rejection::new(
+                    "extension_in_use",
+                    format!(
                         "extension `{id}` is selected by {selected_by}; remove it from that profile first"
                     ),
-                    fatal: false,
-                });
+                ));
             }
             let mut next = current.clone();
             next.installed_extensions
@@ -198,21 +184,17 @@ impl GatewayHost {
         let sessions_guard = self.begin_exclusive_mutation().await?;
         let state = self.state.lock().await;
         let next = {
-            let current = state
-                .config
-                .lock()
-                .map_err(|_| internal("gateway configuration lock is poisoned"))?;
+            let current = state.config()?;
             let mut next = current.clone();
             let installed = next
                 .installed_extensions
                 .get_mut(&id)
                 .ok_or_else(|| unknown_extension(&id))?;
             if installed.digest != expected_digest {
-                return Err(Rejection {
-                    code: "extension_changed",
-                    message: format!("extension `{id}` changed before its hook trust changed"),
-                    fatal: false,
-                });
+                return Err(Rejection::new(
+                    "extension_changed",
+                    format!("extension `{id}` changed before its hook trust changed"),
+                ));
             }
             if installed.hooks.is_empty() {
                 return Err(invalid_config(Error::Config(format!(
@@ -234,10 +216,7 @@ impl GatewayHost {
         state: &GatewayState,
         next: GatewayConfig,
     ) -> std::result::Result<bool, Rejection> {
-        let mut current = state
-            .config
-            .lock()
-            .map_err(|_| internal("gateway configuration lock is poisoned"))?;
+        let mut current = state.config()?;
         if *current == next {
             return Ok(false);
         }
@@ -295,11 +274,10 @@ impl GatewayHost {
 }
 
 fn unknown_extension(id: &str) -> Rejection {
-    Rejection {
-        code: "unknown_extension",
-        message: format!("extension `{id}` is not installed"),
-        fatal: false,
-    }
+    Rejection::new(
+        "unknown_extension",
+        format!("extension `{id}` is not installed"),
+    )
 }
 
 #[cfg(test)]

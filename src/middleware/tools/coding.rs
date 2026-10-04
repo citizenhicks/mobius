@@ -23,8 +23,7 @@ struct Definition {
     write_file: super::ToolSpec,
     apply_patch: super::ToolSpec,
 }
-static DEFINITION: std::sync::LazyLock<Definition> =
-    std::sync::LazyLock::new(|| crate::config::embedded(include_str!("coding.toml")));
+crate::embedded_config! { static DEFINITION: Definition = include_str!("coding.toml"); }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

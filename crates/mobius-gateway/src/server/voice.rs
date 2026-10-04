@@ -177,11 +177,10 @@ pub(super) async fn handle_message(
                 .cloned()
                 .and_then(|host| {
                     if offer_sdp.is_empty() || offer_sdp.len() > 64 * 1024 {
-                        return Err(Rejection {
-                            code: "realtime_voice",
-                            message: "invalid voice connection request".into(),
-                            fatal: false,
-                        });
+                        return Err(Rejection::new(
+                            "realtime_voice",
+                            "invalid voice connection request",
+                        ));
                     }
                     Ok(host)
                 });

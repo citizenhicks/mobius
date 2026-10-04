@@ -147,7 +147,7 @@ fn renders_every_subagent_tool_call() {
 #[test]
 fn wait_agent_uses_its_bounded_wait_deadline() {
     assert_eq!(
-        wait_parameters()["properties"]["timeout_ms"]["maximum"],
+        wait_definition().parameters["properties"]["timeout_ms"]["maximum"],
         serde_json::json!(120_000)
     );
     assert_eq!(

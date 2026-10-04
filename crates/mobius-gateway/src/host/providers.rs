@@ -62,10 +62,7 @@ impl GatewayHost {
         let _mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
         {
-            let mut current = state
-                .config
-                .lock()
-                .map_err(|_| internal("gateway configuration lock is poisoned"))?;
+            let mut current = state.config()?;
             let models = configured_model_choices(&current, &state.store, &state.credentials)
                 .map_err(internal)?;
             crate::config::validate_bot_compatibility(&current, &config, &models)
@@ -97,10 +94,7 @@ impl GatewayHost {
                 .credentials
                 .remove(&instance)
                 .map_err(invalid_config)?;
-            let config = state
-                .config
-                .lock()
-                .map_err(|_| internal("gateway configuration lock is poisoned"))?;
+            let config = state.config()?;
             config
                 .configured_providers
                 .get(&instance)
@@ -149,9 +143,7 @@ impl GatewayHost {
                 )
                 .map_err(invalid_config)?;
             let configured = state
-                .config
-                .lock()
-                .map_err(|_| internal("gateway configuration lock is poisoned"))?
+                .config()?
                 .configured_providers
                 .get(&instance)
                 .filter(|configured| {
@@ -191,25 +183,19 @@ impl GatewayHost {
     ) -> std::result::Result<Option<ServerMessage>, Rejection> {
         let definition = provider(&provider_id).map_err(invalid_config)?;
         let ProviderAuth::Browser(auth) = definition.auth() else {
-            return Err(Rejection {
-                code: "invalid_provider_auth",
-                message: "the selected provider uses an API key".into(),
-                fatal: false,
-            });
+            return Err(Rejection::new(
+                "invalid_provider_auth",
+                "the selected provider uses an API key",
+            ));
         };
         if !auth.supports_device_login() {
-            return Err(Rejection {
-                code: "device_login_unavailable",
-                message: "the selected provider does not support device-code login".into(),
-                fatal: false,
-            });
+            return Err(Rejection::new(
+                "device_login_unavailable",
+                "the selected provider does not support device-code login",
+            ));
         }
         let state = self.state.lock().await;
-        let transport = state
-            .config
-            .lock()
-            .map_err(|_| internal("gateway configuration lock is poisoned"))?
-            .model_transport;
+        let transport = state.config()?.model_transport;
         let login_guard = Arc::clone(&state.provider_login);
         drop(state);
         let login_id = Uuid::new_v4().to_string();
@@ -391,11 +377,7 @@ impl GatewayHost {
     ) -> std::result::Result<ReadyPayload, Rejection> {
         let _mutation = self.begin_exclusive_mutation().await?;
         let state = self.state.lock().await;
-        let current = state
-            .config
-            .lock()
-            .map_err(|_| internal("gateway configuration lock is poisoned"))?
-            .clone();
+        let current = state.config()?.clone();
         validate_browser_endpoint_registration(&current, &selection, operator)?;
         if !credential_is_configured(&selection, &state.store, &state.credentials)
             .map_err(invalid_config)?
@@ -446,9 +428,7 @@ impl GatewayHost {
         )
         .map_err(internal)?;
         let defaults = state
-            .config
-            .lock()
-            .map_err(|_| internal("gateway configuration lock is poisoned"))?
+            .config()?
             .bot_defaults
             .clone()
             .ok_or_else(|| internal("registered provider did not establish Bot defaults"))?;
@@ -478,25 +458,20 @@ impl GatewayHost {
     ) -> std::result::Result<ReadyPayload, Rejection> {
         let _mutation = self.begin_exclusive_mutation().await?;
         let state = self.state.lock().await;
-        let current = state
-            .config
-            .lock()
-            .map_err(|_| internal("gateway configuration lock is poisoned"))?
-            .clone();
+        let current = state.config()?.clone();
         let next = current
             .removing_provider(&instance)
             .map_err(invalid_config)?;
         let bots = state.bots.bots().map_err(internal)?;
         for bot in &bots {
             if bot_references_removed_provider(bot, &instance, &next).map_err(invalid_config)? {
-                return Err(Rejection {
-                    code: "provider_in_use",
-                    message: format!(
+                return Err(Rejection::new(
+                    "provider_in_use",
+                    format!(
                         "provider `{instance}` is selected by Bot @{}; update that Bot first",
                         bot.handle
                     ),
-                    fatal: false,
-                });
+                ));
             }
         }
         validate_bot_catalog(&state, &next, &bots)?;
@@ -538,11 +513,10 @@ fn validate_browser_endpoint_registration(
     if trusted {
         return Ok(());
     }
-    Err(Rejection {
-        code: "operator_required",
-        message: "browser-authenticated proxy destinations are configured locally by the gateway operator".into(),
-        fatal: false,
-    })
+    Err(Rejection::new(
+        "operator_required",
+        "browser-authenticated proxy destinations are configured locally by the gateway operator",
+    ))
 }
 
 fn commit_provider_registration(
@@ -606,14 +580,13 @@ fn validate_bot_catalog(
 }
 
 fn bot_catalog_rejection(bot: &BotRecord, error: impl std::fmt::Display) -> Rejection {
-    Rejection {
-        code: "provider_in_use",
-        message: format!(
+    Rejection::new(
+        "provider_in_use",
+        format!(
             "provider catalog change would invalidate Bot @{}: {error}; register the replacement under a new instance, move affected Bots and Bot defaults, then remove the old instance",
             bot.handle
         ),
-        fatal: false,
-    }
+    )
 }
 
 fn bot_references_removed_provider(
@@ -642,30 +615,27 @@ fn reserve_provider_login(
     provider_id: &str,
 ) -> std::result::Result<bool, Rejection> {
     if request_id.is_empty() || request_id.len() > MAX_LOGIN_REQUEST_ID_BYTES {
-        return Err(Rejection {
-            code: "invalid_provider_login",
-            message: "provider login request IDs must contain 1–128 bytes".into(),
-            fatal: false,
-        });
+        return Err(Rejection::new(
+            "invalid_provider_login",
+            "provider login request IDs must contain 1–128 bytes",
+        ));
     }
     if let Some(attempt) = logins.attempts.get(client_id)
         && attempt.request_id == request_id
     {
         if attempt.provider != provider_id {
-            return Err(Rejection {
-                code: "invalid_provider_login",
-                message: "the provider login request belongs to a different provider".into(),
-                fatal: false,
-            });
+            return Err(Rejection::new(
+                "invalid_provider_login",
+                "the provider login request belongs to a different provider",
+            ));
         }
         return Ok(false);
     }
     if logins.active_id.is_some() {
-        return Err(Rejection {
-            code: "provider_login_in_progress",
-            message: "finish the active provider login before starting another".into(),
-            fatal: false,
-        });
+        return Err(Rejection::new(
+            "provider_login_in_progress",
+            "finish the active provider login before starting another",
+        ));
     }
     logins.active_id = Some(login_id.into());
     logins.attempts.insert(

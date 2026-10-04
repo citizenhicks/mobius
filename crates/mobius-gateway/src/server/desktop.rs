@@ -154,12 +154,10 @@ pub(super) async fn handle_message(
                 write_result(
                     writer,
                     request_id,
-                    Err(Rejection {
-                        code: "computer_busy",
-                        message: "connection requests are already in progress; try again shortly"
-                            .into(),
-                        fatal: false,
-                    }),
+                    Err(Rejection::new(
+                        "computer_busy",
+                        "connection requests are already in progress; try again shortly",
+                    )),
                 )
                 .await?;
             } else {
@@ -195,11 +193,7 @@ pub(super) async fn handle_message(
                             write_result(
                                 writer,
                                 request_id,
-                                Err(Rejection {
-                                    code: "desktop_unavailable",
-                                    message: error.to_string(),
-                                    fatal: false,
-                                }),
+                                Err(Rejection::new("desktop_unavailable", error.to_string())),
                             )
                             .await?;
                             return Ok(None);
@@ -250,11 +244,10 @@ pub(super) async fn handle_message(
                         write_result(
                             writer,
                             request_id,
-                            Err(Rejection {
-                                code: "desktop_busy",
-                                message: "desktop control is already pending".into(),
-                                fatal: false,
-                            }),
+                            Err(Rejection::new(
+                                "desktop_busy",
+                                "desktop control is already pending",
+                            )),
                         )
                         .await?;
                     } else {
@@ -285,12 +278,10 @@ pub(super) async fn handle_message(
 }
 
 fn desktop_unavailable() -> Rejection {
-    Rejection {
-        code: "desktop_unavailable",
-        message: "desktop streaming requires an enabled Linux desktop and an encrypted connection"
-            .into(),
-        fatal: false,
-    }
+    Rejection::new(
+        "desktop_unavailable",
+        "desktop streaming requires an enabled Linux desktop and an encrypted connection",
+    )
 }
 
 fn computer_available(gateway: &GatewayHost, client: &AuthenticatedClient<'_>) -> bool {

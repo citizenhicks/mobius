@@ -29,20 +29,10 @@ fn git_diff_styles_each_file_and_preserves_metadata_and_truncated_sections() {
     let mut state = state();
     state.transcript.clear();
     state.apply_block(rendered(FrontendBlock {
-        id: None,
-        group: None,
-        update: FrontendBlockUpdate::Replace,
-        state: FrontendBlockState::Complete,
         role: FrontendBlockRole::Tool,
-        title: String::new(),
         text: diff.into(),
-        symbol: None,
-        content: Default::default(),
         format: FrontendBlockFormat::UnifiedDiff,
-        image_aspect: None,
-        tone: FrontendTone::Neutral,
-        links: Vec::new(),
-        files: Vec::new(),
+        ..Default::default()
     }));
     let lines = view::live_transcript_lines(&mut state, 0, 80);
     let text = rendered_text(&lines);
@@ -74,20 +64,10 @@ fn metadata_only_diff_remains_text_instead_of_an_empty_edit() {
     let mut state = state();
     state.transcript.clear();
     state.apply_block(rendered(FrontendBlock {
-        id: None,
-        group: None,
-        update: FrontendBlockUpdate::Replace,
-        state: FrontendBlockState::Complete,
         role: FrontendBlockRole::Tool,
-        title: String::new(),
         text: "No changes.".into(),
-        symbol: None,
-        content: Default::default(),
         format: FrontendBlockFormat::UnifiedDiff,
-        image_aspect: None,
-        tone: FrontendTone::Neutral,
-        links: Vec::new(),
-        files: Vec::new(),
+        ..Default::default()
     }));
     let text = rendered_text(&view::live_transcript_lines(&mut state, 0, 80));
     assert_eq!(text.trim(), "No changes.");
@@ -99,19 +79,10 @@ fn completed_diff_replaces_the_pending_block_with_a_styled_diff() {
     state.transcript.clear();
     state.apply_block(rendered(FrontendBlock {
         id: Some("turn/patch".into()),
-        group: None,
-        update: FrontendBlockUpdate::Replace,
         state: FrontendBlockState::Pending,
         role: FrontendBlockRole::Tool,
         title: "Edit note.rs".into(),
-        text: String::new(),
-        symbol: None,
-        content: Default::default(),
-        format: FrontendBlockFormat::PlainText,
-        image_aspect: None,
-        tone: FrontendTone::Neutral,
-        links: Vec::new(),
-        files: Vec::new(),
+        ..Default::default()
     }));
     view::live_transcript_lines(&mut state, 0, 80);
     assert_eq!(
@@ -123,21 +94,14 @@ fn completed_diff_replaces_the_pending_block_with_a_styled_diff() {
         Some(80)
     );
     state.apply_block(rendered(FrontendBlock {
-        id: Some("turn/patch".into()),
-        group: None,
-        update: FrontendBlockUpdate::Replace,
-        state: FrontendBlockState::Complete,
-        role: FrontendBlockRole::Tool,
-        title: "Edit note.rs".into(),
-        text: "--- note.rs\n+++ note.rs\n@@ -1,5 +1,5 @@\n-fn old_name() {}\n+fn new_name() {}\n keep_one();\n-let removed = false;\n keep_two();\n+let added = true;\n keep_three();\n".into(),
-        symbol: None,
-        content: Default::default(),
-        format: FrontendBlockFormat::UnifiedDiff,
-        image_aspect: None,
-        tone: FrontendTone::Success,
-        links: Vec::new(),
-        files: Vec::new(),
-    }));
+id: Some("turn/patch".into()),
+role: FrontendBlockRole::Tool,
+title: "Edit note.rs".into(),
+text: "--- note.rs\n+++ note.rs\n@@ -1,5 +1,5 @@\n-fn old_name() {}\n+fn new_name() {}\n keep_one();\n-let removed = false;\n keep_two();\n+let added = true;\n keep_three();\n".into(),
+format: FrontendBlockFormat::UnifiedDiff,
+tone: FrontendTone::Success,
+..Default::default()
+}));
     assert!(
         state
             .transcript
@@ -225,19 +189,11 @@ fn pending_tool_compacts_its_display_without_losing_completed_detail() {
     );
     state.apply_block(rendered(FrontendBlock {
         id: Some("turn/bash".into()),
-        group: None,
-        update: FrontendBlockUpdate::Replace,
         state: FrontendBlockState::Pending,
         role: FrontendBlockRole::Tool,
         title: "Bash".into(),
         text: detail.clone(),
-        symbol: None,
-        content: Default::default(),
-        format: FrontendBlockFormat::PlainText,
-        image_aspect: None,
-        tone: FrontendTone::Neutral,
-        links: Vec::new(),
-        files: Vec::new(),
+        ..Default::default()
     }));
     assert_eq!(
         rendered_text(&view::live_transcript_lines(&mut state, 0, 80)),
@@ -245,19 +201,12 @@ fn pending_tool_compacts_its_display_without_losing_completed_detail() {
     );
     state.apply_block(rendered(FrontendBlock {
         id: Some("turn/bash".into()),
-        group: None,
         update: FrontendBlockUpdate::Append,
-        state: FrontendBlockState::Complete,
         role: FrontendBlockRole::Tool,
         title: "Bash".into(),
         text: "ok".into(),
-        symbol: None,
-        content: Default::default(),
-        format: FrontendBlockFormat::PlainText,
-        image_aspect: None,
         tone: FrontendTone::Success,
-        links: Vec::new(),
-        files: Vec::new(),
+        ..Default::default()
     }));
 
     let entry = state.transcript.front().expect("tool entry");
@@ -427,19 +376,9 @@ fn narrow_terminal_keeps_session_card_and_compact_footer() {
 fn block_identity_is_scoped_by_explicit_capability() {
     let block = |title: &str| FrontendBlock {
         id: Some("same-id".into()),
-        group: None,
-        update: FrontendBlockUpdate::Replace,
-        state: FrontendBlockState::Complete,
         role: FrontendBlockRole::Notice,
         title: title.into(),
-        text: String::new(),
-        symbol: None,
-        links: Vec::new(),
-        files: Vec::new(),
-        content: Default::default(),
-        format: FrontendBlockFormat::PlainText,
-        image_aspect: None,
-        tone: FrontendTone::Neutral,
+        ..Default::default()
     };
     let mut state = state();
     state.apply_block(RenderedBlock {
@@ -486,20 +425,10 @@ fn gateway_history_preserves_child_diff_rendering() {
         vec![recorded(
             message,
             vec![rendered(FrontendBlock {
-                id: None,
-                group: None,
-                update: FrontendBlockUpdate::Replace,
-                state: FrontendBlockState::Complete,
                 role: FrontendBlockRole::Artifact,
-                title: String::new(),
                 text: "--- a/file\n+++ b/file\n-old\n+new".into(),
-                symbol: None,
-                content: Default::default(),
                 format: FrontendBlockFormat::UnifiedDiff,
-                image_aspect: None,
-                tone: FrontendTone::Neutral,
-                links: Vec::new(),
-                files: Vec::new(),
+                ..Default::default()
             })],
             None,
         )],
@@ -516,24 +445,16 @@ fn session_file_block_renders_download_metadata_as_plain_text() {
     state.transcript.clear();
     state.apply_block(rendered(FrontendBlock {
         id: Some("artifacts/turn/file".into()),
-        group: None,
-        update: FrontendBlockUpdate::Replace,
-        state: FrontendBlockState::Complete,
         role: FrontendBlockRole::Artifact,
         title: "Sent report.xlsx".into(),
-        text: String::new(),
-        symbol: None,
-        content: Default::default(),
-        format: FrontendBlockFormat::PlainText,
-        image_aspect: None,
         tone: FrontendTone::Success,
-        links: Vec::new(),
         files: vec![mobius::protocol::SessionFileReference {
             id: "file-a".into(),
             name: "report.xlsx".into(),
             size: 42,
             media_type: "application/octet-stream".into(),
         }],
+        ..Default::default()
     }));
 
     assert_eq!(
@@ -866,18 +787,10 @@ fn transcript_viewport_matches_full_paragraph_for_unicode_scroll_and_resize() {
             state.apply_block(rendered(FrontendBlock {
                 id: Some(format!("entry-{index}")),
                 group: Some(format!("group-{}", index / 2)),
-                update: FrontendBlockUpdate::Replace,
-                state: FrontendBlockState::Complete,
                 role: FrontendBlockRole::Notice,
                 title: format!("Entry {index}"),
                 text: format!("λ界 e\u{301} 👩‍💻 entry {index} {}", "wide ".repeat(12)),
-                symbol: None,
-                content: Default::default(),
-                format: FrontendBlockFormat::PlainText,
-                image_aspect: None,
-                tone: FrontendTone::Neutral,
-                links: Vec::new(),
-                files: Vec::new(),
+                ..Default::default()
             }));
         }
         state.push("› user e\u{301} 👩‍💻", TranscriptTone::User);
@@ -929,18 +842,11 @@ fn transcript_viewport_matches_full_paragraph_for_unicode_scroll_and_resize() {
         state.apply_block(rendered(FrontendBlock {
             id: Some("entry-3".into()),
             group: Some("group-1".into()),
-            update: FrontendBlockUpdate::Replace,
-            state: FrontendBlockState::Complete,
             role: FrontendBlockRole::Notice,
             title: "Entry 3 updated".into(),
             text: "updated e\u{301} 👩‍💻 content ".repeat(10),
-            symbol: None,
-            content: Default::default(),
-            format: FrontendBlockFormat::PlainText,
-            image_aspect: None,
             tone: FrontendTone::Success,
-            links: Vec::new(),
-            files: Vec::new(),
+            ..Default::default()
         }));
     }
     for width in [40, 67] {

@@ -57,9 +57,7 @@ pub(super) async fn hydrate(
                 })?)?;
             let size = usize::try_from(image.file.size)
                 .ok()
-                .and_then(|bytes| bytes.checked_add(2))
-                .and_then(|bytes| bytes.checked_div(3))
-                .and_then(|bytes| bytes.checked_mul(4));
+                .and_then(|bytes| base64::encoded_len(bytes, true));
             encoded = encoded
                 .checked_add(
                     size.ok_or_else(|| Error::Provider("invalid image observation size".into()))?,

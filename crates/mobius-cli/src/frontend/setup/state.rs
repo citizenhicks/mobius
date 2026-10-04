@@ -972,14 +972,7 @@ impl SetupState {
                 AuthField::Credential => (&mut self.credential, MAX_API_KEY_BYTES),
             }
         };
-        let mut rejected = false;
-        for character in text.chars().filter(|character| !character.is_control()) {
-            if target.len() + character.len_utf8() > limit {
-                rejected = true;
-                break;
-            }
-            target.push(character);
-        }
+        let rejected = crate::frontend::terminal::append_text(target, text, limit);
         self.error = rejected.then(|| format!("input is limited to {limit} bytes"));
     }
 

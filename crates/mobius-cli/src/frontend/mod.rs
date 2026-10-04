@@ -14,6 +14,8 @@ mod gateway;
 mod gateway_actions;
 mod headless;
 mod reinitialize;
+mod response;
+pub use response::{await_response, wait_ready};
 mod setup;
 mod terminal;
 mod theme;

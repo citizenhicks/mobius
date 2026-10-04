@@ -8,8 +8,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use super::manifest::MiddlewareManifest;
-use super::tools::{Catalog, labeled_tool_heading, render_tool_event};
+use super::tools::Catalog;
 use super::{
     ActiveCommandContext, Middleware, MiddlewareCommandContext, MiddlewareCommandOutput,
     ModelContext, PromptSection, RuntimeContext, SessionStartContext, SessionStartSource,
@@ -25,6 +24,7 @@ mod text {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(super) struct Definition {
+        pub(super) write_scratchpad: crate::middleware::tools::ToolSpec,
         pub(super) prompt_projection_header: String,
         pub(super) prompt_projection_global: String,
         pub(super) prompt_projection_empty: String,
@@ -51,14 +51,10 @@ mod text {
         pub(super) message_updated: String,
         pub(super) message_user_confirmed: String,
         pub(super) prompt_main: String,
-        pub(super) render_remember: String,
-        pub(super) tool_write_scratchpad_description: String,
-        pub(super) tool_write_scratchpad_parameter_note_description: String,
         pub(super) widget_global_title: String,
         pub(super) widget_text: String,
     }
-    pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
-        std::sync::LazyLock::new(|| crate::config::embedded(include_str!("scratchpad.toml")));
+    crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("scratchpad.toml"); }
 }
 mod presentation;
 mod projection;
@@ -81,17 +77,10 @@ const MAX_INJECTION_BYTES: usize = 4 * 1024;
 const MAX_SCOPE_BYTES: usize = 1_900;
 const PROJECTION_KIND: &str = "shared_scratchpad";
 
+super::manifest::middleware_manifest! {
 /// Configuration and presentation metadata for durable agent notes.
-pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
-    std::sync::LazyLock::new(|| MiddlewareManifest {
-        id: "scratchpad",
-        label: text::DEFINITION.manifest_label.as_str(),
-        description: text::DEFINITION.manifest_description.as_str(),
-        required: false,
-        default_enabled: text::DEFINITION.default_enabled,
-        required_model_capability: None,
-        settings: &[],
-    });
+    "scratchpad", text::DEFINITION, required: false, capability: None, settings: &[]
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -497,21 +486,9 @@ impl Middleware for Scratchpad {
     }
 
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
-        render_tool_event(
-            event,
-            |name| name == "write_scratchpad",
-            |name, arguments| {
-                if matches!(event, EventMsg::ToolCallEnd(_)) {
-                    name.into()
-                } else {
-                    labeled_tool_heading(
-                        text::DEFINITION.render_remember.as_str(),
-                        "note",
-                        arguments,
-                    )
-                }
-            },
-        )
+        [&text::DEFINITION.write_scratchpad]
+            .into_iter()
+            .find_map(|spec| spec.render(event))
     }
 
     fn prepare_compacted_input(

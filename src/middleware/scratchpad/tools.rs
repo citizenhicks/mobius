@@ -20,22 +20,9 @@ pub(super) struct WriteScratchpad {
 
 impl Tool for WriteScratchpad {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "write_scratchpad".into(),
-            description: text::DEFINITION.tool_write_scratchpad_description.clone(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "note": {
-                        "type": "string",
-                        "description": text::DEFINITION.tool_write_scratchpad_parameter_note_description.as_str(),
-                        "maxLength": MAX_NOTE_BYTES
-                    }
-                },
-                "required": ["note"],
-                "additionalProperties": false
-            }),
-        }
+        let mut tool = text::DEFINITION.write_scratchpad.tool.clone();
+        tool.parameters["properties"]["note"]["maxLength"] = MAX_NOTE_BYTES.into();
+        tool
     }
 
     fn approval(&self) -> ApprovalRequirement {

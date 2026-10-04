@@ -92,41 +92,39 @@ static APPROVAL_POLICIES: std::sync::LazyLock<Vec<MiddlewareSettingChoice>> =
     std::sync::LazyLock::new(|| {
         vec![
             MiddlewareSettingChoice {
-                disables: &[],
-                value: "ask",
-                label: text::DEFINITION.approval_policy_ask_label.as_str(),
-                description: text::DEFINITION.approval_policy_ask_description.as_str(),
-                symbol: Some("shield_check"),
+                disables: vec![],
+                value: "ask".into(),
+                label: text::DEFINITION.approval_policy_ask_label.clone(),
+                description: text::DEFINITION.approval_policy_ask_description.clone(),
+                symbol: Some("shield_check".into()),
                 tone: FrontendTone::Neutral,
             },
             MiddlewareSettingChoice {
-                disables: &[],
-                value: "allow",
-                label: text::DEFINITION.approval_policy_allow_label.as_str(),
-                description: text::DEFINITION.approval_policy_allow_description.as_str(),
-                symbol: Some("shield"),
+                disables: vec![],
+                value: "allow".into(),
+                label: text::DEFINITION.approval_policy_allow_label.clone(),
+                description: text::DEFINITION.approval_policy_allow_description.clone(),
+                symbol: Some("shield".into()),
                 tone: FrontendTone::Warning,
             },
             MiddlewareSettingChoice {
-                disables: &[],
-                value: "allow_network",
-                label: text::DEFINITION
-                    .approval_policy_allow_network_label
-                    .as_str(),
+                disables: vec![],
+                value: "allow_network".into(),
+                label: text::DEFINITION.approval_policy_allow_network_label.clone(),
                 description: text::DEFINITION
                     .approval_policy_allow_network_description
-                    .as_str(),
-                symbol: Some("shield_alert"),
+                    .clone(),
+                symbol: Some("shield_alert".into()),
                 tone: FrontendTone::Warning,
             },
             MiddlewareSettingChoice {
-                disables: &[],
-                value: "full_access",
-                label: text::DEFINITION.approval_policy_full_access_label.as_str(),
+                disables: vec![],
+                value: "full_access".into(),
+                label: text::DEFINITION.approval_policy_full_access_label.clone(),
                 description: text::DEFINITION
                     .approval_policy_full_access_description
-                    .as_str(),
-                symbol: Some("shield_off"),
+                    .clone(),
+                symbol: Some("shield_off".into()),
                 tone: FrontendTone::Error,
             },
         ]
@@ -135,23 +133,21 @@ static SETTINGS: std::sync::LazyLock<Vec<MiddlewareSettingManifest>> =
     std::sync::LazyLock::new(|| {
         vec![
             MiddlewareSettingManifest::Select {
-                id: "approval_policy",
-                label: text::DEFINITION.setting_approval_policy_label.as_str(),
-                description: text::DEFINITION
-                    .setting_approval_policy_description
-                    .as_str(),
-                choices: MiddlewareSettingChoices::Static(&APPROVAL_POLICIES),
+                id: "approval_policy".into(),
+                label: text::DEFINITION.setting_approval_policy_label.clone(),
+                description: text::DEFINITION.setting_approval_policy_description.clone(),
+                choices: MiddlewareSettingChoices::Static(APPROVAL_POLICIES.clone()),
                 unset_label: None,
-                default: Some(text::DEFINITION.defaults_approval_policy.as_str()),
+                default: Some(text::DEFINITION.defaults_approval_policy.clone()),
                 max_bytes: 32,
                 composer: true,
             },
             MiddlewareSettingManifest::Integer {
-                id: "tool_output_bytes",
-                label: text::DEFINITION.setting_tool_output_bytes_label.as_str(),
+                id: "tool_output_bytes".into(),
+                label: text::DEFINITION.setting_tool_output_bytes_label.clone(),
                 description: text::DEFINITION
                     .setting_tool_output_bytes_description
-                    .as_str(),
+                    .clone(),
                 min: 1,
                 max: Some(
                     i64::try_from(MAX_TOOL_OUTPUT_BYTES).expect("output safety bound must fit"),
@@ -161,11 +157,11 @@ static SETTINGS: std::sync::LazyLock<Vec<MiddlewareSettingManifest>> =
                     .expect("validated output default must fit"),
             },
             MiddlewareSettingManifest::Integer {
-                id: "background_commands",
-                label: text::DEFINITION.setting_background_commands_label.as_str(),
+                id: "background_commands".into(),
+                label: text::DEFINITION.setting_background_commands_label.clone(),
                 description: text::DEFINITION
                     .setting_background_commands_description
-                    .as_str(),
+                    .clone(),
                 min: 1,
                 max: Some(
                     i64::try_from(MAX_BACKGROUND_COMMANDS).expect("command safety bound must fit"),

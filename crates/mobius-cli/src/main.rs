@@ -1,7 +1,9 @@
 //! Command-line entry point for möbius.
+use mobius_cli::frontend::{await_response, wait_ready as wait_gateway_ready};
 use std::env;
 use std::fs::{File, OpenOptions};
-use std::io::{IsTerminal as _, Read as _};
+use std::io::IsTerminal as _;
+use std::ops::ControlFlow;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 #[cfg(unix)]
@@ -23,8 +25,8 @@ use mobius_gateway::gateway_accounts::{
     validate_local_gateway_config,
 };
 use mobius_gateway::wire::{
-    BotRecord, ClientKind, ClientMessage, ReadyPayload, ServerFrame, ServerMessage,
-    SessionActivityState, SessionReadyPayload, SessionRecord, apply_session_changes,
+    BotRecord, ClientKind, ClientMessage, ReadyPayload, ServerMessage, SessionActivityState,
+    SessionReadyPayload, SessionRecord,
 };
 use tokio::io::AsyncReadExt as _;
 use tokio::process::{Child, Command};
@@ -671,18 +673,7 @@ fn startup_error(
     message: impl std::fmt::Display,
     log: &tempfile::NamedTempFile,
 ) -> mobius_gateway::Error {
-    let mut details = String::new();
-    if let Ok(file) = std::fs::File::open(log.path()) {
-        let _ = file
-            .take(MAX_STARTUP_ERROR_BYTES)
-            .read_to_string(&mut details);
-    }
-    let details = details.trim();
-    mobius_gateway::Error::Config(if details.is_empty() {
-        message.to_string()
-    } else {
-        format!("{message}: {details}")
-    })
+    mobius_gateway::command::startup_error(message, log, MAX_STARTUP_ERROR_BYTES)
 }
 
 async fn open_session(
@@ -745,27 +736,18 @@ async fn discard_session(
         })
         .await
         .map_err(gateway_error)?;
-    let mut events = events.scoped();
-    loop {
-        let frame = events.next().await.map_err(gateway_error)?.ok_or_else(|| {
-            Error::Stopped("gateway disconnected before discarding the chat".into())
-        })?;
-        let ServerFrame { version, message } = frame;
-        if let Some(error) = message.response_error(Some(&request_id)) {
-            return Err(Error::Stopped(error.message.into()));
-        }
-        match message {
-            ServerMessage::Accepted { request_id: actual } if actual == request_id => return Ok(()),
-            ServerMessage::Ready { payload } => gateway.update(payload),
-            ServerMessage::Sessions { sessions, .. } => gateway.sessions = sessions,
-            ServerMessage::SessionsChanged { sessions, .. } => {
-                apply_session_changes(&mut gateway.sessions, sessions)
+    await_response(
+        events,
+        Some(&request_id),
+        Some(gateway),
+        |message| match message {
+            ServerMessage::Accepted { request_id: actual } if actual == request_id => {
+                ControlFlow::Break(())
             }
-            message => events
-                .defer(ServerFrame { version, message })
-                .map_err(gateway_error)?,
-        }
-    }
+            message => ControlFlow::Continue(message),
+        },
+    )
+    .await
 }
 
 async fn discard_pristine_session(
@@ -793,34 +775,21 @@ async fn refresh_sessions(
         })
         .await
         .map_err(gateway_error)?;
-    let mut events = events.scoped();
-    loop {
-        let frame =
-            events.next().await.map_err(gateway_error)?.ok_or_else(|| {
-                Error::Stopped("gateway disconnected before listing chats".into())
-            })?;
-        let ServerFrame { version, message } = frame;
-        if let Some(error) = message.response_error(Some(&request_id)) {
-            return Err(Error::Stopped(error.message.into()));
-        }
-        match message {
+    let sessions = await_response(
+        events,
+        Some(&request_id),
+        Some(gateway),
+        |message| match message {
             ServerMessage::Sessions {
                 request_id: Some(actual),
                 sessions,
-            } if actual == request_id => {
-                gateway.sessions = sessions;
-                return Ok(());
-            }
-            ServerMessage::Ready { payload } => gateway.update(payload),
-            ServerMessage::Sessions { sessions, .. } => gateway.sessions = sessions,
-            ServerMessage::SessionsChanged { sessions, .. } => {
-                apply_session_changes(&mut gateway.sessions, sessions)
-            }
-            message => events
-                .defer(ServerFrame { version, message })
-                .map_err(gateway_error)?,
-        }
-    }
+            } if actual == request_id => ControlFlow::Break(sessions),
+            message => ControlFlow::Continue(message),
+        },
+    )
+    .await?;
+    gateway.sessions = sessions;
+    Ok(())
 }
 
 fn catalog_session_is_pristine(gateway: &ReadyPayload, session_id: &str) -> bool {
@@ -841,61 +810,24 @@ fn pristine_session(session: &SessionRecord) -> bool {
         && session.activity.state == SessionActivityState::Idle
 }
 
-async fn wait_gateway_ready(events: &mut GatewayEvents) -> Result<ReadyPayload> {
-    let mut events = events.scoped();
-    loop {
-        let frame =
-            events.next().await.map_err(gateway_error)?.ok_or_else(|| {
-                Error::Stopped("gateway disconnected before becoming ready".into())
-            })?;
-        let ServerFrame { version, message } = frame;
-        match message {
-            ServerMessage::Ready { payload } => return Ok(payload),
-            ServerMessage::Rejected { message, .. }
-            | ServerMessage::Error {
-                message,
-                fatal: true,
-                ..
-            } => {
-                return Err(Error::Stopped(message));
-            }
-            message => events
-                .defer(ServerFrame { version, message })
-                .map_err(gateway_error)?,
-        }
-    }
-}
-
 async fn wait_session_opened(
     events: &mut GatewayEvents,
     gateway: &mut ReadyPayload,
     request_id: &str,
 ) -> Result<SessionReadyPayload> {
-    let mut events = events.scoped();
-    loop {
-        let frame =
-            events.next().await.map_err(gateway_error)?.ok_or_else(|| {
-                Error::Stopped("gateway disconnected before opening the chat".into())
-            })?;
-        let ServerFrame { version, message } = frame;
-        if let Some(error) = message.response_error(Some(request_id)) {
-            return Err(Error::Stopped(error.message.into()));
-        }
-        match message {
+    await_response(
+        events,
+        Some(request_id),
+        Some(gateway),
+        |message| match message {
             ServerMessage::SessionOpened {
                 request_id: actual,
                 payload,
-            } if actual == request_id => return Ok(payload),
-            ServerMessage::Ready { payload } => gateway.update(payload),
-            ServerMessage::Sessions { sessions, .. } => gateway.sessions = sessions,
-            ServerMessage::SessionsChanged { sessions, .. } => {
-                apply_session_changes(&mut gateway.sessions, sessions)
-            }
-            message => events
-                .defer(ServerFrame { version, message })
-                .map_err(gateway_error)?,
-        }
-    }
+            } if actual == request_id => ControlFlow::Break(payload),
+            message => ControlFlow::Continue(message),
+        },
+    )
+    .await
 }
 
 fn missing_token(endpoint: &Endpoint) -> mobius_gateway::Error {

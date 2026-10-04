@@ -19,7 +19,7 @@ pub use self::auth::{BrowserLogin, DeviceLogin};
 
 pub(super) static MANIFEST: std::sync::LazyLock<super::provider::ProviderMetadata> =
     std::sync::LazyLock::new(|| {
-        super::provider::ProviderMetadata::load(include_str!("openai_codex_provider.toml"))
+        crate::config::embedded(include_str!("openai_codex_provider.toml"))
     });
 const PROVIDER_ID: &str = "openai_codex";
 

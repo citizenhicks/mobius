@@ -19,8 +19,6 @@ use crate::protocol::EventMsg;
 use crate::protocol::FrontendActionListItem;
 use crate::protocol::FrontendBlock;
 use crate::protocol::FrontendBlockRole;
-use crate::protocol::FrontendBlockState;
-use crate::protocol::FrontendBlockUpdate;
 use crate::protocol::FrontendContribution;
 use crate::protocol::FrontendEvent;
 use crate::protocol::FrontendSlot;
@@ -181,20 +179,11 @@ impl MiddlewareCommandOutput {
         Self::events(vec![FrontendEvent::Render {
             capability: capability.into(),
             block: FrontendBlock {
-                id: None,
-                group: None,
-                update: FrontendBlockUpdate::Replace,
-                state: FrontendBlockState::Complete,
                 role: FrontendBlockRole::Notice,
                 title,
-                text: String::new(),
-                symbol: None,
-                links: Vec::new(),
-                files: Vec::new(),
-                content: Default::default(),
                 format: crate::protocol::FrontendBlockFormat::PlainText,
-                image_aspect: None,
                 tone,
+                ..Default::default()
             },
         }])
     }

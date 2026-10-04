@@ -469,13 +469,7 @@ fn bot_picker_creates_the_chat_for_the_selected_bot() {
 
 #[test]
 fn navigation_only_capability_has_a_popup_surface() {
-    let refresh = Op::CapabilityCommand {
-        capability: "scratchpad".into(),
-        command: "scratchpad".into(),
-        arguments: "refresh".into(),
-        input: None,
-        target: None,
-    };
+    let refresh = Op::command("scratchpad", "scratchpad", "refresh");
     let widget = FrontendWidget {
         id: "navigation".into(),
         slot: FrontendSlot::Navigation,
@@ -521,27 +515,9 @@ fn navigation_only_capability_has_a_popup_surface() {
 
 #[test]
 fn bare_capability_command_opens_all_of_its_popup_surfaces() {
-    let refresh = Op::CapabilityCommand {
-        capability: "scratchpad".into(),
-        command: "scratchpad".into(),
-        arguments: "refresh".into(),
-        input: None,
-        target: None,
-    };
-    let global_action = Op::CapabilityCommand {
-        capability: "scratchpad".into(),
-        command: "scratchpad".into(),
-        arguments: "forget global global-1".into(),
-        input: None,
-        target: None,
-    };
-    let session_action = Op::CapabilityCommand {
-        capability: "scratchpad".into(),
-        command: "scratchpad".into(),
-        arguments: "promote note-1".into(),
-        input: None,
-        target: None,
-    };
+    let refresh = Op::command("scratchpad", "scratchpad", "refresh");
+    let global_action = Op::command("scratchpad", "scratchpad", "forget global global-1");
+    let session_action = Op::command("scratchpad", "scratchpad", "promote note-1");
     let surface =
         |id: &str, slot: FrontendSlot, title: &str, note: &str, action: Op| FrontendWidget {
             id: id.into(),

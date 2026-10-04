@@ -394,10 +394,11 @@ impl HostHandle {
     ) -> std::result::Result<tokio::sync::OwnedMutexGuard<()>, Rejection> {
         Arc::clone(&self.inner.realtime_voice)
             .try_lock_owned()
-            .map_err(|_| Rejection {
-                code: "realtime_voice",
-                message: "this chat already has an active voice call".into(),
-                fatal: false,
+            .map_err(|_| {
+                Rejection::new(
+                    "realtime_voice",
+                    "this chat already has an active voice call",
+                )
             })
     }
 
@@ -700,11 +701,10 @@ impl HostHandle {
             .commands
             .try_send(command)
             .map_err(|error| match error {
-                mpsc::error::TrySendError::Full(_) => Rejection {
-                    code: "server_busy",
-                    message: "the session request queue is full; retry later".into(),
-                    fatal: false,
-                },
+                mpsc::error::TrySendError::Full(_) => Rejection::new(
+                    "server_busy",
+                    "the session request queue is full; retry later",
+                ),
                 mpsc::error::TrySendError::Closed(_) => stopped(),
             })
     }
@@ -716,11 +716,7 @@ fn try_begin_session_mutation(
 ) -> std::result::Result<tokio::sync::OwnedRwLockReadGuard<()>, Rejection> {
     let mutation = Arc::clone(mutations)
         .try_read_owned()
-        .map_err(|_| Rejection {
-            code: "gateway_busy",
-            message: "retry after the gateway update finishes".into(),
-            fatal: false,
-        })?;
+        .map_err(|_| Rejection::new("gateway_busy", "retry after the gateway update finishes"))?;
     reject_pending_bot_deletion(bots)?;
     Ok(mutation)
 }

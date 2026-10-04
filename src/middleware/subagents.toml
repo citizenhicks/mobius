@@ -1,43 +1,164 @@
 default_enabled = true
 # Editable text and defaults owned by this middleware.
 command_description = "open a subagent thread"
-defaults_max_agents = 101
-defaults_max_concurrency = 8
-defaults_max_depth = 4
 defaults_wait_ms = 30000
 manifest_description = "Delegate independent work to durable child agents"
 manifest_label = "Subagents"
 prompt_default = "Collaborate continuously with your parent: use `send_message` at its canonical path for useful findings, blockers, and questions as they arise. Complete the task and report concisely when done."
 prompt_root = "Delegate independent work to subagents when it can run in parallel. Spawn with fresh context by default; include recent turns only when the task requires them, and full history only when essential. They share your workspace; continue your own work while they run, and wait only when you need their results."
-render_agent = "Agent"
-render_agents = "Agents"
 render_empty = "no subagents"
-render_interrupt = "Interrupt"
-render_message = "Message"
 render_open = "Open subagent"
-render_wait = "Wait"
-setting_max_agents_description = "Maximum retained agents, including the root"
-setting_max_agents_label = "Maximum agents"
-setting_max_agents_step = 1
-setting_max_concurrency_description = "Maximum active agents, including the root"
-setting_max_concurrency_label = "Maximum concurrency"
-setting_max_concurrency_step = 1
-setting_max_depth_description = "Maximum child-agent nesting depth"
-setting_max_depth_label = "Maximum depth"
-setting_max_depth_step = 1
-setting_model_route_description = "Model route used by child agents when a spawn does not select one"
-setting_model_route_label = "Default model"
-setting_model_route_unset_label = "Inherit parent"
-tool_interrupt_agent_description = "Interrupt a subagent in this chat's task tree and return its prior status. Cannot target /root."
-tool_list_agents_description = "List this chat's subagents and their canonical task paths; does not list unrelated agent trees."
-tool_parameter_target_description = "Exact canonical task path from spawn_agent or list_agents, such as /root/reviewer; not an agent nickname or owner ID."
-tool_send_message_description = "Send collaboration context to an agent in this chat's subagent task tree; completed or interrupted children are started again for the message. A child may message its parent at the parent's canonical path, including /root. The root agent is never restarted."
-tool_spawn_agent_description = "Start an async child for independent work in this chat's subagent task tree; return its canonical task path."
-tool_spawn_agent_parameter_fork_turns_description = "`none` for a fresh child (default), a positive integer for required recent turns, or `all` only when full history is essential."
-tool_spawn_agent_parameter_model_description = "Registered route; defaults to the child route, then parent."
-tool_spawn_agent_parameter_reasoning_effort_description = "Reasoning effort for the selected model; defaults to middleware configuration."
-tool_spawn_agent_parameter_task_name_description = "1-64 lowercase letters, digits, or underscores."
-tool_wait_agent_description = "Wait for an update from this chat's subagent task tree."
-ceilings_max_depth = 16
-ceilings_max_concurrency = 64
-ceilings_max_agents = 256
+
+[[settings]]
+choices = { "source" = "model_routes" }
+composer = false
+description = "Model route used by child agents when a spawn does not select one"
+id = "model_route"
+label = "Default model"
+max_bytes = 4096
+type = "select"
+unset_label = "Inherit parent"
+
+[[settings]]
+default = 4
+description = "Maximum child-agent nesting depth"
+id = "max_depth"
+label = "Maximum depth"
+max = 16
+min = 1
+step = 1
+type = "integer"
+
+[[settings]]
+default = 8
+description = "Maximum active agents, including the root"
+id = "max_concurrency"
+label = "Maximum concurrency"
+max = 64
+min = 2
+step = 1
+type = "integer"
+
+[[settings]]
+default = 101
+description = "Maximum retained agents, including the root"
+id = "max_agents"
+label = "Maximum agents"
+max = 256
+min = 2
+step = 1
+type = "integer"
+
+[wait_agent]
+result_title = "wait_agent"
+title = "Wait"
+detail = "timeout_ms"
+
+[wait_agent.tool]
+name = "wait_agent"
+description = "Wait for an update from this chat's subagent task tree."
+
+[wait_agent.tool.parameters]
+type = "object"
+additionalProperties = false
+
+[wait_agent.tool.parameters.properties]
+
+[wait_agent.tool.parameters.properties.timeout_ms]
+type = "integer"
+
+[interrupt_agent]
+result_title = "interrupt_agent"
+title = "Interrupt"
+detail = "target"
+
+[interrupt_agent.tool]
+name = "interrupt_agent"
+description = "Interrupt a subagent in this chat's task tree and return its prior status. Cannot target /root."
+
+[interrupt_agent.tool.parameters]
+type = "object"
+required = ["target"]
+additionalProperties = false
+
+[interrupt_agent.tool.parameters.properties]
+
+[interrupt_agent.tool.parameters.properties.target]
+type = "string"
+description = "Exact canonical task path from spawn_agent or list_agents, such as /root/reviewer; not an agent nickname or owner ID."
+
+[list_agents]
+result_title = "list_agents"
+title = "Agents"
+detail = "path_prefix"
+
+[list_agents.tool]
+name = "list_agents"
+description = "List this chat's subagents and their canonical task paths; does not list unrelated agent trees."
+
+[list_agents.tool.parameters]
+type = "object"
+additionalProperties = false
+
+[list_agents.tool.parameters.properties]
+
+[list_agents.tool.parameters.properties.path_prefix]
+type = "string"
+
+[send_message]
+result_title = "send_message"
+title = "Message"
+detail = "target"
+
+[send_message.tool]
+name = "send_message"
+description = "Send collaboration context to an agent in this chat's subagent task tree; completed or interrupted children are started again for the message. A child may message its parent at the parent's canonical path, including /root. The root agent is never restarted."
+
+[send_message.tool.parameters]
+type = "object"
+required = ["target", "text"]
+additionalProperties = false
+
+[send_message.tool.parameters.properties]
+
+[send_message.tool.parameters.properties.target]
+type = "string"
+description = "Exact canonical task path from spawn_agent or list_agents, such as /root/reviewer; not an agent nickname or owner ID."
+
+[send_message.tool.parameters.properties.text]
+type = "string"
+
+[spawn_agent]
+result_title = "spawn_agent"
+title = "Agent"
+detail = "task_name"
+
+[spawn_agent.tool]
+name = "spawn_agent"
+description = "Start an async child for independent work in this chat's subagent task tree; return its canonical task path."
+
+[spawn_agent.tool.parameters]
+type = "object"
+required = ["task_name", "text"]
+additionalProperties = false
+
+[spawn_agent.tool.parameters.properties]
+
+[spawn_agent.tool.parameters.properties.task_name]
+type = "string"
+description = "1-64 lowercase letters, digits, or underscores."
+
+[spawn_agent.tool.parameters.properties.text]
+type = "string"
+
+[spawn_agent.tool.parameters.properties.fork_turns]
+type = "string"
+description = "`none` for a fresh child (default), a positive integer for required recent turns, or `all` only when full history is essential."
+
+[spawn_agent.tool.parameters.properties.model]
+type = "string"
+description = "Registered route; defaults to the child route, then parent."
+
+[spawn_agent.tool.parameters.properties.reasoning_effort]
+type = "string"
+description = "Reasoning effort for the selected model; defaults to middleware configuration."

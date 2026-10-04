@@ -16,7 +16,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use uuid::Uuid;
 
 use super::SetupMode;
-use super::runtime::ExpectedResponse;
+use super::runtime::credential_saved;
 use super::state::{
     ApplyTarget, AuthField, Authentication, Flow, MiddlewareRow, Page, ProviderEntry, SetupState,
     validated_providers,
@@ -1321,7 +1321,7 @@ fn credential_entry_is_masked_and_supports_backspace() {
     state.paste("abc123\n");
     state.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
 
-    assert_eq!(masked_credential(&state.credential), "•••••");
+    assert_eq!(masked_credential(&state.credential, 32), "•••••");
     assert_eq!(state.label, "openai_socket");
     let mut lines = Vec::new();
     render_page(&mut lines, &state, 100);
@@ -1438,14 +1438,20 @@ fn explicit_api_key_replaces_credentialless_auth() {
 
 #[test]
 fn credential_response_matches_instance_and_provider() {
-    let expected = ExpectedResponse::Credential {
-        instance: "work",
-        provider: "responses",
+    let response = mobius_gateway::wire::ServerMessage::ProviderCredentialSaved {
+        request_id: "save".into(),
+        instance: "work".into(),
+        provider: "responses".into(),
     };
-
-    assert!(expected.matches_credential("work", "responses"));
-    assert!(!expected.matches_credential("personal", "responses"));
-    assert!(!expected.matches_credential("work", "openrouter"));
+    assert!(credential_saved(&response, "save", "work", "responses"));
+    assert!(!credential_saved(&response, "other", "work", "responses"));
+    assert!(!credential_saved(
+        &response,
+        "save",
+        "personal",
+        "responses"
+    ));
+    assert!(!credential_saved(&response, "save", "work", "openrouter"));
 }
 
 #[test]

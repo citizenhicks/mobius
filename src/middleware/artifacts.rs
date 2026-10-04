@@ -6,10 +6,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::manifest::MiddlewareManifest;
-use super::tools::{
-    ApprovalRequirement, Catalog, Tool, ToolContext, labeled_tool_heading, render_tool_event,
-};
+use super::tools::{ApprovalRequirement, Catalog, Tool, ToolContext};
 use super::{Middleware, PromptSection, RuntimeContext};
 use crate::backend::model::ToolDefinition;
 use crate::backend::sandbox::MAX_BINARY_FILE_BYTES;
@@ -21,30 +18,19 @@ mod text {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(super) struct Definition {
-        pub(super) tool_publish_file_id_description: String,
+        pub(super) send_artifact: crate::middleware::tools::ToolSpec,
         pub(super) default_enabled: bool,
         pub(super) manifest_description: String,
         pub(super) manifest_label: String,
         pub(super) prompt_main: String,
-        pub(super) render_send: String,
         pub(super) render_sent_prefix: String,
-        pub(super) tool_send_artifact_description: String,
-        pub(super) tool_send_artifact_parameter_path_description: String,
     }
-    pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
-        std::sync::LazyLock::new(|| crate::config::embedded(include_str!("artifacts.toml")));
+    crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("artifacts.toml"); }
 }
+super::manifest::middleware_manifest! {
 /// Configuration metadata for agent-published files.
-pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
-    std::sync::LazyLock::new(|| MiddlewareManifest {
-        id: "artifacts",
-        label: text::DEFINITION.manifest_label.as_str(),
-        description: text::DEFINITION.manifest_description.as_str(),
-        required: false,
-        default_enabled: text::DEFINITION.default_enabled,
-        required_model_capability: None,
-        settings: &[],
-    });
+    "artifacts", text::DEFINITION, required: false, capability: None, settings: &[]
+}
 
 /// Publishes workspace files as session-bound assistant files.
 pub struct Artifacts {
@@ -85,17 +71,9 @@ impl Middleware for Artifacts {
     }
 
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
-        let mut block = render_tool_event(
-            event,
-            |name| name == "send_artifact",
-            |name, arguments| {
-                if matches!(event, EventMsg::ToolCallEnd(_)) {
-                    name.into()
-                } else {
-                    labeled_tool_heading(text::DEFINITION.render_send.as_str(), "path", arguments)
-                }
-            },
-        )?;
+        let mut block = [&text::DEFINITION.send_artifact]
+            .into_iter()
+            .find_map(|spec| spec.render(event))?;
         let EventMsg::ToolCallEnd(result) = event else {
             return Some(block);
         };
@@ -134,22 +112,7 @@ struct SendArtifact {
 
 impl Tool for SendArtifact {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "send_artifact".into(),
-            description: text::DEFINITION.tool_send_artifact_description.clone(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "file_id": {"type":"string", "description":text::DEFINITION.tool_publish_file_id_description.as_str()},
-                    "path": {
-                        "type": "string",
-                        "description": text::DEFINITION.tool_send_artifact_parameter_path_description.as_str()
-                    }
-                },
-                "oneOf": [{"required":["path"]},{"required":["file_id"]}],
-                "additionalProperties": false
-            }),
-        }
+        text::DEFINITION.send_artifact.tool.clone()
     }
 
     fn approval(&self) -> ApprovalRequirement {
@@ -201,7 +164,10 @@ impl Tool for SendArtifact {
     }
 }
 
-fn media_type(name: &str) -> &'static str {
+/// Infers a download media type from the filename extension.
+/// Unknown extensions use `application/octet-stream`; this does not inspect file contents.
+#[must_use]
+pub fn media_type(name: &str) -> &'static str {
     match Path::new(name)
         .extension()
         .and_then(|extension| extension.to_str())

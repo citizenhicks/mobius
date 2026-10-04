@@ -32,7 +32,7 @@ use crate::wire::{
 use crate::{Error, Result};
 
 const DEFAULT_ENDPOINT: &str = "tcp://127.0.0.1:8741";
-const WEBSOCKET_BRIDGE_BYTES: usize = 16 * 1024;
+use crate::wire::WEBSOCKET_BRIDGE_BYTES;
 /// Maximum number of frames a focused client flow may temporarily defer.
 pub const MAX_PENDING_FRAMES: usize = 1024;
 

@@ -19,10 +19,8 @@ use super::RuntimeContext;
 use super::SessionStartContext;
 use super::SessionStartSource;
 use super::SubmissionResult;
-use super::manifest::{MiddlewareManifest, MiddlewareSettingChoices, MiddlewareSettingManifest};
+use super::manifest::MiddlewareSettingManifest;
 use super::tools::Catalog;
-use super::tools::labeled_tool_heading;
-use super::tools::render_tool_event;
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
@@ -49,115 +47,66 @@ mod tools;
 
 use self::tools::{InterruptAgent, ListAgents, SendMessage, SpawnAgent, WaitAgent, fork_context};
 #[cfg(test)]
-use self::tools::{cleanup_error, supervise, wait_parameters, wait_timeout};
+use self::tools::{cleanup_error, supervise, wait_definition, wait_timeout};
 
 const MAX_TASK_NAME_BYTES: usize = 64;
 const IDENTITY_KEY: &str = "subagents.identity";
 const SPAWN_CONTEXT_KEY: &str = "subagents.spawn_context";
 mod text {
-    use super::*;
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(super) struct Definition {
+        pub(super) wait_agent: crate::middleware::tools::ToolSpec,
+        pub(super) interrupt_agent: crate::middleware::tools::ToolSpec,
+        pub(super) list_agents: crate::middleware::tools::ToolSpec,
+        pub(super) send_message: crate::middleware::tools::ToolSpec,
+        pub(super) spawn_agent: crate::middleware::tools::ToolSpec,
+        #[serde(deserialize_with = "crate::middleware::manifest::deserialize_settings")]
+        pub(super) settings: Vec<crate::middleware::manifest::MiddlewareSettingManifest>,
         pub(super) default_enabled: bool,
         pub(super) command_description: String,
-        pub(super) ceilings_max_depth: u8,
-        pub(super) ceilings_max_concurrency: usize,
-        pub(super) ceilings_max_agents: usize,
-        pub(super) defaults_max_agents: i64,
-        pub(super) defaults_max_concurrency: i64,
-        pub(super) defaults_max_depth: i64,
         pub(super) defaults_wait_ms: i64,
         pub(super) manifest_description: String,
         pub(super) manifest_label: String,
         pub(super) prompt_default: String,
         pub(super) prompt_root: String,
-        pub(super) render_agent: String,
-        pub(super) render_agents: String,
         pub(super) render_empty: String,
-        pub(super) render_interrupt: String,
-        pub(super) render_message: String,
         pub(super) render_open: String,
-        pub(super) render_wait: String,
-        pub(super) setting_max_agents_description: String,
-        pub(super) setting_max_agents_label: String,
-        pub(super) setting_max_agents_step: i64,
-        pub(super) setting_max_concurrency_description: String,
-        pub(super) setting_max_concurrency_label: String,
-        pub(super) setting_max_concurrency_step: i64,
-        pub(super) setting_max_depth_description: String,
-        pub(super) setting_max_depth_label: String,
-        pub(super) setting_max_depth_step: i64,
-        pub(super) setting_model_route_description: String,
-        pub(super) setting_model_route_label: String,
-        pub(super) setting_model_route_unset_label: String,
-        pub(super) tool_interrupt_agent_description: String,
-        pub(super) tool_list_agents_description: String,
-        pub(super) tool_parameter_target_description: String,
-        pub(super) tool_send_message_description: String,
-        pub(super) tool_spawn_agent_description: String,
-        pub(super) tool_spawn_agent_parameter_fork_turns_description: String,
-        pub(super) tool_spawn_agent_parameter_model_description: String,
-        pub(super) tool_spawn_agent_parameter_reasoning_effort_description: String,
-        pub(super) tool_spawn_agent_parameter_task_name_description: String,
-        pub(super) tool_wait_agent_description: String,
     }
-    pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
-        std::sync::LazyLock::new(|| {
-            let definition: Definition = crate::config::embedded(include_str!("subagents.toml"));
-
-            assert!(definition.ceilings_max_depth > 0);
-            assert!(definition.ceilings_max_concurrency >= 2);
-            assert!(definition.ceilings_max_agents >= definition.ceilings_max_concurrency);
-            assert!(
-                definition.defaults_wait_ms
-                    >= i64::try_from(MIN_WAIT_MS).expect("wait bound must fit")
-            );
-            assert!(
-                definition.defaults_wait_ms
-                    <= i64::try_from(MAX_WAIT_MS).expect("wait bound must fit")
-            );
-            assert!(definition.defaults_max_depth >= 1);
-            assert!(definition.defaults_max_depth <= i64::from(definition.ceilings_max_depth));
-            assert!(definition.defaults_max_concurrency >= 2);
-            assert!(
-                definition.defaults_max_concurrency
-                    <= i64::try_from(definition.ceilings_max_concurrency)
-                        .expect("bundled concurrency ceiling must fit")
-            );
-            assert!(definition.defaults_max_agents >= definition.defaults_max_concurrency);
-            assert!(
-                definition.defaults_max_agents
-                    <= i64::try_from(definition.ceilings_max_agents)
-                        .expect("bundled agent ceiling must fit")
-            );
-            assert!(definition.setting_max_depth_step > 0);
-            assert!(definition.setting_max_concurrency_step > 0);
-            assert!(definition.setting_max_agents_step > 0);
-
-            definition
-        });
+    crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("subagents.toml"); }
 }
 const MIN_WAIT_MS: u64 = 10_000;
 const MAX_WAIT_MS: u64 = 120_000;
 
 fn default_wait_ms() -> u64 {
-    u64::try_from(text::DEFINITION.defaults_wait_ms)
-        .expect("validated default wait must be positive")
+    let wait = u64::try_from(text::DEFINITION.defaults_wait_ms)
+        .expect("bundled default wait must be positive");
+    assert!((MIN_WAIT_MS..=MAX_WAIT_MS).contains(&wait));
+    wait
 }
 /// Default maximum child-agent nesting depth.
 pub fn default_max_depth() -> u8 {
-    u8::try_from(text::DEFINITION.defaults_max_depth).expect("validated default depth must fit")
+    u8::try_from(super::manifest::integer_default(
+        &text::DEFINITION.settings,
+        "max_depth",
+    ))
+    .expect("validated default depth must fit")
 }
 /// Default number of concurrently active agents, including the root.
 pub fn default_max_concurrency() -> usize {
-    usize::try_from(text::DEFINITION.defaults_max_concurrency)
-        .expect("validated default concurrency must fit")
+    usize::try_from(super::manifest::integer_default(
+        &text::DEFINITION.settings,
+        "max_concurrency",
+    ))
+    .expect("validated default concurrency must fit")
 }
 /// Default number of retained agents, including the root.
 pub fn default_max_agents() -> usize {
-    usize::try_from(text::DEFINITION.defaults_max_agents)
-        .expect("validated default agent count must fit")
+    usize::try_from(super::manifest::integer_default(
+        &text::DEFINITION.settings,
+        "max_agents",
+    ))
+    .expect("validated default agent count must fit")
 }
 
 /// Trusted operator ceilings for the per-Bot subagent settings.
@@ -171,11 +120,26 @@ pub struct SubagentCeilings {
 
 impl Default for SubagentCeilings {
     fn default() -> Self {
-        Self {
-            max_depth: text::DEFINITION.ceilings_max_depth,
-            max_concurrency: text::DEFINITION.ceilings_max_concurrency,
-            max_agents: text::DEFINITION.ceilings_max_agents,
-        }
+        let ceiling = |id| match text::DEFINITION
+            .settings
+            .iter()
+            .find(|setting| setting.id() == id)
+        {
+            Some(MiddlewareSettingManifest::Integer { max: Some(max), .. }) => *max,
+            _ => panic!("missing embedded subagent ceiling {id}"),
+        };
+        Self::new(
+            ceiling("max_depth")
+                .try_into()
+                .expect("depth ceiling must fit"),
+            ceiling("max_concurrency")
+                .try_into()
+                .expect("concurrency ceiling must fit"),
+            ceiling("max_agents")
+                .try_into()
+                .expect("agent ceiling must fit"),
+        )
+        .expect("valid embedded subagent ceilings")
     }
 }
 
@@ -219,15 +183,16 @@ impl SubagentCeilings {
     /// Returns this middleware's settings with the trusted operator's bounds.
     #[must_use]
     pub fn settings(self) -> Vec<MiddlewareSettingManifest> {
-        SETTINGS
+        text::DEFINITION
+            .settings
             .iter()
-            .copied()
+            .cloned()
             .map(|mut setting| {
                 if let MiddlewareSettingManifest::Integer {
                     id, max, default, ..
                 } = &mut setting
                 {
-                    let ceiling = match *id {
+                    let ceiling = match id.as_str() {
                         "max_depth" => i64::from(self.max_depth),
                         "max_concurrency" => i64::try_from(self.max_concurrency)
                             .expect("validated concurrency ceiling must fit"),
@@ -276,68 +241,10 @@ pub fn validate_limits(max_depth: u8, max_concurrency: usize, max_agents: usize)
     SubagentCeilings::default().validate(max_depth, max_concurrency, max_agents)
 }
 
-static SETTINGS: std::sync::LazyLock<Vec<MiddlewareSettingManifest>> =
-    std::sync::LazyLock::new(|| {
-        vec![
-            MiddlewareSettingManifest::Select {
-                id: "model_route",
-                label: text::DEFINITION.setting_model_route_label.as_str(),
-                description: text::DEFINITION.setting_model_route_description.as_str(),
-                choices: MiddlewareSettingChoices::ModelRoutes,
-                unset_label: Some(text::DEFINITION.setting_model_route_unset_label.as_str()),
-                default: None,
-                max_bytes: 4 * 1024,
-                composer: false,
-            },
-            MiddlewareSettingManifest::Integer {
-                id: "max_depth",
-                label: text::DEFINITION.setting_max_depth_label.as_str(),
-                description: text::DEFINITION.setting_max_depth_description.as_str(),
-                min: 1,
-                max: Some(i64::from(text::DEFINITION.ceilings_max_depth)),
-                step: text::DEFINITION.setting_max_depth_step,
-                default: i64::from(default_max_depth()),
-            },
-            MiddlewareSettingManifest::Integer {
-                id: "max_concurrency",
-                label: text::DEFINITION.setting_max_concurrency_label.as_str(),
-                description: text::DEFINITION
-                    .setting_max_concurrency_description
-                    .as_str(),
-                min: 2,
-                max: Some(
-                    i64::try_from(text::DEFINITION.ceilings_max_concurrency)
-                        .expect("bundled concurrency ceiling must fit"),
-                ),
-                step: text::DEFINITION.setting_max_concurrency_step,
-                default: text::DEFINITION.defaults_max_concurrency,
-            },
-            MiddlewareSettingManifest::Integer {
-                id: "max_agents",
-                label: text::DEFINITION.setting_max_agents_label.as_str(),
-                description: text::DEFINITION.setting_max_agents_description.as_str(),
-                min: 2,
-                max: Some(
-                    i64::try_from(text::DEFINITION.ceilings_max_agents)
-                        .expect("bundled agent ceiling must fit"),
-                ),
-                step: text::DEFINITION.setting_max_agents_step,
-                default: text::DEFINITION.defaults_max_agents,
-            },
-        ]
-    });
-
+super::manifest::middleware_manifest! {
 /// Configuration and presentation metadata for child-agent collaboration.
-pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
-    std::sync::LazyLock::new(|| MiddlewareManifest {
-        id: "subagents",
-        label: text::DEFINITION.manifest_label.as_str(),
-        description: text::DEFINITION.manifest_description.as_str(),
-        required: false,
-        default_enabled: text::DEFINITION.default_enabled,
-        required_model_capability: None,
-        settings: &SETTINGS,
-    });
+    "subagents", text::DEFINITION, required: false, capability: None, settings: &text::DEFINITION.settings
+}
 
 /// Child-agent parameters owned by the subagent capability.
 #[derive(Clone)]
@@ -401,7 +308,7 @@ impl AgentIdentity {
                 depth: 0,
             });
         };
-        Ok(serde_json::from_value(value.clone())?)
+        Ok(serde::Deserialize::deserialize(value)?)
     }
 
     fn metadata(&self, mut metadata: BTreeMap<String, Value>) -> BTreeMap<String, Value> {
@@ -742,16 +649,14 @@ impl Subagents {
         let next = page
             .next
             .map(|before_sequence| -> Result<Op> {
-                Ok(Op::CapabilityCommand {
-                    capability: MANIFEST.id.into(),
-                    command: "subagents".into(),
-                    arguments: serde_json::to_string(&PreviewCursor {
+                Ok(Op::command(
+                    MANIFEST.id,
+                    "subagents",
+                    serde_json::to_string(&PreviewCursor {
                         path: path.into(),
                         before_sequence,
                     })?,
-                    input: None,
-                    target: None,
-                })
+                ))
             })
             .transpose()?;
         Ok(MiddlewareCommandOutput::events(vec![
@@ -842,48 +747,15 @@ impl Middleware for Subagents {
     }
 
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
-        let mut block = render_tool_event(
-            event,
-            |name| {
-                matches!(
-                    name,
-                    "spawn_agent"
-                        | "send_message"
-                        | "list_agents"
-                        | "interrupt_agent"
-                        | "wait_agent"
-                )
-            },
-            |name, arguments| match name {
-                _ if matches!(event, EventMsg::ToolCallEnd(_)) => name.into(),
-                "spawn_agent" => labeled_tool_heading(
-                    text::DEFINITION.render_agent.as_str(),
-                    "task_name",
-                    arguments,
-                ),
-                "send_message" => labeled_tool_heading(
-                    text::DEFINITION.render_message.as_str(),
-                    "target",
-                    arguments,
-                ),
-                "list_agents" => labeled_tool_heading(
-                    text::DEFINITION.render_agents.as_str(),
-                    "path_prefix",
-                    arguments,
-                ),
-                "interrupt_agent" => labeled_tool_heading(
-                    text::DEFINITION.render_interrupt.as_str(),
-                    "target",
-                    arguments,
-                ),
-                "wait_agent" => labeled_tool_heading(
-                    text::DEFINITION.render_wait.as_str(),
-                    "timeout_ms",
-                    arguments,
-                ),
-                _ => name.to_string().into(),
-            },
-        )?;
+        let mut block = [
+            &text::DEFINITION.wait_agent,
+            &text::DEFINITION.interrupt_agent,
+            &text::DEFINITION.list_agents,
+            &text::DEFINITION.send_message,
+            &text::DEFINITION.spawn_agent,
+        ]
+        .into_iter()
+        .find_map(|spec| spec.render(event))?;
         if let EventMsg::ToolCallBegin(call) = event
             && call.name == "send_message"
             && let Some(message) = call.arguments.get("text").and_then(Value::as_str)

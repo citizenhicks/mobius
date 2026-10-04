@@ -1,3 +1,4 @@
+use mobius::middleware::artifacts::media_type;
 use std::collections::VecDeque;
 use std::path::Path;
 use std::path::PathBuf;
@@ -263,29 +264,6 @@ fn validate_media_type(media_type: &str) -> Result<(), String> {
         return Err("attachment media type is invalid".into());
     }
     Ok(())
-}
-
-fn media_type(name: &str) -> &'static str {
-    match Path::new(name)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
-        Some("png") => "image/png",
-        Some("jpg" | "jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("webp") => "image/webp",
-        Some("svg") => "image/svg+xml",
-        Some("pdf") => "application/pdf",
-        Some("csv") => "text/csv",
-        Some("xls") => "application/vnd.ms-excel",
-        Some("xlsx") => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        Some("txt") => "text/plain",
-        Some("json") => "application/json",
-        Some("zip") => "application/zip",
-        _ => "application/octet-stream",
-    }
 }
 
 enum UploadSource {

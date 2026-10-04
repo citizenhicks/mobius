@@ -1,4 +1,5 @@
 use super::*;
+use crate::protocol::FrontendBlockFormat;
 
 #[test]
 fn output_capping_keeps_complete_characters_at_both_ends() {

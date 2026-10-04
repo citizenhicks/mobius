@@ -407,13 +407,11 @@ impl UiCatalog {
             ),
             CommandHandler::Exit => CommandAction::Exit,
             CommandHandler::Capability { capability } => {
-                CommandAction::Submit(Box::new(Op::CapabilityCommand {
-                    capability: capability.clone(),
-                    command: command.name.clone(),
-                    arguments: arguments.to_string(),
-                    input: None,
-                    target: None,
-                }))
+                CommandAction::Submit(Box::new(Op::command(
+                    capability.clone(),
+                    command.name.clone(),
+                    arguments.to_string(),
+                )))
             }
         })
     }
@@ -449,144 +447,158 @@ impl UiReference {
 }
 
 fn cli_commands() -> Vec<UiCommand> {
-    vec![
-        command("help", "show commands", false, CommandHandler::Help),
-        command("new", "start a new chat", true, CommandHandler::New),
-        command("files", "download chat files", false, CommandHandler::Files),
-        UiCommand {
-            name: "diff".into(),
-            arguments: "[unstaged|staged|committed]".into(),
-            description: "show workspace changes".into(),
-            requires_idle: false,
-            handler: CommandHandler::Diff,
-        },
-        command(
+    [
+        ("help", "", "show commands", false, CommandHandler::Help),
+        ("new", "", "start a new chat", true, CommandHandler::New),
+        (
+            "files",
+            "",
+            "download chat files",
+            false,
+            CommandHandler::Files,
+        ),
+        (
+            "diff",
+            "[unstaged|staged|committed]",
+            "show workspace changes",
+            false,
+            CommandHandler::Diff,
+        ),
+        (
             "status",
+            "",
             "show turn, token, and capability status",
             false,
             CommandHandler::Status,
         ),
-        command(
+        (
             "interrupt",
+            "",
             "stop the active turn",
             false,
             CommandHandler::Interrupt,
         ),
-        command(
+        (
             "queued",
+            "",
             "inspect or edit queued messages",
             false,
             CommandHandler::Queued,
         ),
-        command(
+        (
             "gateway",
+            "",
             "view, pair, or reconnect gateways",
             true,
             CommandHandler::GatewaySettings,
         ),
-        command(
+        (
             "extensions",
+            "",
             "install, update, trust, or remove extensions",
             true,
             CommandHandler::Extensions,
         ),
-        command(
+        (
             "conversation",
+            "",
             "open this Bot conversation",
             false,
             CommandHandler::Conversation,
         ),
-        UiCommand {
-            name: "bot".into(),
-            arguments: String::new(),
-            description: "configure this Bot".into(),
-            requires_idle: true,
-            handler: CommandHandler::Bot,
-        },
-        UiCommand {
-            name: "workspace".into(),
-            arguments: "<gateway-path>".into(),
-            description: "start a chat in another workspace".into(),
-            requires_idle: true,
-            handler: CommandHandler::Workspace,
-        },
-        UiCommand {
-            name: "login".into(),
-            arguments: "[provider]".into(),
-            description: "authenticate a provider and configure Bot defaults".into(),
-            requires_idle: true,
-            handler: CommandHandler::Login,
-        },
-        command(
+        ("bot", "", "configure this Bot", true, CommandHandler::Bot),
+        (
+            "workspace",
+            "<gateway-path>",
+            "start a chat in another workspace",
+            true,
+            CommandHandler::Workspace,
+        ),
+        (
+            "login",
+            "[provider]",
+            "authenticate a provider and configure Bot defaults",
+            true,
+            CommandHandler::Login,
+        ),
+        (
             "profile",
+            "",
             "show gateway usage statistics",
             false,
             CommandHandler::Profile,
         ),
-        command(
+        (
             "events",
+            "",
             "open background approvals",
             false,
             CommandHandler::Events,
         ),
-        command(
+        (
             "pair",
+            "",
             "create a one-time code for another client",
             false,
             CommandHandler::Pair,
         ),
-        command(
+        (
             "clear",
+            "",
             "clear the terminal and start a new chat",
             true,
             CommandHandler::Clear,
         ),
-        UiCommand {
-            name: "rename".into(),
-            arguments: "<title>".into(),
-            description: "rename this chat".into(),
-            requires_idle: true,
-            handler: CommandHandler::Rename,
-        },
-        command("pin", "pin this chat", true, CommandHandler::Pin),
-        command("unpin", "unpin this chat", true, CommandHandler::Unpin),
-        command(
+        (
+            "rename",
+            "<title>",
+            "rename this chat",
+            true,
+            CommandHandler::Rename,
+        ),
+        ("pin", "", "pin this chat", true, CommandHandler::Pin),
+        ("unpin", "", "unpin this chat", true, CommandHandler::Unpin),
+        (
             "reassign",
+            "",
             "move this chat to another Bot",
             true,
             CommandHandler::Reassign,
         ),
-        UiCommand {
-            name: "attach".into(),
-            arguments: "<gateway-path>".into(),
-            description: "attach a folder to this chat".into(),
-            requires_idle: true,
-            handler: CommandHandler::Attach,
-        },
-        command("delete", "delete this chat", true, CommandHandler::Delete),
-        command(
+        (
+            "attach",
+            "<gateway-path>",
+            "attach a folder to this chat",
+            true,
+            CommandHandler::Attach,
+        ),
+        (
+            "delete",
+            "",
+            "delete this chat",
+            true,
+            CommandHandler::Delete,
+        ),
+        (
             "branch",
+            "",
             "switch the workspace Git branch",
             true,
             CommandHandler::Branch,
         ),
-        command("exit", "exit möbius", false, CommandHandler::Exit),
+        ("exit", "", "exit möbius", false, CommandHandler::Exit),
     ]
-}
-
-fn command(
-    name: &str,
-    description: &str,
-    requires_idle: bool,
-    handler: CommandHandler,
-) -> UiCommand {
-    UiCommand {
-        name: name.into(),
-        arguments: String::new(),
-        description: description.into(),
-        requires_idle,
-        handler,
-    }
+    .into_iter()
+    .map(
+        |(name, arguments, description, requires_idle, handler)| UiCommand {
+            name: name.into(),
+            arguments: arguments.into(),
+            description: description.into(),
+            requires_idle,
+            handler,
+        },
+    )
+    .collect()
 }
 
 fn validate(commands: &[UiCommand], references: &[UiReference]) -> Result<()> {

@@ -30,9 +30,7 @@ use crate::protocol::ModelInfo;
 use crate::protocol::TokenUsage;
 
 pub(super) static MANIFEST: std::sync::LazyLock<super::provider::ProviderMetadata> =
-    std::sync::LazyLock::new(|| {
-        super::provider::ProviderMetadata::load(include_str!("kimi_provider.toml"))
-    });
+    std::sync::LazyLock::new(|| crate::config::embedded(include_str!("kimi_provider.toml")));
 pub(super) static CATALOG: std::sync::LazyLock<super::provider::ModelCatalog> =
     std::sync::LazyLock::new(|| crate::config::embedded(include_str!("kimi.toml")));
 

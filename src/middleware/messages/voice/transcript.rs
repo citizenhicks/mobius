@@ -466,13 +466,11 @@ pub(crate) async fn read_preview(
 }
 
 fn command(before: Option<u64>) -> Op {
-    Op::CapabilityCommand {
-        capability: "messages".into(),
-        command: COMMAND.into(),
-        arguments: before.map_or_else(String::new, |before| before.to_string()),
-        input: None,
-        target: None,
-    }
+    Op::command(
+        "messages",
+        COMMAND,
+        before.map_or_else(String::new, |before| before.to_string()),
+    )
 }
 
 fn widget() -> FrontendEvent {

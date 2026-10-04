@@ -825,13 +825,7 @@ async fn startup_rejects_an_unrecoverable_bot_cascade_before_serving() {
         unrelated
             .submit(Submission {
                 id: Uuid::new_v4().to_string(),
-                op: Op::CapabilityCommand {
-                    capability: "scratchpad".into(),
-                    command: "scratchpad".into(),
-                    arguments: "refresh".into(),
-                    input: None,
-                    target: None,
-                },
+                op: Op::command("scratchpad", "scratchpad", "refresh"),
             })
             .await
             .expect_err("pending recovery blocks accepted commands")
@@ -1087,11 +1081,10 @@ async fn routine_acceptance_keeps_the_gateway_registry_locked() {
                 Some("fixture rejection".into()),
             )
             .expect("finish fixture run");
-        let _ = reply.send(Err(Rejection {
-            code: "fixture_rejection",
-            message: "fixture rejection".into(),
-            fatal: false,
-        }));
+        let _ = reply.send(Err(Rejection::new(
+            "fixture_rejection",
+            "fixture rejection",
+        )));
     });
     let host = HostHandle {
         inner: Arc::new(HostInner {

@@ -626,7 +626,7 @@ fn normalize_output_text_annotations(part: &Value) -> Result<Vec<ModelStepAnnota
     if annotations.is_null() {
         return Ok(Vec::new());
     }
-    let annotations: Vec<OutputTextAnnotation> = serde_json::from_value(annotations.clone())
+    let annotations: Vec<OutputTextAnnotation> = serde::Deserialize::deserialize(annotations)
         .map_err(|error| {
             Error::Provider(format!("invalid output text annotation: {error}").into())
         })?;

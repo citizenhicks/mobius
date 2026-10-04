@@ -530,13 +530,7 @@ async fn global_contribution_reads_and_updates_preserve_extension_references_wit
     );
 
     let refreshed = gateway
-        .submit_contribution(Op::CapabilityCommand {
-            capability: "scratchpad".into(),
-            command: "scratchpad".into(),
-            arguments: "refresh".into(),
-            input: None,
-            target: None,
-        })
+        .submit_contribution(Op::command("scratchpad", "scratchpad", "refresh"))
         .await
         .expect("refresh global scratchpad");
     assert_eq!(refreshed, contributions);
@@ -566,13 +560,11 @@ async fn global_contribution_reads_and_updates_preserve_extension_references_wit
     );
 
     let rejection = gateway
-        .submit_contribution(Op::CapabilityCommand {
-            capability: "scratchpad".into(),
-            command: "scratchpad".into(),
-            arguments: "forget session note-1".into(),
-            input: None,
-            target: None,
-        })
+        .submit_contribution(Op::command(
+            "scratchpad",
+            "scratchpad",
+            "forget session note-1",
+        ))
         .await
         .expect_err("session operations need a selected chat");
     assert_eq!(rejection.code, "invalid_scratchpad");

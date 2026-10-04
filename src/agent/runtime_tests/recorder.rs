@@ -120,7 +120,8 @@ async fn recorder_persists_an_event_before_delivery() {
         .await
         .expect("initial checkpoint");
     let store: Arc<dyn CheckpointStore> = checkpoints.clone();
-    let (events, mut receiver) = EventRecorder::spawn(store, "session".into());
+    let (events, mut receiver) =
+        crate::agent::recorder::RecorderIngress::spawn(store, "session".into());
     let event = Event {
         submission_id: Some("submission".into()),
         msg: EventMsg::Warning(WarningEvent {
@@ -154,7 +155,8 @@ async fn recorder_stops_without_delivering_when_persistence_fails() {
         SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3"))
             .expect("checkpoint store"),
     );
-    let (events, mut receiver) = EventRecorder::spawn(checkpoints, "missing".into());
+    let (events, mut receiver) =
+        crate::agent::recorder::RecorderIngress::spawn(checkpoints, "missing".into());
 
     let error = send_event(
         &events,
@@ -184,7 +186,8 @@ async fn recorder_flush_waits_for_prior_unacknowledged_events() {
         .await
         .expect("initial checkpoint");
     let store: Arc<dyn CheckpointStore> = checkpoints.clone();
-    let (events, mut receiver) = EventRecorder::spawn(store, "session".into());
+    let (events, mut receiver) =
+        crate::agent::recorder::RecorderIngress::spawn(store, "session".into());
     let event = Event {
         submission_id: None,
         msg: EventMsg::Warning(WarningEvent {
@@ -224,7 +227,8 @@ async fn recorder_accepts_a_synchronous_provider_burst() {
         .await
         .expect("initial checkpoint");
     let store: Arc<dyn CheckpointStore> = checkpoints.clone();
-    let (events, mut receiver) = EventRecorder::spawn(store, "session".into());
+    let (events, mut receiver) =
+        crate::agent::recorder::RecorderIngress::spawn(store, "session".into());
     let event_count = EVENT_QUEUE_CAPACITY + 1;
 
     for index in 0..event_count {
@@ -273,7 +277,8 @@ async fn recorder_rejects_command_saturation_without_dropping_accepted_events() 
         .await
         .expect("initial checkpoint");
     let store: Arc<dyn CheckpointStore> = checkpoints;
-    let (events, mut receiver) = EventRecorder::spawn(store, "session".into());
+    let (events, mut receiver) =
+        crate::agent::recorder::RecorderIngress::spawn(store, "session".into());
     let mut accepted = 0;
     let error = loop {
         match try_send_event(
@@ -317,7 +322,8 @@ async fn recorder_rejects_event_byte_saturation_without_dropping_accepted_events
         .await
         .expect("initial checkpoint");
     let store: Arc<dyn CheckpointStore> = checkpoints;
-    let (events, mut receiver) = EventRecorder::spawn(store, "session".into());
+    let (events, mut receiver) =
+        crate::agent::recorder::RecorderIngress::spawn(store, "session".into());
     let message = "x".repeat(RECORDER_EVENT_BYTE_BUDGET / 3);
     let mut accepted = 0;
     let error = loop {
@@ -442,8 +448,9 @@ async fn recorder_weak_ingress_does_not_keep_the_recorder_alive() {
         SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3"))
             .expect("checkpoint store"),
     );
-    let (events, _receiver) = EventRecorder::spawn(checkpoints, "session".into());
-    let weak = events.downgrade();
+    let (events, _receiver) =
+        crate::agent::recorder::RecorderIngress::spawn(checkpoints, "session".into());
+    let weak = Arc::downgrade(&events);
 
     drop(events);
 
@@ -457,7 +464,8 @@ async fn recorder_flush_reports_a_prior_unacknowledged_failure() {
         SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3"))
             .expect("checkpoint store"),
     );
-    let (events, mut receiver) = EventRecorder::spawn(checkpoints, "missing".into());
+    let (events, mut receiver) =
+        crate::agent::recorder::RecorderIngress::spawn(checkpoints, "missing".into());
 
     try_send_event(
         &events,
@@ -486,7 +494,8 @@ async fn recorder_flush_backpressures_until_ordered_delivery_resumes() {
         .save(&test_checkpoint("session"), &[], None)
         .await
         .expect("initial checkpoint");
-    let (events, mut receiver) = EventRecorder::spawn(checkpoints, "session".into());
+    let (events, mut receiver) =
+        crate::agent::recorder::RecorderIngress::spawn(checkpoints, "session".into());
 
     for index in 0..EVENT_QUEUE_CAPACITY {
         send_event(
@@ -548,7 +557,8 @@ async fn recorder_save_copies_the_checkpoint_once_through_sqlite() {
         .push(serde_json::json!({"role": "user", "content": "retained context"}));
     let copies = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     checkpoint.clone_count.0 = Some(Arc::clone(&copies));
-    let (recorder, _receiver) = EventRecorder::spawn(checkpoints.clone(), "session".into());
+    let (recorder, _receiver) =
+        crate::agent::recorder::RecorderIngress::spawn(checkpoints.clone(), "session".into());
 
     recorder
         .save(&checkpoint, &[], None, Vec::new())

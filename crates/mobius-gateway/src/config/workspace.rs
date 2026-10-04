@@ -114,12 +114,7 @@ fn validate_workspace_boundaries(
 
 pub(crate) fn workspace_id(path: &Path) -> String {
     let digest = sha2::Sha256::digest(path.as_os_str().as_encoded_bytes());
-    let mut id = String::from("path-v1:");
-    for byte in digest {
-        use std::fmt::Write as _;
-        write!(&mut id, "{byte:02x}").expect("writing to a string cannot fail");
-    }
-    id
+    format!("path-v1:{digest:x}")
 }
 
 pub(crate) fn local_user_name() -> Option<String> {

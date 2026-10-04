@@ -3,8 +3,28 @@ default_enabled = true
 manifest_description = "Let the agent publish workspace files to the current chat"
 manifest_label = "Artifacts"
 prompt_main = "To send a generated file to the user, first create it in the workspace with another tool, then call `send_artifact` with its path or an authorized stored file_id."
-render_send = "Send"
 render_sent_prefix = "Sent "
-tool_send_artifact_description = "Send one existing workspace file to the user."
-tool_send_artifact_parameter_path_description = "Workspace-relative path to the finished file."
-tool_publish_file_id_description = "Authorized stored file ID to publish without copying bytes."
+
+[send_artifact]
+result_title = "send_artifact"
+title = "Send"
+detail = "path"
+
+[send_artifact.tool]
+name = "send_artifact"
+description = "Send one existing workspace file to the user."
+
+[send_artifact.tool.parameters]
+type = "object"
+oneOf = [{ "required" = ["path"] }, { "required" = ["file_id"] }]
+additionalProperties = false
+
+[send_artifact.tool.parameters.properties]
+
+[send_artifact.tool.parameters.properties.file_id]
+type = "string"
+description = "Authorized stored file ID to publish without copying bytes."
+
+[send_artifact.tool.parameters.properties.path]
+type = "string"
+description = "Workspace-relative path to the finished file."

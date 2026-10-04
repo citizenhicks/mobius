@@ -1,8 +1,7 @@
 use mobius::protocol::{
-    FrontendAction, FrontendActionListItem, FrontendBlock, FrontendBlockFormat, FrontendBlockRole,
-    FrontendBlockState, FrontendBlockUpdate, FrontendEvent, FrontendListItemState,
-    FrontendPickerOption, FrontendSlot, FrontendSymbol, FrontendTone, FrontendWidget,
-    FrontendWidgetContent, Op, SessionContext, TokenUsage,
+    FrontendAction, FrontendActionListItem, FrontendBlock, FrontendBlockRole, FrontendEvent,
+    FrontendListItemState, FrontendPickerOption, FrontendSlot, FrontendSymbol, FrontendTone,
+    FrontendWidget, FrontendWidgetContent, Op, SessionContext, TokenUsage,
 };
 use std::collections::BTreeMap;
 
@@ -172,13 +171,7 @@ fn open_widget_tracks_updates_and_submits_the_advertised_operation() {
 #[test]
 fn opening_widget_submits_its_advertised_refresh() {
     let key: (String, String) = ("capability-a".into(), "view".into());
-    let op = Op::CapabilityCommand {
-        capability: key.0.clone(),
-        command: "refresh".into(),
-        arguments: String::new(),
-        input: None,
-        target: None,
-    };
+    let op = Op::command(key.0.clone(), "refresh", String::new());
     let mut item = widget(blocks("Initial"));
     item.action = Some(op.clone());
     let mut overlay = CapabilityOverlay {
@@ -343,20 +336,9 @@ fn blocks(text: &str) -> FrontendWidgetContent {
     FrontendWidgetContent::Blocks {
         title: "View".into(),
         blocks: vec![FrontendBlock {
-            id: None,
-            group: None,
-            update: FrontendBlockUpdate::Replace,
-            state: FrontendBlockState::Complete,
             role: FrontendBlockRole::Notice,
-            title: String::new(),
             text: text.into(),
-            symbol: None,
-            content: Default::default(),
-            format: FrontendBlockFormat::PlainText,
-            image_aspect: None,
-            tone: FrontendTone::Neutral,
-            links: Vec::new(),
-            files: Vec::new(),
+            ..Default::default()
         }],
     }
 }

@@ -10,7 +10,6 @@ use cap_std::fs::MetadataExt as _;
 
 use super::Middleware;
 use super::PromptSection;
-use super::manifest::MiddlewareManifest;
 use crate::{Error, Result};
 
 mod text {
@@ -22,24 +21,16 @@ mod text {
         pub(super) manifest_label: String,
         pub(super) prompt_title: String,
     }
-    pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
-        std::sync::LazyLock::new(|| crate::config::embedded(include_str!("instructions.toml")));
+    crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("instructions.toml"); }
 }
 const OVERRIDE_FILE: &str = "AGENTS.override.md";
 const INSTRUCTIONS_FILE: &str = "AGENTS.md";
 const MAX_INSTRUCTIONS_BYTES: u64 = 40_000;
 
+super::manifest::middleware_manifest! {
 /// Configuration and presentation metadata for workspace instructions.
-pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
-    std::sync::LazyLock::new(|| MiddlewareManifest {
-        id: "instructions",
-        label: text::DEFINITION.manifest_label.as_str(),
-        description: text::DEFINITION.manifest_description.as_str(),
-        required: false,
-        default_enabled: text::DEFINITION.default_enabled,
-        required_model_capability: None,
-        settings: &[],
-    });
+    "instructions", text::DEFINITION, required: false, capability: None, settings: &[]
+}
 
 /// Optional root workspace instructions composed into the system prompt once.
 pub struct Instructions {

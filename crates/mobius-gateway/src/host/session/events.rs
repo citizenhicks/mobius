@@ -368,11 +368,10 @@ impl HostState {
 
     pub(super) fn require_idle(&self) -> std::result::Result<(), Rejection> {
         if !self.is_idle() {
-            Err(Rejection {
-                code: "agent_busy",
-                message: "finish or interrupt the active turn before changing gateway state".into(),
-                fatal: false,
-            })
+            Err(Rejection::new(
+                "agent_busy",
+                "finish or interrupt the active turn before changing gateway state",
+            ))
         } else {
             Ok(())
         }

@@ -150,24 +150,11 @@ pub fn content_revision(value: &impl Serialize) -> String {
     use sha2::Digest as _;
     let mut hasher = sha2::Sha256::new();
     // Serializing into a digest cannot fail for catalog records.
-    let _ = serde_json::to_writer(DigestWriter(&mut hasher), value);
+    let _ = serde_json::to_writer(&mut hasher, value);
     hasher.finalize()[..16]
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
-}
-
-struct DigestWriter<'a>(&'a mut sha2::Sha256);
-
-impl std::io::Write for DigestWriter<'_> {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        sha2::Digest::update(self.0, bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
 }
 
 /// A cacheable part of the Ready catalog.

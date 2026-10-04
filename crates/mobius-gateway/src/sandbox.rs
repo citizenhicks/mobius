@@ -369,9 +369,6 @@ fn configure_execution(
         if let Some(bubblewrap) = &policy.bubblewrap_executable {
             sandbox = sandbox.bubblewrap_executable(bubblewrap)?;
         }
-        for name in &policy.allow_environment {
-            sandbox = sandbox.allow_environment(name)?;
-        }
     }
     for name in credential_environment {
         sandbox = sandbox.deny_environment(*name);

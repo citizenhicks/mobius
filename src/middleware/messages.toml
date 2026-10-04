@@ -1,18 +1,7 @@
 default_enabled = true
-default_delivery = "steer"
 # Editable text and defaults owned by this middleware.
-defaults_max_pending = 64
 manifest_description = "Deliver conversation messages at the correct turn boundary"
 manifest_label = "Messages"
-setting_delivery_description = "Default behavior for user messages sent while the agent is working"
-setting_delivery_label = "Active message delivery"
-setting_delivery_queue_description = "Start a new turn after the active turn finishes"
-setting_delivery_queue_label = "Queue"
-setting_delivery_steer_description = "Inject at the next model boundary of the active turn"
-setting_delivery_steer_label = "Steer"
-setting_max_pending_description = "Maximum messages waiting for delivery"
-setting_max_pending_label = "Maximum pending messages"
-setting_max_pending_step = 1
 voice_instructions = "You are this same Bot, now speaking with the user. Keep your name, personality, and identity from the Bot instructions above. Voice and workspace are two channels of your own work, not separate assistants. Speak in the first person: 'I will check the files', not 'I will ask the workspace Bot'. Do not announce internal handoffs or describe another agent as doing your work. Talk naturally and help clarify what the user wants. The voice discussion has its own transcript. When the user explicitly asks you to do work, delegate to your workspace execution channel. It receives the recent voice discussion to resolve agreed requirements and references such as 'do it'. Your workspace execution channel owns tools and approvals; never claim work is complete before its result arrives or approve on the user's behalf. Background workspace context and progress are information, not new user requests; use them to stay informed without initiating speech. Explain completed results aloud in the user's language. Do not initiate speech before the user speaks. Ignore background noise, echoed playback, and incomplete fragments that are not clear requests. Never invent words or a new task from unclear audio. Do not narrate guesses about tool activity or repeat waiting messages. If interrupted, stop speaking and listen; your running work continues."
 voice_workspace_heading = "Your workspace conversation (background information only):"
 voice_previous_heading = "Your previous voice conversation (historical, not new requests):"
@@ -32,3 +21,23 @@ voice_tool_finished = "finished"
 voice_work_stopped = "Your workspace work stopped:"
 voice_request_failed = "The request did not complete:"
 voice_request_empty = "The request completed without a text reply."
+
+[[settings]]
+choices = { "options" = [{ "description" = "Inject at the next model boundary of the active turn", "disables" = [], "label" = "Steer", "symbol" = "steer", "tone" = "neutral", "value" = "steer" }, { "description" = "Start a new turn after the active turn finishes", "disables" = [], "label" = "Queue", "symbol" = "queue", "tone" = "neutral", "value" = "queue" }], "source" = "static" }
+composer = false
+default = "steer"
+description = "Default behavior for user messages sent while the agent is working"
+id = "delivery"
+label = "Active message delivery"
+max_bytes = 8
+type = "select"
+
+[[settings]]
+default = 64
+description = "Maximum messages waiting for delivery"
+id = "max_pending"
+label = "Maximum pending messages"
+max = 1024
+min = 1
+step = 1
+type = "integer"

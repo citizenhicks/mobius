@@ -310,9 +310,17 @@ pub(super) struct InitOptions {
     pub(super) cloudflare: Option<CloudflareInit>,
 }
 
-pub(super) enum CloudflareInit {
+/// Cloudflare exposure selected during gateway initialization.
+pub enum CloudflareInit {
+    /// Account-free temporary tunnel.
     Quick,
-    Named { hostname: String, token: String },
+    /// Named tunnel with a credential that is redacted in debug output.
+    Named {
+        /// Public tunnel hostname.
+        hostname: String,
+        /// Cloudflare tunnel credential.
+        token: String,
+    },
 }
 
 impl std::fmt::Debug for CloudflareInit {

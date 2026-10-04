@@ -141,11 +141,10 @@ impl GatewayHost {
         let mut state = self.state.lock().await;
         let bot = state.bots.bot(id).map_err(invalid_bot)?;
         if bot.config.revision != expected_revision {
-            return Err(Rejection {
-                code: "revision_conflict",
-                message: format!("Bot configuration revision is now {}", bot.config.revision),
-                fatal: false,
-            });
+            return Err(Rejection::new(
+                "revision_conflict",
+                format!("Bot configuration revision is now {}", bot.config.revision),
+            ));
         }
         if bot.handle == "mobius" {
             return Err(bot_delete_rejection(
@@ -210,11 +209,10 @@ impl GatewayHost {
         selection: SessionFileSelection,
     ) -> std::result::Result<Vec<String>, Rejection> {
         if session_ids.is_empty() || session_ids.len() > MAX_SESSION_DELETE_ROOTS {
-            return Err(Rejection {
-                code: "invalid_session_selection",
-                message: format!("select between 1 and {MAX_SESSION_DELETE_ROOTS} chats to delete"),
-                fatal: false,
-            });
+            return Err(Rejection::new(
+                "invalid_session_selection",
+                format!("select between 1 and {MAX_SESSION_DELETE_ROOTS} chats to delete"),
+            ));
         }
         let mut seen = HashSet::new();
         let selected = session_ids
@@ -333,11 +331,10 @@ pub(super) async fn prepare_bot_session_tree_deletion(
         .values()
         .any(|starting_bot| starting_bot == bot_id)
     {
-        return Err(Rejection {
-            code: "agent_busy",
-            message: "wait for this Bot's chat to finish starting before deleting it".into(),
-            fatal: false,
-        });
+        return Err(Rejection::new(
+            "agent_busy",
+            "wait for this Bot's chat to finish starting before deleting it",
+        ));
     }
     let summaries = gateway_session_summaries(&state.checkpoints)
         .await
@@ -387,11 +384,10 @@ pub(super) async fn prepare_session_tree_deletion(
         .keys()
         .any(|starting| session_ids.contains(starting))
     {
-        return Err(Rejection {
-            code: "agent_busy",
-            message: "wait for this chat to finish starting before deleting it".into(),
-            fatal: false,
-        });
+        return Err(Rejection::new(
+            "agent_busy",
+            "wait for this chat to finish starting before deleting it",
+        ));
     }
     let residents = session_ids
         .iter()
@@ -401,11 +397,10 @@ pub(super) async fn prepare_session_tree_deletion(
         match host.provider_cutover_status().await {
             Ok(status) if status.idle => {}
             Ok(_) => {
-                return Err(Rejection {
-                    code: "agent_busy",
-                    message: "finish or interrupt the active turn before deleting this chat".into(),
-                    fatal: false,
-                });
+                return Err(Rejection::new(
+                    "agent_busy",
+                    "finish or interrupt the active turn before deleting this chat",
+                ));
             }
             Err(rejection) if rejection.code == "gateway_stopped" => {}
             Err(rejection) => return Err(rejection),
@@ -418,11 +413,10 @@ pub(super) async fn prepare_session_tree_deletion(
         .map_err(session_file_rejection)?;
     for host in residents.into_iter().filter(|_| all) {
         if !host.stop_if_idle().await {
-            return Err(Rejection {
-                code: "agent_busy",
-                message: "finish or interrupt the active turn before deleting this chat".into(),
-                fatal: false,
-            });
+            return Err(Rejection::new(
+                "agent_busy",
+                "finish or interrupt the active turn before deleting this chat",
+            ));
         }
     }
     Ok(file_deletion)

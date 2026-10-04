@@ -3,10 +3,8 @@ use futures_util::StreamExt as _;
 
 impl HostState {
     fn project(&self) -> std::result::Result<&Path, Rejection> {
-        self.spec.workspace.as_deref().ok_or_else(|| Rejection {
-            code: "no_workspace",
-            message: "Persistent Chat has no project workspace".into(),
-            fatal: false,
+        self.spec.workspace.as_deref().ok_or_else(|| {
+            Rejection::new("no_workspace", "Persistent Chat has no project workspace")
         })
     }
 
@@ -196,11 +194,10 @@ impl HostState {
                     let router = &self.running.model_router;
                     let route = &self.running.session.model.route;
                     if !router.supports_realtime_voice(route).map_err(internal)? {
-                        return Err(Rejection {
-                            code: "realtime_voice",
-                            message: "the selected provider does not support realtime voice".into(),
-                            fatal: false,
-                        });
+                        return Err(Rejection::new(
+                            "realtime_voice",
+                            "the selected provider does not support realtime voice",
+                        ));
                     }
                     let active_turn_id = self.activity().await.map_err(internal)?.turn_id;
                     let config = self
@@ -290,11 +287,10 @@ impl HostState {
                         }
                     );
                     let result = match &submission.op {
-                        Op::SetModel { .. } => Err(Rejection {
-                            code: "bot_configuration_required",
-                            message: "change the model on this chat's Bot profile".into(),
-                            fatal: false,
-                        }),
+                        Op::SetModel { .. } => Err(Rejection::new(
+                            "bot_configuration_required",
+                            "change the model on this chat's Bot profile",
+                        )),
                         _ => self.submit(submission),
                     };
                     if result.is_ok()
@@ -491,11 +487,10 @@ impl HostState {
             let _mutation = self.begin_session_mutation()?;
             self.bind_bot().await?;
             if self.spec.bot_id != bot_id {
-                return Err(Rejection {
-                    code: "invalid_submission",
-                    message: "the chat now belongs to another Bot".into(),
-                    fatal: false,
-                });
+                return Err(Rejection::new(
+                    "invalid_submission",
+                    "the chat now belongs to another Bot",
+                ));
             }
             self.running
                 .sender
@@ -588,11 +583,10 @@ impl HostState {
                 .collect());
         };
         if last_sequence > self.sequence {
-            return Err(Rejection {
-                code: "replay_unavailable",
-                message: "the reconnect cursor is ahead of the durable session".into(),
-                fatal: false,
-            });
+            return Err(Rejection::new(
+                "replay_unavailable",
+                "the reconnect cursor is ahead of the durable session",
+            ));
         }
         let oldest = self
             .replay
@@ -601,11 +595,10 @@ impl HostState {
         if last_sequence < self.sequence
             && oldest.is_none_or(|oldest| last_sequence.saturating_add(1) < oldest)
         {
-            return Err(Rejection {
-                code: "replay_unavailable",
-                message: "the reconnect window expired; reload the active session".into(),
-                fatal: false,
-            });
+            return Err(Rejection::new(
+                "replay_unavailable",
+                "the reconnect window expired; reload the active session",
+            ));
         }
         Ok(self
             .replay
@@ -750,11 +743,10 @@ impl HostState {
     async fn require_idle_runtime(&self) -> std::result::Result<(), Rejection> {
         self.require_idle()?;
         if !self.runtime_is_idle().await? {
-            return Err(Rejection {
-                code: "agent_busy",
-                message: "wait for background work before changing this chat".into(),
-                fatal: false,
-            });
+            return Err(Rejection::new(
+                "agent_busy",
+                "wait for background work before changing this chat",
+            ));
         }
         Ok(())
     }

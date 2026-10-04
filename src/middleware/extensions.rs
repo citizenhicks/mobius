@@ -26,7 +26,6 @@ use super::RuntimeContext;
 use super::SessionStartContext;
 use super::SessionStartSource;
 use super::StopContext;
-use super::manifest::MiddlewareManifest;
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
@@ -58,8 +57,7 @@ mod text {
         pub(super) manifest_label: String,
         pub(super) prompt_default: String,
     }
-    pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
-        std::sync::LazyLock::new(|| crate::config::embedded(include_str!("extensions.toml")));
+    crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("extensions.toml"); }
 }
 const MAX_SKILLS: usize = 64;
 const MAX_SKILL_BYTES: u64 = 40_000;
@@ -73,17 +71,10 @@ const SESSION_HOOK_CONTEXT_KIND: &str = "extension_session_hook";
 /// Fail-closed authorization checked immediately before each plugin hook command starts.
 pub type HookAuthorization = CommandAuthorization;
 
+super::manifest::middleware_manifest! {
 /// Configuration and presentation metadata for installed extensions.
-pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
-    std::sync::LazyLock::new(|| MiddlewareManifest {
-        id: "extensions",
-        label: text::DEFINITION.manifest_label.as_str(),
-        description: text::DEFINITION.manifest_description.as_str(),
-        required: false,
-        default_enabled: text::DEFINITION.default_enabled,
-        required_model_capability: None,
-        settings: &[],
-    });
+    "extensions", text::DEFINITION, required: false, capability: None, settings: &[]
+}
 
 /// One validated package format understood by the extensions middleware.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

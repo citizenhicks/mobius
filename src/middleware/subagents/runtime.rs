@@ -647,20 +647,15 @@ fn subagent_error_notice(message: String) -> FrontendEvent {
     FrontendEvent::Render {
         capability: "subagents".into(),
         block: FrontendBlock {
-            id: None,
-            group: None,
             update: crate::protocol::FrontendBlockUpdate::Replace,
             state: crate::protocol::FrontendBlockState::Complete,
             role: crate::protocol::FrontendBlockRole::Notice,
             title: "Subagent error".into(),
             text: message,
             symbol: Some(FrontendSymbol::Agent),
-            links: Vec::new(),
-            files: Vec::new(),
-            content: Default::default(),
             format: crate::protocol::FrontendBlockFormat::PlainText,
-            image_aspect: None,
             tone: FrontendTone::Error,
+            ..Default::default()
         },
     }
 }
@@ -771,13 +766,7 @@ fn picker_options(tree: &Tree) -> Vec<FrontendPickerOption> {
                 FrontendSymbol::Agent
             }),
             shows_detail: false,
-            op: Op::CapabilityCommand {
-                capability: "subagents".into(),
-                command: "subagents".into(),
-                arguments: path.clone(),
-                input: None,
-                target: None,
-            },
+            op: Op::command("subagents", "subagents", path.clone()),
         })
         .collect()
 }

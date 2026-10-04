@@ -23,11 +23,10 @@ pub(super) async fn write_session_history(
     write_rejection(
         writer,
         request_id,
-        Rejection {
-            code: "history_turn_too_large",
-            message: "the next durable turn exceeds the gateway frame limit".into(),
-            fatal: false,
-        },
+        Rejection::new(
+            "history_turn_too_large",
+            "the next durable turn exceeds the gateway frame limit",
+        ),
     )
     .await
 }
@@ -100,11 +99,10 @@ pub(super) fn require_selected<'a>(
 ) -> std::result::Result<&'a HostHandle, Rejection> {
     let host = require_any_selected(selected)?;
     if host.session_id() != session_id {
-        return Err(Rejection {
-            code: "session_not_selected",
-            message: "open this chat on the connection before controlling it".into(),
-            fatal: false,
-        });
+        return Err(Rejection::new(
+            "session_not_selected",
+            "open this chat on the connection before controlling it",
+        ));
     }
     Ok(host)
 }
@@ -121,11 +119,10 @@ pub(super) async fn require_uploads_enabled<'a>(
 }
 
 pub(super) fn uploads_disabled_rejection() -> Rejection {
-    Rejection {
-        code: "uploads_disabled",
-        message: "enable the optional attachments middleware for this chat first".into(),
-        fatal: false,
-    }
+    Rejection::new(
+        "uploads_disabled",
+        "enable the optional attachments middleware for this chat first",
+    )
 }
 
 pub(super) fn require_any_selected(
@@ -134,11 +131,7 @@ pub(super) fn require_any_selected(
     selected
         .as_ref()
         .map(|selected| &selected.host)
-        .ok_or_else(|| Rejection {
-            code: "session_required",
-            message: "create or open a chat first".into(),
-            fatal: false,
-        })
+        .ok_or_else(|| Rejection::new("session_required", "create or open a chat first"))
 }
 
 pub(super) async fn write_result(
@@ -214,19 +207,11 @@ pub(super) async fn write_server_error(
 }
 
 pub(super) fn internal_rejection(message: String) -> Rejection {
-    Rejection {
-        code: "gateway_error",
-        message,
-        fatal: false,
-    }
+    Rejection::new("gateway_error", message)
 }
 
 pub(super) fn routine_rejection(error: Error) -> Rejection {
-    Rejection {
-        code: "invalid_routine",
-        message: error.to_string(),
-        fatal: false,
-    }
+    Rejection::new("invalid_routine", error.to_string())
 }
 
 pub(super) fn list_directories(
@@ -267,11 +252,7 @@ pub(super) fn list_directories(
 }
 
 pub(super) fn directory_rejection(error: impl std::fmt::Display) -> Rejection {
-    Rejection {
-        code: "invalid_directory",
-        message: error.to_string(),
-        fatal: false,
-    }
+    Rejection::new("invalid_directory", error.to_string())
 }
 
 pub(super) fn sequence(frame: &ServerFrame) -> Option<u64> {

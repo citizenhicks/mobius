@@ -542,13 +542,11 @@ fn rendered_preview_round_trip_preserves_page_metadata_and_continuation() {
             event: EventMsg::ContextCompacted,
             blocks: Vec::new(),
         }],
-        next: Some(Op::CapabilityCommand {
-            capability: "subagents".into(),
-            command: "subagents".into(),
-            arguments: r#"{"path":"/root/reviewer","before_sequence":2}"#.into(),
-            input: None,
-            target: None,
-        }),
+        next: Some(Op::command(
+            "subagents",
+            "subagents",
+            r#"{"path":"/root/reviewer","before_sequence":2}"#,
+        )),
     };
 
     let encoded = serde_json::to_value(&expected).expect("encode rendered preview");
@@ -1490,13 +1488,7 @@ fn validate_version_requires_the_exact_protocol() {
 
 #[test]
 fn scratchpad_management_is_gateway_scoped() {
-    let operation = Op::CapabilityCommand {
-        capability: "scratchpad".into(),
-        command: "scratchpad".into(),
-        arguments: "refresh".into(),
-        input: None,
-        target: None,
-    };
+    let operation = Op::command("scratchpad", "scratchpad", "refresh");
     let request = serde_json::to_value(ClientFrame::new(ClientMessage::SubmitContribution {
         request_id: "scratchpad-1".into(),
         operation,

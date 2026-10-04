@@ -18,7 +18,7 @@ pub(super) fn render(frame: &mut ratatui::Frame<'_>, state: &BotsState, gateway:
         Block::default().style(theme.style(Role::Canvas)),
         frame.area(),
     );
-    let area = content_area(frame.area());
+    let area = crate::frontend::terminal::content_area(frame.area(), 92);
     let [header, body, notice, footer] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Min(8),
@@ -561,14 +561,4 @@ fn panel(title: impl Into<String>) -> Block<'static> {
     Block::bordered()
         .title(format!(" {} ", title.into()))
         .border_style(current().style(Role::Border))
-}
-
-fn content_area(area: Rect) -> Rect {
-    let width = area.width.saturating_sub(4).min(92);
-    Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        area.y.saturating_add(1),
-        width,
-        area.height.saturating_sub(2),
-    )
 }

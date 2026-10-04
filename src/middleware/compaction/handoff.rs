@@ -58,23 +58,20 @@ struct NewContext {}
 impl Tool for HandoffTool {
     fn definition(&self) -> ToolDefinition {
         if self.write {
-            ToolDefinition {
-                name: "write_handoff".into(),
-                description: text::DEFINITION.tool_write_handoff_description.clone(),
-                parameters: serde_json::json!({
-                    "type": "object", "properties": {"notes": {
-                        "type": "string", "minLength": 1,
-                        "description": text::DEFINITION.handoff_notes_parameter_description.replace("{max_bytes}", &MAX_NOTE_BYTES.to_string())
-                    }},
-                    "required": ["notes"], "additionalProperties": false
-                }),
+            {
+                let mut tool = text::DEFINITION.write_handoff.tool.clone();
+                tool.parameters["properties"]["notes"]["description"] = text::DEFINITION
+                    .write_handoff
+                    .tool
+                    .parameters["properties"]["notes"]["description"]
+                    .as_str()
+                    .expect("handoff description")
+                    .replace("{max_bytes}", &MAX_NOTE_BYTES.to_string())
+                    .into();
+                tool
             }
         } else {
-            ToolDefinition {
-                name: "new_context".into(),
-                description: text::DEFINITION.tool_new_context_description.clone(),
-                parameters: serde_json::json!({"type": "object", "properties": {}, "additionalProperties": false}),
-            }
+            text::DEFINITION.new_context.tool.clone()
         }
     }
 

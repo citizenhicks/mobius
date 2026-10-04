@@ -571,48 +571,34 @@ fn is_binary_diff(diff: &[u8]) -> bool {
 }
 
 fn error_rejection(error: impl std::fmt::Display) -> Rejection {
-    Rejection {
-        code: "git_error",
-        message: error.to_string(),
-        fatal: false,
-    }
+    Rejection::new("git_error", error.to_string())
 }
 
 fn failure(prefix: &str, stderr: &str) -> Rejection {
     let detail = stderr.trim();
-    Rejection {
-        code: "git_error",
-        message: if detail.is_empty() {
+    Rejection::new(
+        "git_error",
+        if detail.is_empty() {
             prefix.into()
         } else {
             format!("{prefix}: {detail}")
         },
-        fatal: false,
-    }
+    )
 }
 
 fn timeout() -> Rejection {
-    Rejection {
-        code: "git_timeout",
-        message: format!("Git operation exceeded {} seconds", GIT_TIMEOUT.as_secs()),
-        fatal: false,
-    }
+    Rejection::new(
+        "git_timeout",
+        format!("Git operation exceeded {} seconds", GIT_TIMEOUT.as_secs()),
+    )
 }
 
 fn invalid_credential(message: impl Into<String>) -> Rejection {
-    Rejection {
-        code: "invalid_git_credential",
-        message: message.into(),
-        fatal: false,
-    }
+    Rejection::new("invalid_git_credential", message)
 }
 
 fn credential_error(message: impl Into<String>) -> Rejection {
-    Rejection {
-        code: "git_credential_error",
-        message: message.into(),
-        fatal: false,
-    }
+    Rejection::new("git_credential_error", message)
 }
 
 fn invalid_credential_output() -> Rejection {
@@ -620,27 +606,18 @@ fn invalid_credential_output() -> Rejection {
 }
 
 fn unknown_branch() -> Rejection {
-    Rejection {
-        code: "unknown_git_branch",
-        message: "the requested Git branch is not a local branch".into(),
-        fatal: false,
-    }
+    Rejection::new(
+        "unknown_git_branch",
+        "the requested Git branch is not a local branch",
+    )
 }
 
 fn invalid_branch_output() -> Rejection {
-    Rejection {
-        code: "git_error",
-        message: "Git returned an invalid local branch".into(),
-        fatal: false,
-    }
+    Rejection::new("git_error", "Git returned an invalid local branch")
 }
 
 fn invalid_path() -> Rejection {
-    Rejection {
-        code: "git_error",
-        message: "Git returned an invalid untracked path".into(),
-        fatal: false,
-    }
+    Rejection::new("git_error", "Git returned an invalid untracked path")
 }
 
 #[cfg(test)]

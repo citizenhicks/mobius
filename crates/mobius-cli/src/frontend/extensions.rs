@@ -165,7 +165,11 @@ impl ExtensionsState {
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
-                let rejected = append_source(&mut source, &character.to_string());
+                let rejected = crate::frontend::terminal::append_text(
+                    &mut source,
+                    &character.to_string(),
+                    MAX_SOURCE_BYTES,
+                );
                 self.mode = Mode::Install(source);
                 if rejected {
                     self.fail(format!(
@@ -307,7 +311,7 @@ impl ExtensionsState {
         let Mode::Install(source) = &mut self.mode else {
             return;
         };
-        if append_source(source, text.trim()) {
+        if crate::frontend::terminal::append_text(source, text.trim(), MAX_SOURCE_BYTES) {
             self.fail(format!(
                 "Source URL is limited to {MAX_SOURCE_BYTES} bytes."
             ));
@@ -507,25 +511,13 @@ fn id_action(mutation: Mutation, id: String) -> ScreenAction {
     }
 }
 
-fn append_source(source: &mut String, text: &str) -> bool {
-    let mut rejected = false;
-    for character in text.chars().filter(|character| !character.is_control()) {
-        if source.len() + character.len_utf8() > MAX_SOURCE_BYTES {
-            rejected = true;
-            break;
-        }
-        source.push(character);
-    }
-    rejected
-}
-
 fn render(frame: &mut ratatui::Frame<'_>, state: &ExtensionsState, gateway: &ReadyPayload) {
     let theme = current();
     frame.render_widget(
         Block::default().style(theme.style(Role::Canvas)),
         frame.area(),
     );
-    let area = content_area(frame.area());
+    let area = crate::frontend::terminal::content_area(frame.area(), 100);
     let prompt_height = match &state.mode {
         Mode::Install(_) => 3,
         Mode::Confirm(_) => 2,
@@ -800,16 +792,6 @@ fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, state: &ExtensionsS
     frame.render_widget(Paragraph::new(text).style(theme.style(role)), area);
 }
 
-fn content_area(area: Rect) -> Rect {
-    let width = area.width.saturating_sub(4).min(100);
-    Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        area.y.saturating_add(1),
-        width,
-        area.height.saturating_sub(2),
-    )
-}
-
 const fn extension_kind(kind: ExtensionKind) -> &'static str {
     match kind {
         ExtensionKind::Skill => "skill",
@@ -914,8 +896,16 @@ mod tests {
     fn source_input_filters_controls_and_stops_at_the_wire_limit() {
         let mut source = String::new();
 
-        assert!(!append_source(&mut source, "https://example.com/repo\n"));
-        assert!(append_source(&mut source, &"a".repeat(MAX_SOURCE_BYTES)));
+        assert!(!crate::frontend::terminal::append_text(
+            &mut source,
+            "https://example.com/repo\n",
+            MAX_SOURCE_BYTES
+        ));
+        assert!(crate::frontend::terminal::append_text(
+            &mut source,
+            &"a".repeat(MAX_SOURCE_BYTES),
+            MAX_SOURCE_BYTES
+        ));
 
         assert!(!source.contains('\n'));
         assert_eq!(source.len(), MAX_SOURCE_BYTES);

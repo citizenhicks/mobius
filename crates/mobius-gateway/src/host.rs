@@ -188,6 +188,21 @@ pub(crate) struct Rejection {
     pub(crate) fatal: bool,
 }
 
+impl Rejection {
+    pub(crate) fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            fatal: false,
+        }
+    }
+
+    pub(crate) fn fatal(mut self) -> Self {
+        self.fatal = true;
+        self
+    }
+}
+
 pub(crate) type HostAccess = Arc<dyn Fn() -> Result<GatewayHost> + Send + Sync>;
 
 impl GatewayHost {
@@ -527,17 +542,12 @@ impl GatewayHost {
     ) -> std::result::Result<crate::wire::BotRecord, Rejection> {
         let _mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
-        let defaults = state
-            .config
-            .lock()
-            .map_err(|_| internal("gateway configuration lock is poisoned"))?
-            .bot_defaults
-            .clone()
-            .ok_or_else(|| Rejection {
-                code: "gateway_setup_required",
-                message: "configure a provider before creating a Bot".into(),
-                fatal: false,
-            })?;
+        let defaults = state.config()?.bot_defaults.clone().ok_or_else(|| {
+            Rejection::new(
+                "gateway_setup_required",
+                "configure a provider before creating a Bot",
+            )
+        })?;
         let config = defaults.config;
         validate_bot_config(&state, &config)?;
         let bot = state
@@ -563,14 +573,13 @@ impl GatewayHost {
             validate_bot_config(&state, &config)?;
             let previous = state.bots.bot(id).map_err(invalid_bot)?;
             if previous.config.revision != expected_revision {
-                return Err(Rejection {
-                    code: "revision_conflict",
-                    message: format!(
+                return Err(Rejection::new(
+                    "revision_conflict",
+                    format!(
                         "Bot configuration revision is now {}",
                         previous.config.revision
                     ),
-                    fatal: false,
-                });
+                ));
             }
             (
                 state.store.clone(),
@@ -592,11 +601,7 @@ impl GatewayHost {
             let mut candidate = previous.clone();
             candidate.description = identity.description.into();
             candidate.config.config = config.clone();
-            let gateway = state
-                .config
-                .lock()
-                .map_err(|_| internal("gateway configuration lock is poisoned"))?
-                .clone();
+            let gateway = state.config()?.clone();
             Some(
                 crate::assembly::prepare_bot(
                     &gateway,
@@ -693,12 +698,7 @@ impl GatewayHost {
         validate_session_id(&session_id).map_err(|_| invalid_session_id())?;
         let mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
-        let tls = state
-            .config
-            .lock()
-            .map_err(|_| internal("gateway configuration lock is poisoned"))?
-            .tls
-            .clone();
+        let tls = state.config()?.tls.clone();
         let bot = state.bots.bot(bot_id).map_err(invalid_bot)?;
         let state_dir = state.store.state_dir().to_path_buf();
         let workspace = workspace.map(Path::to_path_buf);
@@ -788,10 +788,7 @@ impl GatewayHost {
     ) -> std::result::Result<PathBuf, Rejection> {
         let (state_dir, tls) = {
             let state = self.state.lock().await;
-            let config = state
-                .config
-                .lock()
-                .map_err(|_| internal("gateway configuration lock is poisoned"))?;
+            let config = state.config()?;
             (state.store.state_dir().to_path_buf(), config.tls.clone())
         };
         let parent = parent.to_owned();
@@ -978,11 +975,7 @@ impl GatewayHost {
         let _access = self.begin_mutation().await?;
         let (mut profile, checkpoints, config, store) = {
             let state = self.state.lock().await;
-            let config = state
-                .config
-                .lock()
-                .map_err(|_| internal("gateway configuration lock is poisoned"))?
-                .clone();
+            let config = state.config()?.clone();
             let profile = config.profile();
             (
                 profile,
@@ -1048,10 +1041,7 @@ fn validate_bot_config(
     state: &GatewayState,
     config: &AgentComposition,
 ) -> std::result::Result<(), Rejection> {
-    let gateway = state
-        .config
-        .lock()
-        .map_err(|_| internal("gateway configuration lock is poisoned"))?;
+    let gateway = state.config()?;
     let models =
         configured_model_choices(&gateway, &state.store, &state.credentials).map_err(internal)?;
     crate::config::validate_bot_compatibility(&gateway, config, &models).map_err(invalid_config)?;
@@ -1067,12 +1057,7 @@ fn validate_bot_workspace(
     workspace: &Path,
 ) -> std::result::Result<(), Rejection> {
     let bot = state.bots.bot(bot_id).map_err(invalid_bot)?;
-    let tls = state
-        .config
-        .lock()
-        .map_err(|_| internal("gateway configuration lock is poisoned"))?
-        .tls
-        .clone();
+    let tls = state.config()?.tls.clone();
     ChatSpec::for_bot(workspace, &bot, state.store.state_dir(), tls.as_ref())
         .map(|_| ())
         .map_err(invalid_workspace)
@@ -1090,12 +1075,14 @@ impl Drop for SessionStartGuard {
 }
 
 impl GatewayState {
-    fn ready_snapshot(&self) -> std::result::Result<GatewayReadySnapshot, Rejection> {
-        let config = self
-            .config
+    fn config(&self) -> std::result::Result<std::sync::MutexGuard<'_, GatewayConfig>, Rejection> {
+        self.config
             .lock()
-            .map_err(|_| internal("gateway configuration lock is poisoned"))?
-            .clone();
+            .map_err(|_| internal("gateway configuration lock is poisoned"))
+    }
+
+    fn ready_snapshot(&self) -> std::result::Result<GatewayReadySnapshot, Rejection> {
+        let config = self.config()?.clone();
         Ok(GatewayReadySnapshot {
             store: self.store.clone(),
             config,
@@ -1119,11 +1106,10 @@ impl GatewayState {
         }
         let mut starting = mobius::sync::recover_lock(&self.starting_sessions);
         if starting.contains_key(id) {
-            return Err(Rejection {
-                code: "session_starting",
-                message: "this chat is starting; retry shortly".into(),
-                fatal: false,
-            });
+            return Err(Rejection::new(
+                "session_starting",
+                "this chat is starting; retry shortly",
+            ));
         }
         starting.insert(id.into(), bot_id.into());
         Ok(SessionStartGuard {
@@ -1137,10 +1123,7 @@ impl GatewayState {
     }
 
     fn session_capacity(&self) -> std::result::Result<usize, Rejection> {
-        self.config
-            .lock()
-            .map(|config| config.connections.active_sessions)
-            .map_err(|_| internal("gateway configuration lock is poisoned"))
+        Ok(self.config()?.connections.active_sessions)
     }
 }
 
@@ -1196,11 +1179,10 @@ impl GatewayHost {
 }
 
 fn session_limit(capacity: usize) -> Rejection {
-    Rejection {
-        code: "session_limit",
-        message: format!("this gateway already has {capacity} connected or running chats"),
-        fatal: false,
-    }
+    Rejection::new(
+        "session_limit",
+        format!("this gateway already has {capacity} connected or running chats"),
+    )
 }
 
 async fn receive<T>(
@@ -1210,78 +1192,51 @@ async fn receive<T>(
 }
 
 fn stopped() -> Rejection {
-    Rejection {
-        code: "gateway_stopped",
-        message: "the gateway host stopped".into(),
-        fatal: true,
-    }
+    Rejection::new("gateway_stopped", "the gateway host stopped").fatal()
 }
 
 fn reject_pending_bot_deletion(bots: &BotStore) -> std::result::Result<(), Rejection> {
     if bots.has_pending_bot_deletion().map_err(internal)? {
-        return Err(Rejection {
-            code: "bot_deletion_recovery",
-            message: "finish Bot deletion recovery before changing gateway state".into(),
-            fatal: false,
-        });
+        return Err(Rejection::new(
+            "bot_deletion_recovery",
+            "finish Bot deletion recovery before changing gateway state",
+        ));
     }
     Ok(())
 }
 
 fn internal(error: impl std::fmt::Display) -> Rejection {
-    Rejection {
-        code: "gateway_error",
-        message: error.to_string(),
-        fatal: false,
-    }
+    Rejection::new("gateway_error", error.to_string())
 }
 
 fn invalid_config(error: impl std::fmt::Display) -> Rejection {
-    Rejection {
-        code: "invalid_config",
-        message: error.to_string(),
-        fatal: false,
-    }
+    Rejection::new("invalid_config", error.to_string())
 }
 
 fn bot_delete_rejection(code: &'static str, message: &str) -> Rejection {
-    Rejection {
-        code,
-        message: message.into(),
-        fatal: false,
-    }
+    Rejection::new(code, message)
 }
 
 fn invalid_workspace(error: impl std::fmt::Display) -> Rejection {
-    Rejection {
-        code: "invalid_workspace",
-        message: error.to_string(),
-        fatal: false,
-    }
+    Rejection::new("invalid_workspace", error.to_string())
 }
 
 fn invalid_session_workspace() -> Rejection {
-    Rejection {
-        code: "invalid_session_workspace",
-        message: "the requested session belongs to another workspace".into(),
-        fatal: false,
-    }
+    Rejection::new(
+        "invalid_session_workspace",
+        "the requested session belongs to another workspace",
+    )
 }
 
 fn invalid_session_bot() -> Rejection {
-    Rejection {
-        code: "invalid_session_bot",
-        message: "the requested session Bot identity does not match its durable owner".into(),
-        fatal: false,
-    }
+    Rejection::new(
+        "invalid_session_bot",
+        "the requested session Bot identity does not match its durable owner",
+    )
 }
 
 fn unknown_session() -> Rejection {
-    Rejection {
-        code: "unknown_session",
-        message: "the requested chat does not exist".into(),
-        fatal: false,
-    }
+    Rejection::new("unknown_session", "the requested chat does not exist")
 }
 
 async fn require_catalog_session(
@@ -1301,36 +1256,20 @@ async fn require_catalog_session(
 }
 
 fn invalid_session_id() -> Rejection {
-    Rejection {
-        code: "invalid_session_id",
-        message: "session ID must be 1–4096 bytes".into(),
-        fatal: false,
-    }
+    Rejection::new("invalid_session_id", "session ID must be 1–4096 bytes")
 }
 
 fn invalid_bot(error: impl std::fmt::Display) -> Rejection {
-    Rejection {
-        code: "invalid_bot",
-        message: error.to_string(),
-        fatal: false,
-    }
+    Rejection::new("invalid_bot", error.to_string())
 }
 
 fn invalid_routine(error: impl std::fmt::Display) -> Rejection {
-    Rejection {
-        code: "invalid_routine",
-        message: error.to_string(),
-        fatal: false,
-    }
+    Rejection::new("invalid_routine", error.to_string())
 }
 
 fn scratchpad_error(error: mobius::Error) -> Rejection {
     match error {
-        mobius::Error::Tool(message) => Rejection {
-            code: "invalid_scratchpad",
-            message,
-            fatal: false,
-        },
+        mobius::Error::Tool(message) => Rejection::new("invalid_scratchpad", message),
         error => internal(error),
     }
 }
@@ -1341,11 +1280,10 @@ mod tests;
 fn reject_persistent_session(summary: &SessionSummary) -> std::result::Result<(), Rejection> {
     if summary.session_id == crate::bots::conversation_session_id(&summary.session_context.owner_id)
     {
-        return Err(Rejection {
-            code: "persistent_chat",
-            message: "this conversation belongs permanently to its Bot".into(),
-            fatal: false,
-        });
+        return Err(Rejection::new(
+            "persistent_chat",
+            "this conversation belongs permanently to its Bot",
+        ));
     }
     Ok(())
 }

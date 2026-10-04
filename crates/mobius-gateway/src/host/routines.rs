@@ -121,10 +121,11 @@ impl GatewayHost {
                     .ok_or_else(unknown_session)?;
                 let turn_id = checkpoint
                     .active_execution
-                    .ok_or_else(|| Rejection {
-                        code: "agent_busy",
-                        message: "run admission has not started a turn yet; retry".into(),
-                        fatal: false,
+                    .ok_or_else(|| {
+                        Rejection::new(
+                            "agent_busy",
+                            "run admission has not started a turn yet; retry",
+                        )
                     })?
                     .turn_id;
                 self.state
@@ -288,11 +289,10 @@ impl GatewayHost {
             BeginRun::Started(run) => run,
             BeginRun::AlreadyRecorded => return Ok(()),
             BeginRun::Skipped => {
-                return Err(Rejection {
-                    code: "routine_overlap",
-                    message: format!("routine {routine_id} is already running"),
-                    fatal: false,
-                });
+                return Err(Rejection::new(
+                    "routine_overlap",
+                    format!("routine {routine_id} is already running"),
+                ));
             }
         };
         drop(_mutation);
@@ -312,10 +312,11 @@ impl GatewayHost {
             let run = bots.run(run_id).map_err(invalid_routine)?;
             (bots, run)
         };
-        let session_id = run.session_id.clone().ok_or_else(|| Rejection {
-            code: "routine_run_unavailable",
-            message: "this routine run has no execution session".into(),
-            fatal: false,
+        let session_id = run.session_id.clone().ok_or_else(|| {
+            Rejection::new(
+                "routine_run_unavailable",
+                "this routine run has no execution session",
+            )
         })?;
         drop(_mutation);
         let (host, temporary) = self.open_session_with_cache(&session_id, false).await?;
@@ -343,11 +344,10 @@ impl GatewayHost {
         let mut state = self.state.lock().await;
         let run = state.bots.run(run_id).map_err(invalid_routine)?;
         if run.status == RoutineRunStatus::Running {
-            return Err(Rejection {
-                code: "routine_run_active",
-                message: format!("routine run {run_id} is currently running"),
-                fatal: false,
-            });
+            return Err(Rejection::new(
+                "routine_run_active",
+                format!("routine run {run_id} is currently running"),
+            ));
         }
         let session_root = run.session_id;
         let session_ids = if let Some(session_id) = session_root.as_deref() {

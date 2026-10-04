@@ -11,7 +11,6 @@ use std::sync::atomic::Ordering;
 use super::Agent;
 use super::AgentConfig;
 use super::EVENT_QUEUE_CAPACITY;
-use super::EventRecorder;
 use super::create_agent;
 use super::send_event;
 use super::submission_channel;

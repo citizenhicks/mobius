@@ -1024,11 +1024,10 @@ async fn queue_profile_request(
         write_rejection(
             writer,
             displaced,
-            Rejection {
-                code: "profile_superseded",
-                message: "profile request superseded by a newer request".into(),
-                fatal: false,
-            },
+            Rejection::new(
+                "profile_superseded",
+                "profile request superseded by a newer request",
+            ),
         )
         .await?;
     }

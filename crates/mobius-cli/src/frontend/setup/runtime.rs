@@ -335,25 +335,6 @@ fn configuration_error(message: &ServerMessage, request_id: &str) -> Option<Erro
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn revision_conflict_exits_the_stale_setup_instead_of_offering_a_retry() {
-        let message = ServerMessage::Rejected {
-            request_id: "save".into(),
-            code: "revision_conflict".into(),
-            message: "Bot changed elsewhere".into(),
-            fatal: false,
-        };
-        assert!(matches!(
-            configuration_error(&message, "save"),
-            Some(Error::Stopped(message)) if message.contains("reopen setup")
-        ));
-    }
-}
-
 pub(super) async fn set_credential(
     terminal: &mut SetupTerminal,
     state: &mut SetupState,
@@ -382,18 +363,32 @@ pub(super) async fn set_credential(
         },
     };
     sender.send(message).await.map_err(gateway_error)?;
-    wait_for_response(
-        terminal,
-        state,
-        events,
-        &request_id,
-        ExpectedResponse::Credential {
-            instance: &instance,
-            provider: &provider,
-        },
-    )
-    .await?;
-    Ok(())
+    let mut events = events.scoped();
+    loop {
+        let frame = next_frame(terminal, state, &mut events, false)
+            .await?
+            .ok_or_else(|| Error::Stopped("credential update cancelled".into()))?;
+        auth_response_error(&frame.message, &request_id)?;
+        if credential_saved(&frame.message, &request_id, &instance, &provider) {
+            return Ok(());
+        }
+        reject_invalid_setup_response(&frame.message, &request_id)?;
+        if !matches!(&frame.message, ServerMessage::Accepted { request_id: actual } if actual == &request_id)
+        {
+            events.defer(frame).map_err(gateway_error)?;
+        }
+    }
+}
+
+pub(super) fn credential_saved(
+    message: &ServerMessage,
+    request_id: &str,
+    instance: &str,
+    provider: &str,
+) -> bool {
+    matches!(message, ServerMessage::ProviderCredentialSaved {
+        request_id: actual, instance: actual_instance, provider: actual_provider,
+    } if actual == request_id && actual_instance == instance && actual_provider == provider)
 }
 
 pub(super) async fn device_login(
@@ -411,103 +406,45 @@ pub(super) async fn device_login(
         })
         .await
         .map_err(gateway_error)?;
-    wait_for_response(
-        terminal,
-        state,
-        events,
-        &request_id,
-        ExpectedResponse::Login(&provider),
-    )
-    .await
-}
-
-#[derive(Clone, Copy)]
-pub(super) enum ExpectedResponse<'a> {
-    Credential {
-        instance: &'a str,
-        provider: &'a str,
-    },
-    Login(&'a str),
-}
-
-impl ExpectedResponse<'_> {
-    pub(super) fn matches_credential(&self, instance: &str, provider: &str) -> bool {
-        matches!(
-            self,
-            Self::Credential {
-                instance: expected_instance,
-                provider: expected_provider,
-            } if instance == *expected_instance && provider == *expected_provider
-        )
-    }
-
-    fn is_login(self) -> bool {
-        matches!(self, Self::Login(_))
-    }
-}
-
-struct ResponseProgress {
-    accepted: bool,
-    completed: bool,
-}
-
-impl ResponseProgress {
-    fn new(expected: ExpectedResponse<'_>) -> Self {
-        Self {
-            accepted: matches!(expected, ExpectedResponse::Credential { .. }),
-            completed: false,
-        }
-    }
-}
-
-pub(super) async fn wait_for_response(
-    terminal: &mut SetupTerminal,
-    state: &mut SetupState,
-    events: &mut GatewayEvents,
-    request_id: &str,
-    expected: ExpectedResponse<'_>,
-) -> Result<bool> {
-    let mut progress = ResponseProgress::new(expected);
     let mut events = events.scoped();
+    let mut accepted = false;
+    let mut completed = false;
     loop {
-        let Some(frame) = next_frame(terminal, state, &mut events, expected.is_login()).await?
-        else {
+        let Some(frame) = next_frame(terminal, state, &mut events, true).await? else {
             return Ok(false);
         };
-        let defer = match observe_response(
-            terminal,
-            state,
-            &frame.message,
-            request_id,
-            expected,
-            &mut progress,
-        ) {
-            Ok(defer) => defer,
-            Err(error) => return Err(error),
-        };
-        if progress.accepted && progress.completed {
-            return Ok(true);
+        auth_response_error(&frame.message, &request_id)?;
+        match &frame.message {
+            ServerMessage::Accepted { request_id: actual } if actual == &request_id => {
+                accepted = true
+            }
+            ServerMessage::ProviderLoginStarted {
+                request_id: actual,
+                provider: actual_provider,
+                verification_url,
+                user_code,
+                ..
+            } if actual == &request_id && actual_provider == &provider => {
+                state.show_device_code(verification_url.clone(), user_code.clone());
+                draw(terminal, state)?;
+            }
+            ServerMessage::ProviderLoginFinished {
+                request_id: actual,
+                provider: actual_provider,
+                ..
+            } if actual == &request_id && actual_provider == &provider => completed = true,
+            _ => {
+                reject_invalid_setup_response(&frame.message, &request_id)?;
+                events.defer(frame).map_err(gateway_error)?;
+            }
         }
-        if defer {
-            events.defer(frame).map_err(gateway_error)?;
+        if accepted && completed {
+            return Ok(true);
         }
     }
 }
 
-fn observe_response(
-    terminal: &mut SetupTerminal,
-    state: &mut SetupState,
-    message: &ServerMessage,
-    request_id: &str,
-    expected: ExpectedResponse<'_>,
-    progress: &mut ResponseProgress,
-) -> Result<bool> {
-    if let ServerMessage::Accepted { request_id: actual } = message
-        && actual == request_id
-    {
-        progress.accepted = true;
-        return Ok(false);
-    }
+fn auth_response_error(message: &ServerMessage, request_id: &str) -> Result<()> {
     if let Some(error) = message.response_error(Some(request_id)) {
         return Err(if error.fatal {
             Error::Stopped(error.message.into())
@@ -515,69 +452,7 @@ fn observe_response(
             Error::Auth(error.message.into())
         });
     }
-    match expected {
-        ExpectedResponse::Credential { .. } => {
-            observe_credential(message, request_id, expected, progress)
-        }
-        ExpectedResponse::Login(provider) => {
-            observe_login(terminal, state, message, request_id, provider, progress)
-        }
-    }
-}
-
-fn observe_credential(
-    message: &ServerMessage,
-    request_id: &str,
-    expected: ExpectedResponse<'_>,
-    progress: &mut ResponseProgress,
-) -> Result<bool> {
-    if let ServerMessage::ProviderCredentialSaved {
-        request_id: actual,
-        instance: actual_instance,
-        provider: actual_provider,
-    } = message
-        && actual == request_id
-        && expected.matches_credential(actual_instance, actual_provider)
-    {
-        progress.completed = true;
-        return Ok(false);
-    }
-    reject_invalid_setup_response(message, request_id)?;
-    Ok(true)
-}
-
-fn observe_login(
-    terminal: &mut SetupTerminal,
-    state: &mut SetupState,
-    message: &ServerMessage,
-    request_id: &str,
-    provider: &str,
-    progress: &mut ResponseProgress,
-) -> Result<bool> {
-    match message {
-        ServerMessage::ProviderLoginStarted {
-            request_id: actual,
-            provider: actual_provider,
-            verification_url,
-            user_code,
-            ..
-        } if actual == request_id && actual_provider == provider => {
-            state.show_device_code(verification_url.clone(), user_code.clone());
-            draw(terminal, state)?;
-            return Ok(false);
-        }
-        ServerMessage::ProviderLoginFinished {
-            request_id: actual,
-            provider: actual_provider,
-            ..
-        } if actual == request_id && actual_provider == provider => {
-            progress.completed = true;
-            return Ok(false);
-        }
-        _ => {}
-    }
-    reject_invalid_setup_response(message, request_id)?;
-    Ok(true)
+    Ok(())
 }
 
 fn reject_invalid_setup_response(message: &ServerMessage, request_id: &str) -> Result<()> {
@@ -634,5 +509,24 @@ pub(super) async fn next_frame(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn revision_conflict_exits_the_stale_setup_instead_of_offering_a_retry() {
+        let message = ServerMessage::Rejected {
+            request_id: "save".into(),
+            code: "revision_conflict".into(),
+            message: "Bot changed elsewhere".into(),
+            fatal: false,
+        };
+        assert!(matches!(
+            configuration_error(&message, "save"),
+            Some(Error::Stopped(message)) if message.contains("reopen setup")
+        ));
     }
 }

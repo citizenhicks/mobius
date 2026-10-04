@@ -59,7 +59,7 @@ use self::view::ClientView;
 
 const ROUTINE_TICK: Duration = Duration::from_secs(15);
 const MAX_DIRECTORY_ENTRIES: usize = 512;
-const WEBSOCKET_BRIDGE_BYTES: usize = 16 * 1024;
+use crate::wire::WEBSOCKET_BRIDGE_BYTES;
 const ACCESS_EXPIRY_ENV: &str = "MOBIUS_GATEWAY_ACCESS_EXPIRES_AT";
 
 const _: () = assert!(MAX_FRAME_BYTES <= u32::MAX as usize);

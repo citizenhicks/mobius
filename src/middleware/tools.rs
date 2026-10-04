@@ -13,7 +13,6 @@ use futures_util::future::join_all;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::manifest::MiddlewareManifest;
 use super::{Middleware, PromptSection, ToolExposureContext};
 use crate::BoxFuture;
 use crate::Error;
@@ -28,7 +27,6 @@ use crate::backend::sandbox::ToolPermissions;
 use crate::preview_json;
 use crate::protocol::EventMsg;
 use crate::protocol::FrontendBlock;
-use crate::protocol::FrontendBlockFormat;
 use crate::protocol::FrontendBlockRole;
 use crate::protocol::FrontendBlockState;
 use crate::protocol::FrontendBlockUpdate;
@@ -48,9 +46,9 @@ mod text {
         pub(super) manifest_label: String,
         pub(super) prompt_safety: String,
         pub(super) render_load: String,
+        pub(super) search: crate::backend::model::ToolDefinition,
     }
-    pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
-        std::sync::LazyLock::new(|| crate::config::embedded(include_str!("tools.toml")));
+    crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("tools.toml"); }
 }
 mod coding;
 mod commands;
@@ -73,17 +71,10 @@ const MAX_MUTATION_BYTES: usize = 40_000;
 const MAX_COMMAND_BYTES: usize = 8_000;
 const MAX_PATCH_MATCH_WORK: usize = 32 * 1024 * 1024;
 
+super::manifest::middleware_manifest! {
 /// Configuration and presentation metadata for workspace tools.
-pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
-    std::sync::LazyLock::new(|| MiddlewareManifest {
-        id: "tools",
-        label: text::DEFINITION.manifest_label.as_str(),
-        description: text::DEFINITION.manifest_description.as_str(),
-        required: true,
-        default_enabled: text::DEFINITION.default_enabled,
-        required_model_capability: None,
-        settings: &[],
-    });
+    "tools", text::DEFINITION, required: true, capability: None, settings: &[]
+}
 
 /// Whether a tool can overlap other calls in its model-produced batch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -916,22 +907,9 @@ impl BoundToolCall {
 /// Returns the core discovery tool schema.
 #[must_use]
 pub fn tools_search_definition() -> ToolDefinition {
-    ToolDefinition {
-        name: TOOLS_SEARCH_NAME.into(),
-        description: "Find currently available tools by name or description and load matching tools for this session. Optional capability tools are deferred; a discovered tool becomes callable on the following model step. Tool availability can change; an unavailable result is authoritative, so search again when needed.".into(),
-        parameters: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": MAX_TOOL_SEARCH_QUERY_BYTES
-                }
-            },
-            "required": ["query"],
-            "additionalProperties": false
-        }),
-    }
+    let mut tool = text::DEFINITION.search.clone();
+    tool.parameters["properties"]["query"]["maxLength"] = MAX_TOOL_SEARCH_QUERY_BYTES.into();
+    tool
 }
 
 fn object_hook_input(input: Value) -> Result<Value> {
@@ -1400,19 +1378,11 @@ impl Middleware for Tools {
         if let EventMsg::ToolLoad(load) = event {
             return Some(FrontendBlock {
                 id: Some(format!("{}/{}/load", load.turn_id, load.load_id)),
-                group: None,
-                update: FrontendBlockUpdate::Replace,
-                state: FrontendBlockState::Complete,
                 role: FrontendBlockRole::Tool,
                 title: text::DEFINITION.render_load.clone(),
                 text: load.tools.join("\n"),
-                symbol: None,
-                links: Vec::new(),
-                files: Vec::new(),
-                content: Default::default(),
-                format: FrontendBlockFormat::PlainText,
-                image_aspect: None,
                 tone: FrontendTone::Success,
+                ..Default::default()
             });
         }
         self.tools
@@ -1441,28 +1411,18 @@ pub(crate) fn render_tool_event(
             let heading = heading(&call.name, &call.arguments);
             Some(FrontendBlock {
                 id: Some(format!("{}/{}", call.turn_id, call.call_id)),
-                group: None,
-                update: FrontendBlockUpdate::Replace,
                 state: FrontendBlockState::Pending,
                 role: FrontendBlockRole::Tool,
                 title: heading.title,
                 text: formatted_tool_text(&heading.detail),
-                symbol: None,
-                links: Vec::new(),
-                files: Vec::new(),
-                content: Default::default(),
-                format: FrontendBlockFormat::PlainText,
-                image_aspect: None,
-                tone: FrontendTone::Neutral,
+                ..Default::default()
             })
         }
         EventMsg::ToolCallEnd(result) if owns(&result.name) => {
             let output = formatted_tool_text(&compact_output(&result.output.text()));
             Some(FrontendBlock {
                 id: Some(format!("{}/{}", result.turn_id, result.call_id)),
-                group: None,
                 update: FrontendBlockUpdate::Append,
-                state: FrontendBlockState::Complete,
                 role: FrontendBlockRole::Tool,
                 title: heading(&result.name, &Value::Null).title,
                 text: if result.output.files().next().is_some() {
@@ -1470,21 +1430,17 @@ pub(crate) fn render_tool_event(
                 } else {
                     output
                 },
-                symbol: None,
-                links: Vec::new(),
-                files: Vec::new(),
                 content: if result.output.files().next().is_some() {
                     result.output.clone()
                 } else {
                     Default::default()
                 },
-                format: FrontendBlockFormat::PlainText,
-                image_aspect: None,
                 tone: if result.is_error {
                     FrontendTone::Error
                 } else {
                     FrontendTone::Success
                 },
+                ..Default::default()
             })
         }
         _ => None,
@@ -1498,9 +1454,10 @@ pub(crate) struct ToolHeading {
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ToolSpec {
-    tool: ToolDefinition,
+pub(crate) struct ToolSpec {
+    pub(crate) tool: ToolDefinition,
     title: String,
+    result_title: Option<String>,
     detail: String,
     link_path: Option<String>,
     group: Option<String>,
@@ -1508,11 +1465,18 @@ struct ToolSpec {
 }
 
 impl ToolSpec {
-    fn render(&self, event: &EventMsg) -> Option<FrontendBlock> {
+    pub(crate) fn render(&self, event: &EventMsg) -> Option<FrontendBlock> {
         let mut block = render_tool_event(
             event,
             |name| name == self.tool.name,
-            |_, arguments| labeled_tool_heading(&self.title, &self.detail, arguments),
+            |_, arguments| {
+                let title = if matches!(event, EventMsg::ToolCallEnd(_)) {
+                    self.result_title.as_deref().unwrap_or(&self.title)
+                } else {
+                    &self.title
+                };
+                labeled_tool_heading(title, &self.detail, arguments)
+            },
         )?;
         if let EventMsg::ToolCallBegin(call) = event
             && let Some(key) = &self.link_path

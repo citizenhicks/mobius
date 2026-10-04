@@ -216,7 +216,7 @@ pub enum FrontendSlot {
 }
 
 /// Capability-rendered transcript content with frontend-neutral formatting and tone.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendBlock {
     /// The identifier.
     pub id: Option<String>,
@@ -270,10 +270,11 @@ pub struct RenderedBlock {
 }
 
 /// How a block changes the matching capability-scoped ID.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrontendBlockUpdate {
     /// Selects the replace case.
+    #[default]
     Replace,
     /// Append a block, separating nonempty text with a newline unless a boundary already has one.
     Append,
@@ -296,20 +297,22 @@ impl FrontendBlockUpdate {
 }
 
 /// Lifecycle state of one rendered transcript block.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrontendBlockState {
     /// Selects the pending case.
     Pending,
     /// Selects the complete case.
+    #[default]
     Complete,
 }
 
 /// Semantic category used for grouping, summaries, filtering, and icons.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrontendBlockRole {
     /// Selects the activity case.
+    #[default]
     Activity,
     /// Selects the tool case.
     Tool,
@@ -324,10 +327,11 @@ pub enum FrontendBlockRole {
 }
 
 /// Frontend-neutral structure carried by a transcript block.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrontendBlockFormat {
     /// Selects the plain text case.
+    #[default]
     PlainText,
     /// Selects the unified diff case.
     UnifiedDiff,
@@ -501,10 +505,11 @@ pub enum FrontendPreviewUpdate {
 }
 
 /// A presentation hint rather than a terminal-specific color.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrontendTone {
     /// Selects the neutral case.
+    #[default]
     Neutral,
     /// Selects the success case.
     Success,
@@ -520,86 +525,45 @@ impl EventMsg {
     pub fn presentation(&self) -> Option<RenderedBlock> {
         let block = match self {
             Self::Error(error) => FrontendBlock {
-                id: None,
-                group: None,
-                update: FrontendBlockUpdate::Replace,
-                state: FrontendBlockState::Complete,
                 role: FrontendBlockRole::Notice,
                 title: "Error".into(),
                 text: error.message.clone(),
-                symbol: None,
-                links: Vec::new(),
-                files: Vec::new(),
-                content: Default::default(),
-                format: FrontendBlockFormat::PlainText,
-                image_aspect: None,
                 tone: FrontendTone::Error,
+                ..Default::default()
             },
             Self::Warning(warning) => FrontendBlock {
-                id: None,
-                group: None,
-                update: FrontendBlockUpdate::Replace,
-                state: FrontendBlockState::Complete,
                 role: FrontendBlockRole::Notice,
                 title: "Warning".into(),
                 text: warning.message.clone(),
-                symbol: None,
-                links: Vec::new(),
-                files: Vec::new(),
-                content: Default::default(),
-                format: FrontendBlockFormat::PlainText,
-                image_aspect: None,
                 tone: FrontendTone::Warning,
+                ..Default::default()
             },
             Self::TurnAborted(turn) => FrontendBlock {
-                id: None,
                 group: Some(turn.turn_id.clone()),
-                update: FrontendBlockUpdate::Replace,
-                state: FrontendBlockState::Complete,
                 role: FrontendBlockRole::Notice,
                 title: "Turn aborted".into(),
                 text: turn.reason.clone(),
-                symbol: None,
-                links: Vec::new(),
-                files: Vec::new(),
-                content: Default::default(),
-                format: FrontendBlockFormat::PlainText,
-                image_aspect: None,
                 tone: FrontendTone::Warning,
+                ..Default::default()
             },
             Self::ModelStepCompleted(step) if step.outcome == ModelStepOutcome::Retrying => {
                 FrontendBlock {
                     id: Some(format!("{}/retry", step.model_step_id)),
                     group: Some(step.turn_id.clone()),
-                    update: FrontendBlockUpdate::Replace,
-                    state: FrontendBlockState::Complete,
                     role: FrontendBlockRole::Notice,
                     title: "Reconnecting…".into(),
-                    text: String::new(),
-                    symbol: None,
-                    links: Vec::new(),
-                    files: Vec::new(),
-                    content: Default::default(),
-                    format: FrontendBlockFormat::PlainText,
-                    image_aspect: None,
                     tone: FrontendTone::Warning,
+                    ..Default::default()
                 }
             }
             Self::WebSearchBegin(search) => FrontendBlock {
                 id: Some(format!("{}/{}", search.model_step_id, search.call_id)),
                 group: Some(search.turn_id.clone()),
-                update: FrontendBlockUpdate::Replace,
                 state: FrontendBlockState::Pending,
                 role: FrontendBlockRole::WebSearch,
                 title: "Searching the web".into(),
-                text: String::new(),
                 symbol: Some(FrontendSymbol::Search),
-                links: Vec::new(),
-                files: Vec::new(),
-                content: Default::default(),
-                format: FrontendBlockFormat::PlainText,
-                image_aspect: None,
-                tone: FrontendTone::Neutral,
+                ..Default::default()
             },
             Self::WebSearchEnd(search) => {
                 let (title, text, tone) = match &search.action {

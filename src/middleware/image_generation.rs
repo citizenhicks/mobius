@@ -5,7 +5,6 @@ use std::sync::{Arc, LazyLock};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::manifest::MiddlewareManifest;
 use super::tools::{ApprovalRequirement, Catalog, Tool, ToolContext, render_tool_event};
 use super::{Middleware, RuntimeContext};
 use crate::backend::model::{
@@ -35,16 +34,10 @@ struct Definition {
 static DEFINITION: LazyLock<Definition> =
     LazyLock::new(|| crate::config::embedded(include_str!("image_generation.toml")));
 
+super::manifest::middleware_manifest! {
 /// Configuration metadata for native image generation.
-pub static MANIFEST: LazyLock<MiddlewareManifest> = LazyLock::new(|| MiddlewareManifest {
-    id: "image_generation",
-    label: &DEFINITION.manifest_label,
-    description: &DEFINITION.manifest_description,
-    required: false,
-    default_enabled: DEFINITION.default_enabled,
-    required_model_capability: Some(ModelCapability::ImageGeneration),
-    settings: &[],
-});
+    "image_generation", DEFINITION, required: false, capability: Some(ModelCapability::ImageGeneration), settings: &[]
+}
 
 /// Generates a session image and publishes it as a chat artifact.
 pub struct ImageGeneration {
@@ -95,7 +88,7 @@ impl Middleware for ImageGeneration {
                 block.image_aspect = Some(
                     call.arguments
                         .get("image_aspect")
-                        .and_then(|value| serde_json::from_value(value.clone()).ok())
+                        .and_then(|value| serde::Deserialize::deserialize(value).ok())
                         .unwrap_or_default(),
                 );
             }

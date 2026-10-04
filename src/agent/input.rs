@@ -208,10 +208,7 @@ impl Runner {
         } = change;
         let events = events
             .into_iter()
-            .map(|msg| Event {
-                submission_id: Some(submission_id.clone()),
-                msg,
-            })
+            .map(|msg| crate::agent::turn::turn_event(&submission_id, msg))
             .collect();
         let previous = std::mem::replace(&mut self.state.pending_messages, pending_messages);
         match self.persist_with_events(events, None).await {
@@ -522,14 +519,7 @@ async fn send_messages(
     messages: Vec<EventMsg>,
 ) -> Result<()> {
     for msg in messages {
-        send_event(
-            events,
-            Event {
-                submission_id: Some(submission_id.to_string()),
-                msg,
-            },
-        )
-        .await?;
+        send_event(events, crate::agent::turn::turn_event(submission_id, msg)).await?;
     }
     Ok(())
 }
@@ -601,7 +591,10 @@ mod tests {
             .save(&checkpoint, &[], None)
             .await
             .expect("initial checkpoint");
-        let (recorder, events) = EventRecorder::spawn(Arc::clone(&checkpoints), "session-1".into());
+        let (recorder, events) = crate::agent::recorder::RecorderIngress::spawn(
+            Arc::clone(&checkpoints),
+            "session-1".into(),
+        );
         (directory, checkpoints, recorder, events)
     }
 
@@ -626,9 +619,9 @@ mod tests {
             .append_event(
                 "current",
                 1,
-                &Event {
-                    submission_id: Some("attachment".into()),
-                    msg: EventMsg::Message(crate::protocol::MessageEvent {
+                &crate::agent::turn::turn_event(
+                    "attachment",
+                    EventMsg::Message(crate::protocol::MessageEvent {
                         author: crate::protocol::MessageAuthor::User,
                         delivery: crate::protocol::MessageDelivery::Turn,
                         text: String::new(),
@@ -641,7 +634,7 @@ mod tests {
                         reply: None,
                         message_target: Some(attachment_target),
                     }),
-                },
+                ),
             )
             .await
             .expect("append attachment message");
@@ -653,9 +646,9 @@ mod tests {
             .append_event(
                 "current",
                 2,
-                &Event {
-                    submission_id: Some("assistant".into()),
-                    msg: EventMsg::AssistantMessage(crate::protocol::AssistantMessageEvent {
+                &crate::agent::turn::turn_event(
+                    "assistant",
+                    EventMsg::AssistantMessage(crate::protocol::AssistantMessageEvent {
                         session_id: "current".into(),
                         turn_id: "turn".into(),
                         model_step_id: "step".into(),
@@ -677,7 +670,7 @@ mod tests {
                         ],
                         message_target: Some(assistant_target),
                     }),
-                },
+                ),
             )
             .await
             .expect("append assistant message");
@@ -689,9 +682,9 @@ mod tests {
             .append_event(
                 "other",
                 1,
-                &Event {
-                    submission_id: Some("other".into()),
-                    msg: EventMsg::Message(crate::protocol::MessageEvent {
+                &crate::agent::turn::turn_event(
+                    "other",
+                    EventMsg::Message(crate::protocol::MessageEvent {
                         author: crate::protocol::MessageAuthor::User,
                         delivery: crate::protocol::MessageDelivery::Turn,
                         text: "other chat".into(),
@@ -699,7 +692,7 @@ mod tests {
                         reply: None,
                         message_target: Some(other_target),
                     }),
-                },
+                ),
             )
             .await
             .expect("append other message");
@@ -910,13 +903,7 @@ mod tests {
         })
         .route(Submission {
             id: "preview-1".into(),
-            op: Op::CapabilityCommand {
-                capability: "editable".into(),
-                command: "preview".into(),
-                arguments: String::new(),
-                input: None,
-                target: None,
-            },
+            op: Op::command("editable", "preview", String::new()),
         })
         .await
         .expect("route command");
@@ -940,13 +927,7 @@ mod tests {
         let (_directory, checkpoints, events, mut receiver) = event_recorder().await;
         let submission = Submission {
             id: "command-1".into(),
-            op: Op::CapabilityCommand {
-                capability: "editable".into(),
-                command: "refresh".into(),
-                arguments: String::new(),
-                input: None,
-                target: None,
-            },
+            op: Op::command("editable", "refresh", String::new()),
         };
 
         let route = (ActiveTurnRouter {
@@ -992,13 +973,7 @@ mod tests {
         })
         .route(Submission {
             id: "queue-1".into(),
-            op: Op::CapabilityCommand {
-                capability: "editable".into(),
-                command: "queue".into(),
-                arguments: String::new(),
-                input: None,
-                target: None,
-            },
+            op: Op::command("editable", "queue", String::new()),
         })
         .await;
 

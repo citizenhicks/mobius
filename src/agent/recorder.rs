@@ -17,10 +17,7 @@ use crate::backend::checkpoint::JournalEvent;
 use crate::backend::checkpoint::TimestampedEvent;
 use crate::protocol::Event;
 
-#[derive(Clone)]
-pub(super) struct EventRecorder {
-    ingress: Arc<RecorderIngress>,
-}
+pub(super) type EventRecorder = Arc<RecorderIngress>;
 
 pub(super) struct RecorderIngress {
     commands: mpsc::Sender<RecorderCommand>,
@@ -52,55 +49,23 @@ pub(super) const RECORDER_COMMAND_CAPACITY: usize = 512;
 pub(super) const RECORDER_EVENT_BYTE_BUDGET: usize = 8 * 1024 * 1024;
 const RECORDER_QUEUE_FULL: &str = "event recorder queue is full";
 
-impl EventRecorder {
+impl RecorderIngress {
     pub(super) fn spawn(
         checkpoints: Arc<dyn CheckpointStore>,
         session_id: String,
-    ) -> (Self, mpsc::Receiver<JournalEvent>) {
+    ) -> (Arc<Self>, mpsc::Receiver<JournalEvent>) {
         let (commands, receiver) = mpsc::channel(RECORDER_COMMAND_CAPACITY);
         let (events, event_receiver) = mpsc::channel(EVENT_QUEUE_CAPACITY);
         tokio::spawn(run_recorder(checkpoints, session_id, receiver, events));
         (
-            Self {
-                ingress: Arc::new(RecorderIngress {
-                    commands,
-                    event_bytes: Arc::new(Semaphore::new(RECORDER_EVENT_BYTE_BUDGET)),
-                }),
-            },
+            Arc::new(Self {
+                commands,
+                event_bytes: Arc::new(Semaphore::new(RECORDER_EVENT_BYTE_BUDGET)),
+            }),
             event_receiver,
         )
     }
 
-    pub(super) fn downgrade(&self) -> std::sync::Weak<RecorderIngress> {
-        Arc::downgrade(&self.ingress)
-    }
-
-    pub(super) async fn record(&self, event: Event) -> Result<()> {
-        self.ingress.record(event).await
-    }
-
-    pub(super) fn try_record(&self, event: Event) -> Result<()> {
-        self.ingress.try_record(event)
-    }
-
-    pub(super) async fn save(
-        &self,
-        checkpoint: &Checkpoint,
-        transcript_delta: &[Value],
-        execution: Option<&ExecutionRecord>,
-        events: Vec<Event>,
-    ) -> Result<()> {
-        self.ingress
-            .save(checkpoint, transcript_delta, execution, events)
-            .await
-    }
-
-    pub(super) async fn flush(&self) -> Result<()> {
-        self.ingress.flush().await
-    }
-}
-
-impl RecorderIngress {
     pub(super) async fn record(&self, event: Event) -> Result<()> {
         let (event, event_bytes) = timestamp(event)?;
         let byte_permit = self.reserve_bytes(event_bytes).await?;
@@ -135,7 +100,7 @@ impl RecorderIngress {
             })
     }
 
-    async fn save(
+    pub(super) async fn save(
         &self,
         checkpoint: &Checkpoint,
         transcript_delta: &[Value],
@@ -169,7 +134,7 @@ impl RecorderIngress {
             .map_err(|_| Error::Stopped("event recorder stopped".into()))?
     }
 
-    async fn flush(&self) -> Result<()> {
+    pub(super) async fn flush(&self) -> Result<()> {
         let (flushed, result) = oneshot::channel();
         self.commands
             .send(RecorderCommand::Flush(flushed))

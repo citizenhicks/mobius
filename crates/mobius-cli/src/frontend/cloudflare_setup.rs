@@ -1,5 +1,6 @@
 //! First-run setup for account-free or stable Cloudflare Tunnel exposure.
 
+use crate::frontend::terminal::masked_credential as masked_token;
 use std::io;
 
 use mobius::{Error, Result};
@@ -17,18 +18,7 @@ use super::theme::{Role, current};
 
 const MAX_HOSTNAME_BYTES: usize = 253;
 
-/// Validated values consumed by gateway initialization and never displayed again.
-pub enum CloudflareInit {
-    /// Selects the quick case.
-    Quick,
-    /// A named tunnel authenticated by token.
-    Named {
-        /// The tunnel hostname.
-        hostname: String,
-        /// The Cloudflare tunnel token.
-        token: String,
-    },
-}
+pub use mobius_gateway::command::CloudflareInit;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Field {
@@ -78,14 +68,8 @@ impl State {
             Field::Token => (&mut self.token, MAX_TOKEN_BYTES),
             Field::Connect => return,
         };
-        for character in text.chars().filter(|character| !character.is_control()) {
-            if target.len() + character.len_utf8() > limit {
-                self.error = Some(format!("input is limited to {limit} bytes"));
-                return;
-            }
-            target.push(character);
-        }
-        self.error = None;
+        let rejected = super::terminal::append_text(target, text, limit);
+        self.error = rejected.then(|| format!("input is limited to {limit} bytes"));
     }
 
     fn backspace(&mut self) {
@@ -217,7 +201,7 @@ fn render(frame: &mut ratatui::Frame<'_>, state: &State) {
     let token = if state.token.is_empty() {
         "paste the tunnel token".into()
     } else {
-        masked_token(&state.token)
+        masked_token(&state.token, 24)
     };
     let selected = |field| {
         if state.field == field {
@@ -279,15 +263,6 @@ fn render(frame: &mut ratatui::Frame<'_>, state: &State) {
     );
 }
 
-fn masked_token(token: &str) -> String {
-    let count = token.chars().count();
-    let mut masked = "•".repeat(count.min(24));
-    if count > 24 {
-        masked.push('…');
-    }
-    masked
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,7 +271,7 @@ mod tests {
     fn tunnel_token_is_never_rendered() {
         let token = "secret-tunnel-token";
 
-        assert!(!masked_token(token).contains(token));
+        assert!(!masked_token(token, 24).contains(token));
     }
 
     #[test]

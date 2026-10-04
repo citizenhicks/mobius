@@ -281,11 +281,7 @@ async fn rejection_frames_preserve_request_correlation() {
     write_rejection(
         &mut writer,
         "request-7".into(),
-        Rejection {
-            code: "agent_busy",
-            message: "busy".into(),
-            fatal: false,
-        },
+        Rejection::new("agent_busy", "busy"),
     )
     .await
     .expect("write rejection");

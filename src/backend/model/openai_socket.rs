@@ -66,7 +66,7 @@ mod connection;
 
 pub(super) static MANIFEST: std::sync::LazyLock<super::provider::ProviderMetadata> =
     std::sync::LazyLock::new(|| {
-        super::provider::ProviderMetadata::load(include_str!("openai_socket_provider.toml"))
+        crate::config::embedded(include_str!("openai_socket_provider.toml"))
     });
 
 const MAX_SESSION_ENTRIES: usize = 128;

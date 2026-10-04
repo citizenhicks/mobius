@@ -746,11 +746,10 @@ async fn unpair_client(
             write_rejection(
                 writer,
                 request_id,
-                Rejection {
-                    code: "unpair_rejected",
-                    message: "that paired device cannot be unpaired from this connection".into(),
-                    fatal: false,
-                },
+                Rejection::new(
+                    "unpair_rejected",
+                    "that paired device cannot be unpaired from this connection",
+                ),
             )
             .await
         }
@@ -1047,11 +1046,7 @@ async fn submit(
                 return write_rejection(
                     writer,
                     request_id,
-                    Rejection {
-                        code: "invalid_submission",
-                        message: "peer messages are gateway-owned".into(),
-                        fatal: false,
-                    },
+                    Rejection::new("invalid_submission", "peer messages are gateway-owned"),
                 )
                 .await;
             }
@@ -1062,11 +1057,7 @@ async fn submit(
         return write_rejection(
             writer,
             request_id,
-            Rejection {
-                code: "invalid_submission",
-                message: error.to_string(),
-                fatal: false,
-            },
+            Rejection::new("invalid_submission", error.to_string()),
         )
         .await;
     }
@@ -1483,11 +1474,10 @@ async fn get_git_diff(
         return write_rejection(
             writer,
             request_id,
-            Rejection {
-                code: "git_busy",
-                message: "Git diff requests are already in progress; try again shortly".into(),
-                fatal: false,
-            },
+            Rejection::new(
+                "git_busy",
+                "Git diff requests are already in progress; try again shortly",
+            ),
         )
         .await;
     }

@@ -540,20 +540,11 @@ impl Middleware for CatchAllRenderer {
 
     fn render(&self, _event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
         Some(FrontendBlock {
-            id: None,
-            group: None,
             update: crate::protocol::FrontendBlockUpdate::Replace,
             state: crate::protocol::FrontendBlockState::Complete,
             role: crate::protocol::FrontendBlockRole::Notice,
-            title: String::new(),
-            text: String::new(),
-            symbol: None,
-            links: Vec::new(),
-            files: Vec::new(),
-            content: Default::default(),
             format: crate::protocol::FrontendBlockFormat::PlainText,
-            image_aspect: None,
-            tone: FrontendTone::Neutral,
+            ..Default::default()
         })
     }
 }

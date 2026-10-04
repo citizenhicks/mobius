@@ -8,8 +8,7 @@ use cap_std::fs::Dir;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::manifest::MiddlewareManifest;
-use super::tools::{Catalog, ExecutionMode, Tool, ToolContext, render_tool_event};
+use super::tools::{Catalog, ExecutionMode, Tool, ToolContext};
 use super::{
     Middleware, ModelContext, PromptSection, RuntimeContext, SessionStartContext,
     SessionStartSource,
@@ -27,17 +26,15 @@ mod text {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(super) struct Definition {
+        pub(super) list_attachments: crate::middleware::tools::ToolSpec,
         pub(super) prompt_available_header: String,
         pub(super) prompt_unavailable_header: String,
         pub(super) default_enabled: bool,
         pub(super) manifest_description: String,
         pub(super) manifest_label: String,
         pub(super) prompt_main: String,
-        pub(super) render_list_attachments: String,
-        pub(super) tool_list_attachments_description: String,
     }
-    pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
-        std::sync::LazyLock::new(|| crate::config::embedded(include_str!("attachments.toml")));
+    crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("attachments.toml"); }
 }
 const MATERIALIZED_ATTACHMENTS_FIELD: &str = "_mobius_attachment_blobs";
 // Leave request headroom; hysteresis preserves replay prefixes between crossings.
@@ -54,17 +51,10 @@ struct MaterializedAttachment {
     path: Option<String>,
     unavailable_reason: Option<String>,
 }
+super::manifest::middleware_manifest! {
 /// Configuration metadata for protected user uploads.
-pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
-    std::sync::LazyLock::new(|| MiddlewareManifest {
-        id: "attachments",
-        label: text::DEFINITION.manifest_label.as_str(),
-        description: text::DEFINITION.manifest_description.as_str(),
-        required: false,
-        default_enabled: text::DEFINITION.default_enabled,
-        required_model_capability: None,
-        settings: &[],
-    });
+    "attachments", text::DEFINITION, required: false, capability: None, settings: &[]
+}
 
 /// Optional middleware exposing user uploads to the owning workspace.
 #[derive(Clone)]
@@ -178,17 +168,9 @@ impl Middleware for Attachments {
     }
 
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
-        render_tool_event(
-            event,
-            |name| name == "list_attachments",
-            |name, _| {
-                if matches!(event, EventMsg::ToolCallEnd(_)) {
-                    name.into()
-                } else {
-                    text::DEFINITION.render_list_attachments.as_str().into()
-                }
-            },
-        )
+        [&text::DEFINITION.list_attachments]
+            .into_iter()
+            .find_map(|spec| spec.render(event))
     }
 
     fn pre_model<'a>(&'a self, context: &'a mut ModelContext<'_>) -> BoxFuture<'a, Result<()>> {
@@ -407,7 +389,7 @@ fn materialized_attachments(item: &Value) -> Result<Option<Vec<MaterializedAttac
     let value = item.get(MATERIALIZED_ATTACHMENTS_FIELD).ok_or_else(|| {
         Error::Checkpoint("materialized attachment context omitted blob metadata".into())
     })?;
-    let attachments = serde_json::from_value(value.clone()).map_err(|error| {
+    let attachments = serde::Deserialize::deserialize(value).map_err(|error| {
         Error::Checkpoint(format!("invalid materialized attachment context: {error}"))
     })?;
     Ok(Some(attachments))
@@ -549,15 +531,7 @@ struct ListAttachments {
 
 impl Tool for ListAttachments {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "list_attachments".into(),
-            description: text::DEFINITION.tool_list_attachments_description.clone(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false
-            }),
-        }
+        text::DEFINITION.list_attachments.tool.clone()
     }
 
     fn execution_mode(&self) -> ExecutionMode {
@@ -621,7 +595,7 @@ fn referenced_attachments(input: &[Value]) -> Result<Vec<(usize, Vec<SessionFile
         let Some(value) = item.get(ATTACHMENTS_FIELD) else {
             continue;
         };
-        let attachments: Vec<SessionFileReference> = serde_json::from_value(value.clone())?;
+        let attachments: Vec<SessionFileReference> = serde::Deserialize::deserialize(value)?;
         if !attachments.is_empty() {
             messages.push((index, attachments));
         }

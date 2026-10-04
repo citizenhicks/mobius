@@ -9,7 +9,7 @@ use crate::{Error, Result};
 
 use super::{Rejection, SessionActivities};
 
-const SESSION_PAGE_SIZE: usize = 100;
+use super::SESSION_PAGE_SIZE;
 const SESSION_CATALOG_SCOPE: &str = "gateway";
 const SESSION_CATALOG_KEY: &str = "session_catalog";
 const MAX_SESSION_TITLE_BYTES: usize = 256;
@@ -355,11 +355,10 @@ pub(super) async fn save_session_metadata(
 pub(super) fn validate_session_title(title: &str) -> std::result::Result<&str, Rejection> {
     let title = title.trim();
     if title.is_empty() || title.len() > MAX_SESSION_TITLE_BYTES {
-        return Err(Rejection {
-            code: "invalid_session_title",
-            message: format!("chat title must be 1–{MAX_SESSION_TITLE_BYTES} UTF-8 bytes"),
-            fatal: false,
-        });
+        return Err(Rejection::new(
+            "invalid_session_title",
+            format!("chat title must be 1–{MAX_SESSION_TITLE_BYTES} UTF-8 bytes"),
+        ));
     }
     Ok(title)
 }

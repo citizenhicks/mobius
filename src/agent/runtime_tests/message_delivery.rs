@@ -54,13 +54,7 @@ struct BlockingTool {
 
 impl RefillMiddleware {
     fn op() -> Op {
-        Op::CapabilityCommand {
-            capability: "refill".into(),
-            command: "refill".into(),
-            arguments: String::new(),
-            input: None,
-            target: None,
-        }
+        Op::command("refill", "refill", String::new())
     }
 }
 

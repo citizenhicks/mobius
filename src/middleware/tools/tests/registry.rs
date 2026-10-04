@@ -1,4 +1,5 @@
 use super::*;
+use crate::protocol::FrontendBlockFormat;
 use crate::protocol::MAX_TOOL_NAME_BYTES;
 
 #[test]

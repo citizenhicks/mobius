@@ -132,11 +132,10 @@ fn protect_directory(directory: &Path) -> std::result::Result<(), Rejection> {
 
 fn ensure_destination_available(destination: &Path) -> std::result::Result<(), Rejection> {
     if path_exists(destination) || path_exists(&destination.with_extension("pub")) {
-        return Err(Rejection {
-            code: "ssh_identity_exists",
-            message: format!("SSH identity {GENERATED_KEY_LABEL} already exists on the host"),
-            fatal: false,
-        });
+        return Err(Rejection::new(
+            "ssh_identity_exists",
+            format!("SSH identity {GENERATED_KEY_LABEL} already exists on the host"),
+        ));
     }
     Ok(())
 }
@@ -255,21 +254,16 @@ fn protect(_path: &Path, _directory: bool) -> std::result::Result<(), Rejection>
 }
 
 fn identity_install_error() -> Rejection {
-    Rejection {
-        code: "ssh_identity_exists",
-        message: format!(
+    Rejection::new(
+        "ssh_identity_exists",
+        format!(
             "SSH identity {GENERATED_KEY_LABEL} could not be installed without overwriting a host file"
         ),
-        fatal: false,
-    }
+    )
 }
 
 fn ssh_error(message: impl Into<String>) -> Rejection {
-    Rejection {
-        code: "ssh_error",
-        message: message.into(),
-        fatal: false,
-    }
+    Rejection::new("ssh_error", message)
 }
 
 #[cfg(test)]

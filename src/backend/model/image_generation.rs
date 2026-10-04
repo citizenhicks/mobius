@@ -69,12 +69,7 @@ impl ImageGenerationRequest<'_> {
                     "reference image media type does not match bytes".into(),
                 ));
             }
-            let encoded = image
-                .bytes
-                .len()
-                .checked_add(2)
-                .and_then(|size| size.checked_div(3))
-                .and_then(|size| size.checked_mul(4))
+            let encoded = base64::encoded_len(image.bytes.len(), true)
                 .ok_or_else(|| Error::Tool("reference image is too large".into()))?;
             encoded_total = encoded_total
                 .checked_add(encoded)
@@ -138,12 +133,7 @@ impl ImageApi {
             .references
             .iter()
             .map(|image| {
-                let encoded_len = image
-                    .bytes
-                    .len()
-                    .checked_add(2)
-                    .and_then(|size| size.checked_div(3))
-                    .and_then(|size| size.checked_mul(4))
+                let encoded_len = base64::encoded_len(image.bytes.len(), true)
                     .ok_or_else(|| Error::Tool("reference image is too large".into()))?;
                 if encoded_len.saturating_add(image.media_type.len() + "data:;base64,".len())
                     > MAX_REFERENCE_URL_BYTES

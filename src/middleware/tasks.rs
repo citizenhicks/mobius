@@ -5,7 +5,6 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::manifest::MiddlewareManifest;
 use super::tools::{Catalog, Tool, ToolContext, render_tool_event};
 use super::{
     Middleware, MiddlewareCommandContext, MiddlewareCommandOutput, PromptSection, RuntimeContext,
@@ -24,6 +23,7 @@ mod text {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(super) struct Definition {
+        pub(super) write_todos: crate::middleware::tools::ToolSpec,
         pub(super) prompt_projection: String,
         pub(super) default_enabled: bool,
         pub(super) command_tasks_description: String,
@@ -32,26 +32,17 @@ mod text {
         pub(super) prompt_main: String,
         pub(super) render_empty: String,
         pub(super) render_heading: String,
-        pub(super) tool_write_todos_description: String,
     }
-    pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
-        std::sync::LazyLock::new(|| crate::config::embedded(include_str!("tasks.toml")));
+    crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("tasks.toml"); }
 }
 const STATE_KEY: &str = "tasks.v1";
 const PROJECTION_KIND: &str = "tasks_state";
 const MAX_TODOS: usize = 50;
 const MAX_TODO_BYTES: usize = 500;
+super::manifest::middleware_manifest! {
 /// Configuration and presentation metadata for durable tasks.
-pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
-    std::sync::LazyLock::new(|| MiddlewareManifest {
-        id: "tasks",
-        label: text::DEFINITION.manifest_label.as_str(),
-        description: text::DEFINITION.manifest_description.as_str(),
-        required: false,
-        default_enabled: text::DEFINITION.default_enabled,
-        required_model_capability: None,
-        settings: &[],
-    });
+    "tasks", text::DEFINITION, required: false, capability: None, settings: &[]
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -189,33 +180,11 @@ struct WriteTodos {
 
 impl Tool for WriteTodos {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "write_todos".into(),
-            description: text::DEFINITION.tool_write_todos_description.clone(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "todos": {
-                        "type": "array",
-                        "maxItems": MAX_TODOS,
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "content": {"type": "string", "maxLength": MAX_TODO_BYTES},
-                                "status": {
-                                    "type": "string",
-                                    "enum": ["pending", "in_progress", "completed"]
-                                }
-                            },
-                            "required": ["content", "status"],
-                            "additionalProperties": false
-                        }
-                    }
-                },
-                "required": ["todos"],
-                "additionalProperties": false
-            }),
-        }
+        let mut tool = text::DEFINITION.write_todos.tool.clone();
+        tool.parameters["properties"]["todos"]["maxItems"] = MAX_TODOS.into();
+        tool.parameters["properties"]["todos"]["items"]["properties"]["content"]["maxLength"] =
+            MAX_TODO_BYTES.into();
+        tool
     }
 
     fn call<'a>(

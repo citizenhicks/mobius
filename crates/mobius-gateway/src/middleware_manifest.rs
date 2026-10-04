@@ -160,13 +160,13 @@ pub(crate) fn materialize_integer_defaults(
             entry.manifest.settings
         };
         for setting in settings {
-            if let MiddlewareSettingManifest::Integer { id, default, .. } = *setting
+            if let MiddlewareSettingManifest::Integer { id, default, .. } = setting
                 && config.setting(entry.manifest.id, id).is_none()
             {
                 config.set_setting(
                     entry.manifest.id,
                     id,
-                    Some(FrontendSettingValue::Integer(default)),
+                    Some(FrontendSettingValue::Integer(*default)),
                 );
             }
         }

@@ -32,10 +32,6 @@ pub(super) struct ProviderMetadata {
 }
 
 impl ProviderMetadata {
-    pub(super) fn load(text: &str) -> Self {
-        crate::config::embedded(text)
-    }
-
     pub(super) fn api_key_auth(&'static self) -> ProviderAuth {
         ProviderAuth::ApiKey(
             self.credential_env

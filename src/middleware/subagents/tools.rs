@@ -35,34 +35,7 @@ struct SpawnArgs {
 
 impl Tool for SpawnAgent {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "spawn_agent".into(),
-            description: text::DEFINITION.tool_spawn_agent_description.clone(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "task_name": {
-                        "type": "string",
-                        "description": text::DEFINITION.tool_spawn_agent_parameter_task_name_description.as_str()
-                    },
-                    "text": {"type": "string"},
-                    "fork_turns": {
-                        "type": "string",
-                        "description": text::DEFINITION.tool_spawn_agent_parameter_fork_turns_description.as_str()
-                    },
-                    "model": {
-                        "type": "string",
-                        "description": text::DEFINITION.tool_spawn_agent_parameter_model_description.as_str()
-                    },
-                    "reasoning_effort": {
-                        "type": "string",
-                        "description": text::DEFINITION.tool_spawn_agent_parameter_reasoning_effort_description.as_str()
-                    }
-                },
-                "required": ["task_name", "text"],
-                "additionalProperties": false
-            }),
-        }
+        text::DEFINITION.spawn_agent.tool.clone()
     }
 
     fn hook_identity(&self) -> Option<HookIdentity> {
@@ -190,22 +163,7 @@ struct MessageArgs {
 
 impl Tool for SendMessage {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "send_message".into(),
-            description: text::DEFINITION.tool_send_message_description.clone(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "target": {
-                        "type": "string",
-                        "description": text::DEFINITION.tool_parameter_target_description.as_str()
-                    },
-                    "text": {"type": "string"}
-                },
-                "required": ["target", "text"],
-                "additionalProperties": false
-            }),
-        }
+        text::DEFINITION.send_message.tool.clone()
     }
 
     fn call<'a>(
@@ -328,15 +286,7 @@ struct ListArgs {
 
 impl Tool for ListAgents {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "list_agents".into(),
-            description: text::DEFINITION.tool_list_agents_description.clone(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {"path_prefix": {"type": "string"}},
-                "additionalProperties": false
-            }),
-        }
+        text::DEFINITION.list_agents.tool.clone()
     }
 
     fn call<'a>(
@@ -371,21 +321,7 @@ struct TargetArgs {
 
 impl Tool for InterruptAgent {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "interrupt_agent".into(),
-            description: text::DEFINITION.tool_interrupt_agent_description.clone(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "target": {
-                        "type": "string",
-                        "description": text::DEFINITION.tool_parameter_target_description.as_str()
-                    }
-                },
-                "required": ["target"],
-                "additionalProperties": false
-            }),
-        }
+        text::DEFINITION.interrupt_agent.tool.clone()
     }
 
     fn call<'a>(
@@ -417,11 +353,7 @@ struct WaitArgs {
 
 impl Tool for WaitAgent {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "wait_agent".into(),
-            description: text::DEFINITION.tool_wait_agent_description.clone(),
-            parameters: wait_parameters(),
-        }
+        wait_definition()
     }
 
     fn cancel_on_input(&self) -> bool {
@@ -450,18 +382,11 @@ impl Tool for WaitAgent {
     }
 }
 
-pub(super) fn wait_parameters() -> Value {
-    serde_json::json!({
-        "type": "object",
-        "properties": {
-            "timeout_ms": {
-                "type": "integer",
-                "minimum": MIN_WAIT_MS,
-                "maximum": MAX_WAIT_MS
-            }
-        },
-        "additionalProperties": false
-    })
+pub(super) fn wait_definition() -> ToolDefinition {
+    let mut tool = text::DEFINITION.wait_agent.tool.clone();
+    tool.parameters["properties"]["timeout_ms"]["minimum"] = MIN_WAIT_MS.into();
+    tool.parameters["properties"]["timeout_ms"]["maximum"] = MAX_WAIT_MS.into();
+    tool
 }
 
 pub(super) fn wait_timeout(timeout_ms: Option<u64>) -> Result<Duration> {

@@ -50,17 +50,15 @@ use uuid::Uuid;
 
 #[cfg(test)]
 use self::args::parse;
-use self::args::{
-    CloudflareInit, Command, ConnectOptions, InitOptions, RegisterProviderOptions, parse_cli,
-};
-pub use self::args::{FrontendCommand, GatewayCli};
+pub use self::args::{CloudflareInit, FrontendCommand, GatewayCli};
+use self::args::{Command, ConnectOptions, InitOptions, RegisterProviderOptions, parse_cli};
 use self::connection::*;
 use self::init::*;
 pub use self::init::{
     initialize_named_cloudflare, initialize_quick_cloudflare, reset_gateway_state,
 };
-pub use self::lifecycle::ensure_background_gateway;
 use self::lifecycle::*;
+pub use self::lifecycle::{ensure_background_gateway, startup_error};
 use self::provider::*;
 
 #[cfg(unix)]

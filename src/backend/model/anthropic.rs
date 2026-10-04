@@ -44,9 +44,7 @@ use crate::protocol::ToolLoad;
 use crate::protocol::WebSearchAction;
 
 pub(super) static MANIFEST: std::sync::LazyLock<super::provider::ProviderMetadata> =
-    std::sync::LazyLock::new(|| {
-        super::provider::ProviderMetadata::load(include_str!("anthropic_provider.toml"))
-    });
+    std::sync::LazyLock::new(|| crate::config::embedded(include_str!("anthropic_provider.toml")));
 pub(super) static CATALOG: std::sync::LazyLock<super::provider::ModelCatalog> =
     std::sync::LazyLock::new(|| crate::config::embedded(include_str!("anthropic.toml")));
 
@@ -603,7 +601,7 @@ fn normalize_citations(block: &Value) -> Result<Vec<ModelStepAnnotation>> {
     if citations.is_null() {
         return Ok(Vec::new());
     }
-    let citations: Vec<AnthropicCitation> = serde_json::from_value(citations.clone())
+    let citations: Vec<AnthropicCitation> = serde::Deserialize::deserialize(citations)
         .map_err(|error| Error::Provider(format!("invalid Anthropic citation: {error}").into()))?;
     Ok(citations.into_iter().map(Into::into).collect())
 }

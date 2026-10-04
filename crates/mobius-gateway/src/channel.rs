@@ -20,7 +20,7 @@ pub(crate) const MAX_RECORD: usize = 65_535;
 pub(crate) const TAG_BYTES: usize = 16;
 const MAX_PLAINTEXT: usize = MAX_RECORD - TAG_BYTES;
 const KEEPALIVE: Duration = Duration::from_secs(30);
-const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+use crate::wire::WRITE_TIMEOUT;
 
 pub(crate) struct Identity {
     private: [u8; 32],

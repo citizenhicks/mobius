@@ -303,30 +303,21 @@ fn validate_relative(path: &str) -> std::result::Result<&Path, Rejection> {
 }
 
 fn invalid(message: impl Into<String>) -> Rejection {
-    Rejection {
-        code: "invalid_workspace_file",
-        message: message.into(),
-        fatal: false,
-    }
+    Rejection::new("invalid_workspace_file", message)
 }
 
 fn error_rejection(error: impl std::fmt::Display) -> Rejection {
-    Rejection {
-        code: "workspace_file_error",
-        message: error.to_string(),
-        fatal: false,
-    }
+    Rejection::new("workspace_file_error", error.to_string())
 }
 
 fn timeout() -> Rejection {
-    Rejection {
-        code: "workspace_file_timeout",
-        message: format!(
+    Rejection::new(
+        "workspace_file_timeout",
+        format!(
             "workspace file operation exceeded {} seconds",
             FILE_TIMEOUT.as_secs()
         ),
-        fatal: false,
-    }
+    )
 }
 
 #[cfg(test)]

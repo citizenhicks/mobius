@@ -70,11 +70,7 @@ impl Telemetry {
                 {
                     return Err(unavailable());
                 }
-                Err(Rejection {
-                    code: "storage_full",
-                    message,
-                    fatal: false,
-                })
+                Err(Rejection::new("storage_full", message))
             },
         )
         .await
@@ -83,9 +79,8 @@ impl Telemetry {
 }
 
 fn unavailable() -> Rejection {
-    Rejection {
-        code: "upload_admission_unavailable",
-        message: "Cloud storage could not be checked. Try uploading again.".into(),
-        fatal: false,
-    }
+    Rejection::new(
+        "upload_admission_unavailable",
+        "Cloud storage could not be checked. Try uploading again.",
+    )
 }

@@ -2,28 +2,24 @@
 
 pub mod voice;
 
-use super::manifest::{
-    MiddlewareManifest, MiddlewareSettingChoice, MiddlewareSettingChoices,
-    MiddlewareSettingManifest,
-};
 use super::{
     ActiveCommandContext, MessageRouteContext, Middleware, MiddlewareCommandContext,
     MiddlewareCommandOutput, SessionStartContext, SessionStartSource, SubmissionResult,
 };
 use crate::backend::checkpoint::QueuedMessageBoundary;
 use crate::protocol::{
-    ActiveMessageDelivery, EventMsg, FrontendBlock, FrontendBlockFormat, FrontendBlockRole,
-    FrontendBlockState, FrontendBlockUpdate, FrontendCommand, FrontendContribution, FrontendEvent,
-    FrontendSlot, FrontendSymbol, FrontendTone, FrontendWidget, MAX_CAPABILITY_INPUT_BYTES,
-    MessageAuthor, MessageDelivery, MessageEvent, Op,
+    ActiveMessageDelivery, EventMsg, FrontendBlock, FrontendCommand, FrontendContribution,
+    FrontendEvent, FrontendSlot, FrontendSymbol, FrontendTone, FrontendWidget,
+    MAX_CAPABILITY_INPUT_BYTES, MessageAuthor, MessageDelivery, MessageEvent, Op,
 };
 use crate::{BoxFuture, Error, Result};
 
 mod text {
-    use super::*;
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(super) struct Definition {
+        #[serde(deserialize_with = "crate::middleware::manifest::deserialize_settings")]
+        pub(super) settings: Vec<crate::middleware::manifest::MiddlewareSettingManifest>,
         pub(super) voice_user_label: String,
         pub(super) voice_speaker_label: String,
         pub(super) voice_workspace_label: String,
@@ -44,100 +40,28 @@ mod text {
         pub(super) voice_workspace_heading: String,
         pub(super) voice_previous_heading: String,
         pub(super) default_enabled: bool,
-        pub(super) default_delivery: ActiveMessageDelivery,
-        pub(super) defaults_max_pending: i64,
         pub(super) manifest_description: String,
         pub(super) manifest_label: String,
-        pub(super) setting_delivery_description: String,
-        pub(super) setting_delivery_label: String,
-        pub(super) setting_delivery_queue_description: String,
-        pub(super) setting_delivery_queue_label: String,
-        pub(super) setting_delivery_steer_description: String,
-        pub(super) setting_delivery_steer_label: String,
-        pub(super) setting_max_pending_description: String,
-        pub(super) setting_max_pending_label: String,
-        pub(super) setting_max_pending_step: i64,
     }
-    pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
-        std::sync::LazyLock::new(|| {
-            let definition: Definition = crate::config::embedded(include_str!("messages.toml"));
-
-            assert!(definition.defaults_max_pending >= 1);
-            assert!(definition.defaults_max_pending <= MAX_PENDING_MESSAGES as i64);
-            assert!(definition.setting_max_pending_step > 0);
-
-            definition
-        });
+    crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("messages.toml"); }
 }
 const MAX_PENDING_MESSAGES: usize = 1_024;
 
 /// Default number of pending messages retained by the delivery queue.
 pub fn default_max_pending() -> usize {
-    text::DEFINITION.defaults_max_pending as usize
+    super::manifest::integer_default(&text::DEFINITION.settings, "max_pending") as usize
 }
 /// Default delivery for user messages submitted during an active turn.
 pub fn default_delivery() -> ActiveMessageDelivery {
-    text::DEFINITION.default_delivery
+    super::manifest::string_default(&text::DEFINITION.settings, "delivery")
+        .parse()
+        .expect("valid embedded delivery")
 }
 
-static DELIVERIES: std::sync::LazyLock<Vec<MiddlewareSettingChoice>> =
-    std::sync::LazyLock::new(|| {
-        vec![
-            MiddlewareSettingChoice {
-                disables: &[],
-                value: "steer",
-                label: text::DEFINITION.setting_delivery_steer_label.as_str(),
-                description: text::DEFINITION.setting_delivery_steer_description.as_str(),
-                symbol: Some("steer"),
-                tone: FrontendTone::Neutral,
-            },
-            MiddlewareSettingChoice {
-                disables: &[],
-                value: "queue",
-                label: text::DEFINITION.setting_delivery_queue_label.as_str(),
-                description: text::DEFINITION.setting_delivery_queue_description.as_str(),
-                symbol: Some("queue"),
-                tone: FrontendTone::Neutral,
-            },
-        ]
-    });
-
-static SETTINGS: std::sync::LazyLock<Vec<MiddlewareSettingManifest>> =
-    std::sync::LazyLock::new(|| {
-        vec![
-            MiddlewareSettingManifest::Select {
-                id: "delivery",
-                label: text::DEFINITION.setting_delivery_label.as_str(),
-                description: text::DEFINITION.setting_delivery_description.as_str(),
-                choices: MiddlewareSettingChoices::Static(&DELIVERIES),
-                unset_label: None,
-                default: Some(default_delivery().id()),
-                max_bytes: 8,
-                composer: false,
-            },
-            MiddlewareSettingManifest::Integer {
-                id: "max_pending",
-                label: text::DEFINITION.setting_max_pending_label.as_str(),
-                description: text::DEFINITION.setting_max_pending_description.as_str(),
-                min: 1,
-                max: Some(MAX_PENDING_MESSAGES as i64),
-                step: text::DEFINITION.setting_max_pending_step,
-                default: default_max_pending() as i64,
-            },
-        ]
-    });
-
+super::manifest::middleware_manifest! {
 /// Configuration and presentation metadata for message delivery.
-pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
-    std::sync::LazyLock::new(|| MiddlewareManifest {
-        id: "messages",
-        label: text::DEFINITION.manifest_label.as_str(),
-        description: text::DEFINITION.manifest_description.as_str(),
-        required: true,
-        default_enabled: text::DEFINITION.default_enabled,
-        required_model_capability: None,
-        settings: &SETTINGS,
-    });
+    "messages", text::DEFINITION, required: true, capability: None, settings: &text::DEFINITION.settings
+}
 
 const EDIT_COMMAND: &str = "edit";
 const STALE_EDIT: &str = "message is no longer queued";
@@ -276,19 +200,10 @@ impl Middleware for Messages {
                 source.id().len(),
                 session_id = source.id()
             )),
-            group: None,
-            update: FrontendBlockUpdate::Replace,
-            state: FrontendBlockState::Complete,
-            role: FrontendBlockRole::Activity,
             title: format!("Message received from @{handle}"),
             text: message.text.clone(),
             symbol: Some(symbol.clone().unwrap_or(FrontendSymbol::Chat)),
-            links: Vec::new(),
-            files: Vec::new(),
-            content: Default::default(),
-            format: FrontendBlockFormat::PlainText,
-            image_aspect: None,
-            tone: FrontendTone::Neutral,
+            ..Default::default()
         })
     }
 
@@ -442,9 +357,13 @@ impl Middleware for Messages {
 
 #[cfg(test)]
 mod tests {
+    use crate::protocol::FrontendBlockRole;
     #[test]
     fn declared_deliveries_parse_at_the_protocol_boundary() {
-        for choice in super::DELIVERIES.iter() {
+        for choice in
+            super::super::manifest::static_choices(&super::text::DEFINITION.settings, "delivery")
+                .iter()
+        {
             assert_eq!(
                 choice
                     .value
@@ -477,9 +396,9 @@ mod tests {
                 .all(|setting| !setting.composer)
         );
         assert_eq!(
-            DELIVERIES
+            super::super::manifest::static_choices(&text::DEFINITION.settings, "delivery")
                 .iter()
-                .map(|choice| (choice.value, choice.symbol))
+                .map(|choice| (choice.value.as_str(), choice.symbol.as_deref()))
                 .collect::<Vec<_>>(),
             [("steer", Some("steer")), ("queue", Some("queue"))]
         );

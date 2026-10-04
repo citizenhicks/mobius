@@ -34,13 +34,7 @@ fn frontend_widget(
         icon_only: false,
         progress: None,
         content: Some(content),
-        action: Some(Op::CapabilityCommand {
-            capability: MANIFEST.id.into(),
-            command: "scratchpad".into(),
-            arguments: "refresh".into(),
-            input: None,
-            target: None,
-        }),
+        action: Some(Op::command(MANIFEST.id, "scratchpad", "refresh")),
     }
 }
 

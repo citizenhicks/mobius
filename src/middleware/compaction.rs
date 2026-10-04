@@ -6,10 +6,6 @@ use std::sync::Arc;
 use super::Middleware;
 use super::ModelContext;
 use super::TokenEstimate;
-use super::manifest::{
-    MiddlewareManifest, MiddlewareSettingChoice, MiddlewareSettingChoices,
-    MiddlewareSettingManifest,
-};
 use super::tools::Catalog;
 use super::tools::loaded_tools;
 use super::{
@@ -41,10 +37,13 @@ use crate::protocol::is_internal_message;
 use crate::protocol::tool_complete_boundaries;
 
 mod text {
-    use super::CompactionMode;
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     pub(super) struct Definition {
+        pub(super) new_context: crate::middleware::tools::ToolSpec,
+        pub(super) write_handoff: crate::middleware::tools::ToolSpec,
+        #[serde(deserialize_with = "crate::middleware::manifest::deserialize_settings")]
+        pub(super) settings: Vec<crate::middleware::manifest::MiddlewareSettingManifest>,
         pub(super) summary_tool_call_label: String,
         pub(super) summary_tool_result_label: String,
         pub(super) summary_reasoning_label: String,
@@ -52,38 +51,13 @@ mod text {
         pub(super) summary_user_label: String,
         pub(super) prompt_visual_evidence: String,
         pub(super) prompt_compacted_context: String,
-        pub(super) handoff_notes_parameter_description: String,
         pub(super) handoff_saved_result: String,
         pub(super) handoff_requested_result: String,
         pub(super) handoff_saved_context: String,
         pub(super) handoff_requested_context: String,
-        pub(super) defaults_keep_recent_tokens: i64,
-        pub(super) setting_keep_recent_tokens_label: String,
-        pub(super) setting_keep_recent_tokens_description: String,
-        pub(super) defaults_native_retained_tokens: i64,
-        pub(super) setting_native_retained_tokens_label: String,
-        pub(super) setting_native_retained_tokens_description: String,
-        pub(super) defaults_reserve_tokens: i64,
-        pub(super) setting_reserve_tokens_label: String,
-        pub(super) setting_reserve_tokens_description: String,
-        pub(super) defaults_handoff_reserve_divisor: i64,
-        pub(super) setting_handoff_reserve_divisor_label: String,
-        pub(super) setting_handoff_reserve_divisor_description: String,
-        pub(super) defaults_handoff_warning_reserves: i64,
-        pub(super) setting_handoff_warning_reserves_label: String,
-        pub(super) setting_handoff_warning_reserves_description: String,
-        pub(super) defaults_handoff_urgent_reserves: i64,
-        pub(super) setting_handoff_urgent_reserves_label: String,
-        pub(super) setting_handoff_urgent_reserves_description: String,
         pub(super) default_enabled: bool,
-        pub(super) default_mode: CompactionMode,
-        pub(super) defaults_compaction_tokens: i64,
         pub(super) manifest_description: String,
         pub(super) manifest_label: String,
-        pub(super) mode_automatic_description: String,
-        pub(super) mode_automatic_label: String,
-        pub(super) mode_handoff_description: String,
-        pub(super) mode_handoff_label: String,
         pub(super) prompt_handoff: String,
         pub(super) prompt_reset: String,
         pub(super) prompt_restored: String,
@@ -92,32 +66,8 @@ mod text {
         pub(super) prompt_urgent: String,
         pub(super) prompt_warning: String,
         pub(super) render_context_compacted: String,
-        pub(super) setting_at_tokens_description: String,
-        pub(super) setting_at_tokens_label: String,
-        pub(super) setting_at_tokens_step: i64,
-        pub(super) setting_mode_description: String,
-        pub(super) setting_mode_label: String,
-        pub(super) tool_new_context_description: String,
-        pub(super) tool_write_handoff_description: String,
     }
-    pub(super) static DEFINITION: std::sync::LazyLock<Definition> =
-        std::sync::LazyLock::new(|| {
-            let definition: Definition = crate::config::embedded(include_str!("compaction.toml"));
-
-            assert!(definition.defaults_compaction_tokens >= 1);
-            assert!(definition.defaults_keep_recent_tokens > 0);
-            assert!(definition.defaults_native_retained_tokens > 0);
-            assert!(definition.defaults_reserve_tokens > 0);
-            assert!(definition.defaults_handoff_reserve_divisor > 0);
-            assert!(definition.defaults_handoff_urgent_reserves > 0);
-            assert!(
-                definition.defaults_handoff_warning_reserves
-                    > definition.defaults_handoff_urgent_reserves
-            );
-            assert!(definition.setting_at_tokens_step > 0);
-
-            definition
-        });
+    crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("compaction.toml"); }
 }
 mod handoff;
 
@@ -125,125 +75,9 @@ const MAX_SUMMARY_TOOL_RESULT_CHARS: usize = 2_000;
 
 /// Default compaction trigger for middleware instances without an override.
 pub fn default_compaction_tokens() -> i64 {
-    text::DEFINITION.defaults_compaction_tokens
+    super::manifest::integer_default(&text::DEFINITION.settings, "at_tokens")
 }
 const HANDOFF_EXCLUDES: &[&str] = &["context_offloading"];
-static MODES: std::sync::LazyLock<Vec<MiddlewareSettingChoice>> = std::sync::LazyLock::new(|| {
-    vec![
-        MiddlewareSettingChoice {
-            disables: &[],
-            value: "automatic",
-            label: text::DEFINITION.mode_automatic_label.as_str(),
-            description: text::DEFINITION.mode_automatic_description.as_str(),
-            symbol: None,
-            tone: FrontendTone::Neutral,
-        },
-        MiddlewareSettingChoice {
-            disables: HANDOFF_EXCLUDES,
-            value: "handoff",
-            label: text::DEFINITION.mode_handoff_label.as_str(),
-            description: text::DEFINITION.mode_handoff_description.as_str(),
-            symbol: None,
-            tone: FrontendTone::Neutral,
-        },
-    ]
-});
-static SETTINGS: std::sync::LazyLock<Vec<MiddlewareSettingManifest>> =
-    std::sync::LazyLock::new(|| {
-        vec![
-            MiddlewareSettingManifest::Select {
-                id: "mode",
-                label: text::DEFINITION.setting_mode_label.as_str(),
-                description: text::DEFINITION.setting_mode_description.as_str(),
-                choices: MiddlewareSettingChoices::Static(&MODES),
-                unset_label: None,
-                default: Some(text::DEFINITION.default_mode.id()),
-                max_bytes: 9,
-                composer: false,
-            },
-            MiddlewareSettingManifest::Integer {
-                id: "at_tokens",
-                label: text::DEFINITION.setting_at_tokens_label.as_str(),
-                description: text::DEFINITION.setting_at_tokens_description.as_str(),
-                min: 1,
-                max: None,
-                step: text::DEFINITION.setting_at_tokens_step,
-                default: default_compaction_tokens(),
-            },
-            MiddlewareSettingManifest::Integer {
-                id: "keep_recent_tokens",
-                label: text::DEFINITION.setting_keep_recent_tokens_label.as_str(),
-                description: text::DEFINITION
-                    .setting_keep_recent_tokens_description
-                    .as_str(),
-                min: 1,
-                max: None,
-                step: 1,
-                default: text::DEFINITION.defaults_keep_recent_tokens,
-            },
-            MiddlewareSettingManifest::Integer {
-                id: "native_retained_tokens",
-                label: text::DEFINITION
-                    .setting_native_retained_tokens_label
-                    .as_str(),
-                description: text::DEFINITION
-                    .setting_native_retained_tokens_description
-                    .as_str(),
-                min: 1,
-                max: None,
-                step: 1,
-                default: text::DEFINITION.defaults_native_retained_tokens,
-            },
-            MiddlewareSettingManifest::Integer {
-                id: "reserve_tokens",
-                label: text::DEFINITION.setting_reserve_tokens_label.as_str(),
-                description: text::DEFINITION.setting_reserve_tokens_description.as_str(),
-                min: 1,
-                max: None,
-                step: 1,
-                default: text::DEFINITION.defaults_reserve_tokens,
-            },
-            MiddlewareSettingManifest::Integer {
-                id: "handoff_reserve_divisor",
-                label: text::DEFINITION
-                    .setting_handoff_reserve_divisor_label
-                    .as_str(),
-                description: text::DEFINITION
-                    .setting_handoff_reserve_divisor_description
-                    .as_str(),
-                min: 1,
-                max: None,
-                step: 1,
-                default: text::DEFINITION.defaults_handoff_reserve_divisor,
-            },
-            MiddlewareSettingManifest::Integer {
-                id: "handoff_warning_reserves",
-                label: text::DEFINITION
-                    .setting_handoff_warning_reserves_label
-                    .as_str(),
-                description: text::DEFINITION
-                    .setting_handoff_warning_reserves_description
-                    .as_str(),
-                min: 1,
-                max: None,
-                step: 1,
-                default: text::DEFINITION.defaults_handoff_warning_reserves,
-            },
-            MiddlewareSettingManifest::Integer {
-                id: "handoff_urgent_reserves",
-                label: text::DEFINITION
-                    .setting_handoff_urgent_reserves_label
-                    .as_str(),
-                description: text::DEFINITION
-                    .setting_handoff_urgent_reserves_description
-                    .as_str(),
-                min: 1,
-                max: None,
-                step: 1,
-                default: text::DEFINITION.defaults_handoff_urgent_reserves,
-            },
-        ]
-    });
 
 /// Policy used when a conversation reaches its context threshold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
@@ -257,16 +91,9 @@ pub enum CompactionMode {
 
 impl Default for CompactionMode {
     fn default() -> Self {
-        text::DEFINITION.default_mode
-    }
-}
-
-impl CompactionMode {
-    const fn id(self) -> &'static str {
-        match self {
-            Self::Automatic => "automatic",
-            Self::Handoff => "handoff",
-        }
+        super::manifest::string_default(&text::DEFINITION.settings, "mode")
+            .parse()
+            .expect("valid embedded mode")
     }
 }
 
@@ -280,17 +107,10 @@ impl std::str::FromStr for CompactionMode {
     }
 }
 
+super::manifest::middleware_manifest! {
 /// Configuration and presentation metadata for compaction.
-pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
-    std::sync::LazyLock::new(|| MiddlewareManifest {
-        id: "compaction",
-        label: text::DEFINITION.manifest_label.as_str(),
-        description: text::DEFINITION.manifest_description.as_str(),
-        required: false,
-        default_enabled: text::DEFINITION.default_enabled,
-        required_model_capability: None,
-        settings: &SETTINGS,
-    });
+    "compaction", text::DEFINITION, required: false, capability: None, settings: &text::DEFINITION.settings
+}
 
 /// Compacts visible context after a configurable token threshold.
 pub struct Compaction {
@@ -306,20 +126,38 @@ pub struct Compaction {
 
 impl Default for Compaction {
     fn default() -> Self {
-        Self {
+        let defaults = Self {
             at_tokens: default_compaction_tokens(),
             mode: CompactionMode::default(),
-            keep_recent_tokens: usize::try_from(text::DEFINITION.defaults_keep_recent_tokens)
-                .expect("bundled recent budget must fit"),
-            native_retained_tokens: usize::try_from(
-                text::DEFINITION.defaults_native_retained_tokens,
-            )
+            keep_recent_tokens: usize::try_from(super::manifest::integer_default(
+                &text::DEFINITION.settings,
+                "keep_recent_tokens",
+            ))
+            .expect("bundled recent budget must fit"),
+            native_retained_tokens: usize::try_from(super::manifest::integer_default(
+                &text::DEFINITION.settings,
+                "native_retained_tokens",
+            ))
             .expect("bundled native budget must fit"),
-            reserve_tokens: text::DEFINITION.defaults_reserve_tokens,
-            handoff_reserve_divisor: text::DEFINITION.defaults_handoff_reserve_divisor,
-            handoff_warning_reserves: text::DEFINITION.defaults_handoff_warning_reserves,
-            handoff_urgent_reserves: text::DEFINITION.defaults_handoff_urgent_reserves,
-        }
+            reserve_tokens: super::manifest::integer_default(
+                &text::DEFINITION.settings,
+                "reserve_tokens",
+            ),
+            handoff_reserve_divisor: super::manifest::integer_default(
+                &text::DEFINITION.settings,
+                "handoff_reserve_divisor",
+            ),
+            handoff_warning_reserves: super::manifest::integer_default(
+                &text::DEFINITION.settings,
+                "handoff_warning_reserves",
+            ),
+            handoff_urgent_reserves: super::manifest::integer_default(
+                &text::DEFINITION.settings,
+                "handoff_urgent_reserves",
+            ),
+        };
+        assert!(defaults.handoff_warning_reserves > defaults.handoff_urgent_reserves);
+        defaults
     }
 }
 
@@ -472,11 +310,13 @@ impl Middleware for Compaction {
     }
 
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
-        if let Some(block) = super::tools::render_tool_event(
-            event,
-            |name| matches!(name, "write_handoff" | "new_context"),
-            |name, arguments| super::tools::labeled_tool_heading(name, "notes", arguments),
-        ) {
+        if let Some(block) = [
+            &text::DEFINITION.new_context,
+            &text::DEFINITION.write_handoff,
+        ]
+        .into_iter()
+        .find_map(|spec| spec.render(event))
+        {
             return Some(block);
         }
         matches!(event, EventMsg::ContextCompacted).then(|| FrontendBlock {
@@ -1001,15 +841,10 @@ mod tests {
 
     #[test]
     fn configured_modes_parse_at_the_owner_boundary() {
-        for choice in MODES.iter() {
-            assert_eq!(
-                choice
-                    .value
-                    .parse::<CompactionMode>()
-                    .expect("declared mode")
-                    .id(),
-                choice.value
-            );
+        for choice in
+            super::super::manifest::static_choices(&text::DEFINITION.settings, "mode").iter()
+        {
+            assert!(choice.value.parse::<CompactionMode>().is_ok());
         }
         assert!("other".parse::<CompactionMode>().is_err());
     }

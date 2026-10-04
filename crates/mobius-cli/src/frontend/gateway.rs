@@ -1,5 +1,7 @@
 //! Focused saved-gateway settings.
 
+pub(super) use crate::frontend::terminal::masked_credential as masked;
+
 use std::io;
 
 use mobius::Result;
@@ -8,7 +10,6 @@ use mobius_gateway::wire::ClientKind;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
@@ -353,7 +354,7 @@ fn render(frame: &mut ratatui::Frame<'_>, state: &State) {
         Block::default().style(theme.style(Role::Canvas)),
         frame.area(),
     );
-    let area = content_area(frame.area());
+    let area = crate::frontend::terminal::content_area(frame.area(), 82);
     let page = match state.page {
         Page::Accounts => 1,
         Page::Add => 2,
@@ -471,7 +472,7 @@ fn render_add(lines: &mut Vec<Line<'static>>, state: &State) {
     field(
         lines,
         "One-time code",
-        &masked(&state.pairing_code),
+        &masked(&state.pairing_code, 32),
         state.field == Field::PairingCode,
     );
     lines.push(Line::from(""));
@@ -535,23 +536,4 @@ fn field(lines: &mut Vec<Line<'static>>, label: &str, value: &str, selected: boo
         format!("    {value}{}", if selected { "▏" } else { "" }),
         theme.style(if selected { Role::Info } else { Role::Muted }),
     ));
-}
-
-fn masked(value: &str) -> String {
-    let count = value.chars().count();
-    let mut masked = "•".repeat(count.min(32));
-    if count > 32 {
-        masked.push('…');
-    }
-    masked
-}
-
-fn content_area(area: Rect) -> Rect {
-    let width = area.width.saturating_sub(4).min(82);
-    Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        area.y.saturating_add(1),
-        width,
-        area.height.saturating_sub(2),
-    )
 }

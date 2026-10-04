@@ -15,9 +15,7 @@ use crate::Error;
 use crate::Result;
 
 pub(super) static MANIFEST: std::sync::LazyLock<super::provider::ProviderMetadata> =
-    std::sync::LazyLock::new(|| {
-        super::provider::ProviderMetadata::load(include_str!("deepseek_provider.toml"))
-    });
+    std::sync::LazyLock::new(|| crate::config::embedded(include_str!("deepseek_provider.toml")));
 pub(super) static CATALOG: std::sync::LazyLock<super::provider::ModelCatalog> =
     std::sync::LazyLock::new(|| crate::config::embedded(include_str!("deepseek.toml")));
 
@@ -57,35 +55,9 @@ struct PeakWindow {
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HolidayCalendar {
-    #[serde(deserialize_with = "deserialize_date")]
     start_date: chrono::NaiveDate,
-    #[serde(deserialize_with = "deserialize_date")]
     end_date: chrono::NaiveDate,
-    #[serde(deserialize_with = "deserialize_dates")]
     public_holidays: std::collections::BTreeSet<chrono::NaiveDate>,
-}
-
-fn deserialize_date<'de, D>(deserializer: D) -> std::result::Result<chrono::NaiveDate, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value: String = serde::Deserialize::deserialize(deserializer)?;
-    chrono::NaiveDate::parse_from_str(&value, "%Y-%m-%d").map_err(serde::de::Error::custom)
-}
-
-fn deserialize_dates<'de, D>(
-    deserializer: D,
-) -> std::result::Result<std::collections::BTreeSet<chrono::NaiveDate>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let values: Vec<String> = serde::Deserialize::deserialize(deserializer)?;
-    values
-        .iter()
-        .map(|value| {
-            chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").map_err(serde::de::Error::custom)
-        })
-        .collect()
 }
 
 impl PricingManifest {

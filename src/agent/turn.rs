@@ -420,7 +420,7 @@ impl Runner {
     }
 }
 
-fn turn_event(submission_id: &str, msg: EventMsg) -> Event {
+pub(super) fn turn_event(submission_id: &str, msg: EventMsg) -> Event {
     Event {
         submission_id: Some(submission_id.to_string()),
         msg,

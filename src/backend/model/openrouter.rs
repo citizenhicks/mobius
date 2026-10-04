@@ -13,9 +13,7 @@ use crate::Result;
 use crate::protocol::ToolDiscoveryMode;
 
 pub(super) static MANIFEST: std::sync::LazyLock<super::provider::ProviderMetadata> =
-    std::sync::LazyLock::new(|| {
-        super::provider::ProviderMetadata::load(include_str!("openrouter_provider.toml"))
-    });
+    std::sync::LazyLock::new(|| crate::config::embedded(include_str!("openrouter_provider.toml")));
 
 pub(super) fn provider() -> ProviderDefinition {
     ProviderDefinition::from_metadata(

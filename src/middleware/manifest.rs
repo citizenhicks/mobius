@@ -7,6 +7,24 @@ use crate::protocol::{
 use crate::protocol::{ModelCapability, ModelChoice};
 use crate::{Error, Result};
 
+macro_rules! middleware_manifest {
+    ($(#[$attr:meta])* $id:literal, $definition:expr, required: $required:expr,
+     capability: $capability:expr, settings: $settings:expr) => {
+        $(#[$attr])*
+        pub static MANIFEST: std::sync::LazyLock<$crate::middleware::manifest::MiddlewareManifest> =
+            std::sync::LazyLock::new(|| $crate::middleware::manifest::MiddlewareManifest {
+                id: $id,
+                label: &$definition.manifest_label,
+                description: &$definition.manifest_description,
+                required: $required,
+                default_enabled: $definition.default_enabled,
+                required_model_capability: $capability,
+                settings: $settings,
+            });
+    };
+}
+pub(crate) use middleware_manifest;
+
 /// Static metadata and configurable policy exported by one middleware module.
 #[derive(Debug, Clone, Copy)]
 pub struct MiddlewareManifest {
@@ -46,16 +64,17 @@ impl MiddlewareManifest {
 }
 
 /// One validated setting declared by its owning middleware module.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MiddlewareSettingManifest {
     /// Selects the integer case.
     Integer {
         /// The identifier.
-        id: &'static str,
+        id: String,
         /// The label.
-        label: &'static str,
+        label: String,
         /// The description.
-        description: &'static str,
+        description: String,
         /// The min.
         min: i64,
         /// The max.
@@ -68,17 +87,17 @@ pub enum MiddlewareSettingManifest {
     /// Selects the select case.
     Select {
         /// The identifier.
-        id: &'static str,
+        id: String,
         /// The label.
-        label: &'static str,
+        label: String,
         /// The description.
-        description: &'static str,
+        description: String,
         /// The choices.
         choices: MiddlewareSettingChoices,
         /// The unset label.
-        unset_label: Option<&'static str>,
+        unset_label: Option<String>,
         /// The default.
-        default: Option<&'static str>,
+        default: Option<String>,
         /// The max bytes.
         max_bytes: usize,
         /// The composer.
@@ -89,7 +108,7 @@ pub enum MiddlewareSettingManifest {
 impl MiddlewareSettingManifest {
     /// Returns the stable setting identifier.
     #[must_use]
-    pub const fn id(self) -> &'static str {
+    pub fn id(&self) -> &str {
         match self {
             Self::Integer { id, .. } | Self::Select { id, .. } => id,
         }
@@ -97,9 +116,9 @@ impl MiddlewareSettingManifest {
 
     /// Returns whether this setting selects from the gateway's live model routes.
     #[must_use]
-    pub const fn uses_model_routes(self) -> bool {
+    pub fn uses_model_routes(&self) -> bool {
         matches!(
-            self,
+            &self,
             Self::Select {
                 choices: MiddlewareSettingChoices::ModelRoutes,
                 ..
@@ -109,18 +128,18 @@ impl MiddlewareSettingManifest {
 
     /// Returns the value used by new gateway configurations.
     #[must_use]
-    pub fn default_value(self) -> Option<FrontendSettingValue> {
+    pub fn default_value(&self) -> Option<FrontendSettingValue> {
         match self {
-            Self::Integer { default, .. } => Some(FrontendSettingValue::Integer(default)),
-            Self::Select { default, .. } => {
-                default.map(|value| FrontendSettingValue::String(value.into()))
-            }
+            Self::Integer { default, .. } => Some(FrontendSettingValue::Integer(*default)),
+            Self::Select { default, .. } => default
+                .as_ref()
+                .map(|value| FrontendSettingValue::String(value.clone())),
         }
     }
 
     /// Converts this declaration into the frontend-neutral setting schema.
     #[must_use]
-    pub fn schema(self, models: &[ModelChoice]) -> FrontendSetting {
+    pub fn schema(&self, models: &[ModelChoice]) -> FrontendSetting {
         match self {
             Self::Integer {
                 id,
@@ -135,7 +154,11 @@ impl MiddlewareSettingManifest {
                 label: label.into(),
                 description: description.into(),
                 composer: false,
-                kind: FrontendSettingKind::Integer { min, max, step },
+                kind: FrontendSettingKind::Integer {
+                    min: *min,
+                    max: *max,
+                    step: *step,
+                },
             },
             Self::Select {
                 id,
@@ -149,10 +172,10 @@ impl MiddlewareSettingManifest {
                 id: id.into(),
                 label: label.into(),
                 description: description.into(),
-                composer,
+                composer: *composer,
                 kind: FrontendSettingKind::Select {
                     options: choices.options(models),
-                    unset_label: unset_label.map(str::to_string),
+                    unset_label: unset_label.clone(),
                 },
             },
         }
@@ -162,10 +185,10 @@ impl MiddlewareSettingManifest {
     /// # Errors
     ///
     /// Returns an error if the supplied value is invalid.
-    pub fn validate(self, middleware: &str, value: Option<&FrontendSettingValue>) -> Result<()> {
+    pub fn validate(&self, middleware: &str, value: Option<&FrontendSettingValue>) -> Result<()> {
         match (self, value) {
             (Self::Integer { min, max, .. }, Some(FrontendSettingValue::Integer(value)))
-                if *value >= min && max.is_none_or(|max| *value <= max) =>
+                if *value >= *min && max.is_none_or(|max| *value <= max) =>
             {
                 Ok(())
             }
@@ -186,7 +209,7 @@ impl MiddlewareSettingManifest {
                 },
                 Some(FrontendSettingValue::String(value)),
             ) if !value.trim().is_empty()
-                && value.len() <= max_bytes
+                && value.len() <= *max_bytes
                 && match choices {
                     MiddlewareSettingChoices::Static(_) => choices.contains(&[], value),
                     MiddlewareSettingChoices::ModelRoutes => true,
@@ -220,7 +243,7 @@ impl MiddlewareSettingManifest {
     ///
     /// Returns an error if the supplied value is invalid.
     pub fn validate_choice(
-        self,
+        &self,
         middleware: &str,
         value: Option<&FrontendSettingValue>,
         models: &[ModelChoice],
@@ -247,26 +270,32 @@ impl MiddlewareSettingManifest {
 }
 
 /// How a select setting obtains its finite choices.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "source",
+    content = "options",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum MiddlewareSettingChoices {
     /// Selects the static case.
-    Static(&'static [MiddlewareSettingChoice]),
+    Static(Vec<MiddlewareSettingChoice>),
     /// Selects the model routes case.
     ModelRoutes,
 }
 
 impl MiddlewareSettingChoices {
-    fn options(self, models: &[ModelChoice]) -> Vec<FrontendSettingOption> {
+    fn options(&self, models: &[ModelChoice]) -> Vec<FrontendSettingOption> {
         match self {
             Self::Static(choices) => choices
                 .iter()
                 .map(|choice| FrontendSettingOption {
-                    value: choice.value.into(),
-                    label: choice.label.into(),
-                    description: choice.description.into(),
-                    symbol: choice.symbol.map(FrontendSymbol::from_wire),
+                    value: choice.value.clone(),
+                    label: choice.label.clone(),
+                    description: choice.description.clone(),
+                    symbol: choice.symbol.as_deref().map(FrontendSymbol::from_wire),
                     tone: choice.tone,
-                    disables: choice.disables.iter().map(|id| (*id).into()).collect(),
+                    disables: choice.disables.clone(),
                 })
                 .collect(),
             Self::ModelRoutes => models
@@ -286,7 +315,7 @@ impl MiddlewareSettingChoices {
         }
     }
 
-    fn contains(self, models: &[ModelChoice], value: &str) -> bool {
+    fn contains(&self, models: &[ModelChoice], value: &str) -> bool {
         match self {
             Self::Static(choices) => choices.iter().any(|choice| choice.value == value),
             Self::ModelRoutes => models.iter().any(|choice| choice.route == value),
@@ -295,20 +324,96 @@ impl MiddlewareSettingChoices {
 }
 
 /// One static select choice declared by a middleware module.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MiddlewareSettingChoice {
     /// The value.
-    pub value: &'static str,
+    pub value: String,
     /// The label.
-    pub label: &'static str,
+    pub label: String,
     /// The description.
-    pub description: &'static str,
+    pub description: String,
     /// The symbol.
-    pub symbol: Option<&'static str>,
+    pub symbol: Option<String>,
     /// The tone.
     pub tone: FrontendTone,
     /// Optional middleware excluded by this policy choice.
-    pub disables: &'static [&'static str],
+    pub disables: Vec<String>,
+}
+
+pub(crate) fn deserialize_settings<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<MiddlewareSettingManifest>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let settings =
+        <Vec<MiddlewareSettingManifest> as serde::Deserialize>::deserialize(deserializer)?;
+    let mut ids = std::collections::BTreeSet::new();
+    for setting in &settings {
+        if setting.id().is_empty() || !ids.insert(setting.id()) {
+            return Err(serde::de::Error::custom(
+                "setting IDs must be nonempty and unique",
+            ));
+        }
+        if let MiddlewareSettingManifest::Integer { min, max, step, .. } = setting
+            && (*step <= 0 || max.is_some_and(|max| max < *min))
+        {
+            return Err(serde::de::Error::custom("invalid setting range or step"));
+        }
+        if let MiddlewareSettingManifest::Select {
+            choices: MiddlewareSettingChoices::Static(choices),
+            max_bytes,
+            ..
+        } = setting
+        {
+            let mut values = std::collections::BTreeSet::new();
+            if choices.iter().any(|choice| {
+                choice.value.is_empty()
+                    || choice.value.len() > *max_bytes
+                    || !values.insert(&choice.value)
+            }) {
+                return Err(serde::de::Error::custom(
+                    "select choices must be nonempty, unique, and within the byte limit",
+                ));
+            }
+        }
+        setting
+            .validate("embedded", setting.default_value().as_ref())
+            .map_err(serde::de::Error::custom)?;
+    }
+    Ok(settings)
+}
+
+pub(crate) fn integer_default(settings: &[MiddlewareSettingManifest], id: &str) -> i64 {
+    match settings.iter().find(|setting| setting.id() == id) {
+        Some(MiddlewareSettingManifest::Integer { default, .. }) => *default,
+        _ => panic!("missing embedded integer setting {id}"),
+    }
+}
+
+pub(crate) fn string_default<'a>(settings: &'a [MiddlewareSettingManifest], id: &str) -> &'a str {
+    match settings.iter().find(|setting| setting.id() == id) {
+        Some(MiddlewareSettingManifest::Select {
+            default: Some(default),
+            ..
+        }) => default,
+        _ => panic!("missing embedded select setting {id}"),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn static_choices<'a>(
+    settings: &'a [MiddlewareSettingManifest],
+    id: &str,
+) -> &'a [MiddlewareSettingChoice] {
+    match settings.iter().find(|setting| setting.id() == id) {
+        Some(MiddlewareSettingManifest::Select {
+            choices: MiddlewareSettingChoices::Static(choices),
+            ..
+        }) => choices,
+        _ => panic!("missing embedded static choices {id}"),
+    }
 }
 
 fn setting_type(middleware: &str, setting: &str, expected: &str) -> Error {
@@ -321,29 +426,31 @@ fn setting_type(middleware: &str, setting: &str, expected: &str) -> Error {
 mod tests {
     use super::*;
 
-    const CHOICES: &[MiddlewareSettingChoice] = &[MiddlewareSettingChoice {
-        disables: &[],
-        value: "safe",
-        label: "Safe",
-        description: "Use the safe policy",
-        symbol: None,
-        tone: FrontendTone::Neutral,
-    }];
+    fn setting() -> MiddlewareSettingManifest {
+        let choices = vec![MiddlewareSettingChoice {
+            disables: vec![],
+            value: "safe".into(),
+            label: "Safe".into(),
+            description: "Use the safe policy".into(),
+            symbol: None,
+            tone: FrontendTone::Neutral,
+        }];
 
-    const SETTING: MiddlewareSettingManifest = MiddlewareSettingManifest::Select {
-        id: "policy",
-        label: "Policy",
-        description: "Selection",
-        choices: MiddlewareSettingChoices::Static(CHOICES),
-        unset_label: None,
-        default: Some("safe"),
-        max_bytes: 16,
-        composer: false,
-    };
+        MiddlewareSettingManifest::Select {
+            id: "policy".into(),
+            label: "Policy".into(),
+            description: "Selection".into(),
+            choices: MiddlewareSettingChoices::Static(choices),
+            unset_label: None,
+            default: Some("safe".into()),
+            max_bytes: 16,
+            composer: false,
+        }
+    }
 
     #[test]
     fn select_rejects_values_not_declared_by_the_module() {
-        let error = SETTING
+        let error = setting()
             .validate(
                 "example",
                 Some(&FrontendSettingValue::String("unknown".into())),
@@ -351,5 +458,33 @@ mod tests {
             .expect_err("unknown choice must fail");
 
         assert!(error.to_string().contains("advertised choice"));
+    }
+    #[test]
+    fn embedded_settings_reject_invalid_ranges_defaults_and_duplicate_ids() {
+        let valid = serde_json::json!({"type":"integer", "id":"count", "label":"Count", "description":"Count", "min":1, "max":10, "step":1, "default":4});
+        assert!(deserialize_settings(&serde_json::json!([valid.clone()])).is_ok());
+        assert!(deserialize_settings(&serde_json::json!([valid.clone(), valid.clone()])).is_err());
+        for (key, value) in [("step", 0), ("max", 0), ("default", 11)] {
+            let mut invalid = valid.clone();
+            invalid[key] = value.into();
+            assert!(deserialize_settings(&serde_json::json!([invalid])).is_err());
+        }
+        let mut invalid = valid;
+        invalid["typo"] = true.into();
+        assert!(deserialize_settings(&serde_json::json!([invalid])).is_err());
+    }
+
+    #[test]
+    fn embedded_settings_reject_duplicate_choices() {
+        let mut select = setting();
+        let MiddlewareSettingManifest::Select {
+            choices: MiddlewareSettingChoices::Static(choices),
+            ..
+        } = &mut select
+        else {
+            unreachable!()
+        };
+        choices.push(choices[0].clone());
+        assert!(deserialize_settings(&serde_json::to_value([select]).expect("settings")).is_err());
     }
 }

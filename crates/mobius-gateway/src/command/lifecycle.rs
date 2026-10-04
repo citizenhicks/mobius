@@ -321,11 +321,18 @@ pub(super) fn background_startup_error(
     message: impl std::fmt::Display,
     log: &tempfile::NamedTempFile,
 ) -> Error {
+    startup_error(message, log, MAX_BACKGROUND_ERROR_BYTES)
+}
+
+/// Adds a bounded diagnostic excerpt from a gateway startup log.
+pub fn startup_error(
+    message: impl std::fmt::Display,
+    log: &tempfile::NamedTempFile,
+    max_bytes: u64,
+) -> Error {
     let mut details = String::new();
     if let Ok(file) = File::open(log.path()) {
-        let _ = file
-            .take(MAX_BACKGROUND_ERROR_BYTES)
-            .read_to_string(&mut details);
+        let _ = file.take(max_bytes).read_to_string(&mut details);
     }
     let details = details.trim();
     Error::Config(if details.is_empty() {
