@@ -43,7 +43,9 @@ impl ErrorEvent {
             crate::Error::Tool(_) => (ErrorKind::Tool, false, None, None),
             crate::Error::Checkpoint(_) => (ErrorKind::Checkpoint, false, None, None),
             crate::Error::Busy(_) => (ErrorKind::Busy, false, None, None),
-            crate::Error::Stopped(_) => (ErrorKind::Stopped, false, None, None),
+            crate::Error::Stopped(_) | crate::Error::Poisoned(_) => {
+                (ErrorKind::Stopped, false, None, None)
+            }
             crate::Error::Rollback { .. } => (ErrorKind::Rollback, false, None, None),
             crate::Error::Io(_) => (ErrorKind::Io, false, None, None),
             crate::Error::Http(_) => (ErrorKind::Http, false, None, None),

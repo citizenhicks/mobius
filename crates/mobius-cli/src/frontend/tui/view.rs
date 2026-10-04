@@ -1002,7 +1002,20 @@ fn footer_line(state: &TuiState, width: u16) -> Line<'static> {
             values.push((format!("{label} {summary}"), Role::Success));
         }
     }
+    let attention = state.approvals.len()
+        + state
+            .widgets
+            .iter()
+            .flat_map(|(_, widget)| widget.pending_attention_items())
+            .count();
     let mut widget_spans = widget_line(&state.widgets, FrontendSlot::Header).spans;
+    if attention > 0 {
+        separator(&mut widget_spans);
+        widget_spans.push(Span::styled(
+            format!("attention {attention} · /attention"),
+            theme.style(Role::Warning),
+        ));
+    }
     let footer_widgets = widget_line(&state.widgets, FrontendSlot::ComposerFooter);
     if !footer_widgets.spans.is_empty() {
         separator(&mut widget_spans);

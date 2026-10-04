@@ -353,6 +353,7 @@ fn action_list(edit: Op, delete: Op) -> FrontendWidgetContent {
             state: FrontendListItemState::Plain,
             actions: vec![
                 FrontendAction {
+                    input_from_label: false,
                     editor: None,
                     id: "edit".into(),
                     label: "Edit".into(),
@@ -361,6 +362,7 @@ fn action_list(edit: Op, delete: Op) -> FrontendWidgetContent {
                     op: edit,
                 },
                 FrontendAction {
+                    input_from_label: false,
                     editor: None,
                     id: "delete".into(),
                     label: "Delete".into(),
@@ -410,5 +412,46 @@ fn dashboard_header_shows_the_connected_gateway_version() {
             .backend()
             .to_string()
             .contains("MÖBIUS GATEWAY v9.8.7")
+    );
+}
+
+#[test]
+fn attention_options_submit_directly_and_freeform_uses_declared_editor() {
+    let answer = capability_op("answer", None);
+    let mut item = widget(action_list(answer, capability_op("skip", None)));
+    item.slot = FrontendSlot::Attention;
+    let Some(FrontendWidgetContent::ActionList { items, .. }) = &mut item.content else {
+        panic!("list")
+    };
+    items[0].actions[0].label = "Suggested".into();
+    items[0].actions[0].input_from_label = true;
+    let mut overlay = CapabilityOverlay::from_widgets(
+        "Attention".into(),
+        vec![(("owner".into(), "status".into()), item)],
+    );
+    let operation = activate_overlay(&mut overlay).expect("option");
+    assert_eq!(
+        prepare_overlay_operation(&mut overlay, operation),
+        Some(capability_op("answer", Some("Suggested")))
+    );
+    let Some(FrontendWidgetContent::ActionList { items, .. }) = &mut overlay.widgets[0].1.content
+    else {
+        panic!("list")
+    };
+    items[0].actions[0].input_from_label = false;
+    items[0].actions[0].editor = Some(mobius::protocol::FrontendEditor {
+        title: "Answer".into(),
+        label: "Answer".into(),
+        description: "Your answer".into(),
+        submit_label: "Send".into(),
+    });
+    let freeform = capability_op("answer", None);
+    assert!(prepare_overlay_operation(&mut overlay, freeform).is_none());
+    handle_action_input_key(
+        &mut overlay,
+        KeyEvent::new(KeyCode::Char('A'), KeyModifiers::NONE),
+    );
+    assert!(
+        matches!(handle_action_input_key(&mut overlay, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Some(Op::CapabilityCommand { input: Some(text), .. }) if text == "A")
     );
 }

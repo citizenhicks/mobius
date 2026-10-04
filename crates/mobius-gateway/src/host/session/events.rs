@@ -302,6 +302,13 @@ impl HostState {
                     ..SessionActivity::default()
                 })
             }
+            EventMsg::Frontend(
+                FrontendEvent::Widget { .. } | FrontendEvent::RemoveWidget { .. },
+            ) => {
+                let current = self.activity().await?;
+                (current.attention != super::super::replay::attention_count(&self.widgets))
+                    .then_some(current)
+            }
             _ => None,
         };
         Ok(next)
@@ -350,7 +357,8 @@ impl HostState {
             .unwrap_or_default())
     }
 
-    pub(super) async fn set_activity(&self, activity: SessionActivity) -> Result<()> {
+    pub(super) async fn set_activity(&self, mut activity: SessionActivity) -> Result<()> {
+        activity.attention = super::super::replay::attention_count(&self.widgets);
         update_session_activity(
             &self.checkpoints,
             &self.activities,

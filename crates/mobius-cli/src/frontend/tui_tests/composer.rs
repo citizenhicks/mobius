@@ -535,6 +535,7 @@ fn bare_capability_command_opens_all_of_its_popup_surfaces() {
                     text: note.into(),
                     state: FrontendListItemState::Plain,
                     actions: vec![FrontendAction {
+                        input_from_label: false,
                         editor: None,
                         id: format!("action:{id}"),
                         label: "Run".into(),
@@ -1034,4 +1035,38 @@ fn queued_approvals_keep_the_draft_until_the_last_decision() {
     assert_eq!(state.input, "continue after both approvals");
     assert!(state.approval().is_none());
     assert!(state.is_working());
+}
+
+#[test]
+fn attention_overlay_includes_approvals_and_updates_when_they_are_answered() {
+    let mut state = state();
+    state.capability_overlay = Some(crate::frontend::dashboard::CapabilityOverlay::attention(
+        Vec::new(),
+    ));
+    state.begin_approval(mobius::protocol::ExecApprovalRequestEvent {
+        id: "approval".into(),
+        turn_id: "turn".into(),
+        calls: Vec::new(),
+        reason: "Needs permission".into(),
+    });
+    let overlay = state.capability_overlay.as_mut().expect("attention");
+    assert!(crate::frontend::dashboard::activate_overlay(overlay).is_none());
+    let operation = crate::frontend::dashboard::activate_overlay(overlay).expect("approve");
+    assert_eq!(
+        operation,
+        Op::ExecApproval {
+            id: "approval".into(),
+            decision: ReviewDecision::Approved
+        }
+    );
+    state.submit_attention_operation(operation);
+    assert!(state.approvals.is_empty());
+    assert!(
+        state
+            .capability_overlay
+            .as_ref()
+            .expect("attention")
+            .open_widget()
+            .is_none()
+    );
 }

@@ -56,7 +56,7 @@ async fn upload_admission_requires_a_valid_correlated_collector_decision() {
             let body = request_body(&mut stream).await;
             assert_eq!(body["reason"], "upload");
             assert_eq!(body["upload"]["bytes"], 1);
-            assert_eq!(body["protocol_version"], 90);
+            assert_eq!(body["protocol_version"], crate::wire::PROTOCOL_VERSION);
             assert!(body["storage"]["used_bytes"].is_u64());
             assert!(body.get("events").is_none());
             let request_id = &body["upload"]["request_id"];

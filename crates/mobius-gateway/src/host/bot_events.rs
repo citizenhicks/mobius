@@ -538,6 +538,20 @@ async fn lifecycle_event(
         }
         _ => return Ok(None),
     };
+    session_hook(checkpoints, bots, bot_id, session_id, record, data, turn_id)
+        .await
+        .map(Some)
+}
+
+async fn session_hook(
+    checkpoints: &Arc<dyn CheckpointStore>,
+    bots: &BotStore,
+    bot_id: &str,
+    session_id: &str,
+    record: &JournalEvent,
+    data: HookData,
+    turn_id: Option<&str>,
+) -> Result<HookEvent> {
     let author = if let Some(turn_id) = turn_id {
         match execution_for_turn(checkpoints, session_id, turn_id).await? {
             Some(execution) => Some(execution.author),
@@ -568,7 +582,7 @@ async fn lifecycle_event(
             ancestry.push(cause.id);
         }
     }
-    Ok(Some(HookEvent {
+    Ok(HookEvent {
         id: format!("session-{session_id}-{}", record.sequence),
         bot_id: bot_id.into(),
         source: HookSource::Session {
@@ -578,7 +592,50 @@ async fn lifecycle_event(
         occurred_at: record.recorded_at_ms.div_euclid(1000),
         cause_id,
         ancestry,
-    }))
+    })
+}
+
+async fn project_attention(
+    checkpoints: &Arc<dyn CheckpointStore>,
+    bots: &BotStore,
+    bot_id: &str,
+    session_id: &str,
+    record: &JournalEvent,
+) -> Result<()> {
+    use sha2::{Digest as _, Sha256};
+    let EventMsg::Frontend(FrontendEvent::Widget {
+        capability,
+        item: widget,
+    }) = &record.event.msg
+    else {
+        return Ok(());
+    };
+    for item in widget.pending_attention_items() {
+        // Stable item identity makes repeated widget snapshots and crash replay idempotent.
+        let key = serde_json::to_vec(&(session_id, capability, &widget.id, &item.id))?;
+        let id = format!("attention-{:x}", Sha256::digest(key));
+        if bots.hook_event(&id)?.is_some() {
+            continue;
+        }
+        let mut event = session_hook(
+            checkpoints,
+            bots,
+            bot_id,
+            session_id,
+            record,
+            HookData::SessionAttention {
+                session_id: session_id.into(),
+                capability: capability.clone(),
+                item_id: item.id.clone(),
+                text: item.text.chars().take(200).collect(),
+            },
+            None,
+        )
+        .await?;
+        event.id = id;
+        bots.record_hook(&event)?;
+    }
+    Ok(())
 }
 
 fn session_causality(author: &MessageAuthor) -> (Option<String>, Vec<String>) {
@@ -657,14 +714,16 @@ async fn project_session_journal(
                 owner = Some(next.clone());
             }
             let bot_id = owner.as_deref().unwrap_or(fallback_owner);
-            if bots.bot(bot_id).is_ok()
-                && let Some(event) =
+            if bots.bot(bot_id).is_ok() {
+                project_attention(checkpoints, bots, bot_id, session_id, &record).await?;
+                if let Some(event) =
                     lifecycle_event(checkpoints, bots, bot_id, session_id, &record).await?
-            {
-                bots.project_session(&event, record.sequence)?;
-            } else {
-                bots.advance_source_cursor(session_id, bot_id, record.sequence)?;
+                {
+                    bots.project_session(&event, record.sequence)?;
+                    continue;
+                }
             }
+            bots.advance_source_cursor(session_id, bot_id, record.sequence)?;
         }
         if through.is_none() {
             return Ok(());
@@ -778,6 +837,76 @@ pub(super) fn command_pending(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn attention_projection_counts_open_items_and_deduplicates_replay() {
+        use mobius::protocol::{
+            Event, FrontendActionListItem, FrontendListItemState, FrontendSlot, FrontendTone,
+            FrontendWidget, FrontendWidgetContent,
+        };
+        let temp = tempfile::tempdir().expect("temp");
+        let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+            mobius::backend::checkpoint::sqlite::SqliteCheckpoint::new(
+                temp.path().join("checkpoints"),
+            )
+            .expect("checkpoints"),
+        );
+        let bots = BotStore::open(temp.path()).expect("bots");
+        let mut widget = FrontendWidget {
+            id: "status".into(),
+            slot: FrontendSlot::Attention,
+            text: "1".into(),
+            tone: FrontendTone::Warning,
+            symbol: None,
+            icon_only: false,
+            progress: None,
+            action: None,
+            content: Some(FrontendWidgetContent::ActionList {
+                title: "Attention".into(),
+                actions: Vec::new(),
+                items: vec![FrontendActionListItem {
+                    id: "call".into(),
+                    text: "界".repeat(250),
+                    state: FrontendListItemState::Pending,
+                    actions: Vec::new(),
+                }],
+            }),
+        };
+        let record = |widget| JournalEvent {
+            sequence: 1,
+            recorded_at_ms: 1000,
+            stream_metrics: Vec::new(),
+            event: Event {
+                submission_id: None,
+                msg: EventMsg::Frontend(FrontendEvent::Widget {
+                    capability: "test".into(),
+                    item: widget,
+                }),
+            },
+        };
+        let mut widgets = Vec::new();
+        super::super::replay::update_widgets(&mut widgets, &record(widget.clone()).event.msg);
+        assert_eq!(super::super::replay::attention_count(&widgets), 1);
+        for _ in 0..2 {
+            project_attention(&checkpoints, &bots, "bot", "chat", &record(widget.clone()))
+                .await
+                .expect("projection");
+        }
+        let events = bots.unpublished_events(10).expect("events");
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0].data, HookData::SessionAttention { text, item_id, .. } if text.chars().count() == 200 && item_id == "call")
+        );
+        if let Some(FrontendWidgetContent::ActionList { items, .. }) = &mut widget.content {
+            items[0].state = FrontendListItemState::Completed;
+        }
+        super::super::replay::update_widgets(&mut widgets, &record(widget.clone()).event.msg);
+        assert_eq!(super::super::replay::attention_count(&widgets), 0);
+        project_attention(&checkpoints, &bots, "bot", "chat", &record(widget))
+            .await
+            .expect("closed projection");
+        assert_eq!(bots.unpublished_events(10).expect("events").len(), 1);
+    }
 
     #[test]
     fn source_terminal_facts_keep_the_bound_and_causal_message_identity() {

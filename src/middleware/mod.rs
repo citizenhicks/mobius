@@ -39,6 +39,7 @@ pub mod image_generation;
 pub mod instructions;
 pub mod manifest;
 pub mod messages;
+pub mod questions;
 pub mod scratchpad;
 pub mod sessions;
 pub mod subagents;
@@ -1041,6 +1042,12 @@ fn validate_actions(actions: &[crate::protocol::FrontendAction]) -> Result<()> {
         if action.id.trim().is_empty()
             || action.label.trim().is_empty()
             || action.symbol.as_str().trim().is_empty()
+            || (action.input_from_label
+                && (action.editor.is_some()
+                    || !matches!(
+                        action.op,
+                        crate::protocol::Op::CapabilityCommand { input: None, .. }
+                    )))
             || action.editor.as_ref().is_some_and(|editor| {
                 editor.title.trim().is_empty()
                     || editor.label.trim().is_empty()

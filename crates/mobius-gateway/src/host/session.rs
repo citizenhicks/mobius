@@ -295,14 +295,12 @@ impl HostHandle {
         let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
         let loaded = load_replay(checkpoints.as_ref(), &session_id, &running.frontend).await?;
-        let awaiting_approval = activities
-            .lock()
-            .await
-            .activities
-            .entry(session_id.clone())
-            .or_default()
-            .state
-            == SessionActivityState::AwaitingApproval;
+        let awaiting_approval = {
+            let mut activities = activities.lock().await;
+            let activity = activities.activities.entry(session_id.clone()).or_default();
+            activity.attention = super::replay::attention_count(&loaded.widgets);
+            activity.state == SessionActivityState::AwaitingApproval
+        };
         let mut state = HostState {
             telemetry: Arc::clone(&(host_access)()?.telemetry),
             work_activity,

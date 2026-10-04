@@ -157,6 +157,21 @@ pub struct FrontendWidget {
     pub action: Option<Op>,
 }
 
+impl FrontendWidget {
+    /// Pending decisions contributed by an attention widget.
+    pub fn pending_attention_items(&self) -> impl Iterator<Item = &FrontendActionListItem> {
+        let items = match (&self.slot, &self.content) {
+            (FrontendSlot::Attention, Some(FrontendWidgetContent::ActionList { items, .. })) => {
+                items.as_slice()
+            }
+            _ => &[],
+        };
+        items
+            .iter()
+            .filter(|item| item.state == FrontendListItemState::Pending)
+    }
+}
+
 /// Determinate progress rendered by a frontend widget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendProgress {
@@ -213,6 +228,8 @@ pub enum FrontendSlot {
     Navigation,
     /// A capability action mounted in the current chat's menu.
     ChatMenu,
+    /// Pending decisions contributed by capabilities.
+    Attention,
 }
 
 /// Capability-rendered transcript content with frontend-neutral formatting and tone.
@@ -409,8 +426,24 @@ pub struct FrontendAction {
     pub tone: FrontendTone,
     /// The op.
     pub op: Op,
+    /// Submit the label as capability input instead of storing a duplicate in the operation.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub input_from_label: bool,
     /// Optional capability-owned copy for editing input before submitting the action.
     pub editor: Option<FrontendEditor>,
+}
+
+impl FrontendAction {
+    /// Resolves label-backed input, moving the label into the submitted operation.
+    pub fn into_operation(self) -> Op {
+        let mut op = self.op;
+        if self.input_from_label
+            && let Op::CapabilityCommand { input, .. } = &mut op
+        {
+            *input = Some(self.label);
+        }
+        op
+    }
 }
 
 /// Labels for a frontend-native single-text-input editor.
@@ -676,7 +709,9 @@ pub enum FrontendSymbol {
     Storage,
     /// Selects the task case.
     Task,
-    /// Selects the custom case.
+    /// A question requiring user input.
+    Question,
+    /// A frontend-provided glyph name.
     Custom(String),
 }
 
@@ -701,6 +736,7 @@ impl FrontendSymbol {
             Self::Sparkle => "sparkle",
             Self::Storage => "storage",
             Self::Task => "task",
+            Self::Question => "question",
             Self::Custom(name) => name,
         }
     }
@@ -709,6 +745,7 @@ impl FrontendSymbol {
     /// placeholder is a better outcome than a gateway refusing to decode a whole frame.
     pub(crate) fn from_wire(name: &str) -> Self {
         match name {
+            "question" => Self::Question,
             "agent" => Self::Agent,
             "brain" => Self::Brain,
             "branch" => Self::Branch,

@@ -90,7 +90,7 @@ mod desktop_bytes {
 }
 
 /// Current gateway protocol version.
-pub const PROTOCOL_VERSION: u16 = 90;
+pub const PROTOCOL_VERSION: u16 = 91;
 /// Maximum raw RFB payload in one desktop data frame.
 pub const MAX_DESKTOP_CHUNK_BYTES: usize = 16 * 1024;
 /// Maximum encoded JSON payload accepted in one frame.

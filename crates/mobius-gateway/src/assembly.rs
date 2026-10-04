@@ -804,6 +804,9 @@ fn build_middleware(
                     .take()
                     .ok_or_else(|| Error::Config("extensions were not discovered".into()))?,
             ),
+            BuiltinMiddleware::Questions => {
+                Arc::new(mobius::middleware::questions::Questions::default())
+            }
             BuiltinMiddleware::Tasks => Arc::new(Tasks),
             BuiltinMiddleware::Subagents => {
                 let template = Arc::new(OnceLock::<AgentConfig>::new());

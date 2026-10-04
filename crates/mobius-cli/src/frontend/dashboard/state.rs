@@ -75,6 +75,14 @@ impl CapabilityOverlay {
         overlay
     }
 
+    pub(in crate::frontend) fn attention(widgets: Vec<((String, String), FrontendWidget)>) -> Self {
+        let mut overlay = Self::from_widgets("Attention".into(), widgets);
+        overlay.title = "Attention".into();
+        overlay.slots = vec![FrontendSlot::Attention];
+        overlay.open = None;
+        overlay
+    }
+
     pub(in crate::frontend) fn from_widgets(
         fallback_title: String,
         widgets: Vec<((String, String), FrontendWidget)>,

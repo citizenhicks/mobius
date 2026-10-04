@@ -53,7 +53,7 @@ async fn telemetry_delivers_headers_snapshots_and_tracks_failures() {
                             serde_json::from_slice(&bytes[end + 4..end + 4 + len]).unwrap();
                         assert_eq!(envelope["reason"], "manual");
                         assert_eq!(envelope["activity"]["connected_clients"], 0);
-                        assert_eq!(envelope["protocol_version"], 90);
+                        assert_eq!(envelope["protocol_version"], crate::wire::PROTOCOL_VERSION);
                         let started_at_ms = envelope["started_at_ms"].as_i64().unwrap();
                         assert!(started_at_ms > 0);
                         assert!(
@@ -329,7 +329,7 @@ fn telemetry_configuration_validation_covers_transport_and_secret_boundaries() {
 }
 
 #[test]
-fn protocol_90_telemetry_and_storage_requests_round_trip() {
+fn telemetry_and_storage_requests_round_trip() {
     for request in [
         ClientMessage::GetTelemetry {
             request_id: "read".into(),
@@ -350,7 +350,7 @@ fn protocol_90_telemetry_and_storage_requests_round_trip() {
     ] {
         let frame = ClientFrame::new(request);
         let encoded = serde_json::to_value(&frame).unwrap();
-        assert_eq!(encoded["version"], 90);
+        assert_eq!(encoded["version"], crate::wire::PROTOCOL_VERSION);
         let decoded: ClientFrame = serde_json::from_value(encoded.clone()).unwrap();
         assert_eq!(serde_json::to_value(decoded).unwrap(), encoded);
     }

@@ -273,6 +273,9 @@ impl From<&str> for ProviderError {
 /// Errors returned by möbius modules.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// An internal mutex was poisoned by a panic.
+    #[error("internal lock poisoned: {0}")]
+    Poisoned(&'static str),
     /// The gateway data allowance cannot admit another file.
     #[error("storage is full; free up space before adding files")]
     StorageFull,

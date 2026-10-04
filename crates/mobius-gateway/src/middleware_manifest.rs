@@ -19,6 +19,7 @@ pub(crate) enum BuiltinMiddleware {
     Instructions,
     Extensions,
     Tasks,
+    Questions,
     Subagents,
     Messages,
     ContextOffloading,
@@ -34,7 +35,7 @@ pub(crate) struct MiddlewareRegistration {
     pub(crate) manifest: &'static MiddlewareManifest,
 }
 
-pub(crate) static MIDDLEWARE: std::sync::LazyLock<[MiddlewareRegistration; 16]> =
+pub(crate) static MIDDLEWARE: std::sync::LazyLock<[MiddlewareRegistration; 17]> =
     std::sync::LazyLock::new(|| {
         [
             MiddlewareRegistration {
@@ -64,6 +65,10 @@ pub(crate) static MIDDLEWARE: std::sync::LazyLock<[MiddlewareRegistration; 16]> 
             MiddlewareRegistration {
                 kind: BuiltinMiddleware::Extensions,
                 manifest: &mobius::middleware::extensions::MANIFEST,
+            },
+            MiddlewareRegistration {
+                kind: BuiltinMiddleware::Questions,
+                manifest: &mobius::middleware::questions::MANIFEST,
             },
             MiddlewareRegistration {
                 kind: BuiltinMiddleware::Tasks,
@@ -398,6 +403,7 @@ mod tests {
                 "attachments",
                 "compaction",
                 "context_offloading",
+                "questions",
                 "scratchpad",
                 "subagents",
             ])

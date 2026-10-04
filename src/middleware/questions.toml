@@ -1,0 +1,51 @@
+default_enabled = true
+manifest_label = "Questions"
+manifest_description = "Ask the user for missing information without blocking work"
+prompt_root = "Use ask_user only for missing information, a preference, a constraint, or clarification. Ask one self-contained question per call, with the recommended option first and only a few short options. The call returns immediately: keep doing work that does not depend on the answer. The answer arrives as a user message quoting the question. If it is required, finish independent work and end the turn; the answer can start the next turn. Elapsed time is not an answer."
+command_answer_description = "answer an open question"
+command_skip_description = "skip an open question"
+widget_title = "Questions"
+widget_item_answered = "Answered: {answer}"
+widget_item_skipped = "Skipped"
+action_other_label = "Write an answer"
+action_skip_label = "Skip"
+editor_title = "Answer question"
+editor_label = "Your answer"
+editor_description = "Choose a suggested answer or provide your own."
+editor_submit_label = "Send answer"
+answer_message = "> {title}\n\n{answer}"
+message_not_found = "question was not found"
+message_closed = "question has already been answered or skipped"
+message_empty_answer = "answer must contain 1–4096 bytes"
+message_too_many_open = "answer or skip an open question before asking another"
+message_invalid_question = "question must have a 1–1024 byte title and at most six distinct 1–200 byte options"
+message_busy = "questions are being updated; try again"
+message_unavailable = "questions are unavailable for this session"
+
+[ask_user]
+title = "Ask user"
+result_title = "ask_user"
+detail = "title"
+
+[ask_user.tool]
+name = "ask_user"
+description = "Ask the user one short, self-contained question and continue working. Suggested options are optional; put the recommended answer first. The user can answer during this turn or later. Ask only for missing information, preferences, constraints, or clarification."
+
+[ask_user.tool.parameters]
+type = "object"
+required = ["title"]
+additionalProperties = false
+
+[ask_user.tool.parameters.properties.title]
+type = "string"
+minLength = 1
+description = "The complete question, understandable without surrounding conversation."
+
+[ask_user.tool.parameters.properties.options]
+type = "array"
+uniqueItems = true
+description = "A few short suggested answers, with the recommended option first. The user can always write their own answer."
+
+[ask_user.tool.parameters.properties.options.items]
+type = "string"
+minLength = 1

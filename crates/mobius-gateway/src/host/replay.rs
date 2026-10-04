@@ -249,6 +249,14 @@ pub(super) fn event_sequence(frame: &ServerFrame) -> Option<u64> {
     }
 }
 
+pub(super) fn attention_count(widgets: &SessionWidgets) -> u32 {
+    let count = widgets
+        .iter()
+        .flat_map(|(_, widget)| widget.pending_attention_items())
+        .count();
+    u32::try_from(count).unwrap_or(u32::MAX)
+}
+
 pub(super) fn update_widgets(widgets: &mut SessionWidgets, event: &EventMsg) {
     match event {
         EventMsg::Frontend(FrontendEvent::Widget { capability, item }) => {

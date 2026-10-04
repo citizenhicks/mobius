@@ -1,5 +1,6 @@
 //! Minimal state-driven möbius terminal frontend.
 
+mod attention;
 mod clipboard;
 mod diff;
 mod events;
@@ -521,10 +522,12 @@ impl TuiState {
             self.approval_draft = Some(self.take_input_draft());
         }
         self.approvals.push_back(request);
+        self.sync_attention_approvals();
     }
 
     fn take_approval(&mut self) -> Option<String> {
         let request = self.approvals.pop_front()?;
+        self.sync_attention_approvals();
         self.input.clear();
         self.pastes.clear();
         self.cursor = 0;
@@ -857,6 +860,7 @@ impl TuiState {
         self.commit_stream();
         self.active_turns.retain(|active| active != turn_id);
         self.approvals.retain(|request| request.turn_id != turn_id);
+        self.sync_attention_approvals();
         if self.active_turns.is_empty() {
             self.streamed_step_phases.clear();
             self.turn_started_at = None;

@@ -1111,6 +1111,7 @@ fn session_record_exposes_only_frontend_catalog_fields() {
         title: Some("Greeting".into()),
         pinned: true,
         activity: SessionActivity {
+            attention: 0,
             state: SessionActivityState::Running,
             turn_id: Some("turn-a".into()),
             approval_request_id: None,

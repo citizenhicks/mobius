@@ -64,6 +64,7 @@ enum CommandHandler {
     Diff,
     Branch,
     Queued,
+    Attention,
     Status,
     Interrupt,
     Exit,
@@ -107,6 +108,7 @@ pub(crate) enum CommandAction {
     Branches,
     ConfirmDelete,
     Queued,
+    Attention,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -394,6 +396,8 @@ impl UiCatalog {
             },
             CommandHandler::Branch if arguments.is_empty() => CommandAction::Branches,
             CommandHandler::Branch => command.usage(),
+            CommandHandler::Attention if arguments.is_empty() => CommandAction::Attention,
+            CommandHandler::Attention => command.usage(),
             CommandHandler::Queued if arguments.is_empty() => CommandAction::Queued,
             CommandHandler::Queued => command.usage(),
             CommandHandler::Status => CommandAction::Print(context.status.to_string()),
@@ -477,6 +481,13 @@ fn cli_commands() -> Vec<UiCommand> {
             "stop the active turn",
             false,
             CommandHandler::Interrupt,
+        ),
+        (
+            "attention",
+            "",
+            "answer pending questions",
+            false,
+            CommandHandler::Attention,
         ),
         (
             "queued",

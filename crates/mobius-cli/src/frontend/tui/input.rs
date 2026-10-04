@@ -731,7 +731,8 @@ impl TuiState {
             return UiAction::None;
         };
         if overlay.is_editing() {
-            return handle_action_input_key(overlay, key).map_or(UiAction::None, UiAction::submit);
+            return handle_action_input_key(overlay, key)
+                .map_or(UiAction::None, |op| self.submit_attention_operation(op));
         }
         let action_list_open = matches!(
             overlay
@@ -749,14 +750,14 @@ impl TuiState {
             KeyCode::Enter | KeyCode::Right => {
                 return activate_overlay(overlay)
                     .and_then(|op| prepare_overlay_operation(overlay, op))
-                    .map_or(UiAction::None, UiAction::submit);
+                    .map_or(UiAction::None, |op| self.submit_attention_operation(op));
             }
             KeyCode::Char('a') => {
                 return overlay
                     .open_widget()
                     .and_then(|widget| widget.action.clone())
                     .and_then(|op| prepare_overlay_operation(overlay, op))
-                    .map_or(UiAction::None, UiAction::submit);
+                    .map_or(UiAction::None, |op| self.submit_attention_operation(op));
             }
             _ => {}
         }
@@ -1085,6 +1086,19 @@ impl TuiState {
                 CommandAction::ReassignBot => UiAction::ReassignBot,
                 CommandAction::Branches => UiAction::Branches,
                 CommandAction::ConfirmDelete => UiAction::ConfirmDelete,
+                CommandAction::Attention => {
+                    let widgets = self
+                        .widgets
+                        .iter()
+                        .filter(|(_, item)| item.slot == FrontendSlot::Attention)
+                        .cloned()
+                        .collect();
+                    self.capability_overlay = Some(
+                        crate::frontend::dashboard::CapabilityOverlay::attention(widgets),
+                    );
+                    self.sync_attention_approvals();
+                    UiAction::None
+                }
                 CommandAction::Queued => UiAction::Queued,
             };
         }

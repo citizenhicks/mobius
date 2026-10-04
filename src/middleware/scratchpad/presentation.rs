@@ -53,6 +53,7 @@ fn action_list_content(title: &str, entries: &[Entry]) -> FrontendWidgetContent 
                 input: Some(String::new()),
                 target: None,
             },
+            input_from_label: false,
             editor: Some(FrontendEditor {
                 title: text::DEFINITION.editor_global_title.clone(),
                 label: text::DEFINITION.editor_label.clone(),
@@ -103,6 +104,7 @@ fn list_action(
     input: Option<&str>,
 ) -> FrontendAction {
     FrontendAction {
+        input_from_label: false,
         editor: None,
         id: format!("{id}:{}", entry.id),
         label: label.into(),

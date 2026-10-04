@@ -1,0 +1,1 @@
+Adds durable, nonblocking user questions with typed commands and frontend actions that submit option labels without duplicating their text. Consolidates pending-attention projection and reports poisoned question state distinctly.

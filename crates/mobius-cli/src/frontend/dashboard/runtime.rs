@@ -349,7 +349,7 @@ pub(in crate::frontend) fn activate_overlay(overlay: &mut CapabilityOverlay) -> 
             Some(FrontendWidgetContent::ActionList { items, .. }) => items
                 .get(overlay.option_list.selected().unwrap_or_default())
                 .and_then(|item| item.actions.get(overlay.action_index))
-                .map(|action| action.op.clone()),
+                .map(|action| action.clone().into_operation()),
             _ => widget.action.clone(),
         };
     }
@@ -380,10 +380,23 @@ pub(in crate::frontend) fn prepare_overlay_operation(
     overlay: &mut CapabilityOverlay,
     op: Op,
 ) -> Option<Op> {
+    let action = overlay
+        .selected_action_list_item()
+        .and_then(|item| item.actions.get(overlay.action_index));
+    if action.is_some_and(|action| action.editor.is_none()) {
+        return Some(op);
+    }
     let seed = match &op {
         Op::CapabilityCommand {
             input: Some(input), ..
         } => input.clone(),
+        Op::CapabilityCommand { .. } if action.is_some_and(|action| action.editor.is_some()) => {
+            String::new()
+        }
+        Op::ExecApproval {
+            decision: mobius::protocol::ReviewDecision::Denied { rejection },
+            ..
+        } => rejection.clone(),
         _ => return Some(op),
     };
     let text = truncate_input(terminal_text(&seed));
@@ -406,9 +419,17 @@ pub(in crate::frontend) fn handle_action_input_key(
             None
         }
         KeyCode::Enter => {
+            if input.text.trim().is_empty() {
+                return None;
+            }
             let mut input = overlay.input.take().expect("action input checked");
-            if let Op::CapabilityCommand { input: value, .. } = &mut input.op {
-                *value = Some(input.text);
+            match &mut input.op {
+                Op::CapabilityCommand { input: value, .. } => *value = Some(input.text),
+                Op::ExecApproval {
+                    decision: mobius::protocol::ReviewDecision::Denied { rejection },
+                    ..
+                } => *rejection = input.text,
+                _ => {}
             }
             Some(input.op)
         }

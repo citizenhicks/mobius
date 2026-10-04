@@ -642,6 +642,7 @@ fn frontend_surfaces_require_generic_content() {
 #[test]
 fn action_lists_reject_invalid_and_duplicate_rows() {
     let action = FrontendAction {
+        input_from_label: false,
         editor: None,
         id: "edit:item".into(),
         label: "Edit".into(),

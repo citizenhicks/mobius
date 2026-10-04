@@ -319,6 +319,8 @@ pub struct SessionRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionActivity {
+    /// Pending capability attention items, independent of turn activity.
+    pub attention: u32,
     /// The state.
     pub state: SessionActivityState,
     /// The turn identifier.
@@ -336,6 +338,7 @@ pub struct SessionActivity {
 impl Default for SessionActivity {
     fn default() -> Self {
         Self {
+            attention: 0,
             state: SessionActivityState::Idle,
             turn_id: None,
             approval_request_id: None,
@@ -1343,6 +1346,8 @@ pub enum HookKind {
     SessionTurnFinished,
     /// A turn awaits a human decision.
     SessionApproval,
+    /// A capability requests a new user decision.
+    SessionAttention,
     /// Session deleted.
     SessionDeleted,
     /// Session owner changed.
@@ -1470,6 +1475,17 @@ pub enum HookData {
         /// Approval identity.
         request_id: String,
     },
+    /// A capability requests a user decision.
+    SessionAttention {
+        /// Session identity.
+        session_id: String,
+        /// Owning capability.
+        capability: String,
+        /// Stable item identity.
+        item_id: String,
+        /// Bounded user-facing question or decision.
+        text: String,
+    },
     /// Session removed.
     SessionDeleted {
         /// Session identity.
@@ -1519,6 +1535,7 @@ impl HookData {
             Self::SessionTurnStarted { .. } => HookKind::SessionTurnStarted,
             Self::SessionTurnFinished { .. } => HookKind::SessionTurnFinished,
             Self::SessionApproval { .. } => HookKind::SessionApproval,
+            Self::SessionAttention { .. } => HookKind::SessionAttention,
             Self::SessionDeleted { .. } => HookKind::SessionDeleted,
             Self::SessionOwnerChanged { .. } => HookKind::SessionOwnerChanged,
             Self::ClientConnected { .. } => HookKind::ClientConnected,
