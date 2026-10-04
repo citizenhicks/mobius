@@ -1,4 +1,5 @@
 //! Configured outbound telemetry; no endpoint is enabled by default.
+mod upload;
 use crate::wire::HookKind;
 use crate::{Error, Result, host::GatewayHost};
 use mobius::backend::model::provider::{HttpClient, HttpRedirectPolicy};
@@ -18,7 +19,7 @@ use std::collections::BTreeMap;
 pub struct RuntimeConfig {
     /// Exit after this many idle seconds; with `hold_socket`, idle releases the hold instead.
     pub idle_exit_seconds: u64,
-    /// Maximum stored content bytes; absent for an unlimited self-hosted gateway.
+    /// Informational Cloud content allowance; upload decisions belong to its collector.
     pub storage_limit_bytes: Option<u64>,
     /// Additional Noise-only WebSocket listener.
     pub ingress: Option<std::net::SocketAddr>,
@@ -142,6 +143,9 @@ pub struct TelemetrySink {
     /// Whether delivery is enabled.
     #[serde(default = "enabled")]
     pub enabled: bool,
+    /// Ask this POST collector to admit user uploads; generated files bypass it.
+    #[serde(default)]
+    pub upload_admission: bool,
 }
 const fn enabled() -> bool {
     true
@@ -257,6 +261,13 @@ impl Telemetry {
             .read()
             .map(|config| Arc::clone(&config))
             .map_err(|_| Error::Config("telemetry configuration lock poisoned".into()))
+    }
+
+    fn header(&self, sink: &TelemetrySink, now: i64) -> Value {
+        json!({"version": 1, "sent_at": now, "sequence": self.sequence.fetch_add(1, Ordering::Relaxed),
+            "instance": self.instance, "gateway_version": env!("CARGO_PKG_VERSION"),
+            "protocol_version": crate::wire::PROTOCOL_VERSION, "started_at_ms": self.started_at_ms,
+            "uptime_seconds": self.started.elapsed().as_secs(), "fields": sink.fields})
     }
     pub(crate) fn configure(&self, config: TelemetryConfig) -> Result<()> {
         let mut live = self
@@ -486,10 +497,7 @@ impl Telemetry {
         } else {
             trigger
         };
-        let header = json!({"version": 1, "sent_at": now, "sequence": host.telemetry.sequence.fetch_add(1, Ordering::Relaxed),
-            "instance": host.telemetry.instance, "gateway_version": env!("CARGO_PKG_VERSION"),
-            "protocol_version": crate::wire::PROTOCOL_VERSION, "started_at_ms": host.telemetry.started_at_ms,
-            "uptime_seconds": host.telemetry.started.elapsed().as_secs(), "fields": sink.fields});
+        let header = host.telemetry.header(sink, now);
         let object = envelope
             .as_object_mut()
             .ok_or_else(|| Error::Config("telemetry snapshot is not an object".into()))?;
@@ -525,9 +533,9 @@ impl Telemetry {
         let host = host.clone();
         tasks.spawn(async move {
             let sink = &config.sinks[index];
-            let result = deliver(&host.telemetry, sink, &envelope).await;
+            let result = deliver(&host.telemetry, sink, &envelope, 0).await;
             let http = match &result {
-                Ok(status) => Some(*status),
+                Ok((status, _)) => Some(*status),
                 Err(error) => error.status,
             };
             let acknowledge = match &result {
@@ -610,7 +618,8 @@ async fn deliver(
     telemetry: &Telemetry,
     sink: &TelemetrySink,
     envelope: &Value,
-) -> std::result::Result<u16, DeliveryError> {
+    response_limit: usize,
+) -> std::result::Result<(u16, Vec<u8>), DeliveryError> {
     let error = DeliveryError::transient;
     let client = telemetry.client.as_ref().map_err(|cause| {
         error(&format!(
@@ -674,7 +683,18 @@ async fn deliver(
         .map_err(|cause| DeliveryError::caused("telemetry request failed", &cause.without_url()))?;
     let status = response.status();
     if status.is_success() {
-        return Ok(status.as_u16());
+        let mut body = Vec::new();
+        if response_limit > 0 {
+            while let Some(chunk) = response.chunk().await.map_err(|cause| {
+                DeliveryError::caused("telemetry response failed", &cause.without_url())
+            })? {
+                if chunk.len() > response_limit.saturating_sub(body.len()) {
+                    return Err(error("telemetry response exceeds its size limit"));
+                }
+                body.extend_from_slice(&chunk);
+            }
+        }
+        return Ok((status.as_u16(), body));
     }
     let mut body = Vec::with_capacity(200);
     while body.len() < 200 {

@@ -789,7 +789,7 @@ async fn chromium_executable(runtime: &Path) -> Result<PathBuf> {
 }
 
 fn browser_arguments(profile: &Path) -> Vec<String> {
-    [
+    let mut arguments: Vec<String> = [
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-infobars",
@@ -800,11 +800,17 @@ fn browser_arguments(profile: &Path) -> Vec<String> {
     ]
     .into_iter()
     .map(str::to_owned)
-    .chain([
+    .collect();
+    // Chromium cannot use its internal sandbox as root, including panel launches.
+    #[cfg(target_os = "linux")]
+    if nix::unistd::geteuid().is_root() {
+        arguments.push("--no-sandbox".into());
+    }
+    arguments.extend([
         format!("--user-data-dir={}", profile.display()),
         "about:blank".into(),
-    ])
-    .collect()
+    ]);
+    arguments
 }
 
 async fn start_browser(

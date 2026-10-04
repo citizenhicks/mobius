@@ -63,6 +63,7 @@ mod protocol;
 mod sessions;
 mod telemetry;
 mod transport;
+mod upload_admission;
 mod voice;
 
 fn timer_definition(

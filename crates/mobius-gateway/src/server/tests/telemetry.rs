@@ -321,6 +321,7 @@ fn telemetry_configuration_validation_covers_transport_and_secret_boundaries() {
         serde_json::json!({"url":"https://user:password@example.com"}),
         serde_json::json!({"every_seconds":16}),
         serde_json::json!({"method":"get"}),
+        serde_json::json!({"method":"get","events":[],"upload_admission":true}),
         serde_json::json!({"bearer_file":"../token"}),
         serde_json::json!({"bearer_file":"/token"}),
         serde_json::json!({"bearer_file":"token","bearer_env":"TOKEN"}),
@@ -335,6 +336,15 @@ fn telemetry_configuration_validation_covers_transport_and_secret_boundaries() {
         config.telemetry.sinks = vec![serde_json::from_value(value).unwrap()];
         assert!(config.validate().is_err(), "accepted {patch}");
     }
+    let mut config = GatewayConfig::new("127.0.0.1:8741".parse().unwrap(), None).unwrap();
+    let mut authority = sink("https://example.com/collect".into());
+    authority.upload_admission = true;
+    let mut second = authority.clone();
+    second.id = "second".into();
+    config.telemetry.sinks = vec![authority, second];
+    assert!(config.validate().is_err());
+    config.telemetry.sinks[1].enabled = false;
+    config.validate().unwrap();
 }
 
 #[test]

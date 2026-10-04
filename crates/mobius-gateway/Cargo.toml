@@ -1,6 +1,6 @@
 [package]
 name = "mobius-gateway"
-version = "0.16.9"
+version = "0.16.10"
 edition.workspace = true
 rust-version.workspace = true
 description = "Headless authenticated gateway for möbius frontends"
@@ -45,7 +45,7 @@ snow = { version = "0.10.0", default-features = false, features = ["default-reso
 tokio = { workspace = true, features = ["test-util"] }
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.29", features = ["hostname", "signal"] }
+nix = { version = "0.29", features = ["hostname", "signal", "user"] }
 
 [lints]
 workspace = true

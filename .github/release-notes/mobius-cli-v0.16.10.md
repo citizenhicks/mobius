@@ -1,0 +1,1 @@
+The CLI bundles gateway 0.16.10, adding Cloud-owned upload admission through the telemetry collector and fixing Chromium startup and desktop-panel reopening in Linux gateways running as root. Generated files remain available at the Cloud allowance. Framework 0.16.9 and gateway protocol 90 are unchanged.

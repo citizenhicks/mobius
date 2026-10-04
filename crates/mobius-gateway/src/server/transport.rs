@@ -765,6 +765,7 @@ async fn serve_authenticated_connection(
             &client,
             host,
             ConnectionSessionState {
+                gateway: host,
                 disabled_notifications: &mut disabled_notifications,
                 view: &mut view,
                 selected: &mut selected,

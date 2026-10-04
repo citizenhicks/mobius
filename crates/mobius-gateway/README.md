@@ -299,10 +299,16 @@ context boundaries, scratchpad knowledge, task lists, and subagents.
 
 ### Storage and telemetry
 
-Self-hosted gateways have no storage allowance unless the operator sets one while the
-gateway is stopped. `mobius-gateway set-runtime --storage-limit-bytes BYTES` sets the
-content-blob allowance; `--clear-storage-limit` removes it. The allowance does not
-limit workspace files, checkpoints, or local disk size. Connected apps can inspect
+Self-hosted gateways do not enforce a Cloud plan allowance. A configured telemetry
+collector owns upload admission; `telemetry add --upload-admission` enables this
+check on one POST collector. Before accepting upload bytes, the gateway reports the
+requested size and a fresh storage snapshot, then relays its decision. Collector
+failures reject only that upload with a retryable error. Screenshots and artifacts
+bypass admission. This is a logical allowance: concurrent uploads and generated
+files can exceed it, and the filesystem still has its own capacity.
+
+`set-runtime --storage-limit-bytes BYTES` sets an informational content allowance
+for reports; `--clear-storage-limit` removes it. Connected apps can inspect
 storage usage and selectively purge uploaded, generated, or screenshot files while
 keeping chat history.
 

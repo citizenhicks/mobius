@@ -28,6 +28,7 @@ pub(super) struct AuthenticatedClient<'a> {
 pub(super) const MAX_PENDING_REQUESTS: usize = 4;
 
 pub(super) struct ConnectionSessionState<'a> {
+    pub(super) gateway: &'a GatewayHost,
     pub(super) disabled_notifications: &'a mut BTreeSet<GatewayNotification>,
     pub(super) view: &'a mut ClientView,
     pub(super) selected: &'a mut Option<SelectedChat>,
@@ -1136,6 +1137,13 @@ async fn begin_session_file_upload(
         .await
     {
         Ok(upload) => {
+            if let Err(rejection) =
+                crate::telemetry::Telemetry::admit_upload(connection.gateway, upload.id(), size)
+                    .await
+            {
+                drop(upload);
+                return write_rejection(writer, request_id, rejection).await;
+            }
             let upload_id = upload.id().to_string();
             connection
                 .uploads

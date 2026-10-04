@@ -1,5 +1,15 @@
 use super::*;
 
+#[cfg(target_os = "linux")]
+#[test]
+fn browser_disables_its_sandbox_only_for_root_launches() {
+    let arguments = browser_arguments(Path::new("/tmp/profile"));
+    assert_eq!(
+        arguments.iter().any(|argument| argument == "--no-sandbox"),
+        nix::unistd::geteuid().is_root()
+    );
+}
+
 #[test]
 fn headed_browser_hides_noninteractive_infobars() {
     let arguments = browser_arguments(Path::new("/tmp/profile"));

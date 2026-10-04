@@ -75,6 +75,7 @@ enum GatewaySubcommand {
     SetRuntime {
         #[arg(long)]
         idle_exit_seconds: Option<u64>,
+        /// Informational Cloud allowance, without local upload enforcement.
         #[arg(long)]
         storage_limit_bytes: Option<u64>,
         #[arg(long)]
@@ -104,6 +105,9 @@ pub(super) enum TelemetryCommand {
         url: String,
         #[arg(long, default_value_t = 60)]
         every_seconds: u32,
+        /// Require this collector's decision before accepting a user upload.
+        #[arg(long)]
+        upload_admission: bool,
         #[arg(long, value_delimiter = ',')]
         sections: Vec<String>,
         #[arg(long, value_delimiter = ',')]

@@ -361,6 +361,17 @@ pub(super) fn validate_telemetry(config: &crate::telemetry::TelemetryConfig) -> 
         ));
     }
     let mut ids = std::collections::BTreeSet::new();
+    if config
+        .sinks
+        .iter()
+        .filter(|sink| sink.enabled && sink.upload_admission)
+        .count()
+        > 1
+    {
+        return Err(Error::Config(
+            "telemetry accepts one enabled upload admission collector".into(),
+        ));
+    }
     for (index, sink) in config.sinks.iter().enumerate() {
         let invalid = |field: &str, requirement: &str| {
             Error::Config(format!("telemetry.sinks[{index}].{field} {requirement}"))
@@ -406,6 +417,9 @@ pub(super) fn validate_telemetry(config: &crate::telemetry::TelemetryConfig) -> 
         }
         if sink.method == SinkMethod::Get && !sink.events.is_empty() {
             return Err(invalid("events", "requires the POST method"));
+        }
+        if sink.method == SinkMethod::Get && sink.upload_admission {
+            return Err(invalid("upload_admission", "requires the POST method"));
         }
         if sink.headers.len() > 16 {
             return Err(invalid("headers", "accepts at most 16 headers"));

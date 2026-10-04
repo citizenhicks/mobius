@@ -247,8 +247,7 @@ impl GatewayHost {
         let checkpoints: Arc<dyn CheckpointStore> =
             Arc::new(SqliteCheckpoint::new(store.checkpoints_path())?);
         let scratchpad = ScratchpadStore::new(Arc::clone(&checkpoints));
-        let session_files =
-            SessionFileStore::new(store.state_dir(), config.runtime.storage_limit_bytes);
+        let session_files = SessionFileStore::new(store.state_dir(), None);
         let remote_desktop = Arc::new(RemoteDesktop::new(
             store.state_dir(),
             config.desktop_enabled,
