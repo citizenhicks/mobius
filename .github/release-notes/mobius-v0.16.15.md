@@ -1,0 +1,1 @@
+Normalizes model image observations while preserving originals, selects WebSocket continuation before loading image bytes, and bounds full replay without rewriting conversation history. Records optional model renditions alongside original image references.

@@ -16,6 +16,8 @@ crate::embedded_config! {
     /// Millisecond units allow short local test deadlines without changing wire protocols.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct ModelTransportSettings {
+        /// Complete serialized outgoing request limit, including text and tool schemas.
+        pub max_request_bytes: usize,
         /// HTTP connection deadline.
         pub http_connect_timeout_ms: u64,
         /// Maximum gap between HTTP response chunks.
@@ -59,6 +61,9 @@ impl ModelTransportSettings {
     /// # Errors
     /// Returns a configuration error for invalid operational policy.
     pub fn validate(&self) -> Result<()> {
+        if self.max_request_bytes == 0 {
+            return Err(Error::Config("model request limit must be positive".into()));
+        }
         let deadlines = [
             self.http_connect_timeout_ms,
             self.http_idle_timeout_ms,
@@ -503,6 +508,7 @@ mod settings_tests {
         assert_eq!(
             ModelTransportSettings::default(),
             ModelTransportSettings {
+                max_request_bytes: 24 * 1024 * 1024,
                 http_connect_timeout_ms: 10_000,
                 http_idle_timeout_ms: 180_000,
                 socket_connect_timeout_ms: 15_000,

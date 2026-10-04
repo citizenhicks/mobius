@@ -102,9 +102,30 @@ async fn native_compaction_reuses_the_websocket_with_a_v2_trigger() {
         crate::backend::model::ModelTransportSettings::default(),
     )
     .expect("provider");
-    let initial_input = vec![serde_json::json!({"role": "user", "content": "one"})];
+    let directory = tempfile::tempdir().expect("state");
+    let files = crate::backend::session_files::SessionFileStore::new(directory.path(), None);
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(8, 8)
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .expect("PNG");
+    let image = files
+        .ingest_image(
+            "test-session",
+            "image.png".into(),
+            bytes.into_inner(),
+            crate::protocol::ImageDetail::High,
+        )
+        .await
+        .expect("image");
+    let media = crate::backend::model::MediaPreparation {
+        files: Some(&files),
+        limits: crate::backend::model::ImageInputLimits::default(),
+    };
+    let initial_input = vec![
+        serde_json::json!({"role": "user", "content": [{"type":"input_image", "image":image}]}),
+    ];
     let initial_output = provider
-        .send_response(
+        .respond_prepared(
             ModelRequest {
                 session_id: "test-session",
                 prompt_cache: Some(PromptCacheIdentity {
@@ -120,25 +141,33 @@ async fn native_compaction_reuses_the_websocket_with_a_v2_trigger() {
                 allow_continuation: true,
             },
             Arc::new(|_| Box::pin(async { Ok(()) })),
+            media,
         )
         .await
         .expect("initial response");
     let mut input = initial_input;
     input.extend_from_slice(initial_output.output());
+    files
+        .delete_session("test-session")
+        .await
+        .expect("compaction needs only the suffix");
 
     let compacted = provider
-        .compact(CompactRequest {
-            session_id: "test-session",
-            prompt_cache: Some(PromptCacheIdentity {
-                key: "hashed-cache-key",
-                context_epoch: 1,
-            }),
-            instructions: "Test instructions",
-            input: &input,
-            catalog_revision: "catalog-1",
-            tools: &[],
-            deferred_tools: &[],
-        })
+        .compact_prepared(
+            CompactRequest {
+                session_id: "test-session",
+                prompt_cache: Some(PromptCacheIdentity {
+                    key: "hashed-cache-key",
+                    context_epoch: 1,
+                }),
+                instructions: "Test instructions",
+                input: &input,
+                catalog_revision: "catalog-1",
+                tools: &[],
+                deferred_tools: &[],
+            },
+            media,
+        )
         .await
         .expect("native compaction");
     server.await.expect("WebSocket server");

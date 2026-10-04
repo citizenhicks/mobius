@@ -180,6 +180,9 @@ function capturePage(current, timeout) {
 }
 // A headed page has no fixed viewport; its PNG header says how large the capture is.
 function emitScreenshot(bytes, limit = MAX_TEXT_BYTES - FAILURE_TEXT_BYTES) {
+  if (bytes.length < 24 || !bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) throw new Error('Invalid browser screenshot PNG');
+  const width = bytes.readUInt32BE(16), height = bytes.readUInt32BE(20);
+  if (!width || !height || Math.max(width, height) > browserOptions.image_presentation.max_dimension || Math.ceil(width / 32) * Math.ceil(height / 32) > browserOptions.image_presentation.max_patches) throw new Error('Browser capture exceeds presentation limits; reduce the viewport or headed window size before capturing. CSS coordinates are preserved.');
   const target = path.join(os.tmpdir(), 'screen-' + crypto.randomUUID() + '.png');
   fs.writeFileSync(target, bytes);
   try {

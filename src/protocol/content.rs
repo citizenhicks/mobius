@@ -30,6 +30,21 @@ pub struct ImageReference {
     pub height: u32,
     /// The detail.
     pub detail: ImageDetail,
+    /// Model-only pixels; the original file remains the download and editing source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rendition: Option<ImageRendition>,
+}
+
+/// Prepared model pixels stored under the same session authorization as the original.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageRendition {
+    /// Prepared immutable file.
+    pub file: SessionFileReference,
+    /// Prepared pixel width.
+    pub width: u32,
+    /// Prepared pixel height.
+    pub height: u32,
 }
 
 /// One ordered observation. Files are references, not implicit model attachments.

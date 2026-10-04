@@ -299,6 +299,17 @@ impl Model for Anthropic {
         CATALOG.pricing(&self.model)
     }
 
+    fn request_size(&self, request: ModelRequest<'_>) -> Result<usize> {
+        super::media::serialized_size(&self.request_body(
+            request.instructions,
+            request.input,
+            request.catalog_revision,
+            request.tools,
+            request.deferred_tools,
+            request.allow_hosted_tools,
+        )?)
+    }
+
     fn respond<'a>(
         &'a self,
         request: ModelRequest<'a>,

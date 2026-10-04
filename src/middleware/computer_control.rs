@@ -324,7 +324,7 @@ impl Tool for Evaluate {
                                 .read_bytes(&path, MAX_BINARY_FILE_BYTES, &context.permissions)
                                 .await?;
                             self.files
-                                .ingest_image(
+                                .ingest_screenshot(
                                     &self.session_id,
                                     "screenshot.png".into(),
                                     bytes,

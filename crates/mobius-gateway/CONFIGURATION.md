@@ -84,10 +84,12 @@ are rejected for the operator to resolve.
 ## Model transport and provider data
 
 `[model_transport]` applies to built-in model routes and provider authentication started
-by the gateway. Durations use milliseconds:
+by the gateway. Durations use milliseconds. `max_request_bytes` limits the complete
+serialized outgoing model request, including images, text and tool schemas:
 
 | Field | Default |
 | --- | ---: |
+| `max_request_bytes` | 25165824 (24 MiB) |
 | `http_connect_timeout_ms` | 10000 |
 | `http_idle_timeout_ms` | 180000 |
 | `socket_connect_timeout_ms` | 15000 |

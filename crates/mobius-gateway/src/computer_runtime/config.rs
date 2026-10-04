@@ -707,13 +707,12 @@ fn deadline(seconds: u64) -> Result<()> {
 }
 
 fn dimensions([width, height]: [u32; 2]) -> Result<()> {
-    if width == 0
-        || height == 0
-        || width > 16384
-        || height > 16384
-        || u64::from(width) * u64::from(height) > 64 * 1024 * 1024
-    {
-        return Err(Error::Config("invalid computer viewport dimensions".into()));
+    if !mobius::backend::session_files::ImagePresentation::default().fits(width, height) {
+        let limits = mobius::backend::session_files::ImagePresentation::default();
+        return Err(Error::Config(format!(
+            "computer capture dimensions must be positive and fit {} pixels on the longest side and {} patches of 32 × 32 pixels; reduce the viewport, window size or desktop resolution",
+            limits.max_dimension, limits.max_patches
+        )));
     }
     Ok(())
 }

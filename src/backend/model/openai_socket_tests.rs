@@ -8,6 +8,8 @@ mod exchange;
 mod fallback;
 #[path = "openai_socket_tests/handshake.rs"]
 mod handshake;
+#[path = "openai_socket_tests/media.rs"]
+mod media;
 #[path = "openai_socket_tests/recovery.rs"]
 mod recovery;
 #[path = "openai_socket_tests/request.rs"]

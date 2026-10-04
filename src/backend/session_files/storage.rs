@@ -258,14 +258,25 @@ pub(super) async fn remove_staged_attachments(
 }
 
 pub(super) async fn save_metadata(directory: &Path, file: &StoredSessionFile) -> Result<()> {
+    write_metadata(directory, file, false).await
+}
+
+pub(super) async fn replace_metadata(directory: &Path, file: &StoredSessionFile) -> Result<()> {
+    write_metadata(directory, file, true).await
+}
+
+async fn write_metadata(directory: &Path, file: &StoredSessionFile, replace: bool) -> Result<()> {
     let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
     serde_json::to_writer(&mut temporary, file)?;
     temporary.as_file().sync_all()?;
+    set_private_file(temporary.path()).await?;
     let destination = directory.join(METADATA_FILE);
-    temporary
-        .persist_noclobber(&destination)
-        .map_err(|error| error.error)?;
-    set_private_file(&destination).await?;
+    if replace {
+        temporary.persist(&destination)
+    } else {
+        temporary.persist_noclobber(&destination)
+    }
+    .map_err(|error| error.error)?;
     sync_directory(directory)
 }
 
@@ -288,6 +299,18 @@ fn validate_reference(file: &SessionFileReference) -> Result<()> {
 
 pub(super) fn validate_stored_file(file: &StoredSessionFile) -> Result<()> {
     validate_reference(&file.file)?;
+    if let Some([width, height]) = file.image_dimensions {
+        if !file.file.media_type.starts_with("image/") {
+            return Err(Error::Tool("non-image file has image dimensions".into()));
+        }
+        super::images::validate_dimensions(width, height)?;
+    }
+    if file
+        .image_orientation
+        .is_some_and(|orientation| !(1..=8).contains(&orientation))
+    {
+        return Err(Error::Tool("invalid stored image orientation".into()));
+    }
     validate_content_hash(&file.content_hash)
 }
 

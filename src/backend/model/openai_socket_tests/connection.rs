@@ -261,7 +261,7 @@ async fn connection_limit_closes_other_idle_connections() {
     let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
 
     let Error::Provider(error) = provider
-        .send_response(model_request(), events)
+        .respond(model_request(), events)
         .await
         .expect_err("connection limit should interrupt the attempt")
     else {

@@ -221,6 +221,10 @@ impl Model for Kimi {
         .flatten()
     }
 
+    fn request_size(&self, request: ModelRequest<'_>) -> Result<usize> {
+        super::media::serialized_size(&self.request_body(&request)?)
+    }
+
     fn respond<'a>(
         &'a self,
         request: ModelRequest<'a>,

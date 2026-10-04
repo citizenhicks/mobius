@@ -283,6 +283,7 @@ impl OpenAiSocket {
         &self,
         request: ModelRequest<'_>,
         events: ModelEventSink,
+        media: Option<super::MediaPreparation<'_>>,
     ) -> Result<ModelOutput> {
         let session = self.session(request.session_id).await?;
         // A connection and its continuation cursor form one ordered session exchange.
@@ -290,18 +291,21 @@ impl OpenAiSocket {
         state.last_used_at = Instant::now();
         if state.use_http {
             drop(state);
-            return self.send_http_response(request, events).await;
+            return self.send_http_response(request, events, media).await;
         }
 
         let mut rebuilt_context = false;
         loop {
-            let mut connection = match state.connection.take() {
-                Some(connection) if connection.is_usable() => connection,
-                stale => {
-                    if let Some(connection) = stale {
-                        connection.close().await;
-                    }
-                    state.continuation = None;
+            if !state
+                .connection
+                .as_ref()
+                .is_some_and(OpenAiWsConnection::is_usable)
+            {
+                if let Some(connection) = state.connection.take() {
+                    connection.close().await;
+                }
+                state.continuation = None;
+                state.connection = Some(
                     match connect(
                         self.auth.as_ref(),
                         &self.socket_url,
@@ -313,9 +317,8 @@ impl OpenAiSocket {
                         Ok(connection) => connection,
                         Err(Error::Provider(error)) if error.status() == Some(426) => {
                             state.use_http = true;
-                            state.continuation = None;
                             drop(state);
-                            return self.send_http_response(request, events).await;
+                            return self.send_http_response(request, events, media).await;
                         }
                         Err(Error::Provider(error)) if error.is_stream_interrupted() => {
                             return Err(websocket_failure(
@@ -324,9 +327,9 @@ impl OpenAiSocket {
                             ));
                         }
                         Err(error) => return Err(error),
-                    }
-                }
-            };
+                    },
+                );
+            }
             let envelope_fingerprint = envelope_fingerprint(
                 &self.model,
                 &request,
@@ -340,16 +343,34 @@ impl OpenAiSocket {
                 envelope_fingerprint,
             )?;
             let used_previous_response = previous_response_id.is_some();
-            let mut body = response_body(
-                &self.model,
-                &request,
-                input,
-                previous_response_id.as_deref(),
-                self.reasoning_effort.as_deref(),
-                &self.hosted_tools,
-                self.explicit_prompt_cache,
-            )?;
-            self.http.apply_service_tier(&mut body);
+            let mut prepared;
+            let wire_input = if let Some(media) = media {
+                prepared = media
+                    .prepare(request.session_id, input, self, !used_previous_response)
+                    .await?;
+                super::media::bound_request(
+                    &mut prepared,
+                    input,
+                    media.limits,
+                    self.transport.max_request_bytes,
+                    !used_previous_response,
+                    |input| {
+                        super::media::serialized_size(&self.prepared_body(
+                            &request,
+                            input,
+                            previous_response_id.as_deref(),
+                        )?)
+                    },
+                )?;
+                prepared.as_slice()
+            } else {
+                input
+            };
+            let body = self.prepared_body(&request, wire_input, previous_response_id.as_deref())?;
+            // Until sending begins, cancellation or preparation failure must retain the live connection.
+            let mut connection = state.connection.take().ok_or_else(|| {
+                Error::Provider("model connection disappeared before send".into())
+            })?;
             match exchange(&mut connection, &body, &events).await? {
                 Exchange::Completed(response) => {
                     let response_id = response
@@ -414,17 +435,42 @@ impl OpenAiSocket {
         &self,
         request: ModelRequest<'_>,
         events: ModelEventSink,
+        media: Option<super::MediaPreparation<'_>>,
     ) -> Result<ModelOutput> {
-        self.http
-            .respond(request, events)
-            .await
-            .map_err(|error| match error {
-                Error::Http(_) => Error::Provider(ProviderError::stream_interrupted(None)),
-                error => error,
-            })
+        let result = match media {
+            Some(media) => self.http.respond_prepared(request, events, media).await,
+            None => self.http.respond(request, events).await,
+        };
+        result.map_err(|error| match error {
+            Error::Http(_) => Error::Provider(ProviderError::stream_interrupted(None)),
+            error => error,
+        })
     }
 
-    async fn compact_response(&self, request: CompactRequest<'_>) -> Result<CompactOutput> {
+    fn prepared_body(
+        &self,
+        request: &ModelRequest<'_>,
+        input: &[Value],
+        previous: Option<&str>,
+    ) -> Result<Value> {
+        let mut body = response_body(
+            &self.model,
+            request,
+            input,
+            previous,
+            self.reasoning_effort.as_deref(),
+            &self.hosted_tools,
+            self.explicit_prompt_cache,
+        )?;
+        self.http.apply_service_tier(&mut body);
+        Ok(body)
+    }
+
+    async fn compact_response(
+        &self,
+        request: CompactRequest<'_>,
+        media: Option<super::MediaPreparation<'_>>,
+    ) -> Result<CompactOutput> {
         let mut input = request.input.to_vec();
         input.push(serde_json::json!({"type": "compaction_trigger"}));
         let mut retries = 0;
@@ -441,7 +487,11 @@ impl OpenAiSocket {
                 allow_continuation: true,
             };
             match self
-                .send_response(model_request, Arc::new(|_| Box::pin(async { Ok(()) })))
+                .send_response(
+                    model_request,
+                    Arc::new(|_| Box::pin(async { Ok(()) })),
+                    media,
+                )
                 .await
             {
                 Ok(output) => break output,
@@ -641,12 +691,29 @@ impl Model for OpenAiSocket {
         self.http.pricing()
     }
 
+    fn respond_prepared<'a>(
+        &'a self,
+        request: ModelRequest<'a>,
+        events: ModelEventSink,
+        media: super::MediaPreparation<'a>,
+    ) -> BoxFuture<'a, Result<ModelOutput>> {
+        Box::pin(self.send_response(request, events, Some(media)))
+    }
+
+    fn compact_prepared<'a>(
+        &'a self,
+        request: CompactRequest<'a>,
+        media: super::MediaPreparation<'a>,
+    ) -> BoxFuture<'a, Result<CompactOutput>> {
+        Box::pin(self.compact_response(request, Some(media)))
+    }
+
     fn respond<'a>(
         &'a self,
         request: ModelRequest<'a>,
         events: ModelEventSink,
     ) -> BoxFuture<'a, Result<ModelOutput>> {
-        Box::pin(self.send_response(request, events))
+        Box::pin(self.send_response(request, events, None))
     }
 
     fn fallback_transport<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<bool>> {
@@ -668,7 +735,7 @@ impl Model for OpenAiSocket {
     }
 
     fn compact<'a>(&'a self, request: CompactRequest<'a>) -> BoxFuture<'a, Result<CompactOutput>> {
-        Box::pin(self.compact_response(request))
+        Box::pin(self.compact_response(request, None))
     }
 }
 

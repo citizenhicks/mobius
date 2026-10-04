@@ -247,3 +247,9 @@ continuing. Reset creates an empty browser context; it does not undo remote effe
 or restore logins. Retained state needs no reset.
 
 Reference: [Playwright actionability and condition-based waiting](https://playwright.dev/docs/actionability).
+
+Captures must fit a 2048-pixel maximum side and 2,500 patches of 32 × 32 pixels.
+Browser screenshots retain CSS pixels; reduce the viewport or headed window size
+if a capture is rejected. Custom `emitImage` captures must also fit these limits.
+Desktop screenshots are captured at fitted dimensions; use their image pixels
+with the returned screenshot ID so desktop input maps them to display coordinates.

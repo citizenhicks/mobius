@@ -90,7 +90,7 @@ async fn transient_response_failure_leaves_retry_to_a_fresh_model_attempt() {
     let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
 
     let Error::Provider(error) = provider
-        .send_response(model_request(), Arc::clone(&events))
+        .respond(model_request(), Arc::clone(&events))
         .await
         .expect_err("first model attempt should be interrupted")
     else {
@@ -99,7 +99,7 @@ async fn transient_response_failure_leaves_retry_to_a_fresh_model_attempt() {
     assert!(error.is_stream_interrupted());
 
     let output = provider
-        .send_response(model_request(), events)
+        .respond(model_request(), events)
         .await
         .expect("fresh model attempt should recover");
     server.await.expect("WebSocket server");
@@ -164,7 +164,7 @@ async fn previous_response_not_found_does_not_repeat_full_context() {
     let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
 
     let Error::Provider(error) = provider
-        .send_response(model_request(), events)
+        .respond(model_request(), events)
         .await
         .expect_err("missing previous ID should interrupt the model attempt")
     else {
@@ -265,7 +265,7 @@ async fn previous_response_not_found_rebuilds_full_context_on_the_same_connectio
     let initial_input = vec![serde_json::json!({"role": "user", "content": "one"})];
     let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
     let initial_output = provider
-        .send_response(
+        .respond(
             ModelRequest {
                 session_id: "test-session",
                 prompt_cache: Some(PromptCacheIdentity {
@@ -289,7 +289,7 @@ async fn previous_response_not_found_rebuilds_full_context_on_the_same_connectio
     input.push(serde_json::json!({"role": "user", "content": "two"}));
 
     let output = provider
-        .send_response(
+        .respond(
             ModelRequest {
                 session_id: "test-session",
                 prompt_cache: Some(PromptCacheIdentity {

@@ -121,14 +121,33 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
     .with_reasoning_effort("medium")
     .expect("reasoning effort")
     .with_cached_web_search();
+    let directory = tempfile::tempdir().expect("state");
+    let files = crate::backend::session_files::SessionFileStore::new(directory.path(), None);
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(8, 8)
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .expect("PNG");
+    let image = files
+        .ingest_image(
+            "fallback-session",
+            "image.png".into(),
+            bytes.into_inner(),
+            crate::protocol::ImageDetail::High,
+        )
+        .await
+        .expect("image");
+    let media = crate::backend::model::MediaPreparation {
+        files: Some(&files),
+        limits: crate::backend::model::ImageInputLimits::default(),
+    };
     let input = vec![serde_json::json!({
         "role": "user",
-        "content": [{"type": "input_text", "text": "hello"}]
+        "content": [{"type": "input_text", "text": "hello"}, {"type":"input_image", "image":image}]
     })];
     let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
 
     let warm = provider
-        .send_response(
+        .respond_prepared(
             ModelRequest {
                 session_id: "fallback-session",
                 prompt_cache: Some(PromptCacheIdentity {
@@ -144,6 +163,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
                 allow_continuation: true,
             },
             Arc::clone(&events),
+            media,
         )
         .await
         .expect("initial WebSocket response");
@@ -155,7 +175,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
     }));
 
     let Error::Provider(error) = provider
-        .send_response(
+        .respond_prepared(
             ModelRequest {
                 session_id: "fallback-session",
                 prompt_cache: Some(PromptCacheIdentity {
@@ -171,6 +191,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
                 allow_continuation: true,
             },
             Arc::clone(&events),
+            media,
         )
         .await
         .expect_err("closed WebSocket should be retried before fallback")
@@ -180,7 +201,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
     assert!(error.is_stream_interrupted());
 
     let fallback = provider
-        .send_response(
+        .respond_prepared(
             ModelRequest {
                 session_id: "fallback-session",
                 prompt_cache: Some(PromptCacheIdentity {
@@ -196,11 +217,12 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
                 allow_continuation: true,
             },
             Arc::clone(&events),
+            media,
         )
         .await
         .expect("HTTP fallback");
     let sticky = provider
-        .send_response(
+        .respond_prepared(
             ModelRequest {
                 session_id: "fallback-session",
                 prompt_cache: Some(PromptCacheIdentity {
@@ -216,26 +238,30 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
                 allow_continuation: true,
             },
             Arc::clone(&events),
+            media,
         )
         .await
         .expect("sticky HTTP fallback");
     let compacted = provider
-        .compact(CompactRequest {
-            session_id: "fallback-session",
-            prompt_cache: Some(PromptCacheIdentity {
-                key: "hashed-fallback-session",
-                context_epoch: 1,
-            }),
-            instructions: "Test instructions",
-            input: &continued_input,
-            catalog_revision: "catalog-1",
-            tools: &[],
-            deferred_tools: &[],
-        })
+        .compact_prepared(
+            CompactRequest {
+                session_id: "fallback-session",
+                prompt_cache: Some(PromptCacheIdentity {
+                    key: "hashed-fallback-session",
+                    context_epoch: 1,
+                }),
+                instructions: "Test instructions",
+                input: &continued_input,
+                catalog_revision: "catalog-1",
+                tools: &[],
+                deferred_tools: &[],
+            },
+            media,
+        )
         .await
         .expect("HTTP v2 compaction");
     let Error::Provider(http_error) = provider
-        .send_response(
+        .respond_prepared(
             ModelRequest {
                 session_id: "fallback-session",
                 prompt_cache: Some(PromptCacheIdentity {
@@ -251,6 +277,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
                 allow_continuation: true,
             },
             Arc::clone(&events),
+            media,
         )
         .await
         .expect_err("HTTPS failure should remain retryable after fallback")
@@ -280,6 +307,12 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
         "model response stream was interrupted"
     );
     for request in [first_http, second_http, failed_http] {
+        assert!(
+            request["input"][0]["content"][1]["image_url"]
+                .as_str()
+                .expect("replayed image")
+                .starts_with("data:image/png;base64,")
+        );
         assert_eq!(request["service_tier"], "default");
         assert!(request.get("previous_response_id").is_none());
         assert_eq!(
@@ -300,6 +333,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
         .as_array()
         .expect("full HTTP compaction input");
     assert_eq!(compact_input.len(), continued_input.len() + 1);
+    assert!(compact_input[0]["content"][1]["image_url"].is_string());
     assert_eq!(
         compact_input.last(),
         Some(&serde_json::json!({"type": "compaction_trigger"}))
@@ -354,7 +388,7 @@ async fn explicit_fallback_is_sticky_and_isolated_to_the_session() {
     let input = [serde_json::json!({"role": "user", "content": "complete history"})];
     for _ in 0..2 {
         let output = provider
-            .send_response(
+            .respond(
                 ModelRequest {
                     session_id: "fallback",
                     input: &input,

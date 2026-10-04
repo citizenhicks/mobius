@@ -706,6 +706,10 @@ impl Model for OpenAi {
             .flatten()
     }
 
+    fn request_size(&self, request: ModelRequest<'_>) -> Result<usize> {
+        super::media::serialized_size(&self.response_body(request)?)
+    }
+
     fn respond<'a>(
         &'a self,
         request: ModelRequest<'a>,
@@ -716,6 +720,10 @@ impl Model for OpenAi {
 
     fn compaction_endpoint(&self) -> bool {
         self.compaction_endpoint
+    }
+
+    fn compact_size(&self, request: CompactRequest<'_>) -> Result<usize> {
+        super::media::serialized_size(&self.compact_body(request)?)
     }
 
     fn compact<'a>(&'a self, request: CompactRequest<'a>) -> BoxFuture<'a, Result<CompactOutput>> {

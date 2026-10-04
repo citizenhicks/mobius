@@ -207,20 +207,12 @@ impl ModelRouter {
         events: ModelEventSink,
     ) -> Result<ModelOutput> {
         let route = self.route(provider)?;
-        let input = super::media::hydrate(
-            self.files.as_ref(),
-            request.session_id,
-            request.input,
-            route.provider.as_ref(),
-            self.image_limits,
-        )
-        .await?;
-        let request = ModelRequest {
-            input: &input,
-            ..request
+        let media = super::MediaPreparation {
+            files: self.files.as_ref(),
+            limits: self.image_limits,
         };
         while_valid(&route.credential, || {
-            route.provider.respond(request, events)
+            route.provider.respond_prepared(request, events, media)
         })
         .await
     }
@@ -250,7 +242,7 @@ impl ModelRouter {
             session_id,
             input,
             self.provider(provider)?,
-            self.image_limits,
+            0,
         )
         .await
         .map(|_| ())
@@ -431,22 +423,14 @@ impl ModelRouter {
         request: CompactRequest<'_>,
     ) -> Result<CompactOutput> {
         let route = self.route(provider)?;
-        let original = request.input;
-        let input = super::media::hydrate(
-            self.files.as_ref(),
-            request.session_id,
-            original,
-            route.provider.as_ref(),
-            self.image_limits,
-        )
-        .await?;
-        let request = CompactRequest {
-            input: &input,
-            ..request
+        let media = super::MediaPreparation {
+            files: self.files.as_ref(),
+            limits: self.image_limits,
         };
-        let mut output = while_valid(&route.credential, || route.provider.compact(request)).await?;
-        super::media::restore_references(&mut output.output, original, &input)?;
-        Ok(output)
+        while_valid(&route.credential, || {
+            route.provider.compact_prepared(request, media)
+        })
+        .await
     }
 
     fn provider(&self, id: &str) -> Result<&dyn Model> {

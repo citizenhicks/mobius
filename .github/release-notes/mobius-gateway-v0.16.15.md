@@ -1,0 +1,1 @@
+Uses Core 0.16.15 image normalization and continuation-aware request preparation. Validates computer screenshot dimensions and enforces configurable complete request sizes. Image observations may include a model rendition reference.

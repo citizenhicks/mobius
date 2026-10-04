@@ -14,7 +14,9 @@ pub(crate) use self::replay::{
 };
 
 mod content;
-pub use content::{ContentPart, ImageDetail, ImageReference, ToolContent, ToolResponse};
+pub use content::{
+    ContentPart, ImageDetail, ImageReference, ImageRendition, ToolContent, ToolResponse,
+};
 pub(crate) use content::{content_part_text, content_parts, content_parts_mut};
 
 mod events;

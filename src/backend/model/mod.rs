@@ -34,7 +34,7 @@ pub mod provider;
 pub mod realtime;
 mod router;
 pub use image_generation::{GeneratedImage, ImageGenerationReference, ImageGenerationRequest};
-pub use media::ImageInputLimits;
+pub use media::{ImageInputLimits, MediaPreparation};
 mod transport;
 pub use transport::ModelTransportSettings;
 
@@ -831,6 +831,83 @@ pub trait Model: Send + Sync {
         request: ModelRequest<'a>,
         events: ModelEventSink,
     ) -> BoxFuture<'a, Result<ModelOutput>>;
+
+    /// Prepares full logical history unless the transport can select a continuation suffix.
+    fn respond_prepared<'a>(
+        &'a self,
+        request: ModelRequest<'a>,
+        events: ModelEventSink,
+        media: MediaPreparation<'a>,
+    ) -> BoxFuture<'a, Result<ModelOutput>> {
+        Box::pin(async move {
+            let mut input = media
+                .prepare(request.session_id, request.input, self, true)
+                .await?;
+            media::bound_request(
+                &mut input,
+                request.input,
+                media.limits,
+                self.transport_settings().max_request_bytes,
+                true,
+                |input| self.request_size(ModelRequest { input, ..request }),
+            )?;
+            self.respond(
+                ModelRequest {
+                    input: &input,
+                    ..request
+                },
+                events,
+            )
+            .await
+        })
+    }
+
+    /// Measures the serialized provider envelope for request admission.
+    /// # Errors
+    /// Returns wire conversion or serialization errors.
+    fn request_size(&self, request: ModelRequest<'_>) -> Result<usize> {
+        media::serialized_size(
+            &serde_json::json!({"instructions": request.instructions, "input": request.input, "tools": request.tools, "deferred_tools": request.deferred_tools}),
+        )
+    }
+
+    /// Prepares and restores logical references for native compaction.
+    fn compact_prepared<'a>(
+        &'a self,
+        request: CompactRequest<'a>,
+        media: MediaPreparation<'a>,
+    ) -> BoxFuture<'a, Result<CompactOutput>> {
+        Box::pin(async move {
+            let mut input = media
+                .prepare(request.session_id, request.input, self, true)
+                .await?;
+            media::bound_request(
+                &mut input,
+                request.input,
+                media.limits,
+                self.transport_settings().max_request_bytes,
+                true,
+                |input| self.compact_size(CompactRequest { input, ..request }),
+            )?;
+            let mut output = self
+                .compact(CompactRequest {
+                    input: &input,
+                    ..request
+                })
+                .await?;
+            media::restore_references(&mut output.output, request.input, &input)?;
+            Ok(output)
+        })
+    }
+
+    /// Measures the complete native compaction envelope.
+    /// # Errors
+    /// Returns wire conversion or serialization errors.
+    fn compact_size(&self, request: CompactRequest<'_>) -> Result<usize> {
+        media::serialized_size(
+            &serde_json::json!({"instructions": request.instructions, "input": request.input}),
+        )
+    }
 
     /// Switches a session to its fallback transport once, without sending a request.
     ///

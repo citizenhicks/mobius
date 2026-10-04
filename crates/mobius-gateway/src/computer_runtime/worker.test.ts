@@ -19,7 +19,7 @@ async function withWorker(signal: AbortSignal, run: (evaluate: Evaluate, directo
   const directory = await mkdtemp(join(tmpdir(), "mobius-computer-test-"));
   const script = join(directory, "worker.cjs");
   await writeFile(script, COMPUTER_WORKER);
-  const options = {sandbox:false, arguments:[], viewport:[1365,768], start_page:'about:blank',
+  const options = {image_presentation:{max_dimension:2048,max_patches:2500}, sandbox:false, arguments:[], viewport:[1365,768], start_page:'about:blank',
     playwright_module:'playwright',
     browsers_directory:runtime ? join(runtime, 'browsers') : join(directory, 'browsers'), root_sandbox_error:'root requires an explicit operator sandbox opt-out', ...browser?.(directory)};
   const workerArguments = uid === undefined ? [script, JSON.stringify(options)] : ['-e', 'process.getuid=()=>Number(process.argv[3]);require(process.argv[1]);', script, JSON.stringify(options), String(uid)];
@@ -187,7 +187,10 @@ test("native actions share the evaluation pipe, preserve state, and emit screens
   }, request => {
     actions.push(request.action);
     if (request.action === "apps") return { result: [{ pid: 123 }] };
-    if (request.action === "screenshot") return { result: { screenshotId: "observed", png: Buffer.from("native-image").toString("base64") } };
+    if (request.action === "screenshot") {
+      assert.deepEqual(request, {action:"screenshot"});
+      return { result: { screenshotId: "observed", png: Buffer.from("native-image").toString("base64") } };
+    }
     assert.deepEqual(request, { screenshotId: "observed", x: 10, y: 20, button: "left", clicks: 1, action: "click" });
     return { result: true };
   });
@@ -319,3 +322,16 @@ test("a scoped local browser exposes one page without stealing focus", { timeout
     });
   }
 });
+
+test("browser capture validates actual pixels and keeps CSS click coordinates", { skip: !runtime, timeout: 15000 }, t => withWorker(t.signal, async evaluate => {
+  const captured = await evaluate("var page=await getPage(); await page.setViewportSize({width:800,height:600}); await page.setContent('<button style=\"position:absolute;left:200px;top:100px;width:100px;height:50px\" onclick=\"window.clicked=true\">Target</button>'); await screenshot();");
+  assert.equal(captured.is_error, false);
+  const bytes = await readFile(images(captured)[0].path);
+  assert.equal(bytes.readUInt32BE(16), 800);
+  assert.equal(bytes.readUInt32BE(20), 600);
+  assert.equal(text(await evaluate("await page.mouse.click(250,125); console.log(await page.evaluate(()=>window.clicked));")), "true");
+  const oversized = await evaluate("await page.setViewportSize({width:3000,height:2000}); await screenshot();");
+  assert.equal(oversized.is_error, true);
+  assert.match(text(oversized), /capture exceeds presentation limits/);
+  assert.equal(images(oversized).length, 0);
+}));

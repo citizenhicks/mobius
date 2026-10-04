@@ -18,6 +18,7 @@ use crate::protocol::{SessionFileLimits, SessionFileReference};
 use crate::{Error, Result};
 
 mod images;
+pub use images::ImagePresentation;
 pub use images::grant_context;
 mod storage;
 
@@ -82,6 +83,9 @@ pub struct SessionFileStore {
     // ponytail: immutable private blobs reuse one verified SHA-256 while metadata is unchanged.
     validated_blobs: Arc<StdMutex<BTreeMap<String, BlobValidationStamp>>>,
     initialized: Arc<OnceCell<()>>,
+    image_policy: ImagePresentation,
+    image_work: Arc<tokio::sync::Semaphore>,
+    renditions: Arc<Mutex<()>>,
 }
 
 /// Prepared deletion whose commit lock protects removal from the live file catalog.
@@ -141,6 +145,12 @@ struct StoredSessionFile {
     origin: SessionFileOrigin,
     file: SessionFileReference,
     content_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    image_dimensions: Option<[u32; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    image_orientation: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    image_rendition_key: Option<String>,
     #[serde(default)]
     protected_from_cleanup: bool,
 }
@@ -237,6 +247,9 @@ impl SessionFileStore {
             reservations: Arc::new(StdMutex::new(BTreeMap::new())),
             validated_blobs: Arc::new(StdMutex::new(BTreeMap::new())),
             initialized: Arc::new(OnceCell::new()),
+            image_policy: ImagePresentation::default(),
+            image_work: Arc::new(tokio::sync::Semaphore::new(2)),
+            renditions: Arc::new(Mutex::new(())),
         }
     }
 
@@ -585,6 +598,9 @@ impl SessionFileStore {
                 media_type,
             },
             content_hash: String::new(),
+            image_dimensions: None,
+            image_orientation: None,
+            image_rendition_key: None,
             protected_from_cleanup,
         };
         let temporary = tempfile::NamedTempFile::new_in(&session_dir)?;
@@ -612,7 +628,7 @@ impl SessionFileStore {
     ) -> Result<SessionFileReference> {
         let size = u64::try_from(bytes.len())
             .map_err(|_| Error::Tool("file size is unsupported".into()))?;
-        let mut pending = self
+        let pending = self
             .begin(
                 session_id,
                 name,
@@ -622,10 +638,7 @@ impl SessionFileStore {
                 protected_from_cleanup,
             )
             .await?;
-        for chunk in bytes.chunks(MAX_UPLOAD_CHUNK_BYTES) {
-            pending.append(pending.written, chunk).await?;
-        }
-        pending.finish().await
+        pending.complete_bytes(bytes).await
     }
 
     async fn resolve(
@@ -654,6 +667,18 @@ impl SessionFileStore {
         )
         .await?;
         Ok((metadata, path))
+    }
+
+    pub(crate) async fn file_is_missing(&self, session_id: &str, file_id: &str) -> Result<bool> {
+        validate_session_id(session_id)?;
+        validate_file_id(file_id)?;
+        self.ensure_initialized().await?;
+        match tokio::fs::symlink_metadata(self.session_dir(session_id).join(file_id)).await {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Ok(false),
+            Ok(_) => Err(Error::Tool("session file path is not a directory".into())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+            Err(error) => Err(error.into()),
+        }
     }
 
     async fn resolve_upload(
@@ -954,6 +979,13 @@ pub struct PendingSessionFileWrite {
 }
 
 impl PendingSessionFileWrite {
+    async fn complete_bytes(mut self, bytes: &[u8]) -> Result<SessionFileReference> {
+        for chunk in bytes.chunks(MAX_UPLOAD_CHUNK_BYTES) {
+            self.append(self.written, chunk).await?;
+        }
+        self.finish().await
+    }
+
     #[must_use]
     /// Returns the pending file identifier.
     pub fn id(&self) -> &str {

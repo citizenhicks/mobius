@@ -1,3 +1,4 @@
+max_request_bytes = 25165824
 http_connect_timeout_ms = 10000
 http_idle_timeout_ms = 180000
 socket_connect_timeout_ms = 15000
