@@ -1,0 +1,3 @@
+The CLI ships Gateway 0.16.11 and Core 0.16.10, including configurable host/runtime policy, capacity and authentication limits, trusted computer resources, and operator-only telemetry/proxy administration. Gateway configuration can be inspected and checked without starting the service; bundled computer resources can be exported for preinstalled environments.
+
+Requires Rust 1.99.0. Gateway protocol 90 is unchanged. Binary archives include the compatible gateway, pinned cloudflared, manual pages, LICENSE and NOTICE. The removed provider-specific hold socket and legacy procfs environment variable have no compatibility aliases; use the documented gateway TOML settings.
