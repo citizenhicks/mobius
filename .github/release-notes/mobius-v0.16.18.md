@@ -1,0 +1,1 @@
+Computer control no longer publishes the browser widget above the composer. Removes its publisher, widget state, and widget-only text. Computer actions, screenshot observations, approvals, and worker reset handling are preserved.

@@ -9,16 +9,15 @@ use serde_json::Value;
 
 use super::tools::{ApprovalRequirement, Catalog, Tool, ToolContext, render_tool_event};
 use super::{
-    FrontendEventSink, Middleware, PromptSection, RuntimeContext, SessionStartContext,
-    SessionStartSource, ToolExposureContext,
+    Middleware, PromptSection, RuntimeContext, SessionStartContext, SessionStartSource,
+    ToolExposureContext,
 };
 use crate::backend::model::{ToolDefinition, internal_user_message};
 use crate::backend::sandbox::{MAX_BINARY_FILE_BYTES, NetworkAccess, SandboxMode, WorkerCommand};
 use crate::backend::session_files::SessionFileStore;
 use crate::protocol::{
-    ContentPart, EventMsg, FrontendBlock, FrontendBlockRole, FrontendContribution, FrontendEvent,
-    FrontendLink, FrontendSlot, FrontendTone, FrontendWidget, FrontendWidgetContent, ImageDetail,
-    ToolContent, ToolResponse,
+    ContentPart, EventMsg, FrontendBlock, FrontendContribution, ImageDetail, ToolContent,
+    ToolResponse,
 };
 use crate::{BoxFuture, Error, Result};
 
@@ -30,9 +29,6 @@ struct Definition {
     manifest_description: String,
     prompt: String,
     resume_notice: String,
-    browser_label: String,
-    browser_title: String,
-    browser_notice: String,
     tool: ToolDefinition,
 }
 crate::embedded_config! { static DEFINITION: Definition = include_str!("computer_control.toml"); }
@@ -82,8 +78,6 @@ impl Middleware for ComputerControl {
             files: self.files.clone(),
             worker: self.worker.clone(),
             session_id: runtime.session_id.clone(),
-            frontend: runtime.frontend.clone(),
-            browser: std::sync::Mutex::new(None),
         }))
     }
 
@@ -141,86 +135,6 @@ struct Evaluate {
     files: SessionFileStore,
     worker: WorkerCommand,
     session_id: String,
-    frontend: FrontendEventSink,
-    /// The browser's loopback DevTools address last published to frontends.
-    browser: std::sync::Mutex<Option<String>>,
-}
-
-/// The session widget id announcing the running browser.
-const BROWSER_WIDGET: &str = "browser";
-
-/// Only a loopback HTTP origin: the address is useful to a frontend on this machine alone.
-fn loopback_devtools(address: &str) -> bool {
-    address
-        .strip_prefix("http://127.0.0.1:")
-        .and_then(|port| port.parse::<u16>().ok())
-        .is_some_and(|port| port != 0)
-}
-
-/// The running browser as a footer widget. Its link is the browser's loopback DevTools
-/// origin, so a frontend on the gateway's machine can show and share the page; elsewhere it
-/// only reports that the browser runs.
-fn browser_widget(address: &str) -> FrontendWidget {
-    FrontendWidget {
-        id: BROWSER_WIDGET.into(),
-        slot: FrontendSlot::ComposerFooter,
-        text: DEFINITION.browser_label.clone(),
-        tone: FrontendTone::Neutral,
-        symbol: None,
-        icon_only: false,
-        progress: None,
-        content: Some(FrontendWidgetContent::Blocks {
-            title: DEFINITION.browser_title.clone(),
-            blocks: vec![FrontendBlock {
-                role: FrontendBlockRole::Notice,
-                title: DEFINITION.browser_title.clone(),
-                text: DEFINITION.browser_notice.clone(),
-                links: vec![FrontendLink {
-                    label: "DevTools".into(),
-                    href: address.into(),
-                }],
-                ..Default::default()
-            }],
-        }),
-        action: None,
-    }
-}
-
-impl Evaluate {
-    /// Publishes the browser widget when the browser starts or moves, and removes it once
-    /// the browser is gone.
-    fn announce(&self, address: Option<&str>) {
-        let address = address.filter(|address| loopback_devtools(address));
-        let mut published = crate::sync::recover_lock(&self.browser);
-        if published.as_deref() == address {
-            return;
-        }
-        let event = match address {
-            Some(address) => FrontendEvent::Widget {
-                capability: MANIFEST.id.into(),
-                item: browser_widget(address),
-            },
-            None => FrontendEvent::RemoveWidget {
-                capability: MANIFEST.id.into(),
-                id: BROWSER_WIDGET.into(),
-            },
-        };
-        // A missing frontend never fails the evaluation that already ran.
-        if (self.frontend)(event).is_ok() {
-            *published = address.map(str::to_owned);
-        }
-    }
-}
-
-// A failed or cancelled exchange destroys the worker; its browser link must disappear too.
-struct EvaluationGuard<'a>(Option<&'a Evaluate>);
-
-impl Drop for EvaluationGuard<'_> {
-    fn drop(&mut self) {
-        if let Some(tool) = self.0 {
-            tool.announce(None);
-        }
-    }
 }
 
 #[derive(Deserialize)]
@@ -242,8 +156,8 @@ const fn default_timeout() -> u64 {
 struct Observation {
     content: Vec<WorkerPart>,
     is_error: bool,
-    #[serde(default)]
-    devtools: Option<String>,
+    #[serde(default, rename = "devtools")]
+    _devtools: serde::de::IgnoredAny,
 }
 
 #[derive(Deserialize)]
@@ -286,7 +200,6 @@ impl Tool for Evaluate {
             };
             let request =
                 serde_json::to_vec(&serde_json::json!({"code": args.code, "desktop": desktop}))?;
-            let mut evaluation = EvaluationGuard(Some(self));
             let output = context
                 .sandbox
                 .evaluate_worker(
@@ -298,8 +211,6 @@ impl Tool for Evaluate {
                 )
                 .await?;
             let observation: Observation = serde_json::from_slice(&output)?;
-            self.announce(observation.devtools.as_deref());
-            evaluation.0 = None;
             if observation.content.len() > 64
                 || observation
                     .content
@@ -361,66 +272,10 @@ mod tests {
         local::LocalSandbox,
     };
 
-    #[test]
-    fn only_a_loopback_devtools_origin_is_announced() {
-        assert!(loopback_devtools("http://127.0.0.1:9222"));
-        assert!(!loopback_devtools("http://127.0.0.1:0"));
-        assert!(!loopback_devtools("http://0.0.0.0:9222"));
-        assert!(!loopback_devtools("http://example.com:9222"));
-        assert!(!loopback_devtools("http://127.0.0.1:9222/json"));
-        let widget = browser_widget("http://127.0.0.1:9222");
-        let Some(FrontendWidgetContent::Blocks { blocks, .. }) = widget.content else {
-            panic!("browser widget carries its address in a block");
-        };
-        assert_eq!(blocks[0].links[0].href, "http://127.0.0.1:9222");
-    }
-
-    #[test]
-    fn the_browser_widget_follows_the_browser() {
-        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let sink = events.clone();
-        let reject_first = std::sync::atomic::AtomicBool::new(true);
-        let state = tempfile::tempdir().expect("state");
-        let tool = Evaluate {
-            files: SessionFileStore::new(state.path(), None),
-            worker: WorkerCommand {
-                executable: "/usr/bin/true".into(),
-                arguments: Vec::new(),
-            },
-            session_id: "session".into(),
-            frontend: Arc::new(move |event| {
-                if reject_first.swap(false, std::sync::atomic::Ordering::Relaxed) {
-                    return Err(Error::Stopped("frontend temporarily unavailable".into()));
-                }
-                sink.lock().expect("events").push(event);
-                Ok(())
-            }),
-            browser: std::sync::Mutex::new(None),
-        };
-        tool.announce(Some("http://127.0.0.1:9222"));
-        tool.announce(Some("http://127.0.0.1:9222"));
-        tool.announce(Some("http://127.0.0.1:9222"));
-        tool.announce(Some("http://10.0.0.1:9222"));
-        let events = events.lock().expect("events");
-        assert_eq!(
-            events.len(),
-            2,
-            "published once, then removed for a non-loopback address"
-        );
-        assert!(
-            matches!(&events[0], FrontendEvent::Widget { item, .. } if item.id == BROWSER_WIDGET)
-        );
-        assert!(
-            matches!(&events[1], FrontendEvent::RemoveWidget { id, .. } if id == BROWSER_WIDGET)
-        );
-    }
-
     #[tokio::test]
-    async fn a_failed_or_cancelled_evaluation_removes_the_browser_widget() {
+    async fn failed_or_cancelled_evaluation_still_fails() {
         for timeout_ms in [1, 10_000] {
             let workspace = tempfile::tempdir().expect("workspace");
-            let events = Arc::new(std::sync::Mutex::new(Vec::new()));
-            let sink = events.clone();
             let tool = Evaluate {
                 files: SessionFileStore::new(workspace.path(), None),
                 worker: WorkerCommand {
@@ -428,11 +283,6 @@ mod tests {
                     arguments: vec!["-c".into(), "import time; time.sleep(30)".into()],
                 },
                 session_id: "session".into(),
-                frontend: Arc::new(move |event| {
-                    sink.lock().expect("events").push(event);
-                    Ok(())
-                }),
-                browser: std::sync::Mutex::new(None),
             };
             let sandbox = Arc::new(Sandbox::new(
                 Arc::new(LocalSandbox::new(workspace.path()).expect("sandbox")),
@@ -445,7 +295,6 @@ mod tests {
                 ["call".into()],
             )
             .for_call("call");
-            tool.announce(Some("http://127.0.0.1:9222"));
             let result = tokio::time::timeout(
                 Duration::from_millis(100),
                 tool.call(
@@ -459,11 +308,6 @@ mod tests {
             } else {
                 assert!(result.is_err(), "evaluation was cancelled");
             }
-            let events = events.lock().expect("events");
-            assert_eq!(events.len(), 2);
-            assert!(
-                matches!(&events[1], FrontendEvent::RemoveWidget { id, .. } if id == BROWSER_WIDGET)
-            );
         }
     }
 
@@ -471,7 +315,7 @@ mod tests {
     async fn browser_selection_requires_full_access_network_and_gateway_availability() {
         let state = tempfile::tempdir().expect("state");
         // Echoes the evaluation request back as the observation's text.
-        let echo = "import sys,struct,json; n=struct.unpack('>I',sys.stdin.buffer.read(4))[0]; request=sys.stdin.buffer.read(n).decode(); data=json.dumps({'content':[{'type':'text','text':request}],'is_error':False}).encode(); sys.stdout.buffer.write(struct.pack('>I',len(data))+data); sys.stdout.buffer.flush()";
+        let echo = "import sys,struct,json; n=struct.unpack('>I',sys.stdin.buffer.read(4))[0]; request=sys.stdin.buffer.read(n).decode(); data=json.dumps({'content':[{'type':'text','text':request}],'is_error':False,'devtools':'http://127.0.0.1:9222'}).encode(); sys.stdout.buffer.write(struct.pack('>I',len(data))+data); sys.stdout.buffer.flush()";
         let tool = Evaluate {
             files: SessionFileStore::new(state.path(), None),
             worker: WorkerCommand {
@@ -479,8 +323,6 @@ mod tests {
                 arguments: vec!["-c".into(), echo.into()],
             },
             session_id: "session".into(),
-            frontend: Arc::new(|_| Ok(())),
-            browser: std::sync::Mutex::new(None),
         };
         use crate::backend::sandbox::{
             CommandMode, CommandOutput, CommandOutputSink, DesktopBrowserPage, SandboxBackend,
@@ -608,8 +450,6 @@ mod tests {
                     output.to_string()],
             },
             session_id: "session".into(),
-            frontend: Arc::new(|_| Ok(())),
-            browser: std::sync::Mutex::new(None),
         };
         let sandbox = Arc::new(Sandbox::new(
             Arc::new(LocalSandbox::new(workspace.path()).expect("sandbox")),
