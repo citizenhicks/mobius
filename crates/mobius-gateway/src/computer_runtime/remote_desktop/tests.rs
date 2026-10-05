@@ -322,6 +322,60 @@ async fn failed_release_notifies_chat_connections_that_execution_resumed() {
 use mobius::backend::sandbox::{NetworkAccess, SandboxBackend, SandboxMode};
 
 #[tokio::test]
+async fn native_host_recovers_before_dispatch_but_disconnect_after_dispatch_is_fatal() {
+    let directory = tempfile::tempdir().unwrap();
+    let remote = Arc::new(RemoteDesktop::new(
+        directory.path(),
+        true,
+        ComputerConfig::default(),
+    ));
+    let native = Arc::new(DesktopControl::default());
+    let mut worker = remote.connect("chat", Arc::clone(&native)).unwrap();
+    let request = br#"{"action":"apps"}"#;
+    for _ in 0..2 {
+        let reply =
+            tokio::time::timeout(Duration::from_secs(5), forward_native(&mut worker, request))
+                .await
+                .unwrap()
+                .unwrap();
+        let reply: Value = serde_json::from_slice(&reply).unwrap();
+        assert!(
+            reply["error"]
+                .as_str()
+                .unwrap()
+                .contains("enable desktop control")
+        );
+    }
+
+    let mut app = native.attach().unwrap();
+    let (reply, ()) = tokio::join!(forward_native(&mut worker, request), async {
+        let Some(crate::wire::ServerMessage::DesktopControlRequested {
+            request_id,
+            request,
+            ..
+        }) = app.outgoing.recv().await
+        else {
+            panic!("native request");
+        };
+        assert_eq!(request, json!({"action":"apps"}));
+        app.reply(&request_id, json!({"result":[]})).unwrap();
+    });
+    assert_eq!(
+        serde_json::from_slice::<Value>(&reply.unwrap()).unwrap(),
+        json!({"result":[]})
+    );
+
+    let (reply, ()) = tokio::join!(forward_native(&mut worker, request), async {
+        assert!(matches!(
+            app.outgoing.recv().await,
+            Some(crate::wire::ServerMessage::DesktopControlRequested { .. })
+        ));
+        drop(app);
+    });
+    assert!(reply.is_err());
+}
+
+#[tokio::test]
 async fn one_lease_blocks_all_other_evaluations_and_releases_on_disconnect() {
     let directory = tempfile::tempdir().unwrap();
     let remote = Arc::new(RemoteDesktop::new(

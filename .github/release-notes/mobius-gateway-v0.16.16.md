@@ -1,0 +1,1 @@
+Returns a recoverable error when the native Mac computer-control host is unavailable or busy, preserving the worker interpreter. The host can attach without resetting the worker. Disconnects after an action is dispatched still fail closed; actions are never replayed automatically. Uses Core 0.16.16 with no protocol changes.
