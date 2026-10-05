@@ -1,5 +1,7 @@
 /target
 /examples/
+/scripts/*
+!/scripts/sync-gateway-contract.py
 /.mobius
 /docs
 /.local
