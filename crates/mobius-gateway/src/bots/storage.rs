@@ -92,7 +92,7 @@ COMMIT;
 pub(super) struct BotStorage {
     path: PathBuf,
     pub(super) connection: Mutex<Connection>,
-    telemetry_notify: OnceLock<Weak<tokio::sync::Notify>>,
+    telemetry_notify: OnceLock<(Weak<tokio::sync::Notify>, Weak<crate::host::WorkActivity>)>,
 }
 
 impl BotStorage {
@@ -165,8 +165,14 @@ impl BotStorage {
         read_catalog(&connection)
     }
 
-    pub(super) fn attach_telemetry_notify(&self, notify: &Arc<tokio::sync::Notify>) {
-        let _ = self.telemetry_notify.set(Arc::downgrade(notify));
+    pub(super) fn attach_telemetry_notify(
+        &self,
+        notify: &Arc<tokio::sync::Notify>,
+        activity: &Arc<crate::host::WorkActivity>,
+    ) {
+        let _ = self
+            .telemetry_notify
+            .set((Arc::downgrade(notify), Arc::downgrade(activity)));
     }
 
     /// The catalog with the stamp it was read at, unless nothing committed since `stamp`.
@@ -546,8 +552,13 @@ impl BotStorage {
             .map_err(Error::from)?;
         let result = operation(&transaction)?;
         transaction.commit().map_err(Error::from)?;
-        if let Some(notify) = self.telemetry_notify.get().and_then(Weak::upgrade) {
-            notify.notify_one();
+        if let Some((notify, activity)) = self.telemetry_notify.get() {
+            if let Some(activity) = activity.upgrade() {
+                activity.wake();
+            }
+            if let Some(notify) = notify.upgrade() {
+                notify.notify_one();
+            }
         }
         Ok(result)
     }
@@ -758,7 +769,8 @@ mod tests {
         let directory = tempfile::tempdir().expect("storage directory");
         let (storage, _) = BotStorage::open(&directory.path().join(STATE_FILE)).expect("storage");
         let notify = Arc::new(tokio::sync::Notify::new());
-        storage.attach_telemetry_notify(&notify);
+        let activity = Arc::new(crate::host::WorkActivity::new());
+        storage.attach_telemetry_notify(&notify, &activity);
         storage.save_catalog("updated").expect("commit catalog");
         tokio::time::timeout(Duration::from_millis(100), notify.notified())
             .await

@@ -200,9 +200,10 @@ use bundled defaults. No hosting-provider theme or lifecycle API is required.
 
 `[runtime]` owns `idle_exit_seconds` (259200; 0 disables), optional `ingress`, optional
 `storage_limit_bytes`, `require_access_lease` (false), `access_grace_seconds` (0).
-Supervisors own restart, uptime holds and volume policy.
+Supervisors own restart and volume policy. An optional telemetry activity hook can
+hold the host awake while the gateway has work.
 Existing files that explicitly set the removed `runtime.hold_socket` field must drop
-that field before validation; uptime holds belong to the host supervisor.
+that field before validation; no hosting-provider hold path is built into the gateway.
 
 ```sh
 mobius-gateway set-runtime --idle-exit-seconds 0
@@ -266,6 +267,40 @@ After validation, an operator can add a private collector with `telemetry add`.
 and `upload_admission_timeout_seconds` (both 10, range 1–3600). Admission's deadline
 includes its fresh measurement. Each sink owns its interval, snapshot sections, hook
 events and safe envelope fields. Revisions prevent stale configuration updates.
+
+An optional local activity hook uses the same runtime activity as telemetry snapshots,
+independently of collector configuration or delivery success:
+
+```toml
+[telemetry.activity_hook]
+command = ["/usr/bin/systemd-inhibit", "--what=idle:sleep", "--mode=block", "/bin/cat"]
+idle_grace_seconds = 5
+timeout_seconds = 5
+retry_seconds = 5
+```
+
+On macOS the same contract can use `command = ["/usr/bin/caffeinate", "-i", "/bin/cat"]`.
+
+The gateway starts one foreground command while authenticated native clients, running
+or queued session work, approvals, background commands, subagents, pending deliveries
+or due routines need execution. Dashboard connections and future schedules alone do
+not hold the host awake. Runtime changes wake measurement promptly; failed measurements
+retain the hold. Idle grace accepts 0–3600 seconds, cleanup/measurement timeout 1–60,
+and retry interval 1–3600. Omit the section to disable the hook.
+
+The command is an argument vector, with an absolute executable outside gateway state
+and every agent workspace. It runs from `/` with a cleared environment and
+`PATH=/usr/bin:/bin`, without inherited provider credentials. Any script arguments,
+configuration and credentials must also be operator-owned outside writable workspaces.
+The foreground process must acquire its own inhibitor, retain it until stdin closes,
+then release it and exit. Closing stdin also handles an abruptly killed gateway.
+Normal idle/shutdown closes stdin, bounds cleanup, and terminates remaining process-group
+members. Unexpected exits are logged and retried while activity requires a hold.
+The hook is configured in `gateway.toml` while stopped; paired clients cannot alter it.
+
+Hosts that suspend the entire VM must arrange an external wakeup for future routines;
+an internal gateway timer cannot run while the VM is suspended. Hook commands must not
+detach, reset another holder's inhibitor, or depend on telemetry requests for cleanup.
 
 ## Extension sources
 

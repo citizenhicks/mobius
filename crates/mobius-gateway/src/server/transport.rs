@@ -324,8 +324,8 @@ impl ClientConnections {
     pub(super) fn native_count(&self) -> Result<usize> {
         let entries = self
             .entries
-            .lock()
-            .map_err(|_| Error::Config("client-connection lock is poisoned".into()))?;
+            .try_lock()
+            .map_err(|_| Error::Config("client-connection count is unavailable".into()))?;
         Ok(entries
             .iter()
             .filter(|((_, kind), _)| *kind != ClientKind::GatewayDashboard)
@@ -404,10 +404,6 @@ impl Drop for ClientConnectionGuard {
             let Some(connections) = entries.get_mut(&self.key) else {
                 return;
             };
-            if let Some(host) = &self.activity {
-                host.mark_runtime_activity();
-                host.telemetry.notify.notify_one();
-            }
             if *connections > 1 {
                 *connections -= 1;
             } else {
@@ -421,6 +417,11 @@ impl Drop for ClientConnectionGuard {
                     "client lifecycle persistence failed: {}",
                     connection_diagnostic(&error)
                 );
+            }
+            drop(entries);
+            if let Some(host) = &self.activity {
+                host.mark_runtime_activity();
+                host.telemetry.notify.notify_one();
             }
         };
         // Drop must commit the final presence fact before the guard disappears.
@@ -1185,6 +1186,25 @@ fn pem_error(error: pem::Error) -> std::io::Error {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn client_activity_measurement_does_not_wait_for_presence_persistence() {
+        let clients = super::ClientConnections::default();
+        std::thread::scope(|scope| {
+            let locked = clients.entries.lock().unwrap();
+            let clients = &clients;
+            let (send, receive) = std::sync::mpsc::channel();
+            scope.spawn(move || send.send(clients.native_count()).unwrap());
+            let result = receive.recv_timeout(std::time::Duration::from_secs(1));
+            drop(locked);
+            assert!(
+                result
+                    .expect("client measurement must not wait for the lock")
+                    .is_err()
+            );
+        });
+        assert_eq!(clients.native_count().unwrap(), 0);
+    }
+
     use super::*;
     use crate::wire::{FrameReader, RunStats};
     use sha2::{Digest as _, Sha256};

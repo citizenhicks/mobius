@@ -39,7 +39,7 @@ use mobius::protocol::{
     Event, EventMsg, FrontendContribution, FrontendEvent, FrontendPreviewEvent, MessageAuthor,
     MessageSubmission, ModelStepContentPhase, Op, RenderedBlock, ReviewDecision, Submission,
 };
-use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -109,14 +109,27 @@ pub(crate) struct GatewayHost {
     pub(crate) telemetry: Arc<crate::telemetry::Telemetry>,
 }
 
-struct WorkActivity {
+pub(crate) struct WorkActivity {
     instance: Uuid,
-    revision: AtomicU64,
+    revision: watch::Sender<u64>,
 }
 
 impl WorkActivity {
-    fn mark(&self) {
-        self.revision.fetch_add(1, Ordering::AcqRel);
+    pub(crate) fn new() -> Self {
+        Self {
+            instance: Uuid::new_v4(),
+            revision: watch::Sender::new(0),
+        }
+    }
+
+    pub(crate) fn mark(&self) {
+        self.revision
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
+
+    pub(crate) fn wake(&self) {
+        // Storage commits need a fresh snapshot, not another execution grace period.
+        self.revision.send_modify(|_| {});
     }
 }
 
@@ -246,6 +259,9 @@ impl GatewayHost {
         credentials: Arc<CredentialStore>,
         bots: Arc<BotStore>,
     ) -> Result<Self> {
+        if let Some(hook) = &config.telemetry.activity_hook {
+            hook.validate_roots([store.state_dir()])?;
+        }
         if let Some(defaults) = &config.bot_defaults {
             bots.seed_default(defaults)?;
         }
@@ -280,7 +296,8 @@ impl GatewayHost {
             &config.telemetry,
             store.state_dir(),
         ));
-        bots.attach_telemetry_notify(&telemetry.notify);
+        let work_activity = Arc::new(WorkActivity::new());
+        bots.attach_telemetry_notify(&telemetry.notify, &work_activity);
         let config = Arc::new(StdMutex::new(config));
         let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
         let activities = Arc::new(Mutex::new(catalog::SessionCatalog::default()));
@@ -312,10 +329,7 @@ impl GatewayHost {
             capacity_gate: Arc::new(Mutex::new(())),
             storage_reads: Arc::default(),
             events,
-            work_activity: Arc::new(WorkActivity {
-                instance: Uuid::new_v4(),
-                revision: AtomicU64::new(0),
-            }),
+            work_activity,
             telemetry,
         };
         {
@@ -362,7 +376,7 @@ impl GatewayHost {
     }
 
     pub(crate) async fn runtime_activity(&self) -> std::result::Result<RuntimeActivity, Rejection> {
-        let before = self.work_activity.revision.load(Ordering::Acquire);
+        let before = *self.work_activity.revision.borrow();
         // Keep the registry stable while asking each resident actor. Actor idle
         // checks never acquire GatewayState; hidden routine sessions are included.
         let state = self.state.lock().await;
@@ -384,22 +398,27 @@ impl GatewayHost {
         // Routine reservations happen outside the registry lock; observe them
         // again and reject an idle result if any work changed during this query.
         let running_routines = state.bots.running_routine_count().map_err(internal)?;
-        idle &= running_routines == 0;
-        let after = self.work_activity.revision.load(Ordering::Acquire);
+        let now = Utc::now().timestamp();
+        let next_routine_at = state.bots.next_routine_at(now).map_err(internal)?;
+        idle &= running_routines == 0
+            && !next_routine_at.is_some_and(|at| at.timestamp() <= now)
+            && !state.bots.has_pending_deliveries().map_err(internal)?;
+        let after = *self.work_activity.revision.borrow();
         Ok(RuntimeActivity {
             active_sessions,
             running_routines,
             idle: idle && before == after,
             activity_revision: format!("{}:{after}", self.work_activity.instance),
-            next_routine_at: state
-                .bots
-                .next_routine_at(Utc::now().timestamp())
-                .map_err(internal)?,
+            next_routine_at: next_routine_at.map(|at| at.to_rfc3339()),
         })
     }
 
     pub(crate) fn mark_runtime_activity(&self) {
         self.work_activity.mark();
+    }
+
+    pub(crate) fn activity_changes(&self) -> watch::Receiver<u64> {
+        self.work_activity.revision.subscribe()
     }
 
     pub(crate) async fn begin_mutation(

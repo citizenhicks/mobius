@@ -361,6 +361,9 @@ pub(super) fn invalid_cloudflare_token() -> Error {
 pub(super) fn validate_telemetry(config: &crate::telemetry::TelemetryConfig) -> Result<()> {
     use crate::telemetry::SinkMethod;
     config.policy.validate()?;
+    if let Some(hook) = &config.activity_hook {
+        hook.validate()?;
+    }
     if config.sinks.len() > 16 {
         return Err(Error::Config(
             "telemetry.sinks accepts at most 16 destinations".into(),

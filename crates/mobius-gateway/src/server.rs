@@ -256,6 +256,8 @@ impl GatewayServer {
             self.config.connections.authenticated,
         );
         let client_connections = Arc::new(ClientConnections::default());
+        let mut activity_hook =
+            crate::telemetry::ActivityHook::new(self.config.telemetry.activity_hook.as_ref())?;
         let (client_revocations, _) = broadcast::channel(self.config.connections.total());
         let mut has_active_routines = self.bots.has_active_routines(Utc::now().timestamp())?
             || self.bots.has_pending_deliveries()?
@@ -271,156 +273,166 @@ impl GatewayServer {
         crate::telemetry::Telemetry::tick(&self.host, 0, Trigger::Start, &mut telemetry_tasks)
             .await;
         let mut access_expired = false;
-        let result = async {
+        let serving = async {
             loop {
+                tokio::select! {
+                    biased;
+                    _ = async {
+                        tokio::time::sleep_until(next_nudge).await;
+                        self.host.telemetry.notify.notified().await;
+                    }, if routine_dispatchers.is_empty() => {
+                        next_nudge = Instant::now() + Duration::from_secs(1);
+                        let host = self.host.clone();
+                        routine_dispatchers.spawn(async move {
+                            if let Err(error) = host.dispatch_bot_events().await { eprintln!("Bot delivery failed: code={}", error.code); }
+                        });
+                    }
+                    _ = routine_timer.tick() => {
+                        if self.access_lease.is_some_and(AccessLease::expired) {
+                            access_expired = true;
+                            break Ok(());
+                        }
+                        self.tick_telemetry(&client_connections, Trigger::Interval, &mut telemetry_tasks).await;
+                        // Keep reservation and the shutdown decision under the same
+                        // admission gate; future schedules alone do not keep it open.
+                        let Ok(_admission) = self.host.begin_mutation().await else { continue; };
+                        let now = Utc::now().timestamp();
+                        let poll = self.bots.poll_due(now)?;
+                        let routines_active = poll.active || self.bots.has_pending_deliveries()? || self.bots.has_monitored_sessions()?;
+                        if has_active_routines && !routines_active && connections.is_empty() {
+                            inactivity.as_mut().reset(tokio::time::Instant::now() + inactivity_timeout);
+                        }
+                        has_active_routines = routines_active;
+                        let host = self.host.clone();
+                        // One event delivery worker at a time; all retries retain their original message ID.
+                        if routine_dispatchers.is_empty() {
+                            routine_dispatchers.spawn(async move {
+                                if let Err(error) = host.dispatch_bot_events().await { eprintln!("Bot delivery failed: code={}",error.code); }
+                            });
+                        }
+                        // The clock only committed schedule.due events. The same
+                        // hook action worker starts scheduled and manually requested runs.
+                        let _ = poll.events;
+
+                    }
+                    Some(result) = telemetry_tasks.join_next(), if !telemetry_tasks.is_empty() => {
+                        if let Err(error) = result { eprintln!("telemetry worker failed: {error}"); }
+                    }
+                    Some(_) = connections.join_next(), if !connections.is_empty() => {
+                        if connections.is_empty() {
+                            has_active_routines =
+                                self.bots.has_active_routines(Utc::now().timestamp())? || self.bots.has_pending_deliveries()? || self.bots.has_monitored_sessions()?;
+                            if !has_active_routines {
+                                inactivity.as_mut().reset(tokio::time::Instant::now() + inactivity_timeout);
+                            }
+                        }
+                    }
+                    Some(_) = routine_dispatchers.join_next(), if !routine_dispatchers.is_empty() => {
+                        self.tick_telemetry(&client_connections, Trigger::Interval, &mut telemetry_tasks).await;
+                    }
+                    accepted = async {
+                        let admission = connection_admission.admit().await;
+                        tokio::select! {
+                            accepted = self.listener.accept() => accepted.map(|accepted| (accepted, admission, false)),
+                            accepted = async { match &ingress { Some(listener) => listener.accept().await, None => std::future::pending().await } } => accepted.map(|accepted| (accepted, admission, true)),
+                        }
+                    }, if connections.len() < self.config.connections.total() => {
+                        let ((stream, peer), admission, ingress_connection) = accepted?;
+                        if self.access_lease.is_some_and(AccessLease::expired) {
+                            access_expired = true;
+                            break Ok(());
+                        }
+                        let auth = Arc::clone(&self.auth);
+                        let host = self.host.clone();
+                        let bots = Arc::clone(&self.bots);
+                        let client_connections = Arc::clone(&client_connections);
+                        let client_revocations = client_revocations.clone();
+                        let tls = tls.clone();
+                        let websocket_host = websocket_host.clone();
+                        connections.spawn(async move {
+                            let auth_deadline = Instant::now() + Duration::from_secs(self.config.connections.authentication_timeout_seconds);
+                            let connection = ConnectionContext {
+                                local: peer.ip().is_loopback(),
+                                desktop_transport: tls.is_some(),
+                                auth,
+                                host,
+                                bots,
+                                client_connections,
+                                client_revocations,
+                                admission,
+                                access_lease: self.access_lease,
+                            };
+                            let result = if ingress_connection {
+                                serve_websocket(stream, connection, PlaintextHandshake { expected_websocket_host: None, auth_deadline }).await
+                            } else if let Some(tls) = tls {
+                                let stream = match tokio::time::timeout_at(
+                                    auth_deadline,
+                                    tls.accept(stream),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(stream)) => stream,
+                                    Ok(Err(error)) => {
+                                        eprintln!("gateway TLS handshake failed: {:?}", error.kind());
+                                        return;
+                                    }
+                                    Err(_) => {
+                                        eprintln!("gateway TLS handshake timed out");
+                                        return;
+                                    }
+                                };
+                                serve_connection(stream, connection, auth_deadline, None).await
+                            } else {
+                                serve_plaintext_connection(
+                                    stream,
+                                    connection,
+                                    PlaintextHandshake {
+                                        expected_websocket_host: websocket_host,
+                                        auth_deadline,
+                                    },
+                                )
+                                .await
+                            };
+                            if let Err(error) = result {
+                                eprintln!("gateway connection failed: {}", connection_diagnostic(&error));
+                            }
+                        });
+                    }
+                    () = &mut inactivity, if connections.is_empty() && !has_active_routines && self.config.runtime.idle_exit_seconds != 0 => {
+                        has_active_routines = self.bots.has_active_routines(Utc::now().timestamp())? || self.bots.has_pending_deliveries()? || self.bots.has_monitored_sessions()?;
+                        if !has_active_routines {
+                            if crate::telemetry::Telemetry::pending(&self.host).await {
+                                inactivity.as_mut().reset(Instant::now() + ROUTINE_TICK);
+                                continue;
+                            }
+                            stop_cause = StopCause::Idle;
+                            break Ok(());
+                        }
+                    }
+                }
+            }
+        };
+        let (result, lease_expired) = {
+            // Poll activity alongside the whole loop, including awaits inside
+            // dispatch branches. This scope cancels both futures before actor cleanup.
+            let activity = activity_hook.run(&self.host, || client_connections.native_count());
+            tokio::pin!(activity, serving);
             tokio::select! {
                 biased;
-                () = &mut shutdown => break Ok(()),
-                _ = async {
+                () = &mut shutdown => (Ok(()), false),
+                () = async {
                     match self.access_lease {
                         Some(lease) => tokio::time::sleep_until(lease.deadline).await,
                         None => std::future::pending().await,
                     }
-                } => {
-                    access_expired = true;
-                    break Ok(());
-                }
-                _ = async {
-                    tokio::time::sleep_until(next_nudge).await;
-                    self.host.telemetry.notify.notified().await;
-                }, if routine_dispatchers.is_empty() => {
-                    next_nudge = Instant::now() + Duration::from_secs(1);
-                    let host = self.host.clone();
-                    routine_dispatchers.spawn(async move {
-                        if let Err(error) = host.dispatch_bot_events().await { eprintln!("Bot delivery failed: code={}", error.code); }
-                    });
-                }
-                _ = routine_timer.tick() => {
-                    if self.access_lease.is_some_and(AccessLease::expired) {
-                        access_expired = true;
-                        break Ok(());
-                    }
-                    self.tick_telemetry(&client_connections, Trigger::Interval, &mut telemetry_tasks).await;
-                    // Keep reservation and the shutdown decision under the same
-                    // admission gate; future schedules alone do not keep it open.
-                    let Ok(_admission) = self.host.begin_mutation().await else { continue; };
-                    let now = Utc::now().timestamp();
-                    let poll = self.bots.poll_due(now)?;
-                    let routines_active = poll.active || self.bots.has_pending_deliveries()? || self.bots.has_monitored_sessions()?;
-                    if has_active_routines && !routines_active && connections.is_empty() {
-                        inactivity.as_mut().reset(tokio::time::Instant::now() + inactivity_timeout);
-                    }
-                    has_active_routines = routines_active;
-                    let host = self.host.clone();
-                    // One event delivery worker at a time; all retries retain their original message ID.
-                    if routine_dispatchers.is_empty() {
-                        routine_dispatchers.spawn(async move {
-                            if let Err(error) = host.dispatch_bot_events().await { eprintln!("Bot delivery failed: code={}",error.code); }
-                        });
-                    }
-                    // The clock only committed schedule.due events. The same
-                    // hook action worker starts scheduled and manually requested runs.
-                    let _ = poll.events;
-
-                }
-                Some(result) = telemetry_tasks.join_next(), if !telemetry_tasks.is_empty() => {
-                    if let Err(error) = result { eprintln!("telemetry worker failed: {error}"); }
-                }
-                Some(_) = connections.join_next(), if !connections.is_empty() => {
-                    if connections.is_empty() {
-                        has_active_routines =
-                            self.bots.has_active_routines(Utc::now().timestamp())? || self.bots.has_pending_deliveries()? || self.bots.has_monitored_sessions()?;
-                        if !has_active_routines {
-                            inactivity.as_mut().reset(tokio::time::Instant::now() + inactivity_timeout);
-                        }
-                    }
-                }
-                Some(_) = routine_dispatchers.join_next(), if !routine_dispatchers.is_empty() => {
-                    self.tick_telemetry(&client_connections, Trigger::Interval, &mut telemetry_tasks).await;
-                }
-                accepted = async {
-                    let admission = connection_admission.admit().await;
-                    tokio::select! {
-                        accepted = self.listener.accept() => accepted.map(|accepted| (accepted, admission, false)),
-                        accepted = async { match &ingress { Some(listener) => listener.accept().await, None => std::future::pending().await } } => accepted.map(|accepted| (accepted, admission, true)),
-                    }
-                }, if connections.len() < self.config.connections.total() => {
-                    let ((stream, peer), admission, ingress_connection) = accepted?;
-                    if self.access_lease.is_some_and(AccessLease::expired) {
-                        access_expired = true;
-                        break Ok(());
-                    }
-                    let auth = Arc::clone(&self.auth);
-                    let host = self.host.clone();
-                    let bots = Arc::clone(&self.bots);
-                    let client_connections = Arc::clone(&client_connections);
-                    let client_revocations = client_revocations.clone();
-                    let tls = tls.clone();
-                    let websocket_host = websocket_host.clone();
-                    connections.spawn(async move {
-                        let auth_deadline = Instant::now() + Duration::from_secs(self.config.connections.authentication_timeout_seconds);
-                        let connection = ConnectionContext {
-                            local: peer.ip().is_loopback(),
-                            desktop_transport: tls.is_some(),
-                            auth,
-                            host,
-                            bots,
-                            client_connections,
-                            client_revocations,
-                            admission,
-                            access_lease: self.access_lease,
-                        };
-                        let result = if ingress_connection {
-                            serve_websocket(stream, connection, PlaintextHandshake { expected_websocket_host: None, auth_deadline }).await
-                        } else if let Some(tls) = tls {
-                            let stream = match tokio::time::timeout_at(
-                                auth_deadline,
-                                tls.accept(stream),
-                            )
-                            .await
-                            {
-                                Ok(Ok(stream)) => stream,
-                                Ok(Err(error)) => {
-                                    eprintln!("gateway TLS handshake failed: {:?}", error.kind());
-                                    return;
-                                }
-                                Err(_) => {
-                                    eprintln!("gateway TLS handshake timed out");
-                                    return;
-                                }
-                            };
-                            serve_connection(stream, connection, auth_deadline, None).await
-                        } else {
-                            serve_plaintext_connection(
-                                stream,
-                                connection,
-                                PlaintextHandshake {
-                                    expected_websocket_host: websocket_host,
-                                    auth_deadline,
-                                },
-                            )
-                            .await
-                        };
-                        if let Err(error) = result {
-                            eprintln!("gateway connection failed: {}", connection_diagnostic(&error));
-                        }
-                    });
-                }
-                () = &mut inactivity, if connections.is_empty() && !has_active_routines && self.config.runtime.idle_exit_seconds != 0 => {
-                    has_active_routines = self.bots.has_active_routines(Utc::now().timestamp())? || self.bots.has_pending_deliveries()? || self.bots.has_monitored_sessions()?;
-                    if !has_active_routines {
-                        if crate::telemetry::Telemetry::pending(&self.host).await {
-                            inactivity.as_mut().reset(Instant::now() + ROUTINE_TICK);
-                            continue;
-                        }
-                        stop_cause = StopCause::Idle;
-                        break Ok(());
-                    }
-                }
+                } => (Ok(()), true),
+                () = &mut activity => (Err(Error::Config("telemetry activity worker stopped".into())), false),
+                result = &mut serving => (result, false),
             }
-            }
-        }
-        .await;
+        };
+        access_expired |= lease_expired;
+        // Snapshot workers can also hold host state while waiting for actors.
+        telemetry_tasks.shutdown().await;
         connections.shutdown().await;
         if access_expired {
             routine_dispatchers.shutdown().await;
@@ -436,6 +448,7 @@ impl GatewayServer {
             stop_cause
         };
         crate::telemetry::Telemetry::stop(&self.host, cause, &mut telemetry_tasks).await;
+        activity_hook.stop().await;
         result
     }
 

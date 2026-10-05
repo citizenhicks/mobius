@@ -13,6 +13,62 @@ mod live_chats;
 mod projection;
 mod replay;
 
+impl GatewayHost {
+    pub(crate) async fn pause_activity_reply_for_test(
+        &self,
+    ) -> (oneshot::Receiver<()>, oneshot::Sender<()>, JoinHandle<()>) {
+        let (commands, mut receiver) = mpsc::channel(2);
+        let (events, _) = broadcast::channel(1);
+        let alive = Arc::new(AtomicBool::new(true));
+        let terminated = Arc::new(AtomicBool::new(false));
+        let termination = Arc::new(tokio::sync::Notify::new());
+        self.state.lock().await.sessions.insert(
+            "activity-probe".into(),
+            HostHandle {
+                inner: Arc::new(HostInner {
+                    session_id: "activity-probe".into(),
+                    commands,
+                    events,
+                    alive: Arc::clone(&alive),
+                    terminated: Arc::clone(&terminated),
+                    termination: Arc::clone(&termination),
+                    session_mutations: Arc::new(RwLock::new(())),
+                    realtime_voice: Arc::new(Mutex::new(())),
+                    gateway_sandbox: std::sync::Weak::new(),
+                }),
+            },
+        );
+        let (entered, waiting) = oneshot::channel();
+        let (release, mut released) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let mut entered = Some(entered);
+            let mut held_reply = None;
+            loop {
+                tokio::select! {
+                    command = receiver.recv() => match command {
+                        Some(HostCommand::RuntimeIsIdle { reply }) => {
+                            if let Some(entered) = entered.take() {
+                                held_reply = Some(reply);
+                                let _ = entered.send(());
+                            } else {
+                                let _ = reply.send(Ok(false));
+                            }
+                        }
+                        Some(HostCommand::Shutdown) | None => break,
+                        _ => panic!("unexpected activity probe command"),
+                    },
+                    _ = &mut released => break,
+                }
+            }
+            drop(held_reply);
+            alive.store(false, Ordering::Release);
+            terminated.store(true, Ordering::Release);
+            termination.notify_waiters();
+        });
+        (waiting, release, task)
+    }
+}
+
 pub(crate) async fn ensure_test_bot(
     gateway: &GatewayHost,
 ) -> std::result::Result<crate::wire::BotRecord, Rejection> {

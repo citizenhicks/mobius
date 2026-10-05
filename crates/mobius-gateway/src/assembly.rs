@@ -244,6 +244,14 @@ pub(crate) async fn assemble(
             subagents,
         },
     ) = run_discovery(discovery_gate, move || {
+        if let Some(hook) = &gateway_config.telemetry.activity_hook {
+            hook.validate_roots(
+                [&state_dir, &workspace_path]
+                    .into_iter()
+                    .chain(attached_folders.iter())
+                    .map(std::path::PathBuf::as_path),
+            )?;
+        }
         let resolved_extensions = &resources.extensions;
         let extensions = (EXTENSIONS_MANIFEST.required || settings.enabled(EXTENSIONS_MANIFEST.id))
             .then(|| {

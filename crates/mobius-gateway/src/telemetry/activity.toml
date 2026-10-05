@@ -1,0 +1,3 @@
+idle_grace_seconds = 5
+timeout_seconds = 5
+retry_seconds = 5

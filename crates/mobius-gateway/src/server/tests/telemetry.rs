@@ -149,6 +149,176 @@ async fn telemetry_configuration_rejects_stale_revisions_and_secrets_in_headers(
     server.host.shutdown().await;
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn telemetry_sink_updates_preserve_the_private_operator_activity_hook() {
+    let root = tempfile::tempdir().unwrap();
+    let (server, _) = configured_test_server(root.path().join("state")).await;
+    server.host.shutdown().await;
+    drop(server);
+    let (store, mut config) = ConfigStore::open(root.path().join("state")).unwrap();
+    config.telemetry.activity_hook = Some(crate::telemetry::ActivityHookConfig {
+        command: vec!["/bin/cat".into()],
+        idle_grace_seconds: 7,
+        timeout_seconds: 2,
+        retry_seconds: 3,
+    });
+    store.save(&config).unwrap();
+    let server = GatewayServer::open(root.path().join("state"))
+        .await
+        .unwrap();
+    let mut bytes = Vec::new();
+    dispatch::handle_runtime_message(
+        ClientMessage::ConfigureTelemetry {
+            request_id: "sinks".into(),
+            expected_revision: 0,
+            sinks: vec![sink("https://collector.example/collect".into())],
+            preserve_auth: vec![],
+        },
+        &server.host,
+        true,
+        &mut bytes,
+    )
+    .await
+    .unwrap();
+    let frame = read_frame::<ServerFrame>(&mut crate::wire::FrameReader::new(bytes.as_slice()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        &frame.message,
+        ServerMessage::Telemetry { revision: 1, .. }
+    ));
+    let response = serde_json::to_value(&frame.message).unwrap();
+    assert!(response.get("activity_hook").is_none());
+    assert!(!response.to_string().contains("/bin/cat"));
+    let live = server.host.telemetry.config().unwrap();
+    assert_eq!(
+        live.activity_hook.as_ref(),
+        config.telemetry.activity_hook.as_ref()
+    );
+    let (_, saved) = ConfigStore::open(root.path().join("state")).unwrap();
+    assert_eq!(saved.telemetry.revision, 1);
+    assert_eq!(saved.telemetry.sinks.len(), 1);
+    assert_eq!(
+        saved.telemetry.activity_hook,
+        config.telemetry.activity_hook
+    );
+    server.host.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test(start_paused = true)]
+async fn shutdown_remains_live_when_activity_and_routine_dispatch_contend_for_host_state() {
+    for hook in [true, false] {
+        let root = tempfile::tempdir().unwrap();
+        let (mut server, _) = configured_test_server(root.path().join("state")).await;
+        if hook {
+            server.config.telemetry.activity_hook = Some(crate::telemetry::ActivityHookConfig {
+                command: vec!["/bin/cat".into()],
+                idle_grace_seconds: 60,
+                timeout_seconds: 60,
+                retry_seconds: 1,
+            });
+        } else {
+            server
+                .host
+                .configure_telemetry(0, vec![sink("https://127.0.0.1:1/collect".into())], &[])
+                .await
+                .unwrap();
+        }
+        let (entered, release, actor) = server.host.pause_activity_reply_for_test().await;
+        let ready = server.notify_ready();
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let mut serving = tokio::spawn(server.serve_until(async move {
+            let _ = stopped.await;
+        }));
+        ready.await.unwrap();
+        entered.await.unwrap();
+        tokio::time::advance(ROUTINE_TICK).await;
+        tokio::task::yield_now().await;
+        tokio::time::resume();
+        stop.send(()).unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(2), &mut serving).await;
+        if result.is_err() {
+            serving.abort();
+            let _ = serving.await;
+        }
+        let _ = release.send(());
+        actor.await.unwrap();
+        result
+            .expect("shutdown must progress while the activity reply remains paused")
+            .unwrap()
+            .unwrap();
+        tokio::time::pause();
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn server_shutdown_and_access_lease_expiry_release_activity_hook_descendants() {
+    use nix::sys::signal::kill;
+    use nix::unistd::Pid;
+
+    for expires in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let pid_file = root.path().join("child.pid");
+        let (mut server, _) = configured_test_server(root.path().join("state")).await;
+        server.config.telemetry.activity_hook = Some(crate::telemetry::ActivityHookConfig {
+            command: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                r#"sleep 30 & child=$!; printf '%s\n' "$child" > "$1"; /bin/cat >/dev/null; kill "$child"; wait "$child""#.into(),
+                "activity-test".into(),
+                pid_file.display().to_string(),
+            ],
+            idle_grace_seconds: 60,
+            timeout_seconds: 1,
+            retry_seconds: 1,
+        });
+        if expires {
+            server.access_lease = Some(AccessLease {
+                expires_at: SystemTime::now() + Duration::from_secs(3),
+                deadline: Instant::now() + Duration::from_secs(3),
+            });
+        }
+        let ready = server.notify_ready();
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let serving = tokio::spawn(server.serve_until(async {
+            let _ = stopped.await;
+        }));
+        ready.await.unwrap();
+        let child = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Ok(pid) = tokio::fs::read_to_string(&pid_file).await
+                    && let Ok(pid) = pid.trim().parse()
+                {
+                    break Pid::from_raw(pid);
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("activity hook child started");
+        assert!(kill(child, None).is_ok());
+        if !expires {
+            stop.send(()).unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(10), serving)
+            .await
+            .expect("server shutdown released the activity hook")
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while kill(child, None).is_ok() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("activity hook descendant was terminated");
+    }
+}
+
 #[tokio::test]
 async fn committed_events_retry_and_advance_only_after_delivery() {
     use crate::wire::{HookData, HookEvent, HookSource};

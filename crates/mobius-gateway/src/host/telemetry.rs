@@ -1,5 +1,5 @@
 use super::*;
-use crate::telemetry::{TelemetryConfig, TelemetrySection, TelemetrySink, TelemetrySinkReport};
+use crate::telemetry::{TelemetrySection, TelemetrySink, TelemetrySinkReport};
 use serde_json::{Value, json};
 
 #[derive(Default)]
@@ -70,13 +70,10 @@ impl GatewayHost {
             replacement.bearer_file.clone_from(&previous.bearer_file);
         }
         let mut config = live.clone();
-        config.telemetry = TelemetryConfig {
-            policy: live.telemetry.policy,
-            revision: expected
-                .checked_add(1)
-                .ok_or_else(|| invalid_config("telemetry revision overflow"))?,
-            sinks,
-        };
+        config.telemetry.revision = expected
+            .checked_add(1)
+            .ok_or_else(|| invalid_config("telemetry revision overflow"))?;
+        config.telemetry.sinks = sinks;
         config.validate().map_err(invalid_config)?;
         state.store.save(&config).map_err(internal)?;
         if let Err(error) = state.bots.sync_telemetry_cursors(&config.telemetry.sinks) {

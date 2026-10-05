@@ -395,8 +395,12 @@ impl Default for BotState {
 }
 
 impl BotStore {
-    pub(crate) fn attach_telemetry_notify(&self, notify: &std::sync::Arc<tokio::sync::Notify>) {
-        self.storage.attach_telemetry_notify(notify);
+    pub(crate) fn attach_telemetry_notify(
+        &self,
+        notify: &std::sync::Arc<tokio::sync::Notify>,
+        activity: &std::sync::Arc<crate::host::WorkActivity>,
+    ) {
+        self.storage.attach_telemetry_notify(notify, activity);
     }
 
     /// Opens or creates owner-only Bot state.
@@ -871,7 +875,7 @@ impl BotStore {
         self.storage.has_running_routines()
     }
 
-    pub(crate) fn next_routine_at(&self, now: i64) -> Result<Option<String>> {
+    pub(crate) fn next_routine_at(&self, now: i64) -> Result<Option<chrono::DateTime<Utc>>> {
         self.current_state()?
             .routines
             .iter()
@@ -879,7 +883,6 @@ impl BotStore {
             .min()
             .map(|timestamp| {
                 chrono::DateTime::from_timestamp(timestamp, 0)
-                    .map(|date| date.to_rfc3339())
                     .ok_or_else(|| Error::Config("routine timestamp is invalid".into()))
             })
             .transpose()

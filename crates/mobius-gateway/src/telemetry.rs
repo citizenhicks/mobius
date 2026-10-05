@@ -1,8 +1,11 @@
 //! Configured outbound telemetry; no endpoint is enabled by default.
+mod activity;
 mod policy;
 mod upload;
 use crate::wire::HookKind;
 use crate::{Error, Result, host::GatewayHost};
+pub(crate) use activity::ActivityHook;
+pub use activity::ActivityHookConfig;
 use mobius::backend::model::provider::{HttpClient, HttpRedirectPolicy};
 pub use policy::TelemetryPolicy;
 use serde_json::{Value, json};
@@ -21,6 +24,9 @@ use std::collections::BTreeMap;
 pub struct TelemetryConfig {
     /// Transport settings controlled locally by the gateway operator.
     pub policy: TelemetryPolicy,
+    /// Local operator command held while runtime activity needs an awake host.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity_hook: Option<ActivityHookConfig>,
     /// Optimistic concurrency revision.
     pub revision: u64,
     /// Explicitly configured destinations.
