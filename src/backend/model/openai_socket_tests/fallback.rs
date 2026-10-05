@@ -311,7 +311,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
             request["input"][0]["content"][1]["image_url"]
                 .as_str()
                 .expect("replayed image")
-                .starts_with("data:image/png;base64,")
+                .starts_with("data:image/jpeg;base64,")
         );
         assert_eq!(request["service_tier"], "default");
         assert!(request.get("previous_response_id").is_none());

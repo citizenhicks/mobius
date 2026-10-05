@@ -20,8 +20,6 @@ crate::embedded_config! {
         pub max_dimension: u32,
         /// Maximum number of 32 by 32 pixel patches.
         pub max_patches: u32,
-        /// Try JPEG quality 85 for opaque PNGs at least this large; keep the smaller encoding.
-        pub png_jpeg_threshold_bytes: u64,
     }
     defaults = include_str!("images.toml");
 }
@@ -72,11 +70,7 @@ impl SessionFileStore {
     /// # Errors
     /// Rejects zero or decoder-exceeding dimensions and patch budgets.
     pub fn image_presentation(mut self, policy: ImagePresentation) -> Result<Self> {
-        if policy.max_dimension == 0
-            || policy.max_dimension > 16_384
-            || policy.max_patches == 0
-            || policy.png_jpeg_threshold_bytes == 0
-        {
+        if policy.max_dimension == 0 || policy.max_dimension > 16_384 || policy.max_patches == 0 {
             return Err(Error::Config("invalid image presentation limits".into()));
         }
         self.image_policy = policy;
@@ -94,11 +88,8 @@ impl SessionFileStore {
         let record = self.resolve_image(session_id, image).await?;
         let policy = self.image_policy;
         let key = format!(
-            "{}-{}-{}-{}-v3",
-            record.content_hash,
-            policy.max_dimension,
-            policy.max_patches,
-            policy.png_jpeg_threshold_bytes
+            "{}-{}-{}-v4",
+            record.content_hash, policy.max_dimension, policy.max_patches
         );
         let (source_width, source_height) = oriented_dimensions(
             image.width,
@@ -119,12 +110,6 @@ impl SessionFileStore {
                 .await?
         {
             return Ok(Some(rendition));
-        }
-        if policy.fits(image.width, image.height)
-            && !(image.file.media_type == "image/png"
-                && image.file.size >= policy.png_jpeg_threshold_bytes)
-        {
-            return Ok(None);
         }
         // ponytail: legacy references scan session records under one preparation lock; add a bounded
         // in-memory key-to-reference cache if repeated legacy replay scans become a bottleneck.
@@ -156,7 +141,7 @@ impl SessionFileStore {
         let bytes = self.read_file(session_id, &image.file).await?;
         let prepared = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            prepare_pixels(bytes, width, height, policy)
+            prepare_pixels(&bytes, width, height)
         })
         .await
         .map_err(|error| Error::Tool(format!("image preparation failed: {error}")))??;
@@ -571,40 +556,29 @@ impl SessionFileStore {
 }
 
 fn prepare_pixels(
-    bytes: Vec<u8>,
+    bytes: &[u8],
     width: u32,
     height: u32,
-    policy: ImagePresentation,
 ) -> Result<Option<(Vec<u8>, &'static str)>> {
-    let (media_type, mut decoded, orientation) = decode_image(&bytes)?;
+    let (source_type, mut decoded, orientation) = decode_image(bytes)?;
+    let opaque = opaque_pixels(&decoded);
     decoded.apply_orientation(orientation);
-    let source_png = media_type == "image/png";
-    let try_jpeg = source_png
-        && u64::try_from(bytes.len()).is_ok_and(|size| size >= policy.png_jpeg_threshold_bytes)
-        && opaque_pixels(&decoded);
     let resized = (decoded.width(), decoded.height()) != (width, height);
+    if !opaque && source_type == "image/png" && !resized && orientation == Orientation::NoTransforms
+    {
+        return Ok(None);
+    }
     let prepared = if resized {
         decoded.resize_exact(width, height, image::imageops::FilterType::Triangle)
     } else {
         decoded
     };
-    let (format, media_type) = match media_type {
-        "image/jpeg" => (ImageFormat::Jpeg, "image/jpeg"),
-        "image/webp" => (ImageFormat::WebP, "image/webp"),
-        _ => (ImageFormat::Png, "image/png"),
-    };
-    let output = if !resized && source_png {
-        bytes
+    let (format, media_type) = if opaque {
+        (ImageFormat::Jpeg, "image/jpeg")
     } else {
-        encode_pixels(&prepared, format)?
+        (ImageFormat::Png, "image/png")
     };
-    if try_jpeg {
-        let jpeg = encode_pixels(&prepared, ImageFormat::Jpeg)?;
-        if jpeg.len() < output.len() {
-            return Ok(Some((jpeg, "image/jpeg")));
-        }
-    }
-    Ok(resized.then_some((output, media_type)))
+    Ok(Some((encode_pixels(&prepared, format)?, media_type)))
 }
 
 fn encode_pixels(image: &image::DynamicImage, format: ImageFormat) -> Result<Vec<u8>> {
@@ -825,10 +799,6 @@ mod presentation_tests {
 
     #[test]
     fn png_transparency_survives_jpeg_selection_at_native_alpha_precision() {
-        let policy = ImagePresentation {
-            png_jpeg_threshold_bytes: 1,
-            ..ImagePresentation::default()
-        };
         for alpha in [u16::MAX - 1, u16::MAX / 2, 0] {
             let pixels = image::ImageBuffer::from_pixel(
                 32,
@@ -841,31 +811,39 @@ mod presentation_tests {
                 .expect("PNG");
             let original = png.into_inner();
             assert!(
-                prepare_pixels(original, 32, 32, policy)
+                prepare_pixels(&original, 32, 32)
                     .expect("prepare")
                     .is_none()
+            );
+            let (resized, media_type) = prepare_pixels(&original, 16, 16)
+                .expect("resize transparent pixels")
+                .expect("PNG rendition");
+            assert_eq!(media_type, "image/png");
+            assert_eq!(
+                image::load_from_memory(&resized)
+                    .expect("decode PNG")
+                    .to_rgba16()
+                    .get_pixel(0, 0)
+                    .0[3],
+                alpha
             );
         }
         let pixels = image::DynamicImage::new_rgb8(32, 32);
         let png = encode_pixels(&pixels, ImageFormat::Png).expect("small PNG");
-        assert!(
-            prepare_pixels(png, 32, 32, policy)
-                .expect("size comparison")
-                .is_none(),
-            "do not enlarge a compact PNG with JPEG"
+        let (prepared, media_type) = prepare_pixels(&png, 32, 32)
+            .expect("prepare opaque PNG")
+            .expect("JPEG rendition even for small images");
+        assert_eq!(media_type, "image/jpeg");
+        assert_eq!(
+            image::guess_format(&prepared).expect("format"),
+            ImageFormat::Jpeg
         );
     }
 
     #[tokio::test]
     async fn unchanged_pixels_cache_on_the_original_without_another_quota_charge() {
         let state = tempfile::tempdir().expect("state");
-        let policy = ImagePresentation {
-            png_jpeg_threshold_bytes: 1,
-            ..ImagePresentation::default()
-        };
-        let store = SessionFileStore::new(state.path(), None)
-            .image_presentation(policy)
-            .expect("policy");
+        let store = SessionFileStore::new(state.path(), None);
         let pixels = image::DynamicImage::new_rgba8(32, 32);
         let bytes = encode_pixels(&pixels, ImageFormat::Png).expect("transparent PNG");
         let original_size = u64::try_from(bytes.len()).expect("size");
@@ -882,9 +860,7 @@ mod presentation_tests {
             image.rendition.as_ref().expect("cached no-op").file,
             image.file
         );
-        let reopened = SessionFileStore::new(state.path(), None)
-            .image_presentation(policy)
-            .expect("policy");
+        let reopened = SessionFileStore::new(state.path(), None);
         let mut reference = image.clone();
         reference.rendition = None;
         assert_eq!(
@@ -935,7 +911,6 @@ mod presentation_tests {
             .image_presentation(ImagePresentation {
                 max_dimension: 64,
                 max_patches: 2,
-                ..ImagePresentation::default()
             })
             .expect("policy");
         let bytes =
@@ -1023,7 +998,6 @@ mod presentation_tests {
             .image_presentation(ImagePresentation {
                 max_dimension: 64,
                 max_patches: 2,
-                ..ImagePresentation::default()
             })
             .expect("policy");
         let pixels = image::RgbImage::from_fn(128, 64, |x, _| {
@@ -1154,7 +1128,6 @@ mod presentation_tests {
         let policy = ImagePresentation {
             max_dimension: 64,
             max_patches: 2,
-            ..ImagePresentation::default()
         };
         let store = SessionFileStore::new(state.path(), None)
             .image_presentation(policy)
@@ -1191,7 +1164,10 @@ mod presentation_tests {
                 image::load_from_memory(&prepared).expect("decode").width(),
                 64
             );
-            assert_eq!(image::guess_format(&prepared).expect("format"), format);
+            assert_eq!(
+                image::guess_format(&prepared).expect("format"),
+                ImageFormat::Jpeg
+            );
             let reopened = SessionFileStore::new(state.path(), None)
                 .image_presentation(policy)
                 .expect("policy");
@@ -1209,7 +1185,6 @@ mod presentation_tests {
                 .image_presentation(ImagePresentation {
                     max_dimension: 32,
                     max_patches: 1,
-                    ..ImagePresentation::default()
                 })
                 .expect("stricter policy");
             let different = stricter
@@ -1262,7 +1237,9 @@ mod presentation_tests {
             )
             .await
             .expect("fitting capture");
-        assert!(image.rendition.is_none());
+        let rendition = image.rendition.as_ref().expect("opaque capture rendition");
+        assert_eq!(rendition.file.media_type, "image/jpeg");
+        assert_eq!((rendition.width, rendition.height), (16, 16));
         assert_eq!(
             store
                 .read_file("parent", &image.file)

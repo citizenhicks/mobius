@@ -31,7 +31,7 @@ async fn continuation_skips_old_pixels_and_preparation_failure_preserves_connect
                     body["input"][0]["content"][0]["image_url"]
                         .as_str()
                         .expect("image")
-                        .starts_with("data:image/png;base64,")
+                        .starts_with("data:image/jpeg;base64,")
                 ),
                 1 | 2 => {
                     assert!(body.get("previous_response_id").is_some());

@@ -1,3 +1,2 @@
 max_dimension = 2048
 max_patches = 2500
-png_jpeg_threshold_bytes = 1048576

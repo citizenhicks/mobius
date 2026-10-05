@@ -1,0 +1,1 @@
+Model image renditions now use JPEG quality 85 for opaque pixels and PNG for transparency, regardless of original format or size. Removes the PNG size threshold and duplicate encoding comparison. Original files, orientation handling, capture coordinates, and request budgets are preserved. Cached renditions are refreshed under the new encoding policy.
