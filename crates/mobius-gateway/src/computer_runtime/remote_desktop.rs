@@ -312,10 +312,18 @@ impl RemoteDesktop {
                     Err(error) => serde_json::to_vec(&json!({"error":error.to_string()}))?,
                 }
             } else {
-                if native_channel.is_none() {
-                    native_channel = Some(native.connect(session_id)?);
+                match native_channel
+                    .take()
+                    .map_or_else(|| native.connect(session_id), Ok)
+                {
+                    Ok(mut channel) => {
+                        // A failed reply after dispatch can hide a completed action; fail closed.
+                        let reply = forward_native(&mut channel, &bytes).await?;
+                        native_channel = Some(channel);
+                        reply
+                    }
+                    Err(error) => serde_json::to_vec(&json!({"error":error.to_string()}))?,
                 }
-                forward_native(native_channel.as_mut().ok_or_else(unavailable)?, &bytes).await?
             };
             channel
                 .write_u32(u32::try_from(reply.len()).map_err(|_| unavailable())?)
