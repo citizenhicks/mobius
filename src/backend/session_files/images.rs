@@ -578,7 +578,8 @@ fn prepare_pixels(
     } else {
         (ImageFormat::Png, "image/png")
     };
-    Ok(Some((encode_pixels(&prepared, format)?, media_type)))
+    let encoded = encode_pixels(&prepared, format)?;
+    Ok((encoded.as_slice() != bytes).then_some((encoded, media_type)))
 }
 
 fn encode_pixels(image: &image::DynamicImage, format: ImageFormat) -> Result<Vec<u8>> {
@@ -842,66 +843,66 @@ mod presentation_tests {
 
     #[tokio::test]
     async fn unchanged_pixels_cache_on_the_original_without_another_quota_charge() {
-        let state = tempfile::tempdir().expect("state");
-        let store = SessionFileStore::new(state.path(), None);
-        let pixels = image::DynamicImage::new_rgba8(32, 32);
-        let bytes = encode_pixels(&pixels, ImageFormat::Png).expect("transparent PNG");
-        let original_size = u64::try_from(bytes.len()).expect("size");
-        let image = store
-            .ingest_image(
-                "session",
-                "transparent.png".into(),
-                bytes,
-                ImageDetail::High,
-            )
-            .await
-            .expect("image");
-        assert_eq!(
-            image.rendition.as_ref().expect("cached no-op").file,
-            image.file
-        );
-        let reopened = SessionFileStore::new(state.path(), None);
-        let mut reference = image.clone();
-        reference.rendition = None;
-        assert_eq!(
-            reopened
-                .prepare_image("session", &reference)
+        for (format, pixels) in [
+            (ImageFormat::Png, image::DynamicImage::new_rgba8(32, 32)),
+            (ImageFormat::Jpeg, image::DynamicImage::new_rgb8(32, 32)),
+        ] {
+            let state = tempfile::tempdir().expect("state");
+            let store = SessionFileStore::new(state.path(), None);
+            let bytes = encode_pixels(&pixels, format).expect("image encoding");
+            let original_size = u64::try_from(bytes.len()).expect("size");
+            let mut image = store
+                .ingest_image("session", "image".into(), bytes, ImageDetail::High)
                 .await
-                .expect("cache"),
-            image.rendition
-        );
-        assert_eq!(
-            reopened
-                .list_files("session", &[SessionFileOrigin::Observation])
+                .expect("image");
+            assert_eq!(
+                image.rendition.as_ref().expect("cached no-op").file,
+                image.file
+            );
+            let reopened = SessionFileStore::new(state.path(), None);
+            let rendition = image.rendition.take();
+            assert_eq!(
+                reopened
+                    .prepare_image("session", &image)
+                    .await
+                    .expect("cache"),
+                rendition
+            );
+            image.rendition = rendition;
+            assert_eq!(
+                reopened
+                    .list_files("session", &[SessionFileOrigin::Observation])
+                    .await
+                    .expect("files")
+                    .len(),
+                1
+            );
+            assert_eq!(reopened.stored_bytes().await.expect("bytes"), original_size);
+            let input = [
+                serde_json::json!({"role":"user", "content":[{"type":"input_image", "image":image}]}),
+            ];
+            grant_context(Some(&store), "session", "child", &input)
                 .await
-                .expect("files")
-                .len(),
-            1
-        );
-        assert_eq!(reopened.stored_bytes().await.expect("bytes"), original_size);
-        let input =
-            [serde_json::json!({"role":"user", "content":[{"type":"input_image", "image":image}]})];
-        grant_context(Some(&store), "session", "child", &input)
-            .await
-            .expect("fork");
-        assert_eq!(
+                .expect("fork");
+            assert_eq!(
+                store
+                    .list_files("child", &[SessionFileOrigin::Observation])
+                    .await
+                    .expect("child files")
+                    .len(),
+                1
+            );
             store
-                .list_files("child", &[SessionFileOrigin::Observation])
+                .delete_session("session")
                 .await
-                .expect("child files")
-                .len(),
-            1
-        );
-        store
-            .delete_session("session")
-            .await
-            .expect("delete parent");
-        assert_eq!(
-            store.stored_bytes().await.expect("child bytes"),
-            original_size
-        );
-        store.delete_session("child").await.expect("delete child");
-        assert_eq!(store.stored_bytes().await.expect("collected"), 0);
+                .expect("delete parent");
+            assert_eq!(
+                store.stored_bytes().await.expect("child bytes"),
+                original_size
+            );
+            store.delete_session("child").await.expect("delete child");
+            assert_eq!(store.stored_bytes().await.expect("collected"), 0);
+        }
     }
 
     #[tokio::test]
