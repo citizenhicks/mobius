@@ -53,7 +53,7 @@ pub use context::{
     QueuedMessageView, RuntimeContext, SessionStartContext, SessionStartSource, StopContext,
     SubmissionResult, ToolExposureContext, TurnEndContext, TurnIdentity,
 };
-pub(crate) use context::{MessageSubmitResult, PreparedMessage};
+pub(crate) use context::{MessageSubmitResult, PreparationNotices, PreparedMessage};
 use tools::Catalog;
 
 /// Configurable heuristic for text context budgets, not a model tokenizer.

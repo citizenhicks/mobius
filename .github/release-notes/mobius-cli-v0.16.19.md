@@ -1,0 +1,1 @@
+Updates the terminal client and bundled gateway to Core and Gateway 0.16.19. Includes accurate live compaction notices and the configurable telemetry host activity hook. CLI commands and gateway wire are unchanged.

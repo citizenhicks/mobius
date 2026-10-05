@@ -238,6 +238,7 @@ pub(super) async fn prepare(context: &mut ModelContext<'_>, policy: &Compaction)
         if context.turn_stopped() {
             return Ok(());
         }
+        super::start_notice(context)?;
         apply_compaction(context, input, None, policy.native_retained_tokens).await?;
         if context.turn_stopped() {
             return Ok(());

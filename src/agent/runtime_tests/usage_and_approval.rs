@@ -375,6 +375,320 @@ async fn compact_session_start_stop_completes_after_compaction() {
 }
 
 #[tokio::test]
+async fn compaction_notice_is_live_and_closes_on_success_failure_and_interrupt() {
+    use crate::protocol::FrontendBlockState;
+    use tokio::sync::Notify;
+
+    struct PausedCompaction {
+        entered: Notify,
+        release: Notify,
+        fail: bool,
+    }
+
+    impl Model for PausedCompaction {
+        fn respond<'a>(
+            &'a self,
+            _: ModelRequest,
+            _: ModelEventSink,
+        ) -> BoxFuture<'a, Result<ModelOutput>> {
+            Box::pin(async { Ok(scripted_message("done")) })
+        }
+
+        fn compaction_endpoint(&self) -> bool {
+            true
+        }
+
+        fn compact<'a>(&'a self, _: CompactRequest<'a>) -> BoxFuture<'a, Result<CompactOutput>> {
+            Box::pin(async move {
+                self.entered.notify_one();
+                self.release.notified().await;
+                if self.fail {
+                    return Err(Error::Provider("compaction failed".into()));
+                }
+                CompactOutput::from_output(
+                    vec![serde_json::json!({"type": "compaction", "encrypted_content": "opaque"})],
+                    scripted_usage(),
+                )
+            })
+        }
+    }
+
+    for outcome in ["success", "failure", "interrupt"] {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let workspace = tempfile::tempdir().expect("workspace");
+            let model = Arc::new(PausedCompaction {
+                entered: Notify::new(),
+                release: Notify::new(),
+                fail: outcome == "failure",
+            });
+            let checkpoints = Arc::new(
+                SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3")).unwrap(),
+            );
+            let router_model = Arc::clone(&model) as Arc<dyn Model>;
+            let store = Arc::clone(&checkpoints) as Arc<dyn CheckpointStore>;
+            let mut agent = create_agent(
+                AgentConfig::new(
+                    Arc::new(ModelRouter::new("main", router_model)),
+                    Arc::new(Sandbox::new(
+                        Arc::new(LocalSandbox::new(workspace.path()).unwrap()),
+                        ApprovalPolicy::Ask,
+                    )),
+                    store,
+                    test_middleware(vec![Arc::new(Compaction::new(1).unwrap())]),
+                    "test prompt",
+                )
+                .session_context(test_session_context())
+                .session_id(outcome),
+            )
+            .await
+            .unwrap();
+            agent.sender().submit(user_op("compact this")).unwrap();
+            let mut turn_id = None;
+            let pending = loop {
+                match agent.next_event().await.unwrap().msg {
+                    EventMsg::TurnStarted(turn) => turn_id = Some(turn.turn_id),
+                    EventMsg::Frontend(FrontendEvent::Render { capability, block })
+                        if capability == "compaction" =>
+                    {
+                        break block;
+                    }
+                    _ => {}
+                }
+            };
+            assert_eq!(pending.title, "Context compacting");
+            assert_eq!(pending.state, FrontendBlockState::Pending);
+            assert!(pending.id.is_some());
+            // The pending row must arrive while the provider is still blocked.
+            model.entered.notified().await;
+            if outcome == "interrupt" {
+                agent
+                    .sender()
+                    .submit(Op::Interrupt {
+                        turn_id: turn_id.unwrap(),
+                    })
+                    .unwrap();
+            } else {
+                model.release.notify_one();
+            }
+            let mut completions = 0;
+            loop {
+                match agent.next_event().await.unwrap().msg {
+                    EventMsg::Frontend(FrontendEvent::Render { capability, block })
+                        if capability == "compaction" =>
+                    {
+                        assert_eq!(block.id, pending.id);
+                        assert_eq!(block.state, FrontendBlockState::Complete);
+                        assert_eq!(
+                            block.title,
+                            match outcome {
+                                "success" => "Context compacted",
+                                "failure" => "Context compaction failed",
+                                _ => "Context compaction cancelled",
+                            }
+                        );
+                        completions += 1;
+                    }
+                    EventMsg::ContextCompacted => panic!("duplicate live compaction row"),
+                    EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_) => break,
+                    _ => {}
+                }
+            }
+            assert_eq!(completions, 1);
+            let saved = checkpoints.load(outcome).await.unwrap().unwrap();
+            assert_eq!(saved.compaction_count, u64::from(outcome == "success"));
+        })
+        .await
+        .expect("compaction notice lifecycle completed");
+    }
+}
+
+#[tokio::test]
+async fn compaction_notice_waits_for_later_preparation_hooks_to_settle() {
+    use crate::protocol::FrontendBlockState;
+    use tokio::sync::Notify;
+
+    struct LaterHook {
+        request: bool,
+        fail: bool,
+        entered: Notify,
+        release: Notify,
+    }
+
+    impl LaterHook {
+        async fn run(&self) -> Result<()> {
+            self.entered.notify_one();
+            if self.fail {
+                return Err(Error::Provider("later preparation hook failed".into()));
+            }
+            self.release.notified().await;
+            Ok(())
+        }
+    }
+
+    impl Middleware for LaterHook {
+        fn name(&self) -> &'static str {
+            "later_hook"
+        }
+
+        fn pre_model<'a>(&'a self, _: &'a mut ModelContext<'_>) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async move {
+                if !self.request {
+                    self.run().await?;
+                }
+                Ok(())
+            })
+        }
+
+        fn model_request<'a>(
+            &'a self,
+            _: &'a mut ModelRequestContext<'_>,
+        ) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async move {
+                if self.request {
+                    self.run().await?;
+                }
+                Ok(())
+            })
+        }
+    }
+
+    for request in [false, true] {
+        for outcome in ["failure", "interrupt", "success"] {
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                let workspace = tempfile::tempdir().unwrap();
+                let checkpoints = Arc::new(
+                    SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3")).unwrap(),
+                );
+                let model = Arc::new(NativeCompactionModel::default());
+                let later = Arc::new(LaterHook {
+                    request,
+                    fail: outcome == "failure",
+                    entered: Notify::new(),
+                    release: Notify::new(),
+                });
+                let router_model = Arc::clone(&model) as Arc<dyn Model>;
+                let store = Arc::clone(&checkpoints) as Arc<dyn CheckpointStore>;
+                let later_hook = Arc::clone(&later) as Arc<dyn Middleware>;
+                let mut agent = create_agent(
+                    AgentConfig::new(
+                        Arc::new(ModelRouter::new("main", router_model)),
+                        Arc::new(Sandbox::new(
+                            Arc::new(LocalSandbox::new(workspace.path()).unwrap()),
+                            ApprovalPolicy::Ask,
+                        )),
+                        store,
+                        test_middleware(vec![Arc::new(Compaction::new(1).unwrap()), later_hook]),
+                        "test prompt",
+                    )
+                    .session_context(test_session_context())
+                    .session_id(outcome),
+                )
+                .await
+                .unwrap();
+                agent.sender().submit(user_op("compact this")).unwrap();
+                let mut turn_id = None;
+                let pending = loop {
+                    match agent.next_event().await.unwrap().msg {
+                        EventMsg::TurnStarted(turn) => turn_id = Some(turn.turn_id),
+                        EventMsg::Frontend(FrontendEvent::Render { capability, block })
+                            if capability == "compaction" =>
+                        {
+                            break block;
+                        }
+                        _ => {}
+                    }
+                };
+                assert_eq!(pending.state, FrontendBlockState::Pending);
+                later.entered.notified().await;
+                assert_eq!(model.compactions.load(Ordering::SeqCst), 1);
+                if outcome != "failure" {
+                    assert_eq!(
+                        checkpoints
+                            .load(outcome)
+                            .await
+                            .unwrap()
+                            .unwrap()
+                            .compaction_count,
+                        0,
+                        "compaction remains provisional while a later hook is blocked"
+                    );
+                    assert!(
+                        tokio::time::timeout(
+                            std::time::Duration::from_millis(20),
+                            agent.next_event()
+                        )
+                        .await
+                        .is_err(),
+                        "the pending notice must remain open until preparation settles"
+                    );
+                    if outcome == "interrupt" {
+                        agent
+                            .sender()
+                            .submit(Op::Interrupt {
+                                turn_id: turn_id.unwrap(),
+                            })
+                            .unwrap();
+                    } else {
+                        later.release.notify_one();
+                    }
+                }
+                let mut completions = 0;
+                loop {
+                    match agent.next_event().await.unwrap().msg {
+                        EventMsg::Frontend(FrontendEvent::Render { capability, block })
+                            if capability == "compaction" =>
+                        {
+                            assert_eq!(block.id, pending.id);
+                            assert_eq!(block.state, FrontendBlockState::Complete);
+                            assert_eq!(
+                                block.title,
+                                match outcome {
+                                    "success" => "Context compacted",
+                                    "failure" => "Context compaction failed",
+                                    _ => "Context compaction cancelled",
+                                }
+                            );
+                            let saved = checkpoints.load(outcome).await.unwrap().unwrap();
+                            assert_eq!(saved.compaction_count, u64::from(outcome == "success"));
+                            completions += 1;
+                        }
+                        EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_) => break,
+                        _ => {}
+                    }
+                }
+                assert_eq!(
+                    completions, 1,
+                    "the row closes before the terminal turn event"
+                );
+                let saved = checkpoints.load(outcome).await.unwrap().unwrap();
+                assert_eq!(saved.compaction_count, u64::from(outcome == "success"));
+                assert_eq!(saved.context_epoch, u64::from(outcome == "success"));
+                let transcript = checkpoints
+                    .transcript_page(
+                        outcome,
+                        TranscriptPageRequest {
+                            before_sequence: None,
+                            max_batches: 100,
+                        },
+                    )
+                    .await
+                    .unwrap()
+                    .into_positioned_items_chronological();
+                assert_eq!(
+                    crate::protocol::replay_events(&transcript, outcome)
+                        .iter()
+                        .filter(|event| matches!(event, EventMsg::ContextCompacted))
+                        .count(),
+                    usize::from(outcome == "success")
+                );
+            })
+            .await
+            .expect("later preparation hook settled");
+        }
+    }
+}
+
+#[tokio::test]
 async fn compaction_marker_survives_transcript_replay() {
     let workspace = tempfile::tempdir().expect("workspace");
     let checkpoints = Arc::new(
@@ -409,7 +723,12 @@ async fn compaction_marker_survives_transcript_replay() {
     let mut completed = None;
     loop {
         match agent.next_event().await.expect("agent event").msg {
-            EventMsg::ContextCompacted => live_markers += 1,
+            EventMsg::Frontend(FrontendEvent::Render { capability, block })
+                if capability == "compaction"
+                    && block.state == crate::protocol::FrontendBlockState::Complete =>
+            {
+                live_markers += 1;
+            }
             EventMsg::ModelStepCompleted(event) => completed = Some(event),
             EventMsg::TurnComplete(_) => break,
             _ => {}

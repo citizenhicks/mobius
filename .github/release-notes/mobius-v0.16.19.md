@@ -1,0 +1,1 @@
+Compaction now publishes a live pending notice, then completes the same row when the accepted context rewrite is saved. Failed or interrupted preparation closes the row without reporting a discarded rewrite as successful. Durable compaction markers and image replay behavior remain intact.

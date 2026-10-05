@@ -21,7 +21,7 @@ use crate::backend::model::{
 };
 use crate::backend::sandbox::SandboxAuthorization;
 use crate::middleware::tools::{PreparedToolSet, ToolResult};
-use crate::middleware::{ModelContext, StopContext};
+use crate::middleware::{ModelContext, PreparationNotices, StopContext};
 use crate::protocol::{
     AssistantMessageEvent, Event, EventMsg, MessageTarget, ModelEvent, ModelEventTracker,
     ModelStepCompletedEvent, ModelStepDiagnostics, ModelStepOutcome, ModelStepStartedEvent,
@@ -226,6 +226,7 @@ impl Runner {
         let runtime = Arc::clone(&self.runtime);
         let middleware = self.config.middleware.clone();
         let author = self.active_author()?.clone();
+        let mut preparation_notices = PreparationNotices::new(&runtime.frontend);
         let prepare_model = middleware.prepare_model(ModelContext {
             token_estimate: self.config.token_estimate,
             author: &author,
@@ -255,21 +256,30 @@ impl Runner {
             checkpoint_changed: &mut checkpoint_changed,
             runtime: &runtime,
             hooks: &middleware,
+            preparation_notices: &mut preparation_notices.notices,
         });
         let control = self.wait_active(inbox, turn_id, prepare_model).await?;
         let hook_result = match control {
             Wait::Ready { value, .. } => value,
             Wait::Interrupted { submission_id } => {
-                self.abort(
+                let events = preparation_notices
+                    .cancellations()
+                    .map(|message| turn_event(&submission_id, message))
+                    .collect();
+                self.abort_with_events(
                     &submission_id,
                     turn_id,
                     "interrupted",
                     ExecutionOutcome::Aborted,
+                    events,
                 )
                 .await?;
+                preparation_notices.settle();
                 return Ok(PreparedModel::Aborted);
             }
         };
+        let preparation_accepted = hook_result.is_ok();
+        preparation_notices.fail();
         let request_input = match hook_result {
             Ok(request_input) => {
                 let request_input = match (checkpoint_changed, request_input) {
@@ -322,6 +332,7 @@ impl Runner {
             .config
             .middleware
             .messages_ready(&self.state.pending_messages, turn_id)?;
+        middleware_events.extend(preparation_notices.completions(preparation_accepted));
         self.persist_model_hook_changes(
             submission_id,
             middleware_events,
@@ -330,6 +341,7 @@ impl Runner {
             provisional_target_sequence,
         )
         .await?;
+        preparation_notices.settle();
         let request_input = request_input?;
         if messages_ready {
             return Ok(PreparedModel::Repeat(rewrite_reasons));

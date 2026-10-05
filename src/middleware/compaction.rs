@@ -66,6 +66,9 @@ mod text {
         pub(super) prompt_urgent: String,
         pub(super) prompt_warning: String,
         pub(super) render_context_compacted: String,
+        pub(super) render_context_compacting: String,
+        pub(super) render_compaction_failed: String,
+        pub(super) render_compaction_cancelled: String,
     }
     crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("compaction.toml"); }
 }
@@ -355,6 +358,7 @@ impl Middleware for Compaction {
             if context.turn_stopped() {
                 return Ok(());
             }
+            start_notice(context)?;
             let catalog_revision = context.tools.revision()?;
             let output = if context.model.compaction_endpoint(context.provider)? {
                 let tools = context
@@ -399,10 +403,31 @@ impl Middleware for Compaction {
                 Some(output.usage),
                 self.native_retained_tokens,
             )
-            .await?;
-            Ok(())
+            .await
         })
     }
+}
+
+fn start_notice(context: &mut ModelContext<'_>) -> Result<()> {
+    context.start_preparation_notice(
+        MANIFEST.id,
+        (
+            &text::DEFINITION.render_context_compacting,
+            FrontendTone::Neutral,
+        ),
+        (
+            &text::DEFINITION.render_context_compacted,
+            FrontendTone::Neutral,
+        ),
+        (
+            &text::DEFINITION.render_compaction_failed,
+            FrontendTone::Error,
+        ),
+        (
+            &text::DEFINITION.render_compaction_cancelled,
+            FrontendTone::Neutral,
+        ),
+    )
 }
 
 async fn apply_compaction(
@@ -448,7 +473,6 @@ async fn apply_compaction(
     if let Some(usage) = usage {
         context.usage.push(usage);
     }
-    context.events.push(EventMsg::ContextCompacted);
     context.post_compact().await?;
     Ok(())
 }

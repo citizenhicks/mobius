@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use serde_json::Value;
+use uuid::Uuid;
 
 use super::MiddlewareStack;
 use super::tools::Catalog;
@@ -16,14 +17,122 @@ use crate::backend::checkpoint::{
 use crate::backend::model::{ModelRouter, message_input};
 use crate::backend::sandbox::ApprovalPolicy;
 use crate::protocol::{
-    EventMsg, FrontendEvent, MAX_CAPABILITY_INPUT_BYTES, MessageAuthor, MessageEvent,
-    MessageSubmission, MessageTarget, ReviewDecision, SessionContext, SessionFileReference,
-    TokenUsage, ToolCall, message_metadata,
+    EventMsg, FrontendBlock, FrontendBlockRole, FrontendBlockState, FrontendEvent, FrontendTone,
+    MAX_CAPABILITY_INPUT_BYTES, MessageAuthor, MessageEvent, MessageSubmission, MessageTarget,
+    ReviewDecision, SessionContext, SessionFileReference, TokenUsage, ToolCall, message_metadata,
 };
 use crate::{Error, Result};
 
 /// Sends middleware-owned UI updates without depending on a concrete frontend.
 pub type FrontendEventSink = Arc<dyn Fn(FrontendEvent) -> Result<()> + Send + Sync>;
+
+// Retain live notices until the preparation transaction accepts or discards them.
+pub(crate) struct PreparationNotice {
+    capability: &'static str,
+    id: Uuid,
+    complete: (&'static str, FrontendTone),
+    failed: (&'static str, FrontendTone),
+    cancelled: (&'static str, FrontendTone),
+}
+
+impl PreparationNotice {
+    fn start(
+        frontend: &FrontendEventSink,
+        capability: &'static str,
+        pending: (&'static str, FrontendTone),
+        complete: (&'static str, FrontendTone),
+        failed: (&'static str, FrontendTone),
+        cancelled: (&'static str, FrontendTone),
+    ) -> Result<Self> {
+        let notice = Self {
+            capability,
+            id: Uuid::new_v4(),
+            complete,
+            failed,
+            cancelled,
+        };
+        (frontend)(notice.event(pending, FrontendBlockState::Pending))?;
+        Ok(notice)
+    }
+
+    fn event(
+        &self,
+        (title, tone): (&str, FrontendTone),
+        state: FrontendBlockState,
+    ) -> FrontendEvent {
+        FrontendEvent::Render {
+            capability: self.capability.into(),
+            block: FrontendBlock {
+                id: Some(self.id.to_string()),
+                state,
+                role: FrontendBlockRole::Notice,
+                title: title.into(),
+                tone,
+                ..Default::default()
+            },
+        }
+    }
+}
+
+pub(crate) struct PreparationNotices<'a> {
+    frontend: &'a FrontendEventSink,
+    pub(crate) notices: Vec<PreparationNotice>,
+    failed: bool,
+}
+
+impl<'a> PreparationNotices<'a> {
+    pub(crate) fn new(frontend: &'a FrontendEventSink) -> Self {
+        Self {
+            frontend,
+            notices: Vec::new(),
+            failed: false,
+        }
+    }
+
+    pub(crate) fn completions(&self, accepted: bool) -> impl Iterator<Item = EventMsg> + '_ {
+        self.notices.iter().map(move |notice| {
+            EventMsg::Frontend(notice.event(
+                if accepted {
+                    notice.complete
+                } else {
+                    notice.failed
+                },
+                FrontendBlockState::Complete,
+            ))
+        })
+    }
+
+    pub(crate) fn cancellations(&self) -> impl Iterator<Item = EventMsg> + '_ {
+        self.notices.iter().map(|notice| {
+            EventMsg::Frontend(notice.event(notice.cancelled, FrontendBlockState::Complete))
+        })
+    }
+
+    pub(crate) fn fail(&mut self) {
+        self.failed = true;
+    }
+
+    pub(crate) fn settle(&mut self) {
+        self.notices.clear();
+    }
+}
+
+impl Drop for PreparationNotices<'_> {
+    fn drop(&mut self) {
+        for notice in &self.notices {
+            let fallback = if self.failed {
+                notice.failed
+            } else {
+                notice.cancelled
+            };
+            if let Err(error) =
+                (self.frontend)(notice.event(fallback, FrontendBlockState::Complete))
+            {
+                eprintln!("failed to close preparation notice: {error}");
+            }
+        }
+    }
+}
 
 /// Read-only queued message owned by the middleware receiving it.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -460,6 +569,7 @@ pub struct ModelContext<'a> {
     pub(crate) checkpoint_changed: &'a mut bool,
     pub(crate) runtime: &'a RuntimeContext,
     pub(crate) hooks: &'a MiddlewareStack,
+    pub(crate) preparation_notices: &'a mut Vec<PreparationNotice>,
 }
 
 /// Live capability state used to hide registered tools at a model boundary.
@@ -493,6 +603,25 @@ impl ToolExposureContext<'_> {
 }
 
 impl ModelContext<'_> {
+    pub(crate) fn start_preparation_notice(
+        &mut self,
+        capability: &'static str,
+        pending: (&'static str, FrontendTone),
+        complete: (&'static str, FrontendTone),
+        failed: (&'static str, FrontendTone),
+        cancelled: (&'static str, FrontendTone),
+    ) -> Result<()> {
+        self.preparation_notices.push(PreparationNotice::start(
+            &self.runtime.frontend,
+            capability,
+            pending,
+            complete,
+            failed,
+            cancelled,
+        )?);
+        Ok(())
+    }
+
     /// Prevents provider-hosted tools for this model step.
     pub fn disable_hosted_tools(&mut self) {
         *self.allow_hosted_tools = false;
