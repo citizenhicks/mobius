@@ -5,7 +5,7 @@ use crate::protocol::ToolLoad;
 
 #[test]
 fn implicit_prompt_cache_omits_options() {
-    let provider = OpenAiSocket::with_authorization(
+    let authorized = OpenAiSocket::with_authorization(
         Arc::new(ApiKeyAuthorization::new("test-key".into())),
         "https://example.com/v1",
         "wss://example.com/v1/responses",
@@ -14,24 +14,30 @@ fn implicit_prompt_cache_omits_options() {
         crate::backend::model::ModelTransportSettings::default(),
     )
     .expect("provider");
-    let body = response_body(
-        "test-model",
-        &model_request(),
-        &[],
-        None,
-        None,
-        &[],
-        provider.explicit_prompt_cache,
-    )
-    .expect("response body");
+    let api_key = OpenAiSocket::new("test-key", "test-model").expect("API-key provider");
+    for provider in [authorized, api_key] {
+        let body = response_body(
+            "test-model",
+            &model_request(),
+            &[],
+            None,
+            None,
+            &[],
+            provider.explicit_prompt_cache,
+        )
+        .expect("response body");
 
-    assert_eq!(
-        (
+        assert_eq!(
             provider.prompt_cache_capability(),
-            body.get("prompt_cache_options")
-        ),
-        (PromptCacheMode::Implicit, None)
-    );
+            PromptCacheMode::Implicit
+        );
+        assert_eq!(
+            provider.http.prompt_cache_capability(),
+            PromptCacheMode::Implicit
+        );
+        assert!(body.get("prompt_cache_options").is_none());
+        assert_eq!(body["prompt_cache_key"], "hashed-cache-key");
+    }
 }
 
 #[test]

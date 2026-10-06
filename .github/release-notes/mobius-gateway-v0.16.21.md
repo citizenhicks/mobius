@@ -1,0 +1,1 @@
+Uses Core 0.16.21 to fix advancing Responses cache boundaries and restore implicit caching by default for API-key OpenAI sockets. Existing sessions and gateway settings are preserved. Gateway wire protocol remains 91.

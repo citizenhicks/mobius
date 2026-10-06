@@ -3,6 +3,7 @@ use crate::backend::model::ImageGenerationReference;
 use crate::backend::model::PromptCacheIdentity;
 use crate::backend::model::REPLAY_REASONING_FIELD;
 use crate::backend::model::transport::capture_http_request;
+use crate::protocol::PROMPT_CACHE_BREAKPOINT_FIELD;
 
 fn model_request() -> ModelRequest<'static> {
     ModelRequest {
@@ -284,6 +285,73 @@ fn compatible_responses_are_implicit_while_first_party_breakpoints_are_explicit(
 }
 
 #[test]
+fn explicit_cache_endpoints_advance_and_preserve_previous_lookup_boundaries() {
+    let input = serde_json::json!([
+        {"role":"user", "content":[{"type":"input_text", "text":"first", "_mobius_prompt_cache_breakpoint":true}]},
+        {"role":"assistant", "content":[{"type":"output_text", "text":"answer"}]},
+        {"role":"user", "content":"next turn"},
+        {"type":"function_call", "call_id":"call-1", "name":"inspect", "arguments":"{}"},
+        {"type":"function_call_output", "call_id":"call-1", "output":"tool result"},
+        {"type":"function_call_output", "call_id":"call-2", "output":[
+            {"type":"input_text", "text":"screenshot"},
+            {"type":"input_image", "media_type":"image/png", "data":"pixels"}
+        ]},
+        {"role":"developer", "content":[{"type":"input_text", "text":"continue"}]},
+        {"type":"compaction", "encrypted_content":"opaque"}
+    ]);
+    let original = input.to_string();
+    let history = input.as_array().expect("history");
+    let endpoints = [
+        (0, "content", 0),
+        (2, "content", 0),
+        (4, "output", 0),
+        (5, "output", 1),
+        (6, "content", 0),
+    ];
+    for end in 1..=history.len() {
+        let wired = wire_input_with_cache(&history[..end], true, true, "catalog-1", &[])
+            .expect("explicit replay");
+        for &(index, field, part) in &endpoints {
+            if index < end {
+                assert_eq!(
+                    wired[index][field][part]["prompt_cache_breakpoint"],
+                    serde_json::json!({"mode":"explicit"})
+                );
+            }
+        }
+        let expected_count = endpoints
+            .iter()
+            .filter(|(index, _, _)| *index < end)
+            .count();
+        assert_eq!(
+            serde_json::to_string(&wired)
+                .expect("wire JSON")
+                .matches("prompt_cache_breakpoint")
+                .count(),
+            expected_count
+        );
+    }
+    let suffix = wire_input_with_cache(&history[4..6], true, true, "catalog-1", &[])
+        .expect("continuation suffix");
+    assert_eq!(
+        suffix[1]["output"][1]["prompt_cache_breakpoint"],
+        serde_json::json!({"mode":"explicit"})
+    );
+    let implicit =
+        wire_input_with_cache(history, true, false, "catalog-1", &[]).expect("implicit replay");
+    assert!(
+        !serde_json::to_string(&implicit)
+            .expect("wire JSON")
+            .contains("prompt_cache_breakpoint")
+    );
+    assert_eq!(
+        input.to_string(),
+        original,
+        "durable history must stay unchanged"
+    );
+}
+
+#[test]
 fn responses_decode_strips_reasoning_wire_metadata() {
     let decoded = decode_response(serde_json::json!({
         "output": [{
@@ -386,11 +454,12 @@ fn responses_applies_cache_markers_after_mapping_each_observation_kind() {
         let wired = wire_input_with_cache(&input, true, explicit, "catalog", &[])
             .expect("wire observations");
         let parts = wired[0]["output"].as_array().expect("ordered content");
-        for part in parts {
+        for (index, part) in parts.iter().enumerate() {
             assert!(part.get(PROMPT_CACHE_BREAKPOINT_FIELD).is_none());
             assert_eq!(
                 part.get("prompt_cache_breakpoint"),
-                explicit.then_some(&serde_json::json!({"mode": "explicit"}))
+                (explicit && index + 1 == parts.len())
+                    .then_some(&serde_json::json!({"mode": "explicit"}))
             );
         }
         assert_eq!(parts[1]["type"], "input_text");

@@ -16,7 +16,6 @@ use super::ModelEventSink;
 use super::ModelOutput;
 use super::ModelPricing;
 use super::ModelRequest;
-use super::PROMPT_CACHE_BREAKPOINT_FIELD;
 use super::PromptCacheMode;
 use super::StreamingToolCalls;
 use super::TOOLS_SEARCH_NAME;
@@ -763,15 +762,29 @@ pub(super) fn wire_input_with_cache(
             fields.retain(|name, _| !name.starts_with('_'));
         }
         strip_replay_wire_metadata(&mut item);
+        let cache_endpoint = explicit_prompt_cache
+            && (item.get("type").and_then(Value::as_str) == Some("function_call_output")
+                || matches!(
+                    item.get("role").and_then(Value::as_str),
+                    Some("user" | "developer" | "system")
+                ));
+        if cache_endpoint {
+            let field = if item.get("type").and_then(Value::as_str) == Some("function_call_output")
+            {
+                "output"
+            } else {
+                "content"
+            };
+            if item.get(field).is_some_and(Value::is_string) {
+                let text = item[field].take();
+                item[field] = serde_json::json!([{"type": "input_text", "text": text}]);
+            }
+        }
         let Some(content) = crate::protocol::content_parts_mut(&mut item) else {
             wired.push(item);
             continue;
         };
-        for part in content {
-            let breakpoint = part
-                .get(PROMPT_CACHE_BREAKPOINT_FIELD)
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
+        for part in content.iter_mut() {
             if let Some(fields) = part.as_object_mut() {
                 fields.retain(|name, _| !name.starts_with('_'));
             }
@@ -796,9 +809,17 @@ pub(super) fn wire_input_with_cache(
                 }
                 _ => {}
             }
-            if breakpoint && explicit_prompt_cache {
-                part["prompt_cache_breakpoint"] = serde_json::json!({"mode":"explicit"});
-            }
+        }
+        // Keep earlier endpoints: explicit-only lookup cannot reuse an unmarked prefix.
+        if cache_endpoint
+            && let Some(part) = content.iter_mut().rev().find(|part| {
+                matches!(
+                    part.get("type").and_then(Value::as_str),
+                    Some("input_text" | "input_image")
+                )
+            })
+        {
+            part["prompt_cache_breakpoint"] = serde_json::json!({"mode":"explicit"});
         }
         wired.push(item);
     }

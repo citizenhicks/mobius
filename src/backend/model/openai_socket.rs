@@ -164,7 +164,7 @@ impl OpenAiSocket {
             settings,
         )?;
         provider.http = provider.http.with_native_openai_api()?;
-        Ok(provider.with_explicit_prompt_cache())
+        Ok(provider)
     }
 
     pub(super) fn with_authorization(
@@ -227,7 +227,10 @@ impl OpenAiSocket {
         self
     }
 
-    fn with_explicit_prompt_cache(mut self) -> Self {
+    /// Uses explicit caching at user/developer messages and tool-result endpoints.
+    /// Preserves earlier endpoints for prefix reuse instead of relying on implicit caching.
+    /// Applies to WebSocket requests, HTTP fallback, and native compaction.
+    pub fn with_explicit_prompt_cache(mut self) -> Self {
         self.explicit_prompt_cache = true;
         self.http = self.http.with_explicit_prompt_cache();
         self
