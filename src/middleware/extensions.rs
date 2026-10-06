@@ -1,4 +1,9 @@
 //! Standalone skills and activated Agent Plugin packages.
+//!
+//! Hooks may return a stable `hookSpecificOutput.deliverOnce` key alongside
+//! static `additionalContext`. Only that guidance is delivered once per session;
+//! hook commands and permission decisions still run every time. Unchanged startup
+//! context is skipped; ordinary message and tool context remains repeatable.
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -254,7 +259,7 @@ impl Extensions {
                 self.skills.insert(name, skill);
             }
             let hooks = hooks
-                .map(|definitions| hooks::HookSet::new(root, data, definitions))
+                .map(|definitions| hooks::HookSet::new(package.name, root, data, definitions))
                 .transpose()?;
             if let (Some(authorization), Some(hooks)) = (authorization, hooks)
                 && !hooks.is_empty()
@@ -627,13 +632,24 @@ fn publish_hook_notices(runtime: &RuntimeContext, outcomes: &[hooks::HookOutcome
     Ok(())
 }
 
-fn hook_context(outcomes: &[hooks::HookOutcome]) -> Option<String> {
-    let context = outcomes
-        .iter()
-        .filter_map(|outcome| outcome.additional_context.as_deref())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    (!context.is_empty()).then(|| truncate_utf8(&context, MAX_HOOK_CONTEXT_BYTES).into())
+fn deliver_hook_context(
+    outcomes: &[hooks::HookOutcome],
+    mut deliver: impl FnMut(&hooks::HookOutcome, &str) -> Result<bool>,
+) -> Result<()> {
+    let mut remaining = MAX_HOOK_CONTEXT_BYTES;
+    for outcome in outcomes {
+        let Some(additional) = outcome.additional_context.as_deref() else {
+            continue;
+        };
+        if outcome.deliver_once.is_some() && additional.len() > remaining {
+            continue;
+        }
+        let additional = truncate_utf8(additional, remaining);
+        if !additional.is_empty() && deliver(outcome, additional)? {
+            remaining = remaining.saturating_sub(additional.len()).saturating_sub(2);
+        }
+    }
+    Ok(())
 }
 
 fn hook_stop_reason(outcome: &hooks::HookOutcome) -> String {
@@ -705,15 +721,29 @@ impl Middleware for Extensions {
             };
             let outcomes = self.run_hooks(event, Value::Object(input), &subjects).await;
             publish_hook_notices(context.runtime, &outcomes)?;
-            context.retain_input(|item| {
-                internal_message_kind(item) != Some(SESSION_HOOK_CONTEXT_KIND)
-            });
-            if let Some(additional) = hook_context(&outcomes) {
-                context.push_input(internal_user_message(
-                    SESSION_HOOK_CONTEXT_KIND,
-                    &additional,
-                ));
-            }
+            deliver_hook_context(&outcomes, |outcome, additional| {
+                let kind = outcome
+                    .session_context_kind
+                    .as_deref()
+                    .unwrap_or(SESSION_HOOK_CONTEXT_KIND);
+                if outcome.deliver_once.is_none()
+                    && context
+                        .input
+                        .iter()
+                        .rev()
+                        .find(|item| internal_message_kind(item) == Some(kind))
+                        .is_some_and(|item| item["content"][0]["text"].as_str() == Some(additional))
+                {
+                    return Ok(false);
+                }
+                let appended = context.delivery_once.deliver(
+                    context.input,
+                    outcome.deliver_once.as_deref(),
+                    || internal_user_message(kind, additional),
+                )?;
+                context.input_changed |= appended;
+                Ok(appended)
+            })?;
             if let Some(outcome) = outcomes
                 .iter()
                 .find(|outcome| outcome.continue_session == Some(false))
@@ -752,8 +782,14 @@ impl Middleware for Extensions {
                     || outcome.continue_session == Some(false)
             }) {
                 context.reject(hook_stop_reason(outcome))?;
-            } else if let Some(additional) = hook_context(&outcomes) {
-                context.push_input(internal_user_message("extension_prompt_hook", &additional));
+            } else {
+                deliver_hook_context(&outcomes, |outcome, additional| {
+                    context.delivery_once.deliver(
+                        &mut context.input,
+                        outcome.deliver_once.as_deref(),
+                        || internal_user_message("extension_prompt_hook", additional),
+                    )
+                })?;
             }
             Ok(())
         })
@@ -789,9 +825,13 @@ impl Middleware for Extensions {
                 )
                 .await;
             push_hook_notices(context.events, &outcomes);
-            if let Some(additional) = hook_context(&outcomes) {
-                context.push_input(internal_user_message("extension_tool_hook", &additional));
-            }
+            deliver_hook_context(&outcomes, |outcome, additional| {
+                context.delivery_once.deliver(
+                    &mut context.input,
+                    outcome.deliver_once.as_deref(),
+                    || internal_user_message("extension_tool_hook", additional),
+                )
+            })?;
             if let Some(outcome) = outcomes.iter().find(|outcome| {
                 outcome.failure.is_some()
                     || outcome.permission_decision == Some(hooks::PermissionDecision::Deny)
@@ -907,9 +947,13 @@ impl Middleware for Extensions {
             }) {
                 context.replace(hook_stop_reason(outcome));
             }
-            if let Some(additional) = hook_context(&outcomes) {
-                context.push_input(internal_user_message("extension_tool_hook", &additional));
-            }
+            deliver_hook_context(&outcomes, |outcome, additional| {
+                context.delivery_once.deliver(
+                    &mut context.result.additional_input,
+                    outcome.deliver_once.as_deref(),
+                    || internal_user_message("extension_tool_hook", additional),
+                )
+            })?;
             Ok(())
         })
     }
@@ -1223,6 +1267,65 @@ mod tests {
     }
 
     #[test]
+    fn skipped_once_context_preserves_dynamic_order_and_byte_budget() {
+        let outcomes = [
+            hooks::HookOutcome {
+                additional_context: Some("first".into()),
+                ..Default::default()
+            },
+            hooks::HookOutcome {
+                additional_context: Some("x".repeat(MAX_HOOK_CONTEXT_BYTES / 2)),
+                deliver_once: Some("plugin:guidance".into()),
+                ..Default::default()
+            },
+            hooks::HookOutcome {
+                additional_context: Some("é".repeat(MAX_HOOK_CONTEXT_BYTES)),
+                ..Default::default()
+            },
+        ];
+        let mut delivered = Vec::new();
+
+        deliver_hook_context(&outcomes, |outcome, text| {
+            if outcome.deliver_once.is_some() {
+                return Ok(false);
+            }
+            delivered.push(text.to_owned());
+            Ok(true)
+        })
+        .expect("hook context");
+
+        assert_eq!(delivered.len(), 2);
+        assert_eq!(delivered[0], "first");
+        assert_eq!(delivered[1].len(), MAX_HOOK_CONTEXT_BYTES - 8);
+        assert!(delivered[1].chars().all(|character| character == 'é'));
+    }
+
+    #[test]
+    fn once_context_is_not_consumed_by_a_partial_delivery() {
+        let outcomes = [
+            hooks::HookOutcome {
+                additional_context: Some("x".repeat(MAX_HOOK_CONTEXT_BYTES - 4)),
+                ..Default::default()
+            },
+            hooks::HookOutcome {
+                additional_context: Some("complete guidance".into()),
+                deliver_once: Some("plugin:guidance".into()),
+                ..Default::default()
+            },
+        ];
+        let mut delivered = 0;
+
+        deliver_hook_context(&outcomes, |outcome, _text| {
+            assert_eq!(outcome.deliver_once, None);
+            delivered += 1;
+            Ok(true)
+        })
+        .expect("hook context");
+
+        assert_eq!(delivered, 1);
+    }
+
+    #[test]
     fn duplicate_skill_names_are_rejected() {
         let temporary = tempfile::tempdir().expect("temporary skills");
         let first = temporary.path().join("first");
@@ -1393,7 +1496,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ponytail_shaped_session_hook_adds_hidden_context() {
+    async fn session_hooks_preserve_each_latest_projection_and_once_guidance() {
         use crate::backend::checkpoint::sqlite::SqliteCheckpoint;
         use crate::backend::sandbox::local::LocalSandbox;
         use crate::protocol::SessionContext;
@@ -1411,17 +1514,21 @@ mod tests {
         .expect("plugin manifest");
         std::fs::write(
             plugin.join("hooks/hooks.json"),
-            r#"{"description":"Ponytail activation","hooks":{"SessionStart":[{"matcher":"startup|resume|compact","hooks":[{"type":"command","command":"sh \"${CLAUDE_PLUGIN_ROOT}/hooks/activate.sh\"","timeout":5}]}]}}"#,
+            r#"{"description":"Ponytail activation","hooks":{"SessionStart":[{"matcher":"startup|resume|compact","hooks":[{"type":"command","command":"sh \"${CLAUDE_PLUGIN_ROOT}/hooks/activate.sh\"","timeout":5},{"type":"command","command":"sh \"${CLAUDE_PLUGIN_ROOT}/hooks/activate.sh\" once","timeout":5},{"type":"command","command":"sh \"${CLAUDE_PLUGIN_ROOT}/hooks/activate.sh\"","timeout":5}]}]}}"#,
         )
         .expect("hook manifest");
         std::fs::write(
             plugin.join("hooks/activate.sh"),
             r#"#!/bin/sh
 payload=$(cat)
-printf '%s' "$payload" | grep -q '"source":"startup"' || exit 1
 printf '%s' "$payload" | grep -q '"model":"model"' || exit 1
 printf '%s' "$payload" | grep -q '"permission_mode":"default"' || exit 1
-printf '%s\n' '{"systemMessage":"PONYTAIL:FULL","hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"Ponytail rules active."}}'
+if [ "$1" = once ]; then
+  printf '%s\n' '{"systemMessage":"PONYTAIL:FULL","hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"Ponytail guidance.","deliverOnce":"guidance"}}'
+else
+  state=$(cat "$PLUGIN_DATA/state" 2>/dev/null || printf A)
+  printf '{"systemMessage":"PONYTAIL:FULL","hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"Ponytail %s."}}\n' "$state"
+fi
 "#,
         )
         .expect("hook script");
@@ -1456,9 +1563,11 @@ printf '%s\n' '{"systemMessage":"PONYTAIL:FULL","hookSpecificOutput":{"hookEvent
                 Ok(())
             }),
         };
-        let mut input = Vec::new();
+        let prefix = serde_json::json!({"role": "user", "content": "keep this prefix"});
+        let mut input = vec![prefix];
         let mut context = SessionStartContext {
             runtime: &runtime,
+            delivery_once: super::super::delivery_once::DeliveryOnce::testing(),
             source: SessionStartSource::Startup,
             queued_messages: Default::default(),
             input: &mut input,
@@ -1470,18 +1579,43 @@ printf '%s\n' '{"systemMessage":"PONYTAIL:FULL","hookSpecificOutput":{"hookEvent
             .session_start(&mut context)
             .await
             .expect("session hook");
+        let stable_prefix = serde_json::to_vec(context.input).expect("initial prefix");
+        context.source = SessionStartSource::Resume;
+        extensions
+            .session_start(&mut context)
+            .await
+            .expect("unchanged resumed session hook");
+        assert_eq!(context.input.len(), 4);
+        for state in ["B", "A"] {
+            std::fs::write(workspace.join(".mobius/extensions/ponytail/state"), state)
+                .expect("hook state");
+            extensions
+                .session_start(&mut context)
+                .await
+                .expect("changed session hook");
+        }
 
         assert_eq!(
-            input
+            input[1..]
                 .iter()
-                .filter(|item| {
-                    crate::protocol::internal_message_kind(item) == Some(SESSION_HOOK_CONTEXT_KIND)
-                })
-                .count(),
-            1
+                .map(|item| item["content"][0]["text"].as_str().expect("hook text"))
+                .collect::<Vec<_>>(),
+            [
+                "Ponytail A.",
+                "Ponytail guidance.",
+                "Ponytail A.",
+                "Ponytail B.",
+                "Ponytail B.",
+                "Ponytail A.",
+                "Ponytail A."
+            ]
         );
-        assert!(input[0].to_string().contains("Ponytail rules active."));
-        assert_eq!(notices.lock().expect("notices").len(), 1);
+        assert_eq!(input[0]["content"], "keep this prefix");
+        assert_eq!(
+            serde_json::to_vec(&input[..4]).expect("retained prefix"),
+            stable_prefix
+        );
+        assert_eq!(notices.lock().expect("notices").len(), 12);
     }
 
     #[tokio::test]
@@ -1614,6 +1748,7 @@ printf '%s\n' '{"systemMessage":"PONYTAIL:FULL","hookSpecificOutput":{"hookEvent
     ) -> (Option<String>, crate::protocol::ToolCall) {
         let mut events = Vec::new();
         let mut context = PreToolUseContext {
+            delivery_once: super::super::delivery_once::DeliveryOnce::testing(),
             turn: TurnIdentity {
                 author: &crate::protocol::MessageAuthor::User,
                 session_id: "session",

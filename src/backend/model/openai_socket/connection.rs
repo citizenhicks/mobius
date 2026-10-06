@@ -34,6 +34,7 @@ use super::super::openai::response_error;
 use super::super::openai_auth::OpenAiAuthorization;
 use super::super::openai_auth::ResolvedAuthorization;
 use super::super::transport::account_stream_bytes;
+use super::super::transport::response_error_code;
 use crate::Error;
 use crate::ProviderError;
 use crate::Result;
@@ -363,9 +364,10 @@ fn websocket_connect_error(error: WebSocketError) -> Error {
             .map(str::to_owned);
         let body = response.body().as_deref().unwrap_or_default();
         let body = &body[..body.len().min(super::super::transport::MAX_ERROR_BYTES)];
-        return Error::Provider(ProviderError::http(
-            super::super::transport::http_error_message("WebSocket", status, body),
-            status.as_u16(),
+        return Error::Provider(super::super::transport::http_provider_error(
+            "WebSocket",
+            status,
+            body,
             retry_after,
         ));
     }
@@ -521,7 +523,9 @@ pub(super) fn failed_exchange(event: &Value, output_delivered: bool) -> Result<E
     let code = response_error_code(event);
     let message = response_error(event);
     let retry_after = response_retry_after(event);
-    if event.get("status").and_then(Value::as_u64) == Some(402) {
+    if event.get("status").and_then(Value::as_u64) == Some(402)
+        || code.is_some_and(ProviderError::is_quota_code)
+    {
         return Err(Error::Provider(
             super::super::openai::response_provider_error(event, retry_after),
         ));
@@ -559,16 +563,6 @@ fn response_retry_after(event: &Value) -> Option<String> {
         Value::Number(value) => Some(value.to_string()),
         _ => None,
     })
-}
-
-fn response_error_code(event: &Value) -> Option<&str> {
-    event
-        .pointer("/error/code")
-        .or_else(|| event.pointer("/response/error/code"))
-        .or_else(|| event.pointer("/error/type"))
-        .or_else(|| event.pointer("/response/error/type"))
-        .and_then(Value::as_str)
-        .filter(|code| !code.is_empty())
 }
 
 fn retryable_response_error(code: Option<&str>, message: &str) -> bool {

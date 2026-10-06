@@ -8,11 +8,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::tools::{ApprovalRequirement, Catalog, Tool, ToolContext, render_tool_event};
-use super::{
-    Middleware, PromptSection, RuntimeContext, SessionStartContext, SessionStartSource,
-    ToolExposureContext,
-};
-use crate::backend::model::{ToolDefinition, internal_user_message};
+use super::{Middleware, PromptSection, RuntimeContext, ToolExposureContext};
+use crate::backend::model::ToolDefinition;
 use crate::backend::sandbox::{MAX_BINARY_FILE_BYTES, NetworkAccess, SandboxMode, WorkerCommand};
 use crate::backend::session_files::SessionFileStore;
 use crate::protocol::{
@@ -28,7 +25,6 @@ struct Definition {
     manifest_label: String,
     manifest_description: String,
     prompt: String,
-    resume_notice: String,
     tool: ToolDefinition,
 }
 crate::embedded_config! { static DEFINITION: Definition = include_str!("computer_control.toml"); }
@@ -95,21 +91,6 @@ impl Middleware for ComputerControl {
         Box::pin(async move {
             if !context.supports_tool_image_input() {
                 context.hide(&[DEFINITION.tool.name.as_str()]);
-            }
-            Ok(())
-        })
-    }
-
-    fn session_start<'a>(
-        &'a self,
-        context: &'a mut SessionStartContext<'_>,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            if context.source() == SessionStartSource::Resume {
-                context.push_input(internal_user_message(
-                    "computer_runtime",
-                    &DEFINITION.resume_notice,
-                ));
             }
             Ok(())
         })

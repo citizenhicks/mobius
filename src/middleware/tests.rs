@@ -79,7 +79,8 @@ impl Middleware for CompactInputRewrite {
         context: &'a mut SessionStartContext<'_>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            context.retain_input(|item| item != "remove");
+            context.input.retain(|item| item != "remove");
+            context.input_changed = true;
             context.input.reverse();
             Ok(())
         })
@@ -149,6 +150,51 @@ fn lifecycle_runtime(path: &std::path::Path) -> RuntimeContext {
 }
 
 #[tokio::test]
+async fn computer_control_resumes_preserve_context_without_adding_notices() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let runtime = lifecycle_runtime(workspace.path());
+    let stack = MiddlewareStack::new(vec![Arc::new(
+        computer_control::ComputerControl::new(
+            crate::backend::session_files::SessionFileStore::new(workspace.path(), None),
+            crate::backend::sandbox::WorkerCommand {
+                executable: workspace.path().join("unused-worker"),
+                arguments: Vec::new(),
+            },
+            workspace.path().join("computer-control.md"),
+        )
+        .expect("computer control"),
+    )])
+    .expect("middleware stack");
+    for mut input in [
+        Vec::new(),
+        vec![
+            crate::backend::model::user_message("hello"),
+            serde_json::json!({"type":"function_call", "name":"computer_control", "call_id":"call", "arguments":"{}"}),
+            crate::backend::model::tool_output("call", "observed", false),
+        ],
+    ] {
+        let expected = serde_json::to_vec(&input).expect("original context");
+        for _ in 0..30 {
+            let started = stack
+                .session_start(
+                    &runtime,
+                    &[],
+                    SessionStartSource::Resume,
+                    &mut input,
+                    &mut Default::default(),
+                )
+                .await
+                .expect("resume computer control");
+            assert!(!started.input_changed);
+        }
+        assert_eq!(
+            serde_json::to_vec(&input).expect("resumed context"),
+            expected
+        );
+    }
+}
+
+#[tokio::test]
 async fn session_lifecycle_starts_forward_and_ends_or_rolls_back_in_reverse() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -161,7 +207,13 @@ async fn session_lifecycle_starts_forward_and_ends_or_rolls_back_in_reverse() {
     let runtime = lifecycle_runtime(temporary.path());
     let mut input = Vec::new();
     let started = stack
-        .session_start(&runtime, &[], SessionStartSource::Startup, &mut input)
+        .session_start(
+            &runtime,
+            &[],
+            SessionStartSource::Startup,
+            &mut input,
+            &mut Default::default(),
+        )
         .await
         .expect("session start");
     stack.session_end(&runtime).await.expect("session end");
@@ -186,6 +238,7 @@ async fn session_lifecycle_starts_forward_and_ends_or_rolls_back_in_reverse() {
                 &[],
                 SessionStartSource::Resume,
                 &mut failing_input,
+                &mut Default::default(),
             )
             .await
             .is_err()
@@ -204,6 +257,7 @@ async fn session_lifecycle_starts_forward_and_ends_or_rolls_back_in_reverse() {
                 &[],
                 SessionStartSource::Compact,
                 &mut compact_input,
+                &mut Default::default(),
             )
             .await
             .is_err()
@@ -233,7 +287,13 @@ async fn compact_session_start_restores_removed_and_reordered_input_on_failure()
     let mut input = original.clone();
 
     stack
-        .session_start(&runtime, &[], SessionStartSource::Compact, &mut input)
+        .session_start(
+            &runtime,
+            &[],
+            SessionStartSource::Compact,
+            &mut input,
+            &mut Default::default(),
+        )
         .await
         .expect_err("later middleware must fail");
 
@@ -295,6 +355,7 @@ fn lifecycle_stop_decisions_keep_the_first_reason() {
     let runtime = lifecycle_runtime(temporary.path());
     let mut input = Vec::new();
     let mut start = SessionStartContext {
+        delivery_once: crate::middleware::delivery_once::DeliveryOnce::testing(),
         runtime: &runtime,
         source: SessionStartSource::Startup,
         queued_messages: QueuedMessageSnapshot::default(),
@@ -338,6 +399,7 @@ fn pre_tool_rewrite_rejects_invalid_calls_without_mutation() {
         let mut call = original.clone();
         let mut events = Vec::new();
         let error = PreToolUseContext {
+            delivery_once: crate::middleware::delivery_once::DeliveryOnce::testing(),
             turn: TurnIdentity {
                 author: &crate::protocol::MessageAuthor::User,
                 session_id: "session",

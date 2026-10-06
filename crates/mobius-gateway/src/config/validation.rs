@@ -84,7 +84,6 @@ pub(crate) fn validate_agent_composition_with_ceilings(
     }
     crate::extensions::validate_ids(&config.extensions)?;
     validate_provider_config(&config.provider)?;
-    // ponytail: a voice route is resolved at call time; an unknown one uses the first voice.
     if config
         .realtime_voice
         .as_deref()

@@ -970,6 +970,14 @@ fn ensure_output_size(output: &[Value]) -> Result<()> {
 fn validate_provider_output(output: &[Value]) -> Result<()> {
     if output
         .iter()
+        .any(|item| item.get(crate::middleware::delivery_once::FIELD).is_some())
+    {
+        return Err(Error::Provider(
+            "provider returned an internal guidance receipt".into(),
+        ));
+    }
+    if output
+        .iter()
         .any(|item| item.get("type").and_then(Value::as_str) == Some(TOOL_LOAD_MARKER))
     {
         return Err(Error::Provider(

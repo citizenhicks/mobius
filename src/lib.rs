@@ -230,6 +230,25 @@ impl ProviderError {
         }
     }
 
+    pub(crate) fn with_code(mut self, code: Option<&str>) -> Self {
+        if code.is_some_and(Self::is_quota_code) {
+            self.retryable = false;
+        }
+        self
+    }
+
+    pub(crate) fn is_quota_code(code: &str) -> bool {
+        matches!(
+            code,
+            "insufficient_quota"
+                | "quota_exceeded"
+                | "billing_hard_limit_reached"
+                | "billing_not_active"
+                | "usage_limit_reached"
+                | "credit_limit_exceeded"
+        )
+    }
+
     /// Returns the provider's HTTP status code, when one was received.
     #[must_use]
     pub fn status(&self) -> Option<u16> {

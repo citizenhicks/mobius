@@ -1,0 +1,1 @@
+Use mobius and mobius-gateway 0.16.24. Model-only provider registration again replaces the configurable text-model list, while explicit --model-id and --image-model-id lists remain supported. Receive clear errors for invalid saved voice routes and avoid ambiguous image-generation retries. Protocol version remains 91.

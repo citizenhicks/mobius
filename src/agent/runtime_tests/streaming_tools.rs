@@ -384,10 +384,13 @@ impl Middleware for StreamingHooks {
 
     fn post_tool_use<'a>(
         &'a self,
-        _context: &'a mut PostToolUseContext<'_>,
+        context: &'a mut PostToolUseContext<'_>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             self.post_calls.fetch_add(1, Ordering::SeqCst);
+            context.deliver_once("after", || {
+                crate::backend::model::internal_user_message("streaming_once_after", "after tools")
+            })?;
             Ok(())
         })
     }
@@ -404,10 +407,9 @@ impl Middleware for PreHookEffects {
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            context.push_input(crate::backend::model::internal_user_message(
-                "streaming_pre_hook",
-                "before tool",
-            ));
+            context.deliver_once("before", || {
+                crate::backend::model::internal_user_message("streaming_pre_hook", "before tool")
+            })?;
             context.events.push(EventMsg::ContextCompacted);
             self.executed.notify_one();
             Ok(())
@@ -580,7 +582,7 @@ async fn streaming_tool_runs_before_final_model_step_and_persists_once() {
             started: Arc::clone(&tool_started),
             tool_finished,
         }),
-        hooks.clone(),
+        Arc::<StreamingHooks>::clone(&hooks),
     ))
     .await
     .expect("create agent");
@@ -723,6 +725,7 @@ async fn streaming_prehook_effects_are_applied_before_tool_launch() {
         .await
         .expect("load checkpoint")
         .expect("saved checkpoint");
+    assert!(saved.delivered_once["streaming_pre_hook_effects"].contains("before"));
     let ordered = saved
         .context
         .iter()
@@ -843,6 +846,7 @@ async fn streaming_parallel_tools_start_before_final_model_output_and_keep_order
     let started = Arc::new(Notify::new());
     let started_count = Arc::new(AtomicUsize::new(0));
     let calls = Arc::new(AtomicUsize::new(0));
+    let hooks = Arc::new(StreamingHooks::default());
     let model = Arc::new(ParallelStreamingModel {
         calls: AtomicUsize::new(0),
         started: Arc::clone(&started),
@@ -858,7 +862,7 @@ async fn streaming_parallel_tools_start_before_final_model_output_and_keep_order
             started,
             started_count,
         }),
-        Arc::new(StreamingHooks::default()),
+        hooks.clone(),
     ))
     .await
     .expect("create agent");
@@ -891,12 +895,29 @@ async fn streaming_parallel_tools_start_before_final_model_output_and_keep_order
     }
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(hooks.pre_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(hooks.post_calls.load(Ordering::SeqCst), 2);
 
     let saved = checkpoints
         .load("streaming-parallel")
         .await
         .expect("load checkpoint")
         .expect("saved checkpoint");
+    assert_eq!(
+        saved
+            .context
+            .iter()
+            .filter(|item| internal_message_kind(item) == Some("streaming_once_after"))
+            .count(),
+        1
+    );
+    assert!(saved.delivered_once["streaming_hooks"].contains("after"));
+    let after = saved
+        .context
+        .iter()
+        .position(|item| internal_message_kind(item) == Some("streaming_once_after"))
+        .unwrap();
+    assert_eq!(saved.context[after - 1]["type"], "function_call_output");
     assert_eq!(
         canonical_tool_items(&saved.context),
         [
@@ -905,6 +926,77 @@ async fn streaming_parallel_tools_start_before_final_model_output_and_keep_order
             "function_call_output:parallel-1".to_string(),
             "function_call_output:parallel-2".to_string(),
         ]
+    );
+}
+
+#[tokio::test]
+async fn failed_tool_save_does_not_consume_once_guidance() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let database = workspace.path().join("checkpoints.sqlite3");
+    let checkpoints: Arc<dyn CheckpointStore> =
+        Arc::new(SqliteCheckpoint::new(&database).expect("checkpoint store"));
+    let started = Arc::new(Notify::new());
+    let started_count = Arc::new(AtomicUsize::new(0));
+    let mut agent = create_agent(streaming_config(
+        workspace.path(),
+        Arc::clone(&checkpoints),
+        "failed-tool-save",
+        Arc::new(ParallelStreamingModel {
+            calls: AtomicUsize::new(0),
+            started: Arc::clone(&started),
+            started_count: Arc::clone(&started_count),
+        }),
+        Arc::new(ParallelStreamingTool {
+            calls: Arc::new(AtomicUsize::new(0)),
+            started,
+            started_count,
+        }),
+        Arc::new(StreamingHooks::default()),
+    ))
+    .await
+    .expect("create agent");
+    rusqlite::Connection::open(&database)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER reject_tool_guidance BEFORE UPDATE ON sessions
+         WHEN instr(NEW.latest_checkpoint_json, 'streaming_once_after') > 0
+         BEGIN SELECT RAISE(ABORT, 'injected tool save failure'); END;",
+        )
+        .unwrap();
+    agent
+        .sender()
+        .submit(user_op("two tools with failed save"))
+        .unwrap();
+    let events = collect_until_turn_end(&mut agent).await;
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, EventMsg::ToolCallBegin(_)))
+            .count(),
+        2
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, EventMsg::TurnComplete(_)))
+    );
+    let saved = checkpoints.load("failed-tool-save").await.unwrap().unwrap();
+    assert!(saved.delivered_once.is_empty());
+    assert!(
+        !saved
+            .context
+            .iter()
+            .any(|item| internal_message_kind(item) == Some("streaming_once_after"))
+    );
+    let mut retry_input = Vec::new();
+    let mut delivery = crate::middleware::delivery_once::DeliveryOnce::new(&saved.delivered_once);
+    delivery.owner = "streaming_hooks";
+    assert!(
+        delivery
+            .deliver(&mut retry_input, Some("after"), || {
+                crate::backend::model::internal_user_message("streaming_once_after", "after tools")
+            })
+            .unwrap()
     );
 }
 

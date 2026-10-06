@@ -200,13 +200,12 @@ impl HostState {
                         .config
                         .realtime_voice
                         .as_deref();
-                    // ponytail: an unknown stored voice falls back to the first configured one.
-                    let (voice, route) = router
-                        .voice_choice(selected)
-                        .or_else(|_| router.voice_choice(None))
-                        .map_err(|_| {
-                            Rejection::new("realtime_voice", "no voice model is configured")
-                        })?;
+                    let (voice, route) = router.voice_choice(selected).map_err(|error| {
+                        Rejection::new(
+                            "realtime_voice",
+                            format!("{error}; select an available voice"),
+                        )
+                    })?;
                     let active_turn_id = self.activity().await.map_err(internal)?.turn_id;
                     let config = self
                         .gateway

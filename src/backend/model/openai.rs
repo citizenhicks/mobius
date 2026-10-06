@@ -897,6 +897,10 @@ fn build_generic(config: ProviderBuildConfig) -> Result<std::sync::Arc<dyn Model
         .base_url
         .ok_or_else(|| Error::Config("Responses provider requires a base URL".into()))?;
     let api_key = config.credential.into_optional_api_key("responses")?;
+    let native_voice = generic_provider().supports_at(
+        crate::protocol::ModelCapability::RealtimeVoice,
+        Some(&base_url),
+    );
     let provider = OpenAi::with_client(
         api_key,
         base_url,
@@ -905,6 +909,11 @@ fn build_generic(config: ProviderBuildConfig) -> Result<std::sync::Arc<dyn Model
         config.transport,
     )?
     .with_service_tier(config.service_tier);
+    let provider = if native_voice {
+        provider
+    } else {
+        provider.without_realtime_voice()
+    };
     let provider = match config.reasoning_effort {
         Some(effort) => provider.with_reasoning_effort(effort)?,
         None => provider,
@@ -1251,7 +1260,7 @@ pub(super) fn response_error(event: &Value) -> String {
 
 pub(super) fn response_provider_error(event: &Value, retry_after: Option<String>) -> ProviderError {
     let message = response_error(event);
-    match event
+    let error = match event
         .get("status")
         .and_then(Value::as_u64)
         .and_then(|status| u16::try_from(status).ok())
@@ -1259,5 +1268,6 @@ pub(super) fn response_provider_error(event: &Value, retry_after: Option<String>
     {
         Some(status) => ProviderError::http(message, status, retry_after),
         None => ProviderError::new(message),
-    }
+    };
+    error.with_code(super::transport::response_error_code(event))
 }

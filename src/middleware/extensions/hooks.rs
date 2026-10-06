@@ -105,6 +105,8 @@ pub(crate) enum PermissionDecision {
 pub(crate) struct HookOutcome {
     pub(super) failure: Option<String>,
     pub(super) additional_context: Option<String>,
+    pub(super) deliver_once: Option<String>,
+    pub(super) session_context_kind: Option<String>,
     pub(super) system_message: Option<String>,
     pub(super) decision: Option<HookDecision>,
     pub(super) reason: Option<String>,
@@ -115,6 +117,7 @@ pub(crate) struct HookOutcome {
 }
 
 pub(crate) struct HookSet {
+    name: String,
     plugin_root: PathBuf,
     data_dir: PathBuf,
     hooks: BTreeMap<HookEvent, Vec<CommandHook>>,
@@ -148,12 +151,14 @@ impl HookDefinitions {
 
 impl HookSet {
     pub(super) fn new(
+        name: String,
         plugin_root: PathBuf,
         data_dir: PathBuf,
         definitions: HookDefinitions,
     ) -> Result<Self> {
         let data_dir = canonical_directory(data_dir, "plugin data directory")?;
         Ok(Self {
+            name,
             plugin_root,
             data_dir,
             hooks: definitions.hooks,
@@ -167,7 +172,7 @@ impl HookSet {
         manifest_hooks: Option<&Value>,
     ) -> Result<Self> {
         let definitions = HookDefinitions::load(&plugin_root, manifest_hooks)?;
-        Self::new(plugin_root, data_dir, definitions)
+        Self::new("test".into(), plugin_root, data_dir, definitions)
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -230,24 +235,24 @@ impl HookRuntime {
                 let Some(hooks) = authorized.set.hooks.get(&event) else {
                     continue;
                 };
-                for hook in hooks {
+                for (index, hook) in hooks.iter().enumerate() {
                     if hook.matches(event, matcher_subjects) {
                         if matching.len() == MAX_MATCHING_HOOKS {
                             return Err(Error::Config(format!(
                                 "matching hook count exceeds {MAX_MATCHING_HOOKS}"
                             )));
                         }
-                        matching.push((authorized, hook));
+                        matching.push((authorized, hook, index));
                     }
                 }
             }
 
-            Ok(join_all(
-                matching
-                    .into_iter()
-                    .map(|(authorized, hook)| self.run_hook(authorized, hook, event, &input)),
+            Ok(
+                join_all(matching.into_iter().map(|(authorized, hook, index)| {
+                    self.run_hook(authorized, hook, index, event, &input)
+                }))
+                .await,
             )
-            .await)
         })
     }
 
@@ -255,6 +260,7 @@ impl HookRuntime {
         &self,
         authorized: &AuthorizedHooks,
         hook: &CommandHook,
+        index: usize,
         event: HookEvent,
         input: &str,
     ) -> HookOutcome {
@@ -293,7 +299,21 @@ impl HookRuntime {
             Ok(Err(error)) => HookOutcome::failed(error.to_string()),
             Ok(Ok(None)) => HookOutcome::default(),
             Ok(Ok(Some(output))) => match parse_output(event, hook.context_bytes, output) {
-                Ok(outcome) => outcome,
+                Ok(mut outcome) => {
+                    if let Some(key) = outcome.deliver_once.take() {
+                        outcome.deliver_once = Some(format!("{}:{key}", set.name));
+                    } else if matches!(event, HookEvent::SessionStart | HookEvent::SubagentStart)
+                        && outcome.additional_context.is_some()
+                    {
+                        outcome.session_context_kind = Some(format!(
+                            "{}:{}:{}:{index}",
+                            super::SESSION_HOOK_CONTEXT_KIND,
+                            set.name,
+                            event.as_str(),
+                        ));
+                    }
+                    outcome
+                }
                 Err(error) => HookOutcome::failed(error.to_string()),
             },
         }
@@ -609,6 +629,7 @@ struct RawHookOutput {
 struct RawHookSpecificOutput {
     hook_event_name: HookEvent,
     additional_context: Option<String>,
+    deliver_once: Option<String>,
     permission_decision: Option<RawToolPermissionDecision>,
     permission_decision_reason: Option<String>,
     updated_input: Option<Value>,
@@ -734,36 +755,47 @@ fn normalize_output(
     validate_optional_text(&system_message, MAX_OUTPUT_BYTES, "hook system message")?;
     validate_optional_text(&reason, MAX_OUTPUT_BYTES, "hook reason")?;
 
-    let (additional_context, tool_permission, permission_request, updated_input, specific_reason) =
-        match hook_specific_output {
-            None => (None, None, None, None, None),
-            Some(specific) => {
-                if specific.hook_event_name != event {
-                    return Err(Error::Config(format!(
-                        "{} hook returned output for {}",
-                        event.as_str(),
-                        specific.hook_event_name.as_str()
-                    )));
-                }
-                validate_optional_text(
-                    &specific.additional_context,
-                    context_bytes,
-                    "hook additional context",
-                )?;
-                validate_optional_text(
-                    &specific.permission_decision_reason,
-                    MAX_OUTPUT_BYTES,
-                    "hook permission reason",
-                )?;
-                (
-                    specific.additional_context,
-                    specific.permission_decision,
-                    specific.decision,
-                    specific.updated_input,
-                    specific.permission_decision_reason,
-                )
+    let (
+        additional_context,
+        deliver_once,
+        tool_permission,
+        permission_request,
+        updated_input,
+        specific_reason,
+    ) = match hook_specific_output {
+        None => (None, None, None, None, None, None),
+        Some(specific) => {
+            if specific.hook_event_name != event {
+                return Err(Error::Config(format!(
+                    "{} hook returned output for {}",
+                    event.as_str(),
+                    specific.hook_event_name.as_str()
+                )));
             }
-        };
+            validate_optional_text(
+                &specific.additional_context,
+                context_bytes,
+                "hook additional context",
+            )?;
+            validate_deliver_once(
+                specific.deliver_once.as_deref(),
+                specific.additional_context.as_deref(),
+            )?;
+            validate_optional_text(
+                &specific.permission_decision_reason,
+                MAX_OUTPUT_BYTES,
+                "hook permission reason",
+            )?;
+            (
+                specific.additional_context,
+                specific.deliver_once,
+                specific.permission_decision,
+                specific.decision,
+                specific.updated_input,
+                specific.permission_decision_reason,
+            )
+        }
+    };
 
     let fields = output_fields([
         continue_session.is_some(),
@@ -801,6 +833,8 @@ fn normalize_output(
     Ok(HookOutcome {
         failure: None,
         additional_context,
+        deliver_once,
+        session_context_kind: None,
         system_message,
         decision,
         reason: permission_reason,
@@ -809,6 +843,29 @@ fn normalize_output(
         continue_session,
         stop_reason,
     })
+}
+
+fn validate_deliver_once(key: Option<&str>, context: Option<&str>) -> Result<()> {
+    let Some(key) = key else {
+        return Ok(());
+    };
+    if !crate::identifier::valid_ascii_identifier(
+        key,
+        128,
+        crate::identifier::AsciiCase::Any,
+        b"_-.",
+    ) {
+        return Err(Error::Config(
+            "hook deliverOnce must be 1–128 ASCII letters, digits, underscores, hyphens or dots"
+                .into(),
+        ));
+    }
+    if context.is_none_or(|value| value.trim().is_empty()) {
+        return Err(Error::Config(
+            "hook deliverOnce requires nonempty additionalContext".into(),
+        ));
+    }
+    Ok(())
 }
 
 const CONTINUE: u16 = 1 << 0;
@@ -962,7 +1019,7 @@ mod tests {
             let stdout = if command.contains("/bin/sh -c 'first' <") {
                 r#"{"systemMessage":"first"}"#
             } else {
-                r#"{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"second"}}"#
+                r#"{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"second","deliverOnce":"guidance"}}"#
             };
             CommandOutput {
                 exit_code: 0,
@@ -1193,6 +1250,54 @@ mod tests {
         assert!(parse_output(HookEvent::SessionStart, DEFAULT_CONTEXT_BYTES, output).is_err());
     }
 
+    #[test]
+    fn once_context_preserves_every_permission_decision() {
+        for (decision, expected) in [
+            ("allow", PermissionDecision::Allow),
+            ("deny", PermissionDecision::Deny),
+        ] {
+            let output = serde_json::from_value(json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "additionalContext": "Permission guidance.",
+                    "deliverOnce": "permissions.v1",
+                    "permissionDecision": decision
+                }
+            }))
+            .expect("hook output");
+            let outcome = normalize_output(HookEvent::PreToolUse, DEFAULT_CONTEXT_BYTES, output)
+                .expect("once context");
+
+            assert_eq!(outcome.deliver_once.as_deref(), Some("permissions.v1"));
+            assert_eq!(outcome.permission_decision, Some(expected));
+        }
+    }
+
+    #[test]
+    fn once_context_requires_a_bounded_key_and_nonempty_context() {
+        for (key, context) in [
+            (String::new(), Some("guidance")),
+            ("other:permissions".into(), Some("guidance")),
+            ("é".into(), Some("guidance")),
+            ("x".repeat(129), Some("guidance")),
+            ("permissions".into(), None),
+            ("permissions".into(), Some(" \n")),
+        ] {
+            let output = serde_json::from_value(json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": context,
+                    "deliverOnce": key
+                }
+            }))
+            .expect("hook output");
+
+            assert!(
+                normalize_output(HookEvent::SessionStart, DEFAULT_CONTEXT_BYTES, output).is_err()
+            );
+        }
+    }
+
     #[tokio::test]
     async fn runner_starts_matches_concurrently_and_preserves_declaration_order() {
         let workspace = tempfile::tempdir().expect("workspace");
@@ -1236,6 +1341,7 @@ mod tests {
         assert_eq!(backend.started.load(Ordering::SeqCst), 2);
         assert_eq!(outcomes[0].system_message.as_deref(), Some("first"));
         assert_eq!(outcomes[1].additional_context.as_deref(), Some("second"));
+        assert_eq!(outcomes[1].deliver_once.as_deref(), Some("test:guidance"));
         assert!(
             backend
                 .commands

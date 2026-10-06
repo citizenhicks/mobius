@@ -3,10 +3,12 @@
 pub mod voice;
 
 use super::{
-    ActiveCommandContext, MessageRouteContext, Middleware, MiddlewareCommandContext,
-    MiddlewareCommandOutput, SessionStartContext, SessionStartSource, SubmissionResult,
+    ActiveCommandContext, MessageRouteContext, MessageSubmitContext, Middleware,
+    MiddlewareCommandContext, MiddlewareCommandOutput, SessionStartContext, SessionStartSource,
+    SubmissionResult,
 };
 use crate::backend::checkpoint::QueuedMessageBoundary;
+use crate::backend::model::internal_user_message;
 use crate::protocol::{
     ActiveMessageDelivery, EventMsg, FrontendBlock, FrontendCommand, FrontendContribution,
     FrontendEvent, FrontendSlot, FrontendSymbol, FrontendTone, FrontendWidget,
@@ -20,6 +22,7 @@ mod text {
     pub(super) struct Definition {
         #[serde(deserialize_with = "crate::middleware::manifest::deserialize_settings")]
         pub(super) settings: Vec<crate::middleware::manifest::MiddlewareSettingManifest>,
+        pub(super) permission_notice: String,
         pub(super) voice_user_label: String,
         pub(super) voice_speaker_label: String,
         pub(super) voice_workspace_label: String,
@@ -270,6 +273,23 @@ impl Middleware for Messages {
 
     fn message_boundary_events(&self, submission_id: &str) -> Vec<EventMsg> {
         vec![EventMsg::Frontend(self.remove_widget(submission_id))]
+    }
+
+    fn message_submit<'a>(
+        &'a self,
+        context: &'a mut MessageSubmitContext<'_>,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            if matches!(context.author, MessageAuthor::Source { .. }) {
+                context.deliver_once("permissions", || {
+                    internal_user_message(
+                        "message_permissions",
+                        text::DEFINITION.permission_notice.as_str(),
+                    )
+                })?;
+            }
+            Ok(())
+        })
     }
 
     fn active_command<'a>(

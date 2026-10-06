@@ -25,6 +25,8 @@ pub(super) struct ProviderMetadata {
     pub(super) credential_env: Option<String>,
     pub(super) tool_discovery: ToolDiscoveryMode,
     pub(super) custom_endpoint_tool_discovery: Option<ToolDiscoveryMode>,
+    #[serde(default)]
+    pub(super) native_custom_endpoints: bool,
     pub(super) search: Vec<HostedWebSearch>,
     #[serde(default)]
     pub(super) headers: std::collections::BTreeMap<String, String>,
@@ -508,6 +510,7 @@ pub struct ProviderDefinition {
     tool_discovery: ToolDiscoveryMode,
     custom_endpoint_tool_discovery: Option<ToolDiscoveryMode>,
     default_base_url: Option<&'static str>,
+    native_custom_endpoints: bool,
     credentialless_endpoints: bool,
     builder: ProviderBuilder,
 }
@@ -537,6 +540,7 @@ impl ProviderDefinition {
             tool_discovery: metadata.tool_discovery,
             custom_endpoint_tool_discovery: metadata.custom_endpoint_tool_discovery,
             default_base_url: Some(&metadata.base_url),
+            native_custom_endpoints: metadata.native_custom_endpoints,
             credentialless_endpoints: false,
             builder,
         }
@@ -639,13 +643,26 @@ impl ProviderDefinition {
         self.supports_image_input
     }
 
-    /// Reports a provider capability on any endpoint the operator configures.
+    /// Reports a capability implemented by this provider's native API.
     #[must_use]
     pub const fn supports(&self, capability: ModelCapability) -> bool {
         match capability {
             ModelCapability::ImageGeneration => self.supports_image_generation,
             ModelCapability::RealtimeVoice => !self.realtime_voices.is_empty(),
         }
+    }
+
+    /// Reports a capability for the selected provider endpoint.
+    #[must_use]
+    pub fn supports_at(&self, capability: ModelCapability, base_url: Option<&str>) -> bool {
+        (self.native_custom_endpoints || self.uses_default_endpoint(base_url))
+            && self.supports(capability)
+    }
+
+    /// Reports whether custom roots implement this provider's native media APIs.
+    #[must_use]
+    pub const fn native_custom_endpoints(&self) -> bool {
+        self.native_custom_endpoints
     }
 
     /// Returns supported voices, with the default first.
@@ -1131,7 +1148,7 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_follow_the_provider_on_any_endpoint() {
+    fn capabilities_distinguish_native_proxies_from_compatible_endpoints() {
         for id in ["openai_socket", "openai_codex", "openrouter", "responses"] {
             assert!(
                 provider(id)
@@ -1158,6 +1175,46 @@ mod tests {
                 .expect("non-voice provider")
                 .supports(ModelCapability::RealtimeVoice)
         );
+        for id in ["openai_socket", "openai_codex", "openrouter", "responses"] {
+            let definition = provider(id).expect("provider");
+            assert_eq!(
+                definition.supports_at(
+                    ModelCapability::ImageGeneration,
+                    Some("https://proxy.example/v1")
+                ),
+                id != "responses"
+            );
+            assert_eq!(
+                definition.supports_at(
+                    ModelCapability::RealtimeVoice,
+                    Some("https://proxy.example/v1")
+                ),
+                matches!(id, "openai_socket" | "openai_codex")
+            );
+        }
+        let compatible = provider("responses").expect("compatible provider");
+        for endpoint in [
+            compatible.default_base_url().expect("default"),
+            "https://proxy.example/v1",
+        ] {
+            let model = compatible
+                .build(ProviderBuildConfig {
+                    credential: ProviderCredential::ApiKey("test-key".into()),
+                    model: "test-model".into(),
+                    base_url: Some(endpoint.into()),
+                    reasoning_effort: None,
+                    service_tier: None,
+                    web_search: HostedWebSearch::Off,
+                    http: reqwest::Client::new(),
+                    transport: Default::default(),
+                })
+                .expect("compatible model");
+            assert!(model.supports_image_generation());
+            assert_eq!(
+                model.supports_realtime_voice(),
+                compatible.uses_default_endpoint(Some(endpoint))
+            );
+        }
     }
 
     #[test]

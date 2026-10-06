@@ -90,6 +90,8 @@ impl Runner {
             .ok_or_else(|| Error::Checkpoint("checkpoint sequence overflow".into()))?;
         let batch_before = self.transcript_delta.len();
         let mut context = self.state.context.clone();
+        // A staged batch must see earlier accepted notices without changing live state.
+        let mut delivered_once = Arc::clone(&self.state.delivered_once);
         let mut transcript = Vec::with_capacity(messages.len());
         let mut events = Vec::new();
         for mut message in messages {
@@ -97,7 +99,12 @@ impl Runner {
             let submitted = self
                 .config
                 .middleware
-                .message_submit(self.turn_identity(turn_id)?, &message, &mut hook_events)
+                .message_submit(
+                    self.turn_identity(turn_id)?,
+                    &message,
+                    &mut hook_events,
+                    &delivered_once,
+                )
                 .await?;
             events.extend(
                 hook_events
@@ -119,7 +126,9 @@ impl Runner {
                 });
                 continue;
             }
-            context.extend(submitted.input);
+            context.extend(submitted.input.into_iter().filter(|item| {
+                crate::middleware::delivery_once::accept(&mut delivered_once, item)
+            }));
             self.config
                 .model
                 .prepare_turn_input(&context, &mut message.input);
@@ -140,11 +149,14 @@ impl Runner {
         let previous_pending_messages =
             std::mem::replace(&mut self.state.pending_messages, pending_messages);
         let previous_context = std::mem::replace(&mut self.state.context, context);
+        let previous_delivered_once =
+            std::mem::replace(&mut self.state.delivered_once, delivered_once);
         let transcript_len = self.transcript_delta.len();
         self.transcript_delta.extend(transcript);
         if let Err(error) = self.persist_with_events(events, None).await {
             self.state.pending_messages = previous_pending_messages;
             self.state.context = previous_context;
+            self.state.delivered_once = previous_delivered_once;
             self.transcript_delta.truncate(transcript_len);
             return Err(error);
         }
@@ -211,6 +223,7 @@ impl Runner {
         let mut rewrite_reasons = Vec::new();
         let mut turn_stop = None;
         let mut durable_input = self.state.context.clone();
+        let mut delivered_once = Arc::clone(&self.state.delivered_once);
         let mut transcript_delta = Vec::new();
         let mut context_epoch = self.state.context_epoch;
         let mut compaction_count = self.state.compaction_count;
@@ -243,6 +256,7 @@ impl Runner {
             available_tools: &mut available_tools,
             allow_hosted_tools: &mut allow_hosted_tools,
             durable_input: &mut durable_input,
+            delivered_once: &mut delivered_once,
             transcript_delta: &mut transcript_delta,
             context_epoch: &mut context_epoch,
             compaction_count: &mut compaction_count,
@@ -311,6 +325,9 @@ impl Runner {
             }
         };
         self.transcript_delta.extend(transcript_delta);
+        if checkpoint_changed {
+            self.state.delivered_once = delivered_once;
+        }
         self.state.context_epoch = context_epoch;
         self.state.compaction_count = compaction_count;
         let usage_changed = !middleware_usage.is_empty();
@@ -635,20 +652,24 @@ impl Runner {
                         usize::try_from(transport.stream_retry_limit).map_err(|_| {
                             Error::Config("stream retry limit exceeds platform range".into())
                         })?;
+                    let delay = crate::backend::model::retry_delay(
+                        &error,
+                        stream_retries,
+                        &started.model_step_id,
+                        &transport,
+                    );
                     let delay = if stream_retries < retry_limit {
-                        let delay = crate::backend::model::retry_delay(
-                            &error,
-                            stream_retries,
-                            &started.model_step_id,
-                            &transport,
-                        );
                         stream_retries += 1;
                         delay
                     } else {
                         match model.fallback_transport(&provider, &model_session_id).await {
                             Ok(true) => {
                                 stream_retries = 0;
-                                Duration::ZERO
+                                if error.retry_after().is_some() {
+                                    delay
+                                } else {
+                                    Duration::ZERO
+                                }
                             }
                             outcome => {
                                 let error = outcome.err().unwrap_or(Error::Provider(error));
@@ -1355,13 +1376,17 @@ mod tests {
     fn retry_delay_accepts_http_dates() {
         let date = (chrono::Utc::now() + chrono::Duration::seconds(30)).to_rfc2822();
         let error = crate::ProviderError::http("busy", 503, Some(date));
-        let delay = crate::backend::model::retry_delay(&error, 0, "request", &Default::default());
+        let transport = crate::backend::model::ModelTransportSettings {
+            stream_retry_max_backoff_ms: 60_000,
+            ..Default::default()
+        };
+        let delay = crate::backend::model::retry_delay(&error, 0, "request", &transport);
         assert!(delay >= Duration::from_secs(28) && delay <= Duration::from_secs(30));
     }
 
     #[test]
     fn stream_retry_delay_respects_server_seconds() {
-        let error = crate::ProviderError::stream_interrupted(Some("30".into()));
+        let error = crate::ProviderError::stream_interrupted(Some("3".into()));
 
         assert_eq!(
             crate::backend::model::retry_delay(
@@ -1370,7 +1395,30 @@ mod tests {
                 "step-1",
                 &crate::backend::model::ModelTransportSettings::default()
             ),
-            Duration::from_secs(30)
+            Duration::from_secs(3)
         );
+    }
+
+    #[test]
+    fn retry_waits_never_exceed_the_configured_ceiling() {
+        let transport = crate::backend::model::ModelTransportSettings::default();
+        let ceiling = Duration::from_millis(transport.stream_retry_max_backoff_ms);
+        for hint in [
+            "4".to_owned(),
+            "3600".to_owned(),
+            (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc2822(),
+        ] {
+            let error = crate::ProviderError::http("busy", 429, Some(hint));
+            assert_eq!(
+                crate::backend::model::retry_delay(&error, 0, "step", &transport),
+                ceiling
+            );
+        }
+        let error = crate::ProviderError::stream_interrupted(None);
+        for retry in 0..100 {
+            assert!(
+                crate::backend::model::retry_delay(&error, retry, "step", &transport) <= ceiling
+            );
+        }
     }
 }

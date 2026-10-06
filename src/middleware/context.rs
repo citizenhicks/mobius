@@ -6,6 +6,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::MiddlewareStack;
+use super::delivery_once::{DeliveryOnce, Receipts};
 use super::tools::Catalog;
 use super::tools::ToolResult;
 use super::{TokenEstimate, serialized_len};
@@ -436,6 +437,7 @@ pub enum SessionStartSource {
 pub struct SessionStartContext<'a> {
     /// The runtime.
     pub runtime: &'a RuntimeContext,
+    pub(crate) delivery_once: DeliveryOnce<'a>,
     pub(crate) source: SessionStartSource,
     pub(crate) queued_messages: QueuedMessageSnapshot,
     pub(crate) input: &'a mut Vec<Value>,
@@ -444,6 +446,16 @@ pub struct SessionStartContext<'a> {
 }
 
 impl SessionStartContext<'_> {
+    /// Appends guidance once per session and middleware, at this hook's normal position.
+    /// The receipt becomes durable only when the appended input is accepted.
+    /// # Errors
+    /// Returns an error for an invalid key or a non-guidance context item.
+    pub fn deliver_once(&mut self, key: &str, make: impl FnOnce() -> Value) -> Result<bool> {
+        let appended = self.delivery_once.deliver(self.input, Some(key), make)?;
+        self.input_changed |= appended;
+        Ok(appended)
+    }
+
     #[must_use]
     /// Returns the session-start source.
     pub fn source(&self) -> SessionStartSource {
@@ -460,12 +472,6 @@ impl SessionStartContext<'_> {
     pub fn push_input(&mut self, item: Value) {
         self.input.push(item);
         self.input_changed = true;
-    }
-
-    pub(crate) fn retain_input(&mut self, mut keep: impl FnMut(&Value) -> bool) {
-        let input_len = self.input.len();
-        self.input.retain(&mut keep);
-        self.input_changed |= self.input.len() != input_len;
     }
 
     /// Stops the active turn after session-start processing completes.
@@ -495,11 +501,20 @@ pub struct MessageSubmitContext<'a> {
     pub attachments: &'a [SessionFileReference],
     /// The events.
     pub events: &'a mut Vec<EventMsg>,
+    pub(crate) delivery_once: DeliveryOnce<'a>,
     pub(crate) input: Vec<Value>,
     pub(crate) rejection: Option<String>,
 }
 
 impl MessageSubmitContext<'_> {
+    /// Appends guidance once per session and middleware, before this submitted message.
+    /// Rejected submissions do not consume the delivery receipt.
+    /// # Errors
+    /// Returns an error for an invalid key or a non-guidance context item.
+    pub fn deliver_once(&mut self, key: &str, make: impl FnOnce() -> Value) -> Result<bool> {
+        self.delivery_once.deliver(&mut self.input, Some(key), make)
+    }
+
     /// Adds provider-neutral context immediately before the submitted message.
     pub fn push_input(&mut self, item: Value) {
         self.input.push(item);
@@ -551,6 +566,7 @@ pub struct ModelContext<'a> {
     pub(crate) available_tools: &'a mut BTreeSet<String>,
     pub(crate) allow_hosted_tools: &'a mut bool,
     pub(crate) durable_input: &'a mut Vec<Value>,
+    pub(crate) delivered_once: &'a mut Receipts,
     pub(crate) transcript_delta: &'a mut Vec<Value>,
     pub(crate) context_epoch: &'a mut u64,
     pub(crate) compaction_count: &'a mut u64,
@@ -758,6 +774,7 @@ impl ModelContext<'_> {
                 &self.queued_messages,
                 SessionStartSource::Compact,
                 self.durable_input,
+                self.delivered_once,
             )
             .await?;
         set_first(self.turn_stop, start.stop_reason);
@@ -808,6 +825,7 @@ pub struct PreToolUseContext<'a> {
     pub turn: TurnIdentity<'a>,
     /// The events.
     pub events: &'a mut Vec<EventMsg>,
+    pub(crate) delivery_once: DeliveryOnce<'a>,
     pub(crate) tools: &'a Catalog,
     pub(crate) call: &'a mut ToolCall,
     pub(crate) input: Vec<Value>,
@@ -815,6 +833,14 @@ pub struct PreToolUseContext<'a> {
 }
 
 impl PreToolUseContext<'_> {
+    /// Appends guidance once per session and middleware, before this tool call.
+    /// Interrupted preparation does not consume the delivery receipt.
+    /// # Errors
+    /// Returns an error for an invalid key or a non-guidance context item.
+    pub fn deliver_once(&mut self, key: &str, make: impl FnOnce() -> Value) -> Result<bool> {
+        self.delivery_once.deliver(&mut self.input, Some(key), make)
+    }
+
     /// Returns the call after any earlier middleware rewrites.
     #[must_use]
     pub fn call(&self) -> &ToolCall {
@@ -904,11 +930,21 @@ pub struct PostToolUseContext<'a> {
     pub call: &'a ToolCall,
     /// The events.
     pub events: &'a mut Vec<EventMsg>,
+    pub(crate) delivery_once: DeliveryOnce<'a>,
     pub(crate) tools: &'a Catalog,
     pub(crate) result: &'a mut ToolResult,
 }
 
 impl PostToolUseContext<'_> {
+    /// Appends guidance once per session and middleware, after this tool result.
+    /// The receipt is saved atomically with the accepted result context.
+    /// # Errors
+    /// Returns an error for an invalid key or a non-guidance context item.
+    pub fn deliver_once(&mut self, key: &str, make: impl FnOnce() -> Value) -> Result<bool> {
+        self.delivery_once
+            .deliver(&mut self.result.additional_input, Some(key), make)
+    }
+
     /// Returns the result after any earlier middleware changes.
     #[must_use]
     pub fn result(&self) -> &ToolResult {

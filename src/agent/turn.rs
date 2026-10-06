@@ -120,6 +120,7 @@ impl Runner {
                 self.runtime.turn_identity(&turn_id, &author),
                 &message,
                 &mut hook_messages,
+                &self.state.delivered_once,
             )
             .await?;
         if let Some(rejection) = submitted.rejection {
@@ -207,7 +208,11 @@ impl Runner {
         let context_len = self.state.context.len();
         let transcript_len = self.transcript_delta.len();
         let first_user_message = self.state.first_user_message.clone();
-        self.state.context.extend(submitted.input);
+        self.state
+            .context
+            .extend(submitted.input.into_iter().filter(|item| {
+                crate::middleware::delivery_once::accept(&mut self.state.delivered_once, item)
+            }));
         if self.state.first_user_message.is_none()
             && let Some(title_seed) = message.title_seed.take()
         {
@@ -216,6 +221,10 @@ impl Runner {
         self.push_context(model_input);
         if let Err(error) = self.persist_with_events(events, None).await {
             self.state.pending_messages = previous_pending_messages;
+            crate::middleware::delivery_once::rollback(
+                &mut self.state.delivered_once,
+                &self.state.context[context_len..],
+            );
             self.state.context.truncate(context_len);
             self.transcript_delta.truncate(transcript_len);
             self.state.first_user_message = first_user_message;

@@ -34,6 +34,7 @@ pub mod compaction;
 pub mod computer_control;
 mod context;
 pub mod context_offloading;
+pub(crate) mod delivery_once;
 pub mod extensions;
 pub mod image_generation;
 pub mod instructions;
@@ -653,6 +654,7 @@ impl MiddlewareStack {
         turn: TurnIdentity<'_>,
         message: &PreparedMessage,
         events: &mut Vec<EventMsg>,
+        receipts: &delivery_once::Receipts,
     ) -> Result<MessageSubmitResult> {
         let event = message
             .event
@@ -664,10 +666,12 @@ impl MiddlewareStack {
             message: &event.text,
             attachments: &event.attachments,
             events,
+            delivery_once: delivery_once::DeliveryOnce::new(receipts),
             input: Vec::new(),
             rejection: None,
         };
         for entry in &self.entries {
+            context.delivery_once.owner = entry.name();
             entry.message_submit(&mut context).await?;
         }
         Ok(MessageSubmitResult {
@@ -697,10 +701,12 @@ impl MiddlewareStack {
         queued_messages: &[DurableQueuedMessage],
         source: SessionStartSource,
         input: &mut Vec<Value>,
+        receipts: &mut delivery_once::Receipts,
     ) -> Result<SessionStartResult> {
         let compact_input = (source == SessionStartSource::Compact).then(|| input.clone());
         let mut context = SessionStartContext {
             runtime,
+            delivery_once: delivery_once::DeliveryOnce::new(receipts),
             source,
             queued_messages: QueuedMessageSnapshot::default(),
             input,
@@ -708,6 +714,7 @@ impl MiddlewareStack {
             stop_reason: None,
         };
         for (index, entry) in self.entries.iter().enumerate() {
+            context.delivery_once.owner = entry.name();
             context.queued_messages =
                 QueuedMessageSnapshot::for_owner(entry.name(), queued_messages);
             if let Err(error) = entry.session_start(&mut context).await {
@@ -732,10 +739,12 @@ impl MiddlewareStack {
                 });
             }
         }
-        Ok(SessionStartResult {
+        let mut result = SessionStartResult {
             stop_reason: context.stop_reason,
             input_changed: context.input_changed,
-        })
+        };
+        result.input_changed |= delivery_once::record(receipts, input);
+        Ok(result)
     }
 
     pub(crate) async fn prepare_model(
@@ -798,6 +807,7 @@ impl MiddlewareStack {
 
     pub(crate) async fn pre_tool_use(&self, context: &mut PreToolUseContext<'_>) -> Result<()> {
         for entry in &self.entries {
+            context.delivery_once.owner = entry.name();
             entry.pre_tool_use(context).await?;
         }
         Ok(())
@@ -815,6 +825,7 @@ impl MiddlewareStack {
 
     pub(crate) async fn post_tool_use(&self, context: &mut PostToolUseContext<'_>) -> Result<()> {
         for entry in &self.entries {
+            context.delivery_once.owner = entry.name();
             entry.post_tool_use(context).await?;
         }
         Ok(())

@@ -65,6 +65,243 @@ async fn gateway_with_providers(
 }
 
 #[tokio::test]
+async fn saved_explicit_custom_image_route_remains_available_after_restart() {
+    let root = tempfile::tempdir().expect("root");
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).expect("workspace");
+    let (store, config) = ConfigStore::initialize(
+        root.path().join("state"),
+        "127.0.0.1:8741".parse().expect("listen"),
+        None,
+    )
+    .expect("config");
+    let mut provider = selection("images", "responses", "chat-model");
+    provider.endpoint_auth = ProviderEndpointAuth::ProviderDefault;
+    provider.base_url = Some("http://127.0.0.1:1/v1".into());
+    let mut config = config
+        .registering_provider(
+            provider,
+            "Custom".into(),
+            Default::default(),
+            vec!["chat-model".into()],
+            Vec::new(),
+            vec!["custom-image".into()],
+        )
+        .expect("explicit image opt-in");
+    let default = &mut config.bot_defaults.as_mut().expect("defaults").config;
+    default.middleware.set_enabled("image_generation", true);
+    default.middleware.set_setting(
+        "image_generation",
+        "model",
+        Some(mobius::protocol::FrontendSettingValue::String(
+            "images::custom-image::default".into(),
+        )),
+    );
+    store.save(&config).expect("saved image selection");
+    let (store, config) = ConfigStore::open(store.state_dir().to_owned())
+        .expect("saved configuration stays readable");
+    let credentials =
+        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
+    credentials
+        .set(
+            "images",
+            "responses",
+            "test-key",
+            Some("http://127.0.0.1:1/v1"),
+            None,
+        )
+        .expect("credential");
+    let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
+    let gateway = GatewayHost::start(store, config, credentials, bots)
+        .await
+        .expect("saved image does not block startup");
+    let ready = gateway.ready().await.expect("catalog");
+    assert_eq!(
+        ready
+            .image_models
+            .iter()
+            .map(|model| model.route.as_str())
+            .collect::<Vec<_>>(),
+        ["images::custom-image::default"]
+    );
+    assert!(ready.voice_models.is_empty());
+    let bot = ready.bots.into_iter().next().expect("Bot");
+    let host = gateway
+        .create_session(&workspace, &bot.id)
+        .await
+        .expect("selected image route assembles");
+    assert!(host.is_alive());
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
+async fn saved_unknown_voice_keeps_chat_usable_and_never_selects_a_different_voice() {
+    let root = tempfile::tempdir().expect("root");
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).expect("workspace");
+    let (store, config) = ConfigStore::initialize(
+        root.path().join("state"),
+        "127.0.0.1:8741".parse().expect("listen"),
+        None,
+    )
+    .expect("config");
+    let selection = AgentComposition::default().provider;
+    let config = config
+        .registering_provider(
+            selection,
+            "Native".into(),
+            Default::default(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("native provider");
+    let mut secondary = AgentComposition::default().provider;
+    secondary.instance = "voice-proxy".into();
+    let config = config
+        .registering_provider(
+            secondary,
+            "Voice proxy".into(),
+            Default::default(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("voice provider");
+    let mut config = config;
+    config
+        .bot_defaults
+        .as_mut()
+        .expect("defaults")
+        .config
+        .realtime_voice = Some("cedar".into());
+    store.save(&config).expect("save gateway");
+    let credentials =
+        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
+    for configured in config.configured_providers.values() {
+        let selected = &configured.selection;
+        credentials
+            .set(
+                &selected.instance,
+                &selected.provider,
+                "test-key",
+                selected.base_url.as_deref(),
+                None,
+            )
+            .expect("credential");
+    }
+    let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
+    let mut composition = config
+        .bot_defaults
+        .as_ref()
+        .expect("defaults")
+        .config
+        .clone();
+    composition.realtime_voice = Some("cedar".into());
+    let bot = bots
+        .create_bot("Voice", "Test saved voice selection.", composition)
+        .expect("saved bare voice");
+    let gateway = GatewayHost::start(store, config, credentials, bots)
+        .await
+        .expect("gateway remains usable");
+    let host = gateway
+        .create_session(&workspace, &bot.id)
+        .await
+        .expect("chat remains usable");
+    let error = host
+        .realtime_model()
+        .await
+        .err()
+        .expect("unknown voice is rejected");
+    assert!(error.message.contains("cedar") && error.message.contains("select an available voice"));
+    assert!(host.is_alive());
+    let mut edited = bot.config.config.clone();
+    edited.system_prompt.push_str("\nUpdated instructions.");
+    gateway
+        .configure_bot_defaults(1, edited.clone())
+        .await
+        .expect("unrelated defaults edit retains saved voice");
+    assert!(
+        gateway
+            .create_bot("Invalid", "Test invalid voice defaults.")
+            .await
+            .is_err()
+    );
+    let mut bot = gateway
+        .update_bot(
+            &bot.id,
+            bot.config.revision,
+            crate::bots::BotIdentity {
+                name: &bot.name,
+                description: &bot.description,
+                tint: bot.tint,
+                shape: bot.shape,
+            },
+            edited,
+        )
+        .await
+        .expect("unrelated Bot edit retains saved voice");
+    assert_eq!(bot.config.config.realtime_voice.as_deref(), Some("cedar"));
+    let mut invalid = bot.config.config.clone();
+    invalid.realtime_voice = Some("invalid-new-voice".into());
+    assert!(
+        gateway
+            .configure_bot_defaults(2, invalid.clone())
+            .await
+            .is_err()
+    );
+    assert!(
+        gateway
+            .update_bot(
+                &bot.id,
+                bot.config.revision,
+                crate::bots::BotIdentity {
+                    name: &bot.name,
+                    description: &bot.description,
+                    tint: bot.tint,
+                    shape: bot.shape,
+                },
+                invalid
+            )
+            .await
+            .is_err()
+    );
+    for voice in [
+        Some("openai_socket::gpt-live-1::cedar"),
+        None,
+        Some("voice-proxy::gpt-live-1::cedar"),
+    ] {
+        let mut config = bot.config.config.clone();
+        config.realtime_voice = voice.map(str::to_owned);
+        bot = gateway
+            .update_bot(
+                &bot.id,
+                bot.config.revision,
+                crate::bots::BotIdentity {
+                    name: &bot.name,
+                    description: &bot.description,
+                    tint: bot.tint,
+                    shape: bot.shape,
+                },
+                config,
+            )
+            .await
+            .expect("select voice");
+        let model = host.realtime_model().await.expect("voice is available");
+        assert_eq!(
+            model.voice,
+            voice.unwrap_or("openai_socket::gpt-live-1::marin")
+        );
+    }
+    let error = gateway
+        .remove_provider("voice-proxy".into())
+        .await
+        .expect_err("selected voice cannot be removed");
+    assert_eq!(error.code, "provider_in_use");
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
 async fn bot_updates_obey_operator_subagent_ceilings_and_persist_larger_trees() {
     let (root, gateway) =
         gateway_with_providers(selection("primary", "responses", "custom-model"), None).await;

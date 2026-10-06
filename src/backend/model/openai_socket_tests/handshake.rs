@@ -140,6 +140,10 @@ async fn handshake_rejection_preserves_status_and_payment_message() {
         (426, ""),
         (402, "Balance exhausted"),
         (
+            429,
+            r#"{"error":{"code":"rate_limit_exceeded","type":"insufficient_quota","message":"Quota exhausted"}}"#,
+        ),
+        (
             503,
             r#"{"error":{"message":"Cloud model service unavailable"}}"#,
         ),

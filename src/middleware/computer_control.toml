@@ -2,7 +2,6 @@ default_enabled = false
 manifest_label = "Computer control"
 manifest_description = "Operate a browser and supported native apps with persistent JavaScript and image observations"
 prompt = "Computer control is available. Read {documentation} before using computer_control. Browser state and JavaScript variables survive context compaction. Action failures can retain interpreter state; follow the reported state. An overall evaluation deadline, cancellation, or runtime restart loses interpreter state and may leave an action completed; never repeat it automatically. Each agent has its own interpreter. Gateway-coordinated headed browser tabs share one persistent profile and serialize foreground use; the first evaluation after startup or takeover observes without executing submitted code."
-resume_notice = "This session's execution lifetime restarted. The previous computer interpreter and private temporary files are gone. Prior actions may have completed. Call computer_control for a fresh observation before acting; the gateway-owned browser and its saved logins may still be present; recorded observations remain accessible by file_id."
 
 [tool]
 name = "computer_control"

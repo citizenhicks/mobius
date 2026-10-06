@@ -128,16 +128,25 @@ fn generic_processing_error_is_a_retryable_stream_failure() {
 
 #[test]
 fn payment_denials_override_stream_recovery_hints() {
-    for code in ["rate_limit_exceeded", "previous_response_not_found"] {
+    for (status, code, kind) in [
+        (402, "rate_limit_exceeded", "rate_limit_exceeded"),
+        (
+            402,
+            "previous_response_not_found",
+            "previous_response_not_found",
+        ),
+        (429, "insufficient_quota", "insufficient_quota"),
+        (429, "rate_limit_exceeded", "insufficient_quota"),
+    ] {
         let event = serde_json::json!({
             "type": "error",
-            "status": 402,
-            "error": {"code": code, "message": "Balance exhausted"}
+            "status": status,
+            "error": {"code": code, "type": kind, "message": "Balance exhausted"}
         });
         let Err(Error::Provider(error)) = failed_exchange(&event, false) else {
             panic!("expected payment denial");
         };
-        assert_eq!(error.status(), Some(402));
+        assert_eq!(error.status(), Some(status));
         assert!(!error.is_retryable());
         assert!(!error.is_stream_interrupted());
     }

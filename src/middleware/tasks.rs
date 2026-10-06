@@ -447,6 +447,7 @@ mod tests {
         for source in [SessionStartSource::Startup, SessionStartSource::Resume] {
             tasks
                 .session_start(&mut SessionStartContext {
+                    delivery_once: crate::middleware::delivery_once::DeliveryOnce::testing(),
                     runtime: &runtime,
                     source,
                     queued_messages: Default::default(),
@@ -470,6 +471,7 @@ mod tests {
         let previous_events = frontend_events.lock().expect("events").len();
         tasks
             .session_start(&mut SessionStartContext {
+                delivery_once: crate::middleware::delivery_once::DeliveryOnce::testing(),
                 runtime: &runtime,
                 source: SessionStartSource::Compact,
                 queued_messages: Default::default(),
@@ -520,6 +522,7 @@ mod tests {
             }
             tasks
                 .session_start(&mut SessionStartContext {
+                    delivery_once: crate::middleware::delivery_once::DeliveryOnce::testing(),
                     runtime: &runtime,
                     source,
                     queued_messages: Default::default(),

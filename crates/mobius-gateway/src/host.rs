@@ -572,7 +572,7 @@ impl GatewayHost {
             )
         })?;
         let config = defaults.config;
-        validate_bot_config(&state, &config)?;
+        validate_bot_config(&state, &config, None)?;
         let bot = state
             .bots
             .create_bot(name, description, config)
@@ -593,8 +593,8 @@ impl GatewayHost {
         let (store, computer, runtime_changed) = {
             let _access = self.begin_mutation().await?;
             let state = self.state.lock().await;
-            validate_bot_config(&state, &config)?;
             let previous = state.bots.bot(id).map_err(invalid_bot)?;
+            validate_bot_config(&state, &config, Some(&previous.config.config))?;
             if previous.config.revision != expected_revision {
                 return Err(Rejection::new(
                     "revision_conflict",
@@ -618,8 +618,8 @@ impl GatewayHost {
         }
         let _mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
-        validate_bot_config(&state, &config)?;
         let previous = state.bots.bot(id).map_err(invalid_bot)?;
+        validate_bot_config(&state, &config, Some(&previous.config.config))?;
         let prepared = if runtime_changed {
             let mut candidate = previous.clone();
             candidate.description = identity.description.into();
@@ -1063,12 +1063,18 @@ impl GatewayHost {
 fn validate_bot_config(
     state: &GatewayState,
     config: &AgentComposition,
+    previous: Option<&AgentComposition>,
 ) -> std::result::Result<(), Rejection> {
     let gateway = state.config()?;
     let models =
         configured_model_choices(&gateway, &state.store, &state.credentials).map_err(internal)?;
     crate::config::validate_bot_compatibility(&gateway, config, models.catalogs())
         .map_err(invalid_config)?;
+    if previous.is_none_or(|previous| previous.realtime_voice != config.realtime_voice) {
+        models
+            .validate_voice(config.realtime_voice.as_deref())
+            .map_err(invalid_config)?;
+    }
     ExtensionStore::new(&state.store)
         .resolve(&gateway, &config.extensions)
         .map(|_| ())

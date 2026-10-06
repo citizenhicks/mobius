@@ -705,11 +705,7 @@ async fn register_provider_command_is_idempotent() {
             crate::wire::ProviderTint::Purple,
             crate::wire::ProviderEndpointAuth::Credentialless,
             HostedWebSearch::Live,
-            [
-                "openai/gpt-5".to_string(),
-                "anthropic/claude-sonnet-4".to_string()
-            ]
-            .as_slice(),
+            ["openai/gpt-5".to_string()].as_slice(),
             ["medium".to_string(), "high".to_string()].as_slice(),
             Some("high"),
         )
@@ -778,6 +774,32 @@ async fn register_provider_command_is_idempotent() {
     assert_eq!(
         resolved.lifetime.expires_at,
         Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(2_000_000_000))
+    );
+    register_provider_command(
+        RegisterProviderOptions {
+            state_dir: state.clone(),
+            provider: "openrouter".into(),
+            instance: Some("mobius-cloud".into()),
+            label: None,
+            model: "anthropic/claude-sonnet-4".into(),
+            model_ids: None,
+            image_model_ids: None,
+            reasoning_efforts: vec!["medium".into()],
+            service_tier: None,
+            web_search: HostedWebSearch::Live,
+            base_url: None,
+            credentialless: false,
+            credential_stdin: false,
+            credential_expires_at: None,
+        },
+        load_register_provider_test_client,
+    )
+    .await
+    .expect("switch to a previously unlisted model");
+    let (_, config) = ConfigStore::open(state.clone()).expect("changed model");
+    assert_eq!(
+        config.configured_providers["mobius-cloud"].model_ids,
+        ["anthropic/claude-sonnet-4"]
     );
     provider::clear_provider_credential(
         state.clone(),

@@ -1,25 +1,34 @@
 use super::super::*;
 use super::support::completed_events;
+use crate::backend::model::ModelTransportSettings;
 use crate::backend::model::PromptCacheIdentity;
 
 #[test]
-fn compaction_retry_ignores_overflowing_server_delays_and_preserves_valid_hints() {
-    let base = Duration::from_millis(200);
+fn compaction_retry_is_bounded_and_preserves_valid_hints() {
+    let transport = ModelTransportSettings::default();
     assert_eq!(
         compaction_retry_delay(
             &ProviderError::stream_interrupted(Some(u64::MAX.to_string())),
             1,
-            base,
+            &transport,
         ),
         Duration::from_millis(400),
     );
     assert_eq!(
         compaction_retry_delay(
-            &ProviderError::stream_interrupted(Some("30".into())),
+            &ProviderError::stream_interrupted(Some("3".into())),
             1,
-            base,
+            &transport,
         ),
-        Duration::from_secs(30),
+        Duration::from_secs(3),
+    );
+    assert_eq!(
+        compaction_retry_delay(
+            &ProviderError::stream_interrupted(Some("3600".into())),
+            1,
+            &transport,
+        ),
+        Duration::from_millis(transport.stream_retry_max_backoff_ms)
     );
 }
 

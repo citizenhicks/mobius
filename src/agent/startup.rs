@@ -310,6 +310,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
             &state.pending_messages,
             start_source,
             &mut state.context,
+            &mut state.delivered_once,
         )
         .await?;
     state_changed |= session_start.input_changed;

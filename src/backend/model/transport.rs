@@ -27,10 +27,23 @@ pub(crate) fn retry_delay(
         });
     let jitter_percent = 80 + jitter % 41;
     let backoff = Duration::from_millis(exponential_ms.saturating_mul(jitter_percent) / 100);
-    server_retry_delay(error).map_or(backoff, |delay| delay.max(backoff))
+    bounded_retry_delay(
+        error,
+        backoff,
+        Duration::from_millis(transport.stream_retry_max_backoff_ms),
+    )
 }
 
-pub(super) fn server_retry_delay(error: &ProviderError) -> Option<Duration> {
+pub(super) fn bounded_retry_delay(
+    error: &ProviderError,
+    backoff: Duration,
+    ceiling: Duration,
+) -> Duration {
+    let delay = server_retry_delay(error).unwrap_or_default();
+    delay.max(backoff).min(ceiling)
+}
+
+fn server_retry_delay(error: &ProviderError) -> Option<Duration> {
     let value = error.retry_after()?.trim();
     let delay = value
         .parse::<u64>()
@@ -68,11 +81,11 @@ crate::embedded_config! {
         pub socket_io_timeout_ms: u64,
         /// Maximum gap between WebSocket stream events.
         pub socket_idle_timeout_ms: u64,
-        /// Retries before a model or image request fails.
+        /// Retries before a model request fails.
         pub stream_retry_limit: u32,
-        /// Initial model and image retry backoff.
+        /// Initial model retry backoff.
         pub stream_retry_backoff_ms: u64,
-        /// Ceiling for local exponential model and image backoff.
+        /// Ceiling for retry waits, including jitter and server hints.
         pub stream_retry_max_backoff_ms: u64,
         /// Retries before native compaction fails.
         pub compaction_retry_limit: u32,
@@ -325,11 +338,40 @@ pub(super) async fn status_error(mut response: Response, provider: &str) -> Erro
             }
         }
     }
-    Error::Provider(ProviderError::http(
-        http_error_message(provider, status, &bytes),
+    Error::Provider(http_provider_error(provider, status, &bytes, retry_after))
+}
+
+pub(super) fn http_provider_error(
+    provider: &str,
+    status: reqwest::StatusCode,
+    body: &[u8],
+    retry_after: Option<String>,
+) -> ProviderError {
+    let event = serde_json::from_slice(body).ok();
+    ProviderError::http(
+        http_error_message(provider, status, body),
         status.as_u16(),
         retry_after,
-    ))
+    )
+    .with_code(event.as_ref().and_then(response_error_code))
+}
+
+pub(super) fn response_error_code(event: &serde_json::Value) -> Option<&str> {
+    let mut codes = [
+        "/error/code",
+        "/response/error/code",
+        "/error/type",
+        "/response/error/type",
+    ]
+    .into_iter()
+    .filter_map(|pointer| event.pointer(pointer).and_then(serde_json::Value::as_str))
+    .filter(|code| !code.is_empty());
+    let first = codes.next()?;
+    Some(
+        codes
+            .find(|code| ProviderError::is_quota_code(code))
+            .unwrap_or(first),
+    )
 }
 
 /// `{prefix} HTTP {status}`, followed by the human part of the body when it has one, so
@@ -369,6 +411,26 @@ mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
+
+    #[test]
+    fn quota_errors_are_terminal_while_transient_limits_remain_retryable() {
+        for (code, retryable) in [
+            ("rate_limit_exceeded", true),
+            ("insufficient_quota", false),
+            ("billing_hard_limit_reached", false),
+        ] {
+            let body = serde_json::json!({"error":{"code":code,"message":"Limit reached"}});
+            let error = http_provider_error(
+                "Responses",
+                reqwest::StatusCode::TOO_MANY_REQUESTS,
+                &serde_json::to_vec(&body).expect("JSON error"),
+                Some("3".into()),
+            );
+            assert_eq!(error.is_retryable(), retryable);
+            assert_eq!(error.status(), Some(429));
+            assert_eq!(error.retry_after(), Some("3"));
+        }
+    }
 
     #[test]
     fn http_errors_show_the_provider_message_not_raw_json() {

@@ -2,6 +2,7 @@ symbol = "chat_gpt"
 label = "Codex"
 description = "Use a ChatGPT Plus or Pro subscription"
 base_url = "https://chatgpt.com/backend-api/codex"
+native_custom_endpoints = true
 tool_discovery = "native"
 search = ["off", "cached", "live"]
 custom_endpoint_tool_discovery = "native"

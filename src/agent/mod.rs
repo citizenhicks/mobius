@@ -960,8 +960,11 @@ impl Runner {
     }
 
     fn extend_context(&mut self, items: Vec<Value>) {
-        self.state.context.extend(items.iter().cloned());
-        self.transcript_delta.extend(items);
+        for item in items {
+            if crate::middleware::delivery_once::accept(&mut self.state.delivered_once, &item) {
+                self.push_context(item);
+            }
+        }
     }
 
     async fn emit(&self, submission_id: impl Into<String>, msg: EventMsg) -> Result<()> {

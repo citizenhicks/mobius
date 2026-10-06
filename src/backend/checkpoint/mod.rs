@@ -1,6 +1,6 @@
 //! Durable agent checkpoints.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -427,6 +427,9 @@ pub struct Checkpoint {
     pub sequence: u64,
     /// The context.
     pub context: Vec<Value>,
+    /// Session-scoped receipts for middleware guidance durably added to context.
+    #[serde(default)]
+    pub delivered_once: std::sync::Arc<BTreeMap<String, BTreeSet<String>>>,
     /// The context epoch.
     pub context_epoch: u64,
     /// The compaction count.
@@ -488,6 +491,7 @@ impl Checkpoint {
             model_route: None,
             sequence: 0,
             context: Vec::new(),
+            delivered_once: Default::default(),
             context_epoch: 0,
             compaction_count: 0,
             last_context_rewrite: None,

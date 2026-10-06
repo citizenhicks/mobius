@@ -416,7 +416,7 @@ async fn interrupt_during_stream_retry_backoff_cancels_the_retry() {
     let model = Arc::new(InterruptedStreamModel {
         transport: ModelTransportSettings::default(),
         calls: AtomicUsize::new(0),
-        retry_after: Some("30".into()),
+        retry_after: Some("3".into()),
     });
     let mut agent = create_agent(config_with_model(
         workspace.path(),
@@ -512,7 +512,7 @@ async fn http_service_unavailable_retries_after_server_hint() {
     assert!(started.elapsed() >= std::time::Duration::from_secs(1));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn failed_model_step_retains_provider_retry_metadata() {
     let workspace = tempfile::tempdir().expect("workspace");
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
@@ -619,8 +619,16 @@ async fn stream_exhaustion_switches_transport_once_and_resets_the_retry_budget()
         calls: AtomicUsize,
         fallback: AtomicBool,
         recover: bool,
+        retry_after: Option<&'static str>,
+        limit: u32,
     }
     impl Model for FallbackModel {
+        fn transport_settings(&self) -> ModelTransportSettings {
+            ModelTransportSettings {
+                stream_retry_limit: self.limit,
+                ..Default::default()
+            }
+        }
         fn respond<'a>(
             &'a self,
             _request: ModelRequest,
@@ -632,7 +640,7 @@ async fn stream_exhaustion_switches_transport_once_and_resets_the_retry_budget()
                     Ok(scripted_message("Recovered over fallback."))
                 } else {
                     Err(Error::Provider(crate::ProviderError::stream_interrupted(
-                        None,
+                        self.retry_after.map(Into::into),
                     )))
                 }
             })
@@ -643,7 +651,14 @@ async fn stream_exhaustion_switches_transport_once_and_resets_the_retry_budget()
         }
     }
 
-    for recover in [true, false] {
+    let default_limit = ModelTransportSettings::default().stream_retry_limit;
+    for (recover, hint, limit, expected_calls) in [
+        (true, None, default_limit, stream_retry_limit() + 2),
+        (false, None, default_limit, 2 * (stream_retry_limit() + 1)),
+        (true, Some("3600"), 0, 2),
+        (true, Some("3600"), default_limit, stream_retry_limit() + 2),
+        (true, Some("3"), 0, 2),
+    ] {
         let workspace = tempfile::tempdir().expect("workspace");
         let checkpoints = Arc::new(
             SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
@@ -653,6 +668,8 @@ async fn stream_exhaustion_switches_transport_once_and_resets_the_retry_budget()
             calls: AtomicUsize::new(0),
             fallback: AtomicBool::new(false),
             recover,
+            retry_after: hint,
+            limit,
         });
         let mut agent = create_agent(config_with_model(
             workspace.path(),
@@ -663,6 +680,7 @@ async fn stream_exhaustion_switches_transport_once_and_resets_the_retry_budget()
         ))
         .await
         .expect("agent");
+        let started = tokio::time::Instant::now();
         agent.sender().submit(user_op("hello")).expect("input");
         let completed = loop {
             match agent.next_event().await.expect("terminal event").msg {
@@ -673,14 +691,16 @@ async fn stream_exhaustion_switches_transport_once_and_resets_the_retry_budget()
         };
         assert_eq!(completed, recover);
         assert!(model.fallback.load(Ordering::SeqCst));
-        assert_eq!(
-            model.calls.load(Ordering::SeqCst),
-            if recover {
-                stream_retry_limit() + 2
-            } else {
-                2 * (stream_retry_limit() + 1)
-            },
-        );
+        assert_eq!(model.calls.load(Ordering::SeqCst), expected_calls);
+        if hint == Some("3") {
+            assert!(started.elapsed() >= std::time::Duration::from_secs(3));
+        }
+        if hint == Some("3600") {
+            let ceiling = std::time::Duration::from_millis(
+                ModelTransportSettings::default().stream_retry_max_backoff_ms,
+            );
+            assert!(started.elapsed() >= ceiling);
+        }
     }
 }
 

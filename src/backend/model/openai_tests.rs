@@ -1486,7 +1486,8 @@ async fn credentialless_http_omits_authorization() {
 }
 
 #[tokio::test]
-async fn native_images_use_json_for_generation_and_multipart_for_public_edits() {
+async fn compatible_images_use_json_for_generation_and_multipart_for_public_edits() {
+    use crate::backend::model::provider::{HostedWebSearch, ProviderCredential};
     use base64::Engine as _;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -1543,14 +1544,18 @@ async fn native_images_use_json_for_generation_and_multipart_for_public_edits() 
         }
         requests
     });
-    let provider = OpenAi::with_client(
-        Some("test-key".into()),
-        format!("http://{address}/api/native/v1/"),
-        "chat-model",
-        reqwest::Client::new(),
-        crate::backend::model::ModelTransportSettings::default(),
-    )
-    .expect("provider");
+    let provider = generic_provider()
+        .build(ProviderBuildConfig {
+            credential: ProviderCredential::ApiKey("test-key".into()),
+            base_url: Some(format!("http://{address}/api/native/v1/")),
+            model: "chat-model".into(),
+            reasoning_effort: None,
+            service_tier: None,
+            web_search: HostedWebSearch::Off,
+            http: reqwest::Client::new(),
+            transport: Default::default(),
+        })
+        .expect("provider");
     let generated = provider
         .generate_image(ImageGenerationRequest {
             model: "gpt-image-2.5-sunburst",

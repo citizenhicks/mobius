@@ -75,13 +75,13 @@ pub(super) async fn register_provider_with_credential(
         service_tier: options.service_tier,
         web_search: options.web_search,
     };
-    let model_ids = options
-        .model_ids
-        .unwrap_or_else(|| match existing.as_mut() {
-            Some(configured) => std::mem::take(&mut configured.model_ids),
-            None if definition.models().is_empty() => vec![selection.model.to_owned()],
-            None => Vec::new(),
-        });
+    let model_ids = options.model_ids.unwrap_or_else(|| {
+        if definition.models().is_empty() {
+            vec![selection.model.to_owned()]
+        } else {
+            Vec::new()
+        }
+    });
     let image_model_ids = options
         .image_model_ids
         .unwrap_or_else(|| existing.map_or_else(Vec::new, |configured| configured.image_model_ids));

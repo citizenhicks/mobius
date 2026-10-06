@@ -5,3 +5,4 @@ base_url = "https://api.openai.com/v1"
 tool_discovery = "native"
 search = ["off", "cached", "live"]
 credential_env = "OPENAI_API_KEY"
+native_custom_endpoints = true

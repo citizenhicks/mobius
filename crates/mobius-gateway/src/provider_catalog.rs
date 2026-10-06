@@ -66,23 +66,32 @@ pub(crate) fn provider_instances(
         .collect()
 }
 
-/// Chat and image choices derived from one set of chat routes.
+/// Chat and media choices derived from one set of chat routes.
 pub(crate) struct ConfiguredChoices {
     pub(crate) models: Vec<ModelChoice>,
     pub(crate) images: Vec<ModelChoice>,
+    voices: Vec<ModelChoice>,
 }
 
 impl ConfiguredChoices {
     fn from_routes(gateway: &GatewayConfig, routes: Vec<CatalogRoute>) -> Result<Self> {
-        let images = media_routes(gateway, &routes)?
-            .images
-            .into_iter()
-            .map(|media| media.choice)
-            .collect();
+        let media = media_routes(gateway, &routes)?;
         Ok(Self {
-            images,
+            images: media.images.into_iter().map(|media| media.choice).collect(),
+            voices: media.voices.into_iter().map(|media| media.choice).collect(),
             models: routes.into_iter().map(|route| route.choice).collect(),
         })
+    }
+
+    pub(crate) fn validate_voice(&self, route: Option<&str>) -> Result<()> {
+        if let Some(route) = route
+            && !self.voices.iter().any(|choice| choice.route == route)
+        {
+            return Err(Error::Config(format!(
+                "voice route `{route}` is not configured; select an available voice"
+            )));
+        }
+        Ok(())
     }
 
     /// Borrows the lists dynamic middleware settings select from.
@@ -228,9 +237,14 @@ pub(crate) fn catalog_routes(
                         preset.map_or(DEFAULT_CONTEXT_WINDOW, |preset| preset.context_window),
                     ),
                     supports_image_input: definition.supports_image_input(),
-                    supports_image_generation: definition
-                        .supports(ModelCapability::ImageGeneration),
-                    supports_realtime_voice: definition.supports(ModelCapability::RealtimeVoice),
+                    supports_image_generation: definition.supports_at(
+                        ModelCapability::ImageGeneration,
+                        selection.base_url.as_deref(),
+                    ) || !configured.image_model_ids.is_empty(),
+                    supports_realtime_voice: definition.supports_at(
+                        ModelCapability::RealtimeVoice,
+                        selection.base_url.as_deref(),
+                    ),
                     tool_discovery: definition.tool_discovery(model, selection.base_url.as_deref()),
                 },
                 provider,
@@ -293,7 +307,10 @@ pub(crate) fn media_routes(
             instance: instance.into(),
             transport: transport.choice.route.as_str().into(),
         };
-        if definition.supports(ModelCapability::ImageGeneration) {
+        if definition.supports_at(
+            ModelCapability::ImageGeneration,
+            configured.selection.base_url.as_deref(),
+        ) {
             for preset in definition.image_models() {
                 for quality in with_default(&preset.variants) {
                     media
@@ -301,12 +318,15 @@ pub(crate) fn media_routes(
                         .push(media_choice(&preset.id, &preset.label, quality, false));
                 }
             }
-            // ponytail: setup-listed IDs advertise no quality levels; a catalog entry adds them.
-            for id in &configured.image_model_ids {
-                media.images.push(media_choice(id, id, None, false));
-            }
         }
-        if definition.supports(ModelCapability::RealtimeVoice) {
+        // Explicit image IDs opt a compatible endpoint into its image API.
+        for id in &configured.image_model_ids {
+            media.images.push(media_choice(id, id, None, false));
+        }
+        if definition.supports_at(
+            ModelCapability::RealtimeVoice,
+            configured.selection.base_url.as_deref(),
+        ) {
             for preset in definition.voice_models() {
                 for voice in with_default(&preset.variants) {
                     media
@@ -373,11 +393,11 @@ fn provider_status(definition: &ProviderDefinition) -> ProviderStatus {
         model_ids_configurable: definition.models().is_empty(),
         image_models: std::borrow::Cow::Borrowed(definition.image_models()),
         image_model_ids_configurable: definition.image_models().is_empty()
-            && definition.supports(ModelCapability::ImageGeneration),
+            && definition.supports_at(ModelCapability::ImageGeneration, None),
         voice_models: std::borrow::Cow::Borrowed(definition.voice_models()),
         auth,
         default_base_url: definition.default_base_url().map(str::to_string),
-        native_custom_endpoints: true,
+        native_custom_endpoints: definition.native_custom_endpoints(),
         default_api_key_env,
         models: definition
             .models()
@@ -555,6 +575,7 @@ mod tests {
     #[test]
     fn compatible_provider_status_uses_manifest_defaults() {
         let custom = provider_status(provider("responses").expect("provider"));
+        assert!(!custom.native_custom_endpoints);
         assert!(custom.models.is_empty());
         assert!(custom.model_ids_configurable);
         assert_eq!(
@@ -654,7 +675,7 @@ mod tests {
     }
 
     #[test]
-    fn media_routes_follow_each_provider_catalog_on_any_endpoint() {
+    fn media_routes_skip_compatible_endpoints_without_native_media() {
         let mut config =
             GatewayConfig::new("127.0.0.1:8741".parse().expect("listen"), None).expect("config");
         for (id, base_url, image_ids) in [
@@ -713,7 +734,25 @@ mod tests {
         assert!(voice("openai_socket", "cedar"));
         assert!(voice("openai_codex", "cove"));
         assert!(!voice("openai_codex", "cedar"));
-        assert!(voice("responses", "cedar"));
+        assert!(!voice("responses", "cedar"));
+        assert_eq!(
+            media.voices.first().expect("native voice").instance,
+            "openai_codex"
+        );
+        let choices = configured_model_catalog(&config).expect("configured choices");
+        choices
+            .validate_voice(Some("openai_socket::gpt-live-1::cedar"))
+            .expect("routed voice");
+        for voice in [
+            "cedar",
+            "openai_socket::gpt-live-1::missing",
+            "responses::gpt-live-1::cedar",
+        ] {
+            assert!(choices.validate_voice(Some(voice)).is_err(), "{voice}");
+        }
+        choices
+            .validate_voice(None)
+            .expect("first available voice is optional");
         assert!(
             media
                 .voices

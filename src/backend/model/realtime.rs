@@ -602,13 +602,10 @@ impl RealtimeTransport {
                         .get("retry-after")
                         .and_then(|v| v.to_str().ok())
                         .map(str::to_owned);
-                    return Err(Error::Provider(ProviderError::http(
-                        format!(
-                            "Realtime sideband HTTP {}: {}",
-                            response.status(),
-                            String::from_utf8_lossy(body)
-                        ),
-                        response.status().as_u16(),
+                    return Err(Error::Provider(super::transport::http_provider_error(
+                        "Realtime sideband",
+                        response.status(),
+                        body,
                         retry_after,
                     )));
                 }

@@ -5,4 +5,5 @@ base_url = "https://openrouter.ai/api/v1"
 tool_discovery = "native"
 search = ["off", "live"]
 credential_env = "OPENROUTER_API_KEY"
+native_custom_endpoints = true
 custom_endpoint_tool_discovery = "rebuild"

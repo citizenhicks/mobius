@@ -407,29 +407,8 @@ impl ModelRouter {
         }
         request.validate(self.image_limits)?;
         let route = self.route(&media.transport)?;
-        let transport = route.provider.transport_settings();
-        let request_id = uuid::Uuid::new_v4().to_string();
-        while_valid(&route.credential, || async {
-            let mut retries = 0;
-            loop {
-                match route.provider.generate_image(request).await {
-                    Err(Error::Provider(error))
-                        if error.is_retryable() && retries < transport.stream_retry_limit =>
-                    {
-                        let delay = super::transport::retry_delay(
-                            &error,
-                            retries as usize,
-                            &request_id,
-                            &transport,
-                        );
-                        retries += 1;
-                        tokio::time::sleep(delay).await;
-                    }
-                    result => return result,
-                }
-            }
-        })
-        .await
+        // A rejected image response does not prove generation was uncharged.
+        while_valid(&route.credential, || route.provider.generate_image(request)).await
     }
 
     /// Starts a provider-owned voice call with the selected voice, or the first one.

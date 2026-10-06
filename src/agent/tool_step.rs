@@ -52,6 +52,9 @@ impl Runner {
             )));
         }
         let mut context = PreToolUseContext {
+            delivery_once: crate::middleware::delivery_once::DeliveryOnce::new(
+                &self.state.delivered_once,
+            ),
             turn: self.turn_identity(turn_id)?,
             events,
             tools: &self.catalog,
@@ -87,6 +90,9 @@ impl Runner {
                 continue;
             }
             let mut context = PostToolUseContext {
+                delivery_once: crate::middleware::delivery_once::DeliveryOnce::new(
+                    &self.state.delivered_once,
+                ),
                 turn: self.turn_identity(turn_id)?,
                 call,
                 events: &mut completion.events,
@@ -292,6 +298,10 @@ impl Runner {
                 self.state.pending_tools = pending_tools;
                 self.state.active_execution = active_execution;
                 self.state.total_usage = total_usage;
+                crate::middleware::delivery_once::rollback(
+                    &mut self.state.delivered_once,
+                    &self.state.context[context_len..],
+                );
                 self.state.context.truncate(context_len);
                 self.transcript_delta.truncate(transcript_len);
                 Err(error)

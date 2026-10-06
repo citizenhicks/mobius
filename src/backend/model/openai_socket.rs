@@ -495,22 +495,20 @@ impl OpenAiSocket {
                 .await
             {
                 Ok(output) => break output,
-                Err(Error::Provider(error))
-                    if error.is_stream_interrupted()
-                        && (retries < self.transport.compaction_retry_limit
-                            || self.fallback_transport(request.session_id).await?) =>
-                {
+                Err(Error::Provider(error)) if error.is_stream_interrupted() => {
+                    let delay = compaction_retry_delay(&error, retries, &self.transport);
                     let delay = if retries < self.transport.compaction_retry_limit {
-                        let delay = compaction_retry_delay(
-                            &error,
-                            retries,
-                            Duration::from_millis(self.transport.compaction_retry_backoff_ms),
-                        );
                         retries += 1;
                         delay
-                    } else {
+                    } else if self.fallback_transport(request.session_id).await? {
                         retries = 0;
-                        Duration::ZERO
+                        if error.retry_after().is_some() {
+                            delay
+                        } else {
+                            Duration::ZERO
+                        }
+                    } else {
+                        return Err(Error::Provider(error));
                     };
                     tokio::time::sleep(delay).await;
                 }
@@ -599,10 +597,15 @@ impl OpenAiSocket {
 fn compaction_retry_delay(
     error: &crate::ProviderError,
     retry: u32,
-    base_delay: Duration,
+    transport: &super::ModelTransportSettings,
 ) -> Duration {
-    let backoff = base_delay.saturating_mul(1_u32 << retry.min(4));
-    super::transport::server_retry_delay(error).map_or(backoff, |delay| delay.max(backoff))
+    let backoff = Duration::from_millis(transport.compaction_retry_backoff_ms)
+        .saturating_mul(1_u32 << retry.min(4));
+    super::transport::bounded_retry_delay(
+        error,
+        backoff,
+        Duration::from_millis(transport.stream_retry_max_backoff_ms),
+    )
 }
 
 async fn close_connections(connections: Vec<OpenAiWsConnection>) {

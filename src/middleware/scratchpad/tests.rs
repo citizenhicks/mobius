@@ -430,6 +430,7 @@ async fn startup_and_compaction_restore_shared_notes_without_chat_menu_or_duplic
         SessionStartSource::Compact,
     ] {
         let mut start = SessionStartContext {
+            delivery_once: crate::middleware::delivery_once::DeliveryOnce::testing(),
             runtime: &runtime,
             source,
             queued_messages: Default::default(),
@@ -465,6 +466,7 @@ async fn disabled_agent_keeps_shared_management_without_prompt_or_tools() {
     assert_eq!(middleware.frontend().widgets.len(), 1);
     let mut input = Vec::new();
     let mut start = SessionStartContext {
+        delivery_once: crate::middleware::delivery_once::DeliveryOnce::testing(),
         runtime: &runtime,
         source: SessionStartSource::Startup,
         queued_messages: Default::default(),
