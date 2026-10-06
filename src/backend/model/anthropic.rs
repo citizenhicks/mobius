@@ -881,7 +881,34 @@ fn translate_messages(
     if messages.is_empty() {
         return Err(Error::Provider("Anthropic request has no messages".into()));
     }
+    mark_latest_cache_endpoint(&mut messages);
     Ok(messages)
+}
+
+/// Advances the explicit cache endpoint to the newest cacheable block, so every request
+/// writes its whole prefix and the previous request's endpoint stays readable.
+fn mark_latest_cache_endpoint(messages: &mut [Value]) {
+    if let Some(block) = messages
+        .last_mut()
+        .and_then(|message| message.get_mut("content"))
+        .and_then(Value::as_array_mut)
+        .and_then(|content| {
+            content
+                .iter_mut()
+                .rev()
+                .find(|block| accepts_cache_control(block))
+        })
+    {
+        block["cache_control"] = serde_json::json!({"type": "ephemeral"});
+    }
+}
+
+/// Anthropic rejects cache markers on thinking blocks and empty text blocks.
+fn accepts_cache_control(block: &Value) -> bool {
+    !matches!(
+        block.get("type").and_then(Value::as_str),
+        Some("thinking" | "redacted_thinking")
+    ) && block.get("text").and_then(Value::as_str) != Some("")
 }
 
 fn remember_search_call(search_calls: &mut BTreeSet<String>, call_id: &str, name: &str) {

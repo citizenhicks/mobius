@@ -92,6 +92,53 @@ fn explicit_prompt_cache_breakpoint_is_sent_on_the_marked_content_block() {
 }
 
 #[test]
+fn explicit_cache_endpoint_advances_and_keeps_the_stable_anchor() {
+    let provider = Anthropic::new("test-key", MANIFEST.base_url.as_str(), "claude-sonnet-5-5")
+        .expect("provider");
+    let mut first = user_message("stable prefix");
+    assert!(crate::backend::model::mark_prompt_cache_breakpoint(
+        &mut first
+    ));
+    let history = [
+        first,
+        serde_json::json!({"role":"assistant","content":[{"type":"output_text","text":"answer"}]}),
+        user_message("follow-up"),
+    ];
+    let cache_points = |body: &Value| {
+        body["messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|message| message["content"].as_array().into_iter().flatten())
+            .filter(|block| block.get("cache_control").is_some())
+            .count()
+    };
+
+    let short = provider
+        .request_body("instructions", &history[..1], "catalog-1", &[], &[], false)
+        .expect("first request");
+    let long = provider
+        .request_body("instructions", &history, "catalog-1", &[], &[], false)
+        .expect("follow-up request");
+
+    assert_eq!(cache_points(&short), 1);
+    assert_eq!(
+        long["messages"][0]["content"][0]["cache_control"]["type"],
+        "ephemeral"
+    );
+    assert_eq!(
+        long["messages"][2]["content"][0]["cache_control"]["type"],
+        "ephemeral"
+    );
+    assert!(
+        long["messages"][1]["content"][0]
+            .get("cache_control")
+            .is_none()
+    );
+    assert!(cache_points(&long) <= 4);
+}
+
+#[test]
 fn hosted_search_can_be_disabled_per_request() {
     assert!(wire_tools(&[], &[], false).is_empty());
     assert_eq!(wire_tools(&[], &[], true)[0]["name"], "web_search");
@@ -415,7 +462,8 @@ fn responses_history_translates_to_anthropic_tool_messages() {
                     "type": "tool_result",
                     "tool_use_id": "call_1",
                     "content": [{"type":"text", "text":"contents"}],
-                    "is_error": false
+                    "is_error": false,
+                    "cache_control": {"type": "ephemeral"}
                 }]
             })
         ]
@@ -446,7 +494,8 @@ fn neutral_image_becomes_anthropic_base64_source() {
                 "type": "base64",
                 "media_type": "image/webp",
                 "data": "aGVsbG8="
-            }
+            },
+            "cache_control": {"type": "ephemeral"}
         })
     );
 }
