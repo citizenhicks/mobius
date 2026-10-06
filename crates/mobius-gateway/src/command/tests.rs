@@ -196,6 +196,7 @@ fn reset_bot_defaults_reapplies_defaults_without_changing_other_gateway_state() 
             Default::default(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("register provider");
     let current = config.bot_defaults.as_ref().expect("Bot defaults");

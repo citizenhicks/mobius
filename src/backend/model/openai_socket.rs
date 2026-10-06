@@ -154,16 +154,14 @@ impl OpenAiSocket {
         socket_url
             .set_scheme(scheme)
             .map_err(|_| Error::Config("invalid OpenAI socket scheme".into()))?;
-        let mut provider = Self::with_authorization(
+        Self::with_authorization(
             Arc::new(ApiKeyAuthorization::new(api_key)),
             base_url,
             socket_url.as_str(),
             model,
             client,
             settings,
-        )?;
-        provider.http = provider.http.with_native_openai_api()?;
-        Ok(provider)
+        )
     }
 
     pub(super) fn with_authorization(
@@ -604,12 +602,7 @@ fn compaction_retry_delay(
     base_delay: Duration,
 ) -> Duration {
     let backoff = base_delay.saturating_mul(1_u32 << retry.min(4));
-    error
-        .retry_after()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .map(Duration::from_secs)
-        .filter(|duration| Instant::now().checked_add(*duration).is_some())
-        .map_or(backoff, |retry_after| retry_after.max(backoff))
+    super::transport::server_retry_delay(error).map_or(backoff, |delay| delay.max(backoff))
 }
 
 async fn close_connections(connections: Vec<OpenAiWsConnection>) {
@@ -855,8 +848,7 @@ pub(super) fn provider() -> ProviderDefinition {
     )
     .with_image_input()
     .with_image_generation()
-    .with_realtime_voices(&super::realtime::VOICES)
-    .with_native_custom_endpoints()
+    .with_realtime_voices(&super::realtime::VOICES, &super::realtime::OPENAI_MODELS)
 }
 
 fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {

@@ -192,13 +192,21 @@ impl HostState {
                     self.bind_bot().await?;
                     let bot = self.bots.bot(&self.spec.bot_id).map_err(internal)?;
                     let router = &self.running.model_router;
-                    let route = &self.running.session.model.route;
-                    if !router.supports_realtime_voice(route).map_err(internal)? {
-                        return Err(Rejection::new(
-                            "realtime_voice",
-                            "the selected provider does not support realtime voice",
-                        ));
-                    }
+                    let selected = self
+                        .running
+                        .prepared
+                        .bot
+                        .config
+                        .config
+                        .realtime_voice
+                        .as_deref();
+                    // ponytail: an unknown stored voice falls back to the first configured one.
+                    let (voice, route) = router
+                        .voice_choice(selected)
+                        .or_else(|_| router.voice_choice(None))
+                        .map_err(|_| {
+                            Rejection::new("realtime_voice", "no voice model is configured")
+                        })?;
                     let active_turn_id = self.activity().await.map_err(internal)?.turn_id;
                     let config = self
                         .gateway
@@ -212,6 +220,7 @@ impl HostState {
                     .map_err(internal)?
                     .remove(route)
                     .ok_or_else(|| internal("voice route is no longer configured"))?;
+                    let voice = voice.route.as_str().into();
                     Ok(RealtimeModel {
                         bot_instructions: format!(
                             "Your name is {} (@{}).\n\n{}",
@@ -221,15 +230,8 @@ impl HostState {
                         ),
                         bot_name: bot.name.clone(),
                         router: Arc::clone(router),
-                        voice: self
-                            .running
-                            .prepared
-                            .bot
-                            .config
-                            .config
-                            .realtime_voice
-                            .clone(),
-                        route: route.clone(),
+                        voice,
+                        route: route.into(),
                         provider_instance,
                         active_turn_id,
                         checkpoints: Arc::clone(&self.checkpoints),

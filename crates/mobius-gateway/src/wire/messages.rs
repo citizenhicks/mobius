@@ -623,6 +623,9 @@ pub enum ClientMessage {
         model_ids: Vec<String>,
         /// The reasoning efforts.
         reasoning_efforts: Vec<String>,
+        /// Image model identifiers for providers without an image catalog.
+        #[serde(default)]
+        image_model_ids: Vec<String>,
     },
     /// Selects the remove provider case.
     RemoveProvider {

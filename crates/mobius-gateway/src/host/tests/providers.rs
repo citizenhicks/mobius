@@ -51,12 +51,14 @@ async fn provider_removal_gateway(
             Default::default(),
             vec![primary.model.clone()],
             Vec::new(),
+            Vec::new(),
         )
         .and_then(|config| {
             config.registering_provider(
                 removable.clone(),
                 "Unused".into(),
                 Default::default(),
+                Vec::new(),
                 Vec::new(),
                 Vec::new(),
             )
@@ -119,11 +121,14 @@ async fn browser_proxy_registration_requires_operator_and_allows_trusted_root_re
     let error = gateway
         .register_provider(
             false,
-            selection.clone(),
-            "Proxy".into(),
-            Default::default(),
-            Vec::new(),
-            Vec::new(),
+            crate::config::ConfiguredProvider {
+                selection: selection.clone(),
+                label: "Proxy".into(),
+                tint: Default::default(),
+                model_ids: Vec::new(),
+                reasoning_efforts: Vec::new(),
+                image_model_ids: Vec::new(),
+            },
         )
         .await
         .expect_err("paired clients cannot introduce an authentication destination");
@@ -131,11 +136,14 @@ async fn browser_proxy_registration_requires_operator_and_allows_trusted_root_re
     gateway
         .register_provider(
             true,
-            selection.clone(),
-            "Proxy".into(),
-            Default::default(),
-            Vec::new(),
-            Vec::new(),
+            crate::config::ConfiguredProvider {
+                selection: selection.clone(),
+                label: "Proxy".into(),
+                tint: Default::default(),
+                model_ids: Vec::new(),
+                reasoning_efforts: Vec::new(),
+                image_model_ids: Vec::new(),
+            },
         )
         .await
         .expect("operator registers native proxy");
@@ -144,11 +152,14 @@ async fn browser_proxy_registration_requires_operator_and_allows_trusted_root_re
     gateway
         .register_provider(
             false,
-            selection.clone(),
-            "Reused".into(),
-            Default::default(),
-            Vec::new(),
-            Vec::new(),
+            crate::config::ConfiguredProvider {
+                selection: selection.clone(),
+                label: "Reused".into(),
+                tint: Default::default(),
+                model_ids: Vec::new(),
+                reasoning_efforts: Vec::new(),
+                image_model_ids: Vec::new(),
+            },
         )
         .await
         .expect("paired client can reuse an operator-approved root");
@@ -156,11 +167,14 @@ async fn browser_proxy_registration_requires_operator_and_allows_trusted_root_re
     let error = gateway
         .register_provider(
             false,
-            selection,
-            "Retargeted".into(),
-            Default::default(),
-            Vec::new(),
-            Vec::new(),
+            crate::config::ConfiguredProvider {
+                selection,
+                label: "Retargeted".into(),
+                tint: Default::default(),
+                model_ids: Vec::new(),
+                reasoning_efforts: Vec::new(),
+                image_model_ids: Vec::new(),
+            },
         )
         .await
         .expect_err("paired client cannot retarget an approved instance");
@@ -414,15 +428,18 @@ async fn provider_registration_commits_against_latest_usage() {
         state.store.save(&latest).expect("persist usage");
     }
 
-    commit_provider_registration(
-        &state,
-        &selection,
-        "Test",
-        &ProviderTint::default(),
-        std::slice::from_ref(&selection.model),
-        &[],
-    )
-    .expect("commit registration");
+    let current = state.config.lock().expect("current gateway config");
+    let next = current
+        .registering_configured(crate::config::ConfiguredProvider {
+            model_ids: vec![selection.model.as_str().into()],
+            selection,
+            label: "Test".into(),
+            tint: Default::default(),
+            reasoning_efforts: Vec::new(),
+            image_model_ids: Vec::new(),
+        })
+        .expect("registration");
+    commit_provider_registration(&state, current, next).expect("commit registration");
 
     assert_eq!(
         state
@@ -546,20 +563,23 @@ async fn explicit_key_replaces_credentialless_endpoint_auth() {
     gateway
         .register_provider(
             false,
-            ProviderConfig {
-                instance: "openrouter-managed".into(),
-                provider: "openrouter".into(),
-                model: model.into(),
-                base_url: Some(base_url.into()),
-                endpoint_auth: ProviderEndpointAuth::Credentialless,
-                reasoning_effort: None,
-                service_tier: None,
-                web_search: mobius::backend::model::provider::HostedWebSearch::Off,
+            crate::config::ConfiguredProvider {
+                selection: ProviderConfig {
+                    instance: "openrouter-managed".into(),
+                    provider: "openrouter".into(),
+                    model: model.into(),
+                    base_url: Some(base_url.into()),
+                    endpoint_auth: ProviderEndpointAuth::Credentialless,
+                    reasoning_effort: None,
+                    service_tier: None,
+                    web_search: mobius::backend::model::provider::HostedWebSearch::Off,
+                },
+                label: "Managed".into(),
+                tint: Default::default(),
+                model_ids: vec![model.into()],
+                reasoning_efforts: Vec::new(),
+                image_model_ids: Vec::new(),
             },
-            "Managed".into(),
-            Default::default(),
-            vec![model.into()],
-            Vec::new(),
         )
         .await
         .expect("register credentialless provider");
@@ -619,20 +639,23 @@ async fn credential_update_prepares_once_when_matching_chats_are_next_used() {
     gateway
         .register_provider(
             false,
-            ProviderConfig {
-                instance: "kimi".into(),
-                provider: "kimi".into(),
-                model: "kimi-k3".into(),
-                base_url: Some("https://api.moonshot.ai/v1".into()),
-                endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
-                reasoning_effort: Some("max".into()),
-                service_tier: None,
-                web_search: mobius::backend::model::provider::HostedWebSearch::Off,
+            crate::config::ConfiguredProvider {
+                selection: ProviderConfig {
+                    instance: "kimi".into(),
+                    provider: "kimi".into(),
+                    model: "kimi-k3".into(),
+                    base_url: Some("https://api.moonshot.ai/v1".into()),
+                    endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
+                    reasoning_effort: Some("max".into()),
+                    service_tier: None,
+                    web_search: mobius::backend::model::provider::HostedWebSearch::Off,
+                },
+                label: "Test".into(),
+                tint: Default::default(),
+                model_ids: Vec::new(),
+                reasoning_efforts: Vec::new(),
+                image_model_ids: Vec::new(),
             },
-            "Test".into(),
-            Default::default(),
-            Vec::new(),
-            Vec::new(),
         )
         .await
         .expect("register Kimi");
@@ -1181,11 +1204,14 @@ async fn provider_presentation_edits_do_not_prepare_or_assemble() {
     let ready = gateway
         .register_provider(
             false,
-            primary.clone(),
-            "Renamed".into(),
-            ProviderTint::Purple,
-            vec![primary.model],
-            Vec::new(),
+            crate::config::ConfiguredProvider {
+                selection: primary.clone(),
+                label: "Renamed".into(),
+                tint: crate::wire::ProviderTint::Purple,
+                model_ids: vec![primary.model],
+                reasoning_efforts: Vec::new(),
+                image_model_ids: Vec::new(),
+            },
         )
         .await
         .unwrap();

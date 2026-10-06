@@ -104,3 +104,23 @@ description = "Extended reasoning for demanding work"
 id = "max"
 label = "Maximum"
 description = "Maximum reasoning for the hardest work"
+
+[[image_models]]
+id = "gpt-image-2.5-sunburst"
+label = "GPT Image 2.5 Sunburst"
+description = "Highest-detail OpenAI image model"
+variants = [
+    { id = "low", label = "Low", description = "Fastest and cheapest" },
+    { id = "medium", label = "Medium", description = "Balanced detail and speed" },
+    { id = "high", label = "High", description = "Most detail" },
+]
+
+[[image_models]]
+id = "gpt-image-2.5-flare"
+label = "GPT Image 2.5 Flare"
+description = "Smaller, faster OpenAI image model"
+variants = [
+    { id = "low", label = "Low", description = "Fastest and cheapest" },
+    { id = "medium", label = "Medium", description = "Balanced detail and speed" },
+    { id = "high", label = "High", description = "Most detail" },
+]

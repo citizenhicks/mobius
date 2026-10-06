@@ -252,8 +252,11 @@ pub struct ModelChoice {
     pub group: String,
     /// The model.
     pub model: String,
-    /// The reasoning effort.
+    /// The route variant: reasoning effort, image quality, or the voice of a voice model.
     pub reasoning_effort: Option<String>,
+    /// Display label of the route variant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant_label: Option<String>,
     /// The context window.
     pub context_window: Option<i64>,
     /// The supports image input.

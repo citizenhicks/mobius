@@ -11,6 +11,7 @@ enum Terminal {
     Complete,
     Changed,
     Error,
+    HttpError,
     Hold,
 }
 
@@ -304,7 +305,7 @@ impl Model for StreamingModel {
             }
             if matches!(
                 terminal,
-                Terminal::Changed | Terminal::Error | Terminal::Complete
+                Terminal::Changed | Terminal::Error | Terminal::HttpError | Terminal::Complete
             ) {
                 tool_finished.notified().await;
             }
@@ -315,6 +316,11 @@ impl Model for StreamingModel {
                     false,
                 )),
                 Terminal::Error => Err(Error::Provider(ProviderError::stream_interrupted(None))),
+                Terminal::HttpError => Err(Error::Provider(ProviderError::http(
+                    "busy",
+                    503,
+                    Some("1".into()),
+                ))),
                 Terminal::Hold => {
                     release.notified().await;
                     Ok(streaming_tool_output(false))
@@ -751,6 +757,11 @@ async fn streaming_tool_error_or_mismatch_does_not_retry_and_records_unknown_res
             "streaming-error",
             Terminal::Error,
             "fail after streaming a tool",
+        ),
+        (
+            "streaming-http-error",
+            Terminal::HttpError,
+            "fail after streaming a tool over HTTP",
         ),
         (
             "streaming-mismatch",

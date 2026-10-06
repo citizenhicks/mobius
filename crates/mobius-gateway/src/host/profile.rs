@@ -240,18 +240,35 @@ pub(super) async fn gateway_ready(
                 .map_err(internal)?,
         )
     };
+    let media = crate::provider_catalog::media_routes(&state.config, &routes).map_err(internal)?;
     let models: Vec<_> = routes.iter().map(|route| route.choice.clone()).collect();
-    let model_providers = routes
+    let mut model_providers: BTreeMap<_, _> = routes
         .into_iter()
         .map(|route| (route.choice.route, route.provider.instance))
         .collect();
+    let mut media_choices = |routes: Vec<crate::provider_catalog::MediaRoute>| {
+        routes
+            .into_iter()
+            .map(|media| {
+                model_providers.insert(media.choice.route.as_str().into(), media.instance);
+                media.choice
+            })
+            .collect::<Vec<_>>()
+    };
+    let image_models = media_choices(media.images);
+    let voice_models = media_choices(media.voices);
     let subagent_ceilings = state
         .config
         .execution
         .subagent_ceilings()
         .map_err(internal)?;
-    let middleware_features =
-        crate::middleware_manifest::features_with_ceilings(&models, subagent_ceilings);
+    let middleware_features = crate::middleware_manifest::features_with_ceilings(
+        mobius::middleware::manifest::ModelCatalogs {
+            models: &models,
+            images: &image_models,
+        },
+        subagent_ceilings,
+    );
     let mut bots = state.bots.bots().map_err(internal)?;
     for bot in &mut bots {
         crate::middleware_manifest::materialize_integer_defaults(
@@ -288,6 +305,8 @@ pub(super) async fn gateway_ready(
         provider_instances,
         models,
         model_providers,
+        image_models,
+        voice_models,
         bot_defaults: state.config.bot_defaults.clone().map(|mut defaults| {
             crate::middleware_manifest::materialize_integer_defaults(
                 &mut defaults.config.middleware,
@@ -360,12 +379,14 @@ mod tests {
                 Default::default(),
                 vec!["openai/gpt-5".into()],
                 Vec::new(),
+                Vec::new(),
             )
             .expect("API provider")
             .registering_provider(
                 codex,
                 "Codex".into(),
                 Default::default(),
+                Vec::new(),
                 Vec::new(),
                 Vec::new(),
             )

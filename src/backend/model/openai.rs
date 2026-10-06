@@ -28,7 +28,6 @@ use super::openai_auth::OpenAiAuthorization;
 use super::openai_auth::ResolvedAuthorization;
 use super::provider::ProviderBuildConfig;
 use super::provider::ProviderDefinition;
-use super::provider::uses_default_endpoint;
 use super::provider::validate_base_url;
 use super::realtime::RealtimeTransport;
 use super::transport::SseDecoder;
@@ -87,7 +86,6 @@ pub struct OpenAi {
     auth: Option<Arc<dyn OpenAiAuthorization>>,
     realtime: Option<RealtimeTransport>,
     base_url: String,
-    native_api: bool,
     model: String,
     reasoning_effort: Option<String>,
     service_tier: Option<String>,
@@ -175,22 +173,17 @@ impl OpenAi {
         if model.trim().is_empty() {
             return Err(Error::Config("OPENAI_MODEL is empty".into()));
         }
-        let native_api = uses_default_endpoint(Some(MANIFEST.base_url.as_str()), Some(&base_url));
-        let realtime = if native_api {
-            auth.as_ref()
-                .map(|auth| RealtimeTransport::new_openai(&base_url, Arc::clone(auth), settings))
-                .transpose()?
-        } else {
-            None
-        };
-        let image_api = (auth.is_some() && native_api).then_some(&IMAGE_APIS["openai"]);
+        let realtime = auth
+            .as_ref()
+            .map(|auth| RealtimeTransport::new_openai(&base_url, Arc::clone(auth), settings))
+            .transpose()?;
+        let image_api = Some(&IMAGE_APIS["openai"]);
         Ok(Self {
             client,
             transport: settings,
             auth,
             realtime,
             base_url,
-            native_api,
             model,
             reasoning_effort: None,
             service_tier: None,
@@ -232,21 +225,9 @@ impl OpenAi {
         Ok(self)
     }
 
-    pub(super) fn with_native_openai_api(mut self) -> Result<Self> {
-        let auth = self
-            .auth
-            .as_ref()
-            .ok_or_else(|| Error::Config("native OpenAI API requires authorization".into()))?;
-        if self.realtime.is_none() {
-            self.realtime = Some(RealtimeTransport::new_openai(
-                &self.base_url,
-                Arc::clone(auth),
-                self.transport,
-            )?);
-        }
-        self.image_api = Some(&IMAGE_APIS["openai"]);
-        self.native_api = true;
-        Ok(self)
+    pub(super) fn without_realtime_voice(mut self) -> Self {
+        self.realtime = None;
+        self
     }
 
     pub(super) fn with_service_tier(mut self, service_tier: Option<String>) -> Self {
@@ -907,7 +888,7 @@ pub(super) fn generic_provider() -> ProviderDefinition {
     )
     .with_image_input()
     .with_image_generation()
-    .with_realtime_voices(&super::realtime::VOICES)
+    .with_realtime_voices(&super::realtime::VOICES, &super::realtime::OPENAI_MODELS)
     .with_credentialless_endpoints()
 }
 

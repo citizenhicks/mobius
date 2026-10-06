@@ -26,7 +26,7 @@ pub struct ImageGenerationReference<'a> {
 }
 
 /// Input for native image generation or an edit when references are present.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct ImageGenerationRequest<'a> {
     /// Image model selected by the caller; provider naming is applied by the transport.
     pub model: &'a str,
@@ -34,6 +34,8 @@ pub struct ImageGenerationRequest<'a> {
     pub prompt: &'a str,
     /// Explicit output shape.
     pub image_aspect: ImageAspect,
+    /// Quality level advertised by the selected model, or `None` when it has none.
+    pub quality: Option<&'a str>,
     /// Existing images to guide or edit.
     pub references: &'a [ImageGenerationReference<'a>],
 }
@@ -44,6 +46,14 @@ impl ImageAspect {
             Self::Square => "1024x1024",
             Self::Landscape => "1536x1024",
             Self::Portrait => "1024x1536",
+        }
+    }
+
+    const fn aspect_ratio(self) -> &'static str {
+        match self {
+            Self::Square => "1:1",
+            Self::Landscape => "3:2",
+            Self::Portrait => "2:3",
         }
     }
 }
@@ -57,6 +67,12 @@ impl ImageGenerationRequest<'_> {
             return Err(Error::Tool(
                 "image prompt must contain 1–32000 characters".into(),
             ));
+        }
+        if self
+            .quality
+            .is_some_and(|quality| quality.trim().is_empty() || quality.len() > 64)
+        {
+            return Err(Error::Tool("image quality must contain 1–64 bytes".into()));
         }
         if self.references.len() > MAX_REFERENCES || self.references.len() > limits.max_images {
             return Err(Error::Tool("too many reference images".into()));
@@ -100,12 +116,20 @@ crate::embedded_config! {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ImageApi {
-    model_prefix: String,
     generation_path: String,
     pub(super) edit_path: String,
     reference_format: ImageReferenceFormat,
+    size_format: ImageSizeFormat,
     input_tokens: String,
     output_tokens: String,
+}
+
+/// How an API receives the output shape: pixel `size` or a normalized `aspect_ratio`.
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum ImageSizeFormat {
+    Pixels,
+    AspectRatio,
 }
 
 #[derive(Deserialize, PartialEq)]
@@ -127,8 +151,7 @@ impl ImageApi {
                 "image edits require multipart upload".into(),
             ));
         }
-        let model = format!("{}{}", self.model_prefix, request.model);
-        let size = request.image_aspect.image_size();
+        let model = request.model;
         let encoded = request
             .references
             .iter()
@@ -144,7 +167,16 @@ impl ImageApi {
                 Ok(image_data_url(image.media_type, &data))
             })
             .collect::<Result<Vec<_>>>()?;
-        let mut body = json!({"model": model, "prompt": request.prompt, "n": 1, "size": size});
+        let mut body = json!({"model": model, "prompt": request.prompt, "n": 1});
+        match self.size_format {
+            ImageSizeFormat::Pixels => body["size"] = json!(request.image_aspect.image_size()),
+            ImageSizeFormat::AspectRatio => {
+                body["aspect_ratio"] = json!(request.image_aspect.aspect_ratio());
+            }
+        }
+        if let Some(quality) = request.quality {
+            body["quality"] = json!(quality);
+        }
         if encoded.is_empty() {
             return Ok((&self.generation_path, body));
         }
@@ -171,10 +203,13 @@ impl ImageApi {
         request: &ImageGenerationRequest<'_>,
     ) -> Result<reqwest::multipart::Form> {
         let mut form = reqwest::multipart::Form::new()
-            .text("model", format!("{}{}", self.model_prefix, request.model))
+            .text("model", request.model.to_owned())
             .text("prompt", request.prompt.to_owned())
             .text("n", "1")
             .text("size", request.image_aspect.image_size());
+        if let Some(quality) = request.quality {
+            form = form.text("quality", quality.to_owned());
+        }
         for (index, image) in request.references.iter().enumerate() {
             let extension = match image.media_type {
                 "image/png" => "png",
@@ -284,6 +319,7 @@ mod tests {
             model: "gpt-image-2.5-sunburst",
             prompt: "paint this blue",
             image_aspect: ImageAspect::Landscape,
+            quality: None,
             references: &references,
         };
         request
@@ -301,18 +337,24 @@ mod tests {
         );
         assert!(IMAGE_APIS["openai"].wire(&request).is_err());
         let (endpoint, openrouter) = IMAGE_APIS["openrouter"]
-            .wire(&request)
+            .wire(&ImageGenerationRequest {
+                model: "openai/gpt-image-2.5-sunburst",
+                ..request
+            })
             .expect("OpenRouter JSON edit");
         assert_eq!(endpoint, "images");
         assert_eq!(openrouter["model"], "openai/gpt-image-2.5-sunburst");
         assert_eq!(openrouter["input_references"][0]["type"], "image_url");
-        assert_eq!(openrouter["size"], "1536x1024");
+        assert_eq!(openrouter["aspect_ratio"], "3:2");
+        assert!(openrouter.get("size").is_none());
+        assert!(openrouter.get("quality").is_none());
 
         let (endpoint, portrait) = IMAGE_APIS["openai"]
             .wire(&ImageGenerationRequest {
                 model: "gpt-image-2.5-flare",
                 prompt: "a tall painting",
                 image_aspect: ImageAspect::Portrait,
+                quality: None,
                 references: &[],
             })
             .expect("OpenAI generation");
@@ -333,6 +375,7 @@ mod tests {
                     model: "gpt-image-2.5-sunburst",
                     prompt: "edit",
                     image_aspect: ImageAspect::Portrait,
+                    quality: None,
                     references: &[ImageGenerationReference {
                         media_type: "image/gif",
                         bytes: PNG,
@@ -354,6 +397,7 @@ mod tests {
             model: "gpt-image-2.5-sunburst",
             prompt: "edit",
             image_aspect: ImageAspect::Square,
+            quality: None,
             references: &references,
         };
         request

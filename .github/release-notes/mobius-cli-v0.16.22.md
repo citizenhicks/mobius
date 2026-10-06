@@ -1,0 +1,1 @@
+Preserve independently selected voice routes when changing chat models or provider setups. Consume the expanded provider and media catalogs. Includes gateway and framework 0.16.22 with bounded HTTP and image retries that honor server Retry-After hints.

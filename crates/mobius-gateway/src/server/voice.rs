@@ -49,10 +49,11 @@ impl ConnectionVoice {
                 let call = model
                     .router
                     .start_realtime_voice(
-                        &model.route,
+                        Some(&model.voice),
                         RealtimeVoiceRequest {
                             session_id: session.clone(),
-                            voice: model.voice.clone(),
+                            model: None,
+                            voice: None,
                             offer_sdp,
                             instructions: instructions(
                                 &model.bot_instructions,

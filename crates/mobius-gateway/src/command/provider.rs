@@ -82,6 +82,7 @@ pub(super) async fn register_provider_with_credential(
         tint,
         model_ids,
         reasoning_efforts: options.reasoning_efforts,
+        image_model_ids: Vec::new(),
     };
     request_provider_registration(&endpoint, &token, registration).await?;
     println!("{}", register_provider_json(&selection.provider)?);
@@ -196,6 +197,7 @@ async fn request_provider_registration(
             tint: registration.tint,
             model_ids: registration.model_ids,
             reasoning_efforts: registration.reasoning_efforts,
+            image_model_ids: registration.image_model_ids,
         })
         .await?;
     for _ in 0..MAX_PENDING_FRAMES {

@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use mobius::middleware::manifest::{MiddlewareManifest, MiddlewareSettingManifest};
+use mobius::middleware::manifest::{MiddlewareManifest, MiddlewareSettingManifest, ModelCatalogs};
 use mobius::middleware::subagents::SubagentCeilings;
 use mobius::protocol::{FrontendSettingValue, MiddlewareFeature, ModelChoice};
 
@@ -109,23 +109,23 @@ pub(crate) static MIDDLEWARE: std::sync::LazyLock<[MiddlewareRegistration; 17]> 
         ]
     });
 
-pub(crate) fn features(models: &[ModelChoice]) -> Vec<MiddlewareFeature> {
-    features_with_ceilings(models, SubagentCeilings::default())
+pub(crate) fn features(catalogs: ModelCatalogs<'_>) -> Vec<MiddlewareFeature> {
+    features_with_ceilings(catalogs, SubagentCeilings::default())
 }
 
 pub(crate) fn features_with_ceilings(
-    models: &[ModelChoice],
+    catalogs: ModelCatalogs<'_>,
     ceilings: SubagentCeilings,
 ) -> Vec<MiddlewareFeature> {
     MIDDLEWARE
         .iter()
         .map(|entry| {
-            let mut feature = entry.manifest.feature(models);
+            let mut feature = entry.manifest.feature(catalogs);
             if matches!(entry.kind, BuiltinMiddleware::Subagents) {
                 feature.settings = ceilings
                     .settings()
                     .iter()
-                    .map(|setting| setting.schema(models))
+                    .map(|setting| setting.schema(catalogs))
                     .collect();
             }
             feature
@@ -187,7 +187,7 @@ pub(crate) fn validate_with_ceilings(
     config: &MiddlewareConfig,
     ceilings: SubagentCeilings,
 ) -> Result<()> {
-    let features = features_with_ceilings(&[], ceilings);
+    let features = features_with_ceilings(ModelCatalogs::default(), ceilings);
     for id in config.entries() {
         if let Some(policy) = config.disabled_by(&features, id, None) {
             return Err(Error::Config(format!(
@@ -250,10 +250,10 @@ pub(crate) fn validate_with_ceilings(
 
 pub(crate) fn validate_choices(
     config: &MiddlewareConfig,
-    models: &[ModelChoice],
+    catalogs: ModelCatalogs<'_>,
     selected_model: &ModelChoice,
 ) -> Result<()> {
-    let features = features(models);
+    let features = features(catalogs);
     for id in config.entries() {
         if let Some(policy) = config.disabled_by(&features, id, Some(selected_model)) {
             return Err(Error::Config(format!(
@@ -266,7 +266,7 @@ pub(crate) fn validate_choices(
             setting.validate_choice(
                 entry.manifest.id,
                 config.setting(entry.manifest.id, setting.id()),
-                models,
+                catalogs,
             )?;
         }
     }
@@ -392,7 +392,7 @@ mod tests {
     #[test]
     fn defaults_and_required_features_come_from_core_manifests() {
         let config = default_config();
-        let features = features(&[]);
+        let features = features(ModelCatalogs::default());
 
         assert!(validate(&config).is_ok());
         assert_eq!(config.setting("bots", "collaboration"), None);
@@ -452,7 +452,7 @@ mod tests {
                 .to_string()
                 .contains("incompatible")
         );
-        config.reconcile(&features(&[]), None);
+        config.reconcile(&features(ModelCatalogs::default()), None);
         assert!(!config.enabled("context_offloading"));
         assert!(config.enabled("tasks"));
         assert!(validate(&config).is_ok());
@@ -462,33 +462,62 @@ mod tests {
     }
 
     #[test]
-    fn image_generation_is_disabled_for_an_unsupported_model() {
+    fn image_generation_follows_image_models_not_the_chat_model() {
         let mut config = default_config();
         config.set_enabled("image_generation", true);
-        let models = [ModelChoice {
+        let chat = ModelChoice {
             route: "provider::model::default".into(),
             group: "Provider".into(),
             model: "model".into(),
             reasoning_effort: None,
+            variant_label: None,
             context_window: None,
             supports_image_input: true,
             supports_image_generation: false,
             supports_realtime_voice: false,
             tool_discovery: mobius::protocol::ToolDiscoveryMode::Native,
-        }];
-        assert!(validate_choices(&config, &models, &models[0]).is_err());
-        config.reconcile(&features(&models), Some(&models[0]));
-        assert!(!config.enabled("image_generation"));
-        let mut supported = models;
-        supported[0].supports_image_generation = true;
-        config.set_enabled("image_generation", true);
-        assert!(validate_choices(&config, &supported, &supported[0]).is_ok());
+        };
+        let image = ModelChoice {
+            route: "openai::gpt-image-2.5-sunburst::default".into(),
+            model: "gpt-image-2.5-sunburst".into(),
+            supports_image_generation: true,
+            ..chat.clone()
+        };
+        let models = [chat];
+        let images = [image];
+        let catalogs = ModelCatalogs {
+            models: &models,
+            images: &images,
+        };
+        assert!(validate_choices(&config, catalogs, &models[0]).is_ok());
 
-        let mut sibling = supported[0].clone();
-        sibling.route = "provider::other::default".into();
-        sibling.supports_image_generation = false;
-        let models = [supported[0].clone(), sibling];
-        assert!(validate_choices(&config, &models, &models[1]).is_err());
+        config.set_setting(
+            "image_generation",
+            "model",
+            Some(FrontendSettingValue::String(
+                images[0].route.as_str().into(),
+            )),
+        );
+        assert!(validate_choices(&config, catalogs, &models[0]).is_ok());
+        let options = &features(catalogs)
+            .into_iter()
+            .find(|feature| feature.id == "image_generation")
+            .expect("image feature")
+            .settings[0];
+        assert!(matches!(
+            &options.kind,
+            mobius::protocol::FrontendSettingKind::Select { options, .. }
+                if options.len() == 1 && options[0].value == images[0].route
+        ));
+
+        config.set_setting(
+            "image_generation",
+            "model",
+            Some(FrontendSettingValue::String(
+                "openai::missing::default".into(),
+            )),
+        );
+        assert!(validate_choices(&config, catalogs, &models[0]).is_err());
     }
 
     #[test]
@@ -510,16 +539,20 @@ mod tests {
             group: "Provider · Model".into(),
             model: "model".into(),
             reasoning_effort: Some("high".into()),
+            variant_label: None,
             context_window: Some(200_000),
             supports_image_input: true,
             supports_image_generation: false,
             supports_realtime_voice: false,
             tool_discovery: mobius::protocol::ToolDiscoveryMode::Native,
         }];
-        let subagents = features(&models)
-            .into_iter()
-            .find(|feature| feature.id == "subagents")
-            .expect("subagent feature");
+        let subagents = features(ModelCatalogs {
+            models: &models,
+            images: &[],
+        })
+        .into_iter()
+        .find(|feature| feature.id == "subagents")
+        .expect("subagent feature");
         let route = subagents
             .settings
             .iter()
@@ -542,14 +575,24 @@ mod tests {
             Some(FrontendSettingValue::String(models[0].route.clone())),
         );
         assert!(validate(&config).is_ok());
-        assert!(validate_choices(&config, &models, &models[0]).is_ok());
-        assert!(validate_choices(&config, &[], &models[0]).is_err());
+        assert!(
+            validate_choices(
+                &config,
+                ModelCatalogs {
+                    models: &models,
+                    images: &[]
+                },
+                &models[0]
+            )
+            .is_ok()
+        );
+        assert!(validate_choices(&config, ModelCatalogs::default(), &models[0]).is_err());
     }
 
     #[test]
     fn sandbox_manifest_drives_generic_approval_settings() {
         let config = default_config();
-        let sandbox = features(&[])
+        let sandbox = features(ModelCatalogs::default())
             .into_iter()
             .find(|feature| feature.id == "sandbox")
             .expect("sandbox feature");
@@ -616,7 +659,7 @@ mod tests {
         }
         assert!(validate(&config).is_err());
         validate_with_ceilings(&config, ceilings).expect("operator permits larger agent tree");
-        let feature = features_with_ceilings(&[], ceilings)
+        let feature = features_with_ceilings(ModelCatalogs::default(), ceilings)
             .into_iter()
             .find(|feature| feature.id == "subagents")
             .expect("subagents");

@@ -25,6 +25,15 @@ macro_rules! middleware_manifest {
 }
 pub(crate) use middleware_manifest;
 
+/// Live gateway model lists that dynamic select settings draw their choices from.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ModelCatalogs<'a> {
+    /// Selectable chat model routes.
+    pub models: &'a [ModelChoice],
+    /// Selectable image model routes.
+    pub images: &'a [ModelChoice],
+}
+
 /// Static metadata and configurable policy exported by one middleware module.
 #[derive(Debug, Clone, Copy)]
 pub struct MiddlewareManifest {
@@ -47,7 +56,7 @@ pub struct MiddlewareManifest {
 impl MiddlewareManifest {
     /// Materializes frontend-safe settings using the gateway's current model routes.
     #[must_use]
-    pub fn feature(self, models: &[ModelChoice]) -> MiddlewareFeature {
+    pub fn feature(self, catalogs: ModelCatalogs<'_>) -> MiddlewareFeature {
         MiddlewareFeature {
             id: self.id.into(),
             label: self.label.into(),
@@ -57,7 +66,7 @@ impl MiddlewareManifest {
             settings: self
                 .settings
                 .iter()
-                .map(|setting| setting.schema(models))
+                .map(|setting| setting.schema(catalogs))
                 .collect(),
         }
     }
@@ -126,6 +135,18 @@ impl MiddlewareSettingManifest {
         )
     }
 
+    /// Returns whether this setting selects from the gateway's live image models.
+    #[must_use]
+    pub fn uses_image_models(&self) -> bool {
+        matches!(
+            &self,
+            Self::Select {
+                choices: MiddlewareSettingChoices::ImageModels,
+                ..
+            }
+        )
+    }
+
     /// Returns the value used by new gateway configurations.
     #[must_use]
     pub fn default_value(&self) -> Option<FrontendSettingValue> {
@@ -139,7 +160,7 @@ impl MiddlewareSettingManifest {
 
     /// Converts this declaration into the frontend-neutral setting schema.
     #[must_use]
-    pub fn schema(&self, models: &[ModelChoice]) -> FrontendSetting {
+    pub fn schema(&self, catalogs: ModelCatalogs<'_>) -> FrontendSetting {
         match self {
             Self::Integer {
                 id,
@@ -174,7 +195,7 @@ impl MiddlewareSettingManifest {
                 description: description.into(),
                 composer: *composer,
                 kind: FrontendSettingKind::Select {
-                    options: choices.options(models),
+                    options: choices.options(catalogs),
                     unset_label: unset_label.clone(),
                 },
             },
@@ -211,8 +232,11 @@ impl MiddlewareSettingManifest {
             ) if !value.trim().is_empty()
                 && value.len() <= *max_bytes
                 && match choices {
-                    MiddlewareSettingChoices::Static(_) => choices.contains(&[], value),
-                    MiddlewareSettingChoices::ModelRoutes => true,
+                    MiddlewareSettingChoices::Static(_) => {
+                        choices.contains(ModelCatalogs::default(), value)
+                    }
+                    MiddlewareSettingChoices::ModelRoutes
+                    | MiddlewareSettingChoices::ImageModels => true,
                 } =>
             {
                 Ok(())
@@ -246,20 +270,18 @@ impl MiddlewareSettingManifest {
         &self,
         middleware: &str,
         value: Option<&FrontendSettingValue>,
-        models: &[ModelChoice],
+        catalogs: ModelCatalogs<'_>,
     ) -> Result<()> {
-        let Self::Select {
-            id,
-            choices: MiddlewareSettingChoices::ModelRoutes,
-            ..
-        } = self
-        else {
+        let Self::Select { id, choices, .. } = self else {
             return Ok(());
         };
+        if matches!(choices, MiddlewareSettingChoices::Static(_)) {
+            return Ok(());
+        }
         let Some(FrontendSettingValue::String(value)) = value else {
             return Ok(());
         };
-        if MiddlewareSettingChoices::ModelRoutes.contains(models, value) {
+        if choices.contains(catalogs, value) {
             Ok(())
         } else {
             Err(Error::Config(format!(
@@ -282,10 +304,12 @@ pub enum MiddlewareSettingChoices {
     Static(Vec<MiddlewareSettingChoice>),
     /// Selects the model routes case.
     ModelRoutes,
+    /// Selects the image models case.
+    ImageModels,
 }
 
 impl MiddlewareSettingChoices {
-    fn options(&self, models: &[ModelChoice]) -> Vec<FrontendSettingOption> {
+    fn options(&self, catalogs: ModelCatalogs<'_>) -> Vec<FrontendSettingOption> {
         match self {
             Self::Static(choices) => choices
                 .iter()
@@ -298,29 +322,40 @@ impl MiddlewareSettingChoices {
                     disables: choice.disables.clone(),
                 })
                 .collect(),
-            Self::ModelRoutes => models
-                .iter()
-                .map(|choice| FrontendSettingOption {
-                    value: choice.route.clone(),
-                    label: choice.reasoning_effort.as_ref().map_or_else(
-                        || choice.group.clone(),
-                        |effort| format!("{} · {effort}", choice.group),
-                    ),
-                    description: format!("{} · {}", choice.model, choice.route),
-                    symbol: None,
-                    tone: FrontendTone::Neutral,
-                    disables: Vec::new(),
-                })
-                .collect(),
+            Self::ModelRoutes => route_options(catalogs.models),
+            Self::ImageModels => route_options(catalogs.images),
         }
     }
 
-    fn contains(&self, models: &[ModelChoice], value: &str) -> bool {
-        match self {
-            Self::Static(choices) => choices.iter().any(|choice| choice.value == value),
-            Self::ModelRoutes => models.iter().any(|choice| choice.route == value),
-        }
+    fn contains(&self, catalogs: ModelCatalogs<'_>, value: &str) -> bool {
+        let routes = match self {
+            Self::Static(choices) => return choices.iter().any(|choice| choice.value == value),
+            Self::ModelRoutes => catalogs.models,
+            Self::ImageModels => catalogs.images,
+        };
+        routes.iter().any(|choice| choice.route == value)
     }
+}
+
+fn route_options(choices: &[ModelChoice]) -> Vec<FrontendSettingOption> {
+    choices
+        .iter()
+        .map(|choice| FrontendSettingOption {
+            value: choice.route.clone(),
+            label: choice
+                .variant_label
+                .as_deref()
+                .or(choice.reasoning_effort.as_deref())
+                .map_or_else(
+                    || choice.group.to_owned(),
+                    |variant| format!("{} · {variant}", choice.group),
+                ),
+            description: format!("{} · {}", choice.model, choice.route),
+            symbol: None,
+            tone: FrontendTone::Neutral,
+            disables: Vec::new(),
+        })
+        .collect()
 }
 
 /// One static select choice declared by a middleware module.

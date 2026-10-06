@@ -304,6 +304,7 @@ mod tests {
                 Default::default(),
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
             )
             .expect("provider");
         let mut bot_config = config
@@ -365,6 +366,7 @@ mod tests {
                 AgentComposition::default().provider,
                 "Test".into(),
                 Default::default(),
+                Vec::new(),
                 Vec::new(),
                 Vec::new(),
             )

@@ -171,6 +171,8 @@ pub(crate) struct ConfiguredProvider {
     pub(crate) tint: ProviderTint,
     pub(crate) model_ids: Vec<String>,
     pub(crate) reasoning_efforts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) image_model_ids: Vec<String>,
 }
 
 /// Chat ownership and workspace, independent of Bot configuration.
@@ -270,6 +272,7 @@ impl GatewayConfig {
     }
 
     /// Registers one configured provider and establishes the first Bot defaults.
+    #[cfg(test)]
     pub(crate) fn registering_provider(
         &self,
         selection: ProviderConfig,
@@ -277,26 +280,38 @@ impl GatewayConfig {
         tint: ProviderTint,
         model_ids: Vec<String>,
         reasoning_efforts: Vec<String>,
+        image_model_ids: Vec<String>,
     ) -> Result<Self> {
-        if let Some(configured) = self.configured_providers.get(&selection.instance)
-            && configured.selection.provider != selection.provider
-        {
-            return Err(Error::Config(format!(
-                "provider instance `{}` already belongs to `{}`",
-                selection.instance, configured.selection.provider
-            )));
-        }
-        let configured = ConfiguredProvider {
-            selection: selection.clone(),
+        self.registering_configured(ConfiguredProvider {
+            selection,
             label,
             tint,
             model_ids,
             reasoning_efforts,
-        };
+            image_model_ids,
+        })
+    }
+
+    /// Registers one provider setup and establishes the first Bot defaults.
+    pub(crate) fn registering_configured(&self, configured: ConfiguredProvider) -> Result<Self> {
+        if let Some(current) = self
+            .configured_providers
+            .get(&configured.selection.instance)
+            && current.selection.provider != configured.selection.provider
+        {
+            return Err(Error::Config(format!(
+                "provider instance `{}` already belongs to `{}`",
+                configured.selection.instance, current.selection.provider
+            )));
+        }
         let mut next = self.clone();
+        let default_selection = self
+            .bot_defaults
+            .is_none()
+            .then(|| configured.selection.clone());
         next.configured_providers
-            .insert(selection.instance.clone(), configured);
-        if self.bot_defaults.is_none() {
+            .insert(configured.selection.instance.clone(), configured);
+        if let Some(selection) = default_selection {
             let config = AgentComposition {
                 provider: selection,
                 ..AgentComposition::default()

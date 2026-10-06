@@ -206,6 +206,9 @@ pub(super) async fn register_provider(
                 .unwrap_or_default(),
             model_ids,
             reasoning_efforts,
+            image_model_ids: state
+                .instance()
+                .map_or_else(Vec::new, |instance| instance.image_model_ids.to_vec()),
         })
         .await
         .map_err(gateway_error)?;

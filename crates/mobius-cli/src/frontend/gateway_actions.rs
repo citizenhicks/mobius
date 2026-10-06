@@ -197,6 +197,7 @@ mod tests {
             selection,
             model_ids: Vec::new(),
             reasoning_efforts: Vec::new(),
+            image_model_ids: Vec::new(),
         }];
         let profile = ProfileSnapshot {
             user_name: Some("user".into()),

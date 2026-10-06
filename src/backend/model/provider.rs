@@ -61,8 +61,8 @@ pub use reqwest::Client as HttpClient;
 /// Redirect policy for shared HTTP clients.
 pub use reqwest::redirect::Policy as HttpRedirectPolicy;
 
-/// A reasoning choice advertised for one model.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// A reasoning effort, image tier or voice advertised as a variant of one model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReasoningPreset {
     /// The identifier.
@@ -70,6 +70,7 @@ pub struct ReasoningPreset {
     /// The label.
     pub label: String,
     /// The description.
+    #[serde(default)]
     pub description: String,
 }
 
@@ -93,15 +94,36 @@ pub struct ModelPreset {
     pub tool_discovery: ToolDiscoveryMode,
 }
 
+/// An image or voice model advertised by its backend provider.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MediaModelPreset {
+    /// The identifier.
+    pub id: String,
+    /// The label.
+    pub label: String,
+    /// The description.
+    pub description: String,
+    /// Selectable variants: image tiers with their provider model IDs, or voices.
+    #[serde(default)]
+    pub variants: Vec<ReasoningPreset>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ModelCatalog {
     pub(super) default_model: Option<String>,
     pub(super) models: Vec<ModelPreset>,
+    #[serde(default)]
+    pub(super) image_models: Vec<MediaModelPreset>,
 }
 
 impl ModelCatalog {
     pub(super) fn validate(&self) -> Result<()> {
+        unique_ids(self.image_models.iter().map(|model| model.id.as_str()))?;
+        for model in &self.image_models {
+            unique_ids(model.variants.iter().map(|variant| variant.id.as_str()))?;
+        }
         for (index, model) in self.models.iter().enumerate() {
             if model.id.trim().is_empty()
                 || self.models[..index]
@@ -134,6 +156,18 @@ impl ModelCatalog {
         }
         Ok(())
     }
+}
+
+pub(super) fn unique_ids<'a>(ids: impl Iterator<Item = &'a str>) -> Result<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    for id in ids {
+        if id.trim().is_empty() || !seen.insert(id) {
+            return Err(Error::Config(format!(
+                "model id `{id}` is empty or duplicated"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// One provider-reported account usage window.
@@ -469,10 +503,11 @@ pub struct ProviderDefinition {
     supports_image_input: bool,
     supports_image_generation: bool,
     realtime_voices: &'static [&'static str],
+    image_models: &'static [MediaModelPreset],
+    voice_models: &'static [MediaModelPreset],
     tool_discovery: ToolDiscoveryMode,
     custom_endpoint_tool_discovery: Option<ToolDiscoveryMode>,
     default_base_url: Option<&'static str>,
-    native_custom_endpoints: bool,
     credentialless_endpoints: bool,
     builder: ProviderBuilder,
 }
@@ -497,10 +532,11 @@ impl ProviderDefinition {
             supports_image_input: false,
             supports_image_generation: false,
             realtime_voices: &[],
+            image_models: catalog.map_or(&[], |catalog| catalog.image_models.as_slice()),
+            voice_models: &[],
             tool_discovery: metadata.tool_discovery,
             custom_endpoint_tool_discovery: metadata.custom_endpoint_tool_discovery,
             default_base_url: Some(&metadata.base_url),
-            native_custom_endpoints: false,
             credentialless_endpoints: false,
             builder,
         }
@@ -520,21 +556,14 @@ impl ProviderDefinition {
         self
     }
 
-    pub(crate) const fn with_realtime_voices(mut self, voices: &'static [&'static str]) -> Self {
+    pub(crate) const fn with_realtime_voices(
+        mut self,
+        voices: &'static [&'static str],
+        models: &'static [MediaModelPreset],
+    ) -> Self {
         self.realtime_voices = voices;
+        self.voice_models = models;
         self
-    }
-
-    /// Custom roots for this provider implement its native API, including images and voice.
-    pub(crate) const fn with_native_custom_endpoints(mut self) -> Self {
-        self.native_custom_endpoints = true;
-        self
-    }
-
-    /// Reports whether custom roots retain this provider's native capabilities.
-    #[must_use]
-    pub const fn native_custom_endpoints(&self) -> bool {
-        self.native_custom_endpoints
     }
 
     /// Allows explicitly configured non-default endpoints to omit provider credentials.
@@ -580,6 +609,18 @@ impl ProviderDefinition {
         self.models
     }
 
+    #[must_use]
+    /// Returns the advertised image models; empty when instances list their own.
+    pub const fn image_models(&self) -> &'static [MediaModelPreset] {
+        self.image_models
+    }
+
+    #[must_use]
+    /// Returns the advertised realtime voice models, default first.
+    pub const fn voice_models(&self) -> &'static [MediaModelPreset] {
+        self.voice_models
+    }
+
     /// Returns the model selected for a newly configured provider.
     #[must_use]
     pub const fn default_model(&self) -> Option<&'static str> {
@@ -598,26 +639,19 @@ impl ProviderDefinition {
         self.supports_image_input
     }
 
-    /// Reports a provider capability for the selected endpoint.
+    /// Reports a provider capability on any endpoint the operator configures.
     #[must_use]
-    pub fn supports(&self, capability: ModelCapability, base_url: Option<&str>) -> bool {
+    pub const fn supports(&self, capability: ModelCapability) -> bool {
         match capability {
-            ModelCapability::ImageGeneration => {
-                self.supports_image_generation
-                    && (self.native_custom_endpoints || self.uses_default_endpoint(base_url))
-            }
-            ModelCapability::RealtimeVoice => !self.realtime_voices(base_url).is_empty(),
+            ModelCapability::ImageGeneration => self.supports_image_generation,
+            ModelCapability::RealtimeVoice => !self.realtime_voices.is_empty(),
         }
     }
 
-    /// Returns supported voices, with the default first, for this provider endpoint.
+    /// Returns supported voices, with the default first.
     #[must_use]
-    pub fn realtime_voices(&self, base_url: Option<&str>) -> &'static [&'static str] {
-        if self.native_custom_endpoints || self.uses_default_endpoint(base_url) {
-            self.realtime_voices
-        } else {
-            &[]
-        }
+    pub const fn realtime_voices(&self) -> &'static [&'static str] {
+        self.realtime_voices
     }
 
     /// Resolves cache behavior for one model and endpoint selection.
@@ -1097,68 +1131,32 @@ mod tests {
     }
 
     #[test]
-    fn provider_manifests_scope_image_generation_to_native_endpoints() {
+    fn capabilities_follow_the_provider_on_any_endpoint() {
         for id in ["openai_socket", "openai_codex", "openrouter", "responses"] {
             assert!(
                 provider(id)
                     .expect("image provider")
-                    .supports(ModelCapability::ImageGeneration, None)
+                    .supports(ModelCapability::ImageGeneration)
             );
         }
         for id in ["deepseek", "kimi", "anthropic"] {
             assert!(
                 !provider(id)
                     .expect("non-image provider")
-                    .supports(ModelCapability::ImageGeneration, None)
+                    .supports(ModelCapability::ImageGeneration)
             );
         }
-        for id in ["openrouter", "responses"] {
-            assert!(!provider(id).expect("image provider").supports(
-                ModelCapability::ImageGeneration,
-                Some("https://example.com/v1"),
-            ));
+        for id in ["openai_socket", "openai_codex", "responses"] {
+            assert!(
+                provider(id)
+                    .expect("voice provider")
+                    .supports(ModelCapability::RealtimeVoice)
+            );
         }
-    }
-
-    #[test]
-    fn provider_capabilities_scope_voice_to_native_endpoints() {
-        let native = provider("openai_socket").expect("native provider");
-        native
-            .validate_base_url(Some("https://proxy.example/api/native/v1"))
-            .expect("native root");
-        assert!(native.native_custom_endpoints());
-        assert!(native.supports(
-            ModelCapability::ImageGeneration,
-            Some("https://proxy.example/api/native/v1")
-        ));
-        assert!(native.supports(
-            ModelCapability::RealtimeVoice,
-            Some("https://proxy.example/api/native/v1")
-        ));
-        assert!(
-            provider("openai_codex")
-                .expect("Codex")
-                .native_custom_endpoints()
-        );
-        assert!(
-            provider("openai_codex")
-                .expect("Codex")
-                .validate_base_url(Some("https://proxy.example/v1"))
-                .is_ok()
-        );
-        assert!(
-            provider("responses")
-                .expect("voice provider")
-                .supports(ModelCapability::RealtimeVoice, None,)
-        );
-        assert!(!provider("responses").expect("voice provider").supports(
-            ModelCapability::RealtimeVoice,
-            Some("https://example.com/v1"),
-        ));
         assert!(
             !provider("openrouter")
                 .expect("non-voice provider")
-                .supports(ModelCapability::RealtimeVoice, None,)
+                .supports(ModelCapability::RealtimeVoice)
         );
     }
 

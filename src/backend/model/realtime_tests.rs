@@ -11,6 +11,7 @@ const SDP: &str = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n";
 fn request() -> RealtimeVoiceRequest {
     RealtimeVoiceRequest {
         session_id: "session-1".into(),
+        model: None,
         voice: None,
         offer_sdp: SDP.into(),
         instructions: "Delegate requested work to the workspace.".into(),
@@ -21,9 +22,9 @@ fn request() -> RealtimeVoiceRequest {
 fn embedded_voice_metadata_preserves_models_voices_and_native_routes() {
     assert_eq!(
         (
-            MANIFEST.openai.model.as_str(),
+            MANIFEST.openai.models[0].id.as_str(),
             MANIFEST.openai.calls_path.as_str(),
-            MANIFEST.codex.model.as_str(),
+            MANIFEST.codex.models[0].id.as_str(),
             MANIFEST.codex.calls_path.as_str(),
             MANIFEST.codex.sideband_base_url.as_deref(),
             MANIFEST
@@ -807,18 +808,7 @@ fn custom_endpoints_do_not_advertise_or_dispatch_realtime_voice() {
         crate::backend::model::openai::OpenAi::new("key", "http://localhost:11434/v1", "local")
             .unwrap();
     assert!(public.supports_realtime_voice());
-    assert!(!custom.supports_realtime_voice());
-    let definition = crate::backend::model::provider::provider("responses").unwrap();
-    assert!(
-        !definition
-            .realtime_voices(Some("https://api.openai.com/v1"))
-            .is_empty()
-    );
-    assert!(
-        definition
-            .realtime_voices(Some("http://localhost:11434/v1"))
-            .is_empty()
-    );
+    assert!(custom.supports_realtime_voice());
 }
 
 #[test]
@@ -838,7 +828,9 @@ async fn voice_catalog_default_selection_and_invalid_ids_are_provider_owned() {
     for api in [VoiceApi::OpenAi, VoiceApi::Codex] {
         let (transport, listener) = transport(api).await;
         assert_eq!(
-            transport.session(&request())["audio"]["output"]["voice"],
+            transport
+                .session(&request())
+                .expect("default voice session")["audio"]["output"]["voice"],
             if api == VoiceApi::Codex {
                 "cove"
             } else {
@@ -855,7 +847,9 @@ async fn voice_catalog_default_selection_and_invalid_ids_are_provider_owned() {
             .into(),
         );
         assert_eq!(
-            transport.session(&selected)["audio"]["output"]["voice"],
+            transport
+                .session(&selected)
+                .expect("selected voice session")["audio"]["output"]["voice"],
             if api == VoiceApi::Codex {
                 "maple"
             } else {

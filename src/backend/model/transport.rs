@@ -7,6 +7,46 @@ use crate::Error;
 use crate::ProviderError;
 use crate::Result;
 
+pub(crate) fn retry_delay(
+    error: &crate::ProviderError,
+    retry: usize,
+    request_id: &str,
+    transport: &crate::backend::model::ModelTransportSettings,
+) -> Duration {
+    let multiplier = 1_u64
+        .checked_shl(u32::try_from(retry).unwrap_or(u32::MAX))
+        .unwrap_or(u64::MAX);
+    let exponential_ms = transport
+        .stream_retry_backoff_ms
+        .saturating_mul(multiplier)
+        .min(transport.stream_retry_max_backoff_ms);
+    let jitter = request_id
+        .bytes()
+        .fold(u64::try_from(retry).unwrap_or(u64::MAX), |value, byte| {
+            value.wrapping_mul(16_777_619).wrapping_add(u64::from(byte))
+        });
+    let jitter_percent = 80 + jitter % 41;
+    let backoff = Duration::from_millis(exponential_ms.saturating_mul(jitter_percent) / 100);
+    server_retry_delay(error).map_or(backoff, |delay| delay.max(backoff))
+}
+
+pub(super) fn server_retry_delay(error: &ProviderError) -> Option<Duration> {
+    let value = error.retry_after()?.trim();
+    let delay = value
+        .parse::<u64>()
+        .map(Duration::from_secs)
+        .ok()
+        .or_else(|| {
+            let date = chrono::DateTime::parse_from_rfc2822(value).ok()?;
+            Some(
+                (date.with_timezone(&chrono::Utc) - chrono::Utc::now())
+                    .to_std()
+                    .unwrap_or_default(),
+            )
+        })?;
+    std::time::Instant::now().checked_add(delay).map(|_| delay)
+}
+
 pub(super) const MAX_ERROR_BYTES: usize = 64 * 1024;
 pub(super) const MAX_SSE_FRAME_BYTES: usize = 8 * 1024 * 1024;
 pub(super) const MAX_STREAM_BYTES: usize = 64 * 1024 * 1024;
@@ -28,11 +68,11 @@ crate::embedded_config! {
         pub socket_io_timeout_ms: u64,
         /// Maximum gap between WebSocket stream events.
         pub socket_idle_timeout_ms: u64,
-        /// Retries before a model stream fails.
+        /// Retries before a model or image request fails.
         pub stream_retry_limit: u32,
-        /// Initial stream retry backoff.
+        /// Initial model and image retry backoff.
         pub stream_retry_backoff_ms: u64,
-        /// Ceiling for local exponential stream backoff.
+        /// Ceiling for local exponential model and image backoff.
         pub stream_retry_max_backoff_ms: u64,
         /// Retries before native compaction fails.
         pub compaction_retry_limit: u32,
@@ -286,13 +326,42 @@ pub(super) async fn status_error(mut response: Response, provider: &str) -> Erro
         }
     }
     Error::Provider(ProviderError::http(
-        format!(
-            "{provider} HTTP {status}: {}",
-            String::from_utf8_lossy(&bytes)
-        ),
+        http_error_message(provider, status, &bytes),
         status.as_u16(),
         retry_after,
     ))
+}
+
+/// `{prefix} HTTP {status}`, followed by the human part of the body when it has one, so
+/// frontends show the provider's message rather than its raw JSON.
+pub(super) fn http_error_message(
+    prefix: &str,
+    status: impl std::fmt::Display,
+    body: &[u8],
+) -> String {
+    let detail = error_detail(body);
+    if detail.is_empty() {
+        format!("{prefix} HTTP {status}")
+    } else {
+        format!("{prefix} HTTP {status}: {detail}")
+    }
+}
+
+/// A JSON error's `message` (nested under `error` or top-level, or `error` itself when it is
+/// a string), else the trimmed text.
+fn error_detail(body: &[u8]) -> String {
+    let json = serde_json::from_slice::<serde_json::Value>(body).ok();
+    let message = json.as_ref().and_then(|value| {
+        let error = value.get("error").unwrap_or(value);
+        error
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| error.as_str())
+    });
+    match message {
+        Some(message) => message.trim().to_owned(),
+        None => String::from_utf8_lossy(body).trim().to_owned(),
+    }
 }
 
 #[cfg(test)]
@@ -300,6 +369,32 @@ mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
+
+    #[test]
+    fn http_errors_show_the_provider_message_not_raw_json() {
+        let message = |body: &str| {
+            http_error_message("WebSocket", "503 Service Unavailable", body.as_bytes())
+        };
+        assert_eq!(
+            message(
+                r#"{"error":{"code":"cloud_model_error","message":"Cloud model service unavailable","status":503}}"#
+            ),
+            "WebSocket HTTP 503 Service Unavailable: Cloud model service unavailable"
+        );
+        assert_eq!(
+            message(r#"{"message":"Rate limited"}"#),
+            "WebSocket HTTP 503 Service Unavailable: Rate limited"
+        );
+        assert_eq!(
+            message(r#"{"error":"overloaded"}"#),
+            "WebSocket HTTP 503 Service Unavailable: overloaded"
+        );
+        assert_eq!(
+            message(" upstream down \n"),
+            "WebSocket HTTP 503 Service Unavailable: upstream down"
+        );
+        assert_eq!(message(""), "WebSocket HTTP 503 Service Unavailable");
+    }
 
     #[test]
     fn sse_framing_handles_crlf_and_multiline_data() {

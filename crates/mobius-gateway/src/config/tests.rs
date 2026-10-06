@@ -176,6 +176,7 @@ fn generated_toml_round_trips_manifest_settings() {
             Default::default(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("register provider");
     let usage = TokenUsage {
@@ -216,6 +217,7 @@ fn opening_config_rejects_removed_automatic_approval_settings_without_rewrite() 
             AgentComposition::default().provider,
             "Test".into(),
             Default::default(),
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         )
@@ -278,6 +280,7 @@ fn extension_selection_is_a_stable_optional_reference() {
             AgentComposition::default().provider,
             "Test".into(),
             Default::default(),
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         )
@@ -347,6 +350,7 @@ fn provider_registration_never_silently_changes_existing_defaults() {
             Default::default(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("register Kimi");
     let openrouter = ProviderConfig {
@@ -365,6 +369,7 @@ fn provider_registration_never_silently_changes_existing_defaults() {
             "Test".into(),
             Default::default(),
             vec![openrouter.model.clone(), "anthropic/claude-opus-4.1".into()],
+            Vec::new(),
             Vec::new(),
         )
         .expect("register OpenRouter");
@@ -397,6 +402,7 @@ fn provider_registration_never_silently_changes_existing_defaults() {
             Default::default(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect_err("an existing instance must keep its provider");
     assert!(
@@ -413,6 +419,7 @@ fn provider_registration_never_silently_changes_existing_defaults() {
             updated.clone(),
             "Test".into(),
             Default::default(),
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         )
@@ -443,6 +450,7 @@ fn configured_custom_provider_keeps_its_endpoint_and_model() {
             Default::default(),
             vec![selection.model.clone()],
             vec!["provider-defined".into()],
+            Vec::new(),
         )
         .expect("register custom provider");
 
@@ -491,6 +499,7 @@ fn browser_authenticated_bot_selections_are_bound_to_the_registered_endpoint() {
                 Default::default(),
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
             )
             .expect("trusted operator registration");
         gateway
@@ -508,7 +517,7 @@ fn browser_authenticated_bot_selections_are_bound_to_the_registered_endpoint() {
             "structural URL validation cannot authorize credential destinations"
         );
         assert!(
-            validate_bot_compatibility(&gateway, &bot, &[])
+            validate_bot_compatibility(&gateway, &bot, Default::default())
                 .expect_err("Bot cannot redirect browser credentials")
                 .to_string()
                 .contains("operator-registered")
@@ -518,11 +527,12 @@ fn browser_authenticated_bot_selections_are_bound_to_the_registered_endpoint() {
             crate::provider_catalog::selected_base_url(definition, &selection)
                 .expect("effective endpoint")
         ));
-        validate_bot_compatibility(&gateway, &bot, &[]).expect("normalized registered endpoint");
+        validate_bot_compatibility(&gateway, &bot, Default::default())
+            .expect("normalized registered endpoint");
         if endpoint.is_some() {
             bot.provider.base_url = None;
             assert!(
-                validate_bot_compatibility(&gateway, &bot, &[]).is_err(),
+                validate_bot_compatibility(&gateway, &bot, Default::default()).is_err(),
                 "implicit native endpoint cannot replace the registered proxy"
             );
         }
@@ -549,6 +559,7 @@ fn openrouter_accepts_a_credentialless_custom_https_endpoint() {
             "Test".into(),
             Default::default(),
             vec![selection.model],
+            Vec::new(),
             Vec::new(),
         )
         .expect("credentialless OpenRouter endpoint");
@@ -578,6 +589,7 @@ fn credentialless_endpoint_rejects_openrouter_default_aliases() {
                 "Test".into(),
                 Default::default(),
                 vec![selection.model],
+                Vec::new(),
                 Vec::new(),
             )
             .expect_err("default endpoint origin must require provider authentication");
@@ -611,6 +623,7 @@ fn credentialless_endpoint_requires_https() {
             Default::default(),
             vec![selection.model],
             Vec::new(),
+            Vec::new(),
         )
         .expect_err("credentialless endpoint must require HTTPS");
 
@@ -643,6 +656,7 @@ fn credentialless_endpoint_rejects_secret_bearing_url_components() {
                 Default::default(),
                 vec![selection.model],
                 Vec::new(),
+                Vec::new(),
             )
             .expect_err("secret-bearing endpoint must be rejected");
     }
@@ -668,6 +682,7 @@ fn credentialless_endpoint_requires_provider_opt_in() {
             "Test".into(),
             Default::default(),
             vec![selection.model],
+            Vec::new(),
             Vec::new(),
         )
         .expect_err("native OpenAI endpoints require credentials");
@@ -700,6 +715,7 @@ fn custom_provider_registration_validates_its_model_catalog() {
             Default::default(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect_err("custom catalog must not be empty");
     let duplicate = config
@@ -708,6 +724,7 @@ fn custom_provider_registration_validates_its_model_catalog() {
             "Test".into(),
             Default::default(),
             vec![selection.model.clone(), selection.model.clone()],
+            Vec::new(),
             Vec::new(),
         )
         .expect_err("custom catalog IDs must be unique");
@@ -718,6 +735,7 @@ fn custom_provider_registration_validates_its_model_catalog() {
             Default::default(),
             vec![" anthropic/claude-sonnet-4".into()],
             Vec::new(),
+            Vec::new(),
         )
         .expect_err("custom catalog IDs must be canonical");
     let duplicate_reasoning = config
@@ -727,6 +745,7 @@ fn custom_provider_registration_validates_its_model_catalog() {
             Default::default(),
             vec![selection.model.clone()],
             vec!["high".into(), "high".into()],
+            Vec::new(),
         )
         .expect_err("custom reasoning efforts must be unique");
     let mut missing_reasoning = selection;
@@ -738,6 +757,7 @@ fn custom_provider_registration_validates_its_model_catalog() {
             Default::default(),
             vec!["anthropic/claude-sonnet-4".into()],
             vec!["medium".into()],
+            Vec::new(),
         )
         .expect_err("selected custom reasoning must be configured");
 
@@ -775,6 +795,7 @@ fn custom_provider_catalogs_accept_opaque_ids_but_reject_ambiguous_routes() {
             Default::default(),
             vec!["vendor::model".into()],
             Vec::new(),
+            Vec::new(),
         )
         .expect("opaque model ID");
     let collision = config
@@ -793,6 +814,7 @@ fn custom_provider_catalogs_accept_opaque_ids_but_reject_ambiguous_routes() {
             Default::default(),
             vec!["vendor:".into(), "vendor".into()],
             vec!["high".into(), ":high".into()],
+            Vec::new(),
         )
         .expect_err("distinct catalog pairs must not share a route");
 
@@ -824,6 +846,7 @@ fn custom_provider_catalogs_bound_the_total_generated_routes() {
             Default::default(),
             models,
             efforts,
+            Vec::new(),
         )
         .expect("64 custom routes");
 
@@ -842,6 +865,7 @@ fn custom_provider_catalogs_bound_the_total_generated_routes() {
             "Test".into(),
             Default::default(),
             vec!["local-model".into()],
+            Vec::new(),
             Vec::new(),
         )
         .expect_err("65 total custom routes must fail");
@@ -869,6 +893,7 @@ fn provider_registration_rejects_a_catalog_that_invalidates_the_current_default(
             Default::default(),
             vec![model.clone()],
             vec!["high".into(), "medium".into()],
+            Vec::new(),
         )
         .expect("register provider");
 
@@ -888,6 +913,7 @@ fn provider_registration_rejects_a_catalog_that_invalidates_the_current_default(
             Default::default(),
             vec![model],
             vec!["medium".into()],
+            Vec::new(),
         )
         .expect_err("updated catalog must preserve current default membership");
 
@@ -918,6 +944,7 @@ fn default_and_persisted_config_validate_custom_reasoning_membership() {
             Default::default(),
             vec![model],
             vec!["high".into(), "medium".into()],
+            Vec::new(),
         )
         .expect("register provider");
     let mut replacement = config
@@ -967,6 +994,7 @@ fn provider_catalog_rejects_out_of_catalog_model_and_reasoning() {
             Default::default(),
             vec![model],
             vec!["high".into(), "medium".into()],
+            Vec::new(),
         )
         .expect("register provider");
     let mut invalid_model = gateway
@@ -1003,6 +1031,7 @@ fn saving_defaults_is_revisioned_and_does_not_change_existing_chat_specs() {
             AgentComposition::default().provider,
             "Test".into(),
             Default::default(),
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         )
@@ -1402,45 +1431,16 @@ fn config_rejects_an_empty_system_prompt() {
 }
 
 #[test]
-fn realtime_voice_selection_uses_the_provider_catalog_and_persists() {
-    for (provider_id, voice, invalid_voice) in [
-        ("openai_socket", "cedar", "cove"),
-        ("openai_codex", "cove", "cedar"),
-        ("responses", "cedar", "cove"),
-    ] {
-        let mut config = AgentComposition::default();
-        config.provider.provider = provider_id.into();
-        config.provider.instance = provider_id.into();
-        config.provider.model = "gpt-6.1-sol".into();
-        config.provider.base_url = provider(provider_id)
-            .expect("provider")
-            .default_base_url()
-            .map(str::to_string);
-        config.realtime_voice = Some(voice.into());
-        validate_agent_composition(&config).expect("advertised voice");
-        let stored = toml::to_string(&config).expect("encode Bot configuration");
-        assert_eq!(
-            toml::from_str::<AgentComposition>(&stored).expect("decode"),
-            config
-        );
-
-        config.realtime_voice = Some(invalid_voice.into());
-        assert!(
-            validate_agent_composition(&config)
-                .expect_err("unsupported voice")
-                .to_string()
-                .contains("voice")
-        );
-    }
-    let mut config = AgentComposition::default();
-    config.provider.provider = "responses".into();
-    config.provider.base_url = Some("http://localhost:11434/v1".into());
-    config.realtime_voice = Some("marin".into());
-    assert!(
-        validate_agent_composition(&config)
-            .expect_err("custom endpoint has no voice catalog")
-            .to_string()
-            .contains("voice")
+fn realtime_voice_route_persists_and_is_optional() {
+    let mut config = AgentComposition {
+        realtime_voice: Some("openai_codex::gpt-live-1-codex::cove".into()),
+        ..AgentComposition::default()
+    };
+    validate_agent_composition(&config).expect("voice route");
+    let stored = toml::to_string(&config).expect("encode Bot configuration");
+    assert_eq!(
+        toml::from_str::<AgentComposition>(&stored).expect("decode"),
+        config
     );
     config.realtime_voice = None;
     validate_agent_composition(&config).expect("voice selection is optional");
@@ -1466,6 +1466,7 @@ fn bot_compatibility_checks_policies_route_and_voice_without_credentials() {
             Default::default(),
             vec!["custom-model".into()],
             vec!["high".into(), "medium".into()],
+            Vec::new(),
         )
         .expect("register provider");
     let mut bot = gateway
@@ -1475,9 +1476,9 @@ fn bot_compatibility_checks_policies_route_and_voice_without_credentials() {
         .config
         .clone();
     bot.middleware.set_enabled("image_generation", true);
-    bot.realtime_voice = Some("cedar".into());
-    validate_bot_compatibility(&gateway, &bot, &[])
-        .expect("native endpoint supports both capabilities without credentials");
+    bot.realtime_voice = Some("openai_socket::gpt-live-1::cedar".into());
+    validate_bot_compatibility(&gateway, &bot, Default::default())
+        .expect("image generation and voice routes validate without credentials");
 
     bot.middleware.set_setting(
         "compaction",
@@ -1488,28 +1489,19 @@ fn bot_compatibility_checks_policies_route_and_voice_without_credentials() {
     );
     bot.middleware.set_enabled("context_offloading", true);
     assert!(
-        validate_bot_compatibility(&gateway, &bot, &[])
+        validate_bot_compatibility(&gateway, &bot, Default::default())
             .expect_err("handoff conflicts with context offloading")
             .to_string()
             .contains("incompatible")
     );
     bot.middleware.set_enabled("compaction", false);
 
-    bot.realtime_voice = Some("cove".into());
+    bot.realtime_voice = Some(String::new());
     assert!(
-        validate_bot_compatibility(&gateway, &bot, &[])
-            .expect_err("unsupported voice ID")
+        validate_bot_compatibility(&gateway, &bot, Default::default())
+            .expect_err("empty voice route")
             .to_string()
             .contains("voice")
-    );
-
-    bot.realtime_voice = None;
-    bot.provider.base_url = Some("https://example.com/v1".into());
-    assert!(
-        validate_bot_compatibility(&gateway, &bot, &[])
-            .expect_err("custom endpoint does not support native image generation")
-            .to_string()
-            .contains("image generation")
     );
 }
 
@@ -2047,4 +2039,40 @@ fn shipped_gateway_policy_defaults_preserve_existing_behavior() {
     assert!(!config.telemetry.policy.allow_insecure_http);
     assert_eq!(config.telemetry.policy.request_timeout_seconds, 10);
     assert_eq!(config.telemetry.policy.upload_admission_timeout_seconds, 10);
+}
+
+#[test]
+fn listed_image_model_ids_are_validated_before_saving() {
+    let register = |provider: &str, image_ids: Vec<String>| {
+        let mut selection = AgentComposition::default().provider;
+        selection.instance = provider.into();
+        selection.provider = provider.into();
+        let catalog = provider == "openai_socket";
+        selection.model = if catalog { "gpt-6.1-sol" } else { "chat-model" }.into();
+        selection.reasoning_effort = None;
+        GatewayConfig::new(DEFAULT_LISTEN, None)
+            .expect("gateway config")
+            .registering_provider(
+                selection,
+                "Test".into(),
+                Default::default(),
+                if catalog {
+                    Vec::new()
+                } else {
+                    vec!["chat-model".into()]
+                },
+                Vec::new(),
+                image_ids,
+            )
+    };
+    register("openrouter", vec!["black-forest-labs/flux".into()]).expect("listed image model");
+    for image_ids in [vec!["flux".into(), "flux".into()], vec![String::new()]] {
+        assert!(register("openrouter", image_ids).is_err());
+    }
+    assert!(
+        register("openai_socket", vec!["gpt-image-2.5-sunburst".into()])
+            .expect_err("catalog provider")
+            .to_string()
+            .contains("image model IDs")
+    );
 }

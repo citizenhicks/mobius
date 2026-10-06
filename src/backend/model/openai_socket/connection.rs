@@ -363,12 +363,11 @@ fn websocket_connect_error(error: WebSocketError) -> Error {
             .map(str::to_owned);
         let body = response.body().as_deref().unwrap_or_default();
         let body = &body[..body.len().min(super::super::transport::MAX_ERROR_BYTES)];
-        let message = if body.is_empty() {
-            format!("WebSocket HTTP {status}")
-        } else {
-            format!("WebSocket HTTP {status}: {}", String::from_utf8_lossy(body))
-        };
-        return Error::Provider(ProviderError::http(message, status.as_u16(), retry_after));
+        return Error::Provider(ProviderError::http(
+            super::super::transport::http_error_message("WebSocket", status, body),
+            status.as_u16(),
+            retry_after,
+        ));
     }
     Error::Provider(ProviderError::stream_interrupted(None))
 }

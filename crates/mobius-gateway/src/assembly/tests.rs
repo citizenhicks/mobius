@@ -133,6 +133,7 @@ fn configured_provider_status_requires_the_selected_credential_endpoint() {
             Default::default(),
             vec!["openai/gpt-5.6-luna".into()],
             Vec::new(),
+            Vec::new(),
         )
         .expect("register provider");
 
@@ -202,6 +203,7 @@ fn configured_catalog_resolves_manifest_and_opaque_custom_routes() {
             Default::default(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .and_then(|config| {
             config.registering_provider(
@@ -210,11 +212,14 @@ fn configured_catalog_resolves_manifest_and_opaque_custom_routes() {
                 Default::default(),
                 vec![custom.model.clone(), alternate_model.clone()],
                 vec!["provider-defined".into(), "minimal".into()],
+                Vec::new(),
             )
         })
         .expect("register providers");
 
-    let choices = configured_model_choices(&config, &store, &credentials).expect("catalog");
+    let choices = configured_model_choices(&config, &store, &credentials)
+        .expect("catalog")
+        .models;
     let custom_route = choices
         .iter()
         .find(|choice| choice.model == custom.model)
@@ -275,6 +280,7 @@ fn same_provider_instances_have_distinct_routes_and_models() {
             Default::default(),
             vec![work.model.clone()],
             Vec::new(),
+            Vec::new(),
         )
         .and_then(|config| {
             config.registering_provider(
@@ -283,11 +289,14 @@ fn same_provider_instances_have_distinct_routes_and_models() {
                 Default::default(),
                 vec![personal.model.clone()],
                 Vec::new(),
+                Vec::new(),
             )
         })
         .expect("register providers");
 
-    let choices = configured_model_choices(&config, &store, &credentials).expect("catalog");
+    let choices = configured_model_choices(&config, &store, &credentials)
+        .expect("catalog")
+        .models;
 
     assert_eq!(
         choices
@@ -369,10 +378,13 @@ fn custom_selection_without_reasoning_uses_the_first_configured_effort() {
             Default::default(),
             vec![selection.model.clone()],
             vec!["high".into(), "medium".into()],
+            Vec::new(),
         )
         .expect("register provider");
 
-    let choices = configured_model_choices(&config, &store, &credentials).expect("catalog");
+    let choices = configured_model_choices(&config, &store, &credentials)
+        .expect("catalog")
+        .models;
     let (router, _) = build_models(
         &config,
         &selection,
@@ -497,6 +509,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
             crate::wire::AgentComposition::default().provider,
             "Test".into(),
             Default::default(),
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         )

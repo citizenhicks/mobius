@@ -273,7 +273,11 @@ impl GatewayHost {
         }
         let models = configured_model_catalog(&config)?;
         for bot in bots.bots()? {
-            crate::config::validate_bot_compatibility(&config, &bot.config.config, &models)?;
+            crate::config::validate_bot_compatibility(
+                &config,
+                &bot.config.config,
+                models.catalogs(),
+            )?;
             extensions.resolve(&config, &bot.config.config.extensions)?;
         }
         let discovery_gate = Arc::new(Mutex::new(()));
@@ -1063,7 +1067,8 @@ fn validate_bot_config(
     let gateway = state.config()?;
     let models =
         configured_model_choices(&gateway, &state.store, &state.credentials).map_err(internal)?;
-    crate::config::validate_bot_compatibility(&gateway, config, &models).map_err(invalid_config)?;
+    crate::config::validate_bot_compatibility(&gateway, config, models.catalogs())
+        .map_err(invalid_config)?;
     ExtensionStore::new(&state.store)
         .resolve(&gateway, &config.extensions)
         .map(|_| ())

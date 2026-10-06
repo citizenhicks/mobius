@@ -61,6 +61,9 @@ fn status(provider: &str) -> ProviderStatus {
         symbol: FrontendSymbol::Storage,
         description: format!("{provider} provider"),
         model_ids_configurable,
+        image_models: Default::default(),
+        image_model_ids_configurable: false,
+        voice_models: Default::default(),
         realtime_voices: if matches!(provider, "openai_socket" | "responses") {
             vec!["marin".into(), "cedar".into()]
         } else {
@@ -112,6 +115,7 @@ fn route(route: &str, group: &str, model: &str, reasoning_effort: Option<&str>) 
         group: group.into(),
         model: model.into(),
         reasoning_effort: reasoning_effort.map(str::to_string),
+        variant_label: None,
         context_window: Some(1_000_000),
         supports_image_input: false,
         supports_image_generation: false,
@@ -154,6 +158,7 @@ fn state(mode: SetupMode, provider: &str, configured: bool) -> SetupState {
         } else {
             Vec::new()
         },
+        image_model_ids: Vec::new(),
     }];
     let providers = validated_providers(&statuses, &instances).expect("validated providers");
     original.middleware.set_enabled("plain", true);
@@ -410,6 +415,7 @@ fn configured_fixed_provider_can_be_selected_from_another_provider() {
                 .clone()
                 .into_iter()
                 .collect(),
+            image_model_ids: Vec::new(),
         },
         ProviderInstance {
             label: "kimi".into(),
@@ -419,6 +425,7 @@ fn configured_fixed_provider_can_be_selected_from_another_provider() {
             selection: kimi,
             model_ids: Vec::new(),
             reasoning_efforts: Vec::new(),
+            image_model_ids: Vec::new(),
         },
     ];
     let providers = validated_providers(&statuses, &instances).expect("validated providers");
@@ -501,52 +508,25 @@ fn hosted_search_is_selected_only_from_the_gateway_manifest() {
 }
 
 #[test]
-fn provider_setup_preserves_only_a_voice_advertised_for_the_selected_endpoint() {
-    let selectable = state(SetupMode::Login, "openai_socket", true);
-    let mut current = selectable.original.clone();
-    current.provider.provider = "responses".into();
-    current.realtime_voice = Some("cedar".into());
-    assert_eq!(
-        selectable
-            .agent_composition(&current)
-            .expect("shared voice")
-            .realtime_voice
-            .as_deref(),
-        Some("cedar")
-    );
-
-    current.provider.provider = "openai_codex".into();
-    current.realtime_voice = Some("cove".into());
-    assert!(
-        selectable
-            .agent_composition(&current)
-            .expect("different voice catalog")
-            .realtime_voice
-            .is_none()
-    );
-
-    let unsupported = state(SetupMode::Login, "kimi", true);
-    assert!(
-        unsupported
-            .agent_composition(&current)
-            .expect("different provider")
-            .realtime_voice
-            .is_none()
-    );
-
-    let mut custom = state(SetupMode::Login, "responses", true);
-    custom.endpoint = "http://localhost:11434/v1".into();
-    assert!(
-        custom
-            .agent_composition(&current)
-            .expect("custom endpoint")
-            .realtime_voice
-            .is_none()
-    );
+fn provider_setup_preserves_independent_voice_selection() {
+    let current = AgentComposition {
+        realtime_voice: Some("voice-instance::voice-model::cove".into()),
+        ..AgentComposition::default()
+    };
+    for provider in ["openai_socket", "kimi", "responses"] {
+        let setup = state(SetupMode::Login, provider, true);
+        assert_eq!(
+            setup
+                .agent_composition(&current)
+                .expect("provider selection")
+                .realtime_voice,
+            current.realtime_voice
+        );
+    }
 }
 
 #[test]
-fn bot_model_uses_selected_route_for_image_and_voice_compatibility() {
+fn bot_model_preserves_independent_voice_and_reconciles_declared_capabilities() {
     let mut setup = state(SetupMode::BotModel, "openai_socket", true);
     setup.features.push(image_feature());
     let current = setup.original.provider.clone();
@@ -572,7 +552,7 @@ fn bot_model_uses_selected_route_for_image_and_voice_compatibility() {
     config.realtime_voice = Some("cedar".into());
     let selected = setup.agent_composition(&config).expect("current route");
     assert!(!selected.middleware.enabled("native_image"));
-    assert!(selected.realtime_voice.is_none());
+    assert_eq!(selected.realtime_voice, config.realtime_voice);
 
     setup.row = 1;
     setup.select_model_row();
@@ -728,6 +708,7 @@ fn bot_model_setup_shows_and_selects_models_from_other_configured_providers() {
             selection: kimi,
             model_ids: Vec::new(),
             reasoning_efforts: Vec::new(),
+            image_model_ids: Vec::new(),
         }),
     });
     state
@@ -1196,6 +1177,7 @@ fn setup_rejects_active_provider_values_outside_the_manifest() {
                 selection: config.clone(),
                 model_ids: vec![config.model.clone()],
                 reasoning_efforts: catalog.clone(),
+                image_model_ids: Vec::new(),
             }]
         });
         let original = AgentComposition {

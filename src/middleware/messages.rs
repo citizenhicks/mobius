@@ -390,7 +390,7 @@ mod tests {
     fn manifest_advertises_delivery_symbols() {
         assert!(
             MANIFEST
-                .feature(&[])
+                .feature(Default::default())
                 .settings
                 .iter()
                 .all(|setting| !setting.composer)

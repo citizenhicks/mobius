@@ -1,3 +1,4 @@
+use crate::config::ConfiguredProvider;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -14,8 +15,8 @@ use crate::provider_catalog::{
     configured_model_choices, credential_is_configured, selected_base_url,
 };
 use crate::wire::{
-    AgentComposition, BotRecord, ProviderConfig, ProviderEndpointAuth, ProviderTint, ReadyPayload,
-    ServerFrame, ServerMessage,
+    AgentComposition, BotRecord, ProviderConfig, ProviderEndpointAuth, ReadyPayload, ServerFrame,
+    ServerMessage,
 };
 
 use super::session::ProviderRefresh;
@@ -65,7 +66,7 @@ impl GatewayHost {
             let mut current = state.config()?;
             let models = configured_model_choices(&current, &state.store, &state.credentials)
                 .map_err(internal)?;
-            crate::config::validate_bot_compatibility(&current, &config, &models)
+            crate::config::validate_bot_compatibility(&current, &config, models.catalogs())
                 .map_err(invalid_config)?;
             crate::extensions::ExtensionStore::new(&state.store)
                 .resolve(&current, &config.extensions)
@@ -158,17 +159,9 @@ impl GatewayHost {
         };
         drop(credential_mutation);
         if let Some(configured) = configured {
-            let mut selection = configured.selection;
-            selection.endpoint_auth = ProviderEndpointAuth::ProviderDefault;
-            self.register_provider(
-                false,
-                selection,
-                configured.label,
-                configured.tint,
-                configured.model_ids,
-                configured.reasoning_efforts,
-            )
-            .await?;
+            let mut configured = configured;
+            configured.selection.endpoint_auth = ProviderEndpointAuth::ProviderDefault;
+            self.register_provider(false, configured).await?;
             return Ok(());
         }
         self.refresh_provider_sessions(ProviderRefresh::Instance { instance, base_url })
@@ -369,64 +362,56 @@ impl GatewayHost {
     pub(crate) async fn register_provider(
         &self,
         operator: bool,
-        selection: ProviderConfig,
-        label: String,
-        tint: ProviderTint,
-        model_ids: Vec<String>,
-        reasoning_efforts: Vec<String>,
+        registration: ConfiguredProvider,
     ) -> std::result::Result<ReadyPayload, Rejection> {
+        let selection = &registration.selection;
         let _mutation = self.begin_exclusive_mutation().await?;
         let state = self.state.lock().await;
-        let current = state.config()?.clone();
-        validate_browser_endpoint_registration(&current, &selection, operator)?;
-        if !credential_is_configured(&selection, &state.store, &state.credentials)
-            .map_err(invalid_config)?
-        {
-            return Err(invalid_config(Error::Config(format!(
-                "provider `{}` is not configured on this gateway",
-                selection.provider
-            ))));
-        }
-        let next = current
-            .registering_provider(
-                selection.clone(),
-                label.clone(),
-                tint,
-                model_ids.clone(),
-                reasoning_efforts.clone(),
-            )
-            .map_err(invalid_config)?;
         let mut bots = state.bots.bots().map_err(internal)?;
-        validate_bot_catalog(&state, &next, &bots)?;
-        let catalog_changed = current.configured_providers.len() != next.configured_providers.len()
-            || current.configured_providers.iter().any(|(id, previous)| {
-                next.configured_providers.get(id).is_none_or(|next| {
-                    previous.selection != next.selection
-                        || previous.model_ids != next.model_ids
-                        || previous.reasoning_efforts != next.reasoning_efforts
-                })
-            });
-        if current == next {
+        let (changed, target_epoch) = {
+            let current = state.config()?;
+            validate_browser_endpoint_registration(&current, selection, operator)?;
+            if !credential_is_configured(selection, &state.store, &state.credentials)
+                .map_err(invalid_config)?
+            {
+                return Err(invalid_config(Error::Config(format!(
+                    "provider `{}` is not configured on this gateway",
+                    selection.provider
+                ))));
+            }
+            let next = current
+                .registering_configured(registration)
+                .map_err(invalid_config)?;
+            validate_bot_catalog(&state, &next, &bots)?;
+            let catalog_changed = current.configured_providers.len()
+                != next.configured_providers.len()
+                || current.configured_providers.iter().any(|(id, previous)| {
+                    next.configured_providers.get(id).is_none_or(|next| {
+                        previous.selection != next.selection
+                            || previous.model_ids != next.model_ids
+                            || previous.reasoning_efforts != next.reasoning_efforts
+                            || previous.image_model_ids != next.image_model_ids
+                    })
+                });
+            if *current == next {
+                (false, None)
+            } else {
+                let target_epoch = catalog_changed
+                    .then(|| {
+                        state
+                            .provider_epoch
+                            .load(Ordering::Acquire)
+                            .checked_add(1)
+                            .ok_or_else(|| internal("provider catalog epoch overflow"))
+                    })
+                    .transpose()?;
+                commit_provider_registration(&state, current, next).map_err(internal)?;
+                (true, target_epoch)
+            }
+        };
+        if !changed {
             return gateway_ready_after_unlock(state).await;
         }
-        let target_epoch = catalog_changed
-            .then(|| {
-                state
-                    .provider_epoch
-                    .load(Ordering::Acquire)
-                    .checked_add(1)
-                    .ok_or_else(|| internal("provider catalog epoch overflow"))
-            })
-            .transpose()?;
-        commit_provider_registration(
-            &state,
-            &selection,
-            &label,
-            &tint,
-            &model_ids,
-            &reasoning_efforts,
-        )
-        .map_err(internal)?;
         let defaults = state
             .config()?
             .bot_defaults
@@ -521,23 +506,9 @@ fn validate_browser_endpoint_registration(
 
 fn commit_provider_registration(
     state: &super::GatewayState,
-    selection: &ProviderConfig,
-    label: &str,
-    tint: &ProviderTint,
-    model_ids: &[String],
-    reasoning_efforts: &[String],
+    mut current: std::sync::MutexGuard<'_, GatewayConfig>,
+    next: GatewayConfig,
 ) -> crate::Result<()> {
-    let mut current = state
-        .config
-        .lock()
-        .map_err(|_| Error::Config("gateway configuration lock is poisoned".into()))?;
-    let next = current.registering_provider(
-        selection.clone(),
-        label.into(),
-        *tint,
-        model_ids.to_vec(),
-        reasoning_efforts.to_vec(),
-    )?;
     state.store.save(&next)?;
     *current = next;
     Ok(())
@@ -570,9 +541,11 @@ fn validate_bot_catalog(
     let models = configured_model_choices(gateway, &state.store, &state.credentials)
         .map_err(invalid_config)?;
     for bot in bots {
-        if let Err(error) =
-            crate::config::validate_bot_compatibility(gateway, &bot.config.config, &models)
-        {
+        if let Err(error) = crate::config::validate_bot_compatibility(
+            gateway,
+            &bot.config.config,
+            models.catalogs(),
+        ) {
             return Err(bot_catalog_rejection(bot, error));
         }
     }

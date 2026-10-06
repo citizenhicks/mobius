@@ -85,6 +85,7 @@ pub(crate) async fn ensure_test_bot(
                 Default::default(),
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
             )
             .map_err(invalid_config)?;
         state.store.save(&next).map_err(internal)?;

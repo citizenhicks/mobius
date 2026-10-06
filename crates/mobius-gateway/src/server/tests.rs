@@ -46,6 +46,7 @@ async fn configured_test_server(state_dir: PathBuf) -> (GatewayServer, PairingGr
             Default::default(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("register provider");
     store.save(&config).expect("save provider");

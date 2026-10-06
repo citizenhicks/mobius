@@ -136,7 +136,14 @@ async fn handshake_rejection_preserves_status_and_payment_message() {
     use tokio::io::AsyncReadExt as _;
     use tokio::io::AsyncWriteExt as _;
 
-    for (status, body) in [(426, ""), (402, "Balance exhausted")] {
+    for (status, body) in [
+        (426, ""),
+        (402, "Balance exhausted"),
+        (
+            503,
+            r#"{"error":{"message":"Cloud model service unavailable"}}"#,
+        ),
+    ] {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .expect("WebSocket listener");
@@ -152,7 +159,7 @@ async fn handshake_rejection_preserves_status_and_payment_message() {
             }
             stream
             .write_all(
-                format!("HTTP/1.1 {status} Rejected\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes(),
+                format!("HTTP/1.1 {status} Rejected\r\nRetry-After: 7\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes(),
             )
             .await
             .expect("handshake rejection");
@@ -179,7 +186,14 @@ async fn handshake_rejection_preserves_status_and_payment_message() {
             panic!("expected provider error");
         };
         assert_eq!(error.status(), Some(status));
-        assert!(!error.is_retryable());
+        assert_eq!(error.is_retryable(), status == 503);
+        assert_eq!(error.retry_after(), Some("7"));
+        if status == 503 {
+            assert_eq!(
+                error.to_string(),
+                "WebSocket HTTP 503 Service Unavailable: Cloud model service unavailable"
+            );
+        }
         if status == 402 {
             assert!(error.to_string().contains("Balance exhausted"));
         }

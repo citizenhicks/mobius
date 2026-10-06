@@ -109,7 +109,9 @@ pub(crate) struct RealtimeModel {
     pub(crate) bot_name: String,
     pub(crate) bot_instructions: String,
     pub(crate) router: Arc<ModelRouter>,
-    pub(crate) voice: Option<String>,
+    /// The selected voice route.
+    pub(crate) voice: String,
+    /// The chat route whose transport serves the voice.
     pub(crate) route: String,
     pub(crate) provider_instance: String,
     pub(crate) active_turn_id: Option<String>,

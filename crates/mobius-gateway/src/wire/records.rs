@@ -1,3 +1,7 @@
+use std::borrow::Cow;
+
+use mobius::backend::model::provider::MediaModelPreset;
+
 use super::*;
 
 /// Optional gateway broadcasts a client may suppress on its connection.
@@ -48,6 +52,12 @@ pub struct ReadyPayload {
     pub models: Vec<ModelChoice>,
     /// The model providers.
     pub model_providers: BTreeMap<String, String>,
+    /// Selectable image model routes, keyed into `model_providers` like `models`.
+    #[serde(default)]
+    pub image_models: Vec<ModelChoice>,
+    /// Selectable voice routes; each route's variant is its voice.
+    #[serde(default)]
+    pub voice_models: Vec<ModelChoice>,
     /// The middleware features.
     pub middleware_features: Vec<MiddlewareFeature>,
     /// The extensions.
@@ -75,6 +85,8 @@ impl ReadyPayload {
                 swap(&mut self.bot_defaults, &mut other.bot_defaults);
                 swap(&mut self.models, &mut other.models);
                 swap(&mut self.model_providers, &mut other.model_providers);
+                swap(&mut self.image_models, &mut other.image_models);
+                swap(&mut self.voice_models, &mut other.voice_models);
                 swap(
                     &mut self.middleware_features,
                     &mut other.middleware_features,
@@ -110,6 +122,8 @@ impl ReadyPayload {
                 &self.bot_defaults,
                 &self.models,
                 &self.model_providers,
+                &self.image_models,
+                &self.voice_models,
                 &self.middleware_features,
                 &self.extensions,
                 &self.contributions,
@@ -133,6 +147,8 @@ impl ReadyPayload {
             bot_defaults: None,
             models: Vec::new(),
             model_providers: BTreeMap::new(),
+            image_models: Vec::new(),
+            voice_models: Vec::new(),
             middleware_features: Vec::new(),
             extensions: Vec::new(),
             contributions: Vec::new(),
@@ -582,12 +598,21 @@ pub struct ProviderStatus {
     pub auth: ProviderAuthKind,
     /// The default base URL.
     pub default_base_url: Option<String>,
-    /// Custom roots implement this provider's native image and voice APIs.
+    /// Always true: custom roots keep every native capability. Kept for older clients.
     pub native_custom_endpoints: bool,
     /// The default API key env.
     pub default_api_key_env: Option<String>,
     /// The models.
     pub models: Vec<ProviderModel>,
+    /// Image models the provider advertises; empty when setups list their own.
+    #[serde(default)]
+    pub image_models: Cow<'static, [MediaModelPreset]>,
+    /// Whether setups list their own image model identifiers.
+    #[serde(default)]
+    pub image_model_ids_configurable: bool,
+    /// Realtime voice models the provider advertises, default first.
+    #[serde(default)]
+    pub voice_models: Cow<'static, [MediaModelPreset]>,
     /// The web search.
     pub web_search: Vec<FrontendSettingOption>,
     /// The tool discovery.
@@ -672,6 +697,9 @@ pub struct ProviderInstance {
     pub model_ids: Vec<String>,
     /// The reasoning efforts.
     pub reasoning_efforts: Vec<String>,
+    /// Image model identifiers listed by this setup.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub image_model_ids: Vec<String>,
 }
 
 /// Frontend type attached to one authenticated connection.
@@ -704,21 +732,6 @@ pub struct ClientStatus {
 }
 
 impl ProviderStatus {
-    #[must_use]
-    /// Returns the realtime voices.
-    pub fn realtime_voices(&self, base_url: Option<&str>) -> &[String] {
-        if self.native_custom_endpoints
-            || mobius::backend::model::provider::uses_default_endpoint(
-                self.default_base_url.as_deref(),
-                base_url,
-            )
-        {
-            &self.realtime_voices
-        } else {
-            &[]
-        }
-    }
-
     #[must_use]
     /// Returns the configurable base URL.
     pub fn configurable_base_url(&self) -> bool {

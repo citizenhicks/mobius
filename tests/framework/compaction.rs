@@ -234,6 +234,7 @@ async fn compaction_uses_the_context_window_of_a_new_model_route() {
                 group: route.into(),
                 model: route.into(),
                 reasoning_effort: None,
+                variant_label: None,
                 context_window: Some(context_window),
                 supports_image_input: true,
                 supports_image_generation: false,

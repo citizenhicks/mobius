@@ -13,8 +13,7 @@ use crate::backend::model::{
 use crate::backend::session_files::SessionFileStore;
 use crate::protocol::{
     ContentPart, EventMsg, FrontendBlock, FrontendBlockFormat, FrontendBlockRole,
-    FrontendBlockUpdate, FrontendContribution, ImageAspect, ModelCapability, ToolContent,
-    ToolResponse,
+    FrontendBlockUpdate, FrontendContribution, ImageAspect, ToolContent, ToolResponse,
 };
 use crate::{BoxFuture, Error, Result};
 
@@ -27,7 +26,8 @@ struct Definition {
     render_pending: String,
     render_ready: String,
     render_failed: String,
-    model: String,
+    #[serde(deserialize_with = "super::manifest::deserialize_settings")]
+    settings: Vec<super::manifest::MiddlewareSettingManifest>,
     tool: ToolDefinition,
 }
 
@@ -36,20 +36,26 @@ static DEFINITION: LazyLock<Definition> =
 
 super::manifest::middleware_manifest! {
 /// Configuration metadata for native image generation.
-    "image_generation", DEFINITION, required: false, capability: Some(ModelCapability::ImageGeneration), settings: &[]
+    "image_generation", DEFINITION, required: false, capability: None, settings: &DEFINITION.settings
 }
 
 /// Generates a session image and publishes it as a chat artifact.
 pub struct ImageGeneration {
     models: Arc<ModelRouter>,
     store: SessionFileStore,
+    route: Option<Arc<str>>,
 }
 
 impl ImageGeneration {
     /// Creates the image capability with the configured model routes and session files.
+    /// `route` selects an image model route; `None` uses the first configured one.
     #[must_use]
-    pub fn new(models: Arc<ModelRouter>, store: SessionFileStore) -> Self {
-        Self { models, store }
+    pub fn new(models: Arc<ModelRouter>, store: SessionFileStore, route: Option<Arc<str>>) -> Self {
+        Self {
+            models,
+            store,
+            route,
+        }
     }
 }
 
@@ -59,10 +65,14 @@ impl Middleware for ImageGeneration {
     }
 
     fn register(&self, catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
+        if self.models.image_choices().len() == 0 {
+            return Ok(());
+        }
         catalog.register(Arc::new(GenerateImage {
             models: Arc::clone(&self.models),
             store: self.store.clone(),
             session_id: runtime.session_id.clone(),
+            route: self.route.as_ref().map(Arc::clone),
         }))
     }
 
@@ -121,6 +131,7 @@ struct GenerateImage {
     models: Arc<ModelRouter>,
     store: SessionFileStore,
     session_id: String,
+    route: Option<Arc<str>>,
 }
 
 impl Tool for GenerateImage {
@@ -147,12 +158,6 @@ impl Tool for GenerateImage {
             if arguments.reference_file_ids.len() > 4 {
                 return Err(Error::Tool("too many reference images".into()));
             }
-            let route = context.model_route();
-            if !self.models.supports_image_generation(route)? {
-                return Err(Error::Tool(
-                    "the active model route does not support image generation".into(),
-                ));
-            }
             let mut owned_references = Vec::with_capacity(arguments.reference_file_ids.len());
             for id in &arguments.reference_file_ids {
                 let file = self.store.file_reference(&self.session_id, id).await?;
@@ -165,12 +170,14 @@ impl Tool for GenerateImage {
                 .iter()
                 .map(|(media_type, bytes)| ImageGenerationReference { media_type, bytes })
                 .collect::<Vec<_>>();
+            let image = self.models.image_model(self.route.as_deref())?;
             let generated = self
                 .models
                 .generate_image(
-                    route,
+                    image.route,
                     ImageGenerationRequest {
-                        model: &DEFINITION.model,
+                        model: image.model,
+                        quality: image.quality,
                         prompt: &arguments.prompt,
                         image_aspect: arguments.image_aspect,
                         references: &references,
@@ -268,13 +275,49 @@ mod tests {
             .expect("test image");
         let png = bytes.into_inner();
         let store = SessionFileStore::new(state.path(), None);
-        let middleware = ImageGeneration::new(
-            Arc::new(ModelRouter::new(
+        let mut router = ModelRouter::new("image", Arc::new(ImageModel(png.clone(), true)));
+        router
+            .register_image(
                 "image",
-                Arc::new(ImageModel(png.clone(), true)),
-            )),
-            store.clone(),
+                crate::protocol::ModelChoice {
+                    route: "openai::gpt-image-2.5-sunburst".into(),
+                    group: "OpenAI".into(),
+                    model: "gpt-image-2.5-sunburst".into(),
+                    reasoning_effort: None,
+                    variant_label: None,
+                    context_window: None,
+                    supports_image_input: false,
+                    supports_image_generation: true,
+                    supports_realtime_voice: false,
+                    tool_discovery: crate::protocol::ToolDiscoveryMode::Rebuild,
+                },
+            )
+            .expect("image route");
+        router
+            .register_image(
+                "image",
+                crate::protocol::ModelChoice {
+                    route: "openai::gpt-image-2.5-flare::high".into(),
+                    group: "OpenAI".into(),
+                    model: "gpt-image-2.5-flare".into(),
+                    reasoning_effort: Some("high".into()),
+                    variant_label: None,
+                    context_window: None,
+                    supports_image_input: false,
+                    supports_image_generation: true,
+                    supports_realtime_voice: false,
+                    tool_discovery: crate::protocol::ToolDiscoveryMode::Rebuild,
+                },
+            )
+            .expect("image tier route");
+        let flare = router
+            .image_model(Some("openai::gpt-image-2.5-flare::high"))
+            .expect("quality route");
+        assert_eq!(
+            (flare.model, flare.quality),
+            ("gpt-image-2.5-flare", Some("high"))
         );
+        let middleware = ImageGeneration::new(Arc::new(router), store.clone(), None);
         let runtime = RuntimeContext {
             sender: crate::agent::test_sender(),
             checkpoints: Arc::new(
@@ -300,12 +343,13 @@ mod tests {
                 Arc::new(ImageModel(png.clone(), false)),
             )),
             store.clone(),
+            None,
         );
         let mut unsupported_runtime = runtime.clone();
         unsupported_runtime.model_route = "unsupported".into();
         unsupported
             .register(&mut Catalog::default(), &unsupported_runtime)
-            .expect("registration does not depend on credential availability");
+            .expect("a router without image models registers no tool");
         let source = store
             .publish_artifact("session", "source.png".into(), "image/png".into(), &png)
             .await
@@ -314,6 +358,7 @@ mod tests {
             models: Arc::clone(&middleware.models),
             store: store.clone(),
             session_id: "session".into(),
+            route: None,
         };
         assert_eq!(tool.exposure(), ToolExposure::Deferred);
         assert_eq!(tool.approval(), ApprovalRequirement::Always);
@@ -423,6 +468,7 @@ mod tests {
             models: Arc::clone(&unsupported.models),
             store,
             session_id: "session".into(),
+            route: None,
         };
         let unsupported_context =
             ToolContext::new(sandbox, permissions.for_call("image-call"), "turn")
@@ -434,7 +480,7 @@ mod tests {
                     serde_json::json!({"prompt": "a red square"})
                 )
                 .await,
-            Err(Error::Tool(_))
+            Err(Error::Config(_))
         ));
     }
 }

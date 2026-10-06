@@ -55,7 +55,7 @@ fn base_url_rejects_serializable_secret_locations() {
 }
 
 #[test]
-fn only_the_first_party_endpoint_reports_native_openai_capabilities() {
+fn custom_openai_endpoints_keep_native_capabilities() {
     for model in ["gpt-6-luna", "gpt-6.1-sol", "gpt-6-astra"] {
         let official = OpenAi::new("test-key", "https://api.openai.com:443/v1/", model)
             .expect("official provider");
@@ -63,8 +63,8 @@ fn only_the_first_party_endpoint_reports_native_openai_capabilities() {
             OpenAi::new("test-key", "https://example.com/v1", model).expect("compatible provider");
         assert!(official.supports_realtime_voice());
         assert!(official.supports_image_generation());
-        assert!(!compatible.supports_realtime_voice());
-        assert!(!compatible.supports_image_generation());
+        assert!(compatible.supports_realtime_voice());
+        assert!(compatible.supports_image_generation());
     }
 }
 
@@ -1550,14 +1550,13 @@ async fn native_images_use_json_for_generation_and_multipart_for_public_edits() 
         reqwest::Client::new(),
         crate::backend::model::ModelTransportSettings::default(),
     )
-    .expect("provider")
-    .with_native_openai_api()
-    .expect("native API");
+    .expect("provider");
     let generated = provider
         .generate_image(ImageGenerationRequest {
             model: "gpt-image-2.5-sunburst",
             prompt: "a red fox",
             image_aspect: crate::protocol::ImageAspect::Square,
+            quality: None,
             references: &[],
         })
         .await
@@ -1576,6 +1575,7 @@ async fn native_images_use_json_for_generation_and_multipart_for_public_edits() 
             model: "gpt-image-2.5-flare",
             prompt: "make the fox blue",
             image_aspect: crate::protocol::ImageAspect::Landscape,
+            quality: None,
             references: &references,
         })
         .await

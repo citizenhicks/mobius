@@ -1,6 +1,7 @@
 //! Provider-neutral model and routing tests.
 
 use super::*;
+use crate::protocol::ModelChoice;
 
 struct DefaultCapabilities;
 
@@ -618,4 +619,101 @@ async fn credential_deadline_cancels_in_flight_work_and_blocks_reuse() {
             .is_err()
     );
     assert_eq!(model.started.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn image_retries_are_bounded_status_aware_and_cancellable() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct BusyImage {
+        calls: AtomicUsize,
+        failures: usize,
+        status: u16,
+        retry_after: &'static str,
+    }
+    impl Model for BusyImage {
+        fn supports_image_generation(&self) -> bool {
+            true
+        }
+        fn transport_settings(&self) -> ModelTransportSettings {
+            ModelTransportSettings {
+                stream_retry_limit: 1,
+                stream_retry_backoff_ms: 1,
+                ..ModelTransportSettings::default()
+            }
+        }
+        fn respond<'a>(
+            &'a self,
+            _: ModelRequest<'a>,
+            _: ModelEventSink,
+        ) -> BoxFuture<'a, Result<ModelOutput>> {
+            Box::pin(async { Err(Error::Config("image-only fixture".into())) })
+        }
+        fn generate_image<'a>(
+            &'a self,
+            _: ImageGenerationRequest<'a>,
+        ) -> BoxFuture<'a, Result<GeneratedImage>> {
+            Box::pin(async {
+                if self.calls.fetch_add(1, Ordering::SeqCst) < self.failures {
+                    Err(Error::Provider(crate::ProviderError::http(
+                        "busy",
+                        self.status,
+                        Some(self.retry_after.into()),
+                    )))
+                } else {
+                    Ok(GeneratedImage {
+                        bytes: Vec::new(),
+                        media_type: "image/png".into(),
+                        usage: None,
+                    })
+                }
+            })
+        }
+    }
+    for (status, failures, hint, expected_calls, success) in [
+        (503, 1, "0", 2, true),
+        (503, 9, "0", 2, false),
+        (401, 1, "0", 1, false),
+        (503, 9, "30", 1, false),
+    ] {
+        let model = Arc::new(BusyImage {
+            calls: AtomicUsize::new(0),
+            failures,
+            status,
+            retry_after: hint,
+        });
+        let mut router = ModelRouter::new("transport", Arc::clone(&model) as Arc<dyn Model>);
+        router
+            .register_image(
+                "transport",
+                ModelChoice {
+                    route: "image".into(),
+                    group: "Image".into(),
+                    model: "test-image".into(),
+                    reasoning_effort: None,
+                    variant_label: None,
+                    context_window: None,
+                    supports_image_input: false,
+                    supports_image_generation: true,
+                    supports_realtime_voice: false,
+                    tool_discovery: ToolDiscoveryMode::Rebuild,
+                },
+            )
+            .expect("image route");
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            router.generate_image(
+                "image",
+                ImageGenerationRequest {
+                    model: "test-image",
+                    prompt: "draw",
+                    image_aspect: crate::protocol::ImageAspect::Square,
+                    quality: None,
+                    references: &[],
+                },
+            ),
+        )
+        .await;
+        assert_eq!(result.is_ok_and(|result| result.is_ok()), success);
+        assert_eq!(model.calls.load(Ordering::SeqCst), expected_calls);
+    }
 }

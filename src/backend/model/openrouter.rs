@@ -7,7 +7,6 @@ use super::openai::OpenAi;
 use super::provider::HostedWebSearch;
 use super::provider::ProviderBuildConfig;
 use super::provider::ProviderDefinition;
-use super::provider::uses_default_endpoint;
 use crate::Error;
 use crate::Result;
 use crate::protocol::ToolDiscoveryMode;
@@ -34,8 +33,6 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
         .base_url
         .ok_or_else(|| Error::Config("OpenRouter requires a base URL".into()))?;
     let api_key = config.credential.into_optional_api_key("openrouter")?;
-    let native_images = api_key.is_some()
-        && uses_default_endpoint(Some(MANIFEST.base_url.as_str()), Some(&base_url));
     let provider = OpenAi::with_client(
         api_key,
         base_url,
@@ -43,8 +40,9 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
         config.http,
         config.transport,
     )?
+    .without_realtime_voice()
     .with_service_tier(config.service_tier)
-    .with_image_api(native_images.then_some(&super::image_generation::IMAGE_APIS["openrouter"]));
+    .with_image_api(Some(&super::image_generation::IMAGE_APIS["openrouter"]));
     let provider = match tool_discovery {
         ToolDiscoveryMode::Native => provider.with_openrouter_tool_search(),
         ToolDiscoveryMode::Rebuild => provider.with_tool_discovery(ToolDiscoveryMode::Rebuild),
@@ -89,6 +87,7 @@ mod tests {
                 })
                 .expect("advertised web search mode builds");
             assert!(model.supports_image_generation());
+            assert!(!model.supports_realtime_voice());
         }
     }
 }

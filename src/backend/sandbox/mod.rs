@@ -922,7 +922,7 @@ mod tests {
 
     #[test]
     fn approval_policy_advertises_its_composer_presentation() {
-        let feature = MANIFEST.feature(&[]);
+        let feature = MANIFEST.feature(Default::default());
         let setting = feature
             .settings
             .iter()

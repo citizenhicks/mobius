@@ -4,7 +4,7 @@ use super::*;
 pub(crate) fn validate_bot_compatibility(
     gateway: &GatewayConfig,
     config: &AgentComposition,
-    models: &[mobius::protocol::ModelChoice],
+    catalogs: mobius::middleware::manifest::ModelCatalogs<'_>,
 ) -> Result<()> {
     validate_agent_composition_with_ceilings(config, gateway.execution.subagent_ceilings()?)?;
     validate_desktop_bot_policy(gateway, config)?;
@@ -24,7 +24,7 @@ pub(crate) fn validate_bot_compatibility(
         .ok_or_else(|| {
             Error::Config("active model route is not in the configured catalog".into())
         })?;
-    crate::middleware_manifest::validate_choices(&config.middleware, models, &selected.choice)?;
+    crate::middleware_manifest::validate_choices(&config.middleware, catalogs, &selected.choice)?;
     Ok(())
 }
 
@@ -84,14 +84,13 @@ pub(crate) fn validate_agent_composition_with_ceilings(
     }
     crate::extensions::validate_ids(&config.extensions)?;
     validate_provider_config(&config.provider)?;
-    if let Some(voice) = config.realtime_voice.as_deref()
-        && !provider(&config.provider.provider)?
-            .realtime_voices(config.provider.base_url.as_deref())
-            .contains(&voice)
+    // ponytail: a voice route is resolved at call time; an unknown one uses the first voice.
+    if config
+        .realtime_voice
+        .as_deref()
+        .is_some_and(|voice| voice.trim().is_empty() || voice.len() > 4096)
     {
-        return Err(Error::Config(
-            "the selected voice is not supported by this provider".into(),
-        ));
+        return Err(Error::Config("voice route must be 1–4096 bytes".into()));
     }
     crate::middleware_manifest::validate_with_ceilings(&config.middleware, ceilings)
 }
@@ -139,6 +138,21 @@ pub(super) fn validate_configured_provider(configured: &ConfiguredProvider) -> R
             "provider `{}` uses its advertised model and reasoning catalogs",
             configured.selection.provider
         )));
+    }
+    if !configured.image_model_ids.is_empty() {
+        if !definition.image_models().is_empty()
+            || !definition.supports(mobius::protocol::ModelCapability::ImageGeneration)
+        {
+            return Err(Error::Config(format!(
+                "provider `{}` does not accept listed image model IDs",
+                configured.selection.provider
+            )));
+        }
+        validate_catalog_entries(
+            &configured.image_model_ids,
+            "image model IDs",
+            "image model ID",
+        )?;
     }
     validate_configured_provider_selection(configured, &configured.selection)
 }

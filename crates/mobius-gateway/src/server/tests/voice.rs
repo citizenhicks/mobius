@@ -59,6 +59,7 @@ async fn signaling_requires_the_selected_session_is_ephemeral_and_keeps_chat_usa
             Default::default(),
             vec!["local-test".into()],
             Vec::new(),
+            Vec::new(),
         )
         .expect("register unavailable local provider");
     store.save(&config).expect("save configuration");
@@ -155,11 +156,11 @@ async fn signaling_requires_the_selected_session_is_ephemeral_and_keeps_chat_usa
             offer_sdp: OFFER.into(),
         })
         .await
-        .expect("unsupported provider");
+        .expect("no voice model");
     assert!(
         expect_voice_failure(&mut events, &request, &selected)
             .await
-            .contains("does not support realtime voice")
+            .contains("no voice model is configured")
     );
 
     for session_id in [&selected, &other] {

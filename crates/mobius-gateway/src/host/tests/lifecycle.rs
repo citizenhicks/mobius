@@ -330,6 +330,7 @@ async fn ready_holds_one_gateway_generation_while_loading_catalogs() {
             Default::default(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("provider catalog");
     store.save(&config).expect("save provider catalog");

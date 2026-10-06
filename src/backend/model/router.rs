@@ -28,6 +28,8 @@ use crate::protocol::ToolDiscoveryMode;
 pub struct ModelRouter {
     default: String,
     routes: Vec<ModelRoute>,
+    images: Vec<MediaRoute>,
+    voices: Vec<MediaRoute>,
     files: Option<crate::backend::session_files::SessionFileStore>,
     image_limits: super::ImageInputLimits,
 }
@@ -36,6 +38,39 @@ struct ModelRoute {
     choice: ModelChoice,
     provider: Arc<dyn Model>,
     credential: ModelCredentialLifetime,
+}
+
+/// An image or voice model served through a registered model route's transport.
+struct MediaRoute {
+    choice: ModelChoice,
+    transport: String,
+}
+
+/// One configured image route with the provider model and quality it calls.
+#[derive(Debug, Clone, Copy)]
+pub struct ImageModel<'a> {
+    /// The image route.
+    pub route: &'a str,
+    /// The provider image model.
+    pub model: &'a str,
+    /// The provider quality level, or `None` for its default.
+    pub quality: Option<&'a str>,
+}
+
+fn select_media<'a>(
+    routes: &'a [MediaRoute],
+    route: Option<&str>,
+    kind: &str,
+) -> Result<&'a MediaRoute> {
+    match route {
+        Some(route) => routes
+            .iter()
+            .find(|media| media.choice.route == route)
+            .ok_or_else(|| Error::Unknown(format!("{kind} model `{route}`"))),
+        None => routes
+            .first()
+            .ok_or_else(|| Error::Config(format!("no {kind} model is configured"))),
+    }
 }
 
 impl ModelRouter {
@@ -47,6 +82,8 @@ impl ModelRouter {
             default: id,
             files: None,
             image_limits: super::ImageInputLimits::default(),
+            images: Vec::new(),
+            voices: Vec::new(),
             routes: vec![ModelRoute {
                 choice,
                 provider,
@@ -106,6 +143,70 @@ impl ModelRouter {
             credential: ModelCredentialLifetime::default(),
         });
         Ok(())
+    }
+
+    /// Registers an image model served by the transport of model route `transport`.
+    /// # Errors
+    ///
+    /// Returns an error if the transport is unknown, cannot generate images, or the choice repeats.
+    pub fn register_image(
+        &mut self,
+        transport: impl Into<String>,
+        choice: ModelChoice,
+    ) -> Result<()> {
+        let transport = transport.into();
+        if !self.provider(&transport)?.supports_image_generation() {
+            return Err(Error::Config(format!(
+                "model route `{transport}` cannot generate images"
+            )));
+        }
+        Self::push_media(&mut self.images, transport, choice)
+    }
+
+    /// Registers a voice served by the transport of model route `transport`.
+    /// # Errors
+    ///
+    /// Returns an error if the transport is unknown, lacks realtime voice, or the choice repeats.
+    pub fn register_voice(
+        &mut self,
+        transport: impl Into<String>,
+        choice: ModelChoice,
+    ) -> Result<()> {
+        let transport = transport.into();
+        if !self.provider(&transport)?.supports_realtime_voice()
+            || choice.reasoning_effort.is_none()
+        {
+            return Err(Error::Config(format!(
+                "model route `{transport}` cannot serve voice `{}`",
+                choice.route
+            )));
+        }
+        Self::push_media(&mut self.voices, transport, choice)
+    }
+
+    fn push_media(
+        routes: &mut Vec<MediaRoute>,
+        transport: String,
+        choice: ModelChoice,
+    ) -> Result<()> {
+        if routes
+            .iter()
+            .any(|media| media.choice.route == choice.route)
+        {
+            return Err(Error::Duplicate(format!("media route `{}`", choice.route)));
+        }
+        routes.push(MediaRoute { choice, transport });
+        Ok(())
+    }
+
+    /// Returns the configured image models in display order.
+    pub fn image_choices(&self) -> impl ExactSizeIterator<Item = &ModelChoice> {
+        self.images.iter().map(|media| &media.choice)
+    }
+
+    /// Returns the configured voices in display order.
+    pub fn voice_choices(&self) -> impl ExactSizeIterator<Item = &ModelChoice> {
+        self.voices.iter().map(|media| &media.choice)
     }
 
     /// Cancels paid operations when their credential expires or is revoked.
@@ -263,47 +364,90 @@ impl ModelRouter {
         Ok(self.provider(provider)?.supports_image_input())
     }
 
-    /// Reports whether one route supports provider-native image generation.
+    /// Resolves the selected image route, or the first configured one, with its provider model
+    /// and quality.
     /// # Errors
     ///
-    /// Returns an error if the route is unknown.
-    pub fn supports_image_generation(&self, provider: &str) -> Result<bool> {
-        Ok(self.provider(provider)?.supports_image_generation())
+    /// Returns an error when no image model matches.
+    pub fn image_model(&self, image_route: Option<&str>) -> Result<ImageModel<'_>> {
+        select_media(&self.images, image_route, "image").map(|media| ImageModel {
+            route: &media.choice.route,
+            model: &media.choice.model,
+            quality: media.choice.reasoning_effort.as_deref(),
+        })
     }
 
-    /// Generates or edits an image through one route while enforcing credential lifetime.
+    /// Resolves the selected voice, or the first configured one, with its transport route.
     /// # Errors
     ///
-    /// Returns an error when input, authorization, or the provider response is invalid.
+    /// Returns an error when no voice matches.
+    pub fn voice_choice(&self, voice_route: Option<&str>) -> Result<(&ModelChoice, &str)> {
+        select_media(&self.voices, voice_route, "voice")
+            .map(|media| (&media.choice, media.transport.as_str()))
+    }
+
+    /// Generates or edits an image with `request.model` through image route `image_route`.
+    /// # Errors
+    ///
+    /// Returns an error when the route is unknown, or input, authorization, or the provider
+    /// response is invalid.
     pub async fn generate_image(
         &self,
-        provider: &str,
+        image_route: &str,
         request: ImageGenerationRequest<'_>,
     ) -> Result<GeneratedImage> {
+        let media = select_media(&self.images, Some(image_route), "image")?;
+        if media.choice.model != request.model
+            || media.choice.reasoning_effort.as_deref() != request.quality
+        {
+            return Err(Error::Config(format!(
+                "image route `{image_route}` does not serve model `{}`",
+                request.model
+            )));
+        }
         request.validate(self.image_limits)?;
-        let route = self.route(provider)?;
-        while_valid(&route.credential, || route.provider.generate_image(request)).await
+        let route = self.route(&media.transport)?;
+        let transport = route.provider.transport_settings();
+        let request_id = uuid::Uuid::new_v4().to_string();
+        while_valid(&route.credential, || async {
+            let mut retries = 0;
+            loop {
+                match route.provider.generate_image(request).await {
+                    Err(Error::Provider(error))
+                        if error.is_retryable() && retries < transport.stream_retry_limit =>
+                    {
+                        let delay = super::transport::retry_delay(
+                            &error,
+                            retries as usize,
+                            &request_id,
+                            &transport,
+                        );
+                        retries += 1;
+                        tokio::time::sleep(delay).await;
+                    }
+                    result => return result,
+                }
+            }
+        })
+        .await
     }
 
-    /// Reports whether one route can negotiate realtime voice.
+    /// Starts a provider-owned voice call with the selected voice, or the first one.
     /// # Errors
     ///
-    /// Returns an error if validation or an operation required by this function fails.
-    pub fn supports_realtime_voice(&self, provider: &str) -> Result<bool> {
-        Ok(self.provider(provider)?.supports_realtime_voice())
-    }
-
-    /// Starts a provider-owned voice call through the selected model route.
-    /// # Errors
-    ///
-    /// Returns an error if validation or an operation required by this function fails.
+    /// Returns an error if no voice matches, or validation or an operation required by this
+    /// function fails.
     pub async fn start_realtime_voice(
         &self,
-        provider: &str,
-        request: super::RealtimeVoiceRequest,
+        voice_route: Option<&str>,
+        mut request: super::RealtimeVoiceRequest,
     ) -> Result<super::RealtimeVoiceCall> {
-        let route = self.route(provider)?;
-        let settings = self.transport_settings_for(provider)?;
+        let media = select_media(&self.voices, voice_route, "voice")?;
+        // ponytail: owned copies, the request outlives the router borrow inside the provider.
+        request.model = Some(media.choice.model.as_str().into());
+        request.voice = media.choice.reasoning_effort.as_deref().map(Into::into);
+        let route = self.route(&media.transport)?;
+        let settings = self.transport_settings_for(&media.transport)?;
         let mut credential = route.credential.clone();
         credential.expires_at = credential.expires_at.map(|expires_at| {
             super::RealtimeVoiceCall::cleanup_deadline(
@@ -496,6 +640,7 @@ fn inferred_choice(route: &str, provider: &dyn Model) -> ModelChoice {
         group: route.to_string(),
         model: info.model,
         reasoning_effort: info.reasoning_effort,
+        variant_label: None,
         context_window: None,
         supports_image_input: provider.supports_image_input(),
         supports_image_generation: provider.supports_image_generation(),

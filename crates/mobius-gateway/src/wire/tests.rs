@@ -674,6 +674,7 @@ fn provider_registration_is_gateway_scoped() {
         tint: Default::default(),
         model_ids: Vec::new(),
         reasoning_efforts: Vec::new(),
+        image_model_ids: Vec::new(),
     });
 
     let encoded = serde_json::to_value(frame).expect("encode provider registration");
@@ -1244,6 +1245,8 @@ fn gateway_ready_contains_no_selected_session() {
             }),
             models: Vec::new(),
             model_providers: BTreeMap::new(),
+            image_models: Vec::new(),
+            voice_models: Vec::new(),
             middleware_features: Vec::new(),
             extensions: Vec::new(),
             contributions: vec![FrontendContribution {

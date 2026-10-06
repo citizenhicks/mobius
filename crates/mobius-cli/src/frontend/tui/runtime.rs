@@ -2280,6 +2280,8 @@ mod tests {
             },
             revisions: Default::default(),
             omitted: Default::default(),
+            image_models: Vec::new(),
+            voice_models: Vec::new(),
         }
     }
 

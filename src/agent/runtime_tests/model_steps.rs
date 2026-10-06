@@ -456,6 +456,63 @@ async fn interrupt_during_stream_retry_backoff_cancels_the_retry() {
 }
 
 #[tokio::test]
+async fn http_service_unavailable_retries_after_server_hint() {
+    struct BusyOnce(AtomicUsize);
+    impl Model for BusyOnce {
+        fn respond<'a>(
+            &'a self,
+            _request: ModelRequest<'a>,
+            _events: ModelEventSink,
+        ) -> BoxFuture<'a, Result<ModelOutput>> {
+            let attempt = self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                if attempt == 0 {
+                    Err(Error::Provider(crate::ProviderError::http(
+                        "busy",
+                        503,
+                        Some("1".into()),
+                    )))
+                } else {
+                    Ok(scripted_message("Recovered."))
+                }
+            })
+        }
+    }
+    let workspace = tempfile::tempdir().expect("workspace");
+    let checkpoints = Arc::new(
+        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+            .expect("checkpoint store"),
+    );
+    let model = Arc::new(BusyOnce(AtomicUsize::new(0)));
+    let provider: Arc<dyn Model> = Arc::clone(&model) as Arc<dyn Model>;
+    let mut agent = create_agent(config_with_model(
+        workspace.path(),
+        checkpoints,
+        "http-retry",
+        "test",
+        provider,
+    ))
+    .await
+    .expect("agent");
+    let started = tokio::time::Instant::now();
+    agent.sender().submit(user_op("hello")).expect("input");
+    let mut retries = 0;
+    loop {
+        match agent.next_event().await.expect("event").msg {
+            EventMsg::ModelStepCompleted(step) if step.outcome == ModelStepOutcome::Retrying => {
+                retries += 1
+            }
+            EventMsg::TurnComplete(_) => break,
+            EventMsg::Error(error) => panic!("unexpected error: {}", error.message),
+            _ => {}
+        }
+    }
+    assert_eq!(retries, 1);
+    assert_eq!(model.0.load(Ordering::SeqCst), 2);
+    assert!(started.elapsed() >= std::time::Duration::from_secs(1));
+}
+
+#[tokio::test]
 async fn failed_model_step_retains_provider_retry_metadata() {
     let workspace = tempfile::tempdir().expect("workspace");
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(

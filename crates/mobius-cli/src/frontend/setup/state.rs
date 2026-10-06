@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use mobius::backend::model::provider::HostedWebSearch;
 use mobius::protocol::{
     FrontendSettingKind, FrontendSettingOption, FrontendSettingValue, MiddlewareFeature,
-    ModelCapability, ModelChoice,
+    ModelChoice,
 };
 use mobius::{Error, Result};
 use mobius_gateway::wire::{
@@ -1194,15 +1194,6 @@ impl SetupState {
                 .parse::<HostedWebSearch>()?;
             config.provider = selection;
             config.middleware.reconcile(&self.features, Some(choice));
-            if config.realtime_voice.as_ref().is_some_and(|voice| {
-                !choice.supports(ModelCapability::RealtimeVoice)
-                    || !self
-                        .definition()
-                        .realtime_voices(config.provider.base_url.as_deref())
-                        .contains(voice)
-            }) {
-                config.realtime_voice = None;
-            }
             return Ok(config);
         }
         let definition = self.definition();
@@ -1258,13 +1249,6 @@ impl SetupState {
             reasoning_effort,
             web_search,
         };
-        if config.realtime_voice.as_ref().is_some_and(|voice| {
-            !definition
-                .realtime_voices(config.provider.base_url.as_deref())
-                .contains(voice)
-        }) {
-            config.realtime_voice = None;
-        }
         Ok(config)
     }
 

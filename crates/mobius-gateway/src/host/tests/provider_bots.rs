@@ -39,6 +39,7 @@ async fn gateway_with_providers(
             ProviderTint::default(),
             vec![primary.model.clone()],
             Vec::new(),
+            Vec::new(),
         )
         .expect("primary provider");
     if let Some(secondary) = secondary {
@@ -48,6 +49,7 @@ async fn gateway_with_providers(
                 "Secondary".into(),
                 ProviderTint::default(),
                 vec![secondary.model.clone()],
+                Vec::new(),
                 Vec::new(),
             )
             .expect("secondary provider");
@@ -139,6 +141,7 @@ async fn saved_bot_routes_survive_missing_credentials_without_advertising_unavai
             ProviderTint::default(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("provider");
     store.save(&config).expect("save config");
@@ -153,6 +156,13 @@ async fn saved_bot_routes_survive_missing_credentials_without_advertising_unavai
         "subagents",
         "model_route",
         Some(mobius::protocol::FrontendSettingValue::String(route.into())),
+    );
+    composition.middleware.set_setting(
+        "image_generation",
+        "model",
+        Some(mobius::protocol::FrontendSettingValue::String(
+            "managed::gpt-image-2.5-sunburst::high".into(),
+        )),
     );
     let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
     let saved = bots
@@ -172,6 +182,17 @@ async fn saved_bot_routes_survive_missing_credentials_without_advertising_unavai
     )
     .await
     .expect("saved configured route must not require a credential to boot");
+    crate::assembly::prepare_bot(
+        &config,
+        bots.bot(&saved.id).expect("saved Bot"),
+        &store,
+        &credentials,
+        mobius::backend::session_files::SessionFileStore::new(store.state_dir(), None),
+        0,
+        Arc::new(crate::computer_runtime::ComputerConfig::default()),
+    )
+    .await
+    .expect("saved image route survives unavailable credentials");
     let ready = gateway.ready().await.expect("ready without credentials");
     assert!(ready.models.is_empty());
     assert!(!ready.provider_instances[0].configured);
@@ -287,11 +308,14 @@ async fn provider_replacement_rejects_a_bot_reference_without_changing_either_st
     let error = gateway
         .register_provider(
             false,
-            replacement.clone(),
-            "Secondary".into(),
-            ProviderTint::default(),
-            vec![replacement.model.clone()],
-            Vec::new(),
+            crate::config::ConfiguredProvider {
+                selection: replacement.clone(),
+                label: "Secondary".into(),
+                tint: ProviderTint::default(),
+                model_ids: vec![replacement.model.clone()],
+                reasoning_efforts: Vec::new(),
+                image_model_ids: Vec::new(),
+            },
         )
         .await
         .expect_err("referenced provider replacement");

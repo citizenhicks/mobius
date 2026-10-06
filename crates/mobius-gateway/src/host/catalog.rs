@@ -860,6 +860,7 @@ mod tests {
                 Default::default(),
                 vec![selection.model],
                 Vec::new(),
+                Vec::new(),
             )
             .unwrap();
         let credentials = Arc::new(CredentialStore::open(store.credentials_path()).unwrap());

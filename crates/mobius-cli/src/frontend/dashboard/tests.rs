@@ -314,6 +314,8 @@ fn dashboard_state() -> super::state::DashboardState {
             session_file_limits: session_file_limits(),
             revisions: Default::default(),
             omitted: Default::default(),
+            image_models: Vec::new(),
+            voice_models: Vec::new(),
         },
         clients: Vec::new(),
         current_client_id: None,

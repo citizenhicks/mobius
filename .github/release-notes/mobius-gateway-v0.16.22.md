@@ -1,0 +1,1 @@
+Advertise provider-owned chat, image and voice catalogs independently, including configurable image model IDs and custom native endpoints. Validate saved media selections without requiring currently available credentials. Make provider registration atomic with concurrent usage updates. Includes mobius 0.16.22 caching and HTTP retry fixes.

@@ -37,11 +37,12 @@ pub use image_generation::{GeneratedImage, ImageGenerationReference, ImageGenera
 pub use media::{ImageInputLimits, MediaPreparation};
 mod transport;
 pub use transport::ModelTransportSettings;
+pub(crate) use transport::retry_delay;
 
 pub use self::realtime::{
     RealtimeVoiceCall, RealtimeVoiceCommand, RealtimeVoiceEvent, RealtimeVoiceRequest,
 };
-pub use self::router::{ModelCredentialLifetime, ModelRouter};
+pub use self::router::{ImageModel, ModelCredentialLifetime, ModelRouter};
 
 use crate::protocol::ModelInfo;
 use crate::protocol::{

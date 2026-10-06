@@ -1,11 +1,20 @@
 default_enabled = false
 manifest_label = "Image generation"
-manifest_description = "Create images with a supported OpenAI or OpenRouter model"
+manifest_description = "Create images with any configured image model"
 render_pending = "Generating image"
 render_ready = "Image ready"
 render_failed = "Image generation failed"
 # Image-generation policy and the tool contract belong to this middleware.
-model = "gpt-image-2.5-sunburst"
+
+[[settings]]
+choices = { "source" = "image_models" }
+composer = false
+description = "Image model used to create and edit images"
+id = "model"
+label = "Model"
+max_bytes = 4096
+type = "select"
+unset_label = "First available"
 
 [tool]
 name = "generate_image"

@@ -163,6 +163,7 @@ async fn catalogue_mutations_do_not_require_selecting_the_target_chat() {
             Default::default(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("register provider");
     store.save(&config).expect("save provider");
@@ -616,6 +617,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
             crate::wire::AgentComposition::default().provider,
             "Test".into(),
             Default::default(),
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         )
@@ -1322,6 +1324,7 @@ async fn shutdown_stops_a_blocked_routine_and_fails_its_durable_run() {
             Default::default(),
             vec!["local-test".into()],
             Vec::new(),
+            Vec::new(),
         )
         .expect("register provider");
     store.save(&config).expect("save provider");
@@ -1834,6 +1837,7 @@ async fn storage_mutations_keep_composer_removal_available_during_active_turns()
             "Blocked storage".into(),
             Default::default(),
             vec!["local-test".into()],
+            Vec::new(),
             Vec::new(),
         )
         .expect("register provider");

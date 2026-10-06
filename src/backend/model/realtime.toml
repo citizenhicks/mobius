@@ -1,13 +1,54 @@
 [openai]
-model = "gpt-live-1"
-voices = ["marin", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "cedar", "quartz", "ripple", "vesper", "willow", "stone", "gleam", "meridian", "bossa", "tempo", "beacon", "delta", "cinder"]
 calls_path = "live/sessions"
 
 [codex]
-model = "gpt-live-1-codex"
-voices = ["cove", "juniper", "maple", "spruce", "ember", "vale", "breeze", "arbor", "sol"]
 calls_path = "realtime/calls?intent=quicksilver&architecture=avas"
 sideband_base_url = "https://api.openai.com/v1/live"
 
 [codex.headers]
 openai-alpha = "quicksilver=v2"
+
+[[openai.models]]
+id = "gpt-live-1"
+label = "GPT Live 1"
+description = "OpenAI realtime voice model"
+variants = [
+    { id = "marin", label = "Marin" },
+    { id = "alloy", label = "Alloy" },
+    { id = "ash", label = "Ash" },
+    { id = "ballad", label = "Ballad" },
+    { id = "coral", label = "Coral" },
+    { id = "echo", label = "Echo" },
+    { id = "sage", label = "Sage" },
+    { id = "shimmer", label = "Shimmer" },
+    { id = "verse", label = "Verse" },
+    { id = "cedar", label = "Cedar" },
+    { id = "quartz", label = "Quartz" },
+    { id = "ripple", label = "Ripple" },
+    { id = "vesper", label = "Vesper" },
+    { id = "willow", label = "Willow" },
+    { id = "stone", label = "Stone" },
+    { id = "gleam", label = "Gleam" },
+    { id = "meridian", label = "Meridian" },
+    { id = "bossa", label = "Bossa" },
+    { id = "tempo", label = "Tempo" },
+    { id = "beacon", label = "Beacon" },
+    { id = "delta", label = "Delta" },
+    { id = "cinder", label = "Cinder" },
+]
+
+[[codex.models]]
+id = "gpt-live-1-codex"
+label = "GPT Live 1 Codex"
+description = "ChatGPT realtime voice model"
+variants = [
+    { id = "cove", label = "Cove" },
+    { id = "juniper", label = "Juniper" },
+    { id = "maple", label = "Maple" },
+    { id = "spruce", label = "Spruce" },
+    { id = "ember", label = "Ember" },
+    { id = "vale", label = "Vale" },
+    { id = "breeze", label = "Breeze" },
+    { id = "arbor", label = "Arbor" },
+    { id = "sol", label = "Sol" },
+]

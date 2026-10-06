@@ -627,14 +627,16 @@ impl Runner {
                 Ok(Wait::Ready {
                     value: Err(Error::Provider(error)),
                     input_changed,
-                }) if error.is_stream_interrupted() && streamed.originals.is_empty() => {
+                }) if (error.is_stream_interrupted() || error.is_retryable())
+                    && streamed.originals.is_empty() =>
+                {
                     let transport = model.transport_settings_for(&provider)?;
                     let retry_limit =
                         usize::try_from(transport.stream_retry_limit).map_err(|_| {
                             Error::Config("stream retry limit exceeds platform range".into())
                         })?;
                     let delay = if stream_retries < retry_limit {
-                        let delay = stream_retry_delay(
+                        let delay = crate::backend::model::retry_delay(
                             &error,
                             stream_retries,
                             &started.model_step_id,
@@ -1284,34 +1286,6 @@ fn extend_rewrite_reasons(
     }
 }
 
-fn stream_retry_delay(
-    error: &crate::ProviderError,
-    retry: usize,
-    model_step_id: &str,
-    transport: &crate::backend::model::ModelTransportSettings,
-) -> Duration {
-    let multiplier = 1_u64
-        .checked_shl(u32::try_from(retry).unwrap_or(u32::MAX))
-        .unwrap_or(u64::MAX);
-    let exponential_ms = transport
-        .stream_retry_backoff_ms
-        .saturating_mul(multiplier)
-        .min(transport.stream_retry_max_backoff_ms);
-    let jitter = model_step_id
-        .bytes()
-        .fold(u64::try_from(retry).unwrap_or(u64::MAX), |value, byte| {
-            value.wrapping_mul(16_777_619).wrapping_add(u64::from(byte))
-        });
-    let jitter_percent = 80 + jitter % 41;
-    let backoff = Duration::from_millis(exponential_ms.saturating_mul(jitter_percent) / 100);
-    error
-        .retry_after()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .map(Duration::from_secs)
-        .filter(|duration| std::time::Instant::now().checked_add(*duration).is_some())
-        .map_or(backoff, |retry_after| retry_after.max(backoff))
-}
-
 fn rebase_live_message_targets(events: &mut [EventMsg], provisional: u64, durable: u64) {
     for target in events
         .iter_mut()
@@ -1373,8 +1347,16 @@ mod tests {
     fn overflowing_retry_after_uses_configured_backoff() {
         let error = crate::ProviderError::stream_interrupted(Some(u64::MAX.to_string()));
         let transport = crate::backend::model::ModelTransportSettings::default();
-        let delay = stream_retry_delay(&error, 0, "step-1", &transport);
+        let delay = crate::backend::model::retry_delay(&error, 0, "step-1", &transport);
         assert!(delay < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn retry_delay_accepts_http_dates() {
+        let date = (chrono::Utc::now() + chrono::Duration::seconds(30)).to_rfc2822();
+        let error = crate::ProviderError::http("busy", 503, Some(date));
+        let delay = crate::backend::model::retry_delay(&error, 0, "request", &Default::default());
+        assert!(delay >= Duration::from_secs(28) && delay <= Duration::from_secs(30));
     }
 
     #[test]
@@ -1382,7 +1364,7 @@ mod tests {
         let error = crate::ProviderError::stream_interrupted(Some("30".into()));
 
         assert_eq!(
-            stream_retry_delay(
+            crate::backend::model::retry_delay(
                 &error,
                 0,
                 "step-1",

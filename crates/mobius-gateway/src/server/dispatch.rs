@@ -594,9 +594,20 @@ pub(super) async fn handle_message(
             tint,
             model_ids,
             reasoning_efforts,
+            image_model_ids,
         } => {
             let registered = gateway
-                .register_provider(operator, config, label, tint, model_ids, reasoning_efforts)
+                .register_provider(
+                    operator,
+                    crate::config::ConfiguredProvider {
+                        selection: config,
+                        label,
+                        tint,
+                        model_ids,
+                        reasoning_efforts,
+                        image_model_ids,
+                    },
+                )
                 .await;
             return write_gateway_result(writer, connection.view, request_id, registered).await;
         }

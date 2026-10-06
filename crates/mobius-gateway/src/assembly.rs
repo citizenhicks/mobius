@@ -127,8 +127,8 @@ pub(crate) async fn prepare_bot(
         } else {
             unavailable_models(gateway, &config.provider, session_files)?
         };
-    let choices = models.choices().cloned().collect::<Vec<_>>();
-    crate::config::validate_bot_compatibility(gateway, config, &choices)?;
+    let choices = crate::provider_catalog::configured_model_catalog(gateway)?;
+    crate::config::validate_bot_compatibility(gateway, config, choices.catalogs())?;
     let approval_policy = configured_approval_policy(&config.middleware)?;
     let active_message_delivery = configured_message_delivery(&config.middleware)?;
     let compaction = config
@@ -514,6 +514,7 @@ fn build_models(
             "active model route is not in the configured gateway catalog".into(),
         ));
     }
+    let media = crate::provider_catalog::media_routes(gateway, &catalog)?;
     let routes = instantiate_routes(catalog, store, credentials, &gateway.model_transport)?;
     let first = routes
         .first()
@@ -530,6 +531,12 @@ fn build_models(
     for route in routes {
         router.set_credential_lifetime(&route.id, route.lifetime)?;
         router.configure_choice(route.choice)?;
+    }
+    for image in media.images {
+        router.register_image(image.transport, image.choice)?;
+    }
+    for voice in media.voices {
+        router.register_voice(voice.transport, voice.choice)?;
     }
     Ok((Arc::new(router), context_window))
 }
@@ -710,6 +717,7 @@ fn unavailable_models(
         group: selection.model.clone(),
         model: selection.model.clone(),
         reasoning_effort: effort,
+        variant_label: None,
         context_window: Some(context_window),
         supports_image_input: definition.supports_image_input(),
         supports_image_generation: false,
@@ -796,6 +804,8 @@ fn build_middleware(
             BuiltinMiddleware::ImageGeneration => Arc::new(ImageGeneration::new(
                 Arc::clone(&prepared.models),
                 session_files.clone(),
+                crate::middleware_manifest::string_setting(settings, "image_generation", "model")?
+                    .map(Arc::from),
             )),
             BuiltinMiddleware::Tools => Arc::new(if project {
                 Tools::coding(session_files.clone())

@@ -114,6 +114,7 @@ async fn voice_delegation_consumes_committed_speech_without_echoing_or_replaying
             Default::default(),
             vec!["local-test".into()],
             Vec::new(),
+            Vec::new(),
         )
         .unwrap();
     store.save(&config).unwrap();
@@ -154,7 +155,7 @@ async fn voice_delegation_consumes_committed_speech_without_echoing_or_replaying
             &route,
             Arc::new(OpenAi::new("test-key", &base, "local-test").unwrap()),
         )),
-        voice: None,
+        voice: "voice-test::gpt-live-1::sol".into(),
         route,
         provider_instance: "voice-test".into(),
         active_turn_id: None,

@@ -33,21 +33,60 @@ struct VoiceManifest {
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct VoiceProvider {
-    model: String,
-    voices: Vec<String>,
+    models: Vec<super::provider::MediaModelPreset>,
     calls_path: String,
     sideband_base_url: Option<String>,
     #[serde(default)]
     headers: std::collections::BTreeMap<String, String>,
 }
 
-static MANIFEST: std::sync::LazyLock<VoiceManifest> =
-    std::sync::LazyLock::new(|| crate::config::embedded(include_str!("realtime.toml")));
+static MANIFEST: std::sync::LazyLock<VoiceManifest> = std::sync::LazyLock::new(|| {
+    crate::config::overridable(
+        "realtime.toml",
+        include_str!("realtime.toml"),
+        VoiceManifest::validate,
+    )
+});
+
+impl VoiceProvider {
+    /// Every voice of every model, the default model's default voice first.
+    fn voices(&'static self) -> Vec<&'static str> {
+        let mut voices = Vec::new();
+        for voice in self.models.iter().flat_map(|model| &model.variants) {
+            if !voices.contains(&voice.id.as_str()) {
+                voices.push(voice.id.as_str());
+            }
+        }
+        voices
+    }
+}
+
+impl VoiceManifest {
+    fn validate(&self) -> Result<()> {
+        for api in [&self.openai, &self.codex] {
+            if api.models.is_empty() || api.models.iter().any(|model| model.variants.is_empty()) {
+                return Err(Error::Config(
+                    "realtime APIs require a voice model and a voice".into(),
+                ));
+            }
+            super::provider::unique_ids(api.models.iter().map(|model| model.id.as_str()))?;
+            for model in &api.models {
+                super::provider::unique_ids(model.variants.iter().map(|voice| voice.id.as_str()))?;
+            }
+        }
+        Ok(())
+    }
+}
+
+pub(super) static OPENAI_MODELS: std::sync::LazyLock<&'static [super::provider::MediaModelPreset]> =
+    std::sync::LazyLock::new(|| MANIFEST.openai.models.as_slice());
+pub(super) static CODEX_MODELS: std::sync::LazyLock<&'static [super::provider::MediaModelPreset]> =
+    std::sync::LazyLock::new(|| MANIFEST.codex.models.as_slice());
 
 pub(super) static VOICES: std::sync::LazyLock<Vec<&'static str>> =
-    std::sync::LazyLock::new(|| MANIFEST.openai.voices.iter().map(String::as_str).collect());
+    std::sync::LazyLock::new(|| MANIFEST.openai.voices());
 pub(super) static CODEX_VOICES: std::sync::LazyLock<Vec<&'static str>> =
-    std::sync::LazyLock::new(|| MANIFEST.codex.voices.iter().map(String::as_str).collect());
+    std::sync::LazyLock::new(|| MANIFEST.codex.voices());
 
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -56,6 +95,8 @@ type Socket =
 pub struct RealtimeVoiceRequest {
     /// The session identifier.
     pub session_id: String,
+    /// A provider-advertised voice model, or `None` for its default.
+    pub model: Option<String>,
     /// A provider-advertised voice, or `None` for its default.
     pub voice: Option<String>,
     /// The offer sdp.
@@ -280,15 +321,8 @@ impl RealtimeTransport {
         validate_text(&request.session_id, 256, "session identity")?;
         validate_sdp(&request.offer_sdp)?;
         validate_text(&request.instructions, MAX_TEXT_BYTES, "voice instructions")?;
-        if let Some(voice) = request.voice.as_deref()
-            && !self.voices().contains(&voice)
-        {
-            return Err(invalid(
-                "the selected voice is not supported by this provider",
-            ));
-        }
-        let session = self.session(&request);
-        let voice = request.voice.unwrap_or_else(|| self.voices()[0].into());
+        let session = self.session(&request)?;
+        let voice = field(&session["audio"]["output"], "voice")?.to_owned();
         let body = serde_json::to_vec(&match self.api {
             VoiceApi::Codex => json!({"sdp":request.offer_sdp,"session":session}),
             VoiceApi::OpenAi => {
@@ -369,21 +403,30 @@ impl RealtimeTransport {
         RealtimeVoiceCall::new(answer_sdp, voice, commands, events, cancel)
     }
 
-    fn voices(&self) -> &'static [&'static str] {
+    fn models(&self) -> &'static [super::provider::MediaModelPreset] {
         match self.api {
-            VoiceApi::OpenAi => &VOICES,
-            VoiceApi::Codex => &CODEX_VOICES,
+            VoiceApi::OpenAi => &OPENAI_MODELS,
+            VoiceApi::Codex => &CODEX_MODELS,
         }
     }
 
-    fn session(&self, request: &RealtimeVoiceRequest) -> Value {
-        let voice = request.voice.as_deref().unwrap_or(self.voices()[0]);
-        let model = match self.api {
-            VoiceApi::OpenAi => &MANIFEST.openai.model,
-            VoiceApi::Codex => &MANIFEST.codex.model,
+    fn session(&self, request: &RealtimeVoiceRequest) -> Result<Value> {
+        let model = match request.model.as_deref() {
+            Some(id) => self
+                .models()
+                .iter()
+                .find(|model| model.id == id)
+                .ok_or_else(|| {
+                    invalid("the selected voice model is not supported by this provider")
+                })?,
+            None => &self.models()[0],
         };
-        json!({"model":model,"instructions":request.instructions,
-            "audio":{"output":{"voice":voice}},"delegation":{"type":"client"}})
+        let voice = request.voice.as_deref().unwrap_or(&model.variants[0].id);
+        if !model.variants.iter().any(|variant| variant.id == voice) {
+            return Err(invalid("the selected voice is not supported by this model"));
+        }
+        Ok(json!({"model":model.id,"instructions":request.instructions,
+            "audio":{"output":{"voice":voice}},"delegation":{"type":"client"}}))
     }
 
     async fn negotiate(
