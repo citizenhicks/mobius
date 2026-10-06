@@ -230,94 +230,6 @@ impl PromptCacheMode {
     }
 }
 
-/// Token rates owned by one concrete provider/model implementation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ModelPricing {
-    input_microusd_per_million: u64,
-    cached_input_microusd_per_million: u64,
-    cache_write_input_microusd_per_million: u64,
-    output_microusd_per_million: u64,
-    long_context: Option<LongContextPricing>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LongContextPricing {
-    threshold_input_tokens: u64,
-    input_multiplier_millis: u32,
-    output_multiplier_millis: u32,
-}
-
-impl ModelPricing {
-    /// Creates standard per-million-token rates expressed in millionths of a dollar.
-    #[must_use]
-    pub const fn new(
-        input_microusd_per_million: u64,
-        cached_input_microusd_per_million: u64,
-        cache_write_input_microusd_per_million: u64,
-        output_microusd_per_million: u64,
-    ) -> Self {
-        Self {
-            input_microusd_per_million,
-            cached_input_microusd_per_million,
-            cache_write_input_microusd_per_million,
-            output_microusd_per_million,
-            long_context: None,
-        }
-    }
-
-    /// Estimates request cost in millionths of a dollar, rounded up.
-    #[must_use]
-    pub fn estimate_microusd(self, usage: &TokenUsage) -> Option<u64> {
-        const RATE_DENOMINATOR: u128 = 1_000_000 * 1_000;
-
-        let input = u64::try_from(usage.input_tokens).ok()?;
-        let cached_input = u64::try_from(usage.cached_input_tokens).ok()?;
-        let cache_write_input = u64::try_from(usage.cache_write_input_tokens).ok()?;
-        let output = u64::try_from(usage.output_tokens).ok()?;
-        let uncached_input = input
-            .checked_sub(cached_input)?
-            .checked_sub(cache_write_input)?;
-        let (input_multiplier, output_multiplier) =
-            self.long_context.map_or((1_000, 1_000), |long| {
-                if input > long.threshold_input_tokens {
-                    (long.input_multiplier_millis, long.output_multiplier_millis)
-                } else {
-                    (1_000, 1_000)
-                }
-            });
-        let mut numerator = priced_tokens(
-            uncached_input,
-            self.input_microusd_per_million,
-            input_multiplier,
-        )?;
-        numerator = numerator.checked_add(priced_tokens(
-            cached_input,
-            self.cached_input_microusd_per_million,
-            input_multiplier,
-        )?)?;
-        numerator = numerator.checked_add(priced_tokens(
-            cache_write_input,
-            self.cache_write_input_microusd_per_million,
-            input_multiplier,
-        )?)?;
-        numerator = numerator.checked_add(priced_tokens(
-            output,
-            self.output_microusd_per_million,
-            output_multiplier,
-        )?)?;
-        let rounded = numerator.checked_add(RATE_DENOMINATOR - 1)? / RATE_DENOMINATOR;
-        u64::try_from(rounded).ok()
-    }
-}
-
-fn priced_tokens(tokens: u64, rate: u64, multiplier_millis: u32) -> Option<u128> {
-    u128::from(tokens)
-        .checked_mul(u128::from(rate))?
-        .checked_mul(u128::from(multiplier_millis))
-}
-
 /// Hashes a local session identity into a stable provider cache key.
 #[must_use]
 pub fn prompt_cache_key(session_id: &str) -> String {
@@ -810,11 +722,6 @@ pub trait Model: Send + Sync {
     /// Reports how this route makes deferred tool schemas callable.
     fn tool_discovery(&self) -> ToolDiscoveryMode {
         ToolDiscoveryMode::Rebuild
-    }
-
-    /// Returns current token pricing when this provider owns a known billing schedule.
-    fn pricing(&self) -> Option<ModelPricing> {
-        None
     }
 
     /// Produces one streamed response.

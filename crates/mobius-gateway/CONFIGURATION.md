@@ -118,12 +118,14 @@ reuse that registered endpoint, but cannot introduce or retarget it.
 
 Typed embedded TOMLs beside `src/backend/model/` adapters own provider labels,
 descriptions, credential environment names, wire headers, search modes, OAuth parameters,
-realtime endpoints/voices and tariffs. Middleware prompts, labels and default policies
+realtime endpoints/voices and model catalogs. Middleware prompts, labels and default policies
 live beside their owners. Distributors can edit those source defaults without changing
 execution logic; runtime policy uses the fields above. No global provider registry is added.
-DeepSeek's time-dependent pricing table includes an optional holiday calendar. When a
-potential peak window lacks verified calendar coverage, cost remains unknown rather
-than selecting a guessed tariff. Custom DeepSeek roots also report unknown pricing.
+
+Model catalogs (`anthropic.toml`, `openai.toml`, `kimi.toml`, `deepseek.toml`) can be
+replaced without a rebuild: a file with the same name in `<state dir>/models/` is read at
+gateway start instead of the bundled copy. A file that fails to parse or names an
+unlisted default model or reasoning effort is ignored with a warning.
 
 ## Computer resources
 

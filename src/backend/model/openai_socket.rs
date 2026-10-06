@@ -40,7 +40,6 @@ use super::ImageGenerationRequest;
 use super::Model;
 use super::ModelEventSink;
 use super::ModelOutput;
-use super::ModelPricing;
 use super::ModelRequest;
 use super::PromptCacheMode;
 use super::openai::decode_response;
@@ -688,10 +687,6 @@ impl Model for OpenAiSocket {
 
     fn tool_discovery(&self) -> ToolDiscoveryMode {
         ToolDiscoveryMode::Native
-    }
-
-    fn pricing(&self) -> Option<ModelPricing> {
-        self.http.pricing()
     }
 
     fn respond_prepared<'a>(

@@ -65,7 +65,6 @@ async fn native_root_keeps_capabilities_and_websocket_denials_do_not_fallback() 
         .expect("native provider");
     assert!(provider.supports_image_generation());
     assert!(provider.supports_realtime_voice());
-    assert!(provider.pricing().is_some());
     let error = provider
         .respond(
             super::support::model_request(),

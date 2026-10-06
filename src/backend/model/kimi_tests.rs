@@ -227,27 +227,6 @@ async fn stream_normalizes_deltas_tools_usage_and_errors() {
 }
 
 #[test]
-fn native_kimi_prices_use_verified_default_ttl_and_custom_endpoints_are_unknown() {
-    let k3 = Kimi::new("test-key", MANIFEST.base_url.as_str(), "kimi-k3").expect("K3");
-    assert_eq!(
-        k3.pricing(),
-        Some(crate::backend::model::ModelPricing::new(
-            3_000_000, 300_000, 3_000_000, 15_000_000
-        ))
-    );
-    let code = Kimi::new("test-key", MANIFEST.base_url.as_str(), "kimi-k2.7-code").expect("K2.7");
-    assert_eq!(
-        code.pricing(),
-        Some(crate::backend::model::ModelPricing::new(
-            950_000, 190_000, 0, 4_000_000
-        ))
-    );
-    let custom =
-        Kimi::new("test-key", "https://proxy.example/v1", "kimi-k3").expect("custom endpoint");
-    assert_eq!(custom.pricing(), None);
-}
-
-#[test]
 fn kimi_usage_preserves_provider_reported_cache_writes() {
     let usage = decode_usage(Some(&json!({
         "prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110,

@@ -189,6 +189,7 @@ impl ConfigStore {
     }
 
     fn at(state_dir: PathBuf) -> Self {
+        mobius::config::set_override_dir(state_dir.join("models"));
         let path = state_dir.join(CONFIG_FILE);
         Self {
             state_dir,

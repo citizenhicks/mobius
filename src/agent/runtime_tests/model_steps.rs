@@ -94,7 +94,6 @@ async fn model_step_lifecycle_preserves_correlation_usage_and_content() {
     );
     assert_eq!(diagnostics.prompt_cache.context_epoch, 0);
     assert!(diagnostics.prompt_cache.rewrite_reasons.is_empty());
-    assert_eq!(diagnostics.estimated_cost_microusd, None);
     assert_eq!(
         completed.outcome,
         ModelStepOutcome::Completed {

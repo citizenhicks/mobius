@@ -21,10 +21,6 @@ impl Model for ObservedCapabilities {
         PromptCacheMode::Explicit
     }
 
-    fn pricing(&self) -> Option<ModelPricing> {
-        Some(ModelPricing::new(1_000_000, 100_000, 1_250_000, 2_000_000))
-    }
-
     fn respond<'a>(
         &'a self,
         _request: ModelRequest<'a>,
@@ -149,33 +145,6 @@ fn prompt_cache_identity_is_session_stable_and_keeps_one_latest_breakpoint() {
 }
 
 #[test]
-fn pricing_separates_cache_buckets_and_applies_long_context_rates() {
-    let usage = TokenUsage {
-        input_tokens: 1_000,
-        cached_input_tokens: 200,
-        cache_write_input_tokens: 300,
-        output_tokens: 100,
-        total_tokens: 1_100,
-        ..TokenUsage::default()
-    };
-    let pricing = ModelPricing::new(1_000_000, 100_000, 1_250_000, 2_000_000);
-
-    assert_eq!(pricing.estimate_microusd(&usage), Some(1_095));
-    assert_eq!(
-        ModelPricing {
-            long_context: Some(LongContextPricing {
-                threshold_input_tokens: 999,
-                input_multiplier_millis: 2000,
-                output_multiplier_millis: 1500
-            }),
-            ..pricing
-        }
-        .estimate_microusd(&usage),
-        Some(2_090)
-    );
-}
-
-#[test]
 fn model_step_diagnostics_report_rewrite_before_cache_write() {
     let router = ModelRouter::new("observed", Arc::new(ObservedCapabilities));
     let usage = TokenUsage {
@@ -200,7 +169,6 @@ fn model_step_diagnostics_report_rewrite_before_cache_write() {
     );
     assert_eq!(diagnostics.prompt_cache.context_epoch, 4);
     assert_eq!(diagnostics.prompt_cache.rewrite_reasons, ["compaction"]);
-    assert_eq!(diagnostics.estimated_cost_microusd, Some(125));
 }
 
 #[test]

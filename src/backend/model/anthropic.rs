@@ -11,7 +11,6 @@ use serde_json::Value;
 use super::Model;
 use super::ModelEventSink;
 use super::ModelOutput;
-use super::ModelPricing;
 use super::ModelRequest;
 use super::PROMPT_CACHE_BREAKPOINT_FIELD;
 use super::PromptCacheMode;
@@ -46,7 +45,13 @@ use crate::protocol::WebSearchAction;
 pub(super) static MANIFEST: std::sync::LazyLock<super::provider::ProviderMetadata> =
     std::sync::LazyLock::new(|| crate::config::embedded(include_str!("anthropic_provider.toml")));
 pub(super) static CATALOG: std::sync::LazyLock<super::provider::ModelCatalog> =
-    std::sync::LazyLock::new(|| crate::config::embedded(include_str!("anthropic.toml")));
+    std::sync::LazyLock::new(|| {
+        crate::config::overridable(
+            "anthropic.toml",
+            include_str!("anthropic.toml"),
+            super::provider::ModelCatalog::validate,
+        )
+    });
 
 const MAX_CONTENT_BLOCKS: usize = 1_024;
 const RAW_CONTENT: &str = "_anthropic_content";
@@ -293,10 +298,6 @@ impl Model for Anthropic {
 
     fn tool_discovery(&self) -> ToolDiscoveryMode {
         self.tool_discovery
-    }
-
-    fn pricing(&self) -> Option<ModelPricing> {
-        CATALOG.pricing(&self.model)
     }
 
     fn request_size(&self, request: ModelRequest<'_>) -> Result<usize> {

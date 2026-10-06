@@ -320,9 +320,6 @@ pub struct ModelStepDiagnostics {
     pub provider: String,
     /// The prompt cache.
     pub prompt_cache: PromptCacheDiagnostics,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// The estimated cost microusd.
-    pub estimated_cost_microusd: Option<u64>,
 }
 
 /// Prompt-cache behavior observed for one completed request.

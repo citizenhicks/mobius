@@ -11,7 +11,6 @@ use super::ImageGenerationRequest;
 use super::Model;
 use super::ModelEventSink;
 use super::ModelOutput;
-use super::ModelPricing;
 use super::ModelRequest;
 use super::PromptCacheMode;
 use super::ToolDefinition;
@@ -367,29 +366,6 @@ impl ModelRouter {
         Ok(self.provider(provider)?.prompt_cache_capability())
     }
 
-    /// Returns provider-owned pricing for one route when it is known.
-    /// # Errors
-    ///
-    /// Returns an error if validation or an operation required by this function fails.
-    pub fn pricing(&self, provider: &str) -> Result<Option<ModelPricing>> {
-        Ok(self.provider(provider)?.pricing())
-    }
-
-    /// Estimates one completed request from provider-owned rates.
-    /// # Errors
-    ///
-    /// Returns an error if validation or an operation required by this function fails.
-    pub fn estimated_cost_microusd(
-        &self,
-        provider: &str,
-        usage: &TokenUsage,
-    ) -> Result<Option<u64>> {
-        Ok(self
-            .provider(provider)?
-            .pricing()
-            .and_then(|pricing| pricing.estimate_microusd(usage)))
-    }
-
     pub(crate) fn model_step_diagnostics(
         &self,
         provider: &str,
@@ -407,9 +383,6 @@ impl ModelRouter {
                 outcome: capability.outcome(usage, !rewrite_reasons.is_empty()),
                 rewrite_reasons,
             },
-            estimated_cost_microusd: model
-                .pricing()
-                .and_then(|pricing| pricing.estimate_microusd(usage)),
         })
     }
 

@@ -1,4 +1,4 @@
-# Provider-owned model catalog and token prices.
+# Provider-owned model catalog.
 default_model = "kimi-k3"
 
 [[models]]
@@ -24,16 +24,6 @@ id = "max"
 label = "Maximum"
 description = "Use K3's maximum reasoning effort"
 
-# Official rates verified 2026-10-04: https://platform.kimi.ai/docs/pricing/chat
-# K3 uses the provider's default 5-minute cache TTL (not the optional 1-hour tier).
-[[models.pricing]]
-effective_from = 1791043200
-[models.pricing.rates]
-input_microusd_per_million = 3000000
-cached_input_microusd_per_million = 300000
-cache_write_input_microusd_per_million = 3000000
-output_microusd_per_million = 15000000
-
 [[models]]
 id = "kimi-k2.7-code"
 label = "Kimi K2.7 Code"
@@ -41,11 +31,3 @@ description = "Moonshot's coding model"
 context_window = 262144
 tool_discovery = "rebuild"
 reasoning = []
-
-[[models.pricing]]
-effective_from = 1791043200
-[models.pricing.rates]
-input_microusd_per_million = 950000
-cached_input_microusd_per_million = 190000
-cache_write_input_microusd_per_million = 0
-output_microusd_per_million = 4000000

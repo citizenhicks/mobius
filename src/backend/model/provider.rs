@@ -91,15 +91,6 @@ pub struct ModelPreset {
     pub default_reasoning: Option<String>,
     /// The tool discovery.
     pub tool_discovery: ToolDiscoveryMode,
-    #[serde(default)]
-    pricing: Vec<EffectivePricing>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct EffectivePricing {
-    effective_from: u64,
-    rates: super::ModelPricing,
 }
 
 #[derive(Deserialize)]
@@ -110,22 +101,38 @@ pub(super) struct ModelCatalog {
 }
 
 impl ModelCatalog {
-    pub(super) fn pricing(&self, model: &str) -> Option<super::ModelPricing> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_secs());
-        self.pricing_at(model, now)
-    }
-
-    pub(super) fn pricing_at(&self, model: &str, unix_seconds: u64) -> Option<super::ModelPricing> {
-        self.models
-            .iter()
-            .find(|preset| preset.id == model)?
-            .pricing
-            .iter()
-            .filter(|price| price.effective_from <= unix_seconds)
-            .max_by_key(|price| price.effective_from)
-            .map(|price| price.rates)
+    pub(super) fn validate(&self) -> Result<()> {
+        for (index, model) in self.models.iter().enumerate() {
+            if model.id.trim().is_empty()
+                || self.models[..index]
+                    .iter()
+                    .any(|other| other.id == model.id)
+            {
+                return Err(Error::Config(format!(
+                    "model id `{}` is empty or duplicated",
+                    model.id
+                )));
+            }
+            if let Some(effort) = &model.default_reasoning
+                && !model
+                    .reasoning
+                    .iter()
+                    .any(|reasoning| &reasoning.id == effort)
+            {
+                return Err(Error::Config(format!(
+                    "model `{}` default reasoning `{effort}` is not advertised",
+                    model.id
+                )));
+            }
+        }
+        if let Some(default) = &self.default_model
+            && !self.models.iter().any(|model| &model.id == default)
+        {
+            return Err(Error::Config(format!(
+                "default model `{default}` is not in the catalog"
+            )));
+        }
+        Ok(())
     }
 }
 

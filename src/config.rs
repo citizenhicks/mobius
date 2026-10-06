@@ -1,6 +1,48 @@
 //! Typed loading of owner-local configuration embedded in the binary.
 
+use std::path::PathBuf;
+use std::sync::OnceLock;
+
 use serde::de::DeserializeOwned;
+
+static OVERRIDE_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Sets the directory whose files replace same-named embedded catalogs.
+///
+/// Must run before the first catalog lookup; later calls are ignored.
+pub fn set_override_dir(dir: PathBuf) {
+    let _ = OVERRIDE_DIR.set(dir);
+}
+
+/// Decodes `name` from the override directory when present and valid, else the embedded copy.
+pub fn overridable<T: DeserializeOwned>(
+    name: &str,
+    text: &str,
+    validate: impl Fn(&T) -> crate::Result<()>,
+) -> T {
+    if let Some(path) = OVERRIDE_DIR.get().map(|dir| dir.join(name))
+        && path.is_file()
+    {
+        let loaded = std::fs::read_to_string(&path)
+            .map_err(|error| error.to_string())
+            .and_then(|text| toml::from_str::<T>(&text).map_err(|error| error.to_string()))
+            .and_then(|value| {
+                validate(&value)
+                    .map(|()| value)
+                    .map_err(|error| error.to_string())
+            });
+        match loaded {
+            Ok(value) => return value,
+            Err(error) => eprintln!(
+                "ignoring {}, using the bundled catalog: {error}",
+                path.display()
+            ),
+        }
+    }
+    let value = embedded(text);
+    validate(&value).unwrap_or_else(|error| panic!("invalid embedded {name}: {error}"));
+    value
+}
 
 /// Decodes a complete embedded TOML document into its owning type.
 ///
@@ -57,6 +99,29 @@ macro_rules! embedded_config {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn override_file_replaces_embedded_unless_invalid() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        super::set_override_dir(dir.path().into());
+        let positive = |value: &u8| {
+            (*value > 0)
+                .then_some(())
+                .ok_or_else(|| crate::Error::Config("zero".into()))
+        };
+        let load = |name: &str| -> toml::Table {
+            super::overridable(name, "n = 1", |table: &toml::Table| {
+                positive(&u8::try_from(table["n"].as_integer().unwrap_or(0)).unwrap_or(0))
+            })
+        };
+        std::fs::write(dir.path().join("good.toml"), "n = 7").expect("write");
+        std::fs::write(dir.path().join("bad.toml"), "n = 0").expect("write");
+        std::fs::write(dir.path().join("broken.toml"), "n =").expect("write");
+        assert_eq!(load("good.toml")["n"].as_integer(), Some(7));
+        assert_eq!(load("bad.toml")["n"].as_integer(), Some(1));
+        assert_eq!(load("broken.toml")["n"].as_integer(), Some(1));
+        assert_eq!(load("missing.toml")["n"].as_integer(), Some(1));
+    }
+
     embedded_config! {
         copy;
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]

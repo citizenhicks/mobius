@@ -1,11 +1,33 @@
-# Provider-owned model catalog.
-# Variable tariffs and optional verified holiday coverage live in deepseek_pricing.toml.
-default_model = "deepseek-v4-flash"
+# Provider-owned model catalog, verified 2026-10-06 against api-docs.deepseek.com.
+default_model = "deepseek-flash"
 
 [[models]]
-id = "deepseek-v4-flash"
-label = "DeepSeek V4 Flash"
+id = "deepseek-flash"
+label = "DeepSeek V4.1 Flash"
 description = "DeepSeek's fast frontier agentic model"
+default_reasoning = "high"
+context_window = 1000000
+tool_discovery = "rebuild"
+
+[[models.reasoning]]
+id = "low"
+label = "Low"
+description = "Prefer speed and lower cost"
+
+[[models.reasoning]]
+id = "high"
+label = "High"
+description = "DeepSeek's default reasoning effort"
+
+[[models.reasoning]]
+id = "max"
+label = "Maximum"
+description = "Use maximum available reasoning"
+
+[[models]]
+id = "deepseek-v4-pro"
+label = "DeepSeek V4 Pro"
+description = "DeepSeek's highest-capability model"
 default_reasoning = "high"
 context_window = 1000000
 tool_discovery = "rebuild"

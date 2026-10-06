@@ -62,24 +62,9 @@ async fn credentialless_post_uses_custom_path_and_omits_api_key() {
 }
 
 #[test]
-fn anthropic_reports_provider_owned_cache_pricing() {
+fn anthropic_uses_explicit_prompt_cache() {
     let provider = Anthropic::new("test-key", MANIFEST.base_url.as_str(), "claude-haiku-4-5")
         .expect("provider");
-    let usage = TokenUsage {
-        input_tokens: 1_000_000,
-        cached_input_tokens: 200_000,
-        cache_write_input_tokens: 300_000,
-        output_tokens: 1_000_000,
-        total_tokens: 2_000_000,
-        ..TokenUsage::default()
-    };
-
-    assert_eq!(
-        provider
-            .pricing()
-            .and_then(|pricing| pricing.estimate_microusd(&usage)),
-        Some(5_895_000)
-    );
     assert_eq!(
         provider.prompt_cache_capability(),
         PromptCacheMode::Explicit
@@ -87,28 +72,8 @@ fn anthropic_reports_provider_owned_cache_pricing() {
 }
 
 #[test]
-fn sonnet_5_pricing_changes_at_the_standard_rate_date() {
-    let usage = TokenUsage {
-        input_tokens: 1_000_000,
-        cached_input_tokens: 200_000,
-        cache_write_input_tokens: 300_000,
-        output_tokens: 1_000_000,
-        total_tokens: 2_000_000,
-        ..TokenUsage::default()
-    };
-    let before = CATALOG
-        .pricing_at("claude-sonnet-5", 1_788_220_800 - 1)
-        .and_then(|pricing| pricing.estimate_microusd(&usage));
-    let after = CATALOG
-        .pricing_at("claude-sonnet-5", 1_788_220_800)
-        .and_then(|pricing| pricing.estimate_microusd(&usage));
-
-    assert_eq!((before, after), (Some(11_790_000), Some(17_685_000)));
-}
-
-#[test]
 fn explicit_prompt_cache_breakpoint_is_sent_on_the_marked_content_block() {
-    let provider = Anthropic::new("test-key", MANIFEST.base_url.as_str(), "claude-sonnet-5")
+    let provider = Anthropic::new("test-key", MANIFEST.base_url.as_str(), "claude-sonnet-5-5")
         .expect("provider");
     let mut input = user_message("stable prefix");
     assert!(crate::backend::model::mark_prompt_cache_breakpoint(
@@ -233,7 +198,7 @@ fn native_discovery_ignores_tool_loads_from_an_old_catalog() {
 
 #[test]
 fn rebuild_discovery_omits_deferred_schemas_and_internal_markers() {
-    let provider = Anthropic::new("test-key", MANIFEST.base_url.as_str(), "claude-sonnet-5")
+    let provider = Anthropic::new("test-key", MANIFEST.base_url.as_str(), "claude-sonnet-5-5")
         .expect("provider");
     let direct = [discovery_tool(TOOLS_SEARCH_NAME)];
     let deferred = [discovery_tool("notebook_post")];

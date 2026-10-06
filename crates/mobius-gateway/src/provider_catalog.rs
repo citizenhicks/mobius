@@ -478,15 +478,15 @@ mod tests {
     fn catalog_routes_resolve_model_and_endpoint_tool_discovery() {
         let anthropic = provider("anthropic").expect("anthropic");
         assert_eq!(
-            anthropic.tool_discovery("claude-sonnet-5", anthropic.default_base_url()),
+            anthropic.tool_discovery("claude-sonnet-5-5", anthropic.default_base_url()),
             ToolDiscoveryMode::Rebuild
         );
         assert_eq!(
-            anthropic.tool_discovery("claude-opus-4-8", anthropic.default_base_url()),
+            anthropic.tool_discovery("claude-opus-5-5", anthropic.default_base_url()),
             ToolDiscoveryMode::Native
         );
         assert_eq!(
-            anthropic.tool_discovery("claude-opus-4-8", Some("https://proxy.example/v1")),
+            anthropic.tool_discovery("claude-opus-5-5", Some("https://proxy.example/v1")),
             ToolDiscoveryMode::Rebuild
         );
 

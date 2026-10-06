@@ -14,7 +14,6 @@ use super::ImageGenerationRequest;
 use super::Model;
 use super::ModelEventSink;
 use super::ModelOutput;
-use super::ModelPricing;
 use super::ModelRequest;
 use super::PromptCacheMode;
 use super::StreamingToolCalls;
@@ -73,7 +72,13 @@ impl ToolDiscoveryWire {
 }
 
 pub(super) static CATALOG: std::sync::LazyLock<super::provider::ModelCatalog> =
-    std::sync::LazyLock::new(|| crate::config::embedded(include_str!("openai.toml")));
+    std::sync::LazyLock::new(|| {
+        crate::config::overridable(
+            "openai.toml",
+            include_str!("openai.toml"),
+            super::provider::ModelCatalog::validate,
+        )
+    });
 
 /// OpenAI Responses API configuration.
 pub struct OpenAi {
@@ -93,7 +98,6 @@ pub struct OpenAi {
     image_api: Option<&'static ImageApi>,
     explicit_prompt_cache: bool,
     tool_discovery: ToolDiscoveryWire,
-    pricing_resolver: Option<fn(&str, &str) -> Option<ModelPricing>>,
 }
 
 impl OpenAi {
@@ -197,16 +201,7 @@ impl OpenAi {
             image_api,
             explicit_prompt_cache: false,
             tool_discovery: ToolDiscoveryWire::Rebuild,
-            pricing_resolver: None,
         })
-    }
-
-    pub(super) fn with_pricing_resolver(
-        mut self,
-        resolver: fn(&str, &str) -> Option<ModelPricing>,
-    ) -> Self {
-        self.pricing_resolver = Some(resolver);
-        self
     }
 
     /// Sets validated socket, voice and retry policy for this model.
@@ -694,15 +689,6 @@ impl Model for OpenAi {
 
     fn tool_discovery(&self) -> ToolDiscoveryMode {
         self.tool_discovery.mode()
-    }
-
-    fn pricing(&self) -> Option<ModelPricing> {
-        if let Some(resolver) = self.pricing_resolver {
-            return resolver(&self.base_url, &self.model);
-        }
-        self.native_api
-            .then(|| CATALOG.pricing(&self.model))
-            .flatten()
     }
 
     fn request_size(&self, request: ModelRequest<'_>) -> Result<usize> {
