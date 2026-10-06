@@ -699,7 +699,7 @@ impl Sandbox {
             .await
     }
 
-    /// Reports whether one session still owns a background command result.
+    /// Reports whether one session has an unfinished background command.
     /// # Errors
     ///
     /// Returns an error if validation or an operation required by this function fails.

@@ -378,6 +378,7 @@ impl Middleware for Compaction {
                 let cache_key = prompt_cache_key(context.session_id);
                 let request = CompactRequest {
                     session_id: context.session_id,
+                    cancellation: context.cancellation,
                     prompt_cache: Some(PromptCacheIdentity {
                         key: &cache_key,
                         context_epoch: *context.context_epoch,
@@ -609,6 +610,7 @@ async fn summarize(context: &ModelContext<'_>, keep_recent_tokens: usize) -> Res
     }
     let request = ModelRequest {
         session_id: context.session_id,
+        cancellation: context.cancellation,
         prompt_cache: Some(PromptCacheIdentity {
             key: &cache_key,
             context_epoch: *context.context_epoch,

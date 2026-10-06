@@ -4,7 +4,7 @@ mod events;
 mod storage;
 #[cfg(test)]
 pub(crate) use events::event_selector;
-pub(crate) use events::{MAX_HOOK_ANCESTRY, PendingHookAction, report_text};
+pub(crate) use events::{MAX_HOOK_ANCESTRY, PendingHookAction, TelemetryEvent, report_text};
 
 use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions, TryLockError};

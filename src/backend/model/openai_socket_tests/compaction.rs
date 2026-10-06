@@ -136,6 +136,7 @@ async fn native_compaction_reuses_the_websocket_with_a_v2_trigger() {
     let initial_output = provider
         .respond_prepared(
             ModelRequest {
+                cancellation: None,
                 session_id: "test-session",
                 prompt_cache: Some(PromptCacheIdentity {
                     key: "hashed-cache-key",
@@ -164,6 +165,7 @@ async fn native_compaction_reuses_the_websocket_with_a_v2_trigger() {
     let compacted = provider
         .compact_prepared(
             CompactRequest {
+                cancellation: None,
                 session_id: "test-session",
                 prompt_cache: Some(PromptCacheIdentity {
                     key: "hashed-cache-key",
@@ -262,6 +264,7 @@ async fn native_compaction_retries_an_interrupted_websocket() {
 
     let compacted = provider
         .compact(CompactRequest {
+            cancellation: None,
             session_id: "test-session",
             prompt_cache: Some(PromptCacheIdentity {
                 key: "hashed-cache-key",

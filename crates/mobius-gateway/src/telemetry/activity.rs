@@ -247,7 +247,7 @@ impl<'a> ActivityHook<'a> {
                 }
                 Some(result) = self.retiring.join_next(), if !self.retiring.is_empty() => {
                     if let Err(error) = result {
-                        eprintln!("activity hook cleanup failed: {error}");
+                        gateway_log!("activity hook cleanup failed: {error}");
                     }
                 }
             }
@@ -259,7 +259,7 @@ impl<'a> ActivityHook<'a> {
             match self.acquire() {
                 Ok(()) => *retry_at = None,
                 Err(error) => {
-                    eprintln!("activity hook acquisition failed: {error}");
+                    gateway_log!("activity hook acquisition failed: {error}");
                     *retry_at = Some(
                         Instant::now()
                             + Duration::from_secs(
@@ -279,8 +279,8 @@ impl<'a> ActivityHook<'a> {
         retry: Duration,
     ) {
         match result {
-            Ok(status) => eprintln!("activity hook command exited ({status})"),
-            Err(error) => eprintln!("activity hook command status failed: {error}"),
+            Ok(status) => gateway_log!("activity hook command exited ({status})"),
+            Err(error) => gateway_log!("activity hook command status failed: {error}"),
         }
         self.process = None;
         *retry_at = Some(Instant::now() + retry);
@@ -347,7 +347,7 @@ impl<'a> ActivityHook<'a> {
         }
         while let Some(result) = self.retiring.join_next().await {
             if let Err(error) = result {
-                eprintln!("activity hook cleanup failed: {error}");
+                gateway_log!("activity hook cleanup failed: {error}");
             }
         }
     }
@@ -364,16 +364,16 @@ fn measured_idle(
         Ok(Ok(activity)) => match clients() {
             Ok(clients) => activity.idle && clients == 0,
             Err(error) => {
-                eprintln!("activity hook client count failed: {error}");
+                gateway_log!("activity hook client count failed: {error}");
                 false
             }
         },
         Ok(Err(error)) => {
-            eprintln!("activity hook measurement failed: {}", error.message);
+            gateway_log!("activity hook measurement failed: {}", error.message);
             false
         }
         Err(_) => {
-            eprintln!("activity hook measurement timed out");
+            gateway_log!("activity hook measurement timed out");
             false
         }
     }
@@ -407,7 +407,7 @@ async fn stop_process(mut process: HookProcess, timeout: Duration) {
                 tokio::time::timeout(timeout, process.child.wait()).await,
                 Ok(Ok(_))
             ) {
-                eprintln!("activity hook command did not reap after termination");
+                gateway_log!("activity hook command did not reap after termination");
             }
         }
     }

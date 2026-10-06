@@ -149,6 +149,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
     let warm = provider
         .respond_prepared(
             ModelRequest {
+                cancellation: None,
                 session_id: "fallback-session",
                 prompt_cache: Some(PromptCacheIdentity {
                     key: "hashed-fallback-session",
@@ -177,6 +178,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
     let Error::Provider(error) = provider
         .respond_prepared(
             ModelRequest {
+                cancellation: None,
                 session_id: "fallback-session",
                 prompt_cache: Some(PromptCacheIdentity {
                     key: "hashed-fallback-session",
@@ -203,6 +205,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
     let fallback = provider
         .respond_prepared(
             ModelRequest {
+                cancellation: None,
                 session_id: "fallback-session",
                 prompt_cache: Some(PromptCacheIdentity {
                     key: "hashed-fallback-session",
@@ -224,6 +227,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
     let sticky = provider
         .respond_prepared(
             ModelRequest {
+                cancellation: None,
                 session_id: "fallback-session",
                 prompt_cache: Some(PromptCacheIdentity {
                     key: "hashed-fallback-session",
@@ -245,6 +249,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
     let compacted = provider
         .compact_prepared(
             CompactRequest {
+                cancellation: None,
                 session_id: "fallback-session",
                 prompt_cache: Some(PromptCacheIdentity {
                     key: "hashed-fallback-session",
@@ -263,6 +268,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
     let Error::Provider(http_error) = provider
         .respond_prepared(
             ModelRequest {
+                cancellation: None,
                 session_id: "fallback-session",
                 prompt_cache: Some(PromptCacheIdentity {
                     key: "hashed-fallback-session",
@@ -390,6 +396,7 @@ async fn explicit_fallback_is_sticky_and_isolated_to_the_session() {
         let output = provider
             .respond(
                 ModelRequest {
+                    cancellation: None,
                     session_id: "fallback",
                     input: &input,
                     allow_continuation: true,

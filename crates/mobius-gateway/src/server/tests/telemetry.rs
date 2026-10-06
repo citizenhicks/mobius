@@ -675,6 +675,134 @@ async fn telemetry_source_failure_does_not_stop_serve_or_drop_request_transport(
 }
 
 #[tokio::test]
+async fn telemetry_keeps_an_old_turn_cancellation_after_later_turns() {
+    use crate::wire::{HookData, HookEvent, HookKind, HookSource};
+    use mobius::backend::checkpoint::ExecutionOutcome;
+    use mobius::protocol::{TurnAbortedEvent, TurnStartedEvent, WarningEvent};
+
+    let root = tempfile::tempdir().unwrap();
+    let state_dir = root.path().join("state");
+    let checkpoint_path = state_dir.join("checkpoints.sqlite3");
+    let bots_path = state_dir.join("bots.sqlite3");
+    let (server, _) = configured_test_server(state_dir).await;
+    let mut endpoint = sink("http://127.0.0.1:1".into());
+    endpoint.events = vec![HookKind::SessionTurnFinished];
+    server
+        .host
+        .configure_telemetry(0, vec![endpoint.clone()], &[])
+        .await
+        .unwrap();
+    let bot = server.bots.bots().unwrap().remove(0);
+    let mut checkpoint = Checkpoint::empty("cancelled-chat");
+    checkpoint.session_context.owner_id = bot.id.as_str().into();
+    let checkpoints = SqliteCheckpoint::new(&checkpoint_path).unwrap();
+    checkpoints.save(&checkpoint, &[], None).await.unwrap();
+    for (turn_id, reason, timestamp_ms) in [
+        ("old", "interrupted", 1999),
+        ("next", "frontend disconnected", 3000),
+    ] {
+        checkpoints
+            .append_event(
+                &checkpoint.session_id,
+                timestamp_ms,
+                &Event {
+                    submission_id: None,
+                    msg: EventMsg::TurnStarted(TurnStartedEvent {
+                        turn_id: turn_id.into(),
+                        model_context_window: None,
+                    }),
+                },
+            )
+            .await
+            .unwrap();
+        if turn_id == "next" {
+            for _ in 0..401 {
+                checkpoints
+                    .append_event(
+                        &checkpoint.session_id,
+                        timestamp_ms,
+                        &Event {
+                            submission_id: None,
+                            msg: EventMsg::Warning(WarningEvent {
+                                message: "later turn work".into(),
+                            }),
+                        },
+                    )
+                    .await
+                    .unwrap();
+            }
+        }
+        let cancelled = checkpoints
+            .append_event(
+                &checkpoint.session_id,
+                timestamp_ms,
+                &Event {
+                    submission_id: Some(format!("stop-{turn_id}")),
+                    msg: EventMsg::TurnAborted(TurnAbortedEvent {
+                        turn_id: turn_id.into(),
+                        reason: reason.into(),
+                    }),
+                },
+            )
+            .await
+            .unwrap();
+        if turn_id == "old" {
+            server
+                .bots
+                .project_session(
+                    &HookEvent {
+                        id: "cancelled-turn-with-an-opaque-id".into(),
+                        bot_id: bot.id.as_str().into(),
+                        occurred_at: 1,
+                        source: HookSource::Session {
+                            session_id: checkpoint.session_id.as_str().into(),
+                        },
+                        cause_id: None,
+                        ancestry: vec![],
+                        data: HookData::SessionTurnFinished {
+                            session_id: checkpoint.session_id.as_str().into(),
+                            turn_id: turn_id.into(),
+                            outcome: ExecutionOutcome::Aborted,
+                        },
+                    },
+                    cancelled.sequence,
+                )
+                .unwrap();
+        }
+        let (events, _, _) = server.host.telemetry_events(&endpoint).await.unwrap();
+        assert_eq!(
+            events[0]["session"]["cancellation"],
+            serde_json::json!({
+                "reason": "interrupted", "timestamp_ms": 1999, "submission_id": "stop-old",
+            })
+        );
+    }
+    rusqlite::Connection::open(checkpoint_path)
+        .unwrap()
+        .execute(
+            "DELETE FROM event_journal WHERE session_id=?1 AND recorded_at_ms=1999",
+            [&checkpoint.session_id],
+        )
+        .unwrap();
+    let (events, _, _) = server.host.telemetry_events(&endpoint).await.unwrap();
+    assert!(events[0]["session"].get("cancellation").is_none());
+    let db = rusqlite::Connection::open(bots_path).unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    db.execute(
+        "DELETE FROM hook_events WHERE id='cancelled-turn-with-an-opaque-id'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM hook_journal_sequences", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        0,
+    );
+    server.host.shutdown().await;
+}
+
+#[tokio::test]
 async fn telemetry_enriches_session_without_a_surviving_bot_and_counts_without_decoding() {
     use crate::wire::{HookData, HookEvent, HookSource};
     let root = tempfile::tempdir().unwrap();

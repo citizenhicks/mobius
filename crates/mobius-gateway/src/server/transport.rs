@@ -351,7 +351,7 @@ impl ClientConnections {
             .checked_add(1)
             .ok_or_else(|| Error::Config("client connection count overflow".into()))?;
         if first_native && let Err(error) = record_client_presence(&bots, &key.0, true) {
-            eprintln!(
+            gateway_log!(
                 "client lifecycle persistence failed: {}",
                 connection_diagnostic(&error)
             );
@@ -413,7 +413,7 @@ impl Drop for ClientConnectionGuard {
                 && !native_client_present(&entries, &self.key.0)
                 && let Err(error) = record_client_presence(&self.bots, &self.key.0, false)
             {
-                eprintln!(
+                gateway_log!(
                     "client lifecycle persistence failed: {}",
                     connection_diagnostic(&error)
                 );

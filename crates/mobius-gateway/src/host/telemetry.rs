@@ -1,5 +1,8 @@
 use super::*;
+use crate::bots::TelemetryEvent;
 use crate::telemetry::{TelemetrySection, TelemetrySink, TelemetrySinkReport};
+use crate::wire::{HookData, HookEvent, HookSource};
+use mobius::agent::{FRONTEND_DISCONNECTED_REASON, TURN_INTERRUPTED_REASON, TURN_RESTARTED_REASON};
 use serde_json::{Value, json};
 
 #[derive(Default)]
@@ -12,6 +15,60 @@ struct CompletedStorageMeasurement {
     completed_at: std::time::Instant,
     revision: u64,
     usage: crate::storage_usage::StorageUsage,
+}
+
+pub(super) fn cancellation_reason(reason: &str, failed: bool) -> &str {
+    // Provider and middleware reasons may contain request content or credentials.
+    match reason {
+        TURN_INTERRUPTED_REASON | TURN_RESTARTED_REASON | FRONTEND_DISCONNECTED_REASON => reason,
+        _ if failed => "failed",
+        _ => "aborted",
+    }
+}
+
+async fn session_cancellation(
+    checkpoints: &dyn CheckpointStore,
+    event: &HookEvent,
+    sequence: Option<u64>,
+) -> Result<Option<Value>> {
+    let HookData::SessionTurnFinished {
+        session_id,
+        turn_id,
+        outcome: outcome @ (ExecutionOutcome::Aborted | ExecutionOutcome::Failed),
+    } = &event.data
+    else {
+        return Ok(None);
+    };
+    if !matches!(&event.source, HookSource::Session { session_id: source_id } if source_id == session_id)
+    {
+        return Ok(None);
+    }
+    let Some((sequence, before_sequence)) =
+        sequence.and_then(|sequence| sequence.checked_add(1).map(|before| (sequence, before)))
+    else {
+        return Ok(None);
+    };
+    let page = checkpoints
+        .event_page(
+            session_id,
+            EventPageRequest {
+                before_sequence: Some(before_sequence),
+                limit: 1,
+            },
+        )
+        .await?;
+    Ok(page.events.into_iter().next().and_then(|record| {
+        let EventMsg::TurnAborted(turn) = record.event.msg else {
+            return None;
+        };
+        (record.sequence == sequence && &turn.turn_id == turn_id).then(|| {
+            json!({
+                "reason": cancellation_reason(&turn.reason, *outcome == ExecutionOutcome::Failed),
+                "timestamp_ms": record.recorded_at_ms,
+                "submission_id": record.event.submission_id,
+            })
+        })
+    }))
 }
 
 impl StorageMeasurements {
@@ -231,7 +288,12 @@ impl GatewayHost {
             session_catalog(&checkpoints, &activities).await?
         };
         let mut events = Vec::with_capacity(batch.len());
-        for (row, event) in batch {
+        for TelemetryEvent {
+            rowid,
+            event,
+            journal_sequence,
+        } in batch
+        {
             let mut value = serde_json::to_value(&event)?;
             if let crate::wire::HookSource::Session { session_id } = &event.source
                 && let Some(session) = sessions.iter().find(|s| &s.session_id == session_id)
@@ -241,6 +303,11 @@ impl GatewayHost {
                     json!({"title": session.title, "run_count": session.execution_stats.run_count});
                 if let Some(bot) = bot {
                     enrichment["bot_name"] = json!(bot.name);
+                }
+                if let Some(cancellation) =
+                    session_cancellation(checkpoints.as_ref(), &event, journal_sequence).await?
+                {
+                    enrichment["cancellation"] = cancellation;
                 }
                 if matches!(
                     event.data,
@@ -267,7 +334,7 @@ impl GatewayHost {
                 break;
             }
             bytes = bytes.saturating_add(size);
-            cursor = Some(row);
+            cursor = Some(rowid);
             events.push(value);
         }
         Ok((events, cursor, pending))

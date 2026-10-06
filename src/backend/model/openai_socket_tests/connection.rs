@@ -11,6 +11,128 @@ fn websocket_error_cause_keeps_only_the_io_category() {
 }
 
 #[tokio::test]
+async fn cancelled_request_flushes_reason_and_reconnects() {
+    use crate::backend::model::{ModelCancellation, ModelCancellationReason};
+    use futures_util::{SinkExt as _, StreamExt as _};
+    use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+
+    for reason in [
+        ModelCancellationReason::Interrupted,
+        ModelCancellationReason::FrontendDisconnected,
+        ModelCancellationReason::RequestDropped,
+    ] {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("WebSocket listener");
+        let address = listener.local_addr().expect("WebSocket address");
+        let (started, received) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("first connection");
+            let mut socket = tokio_tungstenite::accept_async(stream)
+                .await
+                .expect("first handshake");
+            let request = socket.next().await.unwrap().unwrap();
+            let request: Value = serde_json::from_str(request.to_text().unwrap()).unwrap();
+            assert_eq!(request["type"], "response.create");
+            started.send(()).unwrap();
+            let frame = socket.next().await.unwrap().unwrap();
+            let Message::Close(Some(frame)) = frame else {
+                panic!("expected clean close, received {frame:?}");
+            };
+            assert_eq!(frame.code, CloseCode::Normal);
+            assert_eq!(frame.reason.as_str(), reason.as_str());
+
+            let (stream, _) = listener.accept().await.expect("fresh connection");
+            let mut socket = tokio_tungstenite::accept_async(stream)
+                .await
+                .expect("fresh handshake");
+            let request = socket.next().await.unwrap().unwrap();
+            let request: Value = serde_json::from_str(request.to_text().unwrap()).unwrap();
+            assert!(request.get("previous_response_id").is_none());
+            for event in super::support::completed_events("recovered", "response-2") {
+                socket.send(Message::text(event.to_string())).await.unwrap();
+            }
+        });
+        let provider = OpenAiSocket::with_authorization(
+            Arc::new(ApiKeyAuthorization::new("test-key".into())),
+            &format!("http://{address}"),
+            format!("ws://{address}/responses"),
+            "test-model",
+            reqwest::Client::new(),
+            crate::backend::model::ModelTransportSettings::default(),
+        )
+        .unwrap();
+        let cancellation = ModelCancellation::default();
+        let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
+        let mut request = Box::pin(provider.respond(
+            ModelRequest {
+                cancellation: Some(&cancellation),
+                ..model_request()
+            },
+            Arc::clone(&events),
+        ));
+        tokio::select! {
+            result = &mut request => panic!("request ended before cancellation: {result:?}"),
+            result = received => result.unwrap(),
+        }
+        if reason != ModelCancellationReason::RequestDropped {
+            cancellation.record(reason);
+        }
+        drop(request);
+        let output = timeout(
+            Duration::from_secs(2),
+            provider.respond(model_request(), events),
+        )
+        .await
+        .expect("fresh response timeout")
+        .expect("fresh response");
+        assert_eq!(output.text(), "recovered");
+        timeout(Duration::from_secs(2), server)
+            .await
+            .expect("close flush timeout")
+            .expect("server task");
+    }
+}
+
+#[tokio::test]
+async fn failed_exchange_flushes_request_failed_reason() {
+    use futures_util::{SinkExt as _, StreamExt as _};
+    use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        socket.next().await.unwrap().unwrap();
+        socket.send(Message::text("invalid JSON")).await.unwrap();
+        let frame = socket.next().await.unwrap().unwrap();
+        let Message::Close(Some(frame)) = frame else {
+            panic!("expected clean close, received {frame:?}");
+        };
+        assert_eq!(frame.code, CloseCode::Normal);
+        assert_eq!(frame.reason.as_str(), "request_failed");
+    });
+    let (socket, _) = connect_async(format!("ws://{address}")).await.unwrap();
+    let mut connection = OpenAiWsConnection::new(socket);
+    let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
+    let result = timeout(
+        Duration::from_secs(2),
+        exchange(&mut connection, &serde_json::json!({}), &events, None),
+    )
+    .await
+    .expect("exchange timeout");
+    assert!(matches!(result, Err(crate::Error::Json(_))));
+    drop(connection);
+    timeout(Duration::from_secs(2), server)
+        .await
+        .expect("close flush timeout")
+        .expect("server task");
+}
+
+#[tokio::test]
 async fn idle_connection_pump_answers_ping() {
     use futures_util::SinkExt as _;
     use futures_util::StreamExt as _;
@@ -292,6 +414,10 @@ async fn pump_still_limits_total_buffered_events() {
         for _ in 0..=MAX_STREAM_EVENTS {
             socket.send(Message::text("x")).await.unwrap();
         }
+        let Message::Close(Some(frame)) = socket.next().await.unwrap().unwrap() else {
+            panic!("expected a close after the response cap");
+        };
+        assert_eq!(frame.reason.as_str(), "request_failed");
     });
     let (socket, _) = connect_async(format!("ws://{address}")).await.unwrap();
     let mut connection = OpenAiWsConnection::new(socket);

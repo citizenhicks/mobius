@@ -558,59 +558,126 @@ async fn failed_model_step_retains_provider_retry_metadata() {
 
 #[tokio::test]
 async fn interrupted_model_request_emits_one_terminal_step() {
-    let workspace = tempfile::tempdir().expect("workspace");
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-            .expect("checkpoint store"),
-    );
-    let entered = Arc::new(Notify::new());
-    let model = Arc::new(BlockingModel {
-        started: Arc::clone(&entered),
-        release: Arc::new(Notify::new()),
-        calls: AtomicUsize::new(0),
-    });
-    let mut agent = create_agent(config_with_model(
-        workspace.path(),
-        checkpoints,
-        "interrupted-step",
-        "test",
-        model,
-    ))
-    .await
-    .expect("create agent");
-    agent
-        .sender()
-        .submit(user_op("hello"))
-        .expect("submit input");
-    let started = loop {
-        if let EventMsg::ModelStepStarted(started) =
-            agent.next_event().await.expect("model step started").msg
-        {
-            break started;
-        }
-    };
-    tokio::time::timeout(std::time::Duration::from_secs(1), entered.notified())
-        .await
-        .expect("model entered");
-    agent
-        .sender()
-        .submit(Op::Interrupt {
-            turn_id: started.turn_id.clone(),
-        })
-        .expect("interrupt turn");
+    use crate::agent::{FRONTEND_DISCONNECTED_REASON, TURN_INTERRUPTED_REASON};
+    use crate::backend::model::{ModelCancellation, ModelCancellationReason};
 
-    let mut terminal = Vec::new();
-    while let Some(event) = agent.next_event().await {
-        match event.msg {
-            EventMsg::ModelStepCompleted(event) => terminal.push(event),
-            EventMsg::TurnAborted(_) => break,
-            _ => {}
+    struct PendingModel {
+        started: Notify,
+        dropped_reason: Mutex<Option<ModelCancellationReason>>,
+    }
+    struct ObserveDrop<'a> {
+        control: &'a ModelCancellation,
+        reason: &'a Mutex<Option<ModelCancellationReason>>,
+    }
+    impl Drop for ObserveDrop<'_> {
+        fn drop(&mut self) {
+            *self.reason.lock().expect("drop observation") = Some(self.control.reason());
         }
     }
+    impl Model for PendingModel {
+        fn respond<'a>(
+            &'a self,
+            request: ModelRequest<'a>,
+            _: ModelEventSink,
+        ) -> BoxFuture<'a, Result<ModelOutput>> {
+            Box::pin(async move {
+                let _drop = ObserveDrop {
+                    control: request.cancellation.expect("request cancellation"),
+                    reason: &self.dropped_reason,
+                };
+                self.started.notify_one();
+                std::future::pending().await
+            })
+        }
+    }
+    for reason in [
+        ModelCancellationReason::Interrupted,
+        ModelCancellationReason::FrontendDisconnected,
+    ] {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+            SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+                .expect("checkpoint store"),
+        );
+        let model = Arc::new(PendingModel {
+            started: Notify::new(),
+            dropped_reason: Mutex::new(None),
+        });
+        let mut agent = create_agent(config_with_model(
+            workspace.path(),
+            checkpoints,
+            "interrupted-step",
+            "test",
+            Arc::clone(&model) as Arc<dyn Model>,
+        ))
+        .await
+        .expect("create agent");
+        agent
+            .sender()
+            .submit(user_op("hello"))
+            .expect("submit input");
+        let started = loop {
+            if let EventMsg::ModelStepStarted(started) =
+                agent.next_event().await.expect("model step started").msg
+            {
+                break started;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(1), model.started.notified())
+            .await
+            .expect("model entered");
+        let (sender, mut events) = agent.into_parts();
+        if reason == ModelCancellationReason::Interrupted {
+            sender
+                .submit(Op::Interrupt {
+                    turn_id: started.turn_id,
+                })
+                .expect("interrupt turn");
+        }
+        drop(sender);
 
-    assert_eq!(terminal.len(), 1);
-    assert_eq!(terminal[0].model_step_id, started.model_step_id);
-    assert_eq!(terminal[0].outcome, ModelStepOutcome::Interrupted);
+        let (terminal, journal_reason) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                let mut terminal = Vec::new();
+                let mut journal_reason = None;
+                while let Some(event) = events.recv().await {
+                    match event.msg {
+                        EventMsg::ModelStepCompleted(event) => terminal.push(event),
+                        EventMsg::TurnAborted(event) => {
+                            journal_reason = Some(event.reason);
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                (terminal, journal_reason.expect("terminal turn reason"))
+            })
+            .await
+            .expect("turn ended after cancellation");
+
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(terminal[0].model_step_id, started.model_step_id);
+        assert_eq!(
+            terminal[0].outcome,
+            if reason == ModelCancellationReason::Interrupted {
+                ModelStepOutcome::Interrupted
+            } else {
+                ModelStepOutcome::Failed
+            }
+        );
+        assert_eq!(
+            *model.dropped_reason.lock().expect("drop observation"),
+            Some(reason)
+        );
+        assert_eq!(
+            journal_reason,
+            if reason == ModelCancellationReason::Interrupted {
+                TURN_INTERRUPTED_REASON
+            } else {
+                FRONTEND_DISCONNECTED_REASON
+            }
+        );
+    }
 }
 
 #[tokio::test(start_paused = true)]

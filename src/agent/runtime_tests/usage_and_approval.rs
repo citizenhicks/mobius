@@ -376,8 +376,16 @@ async fn compact_session_start_stop_completes_after_compaction() {
 
 #[tokio::test]
 async fn compaction_notice_is_live_and_closes_on_success_failure_and_interrupt() {
+    use crate::backend::model::{ModelCancellation, ModelCancellationReason};
     use crate::protocol::FrontendBlockState;
     use tokio::sync::Notify;
+
+    struct InterruptedRequest<'a>(&'a ModelCancellation);
+    impl Drop for InterruptedRequest<'_> {
+        fn drop(&mut self) {
+            assert_eq!(self.0.reason(), ModelCancellationReason::Interrupted);
+        }
+    }
 
     struct PausedCompaction {
         entered: Notify,
@@ -398,8 +406,14 @@ async fn compaction_notice_is_live_and_closes_on_success_failure_and_interrupt()
             true
         }
 
-        fn compact<'a>(&'a self, _: CompactRequest<'a>) -> BoxFuture<'a, Result<CompactOutput>> {
+        fn compact<'a>(
+            &'a self,
+            request: CompactRequest<'a>,
+        ) -> BoxFuture<'a, Result<CompactOutput>> {
             Box::pin(async move {
+                let _interrupt = (request.session_id == "interrupt").then(|| {
+                    InterruptedRequest(request.cancellation.expect("compaction cancellation"))
+                });
                 self.entered.notify_one();
                 self.release.notified().await;
                 if self.fail {

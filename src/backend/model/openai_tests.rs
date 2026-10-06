@@ -8,6 +8,7 @@ use crate::protocol::PROMPT_CACHE_BREAKPOINT_FIELD;
 fn model_request() -> ModelRequest<'static> {
     ModelRequest {
         session_id: "test-session",
+        cancellation: None,
         prompt_cache: Some(PromptCacheIdentity {
             key: "hashed-cache-key",
             context_epoch: 3,
@@ -208,6 +209,7 @@ fn compatible_responses_are_implicit_while_first_party_breakpoints_are_explicit(
     })];
     let request = ModelRequest {
         session_id: "local-session",
+        cancellation: None,
         prompt_cache: Some(PromptCacheIdentity {
             key: "opaque-cache-key",
             context_epoch: 4,
@@ -233,6 +235,7 @@ fn compatible_responses_are_implicit_while_first_party_breakpoints_are_explicit(
 
     let request = ModelRequest {
         session_id: "local-session",
+        cancellation: None,
         prompt_cache: Some(PromptCacheIdentity {
             key: "opaque-cache-key",
             context_epoch: 4,
@@ -1119,6 +1122,7 @@ fn compaction_shape_matches_the_responses_contract() {
         .with_compaction_endpoint()
         .compact_body(CompactRequest {
             session_id: "test-session",
+            cancellation: None,
             prompt_cache: Some(PromptCacheIdentity {
                 key: "hashed-cache-key",
                 context_epoch: 3,
@@ -1168,6 +1172,7 @@ fn native_compaction_ignores_tool_loads_from_an_old_catalog() {
         .with_compaction_endpoint()
         .compact_body(CompactRequest {
             session_id: "test-session",
+            cancellation: None,
             prompt_cache: None,
             instructions: "Compact the conversation",
             input: &input,

@@ -4,6 +4,7 @@ use super::Agent;
 use super::AgentConfig;
 use super::Runner;
 use super::SUBMISSION_QUEUE_CAPACITY;
+use super::TURN_RESTARTED_REASON;
 use super::send_event;
 use super::submission_channel;
 use super::try_send_event;
@@ -340,7 +341,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
             &execution.submission_id,
             EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: execution.turn_id.clone(),
-                reason: "interrupted by restart".into(),
+                reason: TURN_RESTARTED_REASON.into(),
             }),
         ));
     }

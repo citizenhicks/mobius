@@ -10,14 +10,18 @@ use super::streaming::StreamedTools;
 use super::turn_event;
 use crate::agent::input::Wait;
 use crate::agent::tool_step::order_results;
-use crate::agent::{Runner, SubmissionInbox, send_event, unix_timestamp_ms};
+use crate::agent::{
+    FRONTEND_DISCONNECTED_REASON, Runner, SubmissionInbox, TURN_INTERRUPTED_REASON, send_event,
+    unix_timestamp_ms,
+};
 use crate::backend::checkpoint::{
     ActiveModelStep, ContextRewrite, ContextRewriteReason, ExecutionOutcome, ExecutionPhase,
 };
 use crate::backend::model::{
-    MAX_TOOL_CALLS, ModelEventSink, ModelOutput, ModelRequest, PromptCacheIdentity,
-    StreamingToolCalls, ToolDefinition, durable_visible_message_index,
-    insert_before_open_tool_calls, internal_user_message, prompt_cache_key,
+    MAX_TOOL_CALLS, ModelCancellation, ModelCancellationReason, ModelEventSink, ModelOutput,
+    ModelRequest, PromptCacheIdentity, StreamingToolCalls, ToolDefinition,
+    durable_visible_message_index, insert_before_open_tool_calls, internal_user_message,
+    prompt_cache_key,
 };
 use crate::backend::sandbox::SandboxAuthorization;
 use crate::middleware::tools::{PreparedToolSet, ToolResult};
@@ -28,6 +32,18 @@ use crate::protocol::{
     SubmissionRejectedEvent, TokenUsage, ToolCall,
 };
 use crate::{Error, Result};
+
+fn record_cancellation<T>(cancellation: &ModelCancellation, result: &Result<Wait<Result<T>>>) {
+    let reason = match result {
+        Ok(Wait::Interrupted { .. }) => ModelCancellationReason::Interrupted,
+        Err(Error::Stopped(message)) if message == FRONTEND_DISCONNECTED_REASON => {
+            ModelCancellationReason::FrontendDisconnected
+        }
+        Err(_) | Ok(Wait::Ready { value: Err(_), .. }) => ModelCancellationReason::RequestFailed,
+        Ok(Wait::Ready { value: Ok(_), .. }) => return,
+    };
+    cancellation.record(reason);
+}
 
 /// Outcome of `Runner::prepare_model_phase`.
 enum PreparedModel {
@@ -240,39 +256,49 @@ impl Runner {
         let middleware = self.config.middleware.clone();
         let author = self.active_author()?.clone();
         let mut preparation_notices = PreparationNotices::new(&runtime.frontend);
-        let prepare_model = middleware.prepare_model(ModelContext {
-            token_estimate: self.config.token_estimate,
-            author: &author,
-            model: &model,
-            provider: &provider,
-            session_id: &session_id,
-            session_context: &runtime.session_context,
-            metadata: &runtime.metadata,
-            turn_id,
-            model_step,
-            context_window: self.config.context_window,
-            instructions: &instructions,
-            checkpoint_sequence: self.state.sequence,
-            available_tools: &mut available_tools,
-            allow_hosted_tools: &mut allow_hosted_tools,
-            durable_input: &mut durable_input,
-            delivered_once: &mut delivered_once,
-            transcript_delta: &mut transcript_delta,
-            context_epoch: &mut context_epoch,
-            compaction_count: &mut compaction_count,
-            rewrite_reasons: &mut rewrite_reasons,
-            turn_stop: &mut turn_stop,
-            queued_messages,
-            last_usage: last_usage.as_ref(),
-            tools: &catalog,
-            events: &mut middleware_events,
-            usage: &mut middleware_usage,
-            checkpoint_changed: &mut checkpoint_changed,
-            runtime: &runtime,
-            hooks: &middleware,
-            preparation_notices: &mut preparation_notices.notices,
-        });
-        let control = self.wait_active(inbox, turn_id, prepare_model).await?;
+        let cancellation = ModelCancellation::default();
+        let control = {
+            let prepare_model = middleware.prepare_model(ModelContext {
+                token_estimate: self.config.token_estimate,
+                author: &author,
+                model: &model,
+                provider: &provider,
+                session_id: &session_id,
+                cancellation: Some(&cancellation),
+                session_context: &runtime.session_context,
+                metadata: &runtime.metadata,
+                turn_id,
+                model_step,
+                context_window: self.config.context_window,
+                instructions: &instructions,
+                checkpoint_sequence: self.state.sequence,
+                available_tools: &mut available_tools,
+                allow_hosted_tools: &mut allow_hosted_tools,
+                durable_input: &mut durable_input,
+                delivered_once: &mut delivered_once,
+                transcript_delta: &mut transcript_delta,
+                context_epoch: &mut context_epoch,
+                compaction_count: &mut compaction_count,
+                rewrite_reasons: &mut rewrite_reasons,
+                turn_stop: &mut turn_stop,
+                queued_messages,
+                last_usage: last_usage.as_ref(),
+                tools: &catalog,
+                events: &mut middleware_events,
+                usage: &mut middleware_usage,
+                checkpoint_changed: &mut checkpoint_changed,
+                runtime: &runtime,
+                hooks: &middleware,
+                preparation_notices: &mut preparation_notices.notices,
+            });
+            // Keep preparation alive until cancellation is recorded for its provider drop guards.
+            tokio::pin!(prepare_model);
+            let control = self
+                .wait_active(inbox, turn_id, prepare_model.as_mut())
+                .await;
+            record_cancellation(&cancellation, &control);
+            control
+        }?;
         let hook_result = match control {
             Wait::Ready { value, .. } => value,
             Wait::Interrupted { submission_id } => {
@@ -283,7 +309,7 @@ impl Runner {
                 self.abort_with_events(
                     &submission_id,
                     turn_id,
-                    "interrupted",
+                    TURN_INTERRUPTED_REASON,
                     ExecutionOutcome::Aborted,
                     events,
                 )
@@ -499,7 +525,7 @@ impl Runner {
         self.abort_with_events(
             interrupt_submission_id,
             &started.turn_id,
-            "interrupted",
+            TURN_INTERRUPTED_REASON,
             ExecutionOutcome::Aborted,
             events,
         )
@@ -602,8 +628,10 @@ impl Runner {
                     }
                 })
             });
+            let cancellation = ModelCancellation::default();
             let request = ModelRequest {
                 session_id: &model_session_id,
+                cancellation: Some(&cancellation),
                 prompt_cache: Some(PromptCacheIdentity {
                     key: &cache_key,
                     context_epoch: self.state.context_epoch,
@@ -616,16 +644,28 @@ impl Runner {
                 allow_hosted_tools: tools.allow_hosted_tools,
                 allow_continuation: true,
             };
-            let response = model.respond(&provider, request, stream);
-            let response = async move {
-                let response = response.await;
-                drop(response_open);
-                response
-            };
             let mut streamed = StreamedTools::default();
-            let response = self
-                .wait_streamed_response(inbox, response, ready_calls, &tools.catalog, &mut streamed)
-                .await;
+            let response = {
+                let response = model.respond(&provider, request, stream);
+                let response = async move {
+                    let response = response.await;
+                    drop(response_open);
+                    response
+                };
+                // Keep the response alive until its drop guard can read the cancellation reason.
+                tokio::pin!(response);
+                let result = self
+                    .wait_streamed_response(
+                        inbox,
+                        response.as_mut(),
+                        ready_calls,
+                        &tools.catalog,
+                        &mut streamed,
+                    )
+                    .await;
+                record_cancellation(&cancellation, &result);
+                result
+            };
             if !matches!(&response, Ok(Wait::Ready { value: Ok(_), .. })) {
                 streamed.cancel();
             }
@@ -695,7 +735,7 @@ impl Runner {
                                 self.abort(
                                     &interrupt_submission_id,
                                     turn_id,
-                                    "interrupted",
+                                    TURN_INTERRUPTED_REASON,
                                     ExecutionOutcome::Aborted,
                                 )
                                 .await?;
@@ -716,7 +756,7 @@ impl Runner {
                             self.abort(
                                 &interrupt_submission_id,
                                 turn_id,
-                                "interrupted",
+                                TURN_INTERRUPTED_REASON,
                                 ExecutionOutcome::Aborted,
                             )
                             .await?;
@@ -986,7 +1026,7 @@ impl Runner {
             self.abort(
                 &interrupt_submission_id,
                 turn_id,
-                "interrupted",
+                TURN_INTERRUPTED_REASON,
                 ExecutionOutcome::Aborted,
             )
             .await?;
@@ -1027,7 +1067,7 @@ impl Runner {
             self.abort(
                 &interrupt_submission_id,
                 turn_id,
-                "interrupted",
+                TURN_INTERRUPTED_REASON,
                 ExecutionOutcome::Aborted,
             )
             .await?;
@@ -1163,7 +1203,7 @@ impl Runner {
                 self.abort(
                     &interrupt_submission_id,
                     &turn_id,
-                    "interrupted",
+                    TURN_INTERRUPTED_REASON,
                     ExecutionOutcome::Aborted,
                 )
                 .await?;

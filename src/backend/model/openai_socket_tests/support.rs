@@ -4,6 +4,7 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 pub(super) fn model_request() -> ModelRequest<'static> {
     ModelRequest {
+        cancellation: None,
         session_id: "test-session",
         prompt_cache: Some(PromptCacheIdentity {
             key: "hashed-cache-key",

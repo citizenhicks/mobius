@@ -516,21 +516,31 @@ async fn credential_deadline_cancels_in_flight_work_and_blocks_reuse() {
         started: AtomicUsize,
         cancelled: AtomicBool,
     }
-    struct Cancellation<'a>(&'a AtomicBool);
+    struct Cancellation<'a> {
+        dropped: &'a AtomicBool,
+        control: &'a ModelCancellation,
+    }
     impl Drop for Cancellation<'_> {
         fn drop(&mut self) {
-            self.0.store(true, Ordering::SeqCst);
+            assert_eq!(
+                self.control.reason(),
+                ModelCancellationReason::CredentialExpired
+            );
+            self.dropped.store(true, Ordering::SeqCst);
         }
     }
     impl Model for PendingModel {
         fn respond<'a>(
             &'a self,
-            _: ModelRequest<'a>,
+            request: ModelRequest<'a>,
             _: ModelEventSink,
         ) -> BoxFuture<'a, Result<ModelOutput>> {
             self.started.fetch_add(1, Ordering::SeqCst);
             Box::pin(async move {
-                let _cancellation = Cancellation(&self.cancelled);
+                let _cancellation = Cancellation {
+                    dropped: &self.cancelled,
+                    control: request.cancellation.expect("request cancellation"),
+                };
                 std::future::pending().await
             })
         }
@@ -540,8 +550,10 @@ async fn credential_deadline_cancels_in_flight_work_and_blocks_reuse() {
         cancelled: AtomicBool::new(false),
     });
     let mut router = ModelRouter::new("included", model.clone());
+    let cancellation = ModelCancellation::default();
     let request = || ModelRequest {
         session_id: "same-persistent-session",
+        cancellation: Some(&cancellation),
         prompt_cache: None,
         instructions: "",
         input: &[],

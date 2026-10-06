@@ -1,8 +1,10 @@
+use super::super::telemetry::cancellation_reason;
 use super::*;
 
 impl HostState {
     pub(super) async fn apply_event(&mut self, record: JournalEvent) -> Result<()> {
         let was_active = self.pending_turns > 0;
+        let timestamp_ms = record.recorded_at_ms;
         let event = record.event.clone();
         if self
             .project_and_publish(record, JournalDelivery::Live)?
@@ -17,6 +19,18 @@ impl HostState {
                     self.last_assistant_text = Some(text);
                 }
             }
+            EventMsg::TurnAborted(turn) => gateway_log!(
+                "{}",
+                serde_json::json!({
+                    "event": "turn_aborted",
+                    "timestamp_ms": timestamp_ms,
+                    "session_id": self.running.session_id,
+                    "bot_id": self.spec.bot_id,
+                    "turn_id": turn.turn_id,
+                    "submission_id": event.submission_id,
+                    "reason": cancellation_reason(&turn.reason, self.turn_error.is_some()),
+                })
+            ),
             _ => {}
         }
         let next_activity = self.activity_for_event(&event.msg).await?;
@@ -415,6 +429,22 @@ fn bounded_activity_message(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aborted_turn_logs_preserve_known_reasons_and_redact_arbitrary_text() {
+        for failed in [false, true] {
+            for reason in [
+                "interrupted",
+                "interrupted by restart",
+                "frontend disconnected",
+            ] {
+                assert_eq!(cancellation_reason(reason, failed), reason);
+            }
+        }
+        let private_reason = "provider rejected Bearer secret-token for user@example.com";
+        assert_eq!(cancellation_reason(private_reason, true), "failed");
+        assert_eq!(cancellation_reason(private_reason, false), "aborted");
+    }
 
     #[test]
     fn completed_activity_uses_the_bounded_final_answer_without_masking_failures() {

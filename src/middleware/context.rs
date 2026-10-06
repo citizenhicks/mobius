@@ -15,7 +15,7 @@ use crate::backend::checkpoint::{
     Checkpoint, CheckpointStore, ContextRewriteReason, ExecutionOutcome, MAX_QUEUED_MESSAGES,
     QueuedMessage as DurableQueuedMessage, QueuedMessageBoundary,
 };
-use crate::backend::model::{ModelRouter, message_input};
+use crate::backend::model::{ModelCancellation, ModelRouter, message_input};
 use crate::backend::sandbox::ApprovalPolicy;
 use crate::protocol::{
     EventMsg, FrontendBlock, FrontendBlockRole, FrontendBlockState, FrontendEvent, FrontendTone,
@@ -548,6 +548,8 @@ pub struct ModelContext<'a> {
     pub provider: &'a str,
     /// The session identifier.
     pub session_id: &'a str,
+    /// Cause recorded before model preparation is cancelled.
+    pub cancellation: Option<&'a ModelCancellation>,
     /// The session context.
     pub session_context: &'a SessionContext,
     /// The metadata.

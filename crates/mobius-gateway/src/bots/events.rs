@@ -24,6 +24,12 @@ pub(crate) struct PendingHookAction {
     pub(crate) action: BotAction,
 }
 
+pub(crate) struct TelemetryEvent {
+    pub(crate) rowid: i64,
+    pub(crate) event: HookEvent,
+    pub(crate) journal_sequence: Option<u64>,
+}
+
 impl BotStorage {
     pub(super) fn subscriptions(&self, bot_id: &str) -> Result<Vec<BotSubscription>> {
         let connection = self
@@ -544,6 +550,14 @@ pub(super) fn record_event(
     }
     // Deleting old facts must not reuse a row ID already acknowledged by a collector.
     tx.execute("INSERT INTO hook_events(rowid,id,bot_id,source_json,occurred_at,event_json) VALUES(MAX(COALESCE((SELECT MAX(rowid) FROM hook_events),0),COALESCE((SELECT MAX(after_rowid) FROM telemetry_cursors),0))+1,?1,?2,?3,?4,?5)",params![event.id,event.bot_id,serde_json::to_string(&event.source)?,event.occurred_at,json])?;
+    if let Some(sequence) = sequence {
+        let sequence = i64::try_from(sequence)
+            .map_err(|_| Error::Config("hook journal sequence is too large".into()))?;
+        tx.execute(
+            "INSERT INTO hook_journal_sequences(event_id,sequence) VALUES(?1,?2)",
+            params![event.id, sequence],
+        )?;
+    }
     if event.ancestry.len() >= MAX_HOOK_ANCESTRY {
         return Ok(true);
     }
@@ -783,7 +797,7 @@ impl super::BotStore {
     pub(crate) fn telemetry_batch(
         &self,
         sink: &crate::telemetry::TelemetrySink,
-    ) -> Result<(Vec<(i64, HookEvent)>, u64)> {
+    ) -> Result<(Vec<TelemetryEvent>, u64)> {
         let connection = self
             .storage
             .connection
@@ -798,24 +812,36 @@ impl super::BotStore {
             .optional()?
             .ok_or_else(|| Error::Config(format!("telemetry cursor missing for {}", sink.id)))?;
         let kinds = serde_json::to_string(&sink.events)?;
-        let filter = "FROM hook_events WHERE rowid > ?1 AND json_extract(event_json,'$.data.type') IN (SELECT value FROM json_each(?2))";
+        let filter = "WHERE events.rowid > ?1 AND json_extract(event_json,'$.data.type') IN (SELECT value FROM json_each(?2))";
         let count = connection.query_row(
-            &format!("SELECT COUNT(*) {filter}"),
+            &format!("SELECT COUNT(*) FROM hook_events AS events {filter}"),
             params![after, kinds],
             |row| row.get::<_, i64>(0),
         )?;
         let count =
             u64::try_from(count).map_err(|_| Error::Config("invalid event count".into()))?;
         let mut query = connection.prepare(&format!(
-            "SELECT rowid,event_json {filter} ORDER BY rowid LIMIT 32"
+            "SELECT events.rowid,event_json,journal.sequence FROM hook_events AS events LEFT JOIN hook_journal_sequences AS journal ON journal.event_id=events.id {filter} ORDER BY events.rowid LIMIT 32"
         ))?;
         let events = query
             .query_map(params![after, kinds], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                ))
             })?
             .map(|row| {
-                let (id, json) = row?;
-                Ok((id, serde_json::from_str(&json)?))
+                let (id, json, sequence) = row?;
+                let sequence = sequence
+                    .map(u64::try_from)
+                    .transpose()
+                    .map_err(|_| Error::Config("negative hook journal sequence".into()))?;
+                Ok(TelemetryEvent {
+                    rowid: id,
+                    event: serde_json::from_str(&json)?,
+                    journal_sequence: sequence,
+                })
             })
             .collect::<Result<Vec<_>>>()?;
         Ok((events, count))

@@ -118,7 +118,7 @@ impl BackgroundCommands {
             .lock()
             .map_err(|_| state_error())?
             .values()
-            .any(|entry| entry.owner == owner))
+            .any(|entry| entry.owner == owner && !entry.task.is_finished()))
     }
 
     pub(super) fn start(
@@ -469,13 +469,17 @@ mod tests {
         assert_eq!(first.stdout, "first");
 
         release.notify_one();
-        let completed = loop {
-            let output = commands.poll("session-a", &id).await.expect("poll");
-            if output.status != BackgroundCommandStatus::Running {
-                break output;
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while commands.has_owner("session-a").expect("command activity") {
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
-        };
+        })
+        .await
+        .expect("finished command no longer reports activity before polling");
+        let completed = commands
+            .poll("session-a", &id)
+            .await
+            .expect("completed poll");
         assert_eq!(completed.status, BackgroundCommandStatus::Exited);
         assert_eq!(completed.exit_code, Some(7));
         assert_eq!(completed.stderr, "last");

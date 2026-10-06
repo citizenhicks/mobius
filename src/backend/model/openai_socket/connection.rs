@@ -20,8 +20,12 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 
+use super::super::ModelCancellation;
+use super::super::ModelCancellationReason;
 use super::super::ModelEventSink;
 use super::super::StreamingToolCalls;
 use super::super::openai::attach_stream_output;
@@ -60,6 +64,7 @@ pub(super) struct OpenAiWsConnection {
     pump: tokio::task::AbortHandle,
     io_timeout: Duration,
     idle_timeout: Duration,
+    close_reason: Option<ModelCancellationReason>,
 }
 
 enum SocketCommand {
@@ -69,7 +74,8 @@ enum SocketCommand {
     },
     Finish,
     Close {
-        result: oneshot::Sender<()>,
+        reason: Option<ModelCancellationReason>,
+        result: Option<oneshot::Sender<()>>,
     },
 }
 
@@ -106,6 +112,7 @@ impl OpenAiWsConnection {
             pump: task.abort_handle(),
             io_timeout,
             idle_timeout: Duration::from_millis(settings.socket_idle_timeout_ms),
+            close_reason: None,
         }
     }
 
@@ -152,7 +159,10 @@ impl OpenAiWsConnection {
         let (result, closed) = oneshot::channel();
         if self
             .commands
-            .try_send(SocketCommand::Close { result })
+            .try_send(SocketCommand::Close {
+                reason: self.close_reason,
+                result: Some(result),
+            })
             .is_ok()
         {
             let _ = timeout(self.io_timeout, closed).await;
@@ -168,7 +178,20 @@ impl OpenAiWsConnection {
 
 impl Drop for OpenAiWsConnection {
     fn drop(&mut self) {
-        self.retire();
+        // The pump owns the socket until the bounded close flushes, even after the request drops.
+        if self.closed.load(Ordering::Acquire) {
+            return;
+        }
+        if self
+            .commands
+            .try_send(SocketCommand::Close {
+                reason: self.close_reason,
+                result: None,
+            })
+            .is_err()
+        {
+            self.retire();
+        }
     }
 }
 
@@ -183,8 +206,10 @@ async fn socket_pump(
     let mut stream_bytes = 0;
     let mut stream_events = 0;
     let mut close_result = None;
+    let mut close_reason = None;
     loop {
         tokio::select! {
+            biased;
             command = commands.recv() => {
                 match command {
                     Some(SocketCommand::Send { message, result }) if !active => {
@@ -194,6 +219,7 @@ async fn socket_pump(
                         stream_events = 0;
                         let _ = result.send(if sent { Ok(()) } else { Err(()) });
                         if !sent {
+                            close_reason = Some(ModelCancellationReason::RequestFailed);
                             break;
                         }
                     }
@@ -203,8 +229,9 @@ async fn socket_pump(
                     Some(SocketCommand::Finish) => {
                         active = false;
                     }
-                    Some(SocketCommand::Close { result }) => {
-                        close_result = Some(result);
+                    Some(SocketCommand::Close { reason, result }) => {
+                        close_reason = reason;
+                        close_result = result;
                         break;
                     }
                     None => break,
@@ -216,6 +243,7 @@ async fn socket_pump(
                         let sent =
                             send_socket_message(&mut socket, Message::Pong(payload), "pong", io_timeout).await;
                         if !sent {
+                            close_reason = Some(ModelCancellationReason::RequestFailed);
                             if active {
                                 let _ = messages.send(SocketEvent::Closed);
                             }
@@ -225,6 +253,7 @@ async fn socket_pump(
                     Some(Ok(Message::Pong(_) | Message::Frame(_))) => {}
                     Some(Ok(message @ (Message::Text(_) | Message::Binary(_)))) if active => {
                         if message.len() > MAX_SOCKET_MESSAGE_BYTES {
+                            close_reason = Some(ModelCancellationReason::RequestFailed);
                             let _ = messages.send(SocketEvent::ProtocolError(
                                 "WebSocket message exceeded size limit",
                             ));
@@ -239,18 +268,20 @@ async fn socket_pump(
                             )
                             .is_err()
                         {
+                            close_reason = Some(ModelCancellationReason::RequestFailed);
                             let _ = messages.send(SocketEvent::ProtocolError(
                                 "WebSocket response exceeded size limit",
                             ));
                             break;
                         }
                         if messages.send(SocketEvent::Message(message)).is_err() {
-                            log_interruption("response", "event consumer closed");
-                            break;
+                            // The owner's drop queues the close reason. Process it before more output.
+                            continue;
                         }
                     }
                     Some(Ok(Message::Text(_) | Message::Binary(_))) => {}
                     Some(Err(WebSocketError::Capacity(_))) => {
+                        close_reason = Some(ModelCancellationReason::RequestFailed);
                         if active {
                             let _ = messages.send(SocketEvent::ProtocolError(
                                 "WebSocket message exceeded size limit",
@@ -285,7 +316,15 @@ async fn socket_pump(
     }
     closed.store(true, Ordering::Release);
     drop(messages);
-    let _ = timeout(io_timeout, socket.close(None)).await;
+    let frame = close_reason.map(|reason| CloseFrame {
+        code: CloseCode::Normal,
+        reason: reason.as_str().into(),
+    });
+    match timeout(io_timeout, socket.close(frame)).await {
+        Ok(Ok(()) | Err(WebSocketError::ConnectionClosed | WebSocketError::AlreadyClosed)) => {}
+        Ok(Err(error)) => log_websocket_error("close", &error),
+        Err(_) => log_interruption("close", "close timed out"),
+    }
     if let Some(result) = close_result {
         let _ = result.send(());
     }
@@ -409,15 +448,49 @@ pub(super) async fn exchange(
     connection: &mut OpenAiWsConnection,
     body: &Value,
     events: &ModelEventSink,
+    cancellation: Option<&ModelCancellation>,
 ) -> Result<Exchange> {
     let message = Message::text(serde_json::to_string(body)?);
-    if connection.start(message).await.is_err() {
-        return Ok(Exchange::Reconnect);
+    let mut exchange = CloseReasonOnDrop {
+        connection,
+        cancellation,
+        finished: false,
+    };
+    let result = if exchange.connection.start(message).await.is_err() {
+        Ok(Exchange::Reconnect)
+    } else {
+        read_exchange_with_timeout(
+            &mut exchange.connection.messages,
+            events,
+            exchange.connection.idle_timeout,
+        )
+        .await
+    };
+    match &result {
+        Ok(Exchange::Reconnect) | Err(_) => {
+            exchange.connection.close_reason = Some(ModelCancellationReason::RequestFailed);
+        }
+        Ok(_) => exchange.connection.finish(),
     }
-    let result =
-        read_exchange_with_timeout(&mut connection.messages, events, connection.idle_timeout).await;
-    connection.finish();
+    exchange.finished = true;
     result
+}
+
+struct CloseReasonOnDrop<'a> {
+    connection: &'a mut OpenAiWsConnection,
+    cancellation: Option<&'a ModelCancellation>,
+    finished: bool,
+}
+
+impl Drop for CloseReasonOnDrop<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.connection.close_reason = Some(self.cancellation.map_or(
+                ModelCancellationReason::RequestDropped,
+                ModelCancellation::reason,
+            ));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -612,5 +685,51 @@ pub(super) fn websocket_error_cause(error: &WebSocketError) -> String {
 }
 
 fn log_interruption(context: &str, cause: &str) {
-    eprintln!("OpenAI Responses WebSocket interrupted: context={context} cause={cause}");
+    eprintln!(
+        "{} OpenAI Responses WebSocket interrupted: context={context} cause={cause}",
+        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn send_failure_records_request_failed_and_finishes_closing() {
+        let (commands, mut receiver) = mpsc::channel(1);
+        let (_, messages) = mpsc::unbounded_channel();
+        let closed = Arc::new(AtomicBool::new(false));
+        let pump_closed = Arc::clone(&closed);
+        let (finish_close, closing) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let Some(SocketCommand::Send { result, .. }) = receiver.recv().await else {
+                panic!("expected a send command");
+            };
+            result.send(Err(())).unwrap();
+            pump_closed.store(true, Ordering::Release);
+            closing.await.unwrap();
+        });
+        let mut connection = OpenAiWsConnection {
+            commands,
+            messages,
+            closed,
+            pump: task.abort_handle(),
+            io_timeout: Duration::from_secs(1),
+            idle_timeout: Duration::from_secs(1),
+            close_reason: None,
+        };
+        let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
+        assert!(matches!(
+            exchange(&mut connection, &serde_json::json!({}), &events, None).await,
+            Ok(Exchange::Reconnect)
+        ));
+        assert_eq!(
+            connection.close_reason,
+            Some(ModelCancellationReason::RequestFailed)
+        );
+        drop(connection);
+        finish_close.send(()).unwrap();
+        task.await.unwrap();
+    }
 }

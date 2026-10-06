@@ -267,6 +267,7 @@ async fn previous_response_not_found_rebuilds_full_context_on_the_same_connectio
     let initial_output = provider
         .respond(
             ModelRequest {
+                cancellation: None,
                 session_id: "test-session",
                 prompt_cache: Some(PromptCacheIdentity {
                     key: "hashed-cache-key",
@@ -291,6 +292,7 @@ async fn previous_response_not_found_rebuilds_full_context_on_the_same_connectio
     let output = provider
         .respond(
             ModelRequest {
+                cancellation: None,
                 session_id: "test-session",
                 prompt_cache: Some(PromptCacheIdentity {
                     key: "hashed-cache-key",

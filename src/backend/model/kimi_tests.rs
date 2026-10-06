@@ -72,6 +72,7 @@ fn responses_history_becomes_kimi_messages_and_tools() {
     }];
     let request = ModelRequest {
         session_id: "session-7",
+        cancellation: None,
         prompt_cache: Some(PromptCacheIdentity {
             key: "hashed-session-7",
             context_epoch: 0,

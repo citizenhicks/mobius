@@ -144,7 +144,7 @@ impl RemoteDesktop {
                 return;
             }
             if let Some(runtime) = runtime.take() {
-                eprintln!("gateway desktop stopping: no active consumers");
+                gateway_log!("gateway desktop stopping: no active consumers");
                 runtime.stop().await;
             }
         });
@@ -459,7 +459,7 @@ impl RemoteDesktop {
     pub(crate) async fn shutdown(&self) {
         let mut runtime = self.runtime.lock().await;
         if let Some(runtime) = runtime.take() {
-            eprintln!("gateway desktop stopping: shutdown");
+            gateway_log!("gateway desktop stopping: shutdown");
             runtime.stop().await;
         }
     }
@@ -529,7 +529,7 @@ impl Runtime {
         clean_socket(&socket).await?;
         let mut children = Vec::new();
         let mut browser = None;
-        eprintln!("gateway desktop starting");
+        gateway_log!("gateway desktop starting");
         let started: Result<_> = async {
             let display =
                 start_display(&directory, &authority, &socket, &mut children, config).await?;
@@ -561,7 +561,7 @@ impl Runtime {
         let (display, chromium, endpoint, websocket) = match started {
             Ok(started) => started,
             Err(error) => {
-                eprintln!("gateway desktop startup failed: {error}");
+                gateway_log!("gateway desktop startup failed: {error}");
                 if let Some(browser) = browser {
                     browser.stop().await;
                 }
@@ -595,7 +595,7 @@ impl Runtime {
         if let Some(browser) = self.browser.as_mut()
             && let Some(status) = browser.exit_status()?
         {
-            eprintln!(
+            gateway_log!(
                 "gateway desktop browser exited ({status}); native desktop remains available"
             );
             self.browser.take().ok_or_else(unavailable)?.stop().await;

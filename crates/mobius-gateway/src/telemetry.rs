@@ -344,7 +344,7 @@ impl Telemetry {
         let config = match host.telemetry.config() {
             Ok(config) => config,
             Err(error) => {
-                eprintln!("telemetry scheduling failed: {error}");
+                gateway_log!("telemetry scheduling failed: {error}");
                 return;
             }
         };
@@ -363,7 +363,7 @@ impl Telemetry {
             )
             .await
             {
-                eprintln!("telemetry scheduling failed: {error}");
+                gateway_log!("telemetry scheduling failed: {error}");
             }
             while deliveries.join_next().await.is_some() {}
         });
@@ -382,7 +382,7 @@ impl Telemetry {
                     status.in_flight = false;
                 }
             }
-            Err(_) => eprintln!("telemetry stop status lock poisoned"),
+            Err(_) => gateway_log!("telemetry stop status lock poisoned"),
         }
         Self::tick(host, 0, Trigger::Stop(cause), tasks).await;
         if tokio::time::timeout(Duration::from_secs(5), async {
@@ -391,7 +391,7 @@ impl Telemetry {
         .await
         .is_err()
         {
-            eprintln!("telemetry stop delivery timed out");
+            gateway_log!("telemetry stop delivery timed out");
         }
         tasks.shutdown().await;
     }
@@ -425,7 +425,7 @@ impl Telemetry {
             )
             .await
             {
-                eprintln!("telemetry scheduling failed for {}: {error}", sink.id);
+                gateway_log!("telemetry scheduling failed for {}: {error}", sink.id);
                 match host.telemetry.statuses.lock() {
                     Ok(mut statuses) => {
                         let Some(status) = statuses.get_mut(&sink.id) else {
@@ -437,7 +437,7 @@ impl Telemetry {
                         status.consecutive_failures = status.consecutive_failures.saturating_add(1);
                         status.next_at = Some(now.saturating_add(i64::from(sink.every_seconds)));
                     }
-                    Err(_) => eprintln!("telemetry status lock poisoned"),
+                    Err(_) => gateway_log!("telemetry status lock poisoned"),
                 }
             }
         }
@@ -586,7 +586,7 @@ impl Telemetry {
                         status.last_error = error;
                     }
                 }
-                Err(_) => eprintln!("telemetry delivery status lock poisoned"),
+                Err(_) => gateway_log!("telemetry delivery status lock poisoned"),
             }
             host.telemetry.notify.notify_one();
         });
@@ -596,7 +596,7 @@ impl Telemetry {
         match host.telemetry_pending().await {
             Ok(pending) => pending,
             Err(error) => {
-                eprintln!("telemetry pending check failed: {error}");
+                gateway_log!("telemetry pending check failed: {error}");
                 false
             }
         }

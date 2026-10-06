@@ -9,6 +9,8 @@ use super::CompactRequest;
 use super::GeneratedImage;
 use super::ImageGenerationRequest;
 use super::Model;
+use super::ModelCancellation;
+use super::ModelCancellationReason;
 use super::ModelEventSink;
 use super::ModelOutput;
 use super::ModelRequest;
@@ -311,7 +313,7 @@ impl ModelRouter {
             files: self.files.as_ref(),
             limits: self.image_limits,
         };
-        while_valid(&route.credential, || {
+        while_valid(&route.credential, request.cancellation, || {
             route.provider.respond_prepared(request, events, media)
         })
         .await
@@ -408,7 +410,10 @@ impl ModelRouter {
         request.validate(self.image_limits)?;
         let route = self.route(&media.transport)?;
         // A rejected image response does not prove generation was uncharged.
-        while_valid(&route.credential, || route.provider.generate_image(request)).await
+        while_valid(&route.credential, None, || {
+            route.provider.generate_image(request)
+        })
+        .await
     }
 
     /// Starts a provider-owned voice call with the selected voice, or the first one.
@@ -434,8 +439,10 @@ impl ModelRouter {
                 std::time::Duration::from_millis(settings.voice_io_timeout_ms),
             )
         });
-        let mut call =
-            while_valid(&credential, || route.provider.start_realtime_voice(request)).await?;
+        let mut call = while_valid(&credential, None, || {
+            route.provider.start_realtime_voice(request)
+        })
+        .await?;
         call.limit_credential(credential);
         Ok(call)
     }
@@ -523,7 +530,7 @@ impl ModelRouter {
             files: self.files.as_ref(),
             limits: self.image_limits,
         };
-        while_valid(&route.credential, || {
+        while_valid(&route.credential, request.cancellation, || {
             route.provider.compact_prepared(request, media)
         })
         .await
@@ -589,15 +596,25 @@ impl ModelCredentialLifetime {
 
 async fn while_valid<T, F: Future<Output = Result<T>>>(
     credential: &ModelCredentialLifetime,
+    cancellation: Option<&ModelCancellation>,
     operation: impl FnOnce() -> F,
 ) -> Result<T> {
+    let expired = || {
+        if let Some(cancellation) = cancellation {
+            cancellation.record(ModelCancellationReason::CredentialExpired);
+        }
+        Err(expired_credential())
+    };
     if !credential.is_valid() {
-        return Err(expired_credential());
+        return expired();
     }
+    let operation = operation();
+    // Keep the actual future alive until its drop guard can read the recorded reason.
+    tokio::pin!(operation);
     tokio::select! {
         biased;
-        _ = credential.clone().ended() => Err(expired_credential()),
-        result = async { operation().await } => result,
+        _ = credential.clone().ended() => expired(),
+        result = operation.as_mut() => result,
     }
 }
 

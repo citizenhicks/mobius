@@ -19,6 +19,7 @@ use crate::protocol::SubmissionRejectedEvent;
 use crate::protocol::WarningEvent;
 
 use super::EventRecorder;
+use super::FRONTEND_DISCONNECTED_REASON;
 use super::Runner;
 use super::SubmissionInbox;
 use super::send_event;
@@ -183,7 +184,7 @@ impl Runner {
                 }
                 submission = inbox.recv() => {
                     let Some(submission) = submission else {
-                        return Err(Error::Stopped("frontend disconnected".into()));
+                        return Err(Error::Stopped(FRONTEND_DISCONNECTED_REASON.into()));
                     };
                     match self.route_active_submission(submission, turn_id, None).await? {
                         ActiveRoute::Interrupted { submission_id } => {

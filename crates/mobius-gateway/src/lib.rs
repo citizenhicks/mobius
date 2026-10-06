@@ -1,5 +1,15 @@
 //! Authenticated, frontend-neutral access to independent möbius chats.
 
+macro_rules! gateway_log {
+    ($($args:tt)*) => {
+        eprintln!(
+            "{} {}",
+            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            format_args!($($args)*)
+        )
+    };
+}
+
 mod assembly;
 pub mod auth;
 pub mod bots;

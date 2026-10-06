@@ -628,6 +628,7 @@ async fn codex_custom_root_routes_http_fallback_to_proxy() {
         .respond(
             ModelRequest {
                 session_id: "proxy-session",
+                cancellation: None,
                 prompt_cache: None,
                 instructions: "test",
                 input: &[],

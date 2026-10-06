@@ -21,6 +21,7 @@ use crate::protocol::{
 };
 
 pub mod anthropic;
+mod cancellation;
 pub mod deepseek;
 mod image_generation;
 pub mod kimi;
@@ -33,6 +34,7 @@ pub mod openrouter;
 pub mod provider;
 pub mod realtime;
 mod router;
+pub use cancellation::{ModelCancellation, ModelCancellationReason};
 pub use image_generation::{GeneratedImage, ImageGenerationReference, ImageGenerationRequest};
 pub use media::{ImageInputLimits, MediaPreparation};
 mod transport;
@@ -188,6 +190,8 @@ impl StreamingToolCalls {
 pub struct ModelRequest<'a> {
     /// Local session identity used for transport continuation state.
     pub session_id: &'a str,
+    /// Optional local cause recorded before an unfinished request is dropped.
+    pub cancellation: Option<&'a ModelCancellation>,
     /// Optional provider-visible prompt-cache identity.
     pub prompt_cache: Option<PromptCacheIdentity<'a>>,
     /// The instructions.
@@ -245,6 +249,8 @@ pub fn prompt_cache_key(session_id: &str) -> String {
 pub struct CompactRequest<'a> {
     /// Stable conversation identity used by providers for request routing.
     pub session_id: &'a str,
+    /// Optional local cause recorded before an unfinished request is dropped.
+    pub cancellation: Option<&'a ModelCancellation>,
     /// Optional provider-visible prompt-cache identity.
     pub prompt_cache: Option<PromptCacheIdentity<'a>>,
     /// Current system instructions governing the compacted conversation.
@@ -733,7 +739,8 @@ pub trait Model: Send + Sync {
     /// the final output; the agent may execute them before stream EOF, so the
     /// final output must agree. Propagate [`ModelEventSink`] failures. The returned
     /// future may be dropped on cancellation; implementations own cleanup of any
-    /// transport work they launch outside that future.
+    /// transport work they launch outside that future. When present, the request's
+    /// [`ModelCancellation`] records the local cause before that drop.
     fn respond<'a>(
         &'a self,
         request: ModelRequest<'a>,

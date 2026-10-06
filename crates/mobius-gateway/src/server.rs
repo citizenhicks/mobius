@@ -284,7 +284,9 @@ impl GatewayServer {
                         next_nudge = Instant::now() + Duration::from_secs(1);
                         let host = self.host.clone();
                         routine_dispatchers.spawn(async move {
-                            if let Err(error) = host.dispatch_bot_events().await { eprintln!("Bot delivery failed: code={}", error.code); }
+                            if let Err(error) = host.dispatch_bot_events().await {
+                                gateway_log!("Bot delivery failed: code={}", error.code);
+                            }
                         });
                     }
                     _ = routine_timer.tick() => {
@@ -307,7 +309,9 @@ impl GatewayServer {
                         // One event delivery worker at a time; all retries retain their original message ID.
                         if routine_dispatchers.is_empty() {
                             routine_dispatchers.spawn(async move {
-                                if let Err(error) = host.dispatch_bot_events().await { eprintln!("Bot delivery failed: code={}",error.code); }
+                                if let Err(error) = host.dispatch_bot_events().await {
+                                    gateway_log!("Bot delivery failed: code={}", error.code);
+                                }
                             });
                         }
                         // The clock only committed schedule.due events. The same
@@ -316,7 +320,9 @@ impl GatewayServer {
 
                     }
                     Some(result) = telemetry_tasks.join_next(), if !telemetry_tasks.is_empty() => {
-                        if let Err(error) = result { eprintln!("telemetry worker failed: {error}"); }
+                        if let Err(error) = result {
+                            gateway_log!("telemetry worker failed: {error}");
+                        }
                     }
                     Some(_) = connections.join_next(), if !connections.is_empty() => {
                         if connections.is_empty() {
@@ -373,11 +379,14 @@ impl GatewayServer {
                                 {
                                     Ok(Ok(stream)) => stream,
                                     Ok(Err(error)) => {
-                                        eprintln!("gateway TLS handshake failed: {:?}", error.kind());
+                                        gateway_log!(
+                                            "gateway TLS handshake failed: {:?}",
+                                            error.kind()
+                                        );
                                         return;
                                     }
                                     Err(_) => {
-                                        eprintln!("gateway TLS handshake timed out");
+                                        gateway_log!("gateway TLS handshake timed out");
                                         return;
                                     }
                                 };
@@ -394,7 +403,10 @@ impl GatewayServer {
                                 .await
                             };
                             if let Err(error) = result {
-                                eprintln!("gateway connection failed: {}", connection_diagnostic(&error));
+                                gateway_log!(
+                                    "gateway connection failed: {}",
+                                    connection_diagnostic(&error)
+                                );
                             }
                         });
                     }
@@ -462,7 +474,7 @@ impl GatewayServer {
             Ok(clients) => {
                 crate::telemetry::Telemetry::tick(&self.host, clients, trigger, tasks).await
             }
-            Err(error) => eprintln!("telemetry client count unavailable: {error}"),
+            Err(error) => gateway_log!("telemetry client count unavailable: {error}"),
         }
     }
 

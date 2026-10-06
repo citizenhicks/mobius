@@ -133,10 +133,13 @@ impl BotStorage {
         if version == 0 {
             connection.execute_batch(SCHEMA).map_err(Error::from)?;
         }
-        // A version-6 database predates telemetry. This optional table is
-        // idempotent and does not change the Bot schema version.
+        // Optional collector metadata does not change the Bot schema version.
         connection.execute(
             "CREATE TABLE IF NOT EXISTS telemetry_cursors (sink_id TEXT PRIMARY KEY, after_rowid INTEGER NOT NULL)",
+            [],
+        )?;
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS hook_journal_sequences (event_id TEXT PRIMARY KEY REFERENCES hook_events(id) ON DELETE CASCADE, sequence INTEGER NOT NULL CHECK (sequence > 0))",
             [],
         )?;
         protect_database_files(path)?;
@@ -786,7 +789,7 @@ mod tests {
         drop(storage);
         let connection = Connection::open(&path).expect("old database");
         connection
-            .execute("DROP TABLE telemetry_cursors", [])
+            .execute_batch("DROP TABLE telemetry_cursors; DROP TABLE hook_journal_sequences;")
             .expect("old schema");
         drop(connection);
 
@@ -803,6 +806,12 @@ mod tests {
             })
             .expect("telemetry cursor table");
         assert_eq!(cursors, 0);
+        let sequences: i64 = connection
+            .query_row("SELECT COUNT(*) FROM hook_journal_sequences", [], |row| {
+                row.get(0)
+            })
+            .expect("hook journal sequence table");
+        assert_eq!(sequences, 0);
     }
 
     #[test]

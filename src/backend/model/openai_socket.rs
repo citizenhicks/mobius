@@ -371,7 +371,7 @@ impl OpenAiSocket {
             let mut connection = state.connection.take().ok_or_else(|| {
                 Error::Provider("model connection disappeared before send".into())
             })?;
-            match exchange(&mut connection, &body, &events).await? {
+            match exchange(&mut connection, &body, &events, request.cancellation).await? {
                 Exchange::Completed(response) => {
                     let response_id = response
                         .get("id")
@@ -477,6 +477,7 @@ impl OpenAiSocket {
         let output = loop {
             let model_request = ModelRequest {
                 session_id: request.session_id,
+                cancellation: request.cancellation,
                 prompt_cache: request.prompt_cache,
                 instructions: request.instructions,
                 input: &input,

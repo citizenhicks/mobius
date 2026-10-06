@@ -3,8 +3,10 @@ mod streaming;
 
 use uuid::Uuid;
 
+use super::FRONTEND_DISCONNECTED_REASON;
 use super::Runner;
 use super::SubmissionInbox;
+use super::TURN_INTERRUPTED_REASON;
 use super::input::{ActiveRoute, Wait};
 use super::unix_timestamp_ms;
 use crate::backend::checkpoint::{ActiveExecution, ExecutionOutcome, ExecutionPhase};
@@ -60,7 +62,7 @@ impl Runner {
                 self.abort(
                     &submission_id,
                     turn_id,
-                    "interrupted",
+                    TURN_INTERRUPTED_REASON,
                     ExecutionOutcome::Aborted,
                 )
                 .await?;
@@ -89,7 +91,12 @@ impl Runner {
             return Err(error);
         };
         let event = ErrorEvent::from_error(&error);
-        let message = event.message.clone();
+        let message = match &error {
+            Error::Stopped(reason) if reason == FRONTEND_DISCONNECTED_REASON => {
+                FRONTEND_DISCONNECTED_REASON.into()
+            }
+            _ => event.message.clone(),
+        };
         events.push(turn_event(submission_id, EventMsg::Error(event)));
         self.abort_with_events(
             submission_id,

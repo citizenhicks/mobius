@@ -61,6 +61,13 @@ type UsageObserver = Arc<dyn Fn(&str, &TokenUsage) -> Result<()> + Send + Sync>;
 /// Default maximum number of primary model steps in one turn.
 pub const DEFAULT_MAX_MODEL_STEPS: usize = 2042;
 
+/// Journal reason for an explicit turn interruption.
+pub const TURN_INTERRUPTED_REASON: &str = "interrupted";
+/// Journal reason for an unfinished turn recovered after a runtime restart.
+pub const TURN_RESTARTED_REASON: &str = "interrupted by restart";
+/// Journal reason for a closed frontend submission channel.
+pub const FRONTEND_DISCONNECTED_REASON: &str = "frontend disconnected";
+
 /// Whether one runtime owns the primary conversation or a delegated child task.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum AgentRole {
