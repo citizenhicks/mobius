@@ -1,0 +1,1 @@
+Optional skill read directories can disappear or be replaced without blocking unrelated workspace commands, Git checks, or isolated worker startup. File tools still validate the pinned read-directory grant, and primary and attached workspace roots remain enforced.

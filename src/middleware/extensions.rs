@@ -1398,8 +1398,7 @@ mod tests {
         use crate::backend::sandbox::local::LocalSandbox;
         use crate::protocol::SessionContext;
 
-        let temporary = tempfile::tempdir_in(std::env::current_dir().expect("current directory"))
-            .expect("temporary extensions");
+        let temporary = tempfile::tempdir().expect("temporary extensions");
         let workspace = temporary.path().join("workspace");
         std::fs::create_dir(&workspace).expect("workspace");
         let plugin = temporary.path().join("ponytail");
@@ -1427,7 +1426,12 @@ printf '%s\n' '{"systemMessage":"PONYTAIL:FULL","hookSpecificOutput":{"hookEvent
         )
         .expect("hook script");
 
-        let backend = Arc::new(LocalSandbox::new(&workspace).expect("sandbox"));
+        let backend = Arc::new(
+            LocalSandbox::new(&workspace)
+                .expect("sandbox")
+                .allow_read_root(&plugin)
+                .expect("plugin read root"),
+        );
         let extensions = Extensions::discover(Vec::<PathBuf>::new())
             .expect("extensions")
             .activate_plugins([(plugin, trusted_hooks())], &workspace, backend)

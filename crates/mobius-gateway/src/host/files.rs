@@ -496,9 +496,7 @@ mod tests {
 
     #[tokio::test]
     async fn modified_catalog_is_relative_to_a_nested_workspace() {
-        // Bubblewrap intentionally masks host /tmp; keep the parent repository visible.
-        let repository = tempfile::tempdir_in(std::env::current_dir().expect("current directory"))
-            .expect("repository");
+        let repository = tempfile::tempdir().expect("repository");
         let workspace = repository.path().join("workspace");
         std::fs::create_dir(&workspace).expect("workspace");
         git(repository.path(), &["init", "--quiet"]);
@@ -522,6 +520,10 @@ mod tests {
         std::fs::write(repository.path().join("outside.txt"), b"modified").expect("outside change");
         git(repository.path(), &["add", "."]);
         let (_state, sandbox) = sandbox(&workspace);
+        // Bubblewrap masks host /tmp; the parent Git repository must remain readable.
+        let sandbox = sandbox
+            .allow_read_roots([repository.path().to_path_buf()])
+            .expect("repository read root");
 
         let catalog = list(&sandbox, &workspace, WorkspaceFileScope::Modified)
             .await

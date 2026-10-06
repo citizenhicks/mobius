@@ -378,6 +378,8 @@ impl LocalSandbox {
     }
 
     /// Allows file tools and workspace-isolated commands to read one additional directory.
+    /// Removing or replacing it revokes the file-tool grant and supplemental command
+    /// mount without blocking unrelated commands or changing their base read policy.
     /// # Errors
     ///
     /// Returns an error if validation or an operation required by this function fails.
@@ -631,7 +633,7 @@ impl LocalSandbox {
 
     fn validate_workspace_roots(&self) -> Result<()> {
         validate_root(&self.root, &self.root_dir)?;
-        for root in self.workspace_roots.iter().chain(&self.read_roots) {
+        for root in &self.workspace_roots {
             validate_root(&root.path, &root.directory)?;
         }
         Ok(())
@@ -1161,7 +1163,12 @@ struct BoundedOutput {
 
 #[cfg(unix)]
 fn validate_root(path: &Path, directory: &Dir) -> Result<()> {
-    let path = std::fs::metadata(path)?;
+    let path = std::fs::metadata(path).map_err(|error| {
+        Error::Sandbox(format!(
+            "sandbox root unavailable at {}: {error}",
+            path.display()
+        ))
+    })?;
     let directory = directory.dir_metadata()?;
     if std::os::unix::fs::MetadataExt::dev(&path) != cap_std::fs::MetadataExt::dev(&directory)
         || std::os::unix::fs::MetadataExt::ino(&path) != cap_std::fs::MetadataExt::ino(&directory)

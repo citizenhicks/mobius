@@ -507,9 +507,62 @@ async fn absolute_read_roots_reject_symlink_escapes() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn editing_or_removing_read_roots_does_not_block_workspace_commands() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let parent = tempfile::tempdir().expect("skill parent");
+    let resources = parent.path().join("skill");
+    std::fs::create_dir(&resources).expect("skill directory");
+    let requested = std::fs::canonicalize(&resources)
+        .expect("canonical skill")
+        .join("SKILL.md");
+    std::fs::write(&requested, "original").expect("skill");
+    let sandbox = local_sandbox(workspace.path())
+        .allow_read_root(&resources)
+        .expect("read root");
+    std::fs::write(&requested, "updated").expect("edit skill");
+    assert_eq!(
+        sandbox
+            .read(requested.to_str().unwrap(), SandboxMode::WorkspaceWrite)
+            .await
+            .expect("updated skill"),
+        "updated"
+    );
+    std::fs::rename(&resources, parent.path().join("removed")).expect("remove skill");
+    let error = sandbox
+        .read(requested.to_str().unwrap(), SandboxMode::WorkspaceWrite)
+        .await
+        .expect_err("removed skill access must stay denied")
+        .to_string();
+    assert!(error.contains("sandbox root unavailable"));
+    assert!(error.contains(requested.parent().unwrap().to_str().unwrap()));
+    let output = sandbox
+        .execute_read_only("git", &["--version"], &[])
+        .await
+        .expect("workspace Git command");
+    assert_eq!(output.exit_code, 0, "{}", output.stderr);
+    let child = sandbox.isolated_execution().expect("child sandbox");
+    let output = child
+        .execute(
+            "printf available > result.txt",
+            SandboxMode::WorkspaceWrite,
+            NetworkAccess::Denied,
+            CommandMode::Foreground,
+            CommandOutputSink::default(),
+        )
+        .await
+        .expect("workspace command after skill removal");
+    assert_eq!(output.exit_code, 0, "{}", output.stderr);
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("result.txt")).unwrap(),
+        "available"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn absolute_read_roots_reject_replaced_roots() {
     let workspace = tempfile::tempdir().expect("workspace");
-    let parent = tempfile::tempdir().expect("parent");
+    let parent = tempfile::tempdir_in("/tmp").expect("masked parent");
     let resources = parent.path().join("resources");
     let displaced = parent.path().join("displaced");
     std::fs::create_dir(&resources).expect("resources");
@@ -532,18 +585,22 @@ async fn absolute_read_roots_reject_replaced_roots() {
             .await
             .is_err()
     );
-    assert!(
-        sandbox
-            .execute(
-                "true",
-                SandboxMode::WorkspaceWrite,
-                NetworkAccess::Denied,
-                CommandMode::Foreground,
-                CommandOutputSink::default(),
-            )
-            .await
-            .is_err()
-    );
+    let script = if cfg!(target_os = "linux") {
+        format!("test ! -e '{}'", requested.display())
+    } else {
+        "true".into()
+    };
+    let output = sandbox
+        .execute(
+            &script,
+            SandboxMode::WorkspaceWrite,
+            NetworkAccess::Denied,
+            CommandMode::Foreground,
+            CommandOutputSink::default(),
+        )
+        .await
+        .expect("unrelated command after read root replacement");
+    assert_eq!(output.exit_code, 0, "{}", output.stderr);
 }
 
 #[cfg(unix)]

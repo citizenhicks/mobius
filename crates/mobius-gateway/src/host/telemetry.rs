@@ -175,6 +175,9 @@ impl GatewayHost {
                 .map_err(|e| Error::Config(e.message))?;
             snapshot["activity"] = json!({"idle": activity.idle && connected_clients == 0, "connected_clients": connected_clients, "activity_revision": activity.activity_revision, "next_routine_at": activity.next_routine_at, "active_sessions": activity.active_sessions, "running_routines": activity.running_routines});
         }
+        if sections.contains(&TelemetrySection::Resources) {
+            snapshot["resources"] = self.telemetry.resources().await;
+        }
         if sections.contains(&TelemetrySection::Storage) {
             let mut usage = self.storage_usage().await?;
             usage.bound_telemetry_details();

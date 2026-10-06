@@ -113,6 +113,7 @@ pub(super) enum TelemetryCommand {
         /// Require this collector's decision before accepting a user upload.
         #[arg(long)]
         upload_admission: bool,
+        /// Snapshot sections: activity, usage, runs, storage, resources.
         #[arg(long, value_delimiter = ',')]
         sections: Vec<String>,
         #[arg(long, value_delimiter = ',')]

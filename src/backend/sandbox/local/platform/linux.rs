@@ -65,7 +65,12 @@ pub(crate) fn sandboxed_command(
     if network_access == NetworkAccess::Denied && Path::new("/run").is_dir() {
         command.args(["--tmpfs", "/run"]);
     }
-    for root in &sandbox.read_roots {
+    // An unavailable or replaced resource revokes its supplemental mount, not execution.
+    for root in sandbox
+        .read_roots
+        .iter()
+        .filter(|root| super::super::validate_root(&root.path, &root.directory).is_ok())
+    {
         command.arg("--ro-bind").arg(&root.path).arg(&root.path);
     }
     command

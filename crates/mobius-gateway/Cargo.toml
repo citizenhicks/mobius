@@ -1,6 +1,6 @@
 [package]
 name = "mobius-gateway"
-version = "0.16.19"
+version = "0.16.20"
 edition.workspace = true
 rust-version.workspace = true
 description = "Headless authenticated gateway for möbius frontends"
@@ -40,9 +40,14 @@ uuid.workspace = true
 url = "2"
 webpki-roots = "1"
 snow = { version = "0.10.0", default-features = false, features = ["default-resolver", "use-chacha20poly1305", "use-curve25519", "use-getrandom", "use-sha2"] }
+sysinfo = { version = "0.39.6", default-features = false, features = ["system", "disk"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+plist = { version = "1", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+plist = { version = "1", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["hostname", "signal", "user"] }

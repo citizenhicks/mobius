@@ -1,0 +1,1 @@
+Updates the terminal client and bundled gateway to Core and Gateway 0.16.20, including optional resource telemetry and the optional skill-directory fix. CLI commands and gateway wire protocol remain unchanged.

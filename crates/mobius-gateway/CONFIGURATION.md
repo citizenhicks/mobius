@@ -268,6 +268,64 @@ and `upload_admission_timeout_seconds` (both 10, range 1–3600). Admission's de
 includes its fresh measurement. Each sink owns its interval, snapshot sections, hook
 events and safe envelope fields. Revisions prevent stale configuration updates.
 
+### Resource measurements (0.16.20)
+
+Add `resources` to an operator-configured POST collector's `sections` to collect
+local hardware measurements on macOS and Linux. For workload correlation, request
+`activity,resources,runs`; `runs` already reports completed model/tool call counts
+and failures. Those counts exclude unfinished turns and are not transport retry or
+OS syscall counts. Gateway uptime and instance identity remain in every envelope.
+
+```sh
+mobius-gateway telemetry add --id resources \
+  --url https://collector.example/ingest \
+  --sections activity,resources,runs --every-seconds 30 \
+  --bearer-file collector-token
+```
+
+`resources` has `version`, `status`, `measured_at_ms`, `sample_interval_ms`, and:
+
+| Scope | Measurements |
+| --- | --- |
+| `host` | CPU percent (0–100 across the CPUs visible to the OS), logical CPUs, total/available memory, total/used swap, host uptime, mounted-disk read/write byte totals. |
+| `gateway` | Current gateway process CPU percent (100 per occupied core), accumulated CPU milliseconds, resident memory, process disk read/write byte totals. Does not include child processes. |
+| `container` | Linux cgroup v2 CPU microseconds, throttled microseconds/periods, current memory bytes, local CPU quota in cores and memory limit, per-device I/O byte and operation totals. Includes descendants of the current cgroup. |
+| `gpu` | Local GPU utilization and available memory counters. macOS uses unprivileged IORegistry accelerator properties; Linux tries `/usr/bin/nvidia-smi`, then DRM/sysfs counters (including AMD where exposed). No provider GPU information is available. |
+
+Memory and I/O use bytes. CPU percentages need two sufficiently separated samples;
+first and too-close samples report `null`. Counter reset boundaries are gateway
+process start, host boot, device replacement, or cgroup recreation, according to
+scope. Too-close samples reuse gateway process counters until the OS CPU sampling
+window has elapsed (currently 200 ms on macOS and Linux), preserving their baseline.
+Collectors must discard negative deltas and use measurement times for rates.
+Disk counters describe OS-reported storage I/O, not every application read/write:
+caches can satisfy operations without disk I/O. Disk rows refer to mounted devices;
+do not sum overlapping logical volumes as physical-device throughput.
+
+Container limits are **local** limits: ancestor quotas and CPU affinity may constrain
+the process further. `local_cpu_quota_unlimited` and
+`local_memory_limit_unlimited` distinguish the cgroup's `max` setting from an
+unreadable limit. Container memory includes accounting such as page cache and is
+not interchangeable with gateway resident memory. Host values describe what the
+OS exposes, which may exceed a container's allocation.
+
+Unsupported/unreadable optional counters are `null` or have `status = "unavailable"`;
+non-Linux container measurements have `status = "unsupported"`. Linux GPU discovery
+can report `not_detected`; this does not assert that inaccessible hardware is absent.
+Apple unified-memory GPU usage is `system_memory_used_bytes`, not dedicated VRAM.
+Driver-specific counters are best effort and may be absent after an OS/driver update.
+
+Collection starts only when a requested snapshot includes `resources`. Sinks due in
+the same tick share the measurement. OS collection runs off the async executor and
+outside the session lock; at most one OS worker remains outstanding. OS and GPU
+collection each have a two-second response deadline. A timed-out OS call cannot be
+forcibly cancelled, so subsequent requests report busy until it returns. GPU command
+probes are killed on cancellation/timeout and their output is capped at 256 KiB.
+DRM/sysfs reads share the guarded OS worker. Device
+lists are bounded to 64 rows. A resource failure is reported in the section and does
+not fail the other snapshot sections. Stop envelopes retain their existing minimal
+shape without a final hardware probe. No telemetry collector is enabled by default.
+
 An optional local activity hook uses the same runtime activity as telemetry snapshots,
 independently of collector configuration or delivery success:
 

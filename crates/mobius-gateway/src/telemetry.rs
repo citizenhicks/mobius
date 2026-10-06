@@ -1,6 +1,7 @@
 //! Configured outbound telemetry; no endpoint is enabled by default.
 mod activity;
 mod policy;
+mod resources;
 mod upload;
 use crate::wire::HookKind;
 use crate::{Error, Result, host::GatewayHost};
@@ -54,6 +55,8 @@ pub enum TelemetrySection {
     Runs,
     /// Read-only storage totals.
     Storage,
+    /// Host, gateway process, and container resource measurements.
+    Resources,
 }
 impl TelemetrySection {
     const fn key(self) -> &'static str {
@@ -62,6 +65,7 @@ impl TelemetrySection {
             Self::Usage => "usage",
             Self::Runs => "runs",
             Self::Storage => "storage",
+            Self::Resources => "resources",
         }
     }
 }
@@ -225,6 +229,7 @@ pub(crate) struct Telemetry {
     instance: String,
     started_at_ms: i64,
     started: Instant,
+    resources: resources::Resources,
 }
 impl Telemetry {
     pub(crate) fn new(config: &TelemetryConfig, state_dir: &std::path::Path) -> Self {
@@ -254,8 +259,13 @@ impl Telemetry {
             instance: uuid::Uuid::new_v4().to_string(),
             started_at_ms: chrono::Utc::now().timestamp_millis(),
             started: Instant::now(),
+            resources: resources::Resources::default(),
         }
     }
+    pub(crate) async fn resources(&self) -> Value {
+        self.resources.sample().await
+    }
+
     pub(crate) fn config(&self) -> Result<Arc<TelemetryConfig>> {
         self.config
             .read()
@@ -329,6 +339,16 @@ impl Telemetry {
         tasks: &mut tokio::task::JoinSet<()>,
     ) {
         if !tasks.is_empty() {
+            return;
+        }
+        let config = match host.telemetry.config() {
+            Ok(config) => config,
+            Err(error) => {
+                eprintln!("telemetry scheduling failed: {error}");
+                return;
+            }
+        };
+        if !config.sinks.iter().any(|sink| sink.enabled) {
             return;
         }
         let host = host.clone();

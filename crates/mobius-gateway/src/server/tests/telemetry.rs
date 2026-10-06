@@ -7,6 +7,41 @@ fn sink(url: String) -> TelemetrySink {
 }
 
 #[tokio::test]
+async fn telemetry_without_enabled_sinks_starts_no_snapshot_worker() {
+    let root = tempfile::tempdir().unwrap();
+    let (server, _) = configured_test_server(root.path().join("state")).await;
+    let mut disabled = sink("https://example.com/collect".into());
+    disabled.enabled = false;
+    disabled.sections = vec![
+        crate::telemetry::TelemetrySection::Activity,
+        crate::telemetry::TelemetrySection::Storage,
+        crate::telemetry::TelemetrySection::Usage,
+        crate::telemetry::TelemetrySection::Runs,
+        crate::telemetry::TelemetrySection::Resources,
+    ];
+    for sinks in [vec![], vec![disabled]] {
+        let revision = server.host.telemetry.config().unwrap().revision;
+        server
+            .host
+            .configure_telemetry(revision, sinks, &[])
+            .await
+            .unwrap();
+        let mut tasks = JoinSet::new();
+        for trigger in [
+            Trigger::Start,
+            Trigger::Interval,
+            Trigger::Events,
+            Trigger::Manual,
+            Trigger::Stop(crate::telemetry::StopCause::Signal),
+        ] {
+            Telemetry::tick(&server.host, 0, trigger, &mut tasks).await;
+            assert!(tasks.is_empty(), "no worker can probe snapshot sections");
+        }
+    }
+    server.host.shutdown().await;
+}
+
+#[tokio::test]
 async fn telemetry_delivers_headers_snapshots_and_tracks_failures() {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     let root = tempfile::tempdir().unwrap();
@@ -20,6 +55,9 @@ async fn telemetry_delivers_headers_snapshots_and_tracks_failures() {
         fs::set_permissions(&token_path, mobius::owner_only::file()).unwrap();
     }
     endpoint.bearer_file = Some("telemetry-token".into());
+    endpoint
+        .sections
+        .push(crate::telemetry::TelemetrySection::Resources);
     server
         .host
         .configure_telemetry(0, vec![endpoint], &[])
@@ -52,6 +90,13 @@ async fn telemetry_delivers_headers_snapshots_and_tracks_failures() {
                         let envelope: serde_json::Value =
                             serde_json::from_slice(&bytes[end + 4..end + 4 + len]).unwrap();
                         assert_eq!(envelope["reason"], "manual");
+                        assert_eq!(envelope["resources"]["status"], "ok");
+                        assert!(
+                            envelope["resources"]["host"]["memory_total_bytes"]
+                                .as_u64()
+                                .unwrap()
+                                > 0
+                        );
                         assert_eq!(envelope["activity"]["connected_clients"], 0);
                         assert_eq!(envelope["protocol_version"], crate::wire::PROTOCOL_VERSION);
                         let started_at_ms = envelope["started_at_ms"].as_i64().unwrap();
