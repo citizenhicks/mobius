@@ -103,11 +103,10 @@ pub(super) fn validate_provider_config(config: &ProviderConfig) -> Result<()> {
         return Err(Error::Config("model must be 1–1024 bytes".into()));
     }
     let definition = provider(&config.provider)?;
-    definition.build_config_is_valid(
+    definition.model_config_is_valid(
         &config.model,
         config.base_url.as_deref(),
         config.reasoning_effort.as_deref(),
-        config.web_search,
     )?;
     validate_provider_endpoint_auth(definition, config)?;
     Ok(())

@@ -775,6 +775,27 @@ impl ProviderDefinition {
         reasoning_effort: Option<&str>,
         web_search: HostedWebSearch,
     ) -> Result<()> {
+        self.model_config_is_valid(model, base_url, reasoning_effort)?;
+        if !self.web_search.contains(&web_search) {
+            return Err(Error::Config(format!(
+                "provider `{}` does not support web search mode `{}`",
+                self.id,
+                web_search.id()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Validates saved model settings independently of currently available hosted tools.
+    /// # Errors
+    ///
+    /// Returns an error if the model, endpoint, or reasoning effort is invalid.
+    pub fn model_config_is_valid(
+        &self,
+        model: &str,
+        base_url: Option<&str>,
+        reasoning_effort: Option<&str>,
+    ) -> Result<()> {
         if model.trim().is_empty() {
             return Err(Error::Config(format!(
                 "provider `{}` requires a model",
@@ -786,13 +807,6 @@ impl ProviderDefinition {
             return Err(Error::Config(format!(
                 "provider `{}` does not advertise model `{model}`",
                 self.id
-            )));
-        }
-        if !self.web_search.contains(&web_search) {
-            return Err(Error::Config(format!(
-                "provider `{}` does not support web search mode `{}`",
-                self.id,
-                web_search.id()
             )));
         }
         self.validate_base_url(base_url)?;
@@ -977,7 +991,7 @@ mod tests {
                 "Native Messages API with adaptive thinking",
                 "https://api.anthropic.com/v1",
                 Some("ANTHROPIC_API_KEY"),
-                Rebuild,
+                Native,
                 &[Off, Live][..],
             ),
             (
@@ -988,7 +1002,7 @@ mod tests {
                 "https://api.deepseek.com",
                 Some("DEEPSEEK_API_KEY"),
                 Rebuild,
-                &[Off, Live][..],
+                &[Off][..],
             ),
             (
                 "kimi",

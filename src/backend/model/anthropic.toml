@@ -7,7 +7,7 @@ label = "Claude Sonnet 5.5"
 description = "Fast frontier model for coding and agents"
 default_reasoning = "high"
 context_window = 1000000
-tool_discovery = "rebuild"
+tool_discovery = "native"
 
 [[models.reasoning]]
 id = "low"

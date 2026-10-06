@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use super::Model;
 use super::openai::OpenAi;
-use super::provider::HostedWebSearch;
 use super::provider::ProviderBuildConfig;
 use super::provider::ProviderDefinition;
 use crate::Error;
@@ -45,19 +44,12 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
         config.transport,
     )?
     .with_service_tier(config.service_tier)
-    .without_image_input();
+    .without_image_input()
+    .without_realtime_voice()
+    .with_image_api(None);
     let provider = match config.reasoning_effort {
         Some(effort) => provider.with_reasoning_effort(effort)?,
         None => provider,
-    };
-    let provider = match config.web_search {
-        HostedWebSearch::Off => provider,
-        HostedWebSearch::Cached => {
-            return Err(Error::Config(
-                "DeepSeek does not support cached web search".into(),
-            ));
-        }
-        HostedWebSearch::Live => provider.with_web_search(),
     };
     Ok(Arc::new(provider))
 }
@@ -65,9 +57,11 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::model::provider::HostedWebSearch;
     use crate::backend::model::provider::ProviderAuth;
     use crate::backend::model::provider::ProviderCredential;
     use crate::backend::model::provider::provider as registered_provider;
+    use crate::protocol::ModelCapability;
 
     #[test]
     fn advertised_web_search_modes_build() {
@@ -89,28 +83,42 @@ mod tests {
     }
 
     #[test]
-    fn registered_provider_builds_its_default_model() {
+    fn registered_provider_keeps_declared_capabilities_on_each_endpoint() {
         let definition = registered_provider("deepseek").expect("registered provider");
-        let model = definition
-            .build(ProviderBuildConfig {
-                credential: ProviderCredential::ApiKey("test-key".into()),
-                model: "deepseek-flash".into(),
-                base_url: Some(MANIFEST.base_url.as_str().into()),
-                reasoning_effort: None,
-                service_tier: None,
-                web_search: HostedWebSearch::Off,
-                http: reqwest::Client::new(),
-                transport: crate::backend::model::ModelTransportSettings::default(),
-            })
-            .expect("build provider");
-
         assert!(matches!(
             definition.auth(),
             ProviderAuth::ApiKey(key) if Some(key) == MANIFEST.credential_env.as_deref()
         ));
         assert_eq!(definition.models(), &CATALOG.models);
         assert_eq!(definition.web_search(), &MANIFEST.search);
-        assert_eq!(model.info().reasoning_effort.as_deref(), Some("high"));
-        assert!(!model.supports_image_input());
+        for base_url in [MANIFEST.base_url.as_str(), "https://custom.example/v1"] {
+            let model = definition
+                .build(ProviderBuildConfig {
+                    credential: ProviderCredential::ApiKey("test-key".into()),
+                    model: definition.default_model().expect("default model").into(),
+                    base_url: Some(base_url.into()),
+                    reasoning_effort: None,
+                    service_tier: None,
+                    web_search: HostedWebSearch::Off,
+                    http: reqwest::Client::new(),
+                    transport: crate::backend::model::ModelTransportSettings::default(),
+                })
+                .expect("build provider");
+
+            assert_eq!(model.info().reasoning_effort.as_deref(), Some("high"));
+            assert_eq!(
+                (
+                    model.supports_image_input(),
+                    model.supports_image_generation(),
+                    model.supports_realtime_voice(),
+                ),
+                (
+                    definition.supports_image_input(),
+                    definition.supports(ModelCapability::ImageGeneration),
+                    definition.supports(ModelCapability::RealtimeVoice),
+                ),
+                "{base_url} capabilities"
+            );
+        }
     }
 }

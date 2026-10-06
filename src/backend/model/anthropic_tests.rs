@@ -23,21 +23,30 @@ fn advertised_web_search_modes_build() {
 }
 
 #[test]
-fn equivalent_default_endpoint_preserves_native_tool_discovery() {
-    let model = provider()
-        .build(ProviderBuildConfig {
-            credential: ProviderCredential::ApiKey("test-key".into()),
-            model: "claude-haiku-4-5".into(),
-            base_url: Some("https://api.anthropic.com:443/v1/".into()),
-            reasoning_effort: None,
-            service_tier: None,
-            web_search: HostedWebSearch::Off,
-            http: reqwest::Client::new(),
-            transport: crate::backend::model::ModelTransportSettings::default(),
-        })
-        .expect("equivalent default endpoint builds");
+fn native_discovery_builds_on_equivalent_and_custom_endpoints() {
+    for base_url in [
+        "https://api.anthropic.com:443/v1/",
+        "https://proxy.example/v1",
+    ] {
+        let model = provider()
+            .build(ProviderBuildConfig {
+                credential: ProviderCredential::ApiKey("test-key".into()),
+                model: "claude-haiku-4-5".into(),
+                base_url: Some(base_url.into()),
+                reasoning_effort: None,
+                service_tier: None,
+                web_search: HostedWebSearch::Off,
+                http: reqwest::Client::new(),
+                transport: crate::backend::model::ModelTransportSettings::default(),
+            })
+            .expect("native endpoint builds");
 
-    assert_eq!(model.tool_discovery(), ToolDiscoveryMode::Native);
+        assert_eq!(
+            model.tool_discovery(),
+            ToolDiscoveryMode::Native,
+            "{base_url}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -146,37 +155,39 @@ fn hosted_search_can_be_disabled_per_request() {
 
 #[test]
 fn native_discovery_defers_schemas_and_replays_tool_references() {
-    let provider = Anthropic::new("test-key", MANIFEST.base_url.as_str(), "claude-haiku-4-5")
-        .expect("provider");
     let direct = [discovery_tool(TOOLS_SEARCH_NAME)];
     let deferred = [discovery_tool("notebook_post")];
     let input = discovery_history();
 
-    let body = provider
-        .request_body(
-            "instructions",
-            &input,
-            "catalog-1",
-            &direct,
-            &deferred,
-            false,
-        )
-        .expect("request body");
+    for base_url in [MANIFEST.base_url.as_str(), "https://proxy.example/v1"] {
+        let provider = Anthropic::new("test-key", base_url, "claude-sonnet-5-5").expect("provider");
+        let body = provider
+            .request_body(
+                "instructions",
+                &input,
+                "catalog-1",
+                &direct,
+                &deferred,
+                false,
+            )
+            .expect("request body");
 
-    assert_eq!(
-        (
-            body["tools"][0].get("defer_loading"),
-            body["tools"][1]["defer_loading"].as_bool(),
-            body["messages"][2]["content"][0]["content"].clone(),
-            body.to_string().contains("tool_load"),
-        ),
-        (
-            None,
-            Some(true),
-            serde_json::json!([{"type": "tool_reference", "tool_name": "notebook_post"}]),
-            false,
-        )
-    );
+        assert_eq!(
+            (
+                body["tools"][0].get("defer_loading"),
+                body["tools"][1]["defer_loading"].as_bool(),
+                &body["messages"][2]["content"][0]["content"],
+                body.to_string().contains("tool_load"),
+            ),
+            (
+                None,
+                Some(true),
+                &serde_json::json!([{"type": "tool_reference", "tool_name": "notebook_post"}]),
+                false,
+            ),
+            "{base_url}"
+        );
+    }
 }
 
 #[test]
@@ -245,8 +256,9 @@ fn native_discovery_ignores_tool_loads_from_an_old_catalog() {
 
 #[test]
 fn rebuild_discovery_omits_deferred_schemas_and_internal_markers() {
-    let provider = Anthropic::new("test-key", MANIFEST.base_url.as_str(), "claude-sonnet-5-5")
-        .expect("provider");
+    let provider =
+        Anthropic::new("test-key", MANIFEST.base_url.as_str(), "custom-model").expect("provider");
+    assert_eq!(provider.tool_discovery(), ToolDiscoveryMode::Rebuild);
     let direct = [discovery_tool(TOOLS_SEARCH_NAME)];
     let deferred = [discovery_tool("notebook_post")];
     let input = discovery_history();

@@ -30,6 +30,72 @@ fn gateway_config_is_machine_scoped() {
     assert!(serialized["usage"].get("sessions").is_none());
 }
 
+#[tokio::test]
+async fn retired_hosted_search_does_not_prevent_saved_gateway_startup() {
+    use mobius::backend::model::provider::HostedWebSearch;
+    use std::sync::Arc;
+
+    let root = tempfile::tempdir().expect("temporary directory");
+    let state = root.path().join("state");
+    let (store, config) =
+        ConfigStore::initialize(state, DEFAULT_LISTEN, None).expect("initialize state");
+    let definition = provider("deepseek").expect("DeepSeek");
+    let selection = ProviderConfig {
+        instance: "deepseek".into(),
+        provider: "deepseek".into(),
+        model: definition.default_model().expect("default model").into(),
+        base_url: None,
+        endpoint_auth: ProviderEndpointAuth::ProviderDefault,
+        reasoning_effort: None,
+        service_tier: None,
+        web_search: HostedWebSearch::Off,
+    };
+    let mut config = config
+        .registering_provider(
+            selection,
+            "DeepSeek".into(),
+            Default::default(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("register supported settings");
+    let configured = config.configured_providers.get_mut("deepseek").unwrap();
+    configured.selection.web_search = HostedWebSearch::Live;
+    config
+        .bot_defaults
+        .as_mut()
+        .unwrap()
+        .config
+        .provider
+        .web_search = HostedWebSearch::Live;
+    store.save(&config).expect("preserve saved settings");
+    let before = fs::read(store.state_dir().join(CONFIG_FILE)).expect("saved config");
+    let (store, restored) =
+        ConfigStore::open(store.state_dir().to_path_buf()).expect("open saved Live selection");
+    assert_eq!(restored, config);
+    assert_eq!(
+        fs::read(store.state_dir().join(CONFIG_FILE)).expect("unchanged config"),
+        before
+    );
+    let credentials = Arc::new(CredentialStore::open(store.credentials_path()).unwrap());
+    let bots = Arc::new(crate::bots::BotStore::open(store.state_dir()).unwrap());
+    let host = crate::host::GatewayHost::start(store, restored, credentials, bots)
+        .await
+        .expect("retired search selection must not stop the gateway");
+    host.shutdown().await;
+
+    let configured = config.configured_providers.remove("deepseek").unwrap();
+    let error = config
+        .registering_configured(configured)
+        .expect_err("new registrations still validate hosted search support");
+    assert!(
+        error
+            .to_string()
+            .contains("does not support web search mode `live`")
+    );
+}
+
 #[test]
 fn desktop_policy_admits_full_access_and_denied_network_only() {
     let mut gateway = GatewayConfig::new(DEFAULT_LISTEN, None).unwrap();

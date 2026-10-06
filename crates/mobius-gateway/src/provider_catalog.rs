@@ -166,6 +166,12 @@ pub(crate) fn configured_model_routes(
         .sort_by_key(|configured| Some(configured.selection.instance.as_str()) != default_instance);
     for configured in configured {
         let definition = provider(&configured.selection.provider)?;
+        if !definition
+            .web_search()
+            .contains(&configured.selection.web_search)
+        {
+            continue;
+        }
         if credential_is_configured(&configured.selection, store, credentials)? {
             routes.extend(catalog_routes(
                 definition,
@@ -309,7 +315,7 @@ pub(crate) fn media_routes(
         };
         if definition.supports_at(
             ModelCapability::ImageGeneration,
-            configured.selection.base_url.as_deref(),
+            transport.provider.base_url.as_deref(),
         ) {
             for preset in definition.image_models() {
                 for quality in with_default(&preset.variants) {
@@ -325,7 +331,7 @@ pub(crate) fn media_routes(
         }
         if definition.supports_at(
             ModelCapability::RealtimeVoice,
-            configured.selection.base_url.as_deref(),
+            transport.provider.base_url.as_deref(),
         ) {
             for preset in definition.voice_models() {
                 for voice in with_default(&preset.variants) {
@@ -594,10 +600,7 @@ mod tests {
             Some("https://openrouter.ai/api/v1")
         );
         assert_eq!(openrouter.tool_discovery, ToolDiscoveryMode::Native);
-        assert_eq!(
-            openrouter.custom_endpoint_tool_discovery,
-            Some(ToolDiscoveryMode::Rebuild)
-        );
+        assert_eq!(openrouter.custom_endpoint_tool_discovery, None);
     }
 
     #[test]
@@ -605,7 +608,7 @@ mod tests {
         let anthropic = provider("anthropic").expect("anthropic");
         assert_eq!(
             anthropic.tool_discovery("claude-sonnet-5-5", anthropic.default_base_url()),
-            ToolDiscoveryMode::Rebuild
+            ToolDiscoveryMode::Native
         );
         assert_eq!(
             anthropic.tool_discovery("claude-opus-5-5", anthropic.default_base_url()),
@@ -613,7 +616,7 @@ mod tests {
         );
         assert_eq!(
             anthropic.tool_discovery("claude-opus-5-5", Some("https://proxy.example/v1")),
-            ToolDiscoveryMode::Rebuild
+            ToolDiscoveryMode::Native
         );
 
         let openrouter = provider("openrouter").expect("openrouter");
@@ -623,7 +626,7 @@ mod tests {
         );
         assert_eq!(
             openrouter.tool_discovery("openai/gpt-5.6-luna", Some("https://proxy.example/v1")),
-            ToolDiscoveryMode::Rebuild
+            ToolDiscoveryMode::Native
         );
     }
 
@@ -769,7 +772,7 @@ mod tests {
             ("deepseek", ToolDiscoveryMode::Rebuild),
             ("kimi", ToolDiscoveryMode::Rebuild),
             ("openrouter", ToolDiscoveryMode::Native),
-            ("anthropic", ToolDiscoveryMode::Rebuild),
+            ("anthropic", ToolDiscoveryMode::Native),
             ("responses", ToolDiscoveryMode::Rebuild),
         ];
 

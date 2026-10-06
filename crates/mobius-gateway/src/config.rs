@@ -294,6 +294,13 @@ impl GatewayConfig {
 
     /// Registers one provider setup and establishes the first Bot defaults.
     pub(crate) fn registering_configured(&self, configured: ConfiguredProvider) -> Result<Self> {
+        let selection = &configured.selection;
+        provider(&selection.provider)?.build_config_is_valid(
+            &selection.model,
+            selection.base_url.as_deref(),
+            selection.reasoning_effort.as_deref(),
+            selection.web_search,
+        )?;
         if let Some(current) = self
             .configured_providers
             .get(&configured.selection.instance)

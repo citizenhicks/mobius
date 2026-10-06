@@ -344,6 +344,182 @@ fn usage_sink_attributes_usage_to_its_provider() {
 
 #[test]
 fn custom_selection_without_reasoning_uses_the_first_configured_effort() {
+    use mobius::protocol::ToolDiscoveryMode::{Native, Rebuild};
+
+    for (provider_id, discovery) in [("responses", Rebuild), ("openrouter", Native)] {
+        let root = tempfile::tempdir().expect("root");
+        let (store, config) = ConfigStore::initialize(
+            root.path().join("state"),
+            "127.0.0.1:8741".parse().expect("listen address"),
+            None,
+        )
+        .expect("config");
+        let credentials =
+            CredentialStore::open(store.credentials_path()).expect("credential store");
+        credentials
+            .set(
+                provider_id,
+                provider_id,
+                "custom-secret",
+                Some("http://127.0.0.1:11434/v1"),
+                None,
+            )
+            .expect("custom credential");
+        let selection = ProviderConfig {
+            instance: provider_id.into(),
+            provider: provider_id.into(),
+            model: "local-model".into(),
+            base_url: Some("http://127.0.0.1:11434/v1".into()),
+            endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
+            reasoning_effort: None,
+            service_tier: None,
+            web_search: HostedWebSearch::Off,
+        };
+        let config = config
+            .registering_provider(
+                selection,
+                "Test".into(),
+                Default::default(),
+                vec!["local-model".into()],
+                vec!["high".into(), "medium".into()],
+                Vec::new(),
+            )
+            .expect("register provider");
+        let selection = &config
+            .configured_providers
+            .get(provider_id)
+            .expect("configured provider")
+            .selection;
+
+        let choices = configured_model_choices(&config, &store, &credentials)
+            .expect("catalog")
+            .models;
+        let (router, _) = build_models(
+            &config,
+            selection,
+            &store,
+            &credentials,
+            SessionFileStore::new(&root.path().join("files"), None),
+        )
+        .expect("build selected model");
+        let selected = router.choices().next().expect("selected route");
+
+        assert_eq!(choices[0].reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(selected.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(router.default_provider(), choices[0].route);
+        assert_eq!(
+            choices[0].tool_discovery, discovery,
+            "{provider_id} catalog"
+        );
+        assert_eq!(
+            selected.tool_discovery, discovery,
+            "{provider_id} assembled choice"
+        );
+        assert_eq!(
+            router
+                .tool_discovery(router.default_provider())
+                .expect("runtime tool discovery"),
+            discovery,
+            "{provider_id} assembled model"
+        );
+    }
+}
+
+#[test]
+fn selected_custom_root_does_not_inherit_registered_native_media() {
+    use crate::wire::ProviderEndpointAuth::{Credentialless, ProviderDefault};
+
+    for (endpoint_auth, image_ids) in [
+        (ProviderDefault, Vec::new()),
+        (ProviderDefault, vec!["custom-image".into()]),
+        (Credentialless, Vec::new()),
+    ] {
+        let root = tempfile::tempdir().expect("root");
+        let (store, config) = ConfigStore::initialize(
+            root.path().join("state"),
+            "127.0.0.1:8741".parse().expect("listen address"),
+            None,
+        )
+        .expect("config");
+        let image_count = image_ids.len();
+        let mut config = config
+            .registering_provider(
+                ProviderConfig {
+                    instance: "responses".into(),
+                    provider: "responses".into(),
+                    model: "local-model".into(),
+                    base_url: None,
+                    endpoint_auth: ProviderDefault,
+                    reasoning_effort: None,
+                    service_tier: None,
+                    web_search: HostedWebSearch::Off,
+                },
+                "Test".into(),
+                Default::default(),
+                vec!["local-model".into()],
+                Vec::new(),
+                image_ids,
+            )
+            .expect("register default endpoint");
+        let custom_root = "https://proxy.example/v1";
+        let selected = &mut config
+            .bot_defaults
+            .as_mut()
+            .expect("Bot defaults")
+            .config
+            .provider;
+        selected.base_url = Some(custom_root.into());
+        selected.endpoint_auth = endpoint_auth;
+        let selected = &config
+            .bot_defaults
+            .as_ref()
+            .expect("Bot defaults")
+            .config
+            .provider;
+        let configured = config
+            .configured_providers
+            .get("responses")
+            .expect("provider");
+        let routes = catalog_routes(
+            provider("responses").expect("provider"),
+            configured,
+            selected,
+        );
+        let media = media_routes(&config, &routes).expect("selected media catalog");
+        assert!(media.voices.is_empty());
+        assert_eq!(media.images.len(), image_count);
+
+        let credentials = CredentialStore::open(store.credentials_path()).expect("credentials");
+        credentials
+            .set(
+                "responses",
+                "responses",
+                "custom-secret",
+                Some(custom_root),
+                None,
+            )
+            .expect("custom credential");
+        let (router, _) = build_models(
+            &config,
+            selected,
+            &store,
+            &credentials,
+            SessionFileStore::new(&root.path().join("files"), None),
+        )
+        .expect("selected compatible endpoint assembles");
+        assert_eq!(router.voice_choices().len(), 0);
+        assert_eq!(router.image_choices().len(), image_count);
+        if image_count != 0 {
+            assert_eq!(
+                router.image_model(None).expect("listed image").route,
+                "responses::custom-image::default"
+            );
+        }
+    }
+}
+
+#[test]
+fn saved_unsupported_web_search_does_not_block_other_provider_assembly() {
     let root = tempfile::tempdir().expect("root");
     let (store, config) = ConfigStore::initialize(
         root.path().join("state"),
@@ -351,53 +527,111 @@ fn custom_selection_without_reasoning_uses_the_first_configured_effort() {
         None,
     )
     .expect("config");
-    let credentials = CredentialStore::open(store.credentials_path()).expect("credential store");
-    credentials
-        .set(
-            "responses",
-            "responses",
-            "custom-secret",
-            Some("http://127.0.0.1:11434/v1"),
-            None,
-        )
-        .expect("custom credential");
-    let selection = ProviderConfig {
-        instance: "responses".into(),
-        provider: "responses".into(),
-        model: "local-model".into(),
-        base_url: Some("http://127.0.0.1:11434/v1".into()),
-        endpoint_auth: crate::wire::ProviderEndpointAuth::ProviderDefault,
-        reasoning_effort: None,
-        service_tier: None,
-        web_search: HostedWebSearch::Off,
-    };
-    let config = config
+    let deepseek = provider("deepseek").expect("provider");
+    let mut config = config
         .registering_provider(
-            selection.clone(),
-            "Test".into(),
+            ProviderConfig {
+                instance: "deepseek".into(),
+                provider: "deepseek".into(),
+                model: deepseek.default_model().expect("default model").into(),
+                base_url: None,
+                endpoint_auth: ProviderEndpointAuth::ProviderDefault,
+                reasoning_effort: None,
+                service_tier: None,
+                web_search: HostedWebSearch::Off,
+            },
+            "DeepSeek".into(),
             Default::default(),
-            vec![selection.model.clone()],
-            vec!["high".into(), "medium".into()],
+            Vec::new(),
+            Vec::new(),
             Vec::new(),
         )
-        .expect("register provider");
+        .and_then(|config| {
+            config.registering_provider(
+                ProviderConfig {
+                    instance: "responses".into(),
+                    provider: "responses".into(),
+                    model: "local-model".into(),
+                    base_url: Some("https://proxy.example/v1".into()),
+                    endpoint_auth: ProviderEndpointAuth::Credentialless,
+                    reasoning_effort: None,
+                    service_tier: None,
+                    web_search: HostedWebSearch::Off,
+                },
+                "Local".into(),
+                Default::default(),
+                vec!["local-model".into()],
+                Vec::new(),
+                Vec::new(),
+            )
+        })
+        .expect("providers");
+    config
+        .configured_providers
+        .get_mut("deepseek")
+        .expect("DeepSeek")
+        .selection
+        .web_search = HostedWebSearch::Live;
+    config
+        .bot_defaults
+        .as_mut()
+        .expect("Bot defaults")
+        .config
+        .provider
+        .web_search = HostedWebSearch::Live;
+    store.save(&config).expect("existing saved Live setting");
+    let (store, config) = ConfigStore::open(store.state_dir().to_owned())
+        .expect("unsupported saved web search stays readable");
+    let credentials = CredentialStore::open(store.credentials_path()).expect("credentials");
+    credentials
+        .set(
+            "deepseek",
+            "deepseek",
+            "test-key",
+            deepseek.default_base_url(),
+            None,
+        )
+        .expect("DeepSeek credential");
 
-    let choices = configured_model_choices(&config, &store, &credentials)
-        .expect("catalog")
-        .models;
-    let (router, _) = build_models(
+    let selected = &config
+        .configured_providers
+        .get("deepseek")
+        .expect("DeepSeek")
+        .selection;
+    let error = build_models(
         &config,
-        &selection,
+        selected,
         &store,
         &credentials,
-        SessionFileStore::new(tempfile::tempdir().expect("files").path(), None),
+        SessionFileStore::new(&root.path().join("files"), None),
     )
-    .expect("build selected model");
-    let selected = router.choices().next().expect("selected route");
-
-    assert_eq!(choices[0].reasoning_effort.as_deref(), Some("high"));
-    assert_eq!(selected.reasoning_effort.as_deref(), Some("high"));
-    assert_eq!(router.default_provider(), choices[0].route);
+    .err()
+    .expect("selected unsupported search fails explicitly");
+    assert!(
+        error
+            .to_string()
+            .contains("does not support web search mode `live`")
+    );
+    let routes = configured_model_routes(&config, &store, &credentials).expect("available routes");
+    assert!(
+        routes
+            .iter()
+            .all(|route| route.provider.instance != "deepseek")
+    );
+    let selected = &config
+        .configured_providers
+        .get("responses")
+        .expect("Local")
+        .selection;
+    let (router, _) = build_models(
+        &config,
+        selected,
+        &store,
+        &credentials,
+        SessionFileStore::new(&root.path().join("files"), None),
+    )
+    .expect("unrelated supported provider assembles");
+    assert_eq!(router.default_provider(), "responses::local-model::default");
 }
 
 #[test]
