@@ -1,0 +1,1 @@
+Add repeatable --model-id and --image-model-id flags to register-provider through the existing provider registration API. Supplying a flag replaces that provider model list; omitting it preserves the saved list. Retain existing provider validation and defaults for new registrations.

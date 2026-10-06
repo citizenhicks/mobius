@@ -440,6 +440,8 @@ fn parse_register_provider_accepts_credentialless_endpoint_configuration() {
             instance: None,
             label: None,
             model,
+            model_ids: None,
+            image_model_ids: None,
             reasoning_efforts,
             service_tier: None,
             web_search: HostedWebSearch::Live,
@@ -453,6 +455,39 @@ fn parse_register_provider_accepts_credentialless_endpoint_configuration() {
             && reasoning_efforts == ["medium", "none", "low", "high", "xhigh", "max"]
             && base_url == "https://connector.example/v1"
     ));
+}
+
+#[test]
+fn parse_register_provider_accepts_repeated_model_ids() {
+    let command = parse(
+        [
+            "register-provider",
+            "--provider",
+            "openrouter",
+            "--model",
+            "chat-a",
+            "--model-id",
+            "chat-a",
+            "--model-id",
+            "chat-b",
+            "--image-model-id",
+            "image-a",
+            "--image-model-id",
+            "image-b",
+        ]
+        .into_iter()
+        .map(Into::into)
+        .collect(),
+    )
+    .expect("parse model lists");
+    let Command::RegisterProvider(options) = command else {
+        panic!("expected provider registration");
+    };
+    assert_eq!(options.model_ids.expect("chat IDs"), ["chat-a", "chat-b"]);
+    assert_eq!(
+        options.image_model_ids.expect("image IDs"),
+        ["image-a", "image-b"]
+    );
 }
 
 #[test]
@@ -556,6 +591,14 @@ async fn register_provider_command_is_idempotent() {
             instance: None,
             label: Some("Work".into()),
             model: "openai/gpt-5".into(),
+            model_ids: Some(vec![
+                "openai/gpt-5".into(),
+                "anthropic/claude-sonnet-4".into(),
+            ]),
+            image_model_ids: Some(vec![
+                "google/gemini-image".into(),
+                "openai/gpt-image".into(),
+            ]),
             reasoning_efforts: vec!["medium".into(), "high".into()],
             service_tier: None,
             web_search: HostedWebSearch::Live,
@@ -621,6 +664,8 @@ async fn register_provider_command_is_idempotent() {
             instance: None,
             label: None,
             model: "openai/gpt-5".into(),
+            model_ids: None,
+            image_model_ids: None,
             reasoning_efforts: vec!["medium".into(), "high".into()],
             service_tier: None,
             web_search: HostedWebSearch::Live,
@@ -660,10 +705,19 @@ async fn register_provider_command_is_idempotent() {
             crate::wire::ProviderTint::Purple,
             crate::wire::ProviderEndpointAuth::Credentialless,
             HostedWebSearch::Live,
-            ["openai/gpt-5".to_string()].as_slice(),
+            [
+                "openai/gpt-5".to_string(),
+                "anthropic/claude-sonnet-4".to_string()
+            ]
+            .as_slice(),
             ["medium".to_string(), "high".to_string()].as_slice(),
             Some("high"),
         )
+    );
+
+    assert_eq!(
+        configured.image_model_ids,
+        ["google/gemini-image", "openai/gpt-image"]
     );
 
     let api_key = "sk-or-v1-aaaaaaaaaaaaaaaa";
@@ -674,6 +728,8 @@ async fn register_provider_command_is_idempotent() {
             instance: Some("mobius-cloud".into()),
             label: Some("Möbius Cloud".into()),
             model: "openai/gpt-5.6-luna".into(),
+            model_ids: None,
+            image_model_ids: None,
             reasoning_efforts: vec!["medium".into()],
             service_tier: None,
             web_search: HostedWebSearch::Live,

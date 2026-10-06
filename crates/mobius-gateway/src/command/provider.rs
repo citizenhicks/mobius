@@ -28,7 +28,7 @@ pub(super) async fn register_provider_with_credential(
     credential: Option<String>,
     load_local_client: fn(&Endpoint) -> Result<Option<String>>,
 ) -> Result<()> {
-    let (_, config) = ConfigStore::open(options.state_dir)?;
+    let (_, mut config) = ConfigStore::open(options.state_dir)?;
     let endpoint = direct_loopback_endpoint(&config)?;
     let token = load_local_client(&endpoint)?
         .ok_or_else(|| Error::Config("gateway local control credential is unavailable".into()))?;
@@ -36,8 +36,8 @@ pub(super) async fn register_provider_with_credential(
     let base_url = options
         .base_url
         .or_else(|| definition.default_base_url().map(str::to_owned));
-    let instance = options.instance.unwrap_or_else(|| options.provider.clone());
-    let existing = config.configured_providers.get(&instance).cloned();
+    let instance = options.instance.unwrap_or_else(|| definition.id().into());
+    let mut existing = config.configured_providers.remove(&instance);
     if let Some(api_key) = credential {
         request_provider_credential(
             &endpoint,
@@ -52,7 +52,11 @@ pub(super) async fn register_provider_with_credential(
     }
     let label = options
         .label
-        .or_else(|| existing.as_ref().map(|configured| configured.label.clone()))
+        .or_else(|| {
+            existing
+                .as_mut()
+                .map(|configured| std::mem::take(&mut configured.label))
+        })
         .unwrap_or_else(|| definition.label().to_owned());
     let tint = existing
         .as_ref()
@@ -71,21 +75,26 @@ pub(super) async fn register_provider_with_credential(
         service_tier: options.service_tier,
         web_search: options.web_search,
     };
-    let model_ids = if definition.models().is_empty() {
-        vec![selection.model.clone()]
-    } else {
-        Vec::new()
-    };
+    let model_ids = options
+        .model_ids
+        .unwrap_or_else(|| match existing.as_mut() {
+            Some(configured) => std::mem::take(&mut configured.model_ids),
+            None if definition.models().is_empty() => vec![selection.model.to_owned()],
+            None => Vec::new(),
+        });
+    let image_model_ids = options
+        .image_model_ids
+        .unwrap_or_else(|| existing.map_or_else(Vec::new, |configured| configured.image_model_ids));
     let registration = ConfiguredProvider {
-        selection: selection.clone(),
+        selection,
         label,
         tint,
         model_ids,
         reasoning_efforts: options.reasoning_efforts,
-        image_model_ids: Vec::new(),
+        image_model_ids,
     };
     request_provider_registration(&endpoint, &token, registration).await?;
-    println!("{}", register_provider_json(&selection.provider)?);
+    println!("{}", register_provider_json(definition.id())?);
     Ok(())
 }
 

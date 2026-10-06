@@ -206,6 +206,14 @@ struct RegisterProviderArgs {
     #[arg(long, value_name = "ID")]
     model: String,
 
+    /// Chat model ID; repeat to replace the list. Omit to preserve existing IDs.
+    #[arg(long = "model-id", value_name = "ID")]
+    model_ids: Option<Vec<String>>,
+
+    /// Image model ID; repeat to replace the list. Omit to preserve existing IDs.
+    #[arg(long = "image-model-id", value_name = "ID")]
+    image_model_ids: Option<Vec<String>>,
+
     /// Comma-separated reasoning effort identifiers.
     #[arg(
         long,
@@ -351,6 +359,8 @@ pub(super) struct RegisterProviderOptions {
     pub(super) instance: Option<String>,
     pub(super) label: Option<String>,
     pub(super) model: String,
+    pub(super) model_ids: Option<Vec<String>>,
+    pub(super) image_model_ids: Option<Vec<String>>,
     pub(super) reasoning_efforts: Vec<String>,
     pub(super) web_search: HostedWebSearch,
     pub(super) base_url: Option<String>,
@@ -441,6 +451,8 @@ impl GatewayCli {
                     instance: arguments.instance,
                     label: arguments.label,
                     model: arguments.model,
+                    model_ids: arguments.model_ids,
+                    image_model_ids: arguments.image_model_ids,
                     reasoning_efforts: arguments.reasoning_efforts,
                     web_search: arguments.web_search,
                     base_url: arguments.base_url,
