@@ -1520,6 +1520,7 @@ async fn compatible_images_use_json_for_generation_and_multipart_for_public_edit
     });
     let provider = generic_provider()
         .build(ProviderBuildConfig {
+            tool_discovery: None,
             credential: ProviderCredential::ApiKey("test-key".into()),
             base_url: Some(format!("http://{address}/api/native/v1/")),
             model: "chat-model".into(),

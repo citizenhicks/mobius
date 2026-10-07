@@ -15,7 +15,6 @@ async fn capacity_server(
             Default::default(),
             Vec::new(),
             Vec::new(),
-            Vec::new(),
         )
         .expect("register provider");
     config.connections = policy;

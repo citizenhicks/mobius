@@ -1,4 +1,4 @@
-use crate::config::ConfiguredProvider;
+use crate::config::ProviderRegistration;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -171,7 +171,13 @@ impl GatewayHost {
                             == ProviderEndpointAuth::Credentialless
                         && configured_base_url == base_url
                 })
-                .cloned();
+                .map(|configured| ProviderRegistration {
+                    selection: configured.selection.clone(),
+                    label: None,
+                    tint: None,
+                    models: Vec::new(),
+                    image_model_ids: None,
+                });
             let publication = crate::publication::Outcome::applied(state.credentials.set(
                 &instance,
                 &provider_id,
@@ -188,7 +194,9 @@ impl GatewayHost {
             configured.selection.endpoint_auth = ProviderEndpointAuth::ProviderDefault;
             return finish_publication(
                 publication.confirm(),
-                self.register_provider(false, configured).await.map(|_| ()),
+                self.register_provider(false, configured, true, true)
+                    .await
+                    .map(|_| ()),
             );
         }
         finish_publication(
@@ -400,11 +408,33 @@ impl GatewayHost {
     pub(crate) async fn register_provider(
         &self,
         operator: bool,
-        registration: ConfiguredProvider,
+        registration: ProviderRegistration,
+        preserve_selection: bool,
+        if_configured: bool,
     ) -> std::result::Result<ReadyPayload, Rejection> {
+        if !operator
+            && registration.models.iter().any(|model| {
+                model.label.is_some()
+                    || model.description.is_some()
+                    || model.context_window.is_some()
+            })
+        {
+            return Err(Rejection::new(
+                "operator_required",
+                "model metadata is configured locally by the gateway operator",
+            ));
+        }
         let selection = &registration.selection;
         let _mutation = self.begin_exclusive_mutation().await?;
         let state = self.state.lock().await;
+        if if_configured
+            && !state
+                .config()?
+                .configured_providers
+                .contains_key(&registration.selection.instance)
+        {
+            return gateway_ready_after_unlock(state).await;
+        }
         let mut bots = state.bots.bots().map_err(internal)?;
         let mut publication = None;
         let (changed, target_epoch) = {
@@ -419,7 +449,7 @@ impl GatewayHost {
                 ))));
             }
             let next = current
-                .registering_configured(registration)
+                .registering_configured(registration, preserve_selection)
                 .map_err(invalid_config)?;
             validate_bot_catalog(&state, &current, &next, &bots)?;
             let catalog_changed = current.configured_providers.len()
@@ -427,8 +457,7 @@ impl GatewayHost {
                 || current.configured_providers.iter().any(|(id, previous)| {
                     next.configured_providers.get(id).is_none_or(|next| {
                         previous.selection != next.selection
-                            || previous.model_ids != next.model_ids
-                            || previous.reasoning_efforts != next.reasoning_efforts
+                            || previous.models != next.models
                             || previous.image_model_ids != next.image_model_ids
                     })
                 });

@@ -23,7 +23,6 @@ pub(super) async fn gateway_with_bot() -> (tempfile::TempDir, GatewayHost, crate
             Default::default(),
             Vec::new(),
             Vec::new(),
-            Vec::new(),
         )
         .expect("provider");
     config.bot_defaults.as_mut().expect("defaults").config = composition.clone();

@@ -1,3 +1,4 @@
+supported_tool_discovery = ["rebuild"]
 symbol = "kimi"
 label = "Kimi"
 description = "Kimi Chat Completions API"

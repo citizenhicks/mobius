@@ -41,6 +41,7 @@ async fn retired_hosted_search_does_not_prevent_saved_gateway_startup() {
         ConfigStore::initialize(state, DEFAULT_LISTEN, None).expect("initialize state");
     let definition = provider("deepseek").expect("DeepSeek");
     let selection = ProviderConfig {
+        tool_discovery: None,
         instance: "deepseek".into(),
         provider: "deepseek".into(),
         model: definition.default_model().expect("default model").into(),
@@ -55,7 +56,6 @@ async fn retired_hosted_search_does_not_prevent_saved_gateway_startup() {
             selection,
             "DeepSeek".into(),
             Default::default(),
-            Vec::new(),
             Vec::new(),
             Vec::new(),
         )
@@ -86,8 +86,19 @@ async fn retired_hosted_search_does_not_prevent_saved_gateway_startup() {
     host.shutdown().await;
 
     let configured = config.configured_providers.remove("deepseek").unwrap();
+    let configured = ProviderRegistration {
+        models: configured
+            .models
+            .iter()
+            .map(crate::provider_catalog::configured_model_input)
+            .collect(),
+        selection: configured.selection,
+        label: Some(configured.label),
+        tint: Some(configured.tint),
+        image_model_ids: Some(configured.image_model_ids),
+    };
     let error = config
-        .registering_configured(configured)
+        .registering_configured(configured, false)
         .expect_err("new registrations still validate hosted search support");
     assert!(
         error
@@ -242,7 +253,6 @@ fn generated_toml_round_trips_manifest_settings() {
             Default::default(),
             Vec::new(),
             Vec::new(),
-            Vec::new(),
         )
         .expect("register provider");
     let usage = TokenUsage {
@@ -284,7 +294,6 @@ fn opening_config_rejects_removed_automatic_approval_settings_without_rewrite() 
             AgentComposition::default().provider,
             "Test".into(),
             Default::default(),
-            Vec::new(),
             Vec::new(),
             Vec::new(),
         )
@@ -349,7 +358,6 @@ fn extension_selection_is_a_stable_optional_reference() {
             Default::default(),
             Vec::new(),
             Vec::new(),
-            Vec::new(),
         )
         .expect("register provider");
     let id = "plugin:ponytail".to_string();
@@ -398,9 +406,75 @@ fn extension_selection_is_a_stable_optional_reference() {
 }
 
 #[test]
+fn provider_registration_defaults_metadata_and_allows_explicit_image_clear() {
+    let mut selection = AgentComposition::default().provider;
+    selection.instance = "openrouter".into();
+    selection.provider = "openrouter".into();
+    selection.model = "example/chat".into();
+    selection.reasoning_effort = None;
+    selection.base_url = Some("https://openrouter.ai/api/v1".into());
+    selection.web_search = mobius::backend::model::provider::HostedWebSearch::Off;
+    let registration = || ProviderRegistration {
+        selection: selection.clone(),
+        label: None,
+        tint: None,
+        models: Vec::new(),
+        image_model_ids: None,
+    };
+    let config = GatewayConfig::new(DEFAULT_LISTEN, None)
+        .unwrap()
+        .registering_configured(registration(), false)
+        .unwrap();
+    let setup = &config.configured_providers["openrouter"];
+    assert_eq!(setup.label, provider("openrouter").unwrap().label());
+    assert_eq!(setup.tint, ProviderTint::default());
+    assert!(setup.image_model_ids.is_empty());
+    let config = config
+        .registering_configured(
+            ProviderRegistration {
+                label: Some("Work".into()),
+                tint: Some(ProviderTint::Purple),
+                image_model_ids: Some(vec!["example/image".into()]),
+                ..registration()
+            },
+            false,
+        )
+        .unwrap();
+    let retained = config
+        .registering_configured(registration(), false)
+        .unwrap();
+    assert_eq!(retained.configured_providers, config.configured_providers);
+    let cleared = retained
+        .registering_configured(
+            ProviderRegistration {
+                image_model_ids: Some(Vec::new()),
+                ..registration()
+            },
+            false,
+        )
+        .unwrap();
+    let setup = &cleared.configured_providers["openrouter"];
+    assert_eq!(setup.label, "Work");
+    assert_eq!(setup.tint, ProviderTint::Purple);
+    assert!(setup.image_model_ids.is_empty());
+    assert!(
+        cleared
+            .registering_configured(
+                ProviderRegistration {
+                    label: Some(String::new()),
+                    ..registration()
+                },
+                false
+            )
+            .is_err()
+    );
+}
+
+#[test]
 fn provider_registration_never_silently_changes_existing_defaults() {
     let config = GatewayConfig::new(DEFAULT_LISTEN, None).expect("gateway config");
     let kimi = ProviderConfig {
+        tool_discovery: None,
         instance: "kimi".into(),
         provider: "kimi".into(),
         model: "kimi-k3".into(),
@@ -417,10 +491,10 @@ fn provider_registration_never_silently_changes_existing_defaults() {
             Default::default(),
             Vec::new(),
             Vec::new(),
-            Vec::new(),
         )
         .expect("register Kimi");
     let openrouter = ProviderConfig {
+        tool_discovery: None,
         instance: "openrouter".into(),
         provider: "openrouter".into(),
         model: "openrouter/pareto-code".into(),
@@ -435,8 +509,20 @@ fn provider_registration_never_silently_changes_existing_defaults() {
             openrouter.clone(),
             "Test".into(),
             Default::default(),
-            vec![openrouter.model.clone(), "anthropic/claude-opus-4.1".into()],
-            Vec::new(),
+            vec![
+                crate::wire::ConfiguredModel {
+                    id: openrouter.model.clone(),
+                    reasoning_efforts: Some(Vec::new()),
+                    default_reasoning: None,
+                    ..Default::default()
+                },
+                crate::wire::ConfiguredModel {
+                    id: "anthropic/claude-opus-4.1".into(),
+                    reasoning_efforts: Some(Vec::new()),
+                    default_reasoning: None,
+                    ..Default::default()
+                },
+            ],
             Vec::new(),
         )
         .expect("register OpenRouter");
@@ -446,7 +532,7 @@ fn provider_registration_never_silently_changes_existing_defaults() {
         second.configured_providers["openrouter"].selection,
         openrouter
     );
-    assert_eq!(second.configured_providers["openrouter"].model_ids.len(), 2);
+    assert_eq!(second.configured_providers["openrouter"].models.len(), 2);
     assert_eq!(
         second
             .bot_defaults
@@ -469,7 +555,6 @@ fn provider_registration_never_silently_changes_existing_defaults() {
             Default::default(),
             Vec::new(),
             Vec::new(),
-            Vec::new(),
         )
         .expect_err("an existing instance must keep its provider");
     assert!(
@@ -486,8 +571,11 @@ fn provider_registration_never_silently_changes_existing_defaults() {
             updated.clone(),
             "Test".into(),
             Default::default(),
-            Vec::new(),
-            Vec::new(),
+            second.configured_providers["kimi"]
+                .models
+                .iter()
+                .map(crate::provider_catalog::configured_model_input)
+                .collect(),
             Vec::new(),
         )
         .expect("update registered provider");
@@ -500,6 +588,7 @@ fn provider_registration_never_silently_changes_existing_defaults() {
 #[test]
 fn configured_custom_provider_keeps_its_endpoint_and_model() {
     let selection = ProviderConfig {
+        tool_discovery: None,
         instance: "responses".into(),
         provider: "responses".into(),
         model: "vendor/model-opaque".into(),
@@ -515,8 +604,12 @@ fn configured_custom_provider_keeps_its_endpoint_and_model() {
             selection.clone(),
             "Test".into(),
             Default::default(),
-            vec![selection.model.clone()],
-            vec!["provider-defined".into()],
+            vec![crate::wire::ConfiguredModel {
+                id: selection.model.clone(),
+                reasoning_efforts: Some(vec!["provider-defined".into()]),
+                default_reasoning: Some("provider-defined".into()),
+                ..Default::default()
+            }],
             Vec::new(),
         )
         .expect("register custom provider");
@@ -526,7 +619,15 @@ fn configured_custom_provider_keeps_its_endpoint_and_model() {
         selection
     );
     assert_eq!(
-        config.configured_providers["responses"].reasoning_efforts,
+        config.configured_providers["responses"]
+            .models
+            .iter()
+            .find(|model| model.id == selection.model)
+            .unwrap()
+            .reasoning
+            .iter()
+            .map(|effort| effort.id.as_str())
+            .collect::<Vec<_>>(),
         ["provider-defined"]
     );
     assert_eq!(
@@ -544,6 +645,7 @@ fn browser_authenticated_bot_selections_are_bound_to_the_registered_endpoint() {
     let definition = provider("openai_codex").expect("browser-auth provider");
     for endpoint in [None, Some("https://operator.example/codex")] {
         let selection = ProviderConfig {
+            tool_discovery: None,
             instance: "codex".into(),
             provider: definition.id().into(),
             model: definition
@@ -564,7 +666,6 @@ fn browser_authenticated_bot_selections_are_bound_to_the_registered_endpoint() {
                 selection.clone(),
                 "Codex".into(),
                 Default::default(),
-                Vec::new(),
                 Vec::new(),
                 Vec::new(),
             )
@@ -609,6 +710,7 @@ fn browser_authenticated_bot_selections_are_bound_to_the_registered_endpoint() {
 #[test]
 fn openrouter_accepts_a_credentialless_custom_https_endpoint() {
     let selection = ProviderConfig {
+        tool_discovery: None,
         instance: "openrouter".into(),
         provider: "openrouter".into(),
         model: "openai/gpt-5".into(),
@@ -625,8 +727,12 @@ fn openrouter_accepts_a_credentialless_custom_https_endpoint() {
             selection.clone(),
             "Test".into(),
             Default::default(),
-            vec![selection.model],
-            Vec::new(),
+            vec![crate::wire::ConfiguredModel {
+                id: selection.model,
+                reasoning_efforts: Some(Vec::new()),
+                default_reasoning: None,
+                ..Default::default()
+            }],
             Vec::new(),
         )
         .expect("credentialless OpenRouter endpoint");
@@ -639,6 +745,7 @@ fn credentialless_endpoint_rejects_openrouter_default_aliases() {
         "https://openrouter.ai/alternate-path",
     ] {
         let selection = ProviderConfig {
+            tool_discovery: None,
             instance: "openrouter".into(),
             provider: "openrouter".into(),
             model: "openai/gpt-5".into(),
@@ -655,8 +762,12 @@ fn credentialless_endpoint_rejects_openrouter_default_aliases() {
                 selection.clone(),
                 "Test".into(),
                 Default::default(),
-                vec![selection.model],
-                Vec::new(),
+                vec![crate::wire::ConfiguredModel {
+                    id: selection.model,
+                    reasoning_efforts: Some(Vec::new()),
+                    default_reasoning: None,
+                    ..Default::default()
+                }],
                 Vec::new(),
             )
             .expect_err("default endpoint origin must require provider authentication");
@@ -672,6 +783,7 @@ fn credentialless_endpoint_rejects_openrouter_default_aliases() {
 #[test]
 fn credentialless_endpoint_requires_https() {
     let selection = ProviderConfig {
+        tool_discovery: None,
         instance: "openrouter".into(),
         provider: "openrouter".into(),
         model: "openai/gpt-5".into(),
@@ -688,8 +800,12 @@ fn credentialless_endpoint_requires_https() {
             selection.clone(),
             "Test".into(),
             Default::default(),
-            vec![selection.model],
-            Vec::new(),
+            vec![crate::wire::ConfiguredModel {
+                id: selection.model,
+                reasoning_efforts: Some(Vec::new()),
+                default_reasoning: None,
+                ..Default::default()
+            }],
             Vec::new(),
         )
         .expect_err("credentialless endpoint must require HTTPS");
@@ -705,6 +821,7 @@ fn credentialless_endpoint_rejects_secret_bearing_url_components() {
         "https://connector.example/v1#secret",
     ] {
         let selection = ProviderConfig {
+            tool_discovery: None,
             instance: "openrouter".into(),
             provider: "openrouter".into(),
             model: "openai/gpt-5".into(),
@@ -721,8 +838,12 @@ fn credentialless_endpoint_rejects_secret_bearing_url_components() {
                 selection.clone(),
                 "Test".into(),
                 Default::default(),
-                vec![selection.model],
-                Vec::new(),
+                vec![crate::wire::ConfiguredModel {
+                    id: selection.model,
+                    reasoning_efforts: Some(Vec::new()),
+                    default_reasoning: None,
+                    ..Default::default()
+                }],
                 Vec::new(),
             )
             .expect_err("secret-bearing endpoint must be rejected");
@@ -732,6 +853,7 @@ fn credentialless_endpoint_rejects_secret_bearing_url_components() {
 #[test]
 fn credentialless_endpoint_requires_provider_opt_in() {
     let selection = ProviderConfig {
+        tool_discovery: None,
         instance: "openai_socket".into(),
         provider: "openai_socket".into(),
         model: "gpt-6-luna".into(),
@@ -748,8 +870,12 @@ fn credentialless_endpoint_requires_provider_opt_in() {
             selection.clone(),
             "Test".into(),
             Default::default(),
-            vec![selection.model],
-            Vec::new(),
+            vec![crate::wire::ConfiguredModel {
+                id: selection.model,
+                reasoning_efforts: Some(Vec::new()),
+                default_reasoning: None,
+                ..Default::default()
+            }],
             Vec::new(),
         )
         .expect_err("native OpenAI endpoints require credentials");
@@ -764,6 +890,7 @@ fn credentialless_endpoint_requires_provider_opt_in() {
 #[test]
 fn custom_provider_registration_validates_its_model_catalog() {
     let selection = ProviderConfig {
+        tool_discovery: None,
         instance: "openrouter".into(),
         provider: "openrouter".into(),
         model: "anthropic/claude-sonnet-4".into(),
@@ -775,23 +902,34 @@ fn custom_provider_registration_validates_its_model_catalog() {
     };
     let config = GatewayConfig::new(DEFAULT_LISTEN, None).expect("gateway config");
 
-    let missing = config
+    let initialized = config
         .registering_provider(
             selection.clone(),
             "Test".into(),
             Default::default(),
             Vec::new(),
             Vec::new(),
-            Vec::new(),
         )
-        .expect_err("custom catalog must not be empty");
+        .expect("new catalog starts with the selected model");
     let duplicate = config
         .registering_provider(
             selection.clone(),
             "Test".into(),
             Default::default(),
-            vec![selection.model.clone(), selection.model.clone()],
-            Vec::new(),
+            vec![
+                crate::wire::ConfiguredModel {
+                    id: selection.model.clone(),
+                    reasoning_efforts: Some(Vec::new()),
+                    default_reasoning: None,
+                    ..Default::default()
+                },
+                crate::wire::ConfiguredModel {
+                    id: selection.model.clone(),
+                    reasoning_efforts: Some(Vec::new()),
+                    default_reasoning: None,
+                    ..Default::default()
+                },
+            ],
             Vec::new(),
         )
         .expect_err("custom catalog IDs must be unique");
@@ -800,8 +938,12 @@ fn custom_provider_registration_validates_its_model_catalog() {
             selection.clone(),
             "Test".into(),
             Default::default(),
-            vec![" anthropic/claude-sonnet-4".into()],
-            Vec::new(),
+            vec![crate::wire::ConfiguredModel {
+                id: " anthropic/claude-sonnet-4".into(),
+                reasoning_efforts: Some(Vec::new()),
+                default_reasoning: None,
+                ..Default::default()
+            }],
             Vec::new(),
         )
         .expect_err("custom catalog IDs must be canonical");
@@ -810,8 +952,12 @@ fn custom_provider_registration_validates_its_model_catalog() {
             selection.clone(),
             "Test".into(),
             Default::default(),
-            vec![selection.model.clone()],
-            vec!["high".into(), "high".into()],
+            vec![crate::wire::ConfiguredModel {
+                id: selection.model.clone(),
+                reasoning_efforts: Some(vec!["high".into(), "high".into()]),
+                default_reasoning: Some("high".into()),
+                ..Default::default()
+            }],
             Vec::new(),
         )
         .expect_err("custom reasoning efforts must be unique");
@@ -822,13 +968,26 @@ fn custom_provider_registration_validates_its_model_catalog() {
             missing_reasoning,
             "Test".into(),
             Default::default(),
-            vec!["anthropic/claude-sonnet-4".into()],
-            vec!["medium".into()],
+            vec![crate::wire::ConfiguredModel {
+                id: "anthropic/claude-sonnet-4".into(),
+                reasoning_efforts: Some(vec!["medium".into()]),
+                default_reasoning: Some("medium".into()),
+                ..Default::default()
+            }],
             Vec::new(),
         )
         .expect_err("selected custom reasoning must be configured");
 
-    assert!(missing.to_string().contains("1–64 entries"));
+    assert_eq!(
+        initialized.configured_providers["openrouter"].models.len(),
+        1
+    );
+    assert_eq!(
+        initialized.configured_providers["openrouter"].models[0].id,
+        initialized.configured_providers["openrouter"]
+            .selection
+            .model
+    );
     assert!(duplicate.to_string().contains("duplicate model ID"));
     assert!(padded.to_string().contains("must be canonical"));
     assert!(
@@ -849,6 +1008,7 @@ fn custom_provider_catalogs_accept_opaque_ids_but_reject_ambiguous_routes() {
     config
         .registering_provider(
             ProviderConfig {
+                tool_discovery: None,
                 instance: "openrouter".into(),
                 provider: "openrouter".into(),
                 model: "vendor::model".into(),
@@ -860,14 +1020,19 @@ fn custom_provider_catalogs_accept_opaque_ids_but_reject_ambiguous_routes() {
             },
             "Test".into(),
             Default::default(),
-            vec!["vendor::model".into()],
-            Vec::new(),
+            vec![crate::wire::ConfiguredModel {
+                id: "vendor::model".into(),
+                reasoning_efforts: Some(Vec::new()),
+                default_reasoning: None,
+                ..Default::default()
+            }],
             Vec::new(),
         )
         .expect("opaque model ID");
     let collision = config
         .registering_provider(
             ProviderConfig {
+                tool_discovery: None,
                 instance: "openrouter".into(),
                 provider: "openrouter".into(),
                 model: "vendor:".into(),
@@ -879,8 +1044,20 @@ fn custom_provider_catalogs_accept_opaque_ids_but_reject_ambiguous_routes() {
             },
             "Test".into(),
             Default::default(),
-            vec!["vendor:".into(), "vendor".into()],
-            vec!["high".into(), ":high".into()],
+            vec![
+                crate::wire::ConfiguredModel {
+                    id: "vendor:".into(),
+                    reasoning_efforts: Some(vec!["high".into(), ":high".into()]),
+                    default_reasoning: Some("high".into()),
+                    ..Default::default()
+                },
+                crate::wire::ConfiguredModel {
+                    id: "vendor".into(),
+                    reasoning_efforts: Some(vec!["high".into(), ":high".into()]),
+                    default_reasoning: Some("high".into()),
+                    ..Default::default()
+                },
+            ],
             Vec::new(),
         )
         .expect_err("distinct catalog pairs must not share a route");
@@ -900,6 +1077,7 @@ fn custom_provider_catalogs_bound_the_total_generated_routes() {
         .expect("gateway config")
         .registering_provider(
             ProviderConfig {
+                tool_discovery: None,
                 instance: "openrouter".into(),
                 provider: "openrouter".into(),
                 model: models[0].clone(),
@@ -911,8 +1089,18 @@ fn custom_provider_catalogs_bound_the_total_generated_routes() {
             },
             "Test".into(),
             Default::default(),
-            models,
-            efforts,
+            {
+                let reasoning_efforts: Vec<String> = efforts;
+                (models)
+                    .into_iter()
+                    .map(|id| crate::wire::ConfiguredModel {
+                        id,
+                        default_reasoning: reasoning_efforts.first().cloned(),
+                        reasoning_efforts: Some(reasoning_efforts.clone()),
+                        ..Default::default()
+                    })
+                    .collect()
+            },
             Vec::new(),
         )
         .expect("64 custom routes");
@@ -920,6 +1108,7 @@ fn custom_provider_catalogs_bound_the_total_generated_routes() {
     let error = config
         .registering_provider(
             ProviderConfig {
+                tool_discovery: None,
                 instance: "responses".into(),
                 provider: "responses".into(),
                 model: "local-model".into(),
@@ -931,8 +1120,12 @@ fn custom_provider_catalogs_bound_the_total_generated_routes() {
             },
             "Test".into(),
             Default::default(),
-            vec!["local-model".into()],
-            Vec::new(),
+            vec![crate::wire::ConfiguredModel {
+                id: "local-model".into(),
+                reasoning_efforts: Some(Vec::new()),
+                default_reasoning: None,
+                ..Default::default()
+            }],
             Vec::new(),
         )
         .expect_err("65 total custom routes must fail");
@@ -947,6 +1140,7 @@ fn provider_registration_rejects_a_catalog_that_invalidates_the_current_default(
         .expect("gateway config")
         .registering_provider(
             ProviderConfig {
+                tool_discovery: None,
                 instance: "openrouter".into(),
                 provider: "openrouter".into(),
                 model: model.clone(),
@@ -958,8 +1152,12 @@ fn provider_registration_rejects_a_catalog_that_invalidates_the_current_default(
             },
             "Test".into(),
             Default::default(),
-            vec![model.clone()],
-            vec!["high".into(), "medium".into()],
+            vec![crate::wire::ConfiguredModel {
+                id: model.clone(),
+                reasoning_efforts: Some(vec!["high".into(), "medium".into()]),
+                default_reasoning: Some("high".into()),
+                ..Default::default()
+            }],
             Vec::new(),
         )
         .expect("register provider");
@@ -967,6 +1165,7 @@ fn provider_registration_rejects_a_catalog_that_invalidates_the_current_default(
     let error = config
         .registering_provider(
             ProviderConfig {
+                tool_discovery: None,
                 instance: "openrouter".into(),
                 provider: "openrouter".into(),
                 model: model.clone(),
@@ -978,8 +1177,12 @@ fn provider_registration_rejects_a_catalog_that_invalidates_the_current_default(
             },
             "Test".into(),
             Default::default(),
-            vec![model],
-            vec!["medium".into()],
+            vec![crate::wire::ConfiguredModel {
+                id: model,
+                reasoning_efforts: Some(vec!["medium".into()]),
+                default_reasoning: Some("medium".into()),
+                ..Default::default()
+            }],
             Vec::new(),
         )
         .expect_err("updated catalog must preserve current default membership");
@@ -998,6 +1201,7 @@ fn default_and_persisted_config_validate_custom_reasoning_membership() {
         .expect("gateway config")
         .registering_provider(
             ProviderConfig {
+                tool_discovery: None,
                 instance: "openrouter".into(),
                 provider: "openrouter".into(),
                 model: model.clone(),
@@ -1009,8 +1213,12 @@ fn default_and_persisted_config_validate_custom_reasoning_membership() {
             },
             "Test".into(),
             Default::default(),
-            vec![model],
-            vec!["high".into(), "medium".into()],
+            vec![crate::wire::ConfiguredModel {
+                id: model,
+                reasoning_efforts: Some(vec!["high".into(), "medium".into()]),
+                default_reasoning: Some("high".into()),
+                ..Default::default()
+            }],
             Vec::new(),
         )
         .expect("register provider");
@@ -1048,6 +1256,7 @@ fn provider_catalog_rejects_out_of_catalog_model_and_reasoning() {
         .expect("gateway config")
         .registering_provider(
             ProviderConfig {
+                tool_discovery: None,
                 instance: "openrouter".into(),
                 provider: "openrouter".into(),
                 model: model.clone(),
@@ -1059,8 +1268,12 @@ fn provider_catalog_rejects_out_of_catalog_model_and_reasoning() {
             },
             "Test".into(),
             Default::default(),
-            vec![model],
-            vec!["high".into(), "medium".into()],
+            vec![crate::wire::ConfiguredModel {
+                id: model,
+                reasoning_efforts: Some(vec!["high".into(), "medium".into()]),
+                default_reasoning: Some("high".into()),
+                ..Default::default()
+            }],
             Vec::new(),
         )
         .expect("register provider");
@@ -1098,7 +1311,6 @@ fn saving_defaults_is_revisioned_and_does_not_change_existing_chat_specs() {
             AgentComposition::default().provider,
             "Test".into(),
             Default::default(),
-            Vec::new(),
             Vec::new(),
             Vec::new(),
         )
@@ -1524,6 +1736,7 @@ fn realtime_voice_route_persists_and_is_optional() {
 #[test]
 fn bot_compatibility_checks_policies_route_and_voice_without_credentials() {
     let selection = ProviderConfig {
+        tool_discovery: None,
         instance: "responses".into(),
         provider: "responses".into(),
         model: "custom-model".into(),
@@ -1539,8 +1752,12 @@ fn bot_compatibility_checks_policies_route_and_voice_without_credentials() {
             selection,
             "Test".into(),
             Default::default(),
-            vec!["custom-model".into()],
-            vec!["high".into(), "medium".into()],
+            vec![crate::wire::ConfiguredModel {
+                id: "custom-model".into(),
+                reasoning_efforts: Some(vec!["high".into(), "medium".into()]),
+                default_reasoning: Some("high".into()),
+                ..Default::default()
+            }],
             Vec::new(),
         )
         .expect("register provider");
@@ -2124,12 +2341,19 @@ fn listed_image_model_ids_are_validated_before_saving() {
                 selection,
                 "Test".into(),
                 Default::default(),
-                if catalog {
+                (if catalog {
                     Vec::new()
                 } else {
                     vec!["chat-model".into()]
-                },
-                Vec::new(),
+                })
+                .into_iter()
+                .map(|id| crate::wire::ConfiguredModel {
+                    id,
+                    reasoning_efforts: Some(Vec::new()),
+                    default_reasoning: None,
+                    ..Default::default()
+                })
+                .collect(),
                 image_ids,
             )
     };
@@ -2345,4 +2569,165 @@ fn applied_usage_publication_keeps_visible_totals_but_returns_uncertainty() {
         serde_json::to_value(ConfigStore::open(state).unwrap().1).unwrap()
     );
     assert_ne!(config.usage, Default::default());
+}
+
+#[test]
+fn configured_models_keep_independent_efforts_and_explicit_defaults() {
+    let mut selection = AgentComposition::default().provider;
+    selection.instance = "responses".into();
+    selection.provider = "responses".into();
+    selection.model = "reasoner".into();
+    selection.reasoning_effort = None;
+    selection.base_url = Some("http://127.0.0.1:11434/v1".into());
+    selection.web_search = mobius::backend::model::provider::HostedWebSearch::Off;
+    let mut configured = ConfiguredProvider {
+        selection,
+        label: "Custom".into(),
+        tint: Default::default(),
+        models: crate::provider_catalog::prepare_configured_models(
+            provider("responses").unwrap(),
+            vec![
+                ConfiguredModel {
+                    id: "reasoner".into(),
+                    reasoning_efforts: Some(vec!["low".into(), "high".into()]),
+                    default_reasoning: Some("high".into()),
+                    ..Default::default()
+                },
+                ConfiguredModel {
+                    id: "fast".into(),
+                    reasoning_efforts: Some(vec!["brief".into()]),
+                    default_reasoning: Some("brief".into()),
+                    ..Default::default()
+                },
+                ConfiguredModel {
+                    id: "plain".into(),
+                    reasoning_efforts: Some(Vec::new()),
+                    default_reasoning: None,
+                    ..Default::default()
+                },
+            ],
+            Vec::new(),
+        ),
+        image_model_ids: Vec::new(),
+    };
+    validation::validate_configured_provider(&configured).expect("heterogeneous catalog");
+    let definition = provider("responses").unwrap();
+    assert_eq!(
+        effective_reasoning_effort(definition, &configured, &configured.selection),
+        Some("high")
+    );
+    configured.selection.model = "fast".into();
+    assert_eq!(
+        effective_reasoning_effort(definition, &configured, &configured.selection),
+        Some("brief")
+    );
+    configured.selection.reasoning_effort = Some("high".into());
+    assert!(validation::validate_configured_provider(&configured).is_err());
+    configured.selection.reasoning_effort = None;
+    let encoded = toml::to_string(&configured).unwrap();
+    assert_eq!(
+        toml::from_str::<ConfiguredProvider>(&encoded).unwrap(),
+        configured
+    );
+    assert!(encoded.contains("[[models]]"));
+    for default in [None, Some("absent".into())] {
+        configured.models[0].default_reasoning = default;
+        assert!(validation::validate_configured_provider(&configured).is_err());
+    }
+    configured.models[0].default_reasoning = Some("high".into());
+    configured.models[2].default_reasoning = Some("high".into());
+    assert!(validation::validate_configured_provider(&configured).is_err());
+    assert!(toml::from_str::<ConfiguredModel>("id = 'plain'\nunknown = true").is_err());
+}
+
+#[test]
+fn heterogeneous_model_route_budget_counts_each_models_variants() {
+    let mut selection = AgentComposition::default().provider;
+    selection.instance = "responses".into();
+    selection.provider = "responses".into();
+    let mut configured = ConfiguredProvider {
+        selection,
+        label: "Custom".into(),
+        tint: Default::default(),
+        models: crate::provider_catalog::prepare_configured_models(
+            provider("responses").unwrap(),
+            vec![
+                ConfiguredModel {
+                    id: "reasoner".into(),
+                    reasoning_efforts: Some(
+                        (0..63).map(|index| format!("effort-{index}")).collect(),
+                    ),
+                    default_reasoning: Some("effort-0".into()),
+                    ..Default::default()
+                },
+                ConfiguredModel {
+                    id: "plain".into(),
+                    reasoning_efforts: Some(Vec::new()),
+                    default_reasoning: None,
+                    ..Default::default()
+                },
+            ],
+            Vec::new(),
+        ),
+        image_model_ids: Vec::new(),
+    };
+    let mut providers = BTreeMap::new();
+    providers.insert("responses".into(), configured.clone());
+    validation::validate_custom_model_route_count(&providers)
+        .expect("63 variants plus one plain route");
+    configured.models[0]
+        .reasoning
+        .push(mobius::backend::model::provider::ReasoningPreset {
+            id: "effort-63".into(),
+            label: "effort-63".into(),
+            description: String::new(),
+        });
+    providers.insert("responses".into(), configured);
+    assert!(
+        validation::validate_custom_model_route_count(&providers)
+            .unwrap_err()
+            .to_string()
+            .contains("at most 64 model routes")
+    );
+}
+
+#[test]
+fn custom_routes_reject_plain_and_reasoning_collision_in_either_order() {
+    let mut selection = AgentComposition::default().provider;
+    selection.instance = "responses".into();
+    selection.provider = "responses".into();
+    let mut configured = ConfiguredProvider {
+        selection,
+        label: "Custom".into(),
+        tint: Default::default(),
+        models: crate::provider_catalog::prepare_configured_models(
+            provider("responses").unwrap(),
+            vec![
+                ConfiguredModel {
+                    id: "foo".into(),
+                    reasoning_efforts: Some(vec!["bar::default".into()]),
+                    default_reasoning: Some("bar::default".into()),
+                    ..Default::default()
+                },
+                ConfiguredModel {
+                    id: "foo::bar".into(),
+                    reasoning_efforts: Some(Vec::new()),
+                    default_reasoning: None,
+                    ..Default::default()
+                },
+            ],
+            Vec::new(),
+        ),
+        image_model_ids: Vec::new(),
+    };
+    for _ in 0..2 {
+        let providers = BTreeMap::from([("responses".into(), configured.clone())]);
+        assert!(
+            validation::validate_custom_model_route_count(&providers)
+                .unwrap_err()
+                .to_string()
+                .contains("ambiguous route")
+        );
+        configured.models.reverse();
+    }
 }

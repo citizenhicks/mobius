@@ -20,10 +20,11 @@ mobius-gateway --state-dir /srv/agent/state serve
 
 `print-default-config` prints complete default TOML without creating state or exposing
 credentials. Optional paths are omitted until configured. New operator sections use
-Serde defaults: existing version-26 files may omit them or specify only changed fields.
-This addition does not bump configuration version or protocol 90. Unknown fields still
-fail, so typos cannot silently select defaults. Structurally incompatible versions are
-rejected without rewriting files.
+Serde defaults allow omitted operator sections to use their documented defaults.
+Unknown fields fail, so typos cannot silently select defaults. Configuration version
+28 stores complete model records per editable provider setup. Upgrade version 26 or 27 offline
+with the [portable upgrade tool](../../scripts/README-portable-upgrade.md) before
+starting this gateway; incompatible files are rejected without rewriting them.
 
 ## Execution and capacity
 
@@ -126,7 +127,88 @@ execution logic; runtime policy uses the fields above. No global provider regist
 Model catalogs (`anthropic.toml`, `openai.toml`, `kimi.toml`, `deepseek.toml`) can be
 replaced without a rebuild: a file with the same name in `<state dir>/models/` is read at
 gateway start instead of the bundled copy. A file that fails to parse or names an
-unlisted default model or reasoning effort is ignored with a warning.
+unlisted default model or reasoning effort is ignored with a warning. For editable
+providers, these files supply initialization defaults; edit an existing setup's
+stored model records to change that setup.
+
+### Provider model configuration
+
+Every provider uses the same setup and registration path. Only Codex and OpenAI
+socket lock their model catalogs; their setup `models` arrays remain empty.
+Anthropic, Kimi and DeepSeek seed a new setup from their bundled catalogs.
+OpenRouter and Local start empty. After saving, an editable setup's `models` array
+is authoritative: changing the bundled catalog does not add removed models back.
+
+Each stored model has the same full record as a bundled model. Operators may edit
+all its fields in `gateway.toml` while stopped. For example:
+
+```toml
+[[configured_providers.work.models]]
+id = "model-a"
+label = "Model A"
+description = "Custom endpoint model"
+context_window = 128000
+tool_discovery = "rebuild"
+default_reasoning = "high"
+reasoning = [
+  { id = "low", label = "Low", description = "" },
+  { id = "high", label = "High", description = "" },
+]
+```
+
+A nonempty reasoning list requires a default from that list. Plain models use
+`reasoning = []` and omit `default_reasoning`. Explicit Bot reasoning choices must
+belong to the selected model. Editable setups together are limited to 64
+model/effort routes. Context windows must be positive.
+
+The setup's `selection.base_url`, `selection.web_search`, and optional
+`selection.tool_discovery` apply to its models. Discovery accepts `native` or
+`rebuild`; omission uses each model's default and any provider endpoint policy.
+The gateway advertises supported modes and rejects unsupported choices before
+saving. Kimi supports `rebuild` only. Choosing `native` for a custom endpoint
+requires that endpoint to implement the provider's native discovery protocol.
+
+App registration edits model IDs, reasoning choices/defaults and provider-level
+URL, web search and discovery. It preserves stored labels, descriptions, context
+windows and reasoning labels for matching IDs. These metadata fields remain
+operator-controlled. New IDs inherit matching catalog metadata, or the provider's
+default context window and discovery mode when absent from its catalog.
+
+### Command-line setup
+
+`register-provider` uses the same registration path as apps. Repeated `--model-id`
+flags replace the model list while preserving retained models' metadata and
+reasoning choices. Omit them to preserve the live list. Set reasoning only with
+`--models-json`: omit a model's `reasoning_efforts` to retain its choices, or supply
+an empty array to clear them. For example:
+
+```sh
+mobius-gateway --state-dir /srv/agent/state register-provider \
+  --provider openrouter --instance work --model model-a \
+  --base-url https://openrouter.ai/api/v1 --web-search off \
+  --tool-discovery rebuild \
+  --models-json '[{"id":"model-a","reasoning_efforts":["low","high"],"default_reasoning":"high","context_window":128000,"label":"Model A"},{"id":"model-b","reasoning_efforts":[]}]'
+```
+
+`--models-json` conflicts with `--model-id`. Its optional
+`label`, `description` and `context_window` fields require the local operator
+credential; ordinary paired clients cannot overwrite them. Omitted metadata stays
+unchanged. Empty or omitted model lists preserve existing setups and seed new
+catalog-backed setups. Omitted setup label, tint and image model IDs retain the
+live gateway values; new setups use the provider label, default tint and empty
+image list. An explicit wire `image_model_ids: []` clears that list. The command
+reads disk configuration only to locate the gateway, never to fill omitted setup
+metadata. Omit `--tool-discovery` to preserve an existing override.
+Credentials continue through the command's existing credential input options.
+
+Automation refreshes use `--preserve-selection` to retain live model and image
+catalogs, labels, tint, selected model, reasoning effort and web search while updating
+credentials or endpoint settings. Supplied model/image lists only seed a new setup;
+ordinary registration without this flag applies intentional catalog edits.
+`--if-configured` skips registration of a missing optional setup. Both decisions
+are made against live gateway state under the mutation lock. Cloud uses this same
+command for all providers; it does not rebuild catalogs or call a separate wire
+registration script.
 
 ## Computer resources
 

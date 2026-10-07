@@ -306,7 +306,13 @@ fn render_models_page(lines: &mut Vec<Line<'static>>, state: &SetupState) {
             );
         }
     } else {
-        for (index, model) in state.definition().models.iter().enumerate() {
+        for (index, model) in state
+            .definition()
+            .models
+            .iter()
+            .filter(|_| !state.definition().model_ids_configurable)
+            .enumerate()
+        {
             choice(
                 lines,
                 &model.label,
@@ -339,9 +345,7 @@ fn render_models_page(lines: &mut Vec<Line<'static>>, state: &SetupState) {
             if state.reasoning == 0 { "●" } else { "○" },
         );
         for (index, preset) in state
-            .definition()
-            .models
-            .get(state.model)
+            .selected_model_preset()
             .into_iter()
             .flat_map(|model| &model.reasoning)
             .enumerate()

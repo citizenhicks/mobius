@@ -217,24 +217,19 @@ pub(super) async fn register_provider(
     events: &mut GatewayEvents,
     config: ProviderConfig,
 ) -> Result<ReadyPayload> {
-    let model_ids = state.configured_model_ids()?;
-    let reasoning_efforts = state.instance_reasoning_efforts().to_vec();
+    let models = state.configured_models()?;
     let label = state.effective_label().into();
     let request_id = Uuid::new_v4().to_string();
     sender
         .send(ClientMessage::RegisterProvider {
+            preserve_selection: false,
+            if_configured: false,
             request_id: request_id.clone(),
             config,
-            label,
-            tint: state
-                .instance()
-                .map(|instance| instance.tint)
-                .unwrap_or_default(),
-            model_ids,
-            reasoning_efforts,
-            image_model_ids: state
-                .instance()
-                .map_or_else(Vec::new, |instance| instance.image_model_ids.to_vec()),
+            label: Some(label),
+            tint: None,
+            models,
+            image_model_ids: None,
         })
         .await
         .map_err(gateway_error)?;

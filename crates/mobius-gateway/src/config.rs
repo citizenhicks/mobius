@@ -18,13 +18,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use mobius::agent::DEFAULT_MAX_MODEL_STEPS;
 use mobius::backend::model::provider::{
-    ProviderAuth, ProviderDefinition, default_provider, provider,
+    ModelPreset, ProviderAuth, ProviderDefinition, default_provider, provider,
 };
 use mobius::protocol::TokenUsage;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Digest as _;
 
+pub(crate) use crate::wire::ConfiguredModel;
 #[cfg(test)]
 use crate::wire::RoutineInteractionPolicy;
 use crate::wire::{
@@ -49,7 +50,7 @@ pub(crate) use self::workspace::{
 };
 pub use crate::server::ConnectionPolicy;
 
-const CONFIG_VERSION: u32 = 27;
+const CONFIG_VERSION: u32 = 28;
 pub(crate) const MAX_CAPACITY: usize = 4_096;
 
 pub(crate) fn bounded<T>(name: &str, value: T, range: std::ops::RangeInclusive<T>) -> Result<()>
@@ -169,10 +170,17 @@ pub(crate) struct ConfiguredProvider {
     pub(crate) selection: ProviderConfig,
     pub(crate) label: String,
     pub(crate) tint: ProviderTint,
-    pub(crate) model_ids: Vec<String>,
-    pub(crate) reasoning_efforts: Vec<String>,
+    pub(crate) models: Vec<ModelPreset>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) image_model_ids: Vec<String>,
+}
+
+pub(crate) struct ProviderRegistration {
+    pub(crate) selection: ProviderConfig,
+    pub(crate) label: Option<String>,
+    pub(crate) tint: Option<ProviderTint>,
+    pub(crate) models: Vec<ConfiguredModel>,
+    pub(crate) image_model_ids: Option<Vec<String>>,
 }
 
 /// Chat ownership and workspace, independent of Bot configuration.
@@ -223,6 +231,7 @@ impl Default for AgentComposition {
                     .web_search()
                     .first()
                     .expect("default provider web-search manifest"),
+                tool_discovery: None,
             },
             realtime_voice: None,
             middleware,
@@ -279,29 +288,28 @@ impl GatewayConfig {
         selection: ProviderConfig,
         label: String,
         tint: ProviderTint,
-        model_ids: Vec<String>,
-        reasoning_efforts: Vec<String>,
+        models: Vec<ConfiguredModel>,
         image_model_ids: Vec<String>,
     ) -> Result<Self> {
-        self.registering_configured(ConfiguredProvider {
-            selection,
-            label,
-            tint,
-            model_ids,
-            reasoning_efforts,
-            image_model_ids,
-        })
+        self.registering_configured(
+            ProviderRegistration {
+                selection,
+                label: Some(label),
+                tint: Some(tint),
+                models,
+                image_model_ids: Some(image_model_ids),
+            },
+            false,
+        )
     }
 
     /// Registers one provider setup and establishes the first Bot defaults.
-    pub(crate) fn registering_configured(&self, configured: ConfiguredProvider) -> Result<Self> {
-        let selection = &configured.selection;
-        provider(&selection.provider)?.build_config_is_valid(
-            &selection.model,
-            selection.base_url.as_deref(),
-            selection.reasoning_effort.as_deref(),
-            selection.web_search,
-        )?;
+    pub(crate) fn registering_configured(
+        &self,
+        mut configured: ProviderRegistration,
+        preserve_selection: bool,
+    ) -> Result<Self> {
+        let definition = provider(&configured.selection.provider)?;
         if let Some(current) = self
             .configured_providers
             .get(&configured.selection.instance)
@@ -313,12 +321,91 @@ impl GatewayConfig {
             )));
         }
         let mut next = self.clone();
+        let mut previous = next
+            .configured_providers
+            .remove(&configured.selection.instance);
+        if let Some(previous) = &mut previous {
+            if preserve_selection {
+                configured.selection.model = std::mem::take(&mut previous.selection.model);
+                configured.selection.reasoning_effort = previous.selection.reasoning_effort.take();
+                configured.selection.web_search = previous.selection.web_search;
+                configured.label = None;
+                configured.tint = None;
+                configured.models.clear();
+                configured.image_model_ids = None;
+            }
+            if configured.selection.tool_discovery.is_none() {
+                configured.selection.tool_discovery = previous.selection.tool_discovery;
+            }
+        }
+        let label = configured
+            .label
+            .or_else(|| {
+                previous
+                    .as_mut()
+                    .map(|previous| std::mem::take(&mut previous.label))
+            })
+            .unwrap_or_else(|| definition.label().to_owned());
+        let tint = configured
+            .tint
+            .or_else(|| previous.as_ref().map(|previous| previous.tint))
+            .unwrap_or_default();
+        let image_model_ids = configured
+            .image_model_ids
+            .or_else(|| {
+                previous
+                    .as_mut()
+                    .map(|previous| std::mem::take(&mut previous.image_model_ids))
+            })
+            .unwrap_or_default();
+        let selection = &configured.selection;
+        definition.build_config_is_valid(
+            &selection.model,
+            selection.base_url.as_deref(),
+            selection.reasoning_effort.as_deref(),
+            selection.web_search,
+        )?;
         let default_selection = self
             .bot_defaults
             .is_none()
             .then(|| configured.selection.clone());
-        next.configured_providers
-            .insert(configured.selection.instance.clone(), configured);
+        let models = if configured.models.is_empty() {
+            previous.map_or_else(
+                || {
+                    if definition.locked_models() {
+                        Vec::new()
+                    } else if !definition.models().is_empty() {
+                        definition.models().to_vec()
+                    } else {
+                        crate::provider_catalog::prepare_configured_models(
+                            definition,
+                            vec![ConfiguredModel {
+                                id: configured.selection.model.clone(),
+                                ..Default::default()
+                            }],
+                            Vec::new(),
+                        )
+                    }
+                },
+                |previous| previous.models,
+            )
+        } else {
+            crate::provider_catalog::prepare_configured_models(
+                definition,
+                configured.models,
+                previous.map_or_else(Vec::new, |previous| previous.models),
+            )
+        };
+        next.configured_providers.insert(
+            configured.selection.instance.clone(),
+            ConfiguredProvider {
+                selection: configured.selection,
+                label,
+                tint,
+                models,
+                image_model_ids,
+            },
+        );
         if let Some(selection) = default_selection {
             let config = AgentComposition {
                 provider: selection,

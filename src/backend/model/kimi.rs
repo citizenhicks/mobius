@@ -130,21 +130,13 @@ impl Kimi {
         Ok(self)
     }
 
-    /// Selects an effort advertised for this Kimi model.
+    /// Selects an operator-configured effort for this Kimi model.
     /// # Errors
-    /// Returns an error when the model does not advertise that effort.
+    /// Returns an error when the effort is empty.
     pub fn with_reasoning_effort(mut self, effort: impl Into<String>) -> Result<Self> {
         let effort = effort.into();
-        let supported = CATALOG
-            .models
-            .iter()
-            .find(|model| model.id == self.model)
-            .is_some_and(|model| model.reasoning.iter().any(|preset| preset.id == effort));
-        if !supported {
-            return Err(Error::Config(format!(
-                "model `{}` does not support reasoning effort `{effort}`",
-                self.model
-            )));
+        if effort.trim().is_empty() {
+            return Err(Error::Config("reasoning effort cannot be empty".into()));
         }
         self.reasoning_effort = Some(effort);
         Ok(self)

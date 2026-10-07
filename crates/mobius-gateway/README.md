@@ -198,7 +198,7 @@ standard input, keeping the key out of arguments and URLs:
 ```sh
 printf %s "$OPENROUTER_API_KEY" | mobius-gateway register-provider \
   --provider openrouter --model MODEL \
-  --reasoning-efforts medium,none,low,high,xhigh,max \
+  --models-json '[{"id":"MODEL","reasoning_efforts":["medium","high"],"default_reasoning":"medium"}]' \
   --web-search live --credential-stdin
 ```
 
@@ -206,7 +206,7 @@ A trusted OpenRouter-compatible connector can instead remain credentialless:
 
 ```sh
 mobius-gateway register-provider --provider openrouter --model MODEL \
-  --reasoning-efforts medium,none,low,high,xhigh,max \
+  --models-json '[{"id":"MODEL","reasoning_efforts":["medium","high"],"default_reasoning":"medium"}]' \
   --web-search live \
   --base-url https://connector.example/v1 --credentialless
 ```

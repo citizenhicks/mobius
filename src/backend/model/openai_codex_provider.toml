@@ -1,3 +1,4 @@
+locked_models = true
 symbol = "chat_gpt"
 label = "Codex"
 description = "Use a ChatGPT Plus or Pro subscription"

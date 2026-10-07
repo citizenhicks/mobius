@@ -615,17 +615,24 @@ pub enum ClientMessage {
         request_id: String,
         /// The config.
         config: ProviderConfig,
-        /// The label.
-        label: String,
-        /// The tint.
-        tint: ProviderTint,
-        /// The model identifiers.
-        model_ids: Vec<String>,
-        /// The reasoning efforts.
-        reasoning_efforts: Vec<String>,
-        /// Image model identifiers for providers without an image catalog.
+        /// Retain live catalogs, labels and model/search selection during an endpoint or credential refresh.
         #[serde(default)]
-        image_model_ids: Vec<String>,
+        preserve_selection: bool,
+        /// Leave an uninstalled optional setup unconfigured.
+        #[serde(default)]
+        if_configured: bool,
+        /// Omission retains the live label, or uses the provider label for a new setup.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        /// Omission retains the live tint, or uses the default tint for a new setup.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tint: Option<ProviderTint>,
+        /// An empty or omitted list retains existing models, or seeds a new setup.
+        #[serde(default)]
+        models: Vec<ConfiguredModel>,
+        /// Omission retains live image models; an explicit empty list clears them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        image_model_ids: Option<Vec<String>>,
     },
     /// Selects the remove provider case.
     RemoveProvider {

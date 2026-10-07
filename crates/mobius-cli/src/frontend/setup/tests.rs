@@ -53,7 +53,7 @@ fn status(provider: &str) -> ProviderStatus {
         ),
         _ => panic!("unknown fixture provider"),
     };
-    let model_ids_configurable = models.is_empty();
+    let model_ids_configurable = provider != "openai_socket";
     ProviderStatus {
         native_custom_endpoints: provider == "openai_socket",
         provider: provider.into(),
@@ -61,6 +61,7 @@ fn status(provider: &str) -> ProviderStatus {
         symbol: FrontendSymbol::Storage,
         description: format!("{provider} provider"),
         model_ids_configurable,
+        supported_tool_discovery: vec![ToolDiscoveryMode::Native, ToolDiscoveryMode::Rebuild],
         image_models: Default::default(),
         image_model_ids_configurable: false,
         voice_models: Default::default(),
@@ -143,18 +144,12 @@ fn state(mode: SetupMode, provider: &str, configured: bool) -> SetupState {
         configured,
         credential_hint: None,
         selection: original.provider.clone(),
-        model_ids: if statuses[0].model_ids_configurable {
-            vec![original.provider.model.clone()]
-        } else {
-            Vec::new()
-        },
-        reasoning_efforts: if statuses[0].model_ids_configurable {
-            original
-                .provider
-                .reasoning_effort
-                .clone()
-                .into_iter()
-                .collect()
+        models: if statuses[0].model_ids_configurable {
+            vec![model(
+                &original.provider.model,
+                &original.provider.model,
+                original.provider.reasoning_effort.as_deref(),
+            )]
         } else {
             Vec::new()
         },
@@ -412,13 +407,11 @@ fn configured_fixed_provider_can_be_selected_from_another_provider() {
             configured: false,
             credential_hint: None,
             selection: original.provider.clone(),
-            model_ids: vec![original.provider.model.clone()],
-            reasoning_efforts: original
-                .provider
-                .reasoning_effort
-                .clone()
-                .into_iter()
-                .collect(),
+            models: vec![model(
+                &original.provider.model,
+                &original.provider.model,
+                original.provider.reasoning_effort.as_deref(),
+            )],
             image_model_ids: Vec::new(),
         },
         ProviderInstance {
@@ -427,8 +420,7 @@ fn configured_fixed_provider_can_be_selected_from_another_provider() {
             configured: true,
             credential_hint: None,
             selection: kimi,
-            model_ids: Vec::new(),
-            reasoning_efforts: Vec::new(),
+            models: statuses[1].models.clone(),
             image_model_ids: Vec::new(),
         },
     ];
@@ -476,12 +468,19 @@ fn preferred_provider_must_be_advertised() {
 
 #[test]
 fn unchanged_custom_model_keeps_its_reasoning_effort() {
-    let state = state(SetupMode::Login, "responses", true);
-    let mut current = state.original.clone();
-    current.provider.reasoning_effort = Some("provider-defined".into());
-
-    let configured = state.agent_composition(&current).expect("configuration");
-
+    let mut setup = state(SetupMode::Login, "responses", true);
+    setup.original.provider.reasoning_effort = Some("provider-defined".into());
+    let instance = setup.providers[0].instance.as_mut().unwrap();
+    instance.models = vec![model(
+        &setup.original.provider.model,
+        "Custom",
+        Some("provider-defined"),
+    )];
+    instance.selection.reasoning_effort = Some("provider-defined".into());
+    setup.reset_provider_fields();
+    let configured = setup
+        .agent_composition(&setup.original)
+        .expect("configuration");
     assert_eq!(
         configured.provider.reasoning_effort.as_deref(),
         Some("provider-defined")
@@ -710,8 +709,7 @@ fn bot_model_setup_shows_and_selects_models_from_other_configured_providers() {
             configured: true,
             credential_hint: None,
             selection: kimi,
-            model_ids: Vec::new(),
-            reasoning_efforts: Vec::new(),
+            models: Vec::new(),
             image_model_ids: Vec::new(),
         }),
     });
@@ -1179,8 +1177,18 @@ fn setup_rejects_active_provider_values_outside_the_manifest() {
                 configured: true,
                 credential_hint: None,
                 selection: config.clone(),
-                model_ids: vec![config.model.clone()],
-                reasoning_efforts: catalog.clone(),
+                models: vec![ProviderModel {
+                    reasoning: catalog
+                        .iter()
+                        .map(|id| ReasoningChoice {
+                            id: id.to_owned(),
+                            label: id.to_owned(),
+                            description: String::new(),
+                        })
+                        .collect(),
+                    default_reasoning: catalog.first().cloned(),
+                    ..model(&config.model, &config.model, None)
+                }],
                 image_model_ids: Vec::new(),
             }]
         });
@@ -1217,6 +1225,7 @@ fn setup_rejects_active_provider_values_outside_the_manifest() {
             endpoint_auth: ProviderEndpointAuth::ProviderDefault,
             reasoning_effort: None,
             service_tier: None,
+            tool_discovery: None,
             web_search: HostedWebSearch::Off,
         },
         Vec::new(),
@@ -1233,6 +1242,7 @@ fn setup_rejects_active_provider_values_outside_the_manifest() {
             endpoint_auth: ProviderEndpointAuth::ProviderDefault,
             reasoning_effort: None,
             service_tier: None,
+            tool_discovery: None,
             web_search: HostedWebSearch::Off,
         },
         Vec::new(),
@@ -1249,6 +1259,7 @@ fn setup_rejects_active_provider_values_outside_the_manifest() {
             endpoint_auth: ProviderEndpointAuth::ProviderDefault,
             reasoning_effort: Some("max".into()),
             service_tier: None,
+            tool_discovery: None,
             web_search: HostedWebSearch::Live,
         },
         Vec::new(),
@@ -1265,6 +1276,7 @@ fn setup_rejects_active_provider_values_outside_the_manifest() {
             endpoint_auth: ProviderEndpointAuth::ProviderDefault,
             reasoning_effort: Some("missing".into()),
             service_tier: None,
+            tool_discovery: None,
             web_search: HostedWebSearch::Off,
         },
         Vec::new(),
@@ -1281,6 +1293,7 @@ fn setup_rejects_active_provider_values_outside_the_manifest() {
             endpoint_auth: ProviderEndpointAuth::ProviderDefault,
             reasoning_effort: Some("missing".into()),
             service_tier: None,
+            tool_discovery: None,
             web_search: HostedWebSearch::Off,
         },
         vec!["medium".into()],
@@ -1461,4 +1474,26 @@ fn provider_removal_requires_a_configured_row_and_confirmation() {
         state.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)),
         Flow::Remove("kimi".into())
     );
+}
+
+#[test]
+fn editable_catalog_setup_uses_configured_models_and_seeds_new_setups() {
+    let mut setup = state(SetupMode::Login, "kimi", true);
+    assert_eq!(setup.custom_model, "kimi-k3");
+    assert_eq!(setup.model_choice_count(), 1);
+    setup.custom_model = "operator-model, kimi-k3".into();
+    assert_eq!(
+        setup
+            .agent_composition(&setup.original)
+            .unwrap()
+            .provider
+            .model,
+        "operator-model"
+    );
+    assert_eq!(setup.configured_models().unwrap()[0].id, "operator-model");
+    assert_eq!(setup.reasoning_choice_count(), 1);
+    setup.provider = 1;
+    setup.reset_provider_fields();
+    assert_eq!(setup.custom_model, "kimi-k3");
+    assert_eq!(setup.reasoning_choice_count(), 2);
 }

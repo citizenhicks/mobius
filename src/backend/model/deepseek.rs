@@ -32,6 +32,9 @@ pub(super) fn provider() -> ProviderDefinition {
 }
 
 fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
+    let tool_discovery = config
+        .tool_discovery
+        .unwrap_or_else(|| provider().tool_discovery(&config.model, config.base_url.as_deref()));
     let base_url = config
         .base_url
         .ok_or_else(|| Error::Config("DeepSeek requires a base URL".into()))?;
@@ -43,6 +46,7 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
         config.http,
         config.transport,
     )?
+    .with_tool_discovery(tool_discovery)
     .with_service_tier(config.service_tier)
     .without_image_input()
     .without_realtime_voice()
@@ -69,6 +73,7 @@ mod tests {
         for web_search in definition.web_search().iter().copied() {
             definition
                 .build(ProviderBuildConfig {
+                    tool_discovery: None,
                     credential: ProviderCredential::ApiKey("test-key".into()),
                     model: definition.default_model().expect("default model").into(),
                     base_url: Some(MANIFEST.base_url.as_str().into()),
@@ -94,6 +99,7 @@ mod tests {
         for base_url in [MANIFEST.base_url.as_str(), "https://custom.example/v1"] {
             let model = definition
                 .build(ProviderBuildConfig {
+                    tool_discovery: None,
                     credential: ProviderCredential::ApiKey("test-key".into()),
                     model: definition.default_model().expect("default model").into(),
                     base_url: Some(base_url.into()),
@@ -105,7 +111,7 @@ mod tests {
                 })
                 .expect("build provider");
 
-            assert_eq!(model.info().reasoning_effort.as_deref(), Some("high"));
+            assert_eq!(model.info().reasoning_effort.as_deref(), None);
             assert_eq!(
                 (
                     model.supports_image_input(),

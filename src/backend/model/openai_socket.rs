@@ -163,6 +163,11 @@ impl OpenAiSocket {
         )
     }
 
+    pub(super) fn with_tool_discovery(mut self, mode: ToolDiscoveryMode) -> Self {
+        self.http = self.http.with_tool_discovery(mode);
+        self
+    }
+
     pub(super) fn with_authorization(
         auth: Arc<dyn OpenAiAuthorization>,
         http_url: &str,
@@ -590,7 +595,7 @@ impl Model for OpenAiSocket {
     }
 
     fn tool_discovery(&self) -> ToolDiscoveryMode {
-        ToolDiscoveryMode::Native
+        self.http.tool_discovery()
     }
 
     fn respond_prepared<'a>(
@@ -766,6 +771,9 @@ pub(super) fn provider() -> ProviderDefinition {
 }
 
 fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
+    let tool_discovery = config
+        .tool_discovery
+        .unwrap_or_else(|| provider().tool_discovery(&config.model, config.base_url.as_deref()));
     let api_key = config.credential.into_api_key("openai_socket")?;
     let base_url = config
         .base_url
@@ -778,6 +786,7 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
         config.http,
         config.transport,
     )?
+    .with_tool_discovery(tool_discovery)
     .with_service_tier(config.service_tier);
     let provider = match config.reasoning_effort {
         Some(effort) => provider.with_reasoning_effort(effort)?,

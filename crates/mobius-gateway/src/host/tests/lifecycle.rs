@@ -314,6 +314,7 @@ async fn ready_holds_one_gateway_generation_while_loading_catalogs() {
     let (store, config) =
         ConfigStore::initialize(root.path().join("state"), listen, None).expect("config");
     let provider = ProviderConfig {
+        tool_discovery: None,
         instance: "kimi-ready".into(),
         provider: "kimi".into(),
         model: "kimi-k3".into(),
@@ -328,7 +329,6 @@ async fn ready_holds_one_gateway_generation_while_loading_catalogs() {
             provider.clone(),
             "Kimi".into(),
             Default::default(),
-            Vec::new(),
             Vec::new(),
             Vec::new(),
         )

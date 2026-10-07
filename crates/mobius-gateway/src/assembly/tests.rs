@@ -136,6 +136,7 @@ fn configured_provider_status_requires_the_selected_credential_endpoint() {
         )
         .expect("mismatched credential");
     let selection = ProviderConfig {
+        tool_discovery: None,
         instance: "openrouter".into(),
         provider: "openrouter".into(),
         model: "openai/gpt-5.6-luna".into(),
@@ -150,8 +151,12 @@ fn configured_provider_status_requires_the_selected_credential_endpoint() {
             selection,
             "Test".into(),
             Default::default(),
-            vec!["openai/gpt-5.6-luna".into()],
-            Vec::new(),
+            vec![crate::wire::ConfiguredModel {
+                id: "openai/gpt-5.6-luna".into(),
+                reasoning_efforts: Some(Vec::new()),
+                default_reasoning: None,
+                ..Default::default()
+            }],
             Vec::new(),
         )
         .expect("register provider");
@@ -195,6 +200,7 @@ fn configured_catalog_resolves_manifest_and_opaque_custom_routes() {
         )
         .expect("custom credential");
     let kimi = ProviderConfig {
+        tool_discovery: None,
         instance: "kimi".into(),
         provider: "kimi".into(),
         model: "kimi-k3".into(),
@@ -205,6 +211,7 @@ fn configured_catalog_resolves_manifest_and_opaque_custom_routes() {
         web_search: HostedWebSearch::Off,
     };
     let custom = ProviderConfig {
+        tool_discovery: None,
         instance: "responses".into(),
         provider: "responses".into(),
         model: "vendor/model-opaque".into(),
@@ -222,15 +229,26 @@ fn configured_catalog_resolves_manifest_and_opaque_custom_routes() {
             Default::default(),
             Vec::new(),
             Vec::new(),
-            Vec::new(),
         )
         .and_then(|config| {
             config.registering_provider(
                 custom.clone(),
                 "Test".into(),
                 Default::default(),
-                vec![custom.model.clone(), alternate_model.clone()],
-                vec!["provider-defined".into(), "minimal".into()],
+                vec![
+                    crate::wire::ConfiguredModel {
+                        id: custom.model.clone(),
+                        reasoning_efforts: Some(vec!["provider-defined".into(), "minimal".into()]),
+                        default_reasoning: Some("provider-defined".into()),
+                        ..Default::default()
+                    },
+                    crate::wire::ConfiguredModel {
+                        id: alternate_model.clone(),
+                        reasoning_efforts: Some(vec!["provider-defined".into(), "minimal".into()]),
+                        default_reasoning: Some("provider-defined".into()),
+                        ..Default::default()
+                    },
+                ],
                 Vec::new(),
             )
         })
@@ -285,6 +303,7 @@ fn same_provider_instances_have_distinct_routes_and_models() {
     .expect("config");
     let credentials = CredentialStore::open(store.credentials_path()).expect("credential store");
     let work = ProviderConfig {
+        tool_discovery: None,
         instance: "responses-work".into(),
         provider: "responses".into(),
         model: "work-model".into(),
@@ -305,8 +324,12 @@ fn same_provider_instances_have_distinct_routes_and_models() {
             work.clone(),
             "Work".into(),
             Default::default(),
-            vec![work.model.clone()],
-            Vec::new(),
+            vec![crate::wire::ConfiguredModel {
+                id: work.model.clone(),
+                reasoning_efforts: Some(Vec::new()),
+                default_reasoning: None,
+                ..Default::default()
+            }],
             Vec::new(),
         )
         .and_then(|config| {
@@ -314,8 +337,12 @@ fn same_provider_instances_have_distinct_routes_and_models() {
                 personal.clone(),
                 "Personal".into(),
                 Default::default(),
-                vec![personal.model.clone()],
-                Vec::new(),
+                vec![crate::wire::ConfiguredModel {
+                    id: personal.model.clone(),
+                    reasoning_efforts: Some(Vec::new()),
+                    default_reasoning: None,
+                    ..Default::default()
+                }],
                 Vec::new(),
             )
         })
@@ -471,6 +498,7 @@ fn custom_selection_without_reasoning_uses_the_first_configured_effort() {
             )
             .expect("custom credential");
         let selection = ProviderConfig {
+            tool_discovery: None,
             instance: provider_id.into(),
             provider: provider_id.into(),
             model: "local-model".into(),
@@ -485,8 +513,12 @@ fn custom_selection_without_reasoning_uses_the_first_configured_effort() {
                 selection,
                 "Test".into(),
                 Default::default(),
-                vec!["local-model".into()],
-                vec!["high".into(), "medium".into()],
+                vec![crate::wire::ConfiguredModel {
+                    id: "local-model".into(),
+                    reasoning_efforts: Some(vec!["high".into(), "medium".into()]),
+                    default_reasoning: Some("high".into()),
+                    ..Default::default()
+                }],
                 Vec::new(),
             )
             .expect("register provider");
@@ -531,7 +563,7 @@ fn custom_selection_without_reasoning_uses_the_first_configured_effort() {
 }
 
 #[test]
-fn selected_custom_root_does_not_inherit_registered_native_media() {
+fn registered_custom_root_does_not_inherit_stale_bot_native_media() {
     use crate::wire::ProviderEndpointAuth::{Credentialless, ProviderDefault};
 
     for (endpoint_auth, image_ids) in [
@@ -550,6 +582,7 @@ fn selected_custom_root_does_not_inherit_registered_native_media() {
         let mut config = config
             .registering_provider(
                 ProviderConfig {
+                    tool_discovery: None,
                     instance: "responses".into(),
                     provider: "responses".into(),
                     model: "local-model".into(),
@@ -561,20 +594,23 @@ fn selected_custom_root_does_not_inherit_registered_native_media() {
                 },
                 "Test".into(),
                 Default::default(),
-                vec!["local-model".into()],
-                Vec::new(),
+                vec![crate::wire::ConfiguredModel {
+                    id: "local-model".into(),
+                    reasoning_efforts: Some(Vec::new()),
+                    default_reasoning: None,
+                    ..Default::default()
+                }],
                 image_ids,
             )
             .expect("register default endpoint");
         let custom_root = "https://proxy.example/v1";
-        let selected = &mut config
-            .bot_defaults
-            .as_mut()
-            .expect("Bot defaults")
-            .config
-            .provider;
-        selected.base_url = Some(custom_root.into());
-        selected.endpoint_auth = endpoint_auth;
+        let endpoint = &mut config
+            .configured_providers
+            .get_mut("responses")
+            .expect("provider")
+            .selection;
+        endpoint.base_url = Some(custom_root.into());
+        endpoint.endpoint_auth = endpoint_auth;
         let selected = &config
             .bot_defaults
             .as_ref()
@@ -637,6 +673,7 @@ fn saved_unsupported_web_search_does_not_block_other_provider_assembly() {
     let mut config = config
         .registering_provider(
             ProviderConfig {
+                tool_discovery: None,
                 instance: "deepseek".into(),
                 provider: "deepseek".into(),
                 model: deepseek.default_model().expect("default model").into(),
@@ -650,11 +687,11 @@ fn saved_unsupported_web_search_does_not_block_other_provider_assembly() {
             Default::default(),
             Vec::new(),
             Vec::new(),
-            Vec::new(),
         )
         .and_then(|config| {
             config.registering_provider(
                 ProviderConfig {
+                    tool_discovery: None,
                     instance: "responses".into(),
                     provider: "responses".into(),
                     model: "local-model".into(),
@@ -666,8 +703,12 @@ fn saved_unsupported_web_search_does_not_block_other_provider_assembly() {
                 },
                 "Local".into(),
                 Default::default(),
-                vec!["local-model".into()],
-                Vec::new(),
+                vec![crate::wire::ConfiguredModel {
+                    id: "local-model".into(),
+                    reasoning_efforts: Some(Vec::new()),
+                    default_reasoning: None,
+                    ..Default::default()
+                }],
                 Vec::new(),
             )
         })
@@ -766,6 +807,7 @@ fn custom_openai_roots_require_endpoint_bound_stored_credentials() {
         let credentials =
             CredentialStore::open(store.credentials_path()).expect("credential store");
         let selection = ProviderConfig {
+            tool_discovery: None,
             instance: provider_id.into(),
             provider: provider_id.into(),
             model: model.into(),
@@ -858,7 +900,6 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
             crate::wire::AgentComposition::default().provider,
             "Test".into(),
             Default::default(),
-            Vec::new(),
             Vec::new(),
             Vec::new(),
         )

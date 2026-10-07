@@ -1,6 +1,6 @@
 # Offline portable-compaction upgrade
 
-These explicitly invoked tools migrate gateway config **26 → 27**, Bot state
+These explicitly invoked tools migrate gateway config **26 / 27 → 28**, Bot state
 **7 → 8**, and checkpoint JSON **18 → 19**, plus checkpoint SQLite schema
 **11 / 12 → 13**. Already-converted logical version-19 checkpoints in schema 11 are
 also supported: their context is split without another compaction rewrite.
@@ -27,6 +27,8 @@ Supply the real explicit paths; there is no state discovery. Repeat `--database`
 for each checkpoint database. Preflight **all** intended files before applying.
 Unknown versions, targeted settings, checkpoint fields or SQLite schema layouts
 are rejected. Noncanonical TOML formatting may be rejected without writes.
+For the config **27 → 28** reasoning-catalog change alone, supply only
+`--gateway-config` to the config tool; Bot and checkpoint formats do not change.
 
 To apply, repeat each command with:
 
@@ -54,12 +56,44 @@ is attempted after an uncertain commit or directory-sync failure.
 After all dry-runs report no changes, use the new gateway's `check-config` command
 for the selected state directory, then test loading a chat, queued-message
 recovery, model selection and a fork on the disposable copy before rollout.
+`check-config` remains the full validation authority, including provider-manifest
+rules. The script does not maintain a separate list of preset or custom providers.
+It reads the matching source's provider manifests and model catalogs. For editable
+providers with an owner catalog, a `models/<provider>.toml` file beside the supplied
+gateway config takes precedence. Keep that directory with disposable config copies.
+Malformed catalogs needed for seeding stop conversion; the tool does not silently
+fall back to a different catalog. Catalog source files and overrides are read only.
 
 ## Semantic changes and loss
 
 - Compaction `mode = "automatic"` becomes `allow_model_compaction = "off"`;
   `"handoff"` becomes `"on"`. Retired native/offloading settings are removed.
   Missing or unknown selections are refused rather than guessed.
+- Config 27 `model_ids` and provider-wide `reasoning_efforts` become ordered
+  full `models` records containing `id`, `label`, `description`, `context_window`,
+  `reasoning`, `default_reasoning` when applicable, and `tool_discovery`.
+  Reasoning choices contain `id`, `label`, and an optional `description`.
+  Each custom model receives the old effort list in its original order, with its
+  first effort as the explicit default. Empty lists have no default. Matching
+  owner presets retain their model and reasoning display metadata; unknown IDs
+  use the ID as their label and an empty description. An unknown model's context
+  window comes from the provider's declared default model, or the gateway default
+  if none is declared; its tool discovery comes from the provider manifest.
+  Existing Anthropic,
+  Kimi and DeepSeek setups with empty legacy lists receive their owner catalog's
+  full model records and defaults. OpenAI Codex and OpenAI Socket retain
+  locked catalogs with `models = []`; OpenRouter and Responses have no seed catalog.
+  Config 26 also receives the compaction conversion before advancing to 28.
+  Current config 28 is unchanged: full metadata and reasoning arrays are required,
+  nonempty reasoning lists require a default from that list, and empty lists must
+  have no default. Optional provider `tool_discovery` overrides are preserved.
+  Duplicate IDs/efforts, unknown entry fields, old provider-wide fields and the
+  unreleased intermediate map/compact model formats are refused.
+  Catalogs retain the runtime limits of 64 entries, 1,024 UTF-8 bytes per entry,
+  and 16 KiB of entry text. Model context windows must be positive; model and
+  reasoning labels must be nonblank and at most 1,024 bytes, with descriptions
+  at most 16 KiB. Nonempty model catalogs also enforce valid selected
+  models/efforts, unambiguous routes, and 64 total model routes across the gateway.
 - Active encrypted `compaction` / `compaction_summary` items are removed. Their
   meaning **cannot be recovered by this script**. Original journals and backups
   remain intact; an old fork may need its parent's history to recover detail.

@@ -108,6 +108,9 @@ pub(super) fn validate_provider_config(config: &ProviderConfig) -> Result<()> {
         config.base_url.as_deref(),
         config.reasoning_effort.as_deref(),
     )?;
+    if let Some(mode) = config.tool_discovery {
+        definition.validate_tool_discovery(mode)?;
+    }
     validate_provider_endpoint_auth(definition, config)?;
     Ok(())
 }
@@ -128,10 +131,61 @@ pub(super) fn validate_configured_provider(configured: &ConfiguredProvider) -> R
     validate_provider_config(&configured.selection)?;
     validate_provider_label(&configured.label)?;
     let definition = provider(&configured.selection.provider)?;
-    if definition.models().is_empty() {
-        validate_model_ids(&configured.model_ids)?;
-        validate_reasoning_efforts(&configured.reasoning_efforts)?;
-    } else if !configured.model_ids.is_empty() || !configured.reasoning_efforts.is_empty() {
+    if !definition.locked_models() {
+        validate_catalog_entries(
+            configured.models.iter().map(|model| model.id.as_str()),
+            "model IDs",
+            "model ID",
+        )?;
+        for model in &configured.models {
+            if !model.reasoning.is_empty() {
+                validate_catalog_entries(
+                    model.reasoning.iter().map(|effort| effort.id.as_str()),
+                    "reasoning efforts",
+                    "reasoning effort",
+                )?;
+            }
+            definition.validate_tool_discovery(
+                crate::provider_catalog::effective_tool_discovery(
+                    definition,
+                    &configured.selection,
+                    model,
+                ),
+            )?;
+            if model.context_window <= 0
+                || model.label.trim().is_empty()
+                || model.label.len() > 1024
+                || model.description.len() > 16 * 1024
+            {
+                return Err(Error::Config(format!(
+                    "model `{}` requires a positive context window, a label of 1–1024 bytes, and a description of at most 16 KiB",
+                    model.id
+                )));
+            }
+            for effort in &model.reasoning {
+                if effort.label.trim().is_empty()
+                    || effort.label.len() > 1024
+                    || effort.description.len() > 16 * 1024
+                {
+                    return Err(Error::Config(format!(
+                        "model `{}` has invalid reasoning display metadata",
+                        model.id
+                    )));
+                }
+            }
+            match (&model.default_reasoning, model.reasoning.is_empty()) {
+                (None, true) => {}
+                (Some(default), false)
+                    if model.reasoning.iter().any(|effort| &effort.id == default) => {}
+                _ => {
+                    return Err(Error::Config(format!(
+                        "model `{}` must have an explicit default reasoning effort from its nonempty catalog, and no default when its catalog is empty",
+                        model.id
+                    )));
+                }
+            }
+        }
+    } else if !configured.models.is_empty() {
         return Err(Error::Config(format!(
             "provider `{}` uses its advertised model and reasoning catalogs",
             configured.selection.provider
@@ -147,7 +201,7 @@ pub(super) fn validate_configured_provider(configured: &ConfiguredProvider) -> R
             )));
         }
         validate_catalog_entries(
-            &configured.image_model_ids,
+            configured.image_model_ids.iter().map(String::as_str),
             "image model IDs",
             "image model ID",
         )?;
@@ -178,10 +232,14 @@ pub(super) fn validate_configured_provider_selection(
             "browser-auth provider selection must use its operator-registered endpoint".into(),
         ));
     }
-    if !definition.models().is_empty() {
+    if definition.locked_models() {
         return Ok(());
     }
-    if !configured.model_ids.contains(&selection.model) {
+    if !configured
+        .models
+        .iter()
+        .any(|model| model.id == selection.model)
+    {
         return Err(Error::Config(format!(
             "provider `{}` selection model is not in its configured model catalog",
             selection.provider
@@ -190,9 +248,10 @@ pub(super) fn validate_configured_provider_selection(
     let effort = effective_reasoning_effort(definition, configured, selection);
     if !effort.is_none_or(|effort| {
         configured
-            .reasoning_efforts
+            .models
             .iter()
-            .any(|item| item == effort)
+            .find(|model| model.id == selection.model)
+            .is_some_and(|model| model.reasoning.iter().any(|item| item.id == effort))
     }) {
         return Err(Error::Config(format!(
             "provider `{}` selection reasoning effort is not in its configured reasoning catalog",
@@ -207,55 +266,42 @@ pub(super) fn validate_custom_model_route_count(
 ) -> Result<()> {
     let mut routes = BTreeSet::new();
     for configured in configured_providers.values() {
-        if !provider(&configured.selection.provider)?
-            .models()
-            .is_empty()
-        {
+        if provider(&configured.selection.provider)?.locked_models() {
             continue;
         }
-        for model in &configured.model_ids {
-            if configured.reasoning_efforts.is_empty() {
-                routes.insert(model_route_id(&configured.selection.instance, model, None));
-                continue;
-            }
-            for effort in &configured.reasoning_efforts {
+        for model in &configured.models {
+            let efforts = model
+                .reasoning
+                .iter()
+                .map(|effort| Some(effort.id.as_str()))
+                .chain(model.reasoning.is_empty().then_some(None));
+            for effort in efforts {
                 if !routes.insert(model_route_id(
                     &configured.selection.instance,
-                    model,
-                    Some(effort),
+                    &model.id,
+                    effort,
                 )) {
                     return Err(Error::Config(
                         "custom model and reasoning catalogs generate an ambiguous route".into(),
                     ));
                 }
+                if routes.len() > MAX_CUSTOM_MODEL_ROUTES {
+                    return Err(Error::Config(format!(
+                        "custom provider catalogs may generate at most {MAX_CUSTOM_MODEL_ROUTES} model routes"
+                    )));
+                }
             }
         }
-    }
-    if routes.len() > MAX_CUSTOM_MODEL_ROUTES {
-        return Err(Error::Config(format!(
-            "custom provider catalogs may generate at most {MAX_CUSTOM_MODEL_ROUTES} model routes"
-        )));
     }
     Ok(())
 }
 
-fn validate_model_ids(model_ids: &[String]) -> Result<()> {
-    validate_catalog_entries(model_ids, "model IDs", "model ID")
-}
-
-fn validate_reasoning_efforts(reasoning_efforts: &[String]) -> Result<()> {
-    if reasoning_efforts.is_empty() {
-        return Ok(());
-    }
-    validate_catalog_entries(reasoning_efforts, "reasoning efforts", "reasoning effort")
-}
-
-fn validate_catalog_entries(
-    entries: &[String],
+fn validate_catalog_entries<'a>(
+    entries: impl ExactSizeIterator<Item = &'a str>,
     plural_name: &str,
     singular_name: &str,
 ) -> Result<()> {
-    if entries.is_empty() || entries.len() > MAX_PROVIDER_CATALOG_ENTRIES {
+    if entries.len() == 0 || entries.len() > MAX_PROVIDER_CATALOG_ENTRIES {
         return Err(Error::Config(format!(
             "{plural_name} must contain 1–{MAX_PROVIDER_CATALOG_ENTRIES} entries"
         )));
@@ -276,7 +322,7 @@ fn validate_catalog_entries(
                 "each {singular_name} must not contain control characters"
             )));
         }
-        if !seen.insert(entry.as_str()) {
+        if !seen.insert(entry) {
             return Err(Error::Config(format!(
                 "duplicate {singular_name} `{entry}`"
             )));
@@ -335,15 +381,17 @@ pub(crate) fn effective_reasoning_effort<'a>(
     configured: &'a ConfiguredProvider,
     selection: &'a ProviderConfig,
 ) -> Option<&'a str> {
-    selection
-        .reasoning_effort
-        .as_deref()
-        .or_else(|| {
-            definition
-                .model(&selection.model)
-                .and_then(|model| model.default_reasoning.as_deref())
-        })
-        .or_else(|| configured.reasoning_efforts.first().map(String::as_str))
+    selection.reasoning_effort.as_deref().or_else(|| {
+        let model = if definition.locked_models() {
+            definition.model(&selection.model)
+        } else {
+            configured
+                .models
+                .iter()
+                .find(|model| model.id == selection.model)
+        };
+        model.and_then(|model| model.default_reasoning.as_deref())
+    })
 }
 
 pub(super) fn invalid_cloudflare_hostname() -> Error {

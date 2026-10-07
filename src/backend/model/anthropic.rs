@@ -176,22 +176,14 @@ impl Anthropic {
         Ok(self)
     }
 
-    /// Enables adaptive thinking at one supported Anthropic effort level.
+    /// Enables adaptive thinking at the configured Anthropic effort level.
     /// # Errors
     ///
     /// Returns an error if validation or an operation required by this function fails.
     pub fn with_reasoning_effort(mut self, effort: impl Into<String>) -> Result<Self> {
         let effort = effort.into();
-        let supported = &CATALOG
-            .models
-            .iter()
-            .find(|model| model.id == self.model)
-            .is_some_and(|model| model.reasoning.iter().any(|preset| preset.id == effort));
-        if !supported {
-            return Err(Error::Config(format!(
-                "model `{}` does not support reasoning effort `{effort}`",
-                self.model
-            )));
+        if effort.trim().is_empty() {
+            return Err(Error::Config("reasoning effort cannot be empty".into()));
         }
         self.reasoning_effort = Some(effort);
         Ok(self)
@@ -1249,12 +1241,16 @@ pub(super) fn provider() -> ProviderDefinition {
 }
 
 fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
+    let tool_discovery = config
+        .tool_discovery
+        .unwrap_or_else(|| provider().tool_discovery(&config.model, config.base_url.as_deref()));
     let base_url = config
         .base_url
         .ok_or_else(|| Error::Config("Anthropic requires a base URL".into()))?;
     let api_key = config.credential.into_optional_api_key("anthropic")?;
-    let provider = Anthropic::with_client(api_key, base_url, config.model, config.http)?
+    let mut provider = Anthropic::with_client(api_key, base_url, config.model, config.http)?
         .with_transport_settings(config.transport)?;
+    provider.tool_discovery = tool_discovery;
     let provider = match config.reasoning_effort {
         Some(effort) => provider.with_reasoning_effort(effort)?,
         None => provider,

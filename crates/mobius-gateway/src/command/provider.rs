@@ -3,8 +3,8 @@ use std::io::{IsTerminal as _, Read};
 use mobius::backend::model::provider::provider;
 
 use super::*;
-use crate::config::{ConfiguredProvider, MAX_PROVIDER_API_KEY_BYTES};
-use crate::wire::{ProviderConfig, ProviderEndpointAuth, ProviderTint};
+use crate::config::{MAX_PROVIDER_API_KEY_BYTES, ProviderRegistration};
+use crate::wire::{ConfiguredModel, ProviderConfig, ProviderEndpointAuth};
 
 pub(super) async fn register_provider_command(
     options: RegisterProviderOptions,
@@ -28,8 +28,10 @@ pub(super) async fn register_provider_with_credential(
     credential: Option<String>,
     load_local_client: fn(&Endpoint) -> Result<Option<String>>,
 ) -> Result<()> {
-    let (_, mut config) = ConfigStore::open(options.state_dir)?;
-    let endpoint = direct_loopback_endpoint(&config)?;
+    let endpoint = {
+        let (_, config) = ConfigStore::open(options.state_dir)?;
+        direct_loopback_endpoint(&config)?
+    };
     let token = load_local_client(&endpoint)?
         .ok_or_else(|| Error::Config("gateway local control credential is unavailable".into()))?;
     let definition = provider(&options.provider)?;
@@ -37,7 +39,6 @@ pub(super) async fn register_provider_with_credential(
         .base_url
         .or_else(|| definition.default_base_url().map(str::to_owned));
     let instance = options.instance.unwrap_or_else(|| definition.id().into());
-    let mut existing = config.configured_providers.remove(&instance);
     if let Some(api_key) = credential {
         request_provider_credential(
             &endpoint,
@@ -50,17 +51,6 @@ pub(super) async fn register_provider_with_credential(
         )
         .await?;
     }
-    let label = options
-        .label
-        .or_else(|| {
-            existing
-                .as_mut()
-                .map(|configured| std::mem::take(&mut configured.label))
-        })
-        .unwrap_or_else(|| definition.label().to_owned());
-    let tint = existing
-        .as_ref()
-        .map_or_else(ProviderTint::default, |configured| configured.tint);
     let selection = ProviderConfig {
         instance,
         provider: options.provider,
@@ -74,26 +64,36 @@ pub(super) async fn register_provider_with_credential(
         reasoning_effort: None,
         service_tier: options.service_tier,
         web_search: options.web_search,
+        tool_discovery: options.tool_discovery,
     };
-    let model_ids = options.model_ids.unwrap_or_else(|| {
-        if definition.models().is_empty() {
-            vec![selection.model.to_owned()]
-        } else {
-            Vec::new()
-        }
-    });
-    let image_model_ids = options
-        .image_model_ids
-        .unwrap_or_else(|| existing.map_or_else(Vec::new, |configured| configured.image_model_ids));
-    let registration = ConfiguredProvider {
+    let models = options
+        .models
+        .or_else(|| {
+            options.model_ids.map(|ids| {
+                ids.into_iter()
+                    .map(|id| ConfiguredModel {
+                        id,
+                        ..Default::default()
+                    })
+                    .collect()
+            })
+        })
+        .unwrap_or_default();
+    let registration = ProviderRegistration {
         selection,
-        label,
-        tint,
-        model_ids,
-        reasoning_efforts: options.reasoning_efforts,
-        image_model_ids,
+        label: options.label,
+        tint: None,
+        models,
+        image_model_ids: options.image_model_ids,
     };
-    request_provider_registration(&endpoint, &token, registration).await?;
+    request_provider_registration(
+        &endpoint,
+        &token,
+        registration,
+        options.preserve_selection,
+        options.if_configured,
+    )
+    .await?;
     println!("{}", register_provider_json(definition.id())?);
     Ok(())
 }
@@ -194,7 +194,9 @@ async fn request_provider_credential(
 async fn request_provider_registration(
     endpoint: &Endpoint,
     token: &str,
-    registration: ConfiguredProvider,
+    registration: ProviderRegistration,
+    preserve_selection: bool,
+    if_configured: bool,
 ) -> Result<()> {
     let (sender, mut events) = provider_command_connection(endpoint, token).await?;
     let request_id = Uuid::new_v4().to_string();
@@ -202,10 +204,11 @@ async fn request_provider_registration(
         .send(ClientMessage::RegisterProvider {
             request_id: request_id.clone(),
             config: registration.selection,
+            preserve_selection,
+            if_configured,
             label: registration.label,
             tint: registration.tint,
-            model_ids: registration.model_ids,
-            reasoning_efforts: registration.reasoning_efforts,
+            models: registration.models,
             image_model_ids: registration.image_model_ids,
         })
         .await?;

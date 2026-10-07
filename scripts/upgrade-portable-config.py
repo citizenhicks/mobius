@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline portable-compaction config upgrade; never run on a live gateway.
+"""Offline gateway config upgrade; never run on a live gateway.
 
 Dry run: --gateway-config /absolute/gateway.toml --bots-db /absolute/bots.sqlite3
 Apply:   same flags plus --apply --confirm-stopped --backup-dir /absolute/new-backup
@@ -36,8 +36,10 @@ REMOVED_TRANSPORT = {"compaction_retry_limit", "compaction_retry_backoff_ms"}
 COMPACTION_TABLE = "bot_defaults.config.middleware.settings.compaction"
 OFFLOADING_TABLE = "bot_defaults.config.middleware.settings.context_offloading"
 MIDDLEWARE_TABLE = "bot_defaults.config.middleware"
-SECTION = re.compile(r"^\s*\[([a-zA-Z0-9_.]+)\]\s*(?:#.*)?$")
+SECTION = re.compile(r"^\s*\[([^\[\]]+)\]\s*(?:#.*)?$")
 ASSIGNMENT = re.compile(r"^(\s*)([a-zA-Z0-9_]+)(\s*=\s*)(.*)$")
+TOML_COMMENT = re.compile(r'''(?:"(?:[^"\\]|\\.)*"|'[^']*')|(#.*)''')
+MODEL_SOURCE = Path(__file__).resolve().parents[1] / "src/backend/model"
 
 
 def require(condition, message):
@@ -103,15 +105,165 @@ def migrate_composition(versioned):
     return middleware != before
 
 
-def migrate_config(config):
+def validate_catalog(values):
+    require(isinstance(values, list) and len(values) <= 64, "provider catalogs allow at most 64 entries")
+    total_bytes = 0
+    for value in values:
+        require(isinstance(value, str) and value and value == value.strip() and
+                not re.search(r"[\x00-\x1f\x7f-\x9f]", value), "invalid provider catalog entries")
+        size = len(value.encode("utf-8"))
+        require(size <= 1024, "provider catalog entries allow at most 1024 UTF-8 bytes")
+        total_bytes += size
+    require(total_bytes <= 16 * 1024, "provider catalogs allow at most 16 KiB of UTF-8 entries")
+    require(len(set(values)) == len(values), "duplicate provider catalog entries")
+
+
+def validate_models(models):
+    require(isinstance(models, list), "invalid configured models")
+    required = {"id", "label", "description", "context_window", "reasoning", "tool_discovery"}
+    for model in models:
+        require(isinstance(model, dict) and required <= set(model) <= required | {"default_reasoning"} and
+                isinstance(model["label"], str) and model["label"].strip() and len(model["label"].encode()) <= 1024 and
+                isinstance(model["description"], str) and len(model["description"].encode()) <= 16 * 1024 and
+                type(model["context_window"]) is int and 0 < model["context_window"] < 2**63 and
+                model["tool_discovery"] in ("native", "rebuild"), "invalid configured model metadata")
+        choices = model["reasoning"]
+        require(isinstance(choices, list) and all(isinstance(choice, dict) and {"id", "label"} <= set(choice) <= {
+                "id", "label", "description"} and isinstance(choice["label"], str) and choice["label"].strip() and
+                len(choice["label"].encode()) <= 1024 and isinstance(choice.get("description", ""), str) and
+                len(choice.get("description", "").encode()) <= 16 * 1024 for choice in choices), "invalid model reasoning choices")
+        efforts = [choice["id"] for choice in choices]
+        validate_catalog(efforts)
+        default = model.get("default_reasoning")
+        require(default in efforts if efforts else default is None,
+                "model default_reasoning must select a listed effort, or be absent when none exist")
+    validate_catalog([model["id"] for model in models])
+
+
+def provider_model_catalog(selection, models_dir):
+    provider_id = selection.get("provider") if isinstance(selection, dict) else None
+    require(isinstance(provider_id, str) and re.fullmatch(r"[a-z][a-z0-9_]*", provider_id),
+            "missing or invalid provider ID for catalog seeding")
+    owner = "openai" if provider_id == "responses" else provider_id
+    manifest_path = MODEL_SOURCE / f"{owner}_provider.toml"
+    require(manifest_path.is_file(), "provider source manifest is unavailable")
+    manifest = tomllib.loads(manifest_path.read_text())
+    if manifest.get("locked_models", False):
+        return manifest, {"models": []}
+    path = MODEL_SOURCE / f"{provider_id}.toml"
+    if not path.is_file():
+        return manifest, {"models": []}
+    override = models_dir / path.name if models_dir else None
+    if override is not None and (override.exists() or override.is_symlink()):
+        require(override.is_file() and not override.is_symlink(), "model catalog override must be a regular file")
+        path = override
+    try:
+        catalog = tomllib.loads(path.read_text())
+        require(set(catalog) <= {"default_model", "models", "image_models"} and
+                isinstance(catalog.get("models"), list), "invalid provider model catalog")
+        models = catalog["models"]
+        validate_models(models)
+        require(catalog.get("default_model") is None or catalog["default_model"] in
+                [model["id"] for model in models], "invalid provider catalog default model")
+        images = catalog.get("image_models", [])
+        require(isinstance(images, list), "invalid provider image catalog")
+        image_ids = [model["id"] for model in images]
+        require(all(isinstance(value, str) and value.strip() for value in image_ids) and
+                len(set(image_ids)) == len(image_ids), "invalid provider image catalog IDs")
+        for model in images:
+            require(isinstance(model, dict) and {"id", "label", "description"} <= set(model) <= {
+                    "id", "label", "description", "variants"} and isinstance(model["label"], str) and
+                    isinstance(model["description"], str), "invalid provider image catalog model")
+        for choices in [model.get("variants", []) for model in images]:
+            require(isinstance(choices, list), "invalid provider catalog choices")
+            choice_ids = [choice["id"] for choice in choices]
+            require(all(isinstance(value, str) and value.strip() for value in choice_ids) and
+                    len(set(choice_ids)) == len(choice_ids), "invalid provider catalog choice IDs")
+            require(all(isinstance(choice, dict) and {"id", "label"} <= set(choice) <= {
+                    "id", "label", "description"} and isinstance(choice["label"], str) and
+                    isinstance(choice.get("description", ""), str) for choice in choices),
+                    "invalid provider catalog choice")
+        return manifest, catalog
+    except (ValueError, KeyError, TypeError, OSError):
+        raise UpgradeError("invalid provider model catalog or override; no fallback is used") from None
+
+
+def expand_legacy_models(model_ids, efforts, selection, models_dir):
+    manifest, catalog = provider_model_catalog(selection, models_dir)
+    require(not manifest.get("locked_models", False) or not model_ids,
+            "locked providers cannot contain custom model IDs")
+    presets = {model["id"]: model for model in catalog["models"]}
+    if not model_ids:
+        return copy.deepcopy(catalog["models"])
+    default = presets.get(catalog.get("default_model"))
+    if default is not None:
+        context_window = default["context_window"]
+    else:
+        config_source = (MODEL_SOURCE.parents[2] / "crates/mobius-gateway/src/config.rs").read_text()
+        context = re.search(r"pub const DEFAULT_CONTEXT_WINDOW: i64 = ([0-9_]+);", config_source)
+        require(context is not None, "gateway default context window is unavailable")
+        context_window = int(context[1].replace("_", ""))
+    models = []
+    for model_id in model_ids:
+        model = copy.deepcopy(presets.get(model_id, dict(id=model_id, label=model_id, description="",
+            context_window=context_window, reasoning=[], tool_discovery=manifest["tool_discovery"])))
+        choices = {choice["id"]: choice for choice in model["reasoning"]}
+        model["reasoning"] = [copy.deepcopy(choices.get(effort, dict(id=effort, label=effort, description=""))) for effort in efforts]
+        model.pop("default_reasoning", None)
+        if efforts:
+            model["default_reasoning"] = efforts[0]
+        models.append(model)
+    return models
+
+
+def migrate_provider_models(providers, version, models_dir=None):
+    require(isinstance(providers, dict), "invalid configured_providers table")
+    routes = set()
+    for instance, provider in providers.items():
+        catalog_fields = {"models"} if version == 28 else {"model_ids", "reasoning_efforts"}
+        require(isinstance(provider, dict) and set(provider) <= catalog_fields | {
+            "selection", "label", "tint", "image_model_ids",
+        }, "unknown or malformed configured provider")
+        if version != 28:
+            model_ids, efforts = provider.get("model_ids"), provider.get("reasoning_efforts")
+            validate_catalog(model_ids)
+            validate_catalog(efforts)
+            require(model_ids or not efforts, "reasoning efforts have no listed model IDs")
+            provider["models"] = expand_legacy_models(model_ids, efforts, provider.get("selection"), models_dir)
+            del provider["model_ids"], provider["reasoning_efforts"]
+        models = provider.get("models")
+        validate_models(models)
+        for model in models:
+            efforts = [choice["id"] for choice in model["reasoning"]]
+            for effort in efforts or ["default"]:
+                route = f"{instance}::{model['id']}::{effort}"
+                require(route not in routes, "configured models generate an ambiguous route")
+                routes.add(route)
+                require(len(routes) <= 64, "configured models allow at most 64 total routes")
+        if models:
+            selection = provider.get("selection")
+            require(isinstance(instance, str) and re.fullmatch(r"[a-zA-Z0-9_.-]{1,256}", instance) and
+                    isinstance(selection, dict) and selection.get("instance") == instance,
+                    "invalid configured provider selection instance")
+            selected = next((model for model in models if model["id"] == selection.get("model")), None)
+            require(selected is not None, "selected model must be in the configured model catalog")
+            effort = selection.get("reasoning_effort")
+            require(effort is None or effort in [choice["id"] for choice in selected["reasoning"]],
+                    "selected reasoning effort must be in the selected model's catalog")
+        selection = provider.get("selection", {})
+        require(isinstance(selection, dict) and selection.get("tool_discovery") in (None, "native", "rebuild"),
+                "provider tool_discovery must be native, rebuild or absent")
+
+
+def migrate_config(config, models_dir=None):
     """Mutate the parsed gateway config; return whether this one-off changed it."""
-    require(isinstance(config, dict) and type(config.get("version")) is int and config["version"] in (26, 27),
-            "expected gateway config version 26 or 27")
+    require(isinstance(config, dict) and type(config.get("version")) is int and config["version"] in (26, 27, 28),
+            "expected gateway config version 26, 27 or 28")
     require(set(config) <= {"version", "runtime", "connections", "auth", "computer",
             "model_transport", "execution", "telemetry", "listen", "tls", "cloudflare",
             "desktop_enabled", "bot_defaults", "configured_providers", "installed_extensions", "usage"},
             "unknown gateway configuration fields")
-    original = copy.deepcopy(config)
+    version = config["version"]
     changed = False
     transport = config.get("model_transport", {})
     require(isinstance(transport, dict), "invalid model_transport table")
@@ -129,11 +281,46 @@ def migrate_config(config):
     defaults = config.get("bot_defaults")
     if defaults is not None:
         changed = migrate_composition(defaults) or changed
-    if original["version"] == 27:
-        require(not changed, "version 27 still contains retired settings")
+    if version != 26:
+        require(not changed, f"version {version} still contains retired settings")
+    migrate_provider_models(config.get("configured_providers", {}), version, models_dir)
+    if version == 28:
         return False
-    config["version"] = 27
+    config["version"] = 28
     return True
+
+
+def parse_toml_assignment(lines, index):
+    end = index
+    while True:
+        try:
+            return tomllib.loads("".join(lines[index:end + 1])), end + 1
+        except tomllib.TOMLDecodeError:
+            end += 1
+            require(end < len(lines), "unsupported TOML assignment formatting; no files changed")
+
+
+def rewrite_provider_catalog(lines, index, models):
+    parsed, end = parse_toml_assignment(lines, index)
+    require(len(parsed) == 1 and set(parsed) <= {"model_ids", "reasoning_efforts"} and
+            isinstance(next(iter(parsed.values())), list), "unsupported provider catalog formatting; no files changed")
+    indent = lines[index][:len(lines[index]) - len(lines[index].lstrip())]
+    output = ""
+    if "model_ids" in parsed:
+        output = indent + "models = " + toml_inline(models) + "\n"
+    for line in lines[index:end]:
+        for match in TOML_COMMENT.finditer(line):
+            if match[1]:
+                output += indent + match[1] + "\n"
+    return output, end
+
+
+def toml_inline(value):
+    if isinstance(value, dict):
+        return "{" + ", ".join(f"{key} = {toml_inline(item)}" for key, item in value.items()) + "}"
+    if isinstance(value, list):
+        return "[" + ", ".join(toml_inline(item) for item in value) + "]"
+    return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
 
 
 def rewrite_toml(text, expected):
@@ -153,10 +340,23 @@ def rewrite_toml(text, expected):
         assignment = ASSIGNMENT.fullmatch(line.rstrip("\r\n"))
         if assignment:
             indent, name, equals, value = assignment.groups()
+            if value.lstrip().startswith(('"""', "'''")):
+                _, end = parse_toml_assignment(lines, index)
+                output.extend(lines[index:end])
+                index = end
+                continue
             if not section and name == "version":
                 comment = " #" + value.partition("#")[2] if "#" in value else ""
                 output.append(indent + "version" + equals + str(expected["version"]) + comment + "\n")
                 index += 1
+                continue
+            if section.startswith("configured_providers.") and name in {"model_ids", "reasoning_efforts"}:
+                providers = tomllib.loads(f"[{section}]")["configured_providers"]
+                require(len(providers) == 1 and next(iter(providers.values())) == {},
+                        "unsupported configured provider table; no files changed")
+                models = expected["configured_providers"][next(iter(providers))]["models"]
+                replacement, index = rewrite_provider_catalog(lines, index, models)
+                output.append(replacement)
                 continue
             if (section == "model_transport" and name in REMOVED_TRANSPORT) or (
                     section == COMPACTION_TABLE and name in REMOVED_COMPACTION):
@@ -304,7 +504,7 @@ def run(config_path, bots_path, apply=False, confirm_stopped=False, backup_dir=N
     replacement_config = original_config
     if config_path:
         expected = tomllib.loads(original_config.decode("utf-8"))
-        if migrate_config(expected):
+        if migrate_config(expected, config_path.parent / "models"):
             replacement_config = rewrite_toml(original_config.decode("utf-8"), expected).encode("utf-8")
     connection = database(bots_path) if bots_path else None
     try:
@@ -384,6 +584,41 @@ def run(config_path, bots_path, apply=False, confirm_stopped=False, backup_dir=N
 
 
 def self_test():
+    def custom_model(model_id, efforts=(), default=None, **metadata):
+        model = dict(id=model_id, label=model_id, description="", context_window=272000,
+                     tool_discovery="rebuild", reasoning=[dict(id=effort, label=effort, description="") for effort in efforts])
+        if default is not None:
+            model["default_reasoning"] = default
+        model.update(metadata)
+        return model
+
+    providers_text = '''[configured_providers.local-llm]
+label = "Synthetic endpoint"
+model_ids = ["vendor/model-a", "vendor/model-b", "odd#]🚀"]
+reasoning_efforts = [
+  "high", # preserve order
+  "off#]", # preserve literal punctuation
+]
+[configured_providers.local-llm.selection]
+instance = "local-llm"
+provider = "responses"
+model = "vendor/model-a"
+reasoning_effort = "high"
+[configured_providers."openai.main"]
+model_ids = []
+reasoning_efforts = []
+[configured_providers."openai.main".selection]
+instance = "openai.main"
+provider = "openai_socket"
+model = "gpt-6-luna"
+[configured_providers.no-reasoning]
+model_ids = ["plain"]
+reasoning_efforts = []
+[configured_providers.no-reasoning.selection]
+instance = "no-reasoning"
+provider = "responses"
+model = "plain"
+'''
     config_text = '''# operator comment
 version = 26
 listen = "127.0.0.1:8741"
@@ -419,7 +654,11 @@ handoff_urgent_reserves = 2
 stale_after_tokens = 10000
 [bot_defaults.config.middleware.settings.tasks]
 max_items = 30
-'''
+''' + providers_text
+    config_text = config_text.replace('system_prompt = "Keep this text exactly # unchanged"',
+                                     'system_prompt = """Keep this text exactly # unchanged\n'
+                                     '[configured_providers.local-llm]\n'
+                                     'reasoning_efforts = ["prompt example"]\n"""')
     with tempfile.TemporaryDirectory(prefix="portable-config-self-test-") as temporary:
         directory = Path(temporary)
         config_path, bots_path = directory / "gateway.toml", directory / "bots.sqlite3"
@@ -453,12 +692,24 @@ max_items = 30
         backup = directory / "backup"
         run(config_path, bots_path, True, True, backup)
         upgraded = tomllib.loads(config_path.read_text())
+        assert upgraded["bot_defaults"]["config"]["system_prompt"] == automatic["config"]["system_prompt"]
         assert upgraded["bot_defaults"]["config"]["middleware"]["settings"]["compaction"] == {
             "allow_model_compaction": "off", "at_tokens": 250000, "reserve_tokens": 16384,
         }
         assert "# keep comment" in config_path.read_text() and "# old retry" in config_path.read_text()
-        assert upgraded["version"] == 27
+        assert upgraded["version"] == 28
         assert upgraded["model_transport"] == {"stream_retry_limit": 5}
+        provider = upgraded["configured_providers"]["local-llm"]
+        assert provider["models"] == [
+            custom_model(model, ["high", "off#]"], "high")
+            for model in ["vendor/model-a", "vendor/model-b", "odd#]🚀"]
+        ]
+        assert not {"model_ids", "reasoning_efforts"} & provider.keys()
+        assert provider["selection"] == {"instance": "local-llm", "provider": "responses", "model": "vendor/model-a", "reasoning_effort": "high"}
+        assert upgraded["configured_providers"]["openai.main"]["models"] == []
+        assert upgraded["configured_providers"]["no-reasoning"]["models"] == [custom_model("plain")]
+        assert "# preserve order" in config_path.read_text()
+        assert "# preserve literal punctuation" in config_path.read_text()
         with closing(database(bots_path)) as connection, connection:
             saved = json.loads(connection.execute("SELECT state_json FROM catalog").fetchone()[0])
             assert [bot["config"]["config"]["middleware"]["settings"]["compaction"]["allow_model_compaction"] for bot in saved["bots"]] == ["off", "on"]
@@ -548,6 +799,171 @@ max_items = 30
         assert not (directory / "invalid-backup").exists()
         with closing(sqlite3.connect(bots_path)) as connection, connection:
             assert connection.execute("SELECT state_json FROM catalog").fetchone()[0] == json.dumps(mixed)
+        # Version 27 needs only the model-specific catalog conversion.
+        config_path.write_text("version = 27\n" + providers_text)
+        before = config_path.read_bytes()
+        assert run(config_path, None)["config_changed"]
+        assert config_path.read_bytes() == before
+        run(config_path, None, True, True, directory / "version-27-backup")
+        current = tomllib.loads(config_path.read_text())
+        assert current["version"] == 28
+        assert current["configured_providers"] == upgraded["configured_providers"]
+        assert not run(config_path, None, True, True, directory / "unused-27-backup")["config_changed"]
+        assert not (directory / "unused-27-backup").exists()
+        # Editable presets retain owner catalogs, including defaults that are not first.
+        for provider_id in ("anthropic", "kimi", "deepseek"):
+            catalog = tomllib.loads((MODEL_SOURCE / f"{provider_id}.toml").read_text())
+            expected_models = catalog["models"]
+            for version in (26, 27):
+                fixture = dict(version=version, configured_providers={"native": dict(model_ids=[], reasoning_efforts=[],
+                    selection=dict(instance="native", provider=provider_id, model=catalog["default_model"]))})
+                assert migrate_config(fixture)
+                assert fixture["configured_providers"]["native"]["models"] == expected_models
+                preserved = copy.deepcopy(fixture)
+                assert not migrate_config(fixture) and fixture == preserved
+        for provider_id in ("openai_socket", "openai_codex", "openrouter", "responses"):
+            assert provider_model_catalog(dict(provider=provider_id), None)[1]["models"] == []
+        try:
+            provider_model_catalog(dict(provider="unknown_fixture"), None)
+        except UpgradeError:
+            pass
+        else:
+            raise AssertionError("unknown provider manifest accepted")
+        models_dir = directory / "models"
+        models_dir.mkdir()
+        override_text = '''default_model = "fixture-native"
+[[models]]
+id = "fixture-native"
+label = "Fixture"
+description = "Synthetic override"
+context_window = 200000
+tool_discovery = "native"
+reasoning = [{id = "low", label = "Low"}, {id = "high", label = "High"}]
+default_reasoning = "high"
+'''
+        override_path = models_dir / "anthropic.toml"
+        override_path.write_text(override_text)
+        expanded = expand_legacy_models(["fixture-native", "other"], ["high", "custom"], dict(provider="anthropic"), models_dir)
+        assert expanded[0] == dict(id="fixture-native", label="Fixture", description="Synthetic override", context_window=200000,
+            tool_discovery="native", reasoning=[dict(id="high", label="High"), dict(id="custom", label="custom", description="")], default_reasoning="high")
+        assert expanded[1] == custom_model("other", ["high", "custom"], "high", context_window=200000)
+        override_path.write_text(override_text.replace('default_model = "fixture-native"\n', ""))
+        assert expand_legacy_models(["other"], [], dict(provider="anthropic"), models_dir) == [custom_model("other")]
+        override_path.write_text(override_text)
+        config_path.write_text('''version = 27
+[configured_providers.native]
+model_ids = []
+reasoning_efforts = []
+[configured_providers.native.selection]
+instance = "native"
+provider = "anthropic"
+model = "fixture-native"
+reasoning_effort = "low"
+''')
+        original = config_path.read_bytes()
+        assert run(config_path, None)["config_changed"] and config_path.read_bytes() == original
+        run(config_path, None, True, True, directory / "override-backup")
+        upgraded_override = tomllib.loads(config_path.read_text())["configured_providers"]["native"]
+        assert upgraded_override["models"] == tomllib.loads(override_text)["models"]
+        assert upgraded_override["selection"]["reasoning_effort"] == "low"
+        assert override_path.read_text() == override_text
+        media = [f'{{id = "image-{index}", label = "", description = ""}}' for index in range(65)]
+        variants = ", ".join(f'{{id = "variant-{index}", label = ""}}' for index in range(65))
+        media[0] = media[0][:-1] + ", variants = [" + variants + "]}"
+        override_path.write_text("image_models = [" + ", ".join(media) + "]\n" + override_text)
+        assert provider_model_catalog(dict(provider="anthropic"), models_dir)[1]["models"] == upgraded_override["models"]
+        metadata_controls = custom_model("unicode", description="Escaped DEL: \x7f; emoji: 🚀")
+        assert tomllib.loads("models = " + toml_inline([metadata_controls]))["models"] == [metadata_controls]
+        for invalid_override in ("not TOML", override_text.replace('label = "Fixture"', 'label = 1'),
+                                 override_text.replace('default_reasoning = "high"', 'default_reasoning = "missing"')):
+            override_path.write_text(invalid_override)
+            config_path.write_bytes(original)
+            try:
+                run(config_path, None, True, True, directory / "invalid-override-backup")
+            except UpgradeError:
+                pass
+            else:
+                raise AssertionError("invalid model override accepted")
+            assert config_path.read_bytes() == original and not (directory / "invalid-override-backup").exists()
+        override_path.unlink()
+        # Current full model records retain metadata and explicit defaults byte for byte.
+        config_path.write_text('''version = 28
+[configured_providers.custom]
+models = [
+  { id = "a", label = "A", description = "Plain model", context_window = 100000, reasoning = [], tool_discovery = "native" },
+  { id = "b", label = "B", description = "Other plain model", context_window = 100001, reasoning = [], tool_discovery = "rebuild" },
+  { id = "c", label = "C", description = "Custom reasoning model", context_window = 100002, reasoning = [{id = "high", label = "Thorough"}, {id = "low", label = "Quick", description = "Fast mode"}], default_reasoning = "low", tool_discovery = "native" },
+]
+[configured_providers.custom.selection]
+instance = "custom"
+provider = "responses"
+model = "c"
+reasoning_effort = "high"
+tool_discovery = "rebuild"
+''')
+        before = config_path.read_bytes()
+        assert not run(config_path, None, True, True, directory / "unused-28-backup")["config_changed"]
+        assert config_path.read_bytes() == before and not (directory / "unused-28-backup").exists()
+        for version, provider in [
+                (27, dict(model_ids=["a"], reasoning_efforts={"a": ["high"]})),
+                (27, dict(model_ids=["a", "a"], reasoning_efforts=[])),
+                (27, dict(model_ids=[], reasoning_efforts=["high"])),
+                (27, dict(model_ids=["a"], reasoning_efforts=["high", "high"])),
+                (27, dict(models=[])),
+                (28, dict(model_ids=["a"], reasoning_efforts={"a": ["high"]})),
+                (28, dict(models=[], model_ids=[])),
+                (28, dict(models=[dict(id="a", reasoning_efforts=["high"], default_reasoning="high")])),
+                (28, dict(models=[custom_model("a"), custom_model("a")])),
+                (28, dict(models=[custom_model("a", extra=True)])),
+                (28, dict(models=[custom_model("a", reasoning="high")])),
+                (28, dict(models=[custom_model("a", ["high", "high"], "high")])),
+                (28, dict(models=[custom_model("a", [" high"], " high")])),
+                (28, dict(models=[custom_model("a", ["high"])])),
+                (28, dict(models=[custom_model("a", ["high"], "low")])),
+                (28, dict(models=[custom_model("a", default="high")])),
+                (28, dict(models=[custom_model("a", context_window=0)])),
+                (28, dict(models=[custom_model("a", label=" ")])),
+                (28, dict(models=[custom_model("a", description="é" * 8193)])),
+                (28, dict(models=[custom_model("a", ["high"], "high", reasoning=[dict(id="high", label="")])])),
+                (28, dict(models=[custom_model("a", tool_discovery="invalid")]))]:
+            provider["selection"] = dict(instance="custom", provider="responses", model="a")
+            fixture = dict(version=version, configured_providers={"custom": provider})
+            try:
+                migrate_config(fixture)
+            except UpgradeError:
+                pass
+            else:
+                raise AssertionError("invalid configured model catalog accepted")
+        # Catalog limits count UTF-8 bytes; model routes share one gateway-wide budget.
+        full_bytes = [f"{index:02}" + "x" * 1022 for index in range(16)]
+        for values in ([str(index) for index in range(64)], ["é" * 512], full_bytes):
+            validate_catalog(values)
+        for values in ([str(index) for index in range(65)], ["é" * 513], full_bytes + ["extra"]):
+            try:
+                validate_catalog(values)
+            except UpgradeError:
+                pass
+            else:
+                raise AssertionError("oversized provider catalog accepted")
+        models = [custom_model(str(index)) for index in range(64)]
+        provider = dict(models=models, selection=dict(instance="custom", model="0"))
+        migrate_provider_models({"custom": provider}, 28)
+        collision = [custom_model("a", ["b::high"], "b::high"), custom_model("a::b", ["high"], "high")]
+        invalid_providers = [
+            {"custom": dict(models=collision, selection=dict(instance="custom", model="a"))},
+            {instance: dict(models=models[:33], selection=dict(instance=instance, model="0"))
+             for instance in ("one", "two")},
+            {"custom": dict(models=[custom_model("a")], selection=dict(instance="custom", model="missing"))},
+            {"custom": dict(models=[custom_model("a")], selection=dict(instance="custom", model="a", reasoning_effort="high"))},
+            {"custom": dict(models=collision[:1], selection=dict(instance="custom", model="a", reasoning_effort="high"))},
+        ]
+        for providers in invalid_providers:
+            try:
+                migrate_provider_models(providers, 28)
+            except UpgradeError:
+                pass
+            else:
+                raise AssertionError("invalid configured model routes or selection accepted")
     print("self-test passed: synthetic config + bots only")
 
 

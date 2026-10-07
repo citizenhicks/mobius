@@ -98,6 +98,7 @@ async fn voice_delegation_consumes_committed_speech_without_echoing_or_replaying
     )
     .unwrap();
     let provider = crate::wire::ProviderConfig {
+        tool_discovery: None,
         instance: "voice-test".into(),
         provider: "responses".into(),
         model: "local-test".into(),
@@ -112,8 +113,12 @@ async fn voice_delegation_consumes_committed_speech_without_echoing_or_replaying
             provider,
             "Voice test".into(),
             Default::default(),
-            vec!["local-test".into()],
-            Vec::new(),
+            vec![crate::wire::ConfiguredModel {
+                id: "local-test".into(),
+                reasoning_efforts: Some(Vec::new()),
+                default_reasoning: None,
+                ..Default::default()
+            }],
             Vec::new(),
         )
         .unwrap();

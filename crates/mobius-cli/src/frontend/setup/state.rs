@@ -8,8 +8,9 @@ use mobius::protocol::{
 };
 use mobius::{Error, Result};
 use mobius_gateway::wire::{
-    AgentComposition, ExtensionRecord, MiddlewareConfig, ProviderAuthKind, ProviderConfig,
-    ProviderEndpointAuth, ProviderInstance, ProviderStatus, ReadyPayload,
+    AgentComposition, ConfiguredModel, ExtensionRecord, MiddlewareConfig, ProviderAuthKind,
+    ProviderConfig, ProviderEndpointAuth, ProviderInstance, ProviderModel, ProviderStatus,
+    ReadyPayload,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use uuid::Uuid;
@@ -242,21 +243,17 @@ impl SetupState {
         model_providers: &BTreeMap<String, String>,
     ) {
         let selection = &self.original.provider;
-        let effort = selection
-            .reasoning_effort
-            .as_deref()
-            .or_else(|| {
-                self.definition()
-                    .models
-                    .iter()
-                    .find(|model| model.id == selection.model)
-                    .and_then(|model| model.default_reasoning.as_deref())
-            })
-            .or_else(|| {
-                self.instance()
-                    .and_then(|instance| instance.reasoning_efforts.first())
-                    .map(String::as_str)
-            });
+        let models = if self.definition().model_ids_configurable {
+            self.instance_models()
+        } else {
+            &self.definition().models
+        };
+        let effort = selection.reasoning_effort.as_deref().or_else(|| {
+            models
+                .iter()
+                .find(|model| model.id == selection.model)
+                .and_then(|model| model.default_reasoning.as_deref())
+        });
         self.original_model_choice = choices
             .iter()
             .find(|choice| {
@@ -346,14 +343,9 @@ impl SetupState {
         self.entry().instance.as_ref()
     }
 
-    /// The configured model catalog of the edited setup, empty while adding one.
-    pub(super) fn instance_model_ids(&self) -> &[String] {
-        self.instance().map_or(&[], |entry| &entry.model_ids)
-    }
-
-    pub(super) fn instance_reasoning_efforts(&self) -> &[String] {
-        self.instance()
-            .map_or(&[], |entry| &entry.reasoning_efforts)
+    /// The configured models of the edited setup, empty while adding one.
+    pub(super) fn instance_models(&self) -> &[ProviderModel] {
+        self.instance().map_or(&[], |entry| &entry.models)
     }
 
     pub(super) fn select_provider(&mut self, provider: &str) -> Result<()> {
@@ -454,8 +446,22 @@ impl SetupState {
     pub(super) fn model_choice_count(&self) -> usize {
         if self.mode == SetupMode::BotModel {
             self.bot_model_routes.len()
+        } else if self.definition().model_ids_configurable {
+            1
         } else {
-            self.definition().models.len().max(1)
+            self.definition().models.len()
+        }
+    }
+
+    pub(super) fn selected_model_preset(&self) -> Option<&ProviderModel> {
+        if self.definition().model_ids_configurable {
+            let id = self.custom_model.split(',').next()?.trim();
+            self.instance_models()
+                .iter()
+                .find(|model| model.id == id)
+                .or_else(|| self.definition().models.iter().find(|model| model.id == id))
+        } else {
+            self.definition().models.get(self.model)
         }
     }
 
@@ -463,9 +469,7 @@ impl SetupState {
         if self.mode == SetupMode::BotModel {
             0
         } else {
-            self.definition()
-                .models
-                .get(self.model)
+            self.selected_model_preset()
                 .map_or(1, |model| model.reasoning.len() + 1)
         }
     }
@@ -1008,10 +1012,14 @@ impl SetupState {
             0
         };
         self.custom_model = if definition.model_ids_configurable {
-            let mut model_ids = self
-                .instance_model_ids()
+            let models = self
+                .instance()
+                .map_or(definition.models.as_slice(), |instance| {
+                    instance.models.as_slice()
+                });
+            let mut model_ids = models
                 .iter()
-                .map(String::as_str)
+                .map(|model| model.id.as_str())
                 .collect::<Vec<_>>();
             if same_instance && !model_ids.contains(&current.model.as_str()) {
                 model_ids.insert(0, current.model.as_str());
@@ -1023,14 +1031,11 @@ impl SetupState {
         let reasoning = if same_instance {
             current.reasoning_effort.as_deref()
         } else {
-            definition
-                .models
-                .get(self.model)
+            self.selected_model_preset()
                 .and_then(|model| model.default_reasoning.as_deref())
         };
-        self.reasoning = definition
-            .models
-            .get(self.model)
+        self.reasoning = self
+            .selected_model_preset()
             .and_then(|model| {
                 reasoning.and_then(|effort| {
                     model
@@ -1052,6 +1057,19 @@ impl SetupState {
         self.auth_field = AuthField::Label;
         self.row = self.model;
         self.error = None;
+    }
+
+    /// The typed model IDs, each keeping the reasoning it already has on this setup;
+    /// a new ID starts with the provider default.
+    pub(super) fn configured_models(&self) -> Result<Vec<ConfiguredModel>> {
+        Ok(self
+            .configured_model_ids()?
+            .into_iter()
+            .map(|id| ConfiguredModel {
+                id,
+                ..ConfiguredModel::default()
+            })
+            .collect())
     }
 
     pub(super) fn configured_model_ids(&self) -> Result<Vec<String>> {
@@ -1213,6 +1231,7 @@ impl SetupState {
                 base_url: selection.base_url.clone(),
                 endpoint_auth: selection.endpoint_auth,
                 service_tier: selection.service_tier.clone(),
+                tool_discovery: selection.tool_discovery,
                 model: choice.model.clone(),
                 reasoning_effort: choice.reasoning_effort.clone(),
                 web_search: self
@@ -1226,11 +1245,13 @@ impl SetupState {
         }
         let definition = self.definition();
         let model_ids = self.configured_model_ids()?;
-        let model = definition.models.get(self.model).map_or_else(
-            || model_ids.first().map_or("", String::as_str),
-            |model| model.id.as_str(),
-        );
-        let reasoning_effort = if let Some(model) = definition.models.get(self.model) {
+        let model = if definition.model_ids_configurable {
+            model_ids.first().map_or("", String::as_str)
+        } else {
+            self.selected_model_preset()
+                .map_or("", |model| model.id.as_str())
+        };
+        let reasoning_effort = if let Some(model) = self.selected_model_preset() {
             self.reasoning
                 .checked_sub(1)
                 .and_then(|index| model.reasoning.get(index))
@@ -1259,14 +1280,15 @@ impl SetupState {
         if model.is_empty() {
             return Err(Error::Config("model is required".into()));
         }
+        let same_endpoint =
+            current.instance == self.target_instance() && current.base_url.as_deref() == base_url;
         Ok(ProviderConfig {
-            service_tier: if current.instance == self.target_instance()
-                && current.base_url.as_deref() == base_url
-            {
+            service_tier: if same_endpoint {
                 current.service_tier.clone()
             } else {
                 None
             },
+            tool_discovery: current.tool_discovery.filter(|_| same_endpoint),
             instance: self.target_instance().into(),
             provider: definition.provider.clone(),
             model: model.into(),
@@ -1318,7 +1340,7 @@ pub(super) fn validated_providers(
             if status.label.trim().is_empty()
                 || status.description.trim().is_empty()
                 || !valid_web_search_options(&status.web_search)
-                || status.model_ids_configurable != status.models.is_empty()
+                || (!status.model_ids_configurable && status.models.is_empty())
             {
                 return Err(Error::Config(format!(
                     "gateway advertised an incomplete manifest for `{}`",
@@ -1384,16 +1406,18 @@ pub(super) fn validate_active_provider(
         )));
     }
     if status.model_ids_configurable {
-        let model_ids = instance.map_or(&[][..], |entry| &entry.model_ids);
-        let reasoning_efforts = instance.map_or(&[][..], |entry| &entry.reasoning_efforts);
-        if !model_ids.iter().any(|model| model == &config.model) {
+        let Some(model) = instance
+            .into_iter()
+            .flat_map(|entry| &entry.models)
+            .find(|model| model.id == config.model)
+        else {
             return Err(Error::Config(format!(
                 "gateway active provider `{}` has unconfigured model `{}`",
                 status.provider, config.model
             )));
-        }
+        };
         if let Some(effort) = config.reasoning_effort.as_deref()
-            && !reasoning_efforts.iter().any(|choice| choice == effort)
+            && !model.reasoning.iter().any(|choice| choice.id == effort)
         {
             return Err(Error::Config(format!(
                 "gateway active provider `{}` has unconfigured reasoning `{effort}`",

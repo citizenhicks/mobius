@@ -122,12 +122,15 @@ pub(crate) fn prepare_bot<'a>(
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let config = &bot.config.config;
         let model_providers = configured_model_providers(gateway, store, credentials)?;
-        let (models, context_window) =
-            if credential_is_configured(&config.provider, store, credentials)? {
-                build_models(gateway, &config.provider, store, credentials, session_files)?
-            } else {
-                unavailable_models(gateway, &config.provider, session_files)?
-            };
+        let endpoint = gateway
+            .configured_providers
+            .get(&config.provider.instance)
+            .map_or(&config.provider, |configured| &configured.selection);
+        let (models, context_window) = if credential_is_configured(endpoint, store, credentials)? {
+            build_models(gateway, &config.provider, store, credentials, session_files)?
+        } else {
+            unavailable_models(gateway, &config.provider, session_files)?
+        };
         let choices = crate::provider_catalog::configured_model_catalog(gateway)?;
         crate::config::validate_bot_compatibility(gateway, config, choices.catalogs())?;
         let approval_policy = configured_approval_policy(&config.middleware)?;
@@ -687,6 +690,7 @@ fn build_route(
         reasoning_effort: route.provider.reasoning_effort,
         service_tier: route.provider.service_tier,
         web_search: route.provider.web_search,
+        tool_discovery: Some(route.choice.tool_discovery),
         http: http.clone(),
         transport: *transport,
     })?;
@@ -741,9 +745,19 @@ fn unavailable_models(
     session_files: SessionFileStore,
 ) -> Result<(Arc<ModelRouter>, i64)> {
     let definition = provider(&selection.provider)?;
-    let context_window = definition
-        .model(&selection.model)
-        .map_or(DEFAULT_CONTEXT_WINDOW, |preset| preset.context_window);
+    let configured = gateway.configured_providers.get(&selection.instance);
+    let preset = configured
+        .and_then(|configured| {
+            configured
+                .models
+                .iter()
+                .find(|model| model.id == selection.model)
+        })
+        .or_else(|| definition.model(&selection.model));
+    let context_window = preset.map_or_else(
+        || crate::provider_catalog::model_context_window(definition, &selection.model),
+        |model| model.context_window,
+    );
     let effort = match gateway.configured_providers.get(&selection.instance) {
         Some(configured) => {
             gateway.validate_provider_selection(selection)?;
@@ -774,7 +788,16 @@ fn unavailable_models(
         supports_image_input: definition.supports_image_input(),
         supports_image_generation: false,
         supports_realtime_voice: false,
-        tool_discovery: definition.tool_discovery(&selection.model, selection.base_url.as_deref()),
+        tool_discovery: configured.zip(preset).map_or_else(
+            || definition.tool_discovery(&selection.model, selection.base_url.as_deref()),
+            |(configured, model)| {
+                crate::provider_catalog::effective_tool_discovery(
+                    definition,
+                    &configured.selection,
+                    model,
+                )
+            },
+        ),
     })?;
     Ok((Arc::new(router), context_window))
 }

@@ -28,7 +28,9 @@ pub(super) fn provider() -> ProviderDefinition {
 }
 
 fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
-    let tool_discovery = provider().tool_discovery(&config.model, config.base_url.as_deref());
+    let tool_discovery = config
+        .tool_discovery
+        .unwrap_or_else(|| provider().tool_discovery(&config.model, config.base_url.as_deref()));
     let base_url = config
         .base_url
         .ok_or_else(|| Error::Config("OpenRouter requires a base URL".into()))?;
@@ -76,6 +78,7 @@ mod tests {
         for web_search in definition.web_search().iter().copied() {
             let model = definition
                 .build(ProviderBuildConfig {
+                    tool_discovery: None,
                     credential: ProviderCredential::ApiKey("test-key".into()),
                     model: "test-model".into(),
                     base_url: Some(MANIFEST.base_url.as_str().into()),

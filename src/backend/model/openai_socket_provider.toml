@@ -1,3 +1,4 @@
+locked_models = true
 symbol = "chat_gpt"
 label = "OpenAI"
 description = "Persistent Responses WebSocket"

@@ -24,13 +24,21 @@ pub(super) struct ProviderMetadata {
     pub(super) base_url: String,
     pub(super) credential_env: Option<String>,
     pub(super) tool_discovery: ToolDiscoveryMode,
+    #[serde(default = "default_supported_tool_discovery")]
+    pub(super) supported_tool_discovery: Vec<ToolDiscoveryMode>,
     pub(super) custom_endpoint_tool_discovery: Option<ToolDiscoveryMode>,
     #[serde(default)]
     pub(super) native_custom_endpoints: bool,
+    #[serde(default)]
+    pub(super) locked_models: bool,
     pub(super) search: Vec<HostedWebSearch>,
     #[serde(default)]
     pub(super) headers: std::collections::BTreeMap<String, String>,
     pub(super) max_output_tokens: Option<u64>,
+}
+
+fn default_supported_tool_discovery() -> Vec<ToolDiscoveryMode> {
+    vec![ToolDiscoveryMode::Native, ToolDiscoveryMode::Rebuild]
 }
 
 impl ProviderMetadata {
@@ -77,7 +85,7 @@ pub struct ReasoningPreset {
 }
 
 /// A model choice advertised by its backend provider.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelPreset {
     /// The identifier.
@@ -127,6 +135,12 @@ impl ModelCatalog {
             unique_ids(model.variants.iter().map(|variant| variant.id.as_str()))?;
         }
         for (index, model) in self.models.iter().enumerate() {
+            unique_ids(
+                model
+                    .reasoning
+                    .iter()
+                    .map(|reasoning| reasoning.id.as_str()),
+            )?;
             if model.id.trim().is_empty()
                 || self.models[..index]
                     .iter()
@@ -249,6 +263,8 @@ impl std::str::FromStr for HostedWebSearch {
 
 /// Fully resolved settings passed to one provider constructor.
 pub struct ProviderBuildConfig {
+    /// Optional tool-discovery mode; omission uses the provider/model endpoint default.
+    pub tool_discovery: Option<ToolDiscoveryMode>,
     /// The credential.
     pub credential: ProviderCredential,
     /// The model.
@@ -500,6 +516,7 @@ pub struct ProviderDefinition {
     description: &'static str,
     auth: ProviderAuth,
     models: &'static [ModelPreset],
+    locked_models: bool,
     default_model: Option<&'static str>,
     web_search: &'static [HostedWebSearch],
     supports_image_input: bool,
@@ -508,6 +525,7 @@ pub struct ProviderDefinition {
     image_models: &'static [MediaModelPreset],
     voice_models: &'static [MediaModelPreset],
     tool_discovery: ToolDiscoveryMode,
+    supported_tool_discovery: &'static [ToolDiscoveryMode],
     custom_endpoint_tool_discovery: Option<ToolDiscoveryMode>,
     default_base_url: Option<&'static str>,
     native_custom_endpoints: bool,
@@ -530,6 +548,7 @@ impl ProviderDefinition {
             description: &metadata.description,
             auth,
             models: catalog.map_or(&[], |catalog| catalog.models.as_slice()),
+            locked_models: metadata.locked_models,
             default_model: catalog.and_then(|catalog| catalog.default_model.as_deref()),
             web_search: &metadata.search,
             supports_image_input: false,
@@ -538,6 +557,7 @@ impl ProviderDefinition {
             image_models: catalog.map_or(&[], |catalog| catalog.image_models.as_slice()),
             voice_models: &[],
             tool_discovery: metadata.tool_discovery,
+            supported_tool_discovery: &metadata.supported_tool_discovery,
             custom_endpoint_tool_discovery: metadata.custom_endpoint_tool_discovery,
             default_base_url: Some(&metadata.base_url),
             native_custom_endpoints: metadata.native_custom_endpoints,
@@ -699,6 +719,37 @@ impl ProviderDefinition {
         self.custom_endpoint_tool_discovery
     }
 
+    /// Returns the tool-discovery modes implemented by this transport.
+    #[must_use]
+    pub const fn supported_tool_discovery(&self) -> &'static [ToolDiscoveryMode] {
+        self.supported_tool_discovery
+    }
+
+    /// Reports whether this transport implements the requested discovery mode.
+    #[must_use]
+    pub fn supports_tool_discovery(&self, mode: ToolDiscoveryMode) -> bool {
+        self.supported_tool_discovery.contains(&mode)
+    }
+
+    /// Validates a discovery selection before persisting settings or building a model.
+    /// # Errors
+    /// Returns an error when the transport does not implement this mode.
+    pub fn validate_tool_discovery(&self, mode: ToolDiscoveryMode) -> Result<()> {
+        if !self.supports_tool_discovery(mode) {
+            return Err(Error::Config(format!(
+                "provider `{}` does not support {mode:?} tool discovery",
+                self.id
+            )));
+        }
+        Ok(())
+    }
+
+    /// Reports whether model IDs and reasoning efforts must come from the advertised catalog.
+    #[must_use]
+    pub const fn locked_models(&self) -> bool {
+        self.locked_models
+    }
+
     #[must_use]
     /// Returns the configurable base URL.
     pub const fn configurable_base_url(&self) -> bool {
@@ -741,7 +792,7 @@ impl ProviderDefinition {
         if config.base_url.is_none() {
             config.base_url = self.default_base_url.map(str::to_owned);
         }
-        if config.reasoning_effort.is_none() {
+        if self.locked_models && config.reasoning_effort.is_none() {
             config.reasoning_effort = self
                 .model(&config.model)
                 .and_then(|model| model.default_reasoning.as_deref())
@@ -753,7 +804,10 @@ impl ProviderDefinition {
             config.reasoning_effort.as_deref(),
             config.web_search,
         )?;
-        let tool_discovery = self.tool_discovery(&config.model, config.base_url.as_deref());
+        let tool_discovery = *config
+            .tool_discovery
+            .get_or_insert_with(|| self.tool_discovery(&config.model, config.base_url.as_deref()));
+        self.validate_tool_discovery(tool_discovery)?;
         let model = (self.builder)(config)?;
         if model.tool_discovery() != tool_discovery {
             return Err(Error::Config(format!(
@@ -803,14 +857,15 @@ impl ProviderDefinition {
             )));
         }
         let preset = self.model(model);
-        if !self.models.is_empty() && preset.is_none() {
+        if self.locked_models && preset.is_none() {
             return Err(Error::Config(format!(
                 "provider `{}` does not advertise model `{model}`",
                 self.id
             )));
         }
         self.validate_base_url(base_url)?;
-        if let Some(effort) = reasoning_effort
+        if self.locked_models
+            && let Some(effort) = reasoning_effort
             && let Some(preset) = preset
             && !preset.reasoning.iter().any(|preset| preset.id == effort)
         {
@@ -947,6 +1002,144 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+
+    #[test]
+    fn only_locked_provider_catalogs_reject_custom_models_and_efforts() {
+        for definition in providers() {
+            let locked = matches!(definition.id(), "openai_socket" | "openai_codex");
+            assert_eq!(definition.locked_models(), locked, "{}", definition.id());
+            assert_eq!(
+                definition
+                    .model_config_is_valid("operator-custom-model", None, Some("operator-effort"))
+                    .is_err(),
+                locked,
+                "{} custom model",
+                definition.id(),
+            );
+            if let Some(model) = definition.default_model() {
+                definition.model_config_is_valid(model, None, None).unwrap();
+                assert_eq!(
+                    definition
+                        .model_config_is_valid(model, None, Some("operator-effort"))
+                        .is_err(),
+                    locked,
+                    "{} custom effort",
+                    definition.id(),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn editable_providers_build_custom_efforts_without_injecting_defaults() {
+        for id in ["anthropic", "kimi", "deepseek"] {
+            let definition = provider(id).unwrap();
+            for model in [definition.default_model().unwrap(), "operator-custom-model"] {
+                for effort in [None, Some("operator-effort")] {
+                    let built = definition
+                        .build(ProviderBuildConfig {
+                            tool_discovery: None,
+                            credential: ProviderCredential::ApiKey("test-key".into()),
+                            model: model.into(),
+                            base_url: None,
+                            reasoning_effort: effort.map(str::to_owned),
+                            service_tier: None,
+                            web_search: HostedWebSearch::Off,
+                            http: reqwest::Client::new(),
+                            transport: super::super::ModelTransportSettings::default(),
+                        })
+                        .unwrap();
+                    assert_eq!(
+                        built.info().reasoning_effort.as_deref(),
+                        effort,
+                        "{id}/{model}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn discovery_capabilities_reject_unsupported_settings_before_build() {
+        let kimi = provider("kimi").unwrap();
+        assert_eq!(
+            kimi.supported_tool_discovery(),
+            &[ToolDiscoveryMode::Rebuild]
+        );
+        assert!(!kimi.supports_tool_discovery(ToolDiscoveryMode::Native));
+        assert!(
+            kimi.validate_tool_discovery(ToolDiscoveryMode::Native)
+                .is_err()
+        );
+        kimi.validate_tool_discovery(ToolDiscoveryMode::Rebuild)
+            .unwrap();
+        for definition in providers() {
+            definition
+                .validate_tool_discovery(definition.default_tool_discovery())
+                .unwrap();
+            if definition.id() != "kimi" {
+                assert_eq!(
+                    definition.supported_tool_discovery(),
+                    &[ToolDiscoveryMode::Native, ToolDiscoveryMode::Rebuild]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn configured_discovery_is_applied_by_each_api_key_transport() {
+        for id in [
+            "openai_socket",
+            "responses",
+            "openrouter",
+            "anthropic",
+            "deepseek",
+            "kimi",
+        ] {
+            let definition = provider(id).unwrap();
+            for discovery in [ToolDiscoveryMode::Native, ToolDiscoveryMode::Rebuild] {
+                let built = definition.build(ProviderBuildConfig {
+                    tool_discovery: Some(discovery),
+                    credential: ProviderCredential::ApiKey("test-key".into()),
+                    model: definition.default_model().unwrap_or("custom-model").into(),
+                    base_url: None,
+                    reasoning_effort: None,
+                    service_tier: None,
+                    web_search: HostedWebSearch::Off,
+                    http: reqwest::Client::new(),
+                    transport: super::super::ModelTransportSettings::default(),
+                });
+                if id == "kimi" && discovery == ToolDiscoveryMode::Native {
+                    assert!(
+                        built
+                            .err()
+                            .unwrap()
+                            .to_string()
+                            .contains("does not support Native tool discovery")
+                    );
+                } else {
+                    assert_eq!(built.unwrap().tool_discovery(), discovery, "{id}");
+                }
+            }
+        }
+        let model = &provider("anthropic").unwrap().models()[0];
+        assert_eq!(
+            serde_json::from_str::<ModelPreset>(&serde_json::to_string(model).unwrap()).unwrap(),
+            *model
+        );
+    }
+
+    #[test]
+    fn model_catalog_rejects_duplicate_or_empty_reasoning_ids() {
+        let mut catalog: ModelCatalog = toml::from_str(include_str!("openai.toml")).unwrap();
+        catalog.validate().unwrap();
+        let duplicate = catalog.models[0].reasoning[0].clone();
+        catalog.models[0].reasoning.push(duplicate);
+        assert!(catalog.validate().is_err());
+        catalog.models[0].reasoning.pop();
+        catalog.models[0].reasoning[0].id.clear();
+        assert!(catalog.validate().is_err());
+    }
 
     #[test]
     fn embedded_provider_metadata_preserves_setup_defaults() {
@@ -1213,6 +1406,7 @@ mod tests {
         ] {
             let model = compatible
                 .build(ProviderBuildConfig {
+                    tool_discovery: None,
                     credential: ProviderCredential::ApiKey("test-key".into()),
                     model: "test-model".into(),
                     base_url: Some(endpoint.into()),
@@ -1297,6 +1491,7 @@ mod tests {
             if matches!(definition.auth(), ProviderAuth::ApiKey(_)) {
                 definition
                     .build(ProviderBuildConfig {
+                        tool_discovery: None,
                         credential: ProviderCredential::ApiKey("test-secret".into()),
                         model: model.into(),
                         base_url: None,
@@ -1350,6 +1545,7 @@ mod tests {
                 .expect_err("the provider's own endpoint still requires authentication");
             definition
                 .build(ProviderBuildConfig {
+                    tool_discovery: None,
                     credential: ProviderCredential::Credentialless,
                     model: definition
                         .default_model()

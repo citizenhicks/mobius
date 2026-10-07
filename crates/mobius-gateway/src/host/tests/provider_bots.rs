@@ -10,6 +10,7 @@ use super::*;
 
 fn selection(instance: &str, provider: &str, model: &str) -> ProviderConfig {
     ProviderConfig {
+        tool_discovery: None,
         instance: instance.into(),
         provider: provider.into(),
         model: model.into(),
@@ -37,8 +38,12 @@ async fn gateway_with_providers(
             primary.clone(),
             "Primary".into(),
             ProviderTint::default(),
-            vec![primary.model.clone()],
-            Vec::new(),
+            vec![crate::wire::ConfiguredModel {
+                id: primary.model.clone(),
+                reasoning_efforts: Some(Vec::new()),
+                default_reasoning: None,
+                ..Default::default()
+            }],
             Vec::new(),
         )
         .expect("primary provider");
@@ -48,8 +53,12 @@ async fn gateway_with_providers(
                 secondary.clone(),
                 "Secondary".into(),
                 ProviderTint::default(),
-                vec![secondary.model.clone()],
-                Vec::new(),
+                vec![crate::wire::ConfiguredModel {
+                    id: secondary.model.clone(),
+                    reasoning_efforts: Some(Vec::new()),
+                    default_reasoning: None,
+                    ..Default::default()
+                }],
                 Vec::new(),
             )
             .expect("secondary provider");
@@ -83,8 +92,12 @@ async fn saved_explicit_custom_image_route_remains_available_after_restart() {
             provider,
             "Custom".into(),
             Default::default(),
-            vec!["chat-model".into()],
-            Vec::new(),
+            vec![crate::wire::ConfiguredModel {
+                id: "chat-model".into(),
+                reasoning_efforts: Some(Vec::new()),
+                default_reasoning: None,
+                ..Default::default()
+            }],
             vec!["custom-image".into()],
         )
         .expect("explicit image opt-in");
@@ -153,7 +166,6 @@ async fn saved_unknown_voice_keeps_chat_usable_and_never_selects_a_different_voi
             Default::default(),
             Vec::new(),
             Vec::new(),
-            Vec::new(),
         )
         .expect("native provider");
     let mut secondary = AgentComposition::default().provider;
@@ -163,7 +175,6 @@ async fn saved_unknown_voice_keeps_chat_usable_and_never_selects_a_different_voi
             secondary,
             "Voice proxy".into(),
             Default::default(),
-            Vec::new(),
             Vec::new(),
             Vec::new(),
         )
@@ -378,7 +389,6 @@ async fn saved_bot_routes_survive_missing_credentials_without_advertising_unavai
             ProviderTint::default(),
             Vec::new(),
             Vec::new(),
-            Vec::new(),
         )
         .expect("provider");
     store.save(&config).expect("save config");
@@ -545,14 +555,20 @@ async fn provider_replacement_rejects_a_bot_reference_without_changing_either_st
     let error = gateway
         .register_provider(
             false,
-            crate::config::ConfiguredProvider {
+            crate::config::ProviderRegistration {
                 selection: replacement.clone(),
-                label: "Secondary".into(),
-                tint: ProviderTint::default(),
-                model_ids: vec![replacement.model.clone()],
-                reasoning_efforts: Vec::new(),
-                image_model_ids: Vec::new(),
+                label: Some("Secondary".into()),
+                tint: Some(ProviderTint::default()),
+                models: vec![crate::config::ConfiguredModel {
+                    id: replacement.model.clone(),
+                    reasoning_efforts: Some(Vec::new()),
+                    default_reasoning: None,
+                    ..Default::default()
+                }],
+                image_model_ids: Some(Vec::new()),
             },
+            false,
+            false,
         )
         .await
         .expect_err("referenced provider replacement");

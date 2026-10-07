@@ -659,8 +659,11 @@ fn workspace_directory_creation_uses_a_gateway_host_parent_and_name() {
 #[test]
 fn provider_registration_is_gateway_scoped() {
     let frame = ClientFrame::new(ClientMessage::RegisterProvider {
+        preserve_selection: false,
+        if_configured: false,
         request_id: "request-provider".into(),
         config: ProviderConfig {
+            tool_discovery: None,
             instance: "kimi".into(),
             provider: "kimi".into(),
             model: "kimi-k3".into(),
@@ -670,11 +673,10 @@ fn provider_registration_is_gateway_scoped() {
             service_tier: None,
             web_search: HostedWebSearch::Off,
         },
-        label: "Kimi".into(),
-        tint: Default::default(),
-        model_ids: Vec::new(),
-        reasoning_efforts: Vec::new(),
-        image_model_ids: Vec::new(),
+        label: None,
+        tint: None,
+        models: Vec::new(),
+        image_model_ids: None,
     });
 
     let encoded = serde_json::to_value(frame).expect("encode provider registration");
@@ -682,9 +684,14 @@ fn provider_registration_is_gateway_scoped() {
     assert_eq!(encoded["type"], "register_provider");
     assert_eq!(encoded["config"]["provider"], "kimi");
     assert_eq!(encoded["config"]["endpoint_auth"], "provider_default");
-    assert_eq!(encoded["model_ids"], serde_json::json!([]));
-    assert_eq!(encoded["reasoning_efforts"], serde_json::json!([]));
+    assert_eq!(encoded["models"], serde_json::json!([]));
+    assert!(encoded.get("model_ids").is_none());
+    assert!(encoded.get("reasoning_efforts").is_none());
     assert!(encoded.get("session_id").is_none());
+    for field in ["label", "tint", "image_model_ids"] {
+        assert!(encoded.get(field).is_none());
+    }
+    assert!(serde_json::from_value::<ClientFrame>(encoded).is_ok());
 }
 
 #[test]
@@ -707,8 +714,8 @@ fn provider_removal_is_gateway_scoped() {
 }
 
 #[test]
-fn provider_registration_requires_a_reasoning_catalog() {
-    let frame = serde_json::json!({
+fn provider_registration_rejects_provider_wide_catalogs() {
+    let mut frame = serde_json::json!({
         "version": PROTOCOL_VERSION,
         "type": "register_provider",
         "request_id": "request-provider",
@@ -722,17 +729,14 @@ fn provider_registration_requires_a_reasoning_catalog() {
         },
         "label": "OpenRouter",
         "tint": "blue",
-        "model_ids": ["openai/gpt-5"]
+        "models": []
     });
 
-    let error = serde_json::from_value::<ClientFrame>(frame)
-        .expect_err("provider registration requires reasoning efforts");
-
-    assert!(
-        error
-            .to_string()
-            .contains("missing field `reasoning_efforts`")
-    );
+    serde_json::from_value::<ClientFrame>(frame.clone()).expect("model record catalog");
+    frame.as_object_mut().unwrap().remove("models");
+    frame["model_ids"] = serde_json::json!(["openai/gpt-5"]);
+    frame["reasoning_efforts"] = serde_json::json!(["high"]);
+    assert!(serde_json::from_value::<ClientFrame>(frame).is_err());
 }
 
 #[test]

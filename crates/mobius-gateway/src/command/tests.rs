@@ -196,7 +196,6 @@ fn reset_bot_defaults_reapplies_defaults_without_changing_other_gateway_state() 
             Default::default(),
             Vec::new(),
             Vec::new(),
-            Vec::new(),
         )
         .expect("register provider");
     let current = config.bot_defaults.as_ref().expect("Bot defaults");
@@ -422,8 +421,6 @@ fn parse_register_provider_accepts_credentialless_endpoint_configuration() {
         "openrouter".into(),
         "--model".into(),
         "openai/gpt-5".into(),
-        "--reasoning-efforts".into(),
-        "medium,none,low,high,xhigh,max".into(),
         "--web-search".into(),
         "live".into(),
         "--base-url".into(),
@@ -433,28 +430,30 @@ fn parse_register_provider_accepts_credentialless_endpoint_configuration() {
     .expect("parse provider registration");
 
     assert!(matches!(
-        command,
-        Command::RegisterProvider(RegisterProviderOptions {
-            state_dir,
-            provider,
-            instance: None,
-            label: None,
-            model,
-            model_ids: None,
-            image_model_ids: None,
-            reasoning_efforts,
-            service_tier: None,
-            web_search: HostedWebSearch::Live,
-            base_url: Some(base_url),
-            credentialless: true,
-            credential_stdin: false,
-            credential_expires_at: None,
-        }) if state_dir == std::path::Path::new("/tmp/mobius")
-            && provider == "openrouter"
-            && model == "openai/gpt-5"
-            && reasoning_efforts == ["medium", "none", "low", "high", "xhigh", "max"]
-            && base_url == "https://connector.example/v1"
-    ));
+           command,
+           Command::RegisterProvider(RegisterProviderOptions {
+    preserve_selection: false,
+    if_configured: false,
+               state_dir,
+               provider,
+               instance: None,
+               label: None,
+               model,
+               model_ids: None,
+               models: None,
+               image_model_ids: None,
+               tool_discovery: None,
+               service_tier: None,
+               web_search: HostedWebSearch::Live,
+               base_url: Some(base_url),
+               credentialless: true,
+               credential_stdin: false,
+               credential_expires_at: None,
+           }) if state_dir == std::path::Path::new("/tmp/mobius")
+               && provider == "openrouter"
+               && model == "openai/gpt-5"
+               && base_url == "https://connector.example/v1"
+       ));
 }
 
 #[test]
@@ -548,6 +547,46 @@ fn provider_credential_stdin_is_bounded() {
 }
 
 #[test]
+fn parse_register_provider_model_json_rejects_mixed_or_invalid_catalogs() {
+    assert!(
+        parse(
+            [
+                "register-provider",
+                "--provider",
+                "openrouter",
+                "--model",
+                "foo",
+                "--models-json",
+                "[]",
+                "--model-id",
+                "foo",
+            ]
+            .into_iter()
+            .map(Into::into)
+            .collect()
+        )
+        .is_err()
+    );
+    assert!(
+        parse(
+            [
+                "register-provider",
+                "--provider",
+                "openrouter",
+                "--model",
+                "foo",
+                "--models-json",
+                "not json"
+            ]
+            .into_iter()
+            .map(Into::into)
+            .collect()
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn register_provider_success_json_is_stable() {
     assert_eq!(
         register_provider_json("openrouter").expect("provider registration JSON"),
@@ -559,12 +598,13 @@ fn register_provider_success_json_is_stable() {
 async fn register_provider_command_is_idempotent() {
     let directory = tempfile::tempdir().expect("gateway state");
     let state = directory.path().join("gateway");
-    let (server, grant) = GatewayServer::bootstrap(
-        state.clone(),
-        "127.0.0.1:0".parse().expect("listen address"),
-    )
-    .await
-    .expect("bootstrap gateway");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let listen = listener.local_addr().unwrap();
+    let (store, config) = ConfigStore::initialize(state.clone(), listen, None).unwrap();
+    let (auth, grant) = AuthStore::initialize(store.auth_path(), config.auth).unwrap();
+    let operator = auth.provision_local_client().unwrap();
+    drop(listener);
+    let server = GatewayServer::open(state.clone()).await.unwrap();
     let endpoint: Endpoint = format!("tcp://{}", server.listen_addr())
         .parse()
         .expect("gateway endpoint");
@@ -572,7 +612,7 @@ async fn register_provider_command_is_idempotent() {
     let serving = tokio::spawn(server.serve_until(async move {
         let _ = signal.await;
     }));
-    let (dashboard, identity) = GatewayClient::pair(
+    let (dashboard, _identity) = GatewayClient::pair(
         &endpoint,
         grant.code,
         "provider setup",
@@ -582,24 +622,24 @@ async fn register_provider_command_is_idempotent() {
     .expect("pair provider setup client");
     *REGISTER_PROVIDER_TEST_CLIENT
         .lock()
-        .expect("register-provider test client lock") = Some((endpoint, identity.token));
+        .expect("register-provider test client lock") = Some((endpoint, operator.token));
 
     register_provider_command(
         RegisterProviderOptions {
+ preserve_selection: false,
+ if_configured: false,
             state_dir: state.clone(),
             provider: "openrouter".into(),
             instance: None,
             label: Some("Work".into()),
             model: "openai/gpt-5".into(),
-            model_ids: Some(vec![
-                "openai/gpt-5".into(),
-                "anthropic/claude-sonnet-4".into(),
-            ]),
+            models: Some(serde_json::from_str(r#"[{"id":"openai/gpt-5","reasoning_efforts":["medium","high"],"default_reasoning":"medium"},{"id":"anthropic/claude-sonnet-4","reasoning_efforts":["medium","high"],"default_reasoning":"medium"}]"#).unwrap()),
+            model_ids: None,
             image_model_ids: Some(vec![
                 "google/gemini-image".into(),
                 "openai/gpt-image".into(),
             ]),
-            reasoning_efforts: vec!["medium".into(), "high".into()],
+            tool_discovery: Some(mobius::protocol::ToolDiscoveryMode::Native),
             service_tier: None,
             web_search: HostedWebSearch::Live,
             base_url: Some("https://connector.example/v1".into()),
@@ -612,11 +652,61 @@ async fn register_provider_command_is_idempotent() {
     .await
     .expect("register provider");
     let (_, persisted) = ConfigStore::open(state.clone()).expect("registered provider");
+    let models = &persisted.configured_providers["openrouter"].models;
+    assert_eq!(
+        models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        ["openai/gpt-5", "anthropic/claude-sonnet-4"]
+    );
+    for model in models {
+        assert_eq!(
+            model
+                .reasoning
+                .iter()
+                .map(|effort| effort.id.as_str())
+                .collect::<Vec<_>>(),
+            ["medium", "high"]
+        );
+        assert_eq!(model.default_reasoning.as_deref(), Some("medium"));
+    }
     let default = persisted.bot_defaults.expect("Bot defaults");
     let mut selected = default.config;
     selected.provider.reasoning_effort = Some("high".into());
     let request_id = Uuid::new_v4().to_string();
     let (sender, mut events) = dashboard.into_parts();
+    let metadata_request = Uuid::new_v4().to_string();
+    sender
+        .send(ClientMessage::RegisterProvider {
+            request_id: metadata_request.clone(),
+            config: selected.provider.clone(),
+            preserve_selection: false,
+            if_configured: false,
+            label: Some("Unauthorized metadata".into()),
+            tint: Some(Default::default()),
+            models: vec![crate::wire::ConfiguredModel {
+                id: selected.provider.model.clone(),
+                context_window: Some(64000),
+                ..Default::default()
+            }],
+            image_model_ids: Some(Vec::new()),
+        })
+        .await
+        .unwrap();
+    loop {
+        let frame = events.next().await.unwrap().unwrap();
+        if let ServerMessage::Rejected {
+            request_id: actual,
+            code,
+            ..
+        } = frame.message
+            && actual == metadata_request
+        {
+            assert_eq!(code, "operator_required");
+            break;
+        }
+    }
     sender
         .send(ClientMessage::ConfigureBotDefaults {
             request_id: request_id.clone(),
@@ -650,25 +740,45 @@ async fn register_provider_command_is_idempotent() {
     assert!(saved, "gateway did not confirm the Bot-default selection");
 
     let (store, mut persisted) = ConfigStore::open(state.clone()).expect("configured default");
-    persisted
+    // Stale disk metadata must not replace the running gateway's setup.
+    let stale = persisted
         .configured_providers
         .get_mut("openrouter")
-        .expect("OpenRouter instance")
-        .tint = crate::wire::ProviderTint::Purple;
+        .unwrap();
+    stale.label = "Stale name".into();
+    stale.tint = crate::wire::ProviderTint::Purple;
+    stale.image_model_ids = vec!["stale-image".into()];
+    let model = &mut persisted
+        .configured_providers
+        .get_mut("openrouter")
+        .unwrap()
+        .models[1];
+    model.reasoning = ["low", "high"]
+        .into_iter()
+        .map(|id| mobius::backend::model::provider::ReasoningPreset {
+            id: id.into(),
+            label: id.into(),
+            description: String::new(),
+        })
+        .collect();
+    model.default_reasoning = Some("high".into());
     store.save(&persisted).expect("custom provider tint");
 
     register_provider_command(
         RegisterProviderOptions {
+            preserve_selection: false,
+            if_configured: false,
             state_dir: state.clone(),
             provider: "openrouter".into(),
             instance: None,
             label: None,
             model: "openai/gpt-5".into(),
             model_ids: None,
+            models: None,
             image_model_ids: None,
-            reasoning_efforts: vec!["medium".into(), "high".into()],
+            tool_discovery: None,
             service_tier: None,
-            web_search: HostedWebSearch::Live,
+            web_search: HostedWebSearch::Off,
             base_url: Some("https://connector.example/v1".into()),
             credentialless: true,
             credential_stdin: false,
@@ -688,8 +798,12 @@ async fn register_provider_command_is_idempotent() {
             configured.tint,
             configured.selection.endpoint_auth,
             configured.selection.web_search,
-            configured.model_ids.as_slice(),
-            configured.reasoning_efforts.as_slice(),
+            configured.models[0].id.as_str(),
+            configured.models[0]
+                .reasoning
+                .iter()
+                .map(|effort| effort.id.as_str())
+                .collect::<Vec<_>>(),
             config
                 .bot_defaults
                 .as_ref()
@@ -702,15 +816,37 @@ async fn register_provider_command_is_idempotent() {
         (
             1,
             "Work",
-            crate::wire::ProviderTint::Purple,
+            crate::wire::ProviderTint::default(),
             crate::wire::ProviderEndpointAuth::Credentialless,
-            HostedWebSearch::Live,
-            ["openai/gpt-5".to_string()].as_slice(),
-            ["medium".to_string(), "high".to_string()].as_slice(),
+            HostedWebSearch::Off,
+            "openai/gpt-5",
+            vec!["medium", "high"],
             Some("high"),
         )
     );
 
+    assert_eq!(
+        configured.selection.tool_discovery,
+        Some(mobius::protocol::ToolDiscoveryMode::Native)
+    );
+    assert_eq!(configured.models.len(), 2);
+    assert_eq!(configured.models[1].id, "anthropic/claude-sonnet-4");
+    assert_eq!(
+        configured.models[1]
+            .reasoning
+            .iter()
+            .map(|effort| effort.id.as_str())
+            .collect::<Vec<_>>(),
+        ["medium", "high"]
+    );
+    assert_eq!(
+        configured.models[1].default_reasoning.as_deref(),
+        Some("medium")
+    );
+    assert_eq!(
+        configured.models[0].default_reasoning.as_deref(),
+        Some("medium")
+    );
     assert_eq!(
         configured.image_model_ids,
         ["google/gemini-image", "openai/gpt-image"]
@@ -719,14 +855,17 @@ async fn register_provider_command_is_idempotent() {
     let api_key = "sk-or-v1-aaaaaaaaaaaaaaaa";
     register_provider_with_credential(
         RegisterProviderOptions {
+ preserve_selection: false,
+ if_configured: false,
             state_dir: state.clone(),
             provider: "openrouter".into(),
             instance: Some("mobius-cloud".into()),
             label: Some("Möbius Cloud".into()),
             model: "openai/gpt-5.6-luna".into(),
             model_ids: None,
+            models: Some(serde_json::from_str(r#"[{"id":"openai/gpt-5.6-luna","reasoning_efforts":["medium"],"default_reasoning":"medium"}]"#).unwrap()),
             image_model_ids: None,
-            reasoning_efforts: vec!["medium".into()],
+            tool_discovery: None,
             service_tier: None,
             web_search: HostedWebSearch::Live,
             base_url: None,
@@ -777,14 +916,20 @@ async fn register_provider_command_is_idempotent() {
     );
     register_provider_command(
         RegisterProviderOptions {
+            preserve_selection: false,
+            if_configured: false,
             state_dir: state.clone(),
             provider: "openrouter".into(),
             instance: Some("mobius-cloud".into()),
             label: None,
             model: "anthropic/claude-sonnet-4".into(),
-            model_ids: None,
+            model_ids: Some(vec![
+                "openai/gpt-5.6-luna".into(),
+                "anthropic/claude-sonnet-4".into(),
+            ]),
+            models: None,
             image_model_ids: None,
-            reasoning_efforts: vec!["medium".into()],
+            tool_discovery: None,
             service_tier: None,
             web_search: HostedWebSearch::Live,
             base_url: None,
@@ -798,9 +943,92 @@ async fn register_provider_command_is_idempotent() {
     .expect("switch to a previously unlisted model");
     let (_, config) = ConfigStore::open(state.clone()).expect("changed model");
     assert_eq!(
-        config.configured_providers["mobius-cloud"].model_ids,
-        ["anthropic/claude-sonnet-4"]
+        config.configured_providers["mobius-cloud"]
+            .models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        ["openai/gpt-5.6-luna", "anthropic/claude-sonnet-4"]
     );
+    for (catalog, expected_efforts, expected_default) in [
+        (
+            r#"[{"id":"openai/gpt-5.6-luna","reasoning_efforts":["medium","high"],"default_reasoning":"high"},{"id":"anthropic/claude-sonnet-4","reasoning_efforts":["low"],"default_reasoning":"low"}]"#,
+            vec!["low"],
+            Some("low"),
+        ),
+        (
+            r#"[{"id":"openai/gpt-5.6-luna","reasoning_efforts":["medium","high"],"default_reasoning":"high"},{"id":"anthropic/claude-sonnet-4","reasoning_efforts":[]}]"#,
+            vec![],
+            None,
+        ),
+    ] {
+        let Command::RegisterProvider(options) = parse(vec![
+            "register-provider".into(),
+            "--state-dir".into(),
+            state.as_os_str().to_owned(),
+            "--provider".into(),
+            "openrouter".into(),
+            "--instance".into(),
+            "mobius-cloud".into(),
+            "--model".into(),
+            "anthropic/claude-sonnet-4".into(),
+            "--models-json".into(),
+            catalog.into(),
+            "--base-url".into(),
+            "https://connector.example/v1".into(),
+            "--service-tier".into(),
+            "priority".into(),
+            "--tool-discovery".into(),
+            "rebuild".into(),
+            "--credential-stdin".into(),
+        ])
+        .expect("parse Cloud catalog") else {
+            panic!("registration command")
+        };
+        register_provider_with_credential(
+            options,
+            Some(api_key.into()),
+            load_register_provider_test_client,
+        )
+        .await
+        .expect("register Cloud per-model catalog");
+        let (_, persisted) = ConfigStore::open(state.clone()).unwrap();
+        let registered = &persisted.configured_providers["mobius-cloud"];
+        assert_eq!(
+            registered.selection.tool_discovery,
+            Some(mobius::protocol::ToolDiscoveryMode::Rebuild)
+        );
+        assert_eq!(registered.models.len(), 2);
+        assert_eq!(
+            registered.models[0]
+                .reasoning
+                .iter()
+                .map(|effort| effort.id.as_str())
+                .collect::<Vec<_>>(),
+            ["medium", "high"]
+        );
+        assert_eq!(
+            registered.models[0].default_reasoning.as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            registered.models[1]
+                .reasoning
+                .iter()
+                .map(|effort| effort.id.as_str())
+                .collect::<Vec<_>>(),
+            expected_efforts
+        );
+        assert_eq!(
+            registered.models[1].default_reasoning.as_deref(),
+            expected_default
+        );
+        assert_eq!(
+            registered.selection.service_tier.as_deref(),
+            Some("priority")
+        );
+    }
+    let (_, config) = ConfigStore::open(state.clone()).unwrap();
     provider::clear_provider_credential(
         state.clone(),
         "mobius-cloud".into(),
@@ -819,10 +1047,134 @@ async fn register_provider_command_is_idempotent() {
             .unwrap()
             .is_none()
     );
-    let (_, after_clear) = ConfigStore::open(state).unwrap();
+    let (_, after_clear) = ConfigStore::open(state.clone()).unwrap();
     assert_eq!(
         after_clear.configured_providers,
         config.configured_providers
+    );
+
+    for provider_id in ["anthropic", "kimi", "deepseek"] {
+        let Command::RegisterProvider(options) = parse(vec![
+            "register-provider".into(),
+            "--state-dir".into(),
+            state.as_os_str().to_owned(),
+            "--provider".into(),
+            provider_id.into(),
+            "--instance".into(),
+            format!("cloud-{provider_id}").into(),
+            "--model".into(),
+            "cloud-custom-model".into(),
+            "--models-json".into(),
+            r#"[{"id":"cloud-custom-model","reasoning_efforts":[],"label":"Cloud custom","description":"Operator model","context_window":64000}]"#.into(),
+            "--base-url".into(),
+            "https://connector.example/v1".into(),
+            "--credential-stdin".into(),
+        ])
+        .expect("parse editable backend catalog") else {
+            panic!("registration command")
+        };
+        register_provider_with_credential(
+            options,
+            Some(api_key.into()),
+            load_register_provider_test_client,
+        )
+        .await
+        .expect("register editable backend catalog");
+        let (_, persisted) = ConfigStore::open(state.clone()).unwrap();
+        let configured = &persisted.configured_providers[&format!("cloud-{provider_id}")];
+        assert_eq!(configured.selection.provider, provider_id);
+        assert_eq!(
+            configured.selection.base_url.as_deref(),
+            Some("https://connector.example/v1")
+        );
+        assert_eq!(configured.models.len(), 1);
+        assert_eq!(configured.models[0].id, "cloud-custom-model");
+        assert_eq!(configured.models[0].label, "Cloud custom");
+        assert_eq!(configured.models[0].description, "Operator model");
+        assert_eq!(configured.models[0].context_window, 64000);
+        assert!(configured.models[0].reasoning.is_empty());
+    }
+
+    let (_, before_refresh) = ConfigStore::open(state.clone()).unwrap();
+    let before_selection = before_refresh.configured_providers["mobius-cloud"]
+        .selection
+        .clone();
+    for instance in ["mobius-cloud", "absent-optional-provider"] {
+        let Command::RegisterProvider(options) = parse(
+            [
+                "register-provider",
+                "--state-dir",
+                state.to_str().unwrap(),
+                "--provider",
+                "openrouter",
+                "--instance",
+                instance,
+                "--model",
+                "ignored-refresh-model",
+                "--model-id",
+                "replacement-chat",
+                "--image-model-id",
+                "replacement-image",
+                "--label",
+                "Replacement label",
+                "--web-search",
+                "live",
+                "--base-url",
+                "https://connector.example/v1",
+                "--credentialless",
+                "--preserve-selection",
+                "--if-configured",
+            ]
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+        )
+        .unwrap() else {
+            panic!("registration command")
+        };
+        assert!(options.preserve_selection && options.if_configured);
+        register_provider_command(options, load_register_provider_test_client)
+            .await
+            .unwrap();
+    }
+    let (_, after_refresh) = ConfigStore::open(state.clone()).unwrap();
+    let before_provider = &before_refresh.configured_providers["mobius-cloud"];
+    let after_provider = &after_refresh.configured_providers["mobius-cloud"];
+    assert_eq!(after_provider.models, before_provider.models);
+    assert_eq!(
+        after_provider.image_model_ids,
+        before_provider.image_model_ids
+    );
+    assert_eq!(after_provider.label, before_provider.label);
+    assert_eq!(after_provider.tint, before_provider.tint);
+    assert_eq!(
+        after_refresh.configured_providers["mobius-cloud"]
+            .selection
+            .model,
+        before_selection.model
+    );
+    assert_eq!(
+        after_refresh.configured_providers["mobius-cloud"]
+            .selection
+            .reasoning_effort,
+        before_selection.reasoning_effort
+    );
+    assert_eq!(
+        after_refresh.configured_providers["mobius-cloud"]
+            .selection
+            .web_search,
+        before_selection.web_search
+    );
+    assert_eq!(
+        after_refresh.configured_providers["mobius-cloud"]
+            .selection
+            .tool_discovery,
+        before_selection.tool_discovery
+    );
+    assert!(
+        !after_refresh
+            .configured_providers
+            .contains_key("absent-optional-provider")
     );
 
     shutdown.send(()).expect("stop gateway");

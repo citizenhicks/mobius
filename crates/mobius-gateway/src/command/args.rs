@@ -202,6 +202,15 @@ struct RegisterProviderArgs {
     #[arg(long, value_name = "TEXT")]
     label: Option<String>,
 
+    /// Preserve existing model catalogs and selections when refreshing credentials/endpoints.
+    /// Omit this flag when intentionally replacing an existing catalog.
+    #[arg(long)]
+    preserve_selection: bool,
+
+    /// Update only an already configured provider instance.
+    #[arg(long)]
+    if_configured: bool,
+
     /// Provider model identifier.
     #[arg(long, value_name = "ID")]
     model: String,
@@ -210,18 +219,17 @@ struct RegisterProviderArgs {
     #[arg(long = "model-id", value_name = "ID")]
     model_ids: Option<Vec<String>>,
 
+    /// Replace models with JSON records: id, reasoning_efforts, default_reasoning; optional label, description, context_window.
+    #[arg(long, value_name = "JSON", conflicts_with = "model_ids")]
+    models_json: Option<String>,
+
     /// Image model ID; repeat to replace the list. Omit to preserve existing IDs.
     #[arg(long = "image-model-id", value_name = "ID")]
     image_model_ids: Option<Vec<String>>,
 
-    /// Comma-separated reasoning effort identifiers.
-    #[arg(
-        long,
-        value_name = "CSV",
-        value_delimiter = ',',
-        action = ArgAction::Set
-    )]
-    reasoning_efforts: Vec<String>,
+    /// Tool discovery behavior; omit to preserve the existing override.
+    #[arg(long, value_parser = ["native", "rebuild"])]
+    tool_discovery: Option<String>,
 
     /// Hosted web-search mode: off, cached, or live.
     #[arg(long, value_name = "MODE", default_value = "off")]
@@ -359,9 +367,12 @@ pub(super) struct RegisterProviderOptions {
     pub(super) instance: Option<String>,
     pub(super) label: Option<String>,
     pub(super) model: String,
+    pub(super) preserve_selection: bool,
+    pub(super) if_configured: bool,
     pub(super) model_ids: Option<Vec<String>>,
+    pub(super) models: Option<Vec<crate::wire::ConfiguredModel>>,
     pub(super) image_model_ids: Option<Vec<String>>,
-    pub(super) reasoning_efforts: Vec<String>,
+    pub(super) tool_discovery: Option<mobius::protocol::ToolDiscoveryMode>,
     pub(super) web_search: HostedWebSearch,
     pub(super) base_url: Option<String>,
     pub(super) credentialless: bool,
@@ -451,9 +462,19 @@ impl GatewayCli {
                     instance: arguments.instance,
                     label: arguments.label,
                     model: arguments.model,
+                    preserve_selection: arguments.preserve_selection,
+                    if_configured: arguments.if_configured,
                     model_ids: arguments.model_ids,
+                    models: arguments
+                        .models_json
+                        .as_deref()
+                        .map(serde_json::from_str)
+                        .transpose()?,
                     image_model_ids: arguments.image_model_ids,
-                    reasoning_efforts: arguments.reasoning_efforts,
+                    tool_discovery: arguments.tool_discovery.map(|mode| match mode.as_str() {
+                        "native" => mobius::protocol::ToolDiscoveryMode::Native,
+                        _ => mobius::protocol::ToolDiscoveryMode::Rebuild,
+                    }),
                     web_search: arguments.web_search,
                     base_url: arguments.base_url,
                     credentialless: arguments.credentialless,

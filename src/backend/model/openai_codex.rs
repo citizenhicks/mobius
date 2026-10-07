@@ -40,6 +40,9 @@ pub(super) fn provider() -> ProviderDefinition {
 }
 
 fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn super::Model>> {
+    let tool_discovery = config
+        .tool_discovery
+        .unwrap_or_else(|| provider().tool_discovery(&config.model, config.base_url.as_deref()));
     let auth = config.credential.into_browser::<ChatGptAuth>(PROVIDER_ID)?;
     let base_url = config
         .base_url
@@ -64,6 +67,7 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn super::Model>> 
         config.http,
         config.transport,
     )?
+    .with_tool_discovery(tool_discovery)
     .with_service_tier(config.service_tier)
     .with_codex_realtime_voice(base_url)?
     .with_image_api(Some(&super::image_generation::IMAGE_APIS["codex"]));

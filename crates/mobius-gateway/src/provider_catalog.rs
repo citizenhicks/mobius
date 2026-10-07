@@ -3,18 +3,18 @@
 use std::collections::BTreeMap;
 
 use mobius::backend::model::provider::{
-    ProviderAuth, ProviderDefinition, ReasoningPreset, provider, providers,
+    ModelPreset, ProviderAuth, ProviderDefinition, ReasoningPreset, provider, providers,
 };
 use mobius::middleware::manifest::ModelCatalogs;
 use mobius::protocol::{FrontendSettingOption, FrontendTone, ModelCapability, ModelChoice};
 
 use crate::config::{
-    ConfigStore, ConfiguredProvider, CredentialStore, DEFAULT_CONTEXT_WINDOW, GatewayConfig,
-    model_route_id,
+    ConfigStore, ConfiguredModel, ConfiguredProvider, CredentialStore, DEFAULT_CONTEXT_WINDOW,
+    GatewayConfig, model_route_id,
 };
 use crate::wire::{
     ProviderAuthKind, ProviderConfig, ProviderEndpointAuth, ProviderInstance, ProviderModel,
-    ProviderStatus, ReasoningChoice,
+    ProviderStatus,
 };
 use crate::{Error, Result};
 
@@ -57,8 +57,7 @@ pub(crate) fn provider_instances(
                     base_url,
                 )?,
                 selection: configured.selection.clone(),
-                model_ids: configured.model_ids.clone(),
-                reasoning_efforts: configured.reasoning_efforts.clone(),
+                models: configured_models(definition, configured),
                 image_model_ids: configured.image_model_ids.clone(),
             })
         })
@@ -195,83 +194,158 @@ pub(crate) fn configured_model_routes(
     Ok(routes)
 }
 
+#[cfg(test)]
+pub(crate) fn configured_model_input(model: &ModelPreset) -> ConfiguredModel {
+    ConfiguredModel {
+        id: model.id.clone(),
+        reasoning_efforts: Some(
+            model
+                .reasoning
+                .iter()
+                .map(|effort| effort.id.clone())
+                .collect(),
+        ),
+        default_reasoning: model.default_reasoning.clone(),
+        ..Default::default()
+    }
+}
+
+pub(crate) fn model_context_window(definition: &ProviderDefinition, id: &str) -> i64 {
+    definition
+        .model(id)
+        .or_else(|| {
+            definition
+                .default_model()
+                .and_then(|id| definition.model(id))
+        })
+        .map_or(DEFAULT_CONTEXT_WINDOW, |model| model.context_window)
+}
+
+pub(crate) fn prepare_configured_models(
+    definition: &ProviderDefinition,
+    submitted: Vec<ConfiguredModel>,
+    mut previous: Vec<ModelPreset>,
+) -> Vec<ModelPreset> {
+    submitted
+        .into_iter()
+        .map(|input| {
+            let mut model =
+                if let Some(index) = previous.iter().position(|model| model.id == input.id) {
+                    previous.swap_remove(index)
+                } else if let Some(preset) = definition.model(&input.id) {
+                    preset.clone()
+                } else {
+                    ModelPreset {
+                        context_window: model_context_window(definition, &input.id),
+                        tool_discovery: definition.tool_discovery(&input.id, None),
+                        label: input.id.clone(),
+                        id: input.id,
+                        description: String::new(),
+                        reasoning: Vec::new(),
+                        default_reasoning: None,
+                    }
+                };
+            if let Some(efforts) = input.reasoning_efforts {
+                let mut previous_efforts = std::mem::take(&mut model.reasoning);
+                model.reasoning = efforts
+                    .into_iter()
+                    .map(|id| {
+                        previous_efforts
+                            .iter()
+                            .position(|effort| effort.id == id)
+                            .map_or_else(
+                                || ReasoningPreset {
+                                    label: id.clone(),
+                                    id,
+                                    description: String::new(),
+                                },
+                                |index| previous_efforts.swap_remove(index),
+                            )
+                    })
+                    .collect();
+                model.default_reasoning = input.default_reasoning;
+            } else if input.default_reasoning.is_some() {
+                model.default_reasoning = input.default_reasoning;
+            }
+            if let Some(label) = input.label {
+                model.label = label;
+            }
+            if let Some(description) = input.description {
+                model.description = description;
+            }
+            if let Some(window) = input.context_window {
+                model.context_window = window;
+            }
+            model
+        })
+        .collect()
+}
+
+fn models<'a>(
+    definition: &'a ProviderDefinition,
+    configured: &'a ConfiguredProvider,
+) -> &'a [ModelPreset] {
+    if definition.locked_models() {
+        definition.models()
+    } else {
+        &configured.models
+    }
+}
+
 pub(crate) fn catalog_routes(
     definition: &ProviderDefinition,
     configured: &ConfiguredProvider,
     selection: &ProviderConfig,
 ) -> Vec<CatalogRoute> {
-    let mut models = definition
-        .models()
+    let models = models(definition, configured);
+    let ordered = models
         .iter()
-        .map(|preset| (preset.id.as_str(), Some(preset)))
-        .collect::<Vec<_>>();
-    for model in &configured.model_ids {
-        if models.iter().all(|(candidate, _)| *candidate != model) {
-            models.push((model, None));
-        }
-    }
-    models.sort_by_key(|(model, _)| *model != selection.model);
-
+        .filter(|model| model.id == selection.model)
+        .chain(models.iter().filter(|model| model.id != selection.model));
     let mut routes = Vec::new();
-    for (model, preset) in models {
-        let mut efforts: Vec<(Option<&str>, Option<&str>)> = Vec::new();
-        for reasoning in preset.into_iter().flat_map(|preset| &preset.reasoning) {
-            let effort = Some(reasoning.id.as_str());
-            if efforts.iter().all(|(known, _)| *known != effort) {
-                efforts.push((effort, Some(reasoning.label.as_str())));
-            }
-        }
-        if preset.is_none() {
-            for reasoning in &configured.reasoning_efforts {
-                let effort = Some(reasoning.as_str());
-                if efforts.iter().all(|(known, _)| *known != effort) {
-                    efforts.push((effort, None));
-                }
-            }
-        }
-        if efforts.is_empty() {
-            efforts.push((None, None));
-        }
-        for (effort, variant_label) in efforts {
+    for model in ordered {
+        let (id, label, context_window) = (
+            model.id.as_str(),
+            model.label.as_str(),
+            model.context_window,
+        );
+        for variant in with_default(&model.reasoning) {
+            let effort = variant.map(|variant| variant.id.as_str());
+            let variant_label = variant.map(|variant| variant.label.as_str());
             let provider = ProviderConfig {
                 instance: selection.instance.clone(),
                 provider: selection.provider.clone(),
-                base_url: selection.base_url.clone(),
-                endpoint_auth: selection.endpoint_auth,
-                model: model.into(),
+                base_url: configured.selection.base_url.clone(),
+                endpoint_auth: configured.selection.endpoint_auth,
+                model: id.into(),
                 reasoning_effort: effort.map(str::to_string),
                 service_tier: selection
                     .service_tier
                     .as_ref()
                     .or(configured.selection.service_tier.as_ref())
                     .cloned(),
-                web_search: selection.web_search,
+                web_search: configured.selection.web_search,
+                tool_discovery: configured.selection.tool_discovery,
             };
-            let route = model_route_id(&selection.instance, model, effort);
+            let route = model_route_id(&selection.instance, id, effort);
             routes.push(CatalogRoute {
                 choice: ModelChoice {
                     route,
-                    group: format!(
-                        "{} · {}",
-                        configured.label,
-                        preset.map_or(model, |preset| preset.label.as_str())
-                    ),
-                    model: model.into(),
+                    group: format!("{} · {}", configured.label, label),
+                    model: id.into(),
                     reasoning_effort: effort.map(str::to_string),
                     variant_label: variant_label.map(str::to_string),
-                    context_window: Some(
-                        preset.map_or(DEFAULT_CONTEXT_WINDOW, |preset| preset.context_window),
-                    ),
+                    context_window: Some(context_window),
                     supports_image_input: definition.supports_image_input(),
                     supports_image_generation: definition.supports_at(
                         ModelCapability::ImageGeneration,
-                        selection.base_url.as_deref(),
+                        configured.selection.base_url.as_deref(),
                     ) || !configured.image_model_ids.is_empty(),
                     supports_realtime_voice: definition.supports_at(
                         ModelCapability::RealtimeVoice,
-                        selection.base_url.as_deref(),
+                        configured.selection.base_url.as_deref(),
                     ),
-                    tool_discovery: definition.tool_discovery(model, selection.base_url.as_deref()),
+                    tool_discovery: effective_tool_discovery(definition, &provider, model),
                 },
                 provider,
             });
@@ -403,6 +477,42 @@ pub(crate) fn credential_is_configured(
     }
 }
 
+pub(crate) fn effective_tool_discovery(
+    definition: &ProviderDefinition,
+    selection: &ProviderConfig,
+    model: &ModelPreset,
+) -> mobius::protocol::ToolDiscoveryMode {
+    selection.tool_discovery.unwrap_or_else(|| {
+        if definition.uses_default_endpoint(selection.base_url.as_deref()) {
+            model.tool_discovery
+        } else {
+            definition
+                .custom_endpoint_tool_discovery()
+                .unwrap_or(model.tool_discovery)
+        }
+    })
+}
+
+fn configured_models(
+    definition: &ProviderDefinition,
+    configured: &ConfiguredProvider,
+) -> Vec<ProviderModel> {
+    configured
+        .models
+        .iter()
+        .map(|model| {
+            let mut value = model.clone();
+            value.tool_discovery =
+                effective_tool_discovery(definition, &configured.selection, model);
+            value
+        })
+        .collect()
+}
+
+fn provider_models(definition: &ProviderDefinition) -> Vec<ProviderModel> {
+    definition.models().to_vec()
+}
+
 fn provider_status(definition: &ProviderDefinition) -> ProviderStatus {
     let (auth, default_api_key_env) = match definition.auth() {
         ProviderAuth::ApiKey(default_env) => (
@@ -416,7 +526,7 @@ fn provider_status(definition: &ProviderDefinition) -> ProviderStatus {
         label: definition.label().into(),
         symbol: definition.symbol(),
         description: definition.description().into(),
-        model_ids_configurable: definition.models().is_empty(),
+        model_ids_configurable: !definition.locked_models(),
         image_models: std::borrow::Cow::Borrowed(definition.image_models()),
         image_model_ids_configurable: definition.image_models().is_empty()
             && definition.supports_at(ModelCapability::ImageGeneration, None),
@@ -425,27 +535,7 @@ fn provider_status(definition: &ProviderDefinition) -> ProviderStatus {
         default_base_url: definition.default_base_url().map(str::to_string),
         native_custom_endpoints: definition.native_custom_endpoints(),
         default_api_key_env,
-        models: definition
-            .models()
-            .iter()
-            .map(|model| ProviderModel {
-                id: model.id.clone(),
-                label: model.label.clone(),
-                description: model.description.clone(),
-                context_window: model.context_window,
-                reasoning: model
-                    .reasoning
-                    .iter()
-                    .map(|reasoning| ReasoningChoice {
-                        id: reasoning.id.clone(),
-                        label: reasoning.label.clone(),
-                        description: reasoning.description.clone(),
-                    })
-                    .collect(),
-                default_reasoning: model.default_reasoning.clone(),
-                tool_discovery: model.tool_discovery,
-            })
-            .collect(),
+        models: provider_models(definition),
         web_search: definition
             .web_search()
             .iter()
@@ -460,6 +550,7 @@ fn provider_status(definition: &ProviderDefinition) -> ProviderStatus {
             .collect(),
         tool_discovery: definition.default_tool_discovery(),
         custom_endpoint_tool_discovery: definition.custom_endpoint_tool_discovery(),
+        supported_tool_discovery: definition.supported_tool_discovery().into(),
         realtime_voices: definition
             .realtime_voices()
             .iter()
@@ -536,8 +627,7 @@ mod tests {
             },
             label: "OpenAI".into(),
             tint: Default::default(),
-            model_ids: Vec::new(),
-            reasoning_efforts: Vec::new(),
+            models: Vec::new(),
             image_model_ids: Vec::new(),
         };
         let mut selection = configured.selection.clone();
@@ -669,8 +759,20 @@ mod tests {
                     selection,
                     id.into(),
                     Default::default(),
-                    vec![model.into(), "custom-model".into()],
-                    vec!["medium".into(), "max".into()],
+                    vec![
+                        crate::wire::ConfiguredModel {
+                            id: model.into(),
+                            reasoning_efforts: Some(vec!["medium".into(), "max".into()]),
+                            default_reasoning: Some("medium".into()),
+                            ..Default::default()
+                        },
+                        crate::wire::ConfiguredModel {
+                            id: "custom-model".into(),
+                            reasoning_efforts: Some(vec!["medium".into(), "max".into()]),
+                            default_reasoning: Some("medium".into()),
+                            ..Default::default()
+                        },
+                    ],
                     Vec::new(),
                 )
                 .expect("register custom catalog");
@@ -719,12 +821,19 @@ mod tests {
                     selection,
                     id.into(),
                     Default::default(),
-                    if definition.models().is_empty() {
+                    (if definition.models().is_empty() {
                         vec!["local".into()]
                     } else {
                         Vec::new()
-                    },
-                    Vec::new(),
+                    })
+                    .into_iter()
+                    .map(|id| crate::wire::ConfiguredModel {
+                        id,
+                        reasoning_efforts: Some(Vec::new()),
+                        default_reasoning: None,
+                        ..Default::default()
+                    })
+                    .collect(),
                     image_ids,
                 )
                 .expect("register");
@@ -803,5 +912,160 @@ mod tests {
                 "provider {id}"
             );
         }
+    }
+
+    #[test]
+    fn configured_catalogs_preserve_per_model_reasoning_and_plain_routes() {
+        use crate::config::ConfiguredModel;
+
+        let mut selection = crate::wire::AgentComposition::default().provider;
+        selection.instance = "custom".into();
+        selection.provider = "responses".into();
+        selection.model = "reasoner".into();
+        selection.reasoning_effort = None;
+        let mut configured = ConfiguredProvider {
+            selection,
+            label: "Custom".into(),
+            tint: Default::default(),
+            models: prepare_configured_models(
+                provider("responses").expect("provider"),
+                vec![
+                    ConfiguredModel {
+                        id: "reasoner".into(),
+                        reasoning_efforts: Some(vec!["low".into(), "high".into()]),
+                        default_reasoning: Some("high".into()),
+                        ..Default::default()
+                    },
+                    ConfiguredModel {
+                        id: "fast".into(),
+                        reasoning_efforts: Some(vec!["brief".into()]),
+                        default_reasoning: Some("brief".into()),
+                        ..Default::default()
+                    },
+                    ConfiguredModel {
+                        id: "plain".into(),
+                        reasoning_efforts: Some(Vec::new()),
+                        default_reasoning: None,
+                        ..Default::default()
+                    },
+                ],
+                Vec::new(),
+            ),
+            image_model_ids: Vec::new(),
+        };
+        let definition = provider("responses").expect("custom provider");
+        let models = configured_models(definition, &configured);
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| (
+                    model.id.as_str(),
+                    model
+                        .reasoning
+                        .iter()
+                        .map(|effort| effort.id.as_str())
+                        .collect::<Vec<_>>(),
+                    model.default_reasoning.as_deref(),
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("reasoner", vec!["low", "high"], Some("high")),
+                ("fast", vec!["brief"], Some("brief")),
+                ("plain", Vec::new(), None),
+            ]
+        );
+        let routes = catalog_routes(definition, &configured, &configured.selection);
+        assert_eq!(
+            routes
+                .iter()
+                .map(|route| route.choice.route.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "custom::reasoner::low",
+                "custom::reasoner::high",
+                "custom::fast::brief",
+                "custom::plain::default"
+            ]
+        );
+        let builtin = provider("openai_socket").expect("builtin provider");
+        configured.selection.provider = "openai_socket".into();
+        configured.models.clear();
+        assert!(configured_models(builtin, &configured).is_empty());
+        assert!(!provider_status(builtin).models.is_empty());
+    }
+
+    #[test]
+    fn editable_setups_keep_their_own_metadata_and_model_list() {
+        for definition in providers() {
+            assert_eq!(
+                provider_status(definition).model_ids_configurable,
+                !matches!(definition.id(), "openai_socket" | "openai_codex")
+            );
+        }
+        let definition = provider("anthropic").expect("provider");
+        let id = definition.default_model().expect("default");
+        let mut selection = crate::wire::AgentComposition::default().provider;
+        selection.instance = "editable".into();
+        selection.provider = definition.id().into();
+        selection.model = id.into();
+        selection.base_url = definition.default_base_url().map(str::to_owned);
+        selection.reasoning_effort = None;
+        let mut gateway = GatewayConfig::new("127.0.0.1:8741".parse().expect("listen"), None)
+            .expect("gateway")
+            .registering_provider(
+                selection.clone(),
+                "Editable".into(),
+                Default::default(),
+                Vec::new(),
+                Vec::new(),
+            )
+            .expect("seed catalog");
+        assert_eq!(
+            gateway.configured_providers["editable"].models,
+            definition.models()
+        );
+        let stored = gateway
+            .configured_providers
+            .get_mut("editable")
+            .expect("setup");
+        let model = stored
+            .models
+            .iter_mut()
+            .find(|model| model.id == id)
+            .expect("model");
+        model.context_window = 123456;
+        model.label = "Operator label".into();
+        model.description = "Operator description".into();
+        stored.selection.tool_discovery = Some(ToolDiscoveryMode::Native);
+        selection.tool_discovery = Some(ToolDiscoveryMode::Native);
+        let gateway = gateway
+            .registering_provider(
+                selection,
+                "Edited".into(),
+                Default::default(),
+                vec![ConfiguredModel {
+                    id: id.into(),
+                    reasoning_efforts: Some(Vec::new()),
+                    ..Default::default()
+                }],
+                Vec::new(),
+            )
+            .expect("app edit");
+        let stored = &gateway.configured_providers["editable"];
+        assert_eq!(stored.models.len(), 1, "removed presets must not return");
+        let model = &stored.models[0];
+        assert_eq!(model.context_window, 123456);
+        assert_eq!(model.label, "Operator label");
+        assert_eq!(model.description, "Operator description");
+        assert!(model.reasoning.is_empty());
+        assert!(model.default_reasoning.is_none());
+        let routes = catalog_routes(definition, stored, &stored.selection);
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].choice.context_window, Some(123456));
+        assert_eq!(routes[0].choice.tool_discovery, ToolDiscoveryMode::Native);
+        assert!(routes[0].provider.reasoning_effort.is_none());
+        let restored: GatewayConfig =
+            toml::from_str(&toml::to_string(&gateway).expect("serialize")).expect("restore");
+        assert_eq!(restored.configured_providers, gateway.configured_providers);
     }
 }

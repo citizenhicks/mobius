@@ -590,23 +590,25 @@ pub(super) async fn handle_message(
         ClientMessage::RegisterProvider {
             request_id,
             config,
+            preserve_selection,
+            if_configured,
             label,
             tint,
-            model_ids,
-            reasoning_efforts,
+            models,
             image_model_ids,
         } => {
             let registered = gateway
                 .register_provider(
                     operator,
-                    crate::config::ConfiguredProvider {
+                    crate::config::ProviderRegistration {
                         selection: config,
                         label,
                         tint,
-                        model_ids,
-                        reasoning_efforts,
+                        models,
                         image_model_ids,
                     },
+                    preserve_selection,
+                    if_configured,
                 )
                 .await;
             return write_gateway_result(writer, connection.view, request_id, registered).await;

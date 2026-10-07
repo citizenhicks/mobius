@@ -163,7 +163,6 @@ async fn catalogue_mutations_do_not_require_selecting_the_target_chat() {
             Default::default(),
             Vec::new(),
             Vec::new(),
-            Vec::new(),
         )
         .expect("register provider");
     store.save(&config).expect("save provider");
@@ -617,7 +616,6 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
             crate::wire::AgentComposition::default().provider,
             "Test".into(),
             Default::default(),
-            Vec::new(),
             Vec::new(),
             Vec::new(),
         )
@@ -1327,6 +1325,7 @@ async fn shutdown_stops_a_blocked_routine_and_fails_its_durable_run() {
     let (store, config) = ConfigStore::initialize(root.path().join("state"), listen, None)
         .expect("initialize gateway");
     let provider = crate::wire::ProviderConfig {
+        tool_discovery: None,
         instance: "blocked-routine".into(),
         provider: "responses".into(),
         model: "local-test".into(),
@@ -1345,8 +1344,12 @@ async fn shutdown_stops_a_blocked_routine_and_fails_its_durable_run() {
             provider,
             "Blocked routine".into(),
             Default::default(),
-            vec!["local-test".into()],
-            Vec::new(),
+            vec![crate::wire::ConfiguredModel {
+                id: "local-test".into(),
+                reasoning_efforts: Some(Vec::new()),
+                default_reasoning: None,
+                ..Default::default()
+            }],
             Vec::new(),
         )
         .expect("register provider");
@@ -1840,6 +1843,7 @@ async fn storage_mutations_keep_composer_removal_available_during_active_turns()
     let (store, config) = ConfigStore::initialize(root.path().join("state"), listen, None)
         .expect("initialize gateway");
     let provider = crate::wire::ProviderConfig {
+        tool_discovery: None,
         instance: "blocked-storage".into(),
         provider: "responses".into(),
         model: "local-test".into(),
@@ -1859,8 +1863,12 @@ async fn storage_mutations_keep_composer_removal_available_during_active_turns()
             provider,
             "Blocked storage".into(),
             Default::default(),
-            vec!["local-test".into()],
-            Vec::new(),
+            vec![crate::wire::ConfiguredModel {
+                id: "local-test".into(),
+                reasoning_efforts: Some(Vec::new()),
+                default_reasoning: None,
+                ..Default::default()
+            }],
             Vec::new(),
         )
         .expect("register provider");

@@ -41,6 +41,7 @@ async fn signaling_requires_the_selected_session_is_ephemeral_and_keeps_chat_usa
     // A nondefault endpoint without its own credential cannot use ambient API keys or voice.
     let composition = crate::wire::AgentComposition {
         provider: crate::wire::ProviderConfig {
+            tool_discovery: None,
             instance: "voice-boundary-test".into(),
             provider: "responses".into(),
             model: "local-test".into(),
@@ -57,8 +58,12 @@ async fn signaling_requires_the_selected_session_is_ephemeral_and_keeps_chat_usa
             composition.provider.clone(),
             "Voice boundary".into(),
             Default::default(),
-            vec!["local-test".into()],
-            Vec::new(),
+            vec![crate::wire::ConfiguredModel {
+                id: "local-test".into(),
+                reasoning_efforts: Some(Vec::new()),
+                default_reasoning: None,
+                ..Default::default()
+            }],
             Vec::new(),
         )
         .expect("register unavailable local provider");

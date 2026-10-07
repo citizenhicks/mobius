@@ -2,6 +2,9 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use mobius::backend::model::provider::MediaModelPreset;
+pub use mobius::backend::model::provider::{
+    ModelPreset as ProviderModel, ReasoningPreset as ReasoningChoice,
+};
 
 use super::*;
 
@@ -568,6 +571,9 @@ pub struct ProviderConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Optional native Responses processing tier.
     pub service_tier: Option<String>,
+    /// Provider-level tool discovery override; omission uses the provider default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_discovery: Option<ToolDiscoveryMode>,
     /// The web search.
     pub web_search: HostedWebSearch,
 }
@@ -618,6 +624,8 @@ pub struct ProviderStatus {
     pub web_search: Vec<FrontendSettingOption>,
     /// The tool discovery.
     pub tool_discovery: ToolDiscoveryMode,
+    /// Discovery modes implemented by the provider adapter.
+    pub supported_tool_discovery: Vec<ToolDiscoveryMode>,
     /// The custom endpoint tool discovery.
     pub custom_endpoint_tool_discovery: Option<ToolDiscoveryMode>,
     /// The realtime voices.
@@ -694,10 +702,8 @@ pub struct ProviderInstance {
     pub credential_hint: Option<String>,
     /// The selection.
     pub selection: ProviderConfig,
-    /// The model identifiers.
-    pub model_ids: Vec<String>,
-    /// The reasoning efforts.
-    pub reasoning_efforts: Vec<String>,
+    /// Configured model overrides; built-in catalogs remain in [`ProviderStatus::models`].
+    pub models: Vec<ProviderModel>,
     /// Image model identifiers listed by this setup.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub image_model_ids: Vec<String>,
@@ -746,34 +752,27 @@ impl ProviderStatus {
     }
 }
 
-/// One model advertised by a provider manifest.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProviderModel {
-    /// The identifier.
+/// Model edits; optional metadata is accepted only from the gateway operator.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfiguredModel {
+    /// Provider model identifier.
     pub id: String,
-    /// The label.
-    pub label: String,
-    /// The description.
-    pub description: String,
-    /// The context window.
-    pub context_window: i64,
-    /// The reasoning.
-    pub reasoning: Vec<ReasoningChoice>,
-    /// The default reasoning.
+    /// Omit to retain choices; an empty list explicitly clears them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_efforts: Option<Vec<String>>,
+    /// Required member of a nonempty reasoning list; absent when the list is empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_reasoning: Option<String>,
-    /// The tool discovery.
-    pub tool_discovery: ToolDiscoveryMode,
-}
-
-/// One reasoning effort advertised for a provider model.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReasoningChoice {
-    /// The identifier.
-    pub id: String,
-    /// The label.
-    pub label: String,
-    /// The description.
-    pub description: String,
+    /// Operator-only display label; omission preserves the stored value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Operator-only description; omission preserves the stored value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Operator-only context window in tokens; omission preserves the stored value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<i64>,
 }
 
 /// Frontend-safe provider authentication mechanism.

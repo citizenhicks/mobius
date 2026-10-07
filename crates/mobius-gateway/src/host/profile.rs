@@ -369,6 +369,7 @@ mod tests {
             reasoning_effort: None,
             service_tier: None,
             web_search: mobius::backend::model::provider::HostedWebSearch::Off,
+            tool_discovery: None,
         };
         let codex = ProviderConfig {
             instance: "codex".into(),
@@ -379,14 +380,19 @@ mod tests {
             reasoning_effort: None,
             service_tier: None,
             web_search: mobius::backend::model::provider::HostedWebSearch::Off,
+            tool_discovery: None,
         };
         let config = config
             .registering_provider(
                 api,
                 "API".into(),
                 Default::default(),
-                vec!["openai/gpt-5".into()],
-                Vec::new(),
+                vec![crate::wire::ConfiguredModel {
+                    id: "openai/gpt-5".into(),
+                    reasoning_efforts: Some(Vec::new()),
+                    default_reasoning: None,
+                    ..Default::default()
+                }],
                 Vec::new(),
             )
             .expect("API provider")
@@ -394,7 +400,6 @@ mod tests {
                 codex,
                 "Codex".into(),
                 Default::default(),
-                Vec::new(),
                 Vec::new(),
                 Vec::new(),
             )

@@ -858,8 +858,12 @@ mod tests {
                 selection.clone(),
                 "Unconfigured test".into(),
                 Default::default(),
-                vec![selection.model],
-                Vec::new(),
+                vec![crate::wire::ConfiguredModel {
+                    id: selection.model,
+                    reasoning_efforts: Some(Vec::new()),
+                    default_reasoning: None,
+                    ..Default::default()
+                }],
                 Vec::new(),
             )
             .unwrap();

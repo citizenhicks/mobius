@@ -788,6 +788,9 @@ pub(super) fn generic_provider() -> ProviderDefinition {
 }
 
 fn build_generic(config: ProviderBuildConfig) -> Result<std::sync::Arc<dyn Model>> {
+    let tool_discovery = config.tool_discovery.unwrap_or_else(|| {
+        generic_provider().tool_discovery(&config.model, config.base_url.as_deref())
+    });
     let base_url = config
         .base_url
         .ok_or_else(|| Error::Config("Responses provider requires a base URL".into()))?;
@@ -803,6 +806,7 @@ fn build_generic(config: ProviderBuildConfig) -> Result<std::sync::Arc<dyn Model
         config.http,
         config.transport,
     )?
+    .with_tool_discovery(tool_discovery)
     .with_service_tier(config.service_tier);
     let provider = if native_voice {
         provider

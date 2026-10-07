@@ -195,8 +195,7 @@ mod tests {
             configured: true,
             credential_hint: None,
             selection,
-            model_ids: Vec::new(),
-            reasoning_efforts: Vec::new(),
+            models: Vec::new(),
             image_model_ids: Vec::new(),
         }];
         let profile = ProfileSnapshot {
