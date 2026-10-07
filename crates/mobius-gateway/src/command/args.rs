@@ -227,8 +227,8 @@ struct RegisterProviderArgs {
     #[arg(long = "image-model-id", value_name = "ID")]
     image_model_ids: Option<Vec<String>>,
 
-    /// Tool discovery behavior; omit to preserve the existing override.
-    #[arg(long, value_parser = ["native", "rebuild"])]
+    /// Tool discovery mode: native or rebuild; omit to preserve the existing override.
+    #[arg(long, value_name = "MODE", value_parser = ["native", "rebuild"], hide_possible_values = true)]
     tool_discovery: Option<String>,
 
     /// Hosted web-search mode: off, cached, or live.
