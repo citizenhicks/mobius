@@ -51,7 +51,7 @@ async fn transcript_page_bounds_batches_and_continues_backward() {
         checkpoint.sequence = sequence;
         let item = json!({"sequence": sequence});
         store
-            .save(&checkpoint, std::slice::from_ref(&item), None)
+            .save(&checkpoint, &[Arc::new(item.clone())], None)
             .await
             .expect("append transcript");
     }
@@ -190,7 +190,7 @@ async fn execution_insert_failure_rolls_back_checkpoint_and_transcript() {
         .await
         .expect("save session");
     store
-        .run(|connection| {
+        .run(|connection, _cache| {
             connection.execute_batch(
                 "CREATE TRIGGER reject_execution
                      BEFORE INSERT ON execution_journal
@@ -211,7 +211,7 @@ async fn execution_insert_failure_rolls_back_checkpoint_and_transcript() {
 
     assert!(
         store
-            .save(&next, &[json!({"role": "assistant"})], Some(&record))
+            .save(&next, &[json!({"role": "assistant"}).into()], Some(&record))
             .await
             .is_err()
     );
@@ -259,8 +259,8 @@ async fn event_insert_failure_rolls_back_checkpoint_and_event_batch() {
 
     let error = store
         .save_with_events(
-            next,
-            vec![json!({"role": "assistant"})],
+            Arc::new(next),
+            vec![json!({"role": "assistant"}).into()],
             None,
             vec![warning(10, "first"), warning(-1, "invalid")],
         )

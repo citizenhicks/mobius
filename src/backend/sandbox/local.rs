@@ -80,7 +80,7 @@ pub struct LocalSandbox {
     shell_executable: PathBuf,
     bubblewrap_executable: Option<PathBuf>,
     allowed_environment: BTreeSet<String>,
-    denied_reads: Vec<DeniedRead>,
+    denied_reads: Arc<Vec<DeniedRead>>,
     denied_environment: BTreeSet<String>,
     isolated_home: bool,
     #[cfg(target_os = "linux")]
@@ -168,7 +168,7 @@ impl LocalSandbox {
                 shell_executable: super::text::DEFINITION.defaults_shell.as_str().into(),
                 bubblewrap_executable: None,
                 allowed_environment: BTreeSet::new(),
-                denied_reads: Vec::new(),
+                denied_reads: Arc::default(),
                 denied_environment: BTreeSet::new(),
                 isolated_home: false,
                 #[cfg(target_os = "linux")]
@@ -192,7 +192,7 @@ impl LocalSandbox {
         scoped.shell_executable = self.shell_executable.clone();
         scoped.bubblewrap_executable = self.bubblewrap_executable.clone();
         scoped.allowed_environment = self.allowed_environment.clone();
-        scoped.denied_reads = self.denied_reads.clone();
+        scoped.denied_reads = Arc::clone(&self.denied_reads);
         scoped.denied_environment = self.denied_environment.clone();
         scoped.isolated_home = self.isolated_home;
         #[cfg(target_os = "linux")]
@@ -336,11 +336,12 @@ impl LocalSandbox {
         {
             return Ok(self);
         }
+        // A policy change must not alter restrictions retained by isolated children or in-flight file access.
+        let denied_reads = Arc::make_mut(&mut self.denied_reads);
         if metadata.is_dir() {
-            self.denied_reads
-                .retain(|denied| !denied.path.starts_with(&path));
+            denied_reads.retain(|denied| !denied.path.starts_with(&path));
         }
-        self.denied_reads.push(DeniedRead {
+        denied_reads.push(DeniedRead {
             path,
             directory: metadata.is_dir(),
         });
@@ -819,13 +820,8 @@ impl LocalSandbox {
                     status
                 };
                 let (stdout, stderr, status) = tokio::join!(
-                    read_output(
-                        stdout,
-                        CommandStream::Stdout,
-                        output_sink.clone(),
-                        output_limit
-                    ),
-                    read_output(stderr, CommandStream::Stderr, output_sink, output_limit),
+                    read_output(stdout, CommandStream::Stdout, &output_sink, output_limit),
+                    read_output(stderr, CommandStream::Stderr, &output_sink, output_limit),
                     wait
                 );
                 let stdout = stdout?;
@@ -940,7 +936,7 @@ impl SandboxBackend for LocalSandbox {
         Box::pin(async move {
             let requested = path.to_string();
             if sandbox_mode == SandboxMode::DangerFullAccess && Path::new(path).is_absolute() {
-                let denied_reads = self.denied_reads.clone();
+                let denied_reads = Arc::clone(&self.denied_reads);
                 return tokio::task::spawn_blocking(move || {
                     let (root, relative) =
                         full_access_target(Path::new(&requested), &denied_reads)?;
@@ -970,7 +966,7 @@ impl SandboxBackend for LocalSandbox {
             }
             let requested = path.to_string();
             if sandbox_mode == SandboxMode::DangerFullAccess && Path::new(path).is_absolute() {
-                let denied_reads = self.denied_reads.clone();
+                let denied_reads = Arc::clone(&self.denied_reads);
                 return tokio::task::spawn_blocking(move || {
                     let (root, relative) =
                         full_access_target(Path::new(&requested), &denied_reads)?;
@@ -1001,7 +997,7 @@ impl SandboxBackend for LocalSandbox {
             let requested = path.to_string();
             let content = content.as_bytes().to_vec();
             if sandbox_mode == SandboxMode::DangerFullAccess && Path::new(path).is_absolute() {
-                let denied_reads = self.denied_reads.clone();
+                let denied_reads = Arc::clone(&self.denied_reads);
                 return tokio::task::spawn_blocking(move || {
                     let (root, relative) =
                         full_access_target(Path::new(&requested), &denied_reads)?;
@@ -1130,7 +1126,7 @@ fn paths_overlap(left: &Path, right: &Path) -> bool {
 async fn read_output(
     mut reader: impl AsyncRead + Unpin,
     stream: CommandStream,
-    sink: CommandOutputSink,
+    sink: &CommandOutputSink,
     limit: usize,
 ) -> Result<BoundedOutput> {
     let mut output = Vec::new();

@@ -30,7 +30,7 @@ use crate::wire::{
 };
 use crate::{Error, Result};
 
-const STATE_VERSION: u32 = 7;
+const STATE_VERSION: u32 = 8;
 const STATE_FILE: &str = storage::STATE_FILE;
 const STATE_LOCK_FILE: &str = "bots-state.lock";
 const ROUTINES_DIR: &str = "routines";
@@ -426,7 +426,7 @@ impl BotStore {
         let bot_ids = state
             .bots
             .iter()
-            .map(|bot| bot.id.clone())
+            .map(|bot| bot.id.as_str())
             .collect::<BTreeSet<_>>();
         store.storage.validate_run_owners(&bot_ids)?;
         Ok(store)
@@ -565,19 +565,13 @@ impl BotStore {
         }
         let routines = state
             .routines
-            .iter()
+            .into_iter()
             .filter(|routine| routine.bot_id == id)
-            .cloned()
             .collect::<Vec<_>>();
         let routine_ids = routines
             .iter()
-            .map(|routine| routine.id.clone())
+            .map(|routine| routine.id.as_str())
             .collect::<BTreeSet<_>>();
-        let instructions = routines
-            .iter()
-            .map(|routine| routine.instructions.clone())
-            .collect::<BTreeSet<_>>();
-        drop(state);
         let mut routine_locks = Vec::with_capacity(routine_ids.len());
         for routine_id in &routine_ids {
             let Some(lock) = self.try_routine_lock(routine_id)? else {
@@ -590,6 +584,10 @@ impl BotStore {
         for routine in &routines {
             self.read_routine_instructions(routine)?;
         }
+        let (routine_ids, instructions) = routines
+            .into_iter()
+            .map(|routine| (routine.id, routine.instructions))
+            .unzip();
         Ok(BotDeletion {
             bot_id: id.into(),
             expected_revision,
@@ -613,7 +611,7 @@ impl BotStore {
             session_ids: session_ids.to_vec(),
             instruction_paths: deletion.instructions.iter().cloned().collect(),
         };
-        let intent = self.update_locked(|state| {
+        self.update_locked(|state| {
             let bot = find_bot_mut(state, &intent.bot_id)?;
             if bot.config.revision != intent.expected_revision {
                 return Err(Error::Config(format!(
@@ -629,7 +627,7 @@ impl BotStore {
                 ));
             }
             state.pending_bot_deletion = Some(intent.clone());
-            Ok(intent.clone())
+            Ok(())
         })?;
         deletion.release_state_lock();
         Ok(intent)
@@ -720,9 +718,12 @@ impl BotStore {
                 .routines
                 .iter()
                 .filter(|routine| routine.bot_id == bot_id)
-                .map(|routine| routine.id.clone())
+                .map(|routine| routine.id.as_str())
                 .collect::<BTreeSet<_>>();
-            if current_routine_ids != routine_ids {
+            if !current_routine_ids
+                .into_iter()
+                .eq(routine_ids.iter().map(String::as_str))
+            {
                 return Err(Error::Config(
                     "Bot routine state changed during deletion".into(),
                 ));
@@ -731,9 +732,9 @@ impl BotStore {
                 .routines
                 .iter()
                 .filter(|routine| routine.bot_id == bot_id)
-                .map(|routine| routine.instructions.clone())
+                .map(|routine| &routine.instructions)
                 .collect::<BTreeSet<_>>();
-            if current_instructions != instructions {
+            if !current_instructions.into_iter().eq(&instructions) {
                 return Err(Error::Config(
                     "Bot routine instructions changed during deletion".into(),
                 ));
@@ -796,7 +797,15 @@ impl BotStore {
         validate_input_definition(definition)?;
         let workspace = validate_workspace(&definition.workspace)?;
         let path = self.new_instruction_path();
-        crate::publication::publish(&path, definition.instructions.trim().as_bytes(), true)?;
+        if let Err(error) =
+            crate::publication::publish(&path, definition.instructions.trim().as_bytes(), true)
+        {
+            if matches!(error, Error::PublicationApplied { .. }) {
+                // No catalog references this newly allocated path yet; remove the applied but unconfirmed staging file.
+                remove_if_present(&path)?;
+            }
+            return Err(error);
+        }
         let result = (|| {
             let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
             state_lock.lock()?;
@@ -817,8 +826,10 @@ impl BotStore {
                     .collect::<Result<_>>()?,
                 enabled: true,
             };
-            state.routines.push(routine.clone());
+            let index = state.routines.len();
+            state.routines.push(routine);
             validate_state(&state, &self.routines_dir)?;
+            let routine = &state.routines[index];
             let event = events::caused_event(
                 Uuid::new_v4().to_string(),
                 bot_id.into(),
@@ -839,7 +850,7 @@ impl BotStore {
                 now,
                 None,
             )?;
-            Ok(routine)
+            Ok(state.routines.swap_remove(index))
         })();
         if result.is_err() {
             remove_if_present(&path)?;
@@ -851,7 +862,7 @@ impl BotStore {
         let state = self.fresh_state()?;
         state
             .routines
-            .iter()
+            .into_iter()
             .filter(|stored| bot_id.is_none_or(|bot_id| stored.bot_id == bot_id))
             .map(|stored| self.routine_record_from(stored, now))
             .collect()
@@ -861,7 +872,7 @@ impl BotStore {
         let state = self.fresh_state()?;
         let stored = state
             .routines
-            .iter()
+            .into_iter()
             .find(|routine| routine.id == id)
             .ok_or_else(|| Error::Config(format!("unknown routine `{id}`")))?;
         self.routine_record_from(stored, now)
@@ -911,20 +922,19 @@ impl BotStore {
         let mut state = self.fresh_state()?;
         reject_bot_mutation_if_deleting(&state)?;
         let index = resolve_routine(&state.routines, id)?;
-        let existing = state.routines[index].clone();
-        let bindings = existing
-            .bindings
-            .iter()
-            .map(|binding| binding.definition.clone())
-            .collect::<Vec<_>>();
+        let existing = &state.routines[index];
         if existing.workspace == workspace
-            && self.read_routine_instructions(&existing)? == definition.instructions.trim()
-            && bindings == definition.bindings
+            && self.read_routine_instructions(existing)? == definition.instructions.trim()
+            && existing
+                .bindings
+                .iter()
+                .map(|binding| &binding.definition)
+                .eq(&definition.bindings)
         {
             if let Some(id) = accepted_action_id {
                 self.storage.action_accepted(id)?;
             }
-            return Ok(existing);
+            return Ok(state.routines.swap_remove(index));
         }
         let Some(_lock) = self.try_routine_lock(&existing.id)? else {
             return Err(Error::Config(format!(
@@ -933,7 +943,17 @@ impl BotStore {
             )));
         };
         let path = self.new_instruction_path();
-        crate::publication::publish(&path, definition.instructions.trim().as_bytes(), true)?;
+        if let Err(error) =
+            crate::publication::publish(&path, definition.instructions.trim().as_bytes(), true)
+        {
+            if matches!(error, Error::PublicationApplied { .. }) {
+                // No catalog references this newly allocated path yet; remove the applied but unconfirmed staging file.
+                remove_if_present(&path)?;
+            }
+            return Err(error);
+        }
+        let previous_instructions = std::mem::take(&mut state.routines[index].instructions);
+        let mut previous_bindings = std::mem::take(&mut state.routines[index].bindings);
         let result = (|| {
             let now = Utc::now().timestamp();
             let stored = &mut state.routines[index];
@@ -943,19 +963,18 @@ impl BotStore {
                 .bindings
                 .iter()
                 .map(|binding| {
-                    existing
-                        .bindings
+                    if let Some(index) = previous_bindings
                         .iter()
-                        .find(|prior| prior.definition == *binding)
-                        .cloned()
-                        .map_or_else(
-                            || StoredRoutineBinding::new(binding.clone(), now, false),
-                            Ok,
-                        )
+                        .position(|prior| prior.definition == *binding)
+                    {
+                        Ok(previous_bindings.swap_remove(index))
+                    } else {
+                        StoredRoutineBinding::new(binding.clone(), now, false)
+                    }
                 })
                 .collect::<Result<_>>()?;
-            let updated = stored.clone();
             validate_state(&state, &self.routines_dir)?;
+            let updated = &state.routines[index];
             let event = events::caused_event(
                 Uuid::new_v4().to_string(),
                 updated.bot_id.clone(),
@@ -976,10 +995,10 @@ impl BotStore {
                 now,
                 accepted_action_id,
             )?;
-            Ok(updated)
+            Ok(state.routines.swap_remove(index))
         })();
         if result.is_ok() {
-            let _ = remove_if_present(&existing.instructions);
+            let _ = remove_if_present(&previous_instructions);
         } else {
             remove_if_present(&path)?;
         }
@@ -1003,7 +1022,7 @@ impl BotStore {
             if let Some(id) = accepted_action_id {
                 self.storage.action_accepted(id)?;
             }
-            return Ok(state.routines[index].clone());
+            return Ok(state.routines.swap_remove(index));
         }
         let now = Utc::now().timestamp();
         let stored = &mut state.routines[index];
@@ -1013,8 +1032,8 @@ impl BotStore {
                 binding.reset(now, true)?;
             }
         }
-        let updated = stored.clone();
         validate_state(&state, &self.routines_dir)?;
+        let updated = &state.routines[index];
         let data = if enabled {
             HookData::RoutineResumed {
                 routine_id: updated.id.clone(),
@@ -1042,7 +1061,7 @@ impl BotStore {
             now,
             accepted_action_id,
         )?;
-        Ok(updated)
+        Ok(state.routines.swap_remove(index))
     }
 
     pub(crate) fn prepare_routine_deletion(&self, id: &str) -> Result<RoutineDeletion> {
@@ -1056,18 +1075,18 @@ impl BotStore {
             )));
         };
         self.read_routine_instructions(&routine)?;
-        let state = self.fresh_state()?;
+        let mut state = self.fresh_state()?;
         let index = resolve_routine(&state.routines, &routine.id)?;
-        let routine = &state.routines[index];
+        let routine = state.routines.swap_remove(index);
         let session_ids = self
             .storage
             .session_ids_for_routine(&routine.id)?
             .into_iter()
             .collect();
         Ok(RoutineDeletion {
-            routine_id: routine.id.clone(),
+            routine_id: routine.id,
             session_ids,
-            instructions: routine.instructions.clone(),
+            instructions: routine.instructions,
             _state_lock: state_lock,
             _lock: lock,
         })
@@ -1135,36 +1154,40 @@ impl BotStore {
     }
 
     pub(crate) fn routine(&self, id: &str) -> Result<StoredRoutine> {
-        let state = self.fresh_state()?;
-        Ok(state.routines[resolve_routine(&state.routines, id)?].clone())
+        let mut state = self.fresh_state()?;
+        let index = resolve_routine(&state.routines, id)?;
+        Ok(state.routines.swap_remove(index))
     }
 
     pub(crate) fn routine_input(&self, id: &str) -> Result<(StoredRoutine, String)> {
         let state = self.fresh_state()?;
         let routine = state
             .routines
-            .iter()
+            .into_iter()
             .find(|routine| routine.id == id)
             .ok_or_else(|| Error::Config(format!("unknown routine `{id}`")))?;
-        let instructions = self.read_routine_instructions(routine)?;
+        let instructions = self.read_routine_instructions(&routine)?;
         let input = format!("{ROUTINE_SUBMISSION_PREFIX}\n\n{instructions}");
-        Ok((routine.clone(), input))
+        Ok((routine, input))
     }
 
-    fn routine_record_from(&self, stored: &StoredRoutine, now: i64) -> Result<Routine> {
+    fn routine_record_from(&self, stored: StoredRoutine, now: i64) -> Result<Routine> {
+        let instructions = self.read_routine_instructions(&stored)?;
+        let finished = stored.is_finished(now);
+        let next_run_at = stored.next_run_at(now);
         Ok(Routine {
-            id: stored.id.clone(),
-            bot_id: stored.bot_id.clone(),
-            workspace: stored.workspace.clone(),
-            instructions: self.read_routine_instructions(stored)?,
+            id: stored.id,
+            bot_id: stored.bot_id,
+            workspace: stored.workspace,
+            instructions,
             bindings: stored
                 .bindings
-                .iter()
-                .map(|binding| binding.definition.clone())
+                .into_iter()
+                .map(|binding| binding.definition)
                 .collect(),
             enabled: stored.enabled,
-            finished: stored.is_finished(now),
-            next_run_at: stored.next_run_at(now),
+            finished,
+            next_run_at,
         })
     }
 
@@ -1780,7 +1803,7 @@ fn validate_instructions(instructions: &str) -> Result<()> {
 pub(crate) fn validate_definition(definition: &RoutineDefinition, depth: usize) -> Result<()> {
     validate_stored_workspace(&definition.workspace)?;
     validate_instructions(&definition.instructions)?;
-    validate_bindings(&definition.bindings, depth)
+    validate_bindings(definition.bindings.iter(), depth)
 }
 
 pub(crate) fn validate_input_definition(definition: &RoutineDefinition) -> Result<()> {
@@ -1804,7 +1827,10 @@ pub(crate) fn validate_input_definition(definition: &RoutineDefinition) -> Resul
     Ok(())
 }
 
-fn validate_bindings(bindings: &[RoutineBinding], depth: usize) -> Result<()> {
+fn validate_bindings<'a>(
+    bindings: impl ExactSizeIterator<Item = &'a RoutineBinding>,
+    depth: usize,
+) -> Result<()> {
     if depth > 4 || bindings.len() > events::MAX_ROUTINE_BINDINGS {
         return Err(Error::Config(
             "routine bindings exceed their count or nesting bound".into(),
@@ -1970,11 +1996,7 @@ fn validate_state(state: &BotState, routines_dir: &Path) -> Result<()> {
             ));
         }
         validate_bindings(
-            &routine
-                .bindings
-                .iter()
-                .map(|binding| binding.definition.clone())
-                .collect::<Vec<_>>(),
+            routine.bindings.iter().map(|binding| &binding.definition),
             0,
         )?;
         if routine

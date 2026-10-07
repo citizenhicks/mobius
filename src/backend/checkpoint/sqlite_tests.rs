@@ -105,6 +105,8 @@ fn execution(session_id: &str, turn: u64) -> ExecutionRecord {
     }
 }
 
+#[path = "sqlite_tests/context.rs"]
+mod context;
 #[path = "sqlite_tests/event_journal.rs"]
 mod event_journal;
 #[path = "sqlite_tests/journals.rs"]

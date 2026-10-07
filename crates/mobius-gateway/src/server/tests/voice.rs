@@ -230,7 +230,7 @@ async fn signaling_requires_the_selected_session_is_ephemeral_and_keeps_chat_usa
         match next_gateway_message(&mut events).await {
             ServerMessage::AgentEvent {
                 session_id, record, ..
-            } if session_id == selected
+            } if session_id.as_ref() == selected
                 && record.event.submission_id.as_deref() == Some(&submission_id) =>
             {
                 match record.event.msg {

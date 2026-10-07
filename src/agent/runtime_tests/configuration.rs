@@ -281,7 +281,7 @@ async fn blank_session_owner_is_rejected_at_agent_creation() {
 }
 
 #[tokio::test]
-async fn completed_pre_model_effects_are_settled_when_a_later_hook_fails() {
+async fn completed_pre_model_usage_is_settled_when_a_later_hook_rejects_preparation() {
     let workspace = tempfile::tempdir().expect("workspace");
     let checkpoints = Arc::new(
         SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
@@ -310,7 +310,7 @@ async fn completed_pre_model_effects_are_settled_when_a_later_hook_fails() {
             .lock()
             .expect("usage observer lock")
             .push((route.to_owned(), usage.total_tokens));
-        Ok(())
+        Box::pin(async { Ok(()) })
     });
     let mut agent = create_agent(config).await.expect("create agent");
     agent.next_event().await.expect("configured event");
@@ -346,7 +346,7 @@ async fn completed_pre_model_effects_are_settled_when_a_later_hook_fails() {
         .pop()
         .expect("failed execution");
 
-    assert!(saw_effect);
+    assert!(!saw_effect);
     assert_eq!(
         observed_usage
             .lock()
@@ -362,14 +362,18 @@ async fn completed_pre_model_effects_are_settled_when_a_later_hook_fails() {
             execution.usage.total_tokens,
             saved.execution_stats.failed_run_count,
         ),
-        (ExecutionOutcome::Failed, 0, 1, 1)
+        (ExecutionOutcome::Failed, 1, 1, 1)
     );
     assert!(
-        saved
+        !saved
             .context
             .iter()
             .any(|item| internal_message_kind(item) == Some("settled"))
     );
+    assert_eq!((saved.context_epoch, saved.compaction_count), (0, 0));
+    assert!(saved.context.iter().any(|item| {
+        crate::protocol::message_metadata(item).is_some_and(|message| message.text == "hello")
+    }));
 }
 
 #[tokio::test]
@@ -382,7 +386,9 @@ async fn capability_frontend_sink_does_not_keep_a_stopped_agent_alive() {
         .await
         .expect("agent");
     let frontend = agent.frontend_sink();
-    let (sender, mut events) = agent.into_recorded_parts();
+    let session_storage = agent.session().session_id.as_ptr();
+    let (sender, mut events, session, _) = agent.into_recorded_parts();
+    assert_eq!(session.session_id.as_ptr(), session_storage);
     drop(sender);
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         while events.recv().await.is_some() {}

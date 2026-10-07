@@ -137,13 +137,9 @@ impl Tool for SendArtifact {
                         .sandbox
                         .read_bytes(&path, MAX_BINARY_FILE_BYTES, &context.permissions)
                         .await?;
+                    let media_type = media_type(&name).into();
                     self.store
-                        .publish_artifact(
-                            &self.session_id,
-                            name.clone(),
-                            media_type(&name).into(),
-                            &bytes,
-                        )
+                        .publish_artifact(&self.session_id, name, media_type, &bytes)
                         .await?
                 }
                 (None, Some(id)) => {

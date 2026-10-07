@@ -7,7 +7,10 @@ use tokio_tungstenite::tungstenite::Error as WebSocketError;
 fn websocket_error_cause_keeps_only_the_io_category() {
     let error = WebSocketError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionReset));
 
-    assert_eq!(websocket_error_cause(&error), "I/O:ConnectionReset");
+    assert_eq!(
+        websocket_error_cause(&error).to_string(),
+        "I/O:ConnectionReset"
+    );
 }
 
 #[tokio::test]
@@ -120,7 +123,7 @@ async fn failed_exchange_flushes_request_failed_reason() {
     let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
     let result = timeout(
         Duration::from_secs(2),
-        exchange(&mut connection, &serde_json::json!({}), &events, None),
+        exchange(&mut connection, "{}".to_owned(), &events, None),
     )
     .await
     .expect("exchange timeout");

@@ -82,7 +82,7 @@ impl Shared {
                     if !entry.status.is_active() {
                         return Ok(Stage::Unchanged(()));
                     }
-                    entry.status = status.clone();
+                    entry.status = status;
                     entry.active_turn_id = None;
                     entry.last_message.clone_from(&message);
                     let parent = entry.parent.clone();
@@ -245,9 +245,8 @@ async fn monitor_events(
                 .await
             }
             EventMsg::TurnComplete(_) => {
-                let message = last_message.clone();
                 return shared
-                    .finished(root_id, path, AgentStatus::Completed, message)
+                    .finished(root_id, path, AgentStatus::Completed, last_message)
                     .await;
             }
             EventMsg::TurnAborted(turn) => {

@@ -1,7 +1,9 @@
 //! Converts neutral model history into frontend presentation events.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
+use serde::Deserialize as _;
 use serde_json::Value;
 
 use crate::protocol::AssistantMessageEvent;
@@ -34,19 +36,29 @@ pub(crate) fn is_internal_message(message: &Value) -> bool {
 
 const FORKED_ATTACHMENT_PLACEHOLDER: &str = "[Attachment unavailable in this fork]";
 
-pub(crate) fn strip_attachment_references(items: &mut Vec<Value>) {
+pub(crate) fn strip_attachment_references(items: &mut Vec<Arc<Value>>) {
     for item in items.iter_mut() {
+        if item.get(ATTACHMENTS_FIELD).is_none()
+            && item
+                .get(MESSAGE_METADATA_FIELD)
+                .and_then(|metadata| metadata.get("attachments"))
+                .and_then(Value::as_array)
+                .is_none_or(Vec::is_empty)
+        {
+            continue;
+        }
+        let item = Arc::make_mut(item);
         let needs_placeholder = item.get("role").and_then(Value::as_str) == Some("user")
             && item
                 .get(ATTACHMENTS_FIELD)
                 .and_then(|value| {
-                    serde_json::from_value::<Vec<crate::protocol::SessionFileReference>>(
-                        value.clone(),
+                    <Vec<crate::protocol::SessionFileReference> as serde::Deserialize>::deserialize(
+                        value,
                     )
                     .ok()
                 })
                 .is_some_and(|files| !files.is_empty())
-            && message_text(item, "user").is_none_or(|text| text.trim().is_empty());
+            && !has_message_text(item);
         if let Some(object) = item.as_object_mut() {
             object.remove(ATTACHMENTS_FIELD);
             if needs_placeholder {
@@ -60,8 +72,7 @@ pub(crate) fn strip_attachment_references(items: &mut Vec<Value>) {
             }
             if let Some(mut message) = object
                 .get(MESSAGE_METADATA_FIELD)
-                .cloned()
-                .and_then(|value| serde_json::from_value::<MessageEvent>(value).ok())
+                .and_then(|value| <MessageEvent as serde::Deserialize>::deserialize(value).ok())
             {
                 message.attachments.clear();
                 if needs_placeholder {
@@ -74,30 +85,55 @@ pub(crate) fn strip_attachment_references(items: &mut Vec<Value>) {
         }
     }
     items.retain_mut(|item| {
-        if internal_message_kind(item) != Some(ATTACHMENT_CONTEXT_MARKER) { return true; }
-        let images = item.get("content").and_then(Value::as_array).into_iter().flatten()
-            .filter(|part| part.get("type").and_then(Value::as_str) == Some("input_image")).cloned().collect::<Vec<_>>();
-        if images.is_empty() { return false; }
-        *item = serde_json::json!({"role":"user", "content": images, (INTERNAL_MESSAGE_FIELD): "inherited_media"});
+        if internal_message_kind(item) != Some(ATTACHMENT_CONTEXT_MARKER) {
+            return true;
+        }
+        let is_image =
+            |part: &Value| part.get("type").and_then(Value::as_str) == Some("input_image");
+        if !item
+            .get("content")
+            .and_then(Value::as_array)
+            .is_some_and(|parts| parts.iter().any(is_image))
+        {
+            return false;
+        }
+        let images = if let Some(item) = Arc::get_mut(item) {
+            let mut parts = item
+                .get_mut("content")
+                .and_then(Value::as_array_mut)
+                .map(std::mem::take)
+                .unwrap_or_default();
+            parts.retain(is_image);
+            parts
+        } else {
+            // A fork owns its rewritten item; copy only retained images, never attachment text.
+            item["content"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|part| is_image(part))
+                .cloned()
+                .collect()
+        };
+        let mut inherited = serde_json::json!({
+            "role": "user",
+            (INTERNAL_MESSAGE_FIELD): "inherited_media"
+        });
+        inherited["content"] = Value::Array(images);
+        *item = Arc::new(inherited);
         true
     });
 }
 
-fn message_text(value: &Value, role: &str) -> Option<String> {
-    if value.get("role").and_then(Value::as_str) != Some(role) {
-        return None;
-    }
-    let content = value.get("content")?;
-    match content {
-        Value::String(text) => Some(text.clone()),
-        Value::Array(parts) => {
-            let text: String = parts
-                .iter()
-                .filter_map(|part| part.get("text").and_then(Value::as_str))
-                .collect();
-            (!text.is_empty()).then_some(text)
-        }
-        _ => None,
+fn has_message_text(value: &Value) -> bool {
+    match value.get("content") {
+        Some(Value::String(text)) => !text.trim().is_empty(),
+        Some(Value::Array(parts)) => parts.iter().any(|part| {
+            part.get("text")
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.trim().is_empty())
+        }),
+        _ => false,
     }
 }
 
@@ -143,11 +179,16 @@ pub(crate) fn tool_complete_boundaries<'a>(
 
 /// Reconstructs frontend-neutral events from positioned durable transcript items.
 #[must_use]
-pub fn events(context: &[(MessageTarget, Value)], session_id: &str) -> Vec<EventMsg> {
+pub fn events<V: std::borrow::Borrow<Value>>(
+    context: &[(MessageTarget, V)],
+    session_id: &str,
+) -> Vec<EventMsg> {
     let mut events = Vec::new();
     let mut tools = BTreeMap::new();
-    let complete = tool_complete_boundaries(context.iter().map(|(_, value)| value));
+    let session_id: Arc<str> = session_id.into();
+    let complete = tool_complete_boundaries(context.iter().map(|(_, value)| value.borrow()));
     for (index, (target, value)) in context.iter().enumerate() {
+        let value = value.borrow();
         if internal_message_kind(value) == Some(CONTEXT_COMPACTED_MARKER) {
             events.push(EventMsg::ContextCompacted);
             continue;
@@ -166,9 +207,9 @@ pub fn events(context: &[(MessageTarget, Value)], session_id: &str) -> Vec<Event
             let content = assistant_content(value);
             if !content.is_empty() {
                 events.push(EventMsg::AssistantMessage(AssistantMessageEvent {
-                    session_id: session_id.into(),
-                    turn_id: item_id.clone(),
-                    model_step_id: item_id.clone(),
+                    session_id: Arc::clone(&session_id),
+                    turn_id: item_id.as_str().into(),
+                    model_step_id: item_id.as_str().into(),
                     content,
                     message_target,
                 }));
@@ -179,9 +220,9 @@ pub fn events(context: &[(MessageTarget, Value)], session_id: &str) -> Vec<Event
             Some("reasoning") => {
                 if let Some(text) = reasoning_text(value) {
                     events.push(EventMsg::AssistantMessage(AssistantMessageEvent {
-                        session_id: session_id.into(),
-                        turn_id: item_id.clone(),
-                        model_step_id: item_id,
+                        session_id: Arc::clone(&session_id),
+                        turn_id: item_id.as_str().into(),
+                        model_step_id: item_id.into(),
                         content: vec![ModelStepContent {
                             output_index: 0,
                             part_index: 0,
@@ -209,13 +250,23 @@ pub fn events(context: &[(MessageTarget, Value)], session_id: &str) -> Vec<Event
             }
             Some("function_call_output") => {
                 let call_id = string(value, "call_id");
-                let Some(output) = value.get("output").cloned().and_then(|mut output| {
-                    for part in output.as_array_mut()? {
-                        if let Some(fields) = part.as_object_mut() {
-                            fields.remove(PROMPT_CACHE_BREAKPOINT_FIELD);
-                        }
-                    }
-                    serde_json::from_value(output).ok()
+                let Some(output) = value.get("output").and_then(|output| {
+                    output
+                        .as_array()?
+                        .iter()
+                        .map(|part| {
+                            let fields = part
+                                .as_object()?
+                                .iter()
+                                .filter(|(key, _)| key.as_str() != PROMPT_CACHE_BREAKPOINT_FIELD)
+                                .map(|(key, value)| (key.as_str(), value));
+                            super::ContentPart::deserialize(serde::de::value::MapDeserializer::new(
+                                fields,
+                            ))
+                            .ok()
+                        })
+                        .collect::<Option<Vec<_>>>()
+                        .map(super::ToolContent)
                 }) else {
                     continue;
                 };
@@ -252,7 +303,7 @@ pub fn events(context: &[(MessageTarget, Value)], session_id: &str) -> Vec<Event
 }
 
 pub(crate) fn message_metadata(value: &Value) -> Option<MessageEvent> {
-    serde_json::from_value(value.get(MESSAGE_METADATA_FIELD)?.clone()).ok()
+    MessageEvent::deserialize(value.get(MESSAGE_METADATA_FIELD)?).ok()
 }
 
 fn replay_id(target: &MessageTarget) -> String {
@@ -300,8 +351,7 @@ fn assistant_content(value: &Value) -> Vec<ModelStepContent> {
                     text: text.into(),
                     annotations: part
                         .get("annotations")
-                        .cloned()
-                        .and_then(|annotations| serde_json::from_value(annotations).ok())
+                        .and_then(|annotations| Vec::deserialize(annotations).ok())
                         .unwrap_or_default(),
                 })
             }))
@@ -356,7 +406,7 @@ mod tests {
             })
             .expect("typed user message")
         };
-        let mut items = vec![
+        let items = vec![
             typed_user_message(
                 "",
                 vec![SessionFileReference {
@@ -369,6 +419,7 @@ mod tests {
             internal_user_message(ATTACHMENT_CONTEXT_MARKER, "private blob context"),
         ];
 
+        let mut items = items.into_iter().map(Arc::new).collect();
         strip_attachment_references(&mut items);
         assert_eq!(items.len(), 1);
         let context = [(
@@ -453,8 +504,8 @@ mod tests {
         assert!(matches!(
             &replayed[1],
             EventMsg::AssistantMessage(event)
-                if event.turn_id == "history-4-2"
-                    && event.model_step_id == "history-4-2"
+                if event.turn_id.as_ref() == "history-4-2"
+                    && event.model_step_id.as_ref() == "history-4-2"
                     && event.content.len() == 2
                     && event.content[0].phase == ModelStepContentPhase::Reasoning
                     && event.content[0].text == "neutral"
@@ -654,7 +705,7 @@ mod tests {
                 catalog_revision: "catalog-1".into(),
                 tools: vec!["notebook_post".into(), "notebook_read".into()],
             }
-            .into_input(),
+            .to_input(),
         )];
 
         let replayed = events(&history, "session");

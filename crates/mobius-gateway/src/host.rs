@@ -19,7 +19,7 @@ mod telemetry;
 #[cfg(test)]
 use routines::accept_routine_while_state_locked;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
@@ -166,7 +166,12 @@ struct GatewayState {
 
 struct GatewayReadySnapshot {
     store: ConfigStore,
-    config: GatewayConfig,
+    configured_providers: BTreeMap<String, crate::config::ConfiguredProvider>,
+    bot_defaults: Option<crate::wire::VersionedAgentConfig>,
+    subagent_ceilings: mobius::middleware::subagents::SubagentCeilings,
+    extensions: Vec<crate::wire::ExtensionRecord>,
+    computer_view: crate::wire::ComputerView,
+    max_active_sessions: usize,
     credentials: Arc<CredentialStore>,
     credential_catalog_gate: Arc<Mutex<()>>,
     bots: Arc<BotStore>,
@@ -181,7 +186,7 @@ async fn gateway_ready_after_unlock(
 ) -> std::result::Result<ReadyPayload, Rejection> {
     let snapshot = state.ready_snapshot()?;
     drop(state);
-    gateway_ready(&snapshot).await
+    gateway_ready(snapshot).await
 }
 
 pub(crate) struct HostSnapshot {
@@ -456,6 +461,7 @@ impl GatewayHost {
     }
 
     async fn begin_credential_mutation(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        // Return an owned guard without retaining the gateway-wide state lock while waiting.
         let gate = Arc::clone(&self.state.lock().await.credential_catalog_gate);
         gate.lock_owned().await
     }
@@ -487,7 +493,7 @@ impl GatewayHost {
         self.reconcile_pending_bot_deletion().await?;
         let _mutation = self.begin_access().await?;
         let snapshot = self.state.lock().await.ready_snapshot()?;
-        gateway_ready(&snapshot).await
+        gateway_ready(snapshot).await
     }
 
     pub(crate) async fn contributions(
@@ -525,6 +531,7 @@ impl GatewayHost {
 
     pub(crate) async fn sessions(&self) -> std::result::Result<Vec<SessionRecord>, Rejection> {
         let _access = self.begin_mutation().await?;
+        // Catalog reads await storage after releasing GatewayState, retaining only these shared owners.
         let (checkpoints, activities) = {
             let state = self.state.lock().await;
             (
@@ -621,11 +628,11 @@ impl GatewayHost {
         let previous = state.bots.bot(id).map_err(invalid_bot)?;
         validate_bot_config(&state, &config, Some(&previous.config.config))?;
         let prepared = if runtime_changed {
-            let mut candidate = previous.clone();
+            let mut candidate = previous;
             candidate.description = identity.description.into();
             candidate.config.config = config.clone();
-            let gateway = state.config()?.clone();
-            Some(
+            let preparation = {
+                let gateway = state.config()?;
                 crate::assembly::prepare_bot(
                     &gateway,
                     candidate,
@@ -635,9 +642,8 @@ impl GatewayHost {
                     state.provider_epoch.load(Ordering::Acquire),
                     Arc::clone(self.remote_desktop.configuration()),
                 )
-                .await
-                .map_err(invalid_config)?,
-            )
+            };
+            Some(preparation.await.map_err(invalid_config)?)
         } else {
             None
         };
@@ -721,6 +727,7 @@ impl GatewayHost {
         validate_session_id(&session_id).map_err(|_| invalid_session_id())?;
         let mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
+        // Blocking workspace validation must not retain the configuration lock.
         let tls = state.config()?.tls.clone();
         let bot = state.bots.bot(bot_id).map_err(invalid_bot)?;
         let state_dir = state.store.state_dir().to_path_buf();
@@ -849,6 +856,7 @@ impl GatewayHost {
             }
             state.sessions.remove(session_id);
         }
+        // Reopening awaits checkpoint and filesystem work without keeping GatewayState locked.
         let (checkpoints, config, bots, state_dir) = {
             let state = self.state.lock().await;
             (
@@ -996,15 +1004,13 @@ impl GatewayHost {
         include_provider_usage: bool,
     ) -> std::result::Result<ProfileSnapshot, Rejection> {
         let _access = self.begin_mutation().await?;
-        let (mut profile, checkpoints, config, store) = {
+        let (mut profile, checkpoints, usage_request) = {
             let state = self.state.lock().await;
-            let config = state.config()?.clone();
-            let profile = config.profile();
+            let config = state.config()?;
             (
-                profile,
+                config.profile(),
                 Arc::clone(&state.checkpoints),
-                config,
-                state.store.clone(),
+                include_provider_usage.then(|| provider_usage(&config, &state.store)),
             )
         };
         drop(_access);
@@ -1022,8 +1028,8 @@ impl GatewayHost {
                 .map_err(internal)?;
             profile.recent_run_groups = recent_run_groups(recent_runs, &sessions, &metadata);
         }
-        if include_provider_usage {
-            profile.provider_usage = provider_usage(&config, &store).await.map_err(internal)?;
+        if let Some(usage_request) = usage_request {
+            profile.provider_usage = usage_request.await.map_err(internal)?;
         }
         Ok(profile)
     }
@@ -1087,10 +1093,15 @@ fn validate_bot_workspace(
     workspace: &Path,
 ) -> std::result::Result<(), Rejection> {
     let bot = state.bots.bot(bot_id).map_err(invalid_bot)?;
-    let tls = state.config()?.tls.clone();
-    ChatSpec::for_bot(workspace, &bot, state.store.state_dir(), tls.as_ref())
-        .map(|_| ())
-        .map_err(invalid_workspace)
+    let config = state.config()?;
+    ChatSpec::for_bot(
+        workspace,
+        &bot,
+        state.store.state_dir(),
+        config.tls.as_ref(),
+    )
+    .map(|_| ())
+    .map_err(invalid_workspace)
 }
 
 struct SessionStartGuard {
@@ -1112,10 +1123,21 @@ impl GatewayState {
     }
 
     fn ready_snapshot(&self) -> std::result::Result<GatewayReadySnapshot, Rejection> {
-        let config = self.config()?.clone();
+        let config = self.config()?;
         Ok(GatewayReadySnapshot {
             store: self.store.clone(),
-            config,
+            configured_providers: config.configured_providers.clone(),
+            bot_defaults: config.bot_defaults.clone(),
+            subagent_ceilings: config.execution.subagent_ceilings().map_err(internal)?,
+            extensions: crate::extensions::records(&config),
+            computer_view: if !config.desktop_enabled {
+                crate::wire::ComputerView::Unavailable
+            } else if cfg!(target_os = "linux") {
+                crate::wire::ComputerView::RemoteDesktop
+            } else {
+                crate::wire::ComputerView::EmbeddedBrowser
+            },
+            max_active_sessions: config.connections.active_sessions,
             credentials: Arc::clone(&self.credentials),
             credential_catalog_gate: Arc::clone(&self.credential_catalog_gate),
             bots: Arc::clone(&self.bots),
@@ -1233,6 +1255,21 @@ fn reject_pending_bot_deletion(bots: &BotStore) -> std::result::Result<(), Rejec
         ));
     }
     Ok(())
+}
+
+// Live mutations must complete follow-up effects without losing an earlier applied-write failure.
+pub(crate) fn finish_publication<T>(
+    publication: crate::Result<()>,
+    follow_up: std::result::Result<T, Rejection>,
+) -> std::result::Result<T, Rejection> {
+    match (publication, follow_up) {
+        (Ok(()), result) => result,
+        (Err(error), Ok(_)) => Err(internal(error)),
+        (Err(error), Err(follow_up)) => Err(internal(format!(
+            "{error}; follow-up failed ({}): {}",
+            follow_up.code, follow_up.message
+        ))),
+    }
 }
 
 fn internal(error: impl std::fmt::Display) -> Rejection {

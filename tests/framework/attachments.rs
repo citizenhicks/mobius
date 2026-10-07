@@ -6,28 +6,17 @@ pub(super) fn png() -> Vec<u8> {
 }
 
 #[tokio::test]
-async fn attachment_hydration_runs_after_native_compaction_replaces_context() {
+async fn attachment_hydration_survives_plaintext_checkpoint_reset() {
     let workspace = TempDir::new().expect("create workspace");
     let session_id = "attachment-compaction";
     let store = SessionFileStore::new(workspace.path(), None);
     let attachment = upload_attachment(&store, session_id, "photo.png", "image/png", &png()).await;
     let model = Arc::new(
-        ScriptedModel::with_compaction(
-            vec![
-                text_response_with_usage("draft", usage(2_000)),
-                text_response("done"),
-            ],
-            vec![
-                CompactOutput::from_output(
-                    vec![serde_json::json!({
-                        "type": "compaction",
-                        "encrypted_content": "opaque"
-                    })],
-                    usage(10),
-                )
-                .expect("compaction output"),
-            ],
-        )
+        ScriptedModel::new(vec![
+            text_response_with_usage("draft", usage(2_000)),
+            super::compaction::checkpoint_response("Checkpoint: inspect the uploaded photo."),
+            text_response("done"),
+        ])
         .with_image_input(),
     );
     let config = test_config(
@@ -56,23 +45,12 @@ async fn attachment_hydration_runs_after_native_compaction_replaces_context() {
         .expect("submit attachment turn");
     assert_eq!(final_message(&mut agent).await, "done");
 
-    assert_eq!(
-        model
-            .compact_requests
-            .lock()
-            .expect("compact requests")
-            .len(),
-        1
-    );
-    assert_eq!(
-        request_image_count(&model.compact_requests.lock().expect("compact requests")[0].input),
-        1
-    );
     let requests = model.requests.lock().expect("requests");
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 3);
     assert_eq!(request_image_count(&requests[1].input), 1);
-    let final_input = serde_json::to_string(&requests[1].input).expect("serialize final input");
-    assert!(final_input.contains("opaque"));
+    assert_eq!(request_image_count(&requests[2].input), 1);
+    let final_input = serde_json::to_string(&requests[2].input).expect("serialize final input");
+    assert!(final_input.contains("Checkpoint: inspect the uploaded photo"));
     assert!(final_input.contains(&attachment.id));
 }
 
@@ -324,7 +302,10 @@ async fn malformed_current_image_fails_but_does_not_poison_later_turns() {
     let recovery = serde_json::to_string(&requests[1].input).expect("serialize recovery input");
     assert!(recovery.contains(&oversized.id));
     assert!(recovery.contains(&current.id));
-    assert!(recovery.contains("Unavailable file references"));
+    assert!(
+        !recovery.contains("Unavailable file references"),
+        "failed preparation stays provisional"
+    );
 }
 
 #[tokio::test]

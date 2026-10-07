@@ -38,13 +38,12 @@ impl GatewayHost {
                     ));
                 }
                 let sender = crate::bots::conversation_session_id(bot_id);
+                let handle = format!("chat #{sender}");
                 message.author = source_author(
                     command_id,
                     cause,
-                    MessageSource::Session {
-                        session_id: sender.clone(),
-                    },
-                    format!("chat #{sender}"),
+                    MessageSource::Session { session_id: sender },
+                    handle,
                 );
                 message
                     .requested_delivery

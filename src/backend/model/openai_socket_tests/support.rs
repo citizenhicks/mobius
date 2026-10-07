@@ -11,7 +11,7 @@ pub(super) fn model_request() -> ModelRequest<'static> {
             context_epoch: 1,
         }),
         instructions: "Test instructions",
-        input: &[],
+        input: (&[]).into(),
         catalog_revision: "catalog-1",
         tools: &[],
         deferred_tools: &[],
@@ -87,33 +87,4 @@ pub(super) async fn write_http_stream(
         .write_all(response.as_bytes())
         .await
         .expect("HTTP stream response");
-}
-
-pub(super) async fn write_http_compaction_stream(stream: &mut tokio::net::TcpStream) {
-    let events = [
-        serde_json::json!({
-            "type": "response.output_item.done",
-            "output_index": 0,
-            "item": {
-                "type": "compaction",
-                "encrypted_content": "opaque"
-            }
-        }),
-        serde_json::json!({
-            "type": "response.completed",
-            "response": {"id": "response-compact", "output": []}
-        }),
-    ];
-    let body = events
-        .into_iter()
-        .map(|event| format!("data: {event}\n\n"))
-        .collect::<String>();
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    stream
-        .write_all(response.as_bytes())
-        .await
-        .expect("HTTP compaction response");
 }

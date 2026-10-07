@@ -161,6 +161,10 @@ fn state(mode: SetupMode, provider: &str, configured: bool) -> SetupState {
         image_model_ids: Vec::new(),
     }];
     let providers = validated_providers(&statuses, &instances).expect("validated providers");
+    assert!(std::sync::Arc::ptr_eq(
+        &providers[0].status,
+        &providers[1].status
+    ));
     original.middleware.set_enabled("plain", true);
     original.middleware.set_enabled("configured", true);
     let mut state =
@@ -376,7 +380,7 @@ fn empty_api_key_reuse_is_deferred_to_the_gateway() {
 fn device_login_is_reused_across_same_provider_instances() {
     let mut state = state(SetupMode::Login, "kimi", true);
     for entry in &mut state.providers {
-        entry.status.auth = ProviderAuthKind::DeviceCode;
+        std::sync::Arc::make_mut(&mut entry.status).auth = ProviderAuthKind::DeviceCode;
     }
     state.provider = 1;
     state.reset_provider_fields();
@@ -455,7 +459,7 @@ fn new_provider_reuses_one_opaque_instance_id() {
         .agent_composition(&state.original)
         .expect("new provider config");
 
-    assert!(Uuid::parse_str(&instance).is_ok());
+    assert!(Uuid::parse_str(instance).is_ok());
     assert_eq!(config.provider.instance, instance);
 }
 
@@ -699,7 +703,7 @@ fn bot_model_setup_shows_and_selects_models_from_other_configured_providers() {
     kimi.reasoning_effort = Some("max".into());
     kimi.base_url = None;
     state.providers.push(ProviderEntry {
-        status: status("kimi"),
+        status: std::sync::Arc::new(status("kimi")),
         instance: Some(ProviderInstance {
             label: "Personal".into(),
             tint: Default::default(),

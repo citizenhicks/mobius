@@ -265,7 +265,8 @@ fn generated_toml_round_trips_manifest_settings() {
 
     assert!(contents.starts_with(&format!("version = {CONFIG_VERSION}\n")));
     assert!(contents.contains("max_model_steps = 2042"));
-    assert!(contents.contains("[bot_defaults.config.middleware.settings.context_offloading]"));
+    assert!(contents.contains("[bot_defaults.config.middleware.settings.compaction]"));
+    assert!(contents.contains("allow_model_compaction = \"off\""));
     assert!(contents.contains("[bot_defaults.config.middleware.settings.sessions]"));
     assert!(contents.contains("[bot_defaults.config.middleware.settings.messages]"));
     assert!(contents.contains("delivery = \"steer\""));
@@ -1187,7 +1188,7 @@ fn invalid_configuration_does_not_create_gateway_state() {
 }
 
 #[test]
-fn incompatible_state_explains_the_required_reset() {
+fn invalid_configuration_explains_recovery_without_deleting_state() {
     let root = tempfile::tempdir().expect("temporary directory");
     let state = root.path().join("state");
     let (_, config) =
@@ -1205,8 +1206,16 @@ fn incompatible_state_explains_the_required_reset() {
 
     let error = ConfigStore::open(state.clone()).expect_err("legacy state must fail");
 
-    assert!(error.to_string().contains("incompatible with this release"));
-    assert!(error.to_string().contains(&state.display().to_string()));
+    assert!(error.to_string().contains("preserve the state directory"));
+    assert!(
+        error
+            .to_string()
+            .contains(&state.join(CONFIG_FILE).display().to_string())
+    );
+    assert_eq!(
+        fs::read(state.join(CONFIG_FILE)).expect("saved config remains available"),
+        serde_json::to_vec(&legacy).expect("original saved config"),
+    );
 }
 
 #[test]
@@ -1548,19 +1557,12 @@ fn bot_compatibility_checks_policies_route_and_voice_without_credentials() {
 
     bot.middleware.set_setting(
         "compaction",
-        "mode",
-        Some(mobius::protocol::FrontendSettingValue::String(
-            "handoff".into(),
-        )),
+        "allow_model_compaction",
+        Some(mobius::protocol::FrontendSettingValue::String("on".into())),
     );
-    bot.middleware.set_enabled("context_offloading", true);
-    assert!(
-        validate_bot_compatibility(&gateway, &bot, Default::default())
-            .expect_err("handoff conflicts with context offloading")
-            .to_string()
-            .contains("incompatible")
-    );
-    bot.middleware.set_enabled("compaction", false);
+    bot.middleware.set_enabled("tasks", true);
+    validate_bot_compatibility(&gateway, &bot, Default::default())
+        .expect("model-requested compaction and tasks are independent");
 
     bot.realtime_voice = Some(String::new());
     assert!(
@@ -2141,4 +2143,206 @@ fn listed_image_model_ids_are_validated_before_saving() {
             .to_string()
             .contains("image model IDs")
     );
+}
+
+#[test]
+fn failed_credential_publication_preserves_secrets_and_revocation() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("credentials.json");
+    let store = CredentialStore::open(path.clone()).unwrap();
+    store
+        .set("openai_socket", "openai_socket", "before", None, None)
+        .unwrap();
+    let resolved = store
+        .get("openai_socket", "openai_socket", None)
+        .unwrap()
+        .unwrap();
+    let revoked = resolved.lifetime.revoked.unwrap();
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+
+    assert!(
+        store
+            .set("openai_socket", "openai_socket", "after", None, None)
+            .is_err()
+    );
+    assert!(store.remove("openai_socket").is_err());
+    assert_eq!(
+        store
+            .get("openai_socket", "openai_socket", None)
+            .unwrap()
+            .unwrap()
+            .api_key,
+        "before"
+    );
+    assert!(!revoked.has_changed().unwrap());
+    assert!(
+        store
+            .set("other", "openai_socket", "new", None, None)
+            .is_err()
+    );
+    assert!(store.get("other", "openai_socket", None).unwrap().is_none());
+}
+
+#[test]
+fn persisted_api_keys_reject_non_token_bytes_without_exposing_them() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("credentials.json");
+    for key in [
+        "secret token",
+        "secret\nheader",
+        " secret",
+        "secret\u{7f}",
+        "secreté",
+    ] {
+        fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "fixture": {"provider": "openrouter", "api_key": key}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let Err(error) = CredentialStore::open(path.clone()) else {
+            panic!("persisted malformed key must fail");
+        };
+        assert!(error.to_string().contains("visible ASCII"));
+        assert!(!error.to_string().contains(key));
+    }
+}
+
+#[test]
+fn persisted_config_and_credentials_reject_oversized_files() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = directory.path().join("gateway");
+    let (store, _) =
+        ConfigStore::initialize(state.clone(), "127.0.0.1:8741".parse().unwrap(), None).unwrap();
+    fs::File::create(store.state_dir().join("gateway.toml"))
+        .unwrap()
+        .set_len(MAX_CONFIG_BYTES + 1)
+        .unwrap();
+    let Err(error) = ConfigStore::open(state) else {
+        panic!("oversized config must fail")
+    };
+    assert!(error.to_string().contains("too large"));
+    let path = directory.path().join("credentials.json");
+    fs::File::create(&path)
+        .unwrap()
+        .set_len(MAX_CREDENTIAL_STATE_BYTES as u64 + 1)
+        .unwrap();
+    let Err(error) = CredentialStore::open(path) else {
+        panic!("oversized credentials must fail")
+    };
+    assert!(error.to_string().contains("too large"));
+}
+
+#[cfg(unix)]
+#[test]
+fn persisted_config_and_credentials_reject_fifos_without_a_writer() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = directory.path().join("gateway");
+    let (store, _) =
+        ConfigStore::initialize(state.clone(), "127.0.0.1:8741".parse().unwrap(), None).unwrap();
+    let config_path = store.state_dir().join("gateway.toml");
+    fs::remove_file(&config_path).unwrap();
+    let credentials = directory.path().join("credentials.json");
+    for path in [config_path.as_path(), credentials.as_path()] {
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(path)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let Err(error) = ConfigStore::open(state) else {
+        panic!("FIFO config must fail")
+    };
+    assert!(error.to_string().contains("regular file"));
+    let Err(error) = CredentialStore::open(credentials) else {
+        panic!("FIFO credentials must fail")
+    };
+    assert!(error.to_string().contains("regular file"));
+}
+
+#[test]
+fn applied_credential_publication_keeps_new_bytes_and_revokes_old_lifetime() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("credentials.json");
+    let store = CredentialStore::open(path.clone()).unwrap();
+    store
+        .set("openai_socket", "openai_socket", "before", None, None)
+        .unwrap();
+    let revoked = store
+        .get("openai_socket", "openai_socket", None)
+        .unwrap()
+        .unwrap()
+        .lifetime
+        .revoked
+        .unwrap();
+    crate::publication::fail_next_directory_sync(&path);
+    assert!(matches!(
+        store.set("openai_socket", "openai_socket", "after", None, None),
+        Err(Error::PublicationApplied { .. })
+    ));
+    assert!(revoked.has_changed().is_err());
+    for owner in [&store, &CredentialStore::open(path.clone()).unwrap()] {
+        assert_eq!(
+            owner
+                .get("openai_socket", "openai_socket", None)
+                .unwrap()
+                .unwrap()
+                .api_key,
+            "after"
+        );
+    }
+    let revoked = store
+        .get("openai_socket", "openai_socket", None)
+        .unwrap()
+        .unwrap()
+        .lifetime
+        .revoked
+        .unwrap();
+    crate::publication::fail_next_directory_sync(&path);
+    assert!(matches!(
+        store.remove("openai_socket"),
+        Err(Error::PublicationApplied { .. })
+    ));
+    assert!(revoked.has_changed().is_err());
+    assert!(
+        store
+            .get("openai_socket", "openai_socket", None)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        CredentialStore::open(path)
+            .unwrap()
+            .get("openai_socket", "openai_socket", None)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn applied_usage_publication_keeps_visible_totals_but_returns_uncertainty() {
+    let root = tempfile::tempdir().unwrap();
+    let state = root.path().join("state");
+    let (store, mut config) =
+        ConfigStore::initialize(state.clone(), "127.0.0.1:8741".parse().unwrap(), None).unwrap();
+    crate::publication::fail_next_directory_sync(&state.join("gateway.toml"));
+    let usage = TokenUsage {
+        input_tokens: 7,
+        total_tokens: 7,
+        ..TokenUsage::default()
+    };
+    assert!(matches!(
+        store.record_usage(&mut config, "openai_socket", &usage),
+        Err(Error::PublicationApplied { .. })
+    ));
+    assert_eq!(
+        serde_json::to_value(&config).unwrap(),
+        serde_json::to_value(ConfigStore::open(state).unwrap().1).unwrap()
+    );
+    assert_ne!(config.usage, Default::default());
 }

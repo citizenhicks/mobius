@@ -312,14 +312,14 @@ impl GatewayHost {
             let run = bots.run(run_id).map_err(invalid_routine)?;
             (bots, run)
         };
-        let session_id = run.session_id.clone().ok_or_else(|| {
+        let session_id = run.session_id.as_deref().ok_or_else(|| {
             Rejection::new(
                 "routine_run_unavailable",
                 "this routine run has no execution session",
             )
         })?;
         drop(_mutation);
-        let (host, temporary) = self.open_session_with_cache(&session_id, false).await?;
+        let (host, temporary) = self.open_session_with_cache(session_id, false).await?;
         let page = host.history_page(before_sequence).await;
         if temporary {
             let _ = host.stop_if_idle().await;

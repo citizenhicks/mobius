@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use super::{Basis, Entry, MANIFEST, Snapshot, text};
 use crate::Result;
 use crate::middleware::{FrontendEventSink, MiddlewareCommandOutput};
@@ -155,15 +157,16 @@ pub(super) fn format_snapshot(snapshot: &Snapshot) -> String {
     sections.join("\n\n")
 }
 
-fn format_entries(entries: &[Entry]) -> String {
+fn format_entries(entries: &[Entry]) -> Cow<'_, str> {
     if entries.is_empty() {
-        return text::DEFINITION.message_no_notes.clone();
+        return Cow::Borrowed(&text::DEFINITION.message_no_notes);
     }
     entries
         .iter()
         .map(|entry| format!("[{}] {}\n  {}", entry.id, entry.note, entry_metadata(entry)))
         .collect::<Vec<_>>()
         .join("\n")
+        .into()
 }
 
 fn entry_metadata(entry: &Entry) -> String {

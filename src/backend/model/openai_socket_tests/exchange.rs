@@ -235,3 +235,79 @@ async fn websocket_burst_waits_for_the_event_sink_in_order() {
         Exchange::Completed(_)
     ));
 }
+
+#[tokio::test]
+async fn completed_web_item_releases_tools_before_web_events_and_retains_handled_items() {
+    let (sender, mut messages) = mpsc::unbounded_channel();
+    for event in [
+        serde_json::json!({
+            "type": "response.output_item.done", "output_index": 1,
+            "item": {"type": "function_call", "call_id": "call-1", "name": "read_file", "arguments": "{}"}
+        }),
+        serde_json::json!({
+            "type": "response.output_item.done", "output_index": 0,
+            "item": {"type": "web_search_call", "id": "search-1"}
+        }),
+        serde_json::json!({
+            "type": "response.output_item.added",
+            "item": {"type": "message", "id": "commentary-1", "phase": "commentary"}
+        }),
+        serde_json::json!({
+            "type": "response.output_item.done", "output_index": 2,
+            "item": {"type": "message", "id": "commentary-1", "role": "assistant", "content": []}
+        }),
+        serde_json::json!({"type": "response.completed", "response": {"id": "response-1", "output": []}}),
+    ] {
+        sender
+            .send(SocketEvent::Message(Message::text(event.to_string())))
+            .expect("event");
+    }
+    drop(sender);
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink_seen = Arc::clone(&seen);
+    let events: ModelEventSink = Arc::new(move |event| {
+        sink_seen.lock().expect("events lock").push(event);
+        Box::pin(async { Ok(()) })
+    });
+    let Exchange::Completed(response) = read_exchange(&mut messages, &events)
+        .await
+        .expect("exchange")
+    else {
+        panic!("expected completion");
+    };
+    let seen = seen.lock().expect("events lock");
+    assert!(matches!(
+        &seen[..],
+        [
+            ModelEvent::ToolCallReady(_),
+            ModelEvent::WebSearchStarted { .. },
+            ModelEvent::WebSearchCompleted { .. }
+        ]
+    ));
+    assert_eq!(response["output"][0]["id"], "search-1");
+    assert_eq!(response["output"][1]["call_id"], "call-1");
+    assert_eq!(response["output"][2]["id"], "commentary-1");
+}
+
+#[tokio::test]
+async fn duplicate_completed_web_item_is_rejected_before_web_delivery() {
+    let (sender, mut messages) = mpsc::unbounded_channel();
+    for item in [
+        serde_json::json!({"type": "message", "role": "assistant", "content": []}),
+        serde_json::json!({"type": "web_search_call", "id": "search-1"}),
+    ] {
+        sender
+            .send(SocketEvent::Message(Message::text(
+                serde_json::json!({
+                    "type": "response.output_item.done", "output_index": 0, "item": item
+                })
+                .to_string(),
+            )))
+            .expect("event");
+    }
+    drop(sender);
+    let events: ModelEventSink = Arc::new(|_| {
+        panic!("duplicate item must be rejected before event delivery");
+    });
+    assert!(read_exchange(&mut messages, &events).await.is_err());
+}

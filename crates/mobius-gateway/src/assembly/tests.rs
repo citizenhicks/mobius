@@ -74,27 +74,46 @@ async fn canceled_discovery_waiter_keeps_the_gate_until_the_batch_finishes() {
 }
 
 #[test]
-fn configured_compaction_reports_the_selected_policy_threshold() {
+fn configured_compaction_respects_the_threshold_and_response_reserve() {
     let mut settings = crate::middleware_manifest::default_config();
     assert_eq!(
         configured_compaction(&settings)
-            .expect("automatic policy")
+            .expect("default policy")
             .trigger_tokens(272_000),
-        250_000
+        239_232
     );
     settings.set_setting(
         "compaction",
-        "mode",
-        Some(mobius::protocol::FrontendSettingValue::String(
-            "handoff".into(),
-        )),
+        "allow_model_compaction",
+        Some(mobius::protocol::FrontendSettingValue::String("on".into())),
     );
     assert_eq!(
         configured_compaction(&settings)
-            .expect("handoff policy")
+            .expect("model-requested compaction")
             .trigger_tokens(272_000),
-        222_848
+        239_232
     );
+    settings.set_setting(
+        "compaction",
+        "reserve_tokens",
+        Some(mobius::protocol::FrontendSettingValue::Integer(32_000)),
+    );
+    assert_eq!(
+        configured_compaction(&settings)
+            .expect("response reserve")
+            .trigger_tokens(272_000),
+        208_000
+    );
+    settings.set_setting("compaction", "allow_model_compaction", None);
+    configured_compaction(&settings).expect("absent model reset option defaults to disabled");
+    settings.set_setting(
+        "compaction",
+        "allow_model_compaction",
+        Some(mobius::protocol::FrontendSettingValue::String(
+            "invalid".into(),
+        )),
+    );
+    assert!(configured_compaction(&settings).is_err());
 }
 
 #[test]
@@ -137,7 +156,7 @@ fn configured_provider_status_requires_the_selected_credential_endpoint() {
         )
         .expect("register provider");
 
-    let instance = provider_instances(&config, &store, &credentials)
+    let instance = provider_instances(&config.configured_providers, &store, &credentials)
         .expect("provider instances")
         .into_iter()
         .find(|entry| entry.selection.provider == "openrouter")
@@ -224,12 +243,20 @@ fn configured_catalog_resolves_manifest_and_opaque_custom_routes() {
         .iter()
         .find(|choice| choice.model == custom.model)
         .expect("custom choice");
-    let resolved = configured_model_routes(&config, &store, &credentials)
-        .expect("routes")
-        .into_iter()
-        .find(|route| route.choice.route == custom_route.route)
-        .expect("resolve custom route")
-        .provider;
+    let resolved = configured_model_routes(
+        &config.configured_providers,
+        config
+            .bot_defaults
+            .as_ref()
+            .map(|defaults| defaults.config.provider.instance.as_str()),
+        &store,
+        &credentials,
+    )
+    .expect("routes")
+    .into_iter()
+    .find(|route| route.choice.route == custom_route.route)
+    .expect("resolve custom route")
+    .provider;
     let model_providers =
         configured_model_providers(&config, &store, &credentials).expect("provider IDs");
 
@@ -340,6 +367,84 @@ fn usage_sink_attributes_usage_to_its_provider() {
     assert_eq!(daily_usage.len(), 1);
     assert_eq!(daily_usage[0].provider, "openai_socket");
     assert_eq!(daily_usage[0].usage, usage);
+}
+
+#[test]
+fn failed_usage_save_keeps_committed_counters() {
+    let root = tempfile::tempdir().expect("root");
+    let state = root.path().join("state");
+    let (store, config) = ConfigStore::initialize(
+        state.clone(),
+        "127.0.0.1:8741".parse().expect("listen address"),
+        None,
+    )
+    .expect("config");
+    let gateway = Mutex::new(config);
+    let usage = TokenUsage {
+        input_tokens: 11,
+        total_tokens: 11,
+        ..TokenUsage::default()
+    };
+    persist_usage(&gateway, &store, "openai_socket", &usage).expect("initial usage");
+    let before = gateway.lock().unwrap().profile().daily_usage;
+    let path = state.join("gateway.toml");
+    std::fs::remove_file(&path).expect("remove test config");
+    std::fs::create_dir(&path).expect("block config replacement");
+
+    assert!(persist_usage(&gateway, &store, "openai_socket", &usage).is_err());
+    assert_eq!(gateway.lock().unwrap().profile().daily_usage, before);
+}
+
+#[tokio::test]
+async fn usage_publication_waits_off_executor_and_keeps_failed_totals() {
+    let root = tempfile::tempdir().expect("root");
+    let state = root.path().join("state");
+    let (store, config) = ConfigStore::initialize(
+        state.clone(),
+        "127.0.0.1:8741".parse().expect("listen address"),
+        None,
+    )
+    .expect("config");
+    let gateway = Arc::new(Mutex::new(config));
+    let usage = TokenUsage {
+        input_tokens: 11,
+        total_tokens: 11,
+        ..TokenUsage::default()
+    };
+    let (locked, acquired) = tokio::sync::oneshot::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let blocking_gateway = Arc::clone(&gateway);
+    let blocker = tokio::task::spawn_blocking(move || {
+        let _guard = blocking_gateway.lock().expect("configuration lock");
+        locked.send(()).expect("signal lock");
+        released.recv().expect("release lock");
+    });
+    acquired.await.expect("lock acquired");
+    let publish = publish_usage(&gateway, &store, "openai_socket", &usage);
+    tokio::pin!(publish);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut publish)
+            .await
+            .is_err()
+    );
+    release.send(()).expect("release worker");
+    blocker.await.expect("blocking owner");
+    publish.await.expect("durable publication");
+    let (_, restored) = ConfigStore::open(state.clone()).expect("reopen config");
+    assert_eq!(restored.profile().daily_usage[0].usage, usage);
+    let before = gateway.lock().expect("gateway").profile().daily_usage;
+    let path = state.join("gateway.toml");
+    std::fs::remove_file(&path).expect("remove config");
+    std::fs::create_dir(&path).expect("block publication");
+    assert!(
+        publish_usage(&gateway, &store, "openai_socket", &usage)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        gateway.lock().expect("gateway").profile().daily_usage,
+        before
+    );
 }
 
 #[test]
@@ -485,7 +590,8 @@ fn selected_custom_root_does_not_inherit_registered_native_media() {
             configured,
             selected,
         );
-        let media = media_routes(&config, &routes).expect("selected media catalog");
+        let media =
+            media_routes(&config.configured_providers, &routes).expect("selected media catalog");
         assert!(media.voices.is_empty());
         assert_eq!(media.images.len(), image_count);
 
@@ -612,7 +718,16 @@ fn saved_unsupported_web_search_does_not_block_other_provider_assembly() {
             .to_string()
             .contains("does not support web search mode `live`")
     );
-    let routes = configured_model_routes(&config, &store, &credentials).expect("available routes");
+    let routes = configured_model_routes(
+        &config.configured_providers,
+        config
+            .bot_defaults
+            .as_ref()
+            .map(|defaults| defaults.config.provider.instance.as_str()),
+        &store,
+        &credentials,
+    )
+    .expect("available routes");
     assert!(
         routes
             .iter()

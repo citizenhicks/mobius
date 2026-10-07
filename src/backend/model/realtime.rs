@@ -1,5 +1,6 @@
 //! Provider-owned WebRTC negotiation and authenticated voice sideband control.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
@@ -343,46 +344,46 @@ impl RealtimeTransport {
         if !response.status().is_success() {
             return Err(status_error(response, "Realtime").await);
         }
-        let (cleanup, answer_sdp) = self.negotiate(response, &request.session_id).await?;
+        let (cleanup, answer_sdp) = self.negotiate(response, request.session_id).await?;
         validate_sdp(&answer_sdp)?;
         validate_text(&voice, 256, "voice name")?;
         let (commands, command_rx) = mpsc::channel(COMMAND_CAPACITY);
         let (event_tx, events) = mpsc::channel(16);
         let (cancel, cancelled) = oneshot::channel();
         let api = self.api;
-        let transport = self.clone();
         tokio::spawn(async move {
+            let transport = &cleanup.transport;
             let mut cancelled = cancelled;
             let mut pending = VecDeque::new();
-            let call_id = cleanup.call_id.clone();
-            let session_id = cleanup.session_id.clone();
             let io_timeout = Duration::from_millis(transport.settings.voice_io_timeout_ms);
-            let connect = timeout(
-                Duration::from_millis(transport.settings.voice_start_timeout_ms),
-                transport.connect(&call_id, &session_id),
-            );
-            tokio::pin!(connect);
             let mut command_rx = command_rx;
-            let mut socket = loop {
-                tokio::select! {
-                    _ = &mut cancelled => return,
-                    result = &mut connect => break match result {
-                        Ok(Ok(socket)) => socket,
-                        Ok(Err(error)) => {
-                            let _ = event_tx.send(Err(error)).await;
-                            return;
-                        }
-                        Err(_) => {
-                            let _ = event_tx
-                                .send(Err(invalid("voice sideband negotiation timed out")))
-                                .await;
-                            return;
-                        }
-                    },
-                    command = command_rx.recv(), if pending.len() < COMMAND_CAPACITY => match command {
-                        Some(RealtimeVoiceCommand::Close) | None => return,
-                        Some(command) => pending.push_back(command),
-                    },
+            let mut socket = {
+                let connect = timeout(
+                    Duration::from_millis(transport.settings.voice_start_timeout_ms),
+                    transport.connect(&cleanup.call_id, &cleanup.session_id),
+                );
+                tokio::pin!(connect);
+                loop {
+                    tokio::select! {
+                        _ = &mut cancelled => return,
+                        result = &mut connect => break match result {
+                            Ok(Ok(socket)) => socket,
+                            Ok(Err(error)) => {
+                                let _ = event_tx.send(Err(error)).await;
+                                return;
+                            }
+                            Err(_) => {
+                                let _ = event_tx
+                                    .send(Err(invalid("voice sideband negotiation timed out")))
+                                    .await;
+                                return;
+                            }
+                        },
+                        command = command_rx.recv(), if pending.len() < COMMAND_CAPACITY => match command {
+                            Some(RealtimeVoiceCommand::Close) | None => return,
+                            Some(command) => pending.push_back(command),
+                        },
+                    }
                 }
             };
             let result = tokio::select! {
@@ -432,7 +433,7 @@ impl RealtimeTransport {
     async fn negotiate(
         &self,
         response: reqwest::Response,
-        session_id: &str,
+        session_id: String,
     ) -> Result<(CallCleanup, String)> {
         let call_id = match self.api {
             VoiceApi::Codex => self.call_id(&response)?,
@@ -445,7 +446,7 @@ impl RealtimeTransport {
                 let cleanup = CallCleanup {
                     transport: self.clone(),
                     call_id: id.into(),
-                    session_id: session_id.into(),
+                    session_id,
                 };
                 if body["transport"]["type"] != "webrtc" {
                     return Err(invalid("voice response omitted its WebRTC transport"));
@@ -459,7 +460,7 @@ impl RealtimeTransport {
         let cleanup = CallCleanup {
             transport: self.clone(),
             call_id,
-            session_id: session_id.into(),
+            session_id,
         };
         let answer =
             String::from_utf8(read_limited(response, MAX_SDP_BYTES, "Realtime SDP").await?)
@@ -474,15 +475,19 @@ impl RealtimeTransport {
         content_type: &str,
         session_id: &str,
     ) -> Result<reqwest::Response> {
+        let request = self
+            .client
+            .post(url)
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(body)
+            .timeout(Duration::from_millis(self.settings.voice_start_timeout_ms));
         for attempt in 0..2 {
             let auth = self.auth.authorize_http(false, Some(session_id)).await?;
-            let mut request = self
-                .client
-                .post(url.clone())
-                .bearer_auth(&auth.token)
-                .header(reqwest::header::CONTENT_TYPE, content_type)
-                .body(body.clone())
-                .timeout(Duration::from_millis(self.settings.voice_start_timeout_ms));
+            // Reqwest shares the owned byte body while each authorization attempt gets its own headers.
+            let mut request = request
+                .try_clone()
+                .ok_or_else(|| invalid("voice request could not be replayed for authorization"))?
+                .bearer_auth(&auth.token);
             for (name, value) in auth.headers {
                 request = request.header(name, value.as_ref());
             }
@@ -632,7 +637,7 @@ impl Drop for CallCleanup {
         } else {
             url.set_path(&format!("{}/{}/hangup", url.path(), self.call_id));
         }
-        let session_id = self.session_id.clone();
+        let session_id = std::mem::take(&mut self.session_id);
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
                 let _ = timeout(
@@ -938,7 +943,7 @@ impl VoiceTurns {
         });
         caption.end_ms = caption.end_ms.max(end_ms);
         let id = caption.id.clone();
-        self.transcript(&id, live_role(speaker), text, false, events)
+        self.transcript(&id, live_role(speaker), text.into(), false, events)
     }
 
     fn finish_caption(
@@ -949,10 +954,10 @@ impl VoiceTurns {
         if let Some(caption) = self.live_captions[speaker].take() {
             let text = self
                 .streams
-                .get(&caption.id)
-                .map(|stream| stream.text.clone())
+                .get_mut(&caption.id)
+                .map(|stream| std::mem::take(&mut stream.text))
                 .unwrap_or_default();
-            self.transcript(&caption.id, live_role(speaker), &text, true, events)?;
+            self.transcript(&caption.id, live_role(speaker), text.into(), true, events)?;
         }
         Ok(())
     }
@@ -969,33 +974,22 @@ impl VoiceTurns {
     fn observe_codex(&mut self, event: &Value, events: &mut Vec<RealtimeVoiceEvent>) -> Result<()> {
         use crate::protocol::ConversationRole;
         match event["type"].as_str() {
-            Some("input_transcript.added") => {
-                let id = self
-                    .codex_input
-                    .clone()
-                    .unwrap_or_else(|| self.codex_id(true));
-                self.codex_input = Some(id.clone());
-                self.transcript(
-                    &id,
-                    ConversationRole::User,
-                    transcript_field(&event["item"], "text")?,
-                    false,
-                    events,
-                )?;
-            }
-            Some("output_transcript.added") => {
-                let id = self
-                    .codex_output
-                    .clone()
-                    .unwrap_or_else(|| self.codex_id(false));
-                self.codex_output = Some(id.clone());
-                self.transcript(
-                    &id,
-                    ConversationRole::Assistant,
-                    transcript_field(&event["item"], "text")?,
-                    false,
-                    events,
-                )?;
+            Some(kind @ ("input_transcript.added" | "output_transcript.added")) => {
+                let user = kind == "input_transcript.added";
+                let (id, role) = if user {
+                    (self.codex_input.take(), ConversationRole::User)
+                } else {
+                    (self.codex_output.take(), ConversationRole::Assistant)
+                };
+                let id = id.unwrap_or_else(|| self.codex_id(user));
+                let result = transcript_field(&event["item"], "text")
+                    .and_then(|text| self.transcript(&id, role, text.into(), false, events));
+                if user {
+                    self.codex_input = Some(id);
+                } else {
+                    self.codex_output = Some(id);
+                }
+                result?;
             }
             Some("turn.done") => self.codex_turn_done(event, events)?,
             Some("delegation.created") => {
@@ -1053,14 +1047,14 @@ impl VoiceTurns {
                 .take()
                 .unwrap_or_else(|| self.codex_id(false))
         };
-        self.transcript(&id, role, text, true, events)
+        self.transcript(&id, role, text.into(), true, events)
     }
 
     fn transcript(
         &mut self,
         id: &str,
         role: crate::protocol::ConversationRole,
-        text: &str,
+        text: Cow<'_, str>,
         complete: bool,
         events: &mut Vec<RealtimeVoiceEvent>,
     ) -> Result<()> {
@@ -1074,19 +1068,15 @@ impl VoiceTurns {
         }
         let had_draft = !stream.text.is_empty();
         if complete {
-            stream.text = text.into();
+            stream.text = String::new();
             stream.complete = true;
         } else {
             if stream.text.len() + text.len() > MAX_TEXT_BYTES {
                 return Err(invalid("voice transcript exceeded its size limit"));
             }
-            stream.text.push_str(text);
+            stream.text.push_str(&text);
         }
-        let text = if complete {
-            std::mem::take(&mut stream.text)
-        } else {
-            text.into()
-        };
+        let text = text.into_owned();
         if !text.is_empty() || complete && had_draft {
             events.push(RealtimeVoiceEvent::Transcript {
                 id: id.into(),

@@ -1,15 +1,18 @@
 //! Native Anthropic Messages API provider.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use reqwest::Client;
-use serde::Deserialize;
+use serde::ser::SerializeSeq as _;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::Model;
 use super::ModelEventSink;
+use super::ModelInput;
 use super::ModelOutput;
 use super::ModelRequest;
 use super::PROMPT_CACHE_BREAKPOINT_FIELD;
@@ -56,6 +59,15 @@ pub(super) static CATALOG: std::sync::LazyLock<super::provider::ModelCatalog> =
 const MAX_CONTENT_BLOCKS: usize = 1_024;
 const RAW_CONTENT: &str = "_anthropic_content";
 
+pub(super) fn has_replay_reasoning(item: &Value) -> bool {
+    item.get(RAW_CONTENT).is_some()
+}
+
+pub(super) fn strip_replay_reasoning(item: &mut Value) -> bool {
+    item.as_object_mut()
+        .is_some_and(|fields| fields.remove(RAW_CONTENT).is_some())
+}
+
 /// Anthropic's native Messages API provider.
 pub struct Anthropic {
     client: Client,
@@ -67,6 +79,14 @@ pub struct Anthropic {
     tool_discovery: ToolDiscoveryMode,
     reasoning_effort: Option<String>,
     web_search: bool,
+}
+
+#[derive(Serialize)]
+struct RequestBody<'a> {
+    #[serde(flatten)]
+    metadata: Value,
+    tools: WireTools<'a>,
+    messages: Vec<WireMessage<'a>>,
 }
 
 impl Anthropic {
@@ -188,16 +208,20 @@ impl Anthropic {
         &self,
         request: ModelRequest<'_>,
         events: ModelEventSink,
+        media: Option<super::MediaPreparation<'_>>,
     ) -> Result<ModelOutput> {
-        let body = self.request_body(
-            request.instructions,
-            request.input,
-            request.catalog_revision,
-            request.tools,
-            request.deferred_tools,
-            request.allow_hosted_tools,
-        )?;
-        let mut response = self.post(&body).await?;
+        let body = super::media::encode_request(self, request, media, true, |input| {
+            Ok(serde_json::to_vec(&self.request_body(
+                request.instructions,
+                input,
+                request.catalog_revision,
+                request.tools,
+                request.deferred_tools,
+                request.allow_hosted_tools,
+            )?)?)
+        })
+        .await?;
+        let mut response = self.post(body).await?;
         let mut sse = SseDecoder::default();
         let mut stream = StreamState::default();
         while let Some(chunk) = response.chunk().await? {
@@ -217,35 +241,57 @@ impl Anthropic {
         stream.finish()
     }
 
-    fn request_body(
+    fn request_body<'a>(
         &self,
         instructions: &str,
-        input: &[Value],
+        input: ModelInput<'a>,
         catalog_revision: &str,
-        tools: &[ToolDefinition],
-        deferred_tools: &[ToolDefinition],
+        tools: &'a [Arc<ToolDefinition>],
+        deferred_tools: &'a [Arc<ToolDefinition>],
         allow_hosted_tools: bool,
-    ) -> Result<Value> {
+    ) -> Result<RequestBody<'a>> {
         let discovery = self.tool_discovery();
         let mut body = serde_json::json!({
             "model": self.model,
             "max_tokens": self.max_output_tokens,
             "system": instructions,
-            "messages": translate_messages(
-                input,
-                discovery,
-                catalog_revision,
-                deferred_tools,
-            )?,
-            "tools": wire_tools(
-                tools,
-                if discovery == ToolDiscoveryMode::Native { deferred_tools } else { &[] },
-                self.web_search && allow_hosted_tools,
-            ),
             "stream": true
         });
+        let messages = translate_messages(input, discovery, catalog_revision, deferred_tools)?;
         self.apply_reasoning(&mut body);
-        Ok(body)
+        Ok(RequestBody {
+            metadata: body,
+            messages,
+            tools: wire_tools(
+                tools,
+                if discovery == ToolDiscoveryMode::Native {
+                    deferred_tools
+                } else {
+                    &[]
+                },
+                self.web_search && allow_hosted_tools,
+            ),
+        })
+    }
+
+    #[cfg(test)]
+    fn request_body_value(
+        &self,
+        instructions: &str,
+        input: ModelInput<'_>,
+        catalog_revision: &str,
+        tools: &[Arc<ToolDefinition>],
+        deferred_tools: &[Arc<ToolDefinition>],
+        allow_hosted_tools: bool,
+    ) -> Result<Value> {
+        Ok(serde_json::to_value(self.request_body(
+            instructions,
+            input,
+            catalog_revision,
+            tools,
+            deferred_tools,
+            allow_hosted_tools,
+        )?)?)
     }
 
     fn apply_reasoning(&self, body: &mut Value) {
@@ -255,7 +301,7 @@ impl Anthropic {
         }
     }
 
-    async fn post(&self, body: &Value) -> Result<reqwest::Response> {
+    async fn post(&self, body: Vec<u8>) -> Result<reqwest::Response> {
         let mut request = self.client.post(format!("{}/messages", self.base_url));
         for (name, value) in &MANIFEST.headers {
             request = request.header(name, value);
@@ -263,7 +309,11 @@ impl Anthropic {
         if let Some(api_key) = &self.api_key {
             request = request.header("x-api-key", api_key);
         }
-        let response = request.json(body).send().await?;
+        let response = request
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .send()
+            .await?;
         if response.status().is_success() {
             Ok(response)
         } else {
@@ -300,6 +350,15 @@ impl Model for Anthropic {
         self.tool_discovery
     }
 
+    fn respond_prepared<'a>(
+        &'a self,
+        request: ModelRequest<'a>,
+        events: ModelEventSink,
+        media: super::MediaPreparation<'a>,
+    ) -> BoxFuture<'a, Result<ModelOutput>> {
+        Box::pin(self.send_response(request, events, Some(media)))
+    }
+
     fn request_size(&self, request: ModelRequest<'_>) -> Result<usize> {
         super::media::serialized_size(&self.request_body(
             request.instructions,
@@ -316,7 +375,7 @@ impl Model for Anthropic {
         request: ModelRequest<'a>,
         events: ModelEventSink,
     ) -> BoxFuture<'a, Result<ModelOutput>> {
-        Box::pin(self.send_response(request, events))
+        Box::pin(self.send_response(request, events, None))
     }
 }
 
@@ -337,8 +396,8 @@ impl StreamState {
     async fn apply(&mut self, event: Value, events: &ModelEventSink) -> Result<()> {
         match event.get("type").and_then(Value::as_str) {
             Some("message_start") => self.usage.update(event.pointer("/message/usage"))?,
-            Some("content_block_start") => self.start_block(&event, events).await?,
-            Some("content_block_delta") => self.delta_block(&event, events).await?,
+            Some("content_block_start") => self.start_block(event, events).await?,
+            Some("content_block_delta") => self.delta_block(event, events).await?,
             Some("content_block_stop") => self.stop_block(&event, events).await?,
             Some("message_delta") => {
                 self.usage.update(event.get("usage"))?;
@@ -360,8 +419,8 @@ impl StreamState {
         Ok(())
     }
 
-    async fn start_block(&mut self, event: &Value, events: &ModelEventSink) -> Result<()> {
-        let index = event_index(event)?;
+    async fn start_block(&mut self, mut event: Value, events: &ModelEventSink) -> Result<()> {
+        let index = event_index(&event)?;
         if self.blocks.contains_key(&index) {
             return Err(Error::Provider(
                 format!("Anthropic repeated content block index {index}").into(),
@@ -373,8 +432,8 @@ impl StreamState {
             ));
         }
         let block = event
-            .get("content_block")
-            .cloned()
+            .get_mut("content_block")
+            .map(Value::take)
             .ok_or_else(|| Error::Provider("Anthropic content block omitted value".into()))?;
         if block.get("type").and_then(Value::as_str) == Some("server_tool_use")
             && block.get("name").and_then(Value::as_str) == Some("web_search")
@@ -404,15 +463,15 @@ impl StreamState {
         Ok(())
     }
 
-    async fn delta_block(&mut self, event: &Value, events: &ModelEventSink) -> Result<()> {
-        let index = event_index(event)?;
+    async fn delta_block(&mut self, mut event: Value, events: &ModelEventSink) -> Result<()> {
+        let index = event_index(&event)?;
         if self.completed_blocks.contains(&index) {
             return Err(Error::Provider(
                 format!("Anthropic delta followed completed content block index {index}").into(),
             ));
         }
         let delta = event
-            .get("delta")
+            .get_mut("delta")
             .ok_or_else(|| Error::Provider("Anthropic content delta omitted value".into()))?;
         let block = self
             .blocks
@@ -439,7 +498,7 @@ impl StreamState {
                 .or_default()
                 .push_str(required_string(delta, "partial_json")?),
             Some("citations_delta") => {
-                if let Some(citation) = delta.get("citation") {
+                if let Some(citation) = delta.get_mut("citation") {
                     let citations = block
                         .as_object_mut()
                         .ok_or_else(|| {
@@ -452,7 +511,7 @@ impl StreamState {
                         .ok_or_else(|| {
                             Error::Provider("Anthropic citations were not an array".into())
                         })?
-                        .push(citation.clone());
+                        .push(citation.take());
                 }
             }
             None | Some(_) => {}
@@ -504,10 +563,8 @@ impl StreamState {
             if block.get("type").and_then(Value::as_str) != Some("tool_use") {
                 continue;
             }
-            let input = block
-                .get("input")
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!({}));
+            let empty = serde_json::json!({});
+            let input = block.get("input").unwrap_or(&empty);
             let item = serde_json::json!({
                 "type": "function_call",
                 "call_id": required_string(block, "id")?,
@@ -528,10 +585,8 @@ impl StreamState {
             .iter()
             .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
             .map(|block| {
-                let arguments = block
-                    .get("input")
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!({}));
+                let empty = serde_json::json!({});
+                let arguments = block.get("input").unwrap_or(&empty);
                 Ok(serde_json::json!({
                     "type": "function_call",
                     "call_id": required_string(block, "id")?,
@@ -790,12 +845,18 @@ impl Usage {
     }
 }
 
-fn translate_messages(
-    input: &[Value],
+#[derive(Serialize)]
+struct WireMessage<'a> {
+    role: &'a str,
+    content: Vec<Cow<'a, Value>>,
+}
+
+fn translate_messages<'a>(
+    input: ModelInput<'a>,
     discovery: ToolDiscoveryMode,
     catalog_revision: &str,
-    deferred_tools: &[ToolDefinition],
-) -> Result<Vec<Value>> {
+    deferred_tools: &[Arc<ToolDefinition>],
+) -> Result<Vec<WireMessage<'a>>> {
     let mut messages = Vec::new();
     let mut preserved_tools = BTreeSet::new();
     let mut search_calls = BTreeSet::new();
@@ -824,7 +885,7 @@ fn translate_messages(
                             .filter_map(|block| block.get("id").and_then(Value::as_str))
                             .map(ToString::to_string),
                     );
-                    push_message(&mut messages, role, content.clone());
+                    push_message(&mut messages, role, content.iter().map(Cow::Borrowed));
                 } else {
                     let blocks = item
                         .get("content")
@@ -834,7 +895,7 @@ fn translate_messages(
                         .map(content_block)
                         .filter_map(Result::transpose)
                         .collect::<Result<Vec<_>>>()?;
-                    push_message(&mut messages, role, blocks);
+                    push_message(&mut messages, role, blocks.into_iter().map(Cow::Owned));
                 }
             }
             Some("function_call") => {
@@ -845,26 +906,26 @@ fn translate_messages(
                     push_message(
                         &mut messages,
                         "assistant",
-                        vec![serde_json::json!({
+                        [Cow::Owned(serde_json::json!({
                             "type": "tool_use",
                             "id": call_id,
                             "name": name,
                             "input": serde_json::from_str::<Value>(required_string(item, "arguments")?)?
-                        })],
+                        }))],
                     );
                 }
             }
             Some("function_call_output") => push_message(
                 &mut messages,
                 "user",
-                vec![tool_result_block(
+                [Cow::Owned(tool_result_block(
                     item,
                     input.get(index + 1),
                     discovery,
                     catalog_revision,
                     &search_calls,
                     &deferred_tool_names,
-                )?],
+                )?)],
             ),
             Some("tool_load") => replay_standalone_tool_load(
                 &mut messages,
@@ -887,11 +948,10 @@ fn translate_messages(
 
 /// Advances the explicit cache endpoint to the newest cacheable block, so every request
 /// writes its whole prefix and the previous request's endpoint stays readable.
-fn mark_latest_cache_endpoint(messages: &mut [Value]) {
+fn mark_latest_cache_endpoint(messages: &mut [WireMessage<'_>]) {
     if let Some(block) = messages
         .last_mut()
-        .and_then(|message| message.get_mut("content"))
-        .and_then(Value::as_array_mut)
+        .map(|message| &mut message.content)
         .and_then(|content| {
             content
                 .iter_mut()
@@ -899,7 +959,7 @@ fn mark_latest_cache_endpoint(messages: &mut [Value]) {
                 .find(|block| accepts_cache_control(block))
         })
     {
-        block["cache_control"] = serde_json::json!({"type": "ephemeral"});
+        block.to_mut()["cache_control"] = serde_json::json!({"type": "ephemeral"});
     }
 }
 
@@ -993,7 +1053,7 @@ fn follows_search_result(previous: Option<&Value>, search_calls: &BTreeSet<Strin
 }
 
 fn replay_standalone_tool_load(
-    messages: &mut Vec<Value>,
+    messages: &mut Vec<WireMessage<'_>>,
     load: Option<ToolLoad>,
     follows_search_result: bool,
     index: usize,
@@ -1015,22 +1075,22 @@ fn replay_standalone_tool_load(
     push_message(
         messages,
         "assistant",
-        vec![serde_json::json!({
+        [Cow::Owned(serde_json::json!({
             "type": "tool_use",
             "id": call_id,
             "name": TOOLS_SEARCH_NAME,
             "input": {"query": "restore loaded session tools"}
-        })],
+        }))],
     );
     push_message(
         messages,
         "user",
-        vec![serde_json::json!({
+        [Cow::Owned(serde_json::json!({
             "type": "tool_result",
             "tool_use_id": call_id,
             "content": references,
             "is_error": false
-        })],
+        }))],
     );
 }
 
@@ -1054,48 +1114,86 @@ fn tool_references(
         .collect()
 }
 
-fn push_message(messages: &mut Vec<Value>, role: &str, blocks: Vec<Value>) {
-    if blocks.is_empty() {
+fn push_message<'a>(
+    messages: &mut Vec<WireMessage<'a>>,
+    role: &'a str,
+    blocks: impl IntoIterator<Item = Cow<'a, Value>>,
+) {
+    let mut blocks = blocks.into_iter().peekable();
+    if blocks.peek().is_none() {
         return;
     }
     if let Some(last) = messages.last_mut()
-        && last.get("role").and_then(Value::as_str) == Some(role)
-        && let Some(content) = last.get_mut("content").and_then(Value::as_array_mut)
+        && last.role == role
     {
-        content.extend(blocks);
-        return;
+        last.content.extend(blocks);
+    } else {
+        messages.push(WireMessage {
+            role,
+            content: blocks.collect(),
+        });
     }
-    messages.push(serde_json::json!({"role": role, "content": blocks}));
 }
 
-fn wire_tools(
-    tools: &[ToolDefinition],
-    deferred_tools: &[ToolDefinition],
+struct WireTools<'a> {
+    direct: &'a [Arc<ToolDefinition>],
+    deferred: &'a [Arc<ToolDefinition>],
     web_search: bool,
-) -> Vec<Value> {
-    let mut output = tools
-        .iter()
-        .map(|tool| (tool, false))
-        .chain(deferred_tools.iter().map(|tool| (tool, true)))
-        .map(|(tool, deferred)| {
-            let mut wire = serde_json::json!({
-                "name": tool.name,
-                "description": tool.description,
-                "input_schema": tool.parameters
-            });
-            if deferred {
-                wire["defer_loading"] = Value::Bool(true);
+}
+
+impl Serialize for WireTools<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Function<'a> {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            defer_loading: Option<bool>,
+            description: &'a str,
+            input_schema: &'a Value,
+            name: &'a str,
+        }
+        let mut sequence = serializer.serialize_seq(None)?;
+        for (tool, deferred) in self
+            .direct
+            .iter()
+            .map(|tool| (tool, false))
+            .chain(self.deferred.iter().map(|tool| (tool, true)))
+        {
+            sequence.serialize_element(&Function {
+                defer_loading: deferred.then_some(true),
+                description: &tool.description,
+                input_schema: &tool.parameters,
+                name: &tool.name,
+            })?;
+        }
+        if self.web_search {
+            #[derive(Serialize)]
+            struct Search {
+                name: &'static str,
+                #[serde(rename = "type")]
+                kind: &'static str,
             }
-            wire
-        })
-        .collect::<Vec<_>>();
-    if web_search {
-        output.push(serde_json::json!({
-            "type": "web_search_20260318",
-            "name": "web_search"
-        }));
+            sequence.serialize_element(&Search {
+                name: "web_search",
+                kind: "web_search_20260318",
+            })?;
+        }
+        sequence.end()
     }
-    output
+}
+
+fn wire_tools<'a>(
+    tools: &'a [Arc<ToolDefinition>],
+    deferred_tools: &'a [Arc<ToolDefinition>],
+    web_search: bool,
+) -> WireTools<'a> {
+    WireTools {
+        direct: tools,
+        deferred: deferred_tools,
+        web_search,
+    }
 }
 
 fn event_index(event: &Value) -> Result<usize> {

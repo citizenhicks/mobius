@@ -545,31 +545,51 @@ async fn recorder_flush_backpressures_until_ordered_delivery_resumes() {
 }
 
 #[tokio::test]
-async fn recorder_save_copies_the_checkpoint_once_through_sqlite() {
+async fn recorder_save_shares_the_checkpoint_without_copying_its_payload() {
     let directory = tempfile::tempdir().expect("checkpoint directory");
     let checkpoints = Arc::new(
         SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3"))
             .expect("checkpoint store"),
     );
     let mut checkpoint = test_checkpoint("session");
-    checkpoint
-        .context
-        .push(serde_json::json!({"role": "user", "content": "retained context"}));
+    std::sync::Arc::make_mut(&mut checkpoint.context).push(std::sync::Arc::new(
+        serde_json::json!({"role": "user", "content": "retained context"}),
+    ));
     let copies = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     checkpoint.clone_count.0 = Some(Arc::clone(&copies));
     let (recorder, _receiver) =
         crate::agent::recorder::RecorderIngress::spawn(checkpoints.clone(), "session".into());
 
+    let checkpoint = Arc::new(checkpoint);
     recorder
-        .save(&checkpoint, &[], None, Vec::new())
+        .save(Arc::clone(&checkpoint), &[], None, Vec::new())
         .await
         .expect("save snapshot");
 
-    assert_eq!(copies.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(copies.load(std::sync::atomic::Ordering::Relaxed), 0);
+    assert_eq!(Arc::strong_count(&checkpoint), 1);
     assert_eq!(
-        checkpoints.load("session").await.expect("load"),
-        Some(checkpoint)
+        checkpoints.load("session").await.expect("load").as_ref(),
+        Some(checkpoint.as_ref())
     );
+}
+
+#[test]
+fn explicit_checkpoint_mutation_copies_only_when_a_snapshot_is_retained() {
+    let copies = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut checkpoint = test_checkpoint("session");
+    checkpoint.clone_count.0 = Some(Arc::clone(&copies));
+    let mut live = super::super::LiveCheckpoint(Arc::new(checkpoint));
+    live.make_mut().sequence = 1;
+    assert_eq!(copies.load(std::sync::atomic::Ordering::Relaxed), 0);
+
+    let snapshot = Arc::clone(&live.0);
+    live.make_mut().sequence = 2;
+    assert_eq!(snapshot.sequence, 1);
+    assert_eq!(live.sequence, 2);
+    assert_eq!(copies.load(std::sync::atomic::Ordering::Relaxed), 1);
+    live.make_mut().sequence = 3;
+    assert_eq!(copies.load(std::sync::atomic::Ordering::Relaxed), 1);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -619,4 +639,60 @@ async fn fast_model_burst_waits_for_durable_event_delivery() {
     .await
     .expect("burst completes");
     assert_eq!(deltas, DELTAS);
+}
+
+#[test]
+fn execution_completion_moves_fields_and_restores_them_on_overflow() {
+    use crate::backend::checkpoint::{ActiveExecution, ExecutionPhase};
+    let mut checkpoint = Checkpoint::empty("completion-ownership");
+    checkpoint.active_execution = Some(ActiveExecution {
+        submission_id: "submission".into(),
+        author: crate::protocol::MessageAuthor::User,
+        turn_id: "turn".into(),
+        started_at_ms: i64::MIN,
+        model_calls: 2,
+        tool_calls: 3,
+        failed_tool_calls: 1,
+        usage: TokenUsage::default(),
+        next_model_step: 4,
+        stop_hook_active: true,
+        phase: ExecutionPhase::Completion {
+            last_assistant_message: Some("done".into()),
+        },
+    });
+    let before = checkpoint.active_execution.clone();
+    let submission_ptr = before.as_ref().expect("active").submission_id.as_ptr();
+    let original_ptr = checkpoint
+        .active_execution
+        .as_ref()
+        .expect("active")
+        .submission_id
+        .as_ptr();
+    assert_ne!(submission_ptr, original_ptr);
+    checkpoint.execution_stats.run_count = u64::MAX;
+    let stats = checkpoint.execution_stats.clone();
+    assert!(
+        checkpoint
+            .finish_execution(ExecutionOutcome::Completed, i64::MAX)
+            .is_err()
+    );
+    assert_eq!(checkpoint.active_execution, before);
+    assert_eq!(checkpoint.execution_stats, stats);
+    assert_eq!(
+        checkpoint
+            .active_execution
+            .as_ref()
+            .expect("restored")
+            .submission_id
+            .as_ptr(),
+        original_ptr
+    );
+    checkpoint.execution_stats.run_count = 0;
+    let record = checkpoint
+        .finish_execution(ExecutionOutcome::Completed, i64::MAX)
+        .expect("completion");
+    assert!(checkpoint.active_execution.is_none());
+    assert_eq!(record.submission_id.as_ptr(), original_ptr);
+    assert_eq!(record.elapsed_ms, u64::MAX);
+    assert_eq!(checkpoint.execution_stats.run_count, 1);
 }

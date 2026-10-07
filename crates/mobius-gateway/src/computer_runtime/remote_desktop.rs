@@ -136,7 +136,7 @@ impl RemoteDesktop {
     fn stop_if_unused(self: &Arc<Self>) {
         let remote = Arc::clone(self);
         tokio::spawn(async move {
-            let _execution = Arc::clone(&remote.executions).write_owned().await;
+            let _execution = remote.executions.write().await;
             let mut runtime = remote.runtime.lock().await;
             if remote.held.load(Ordering::Acquire)
                 || *mobius::sync::recover_lock(&remote.consumers) != 0
@@ -144,7 +144,7 @@ impl RemoteDesktop {
                 return;
             }
             if let Some(runtime) = runtime.take() {
-                gateway_log!("gateway desktop stopping: no active consumers");
+                tracing::info!("gateway desktop stopping: no active consumers");
                 runtime.stop().await;
             }
         });
@@ -222,8 +222,9 @@ impl RemoteDesktop {
         if !self.enabled {
             return Err(unavailable());
         }
-        let _lease = Arc::clone(&self.control)
-            .try_lock_owned()
+        let _lease = self
+            .control
+            .try_lock()
             .map_err(|_| Error::Config("the desktop is busy".into()))?;
         self.check_execution()?;
         if cfg!(target_os = "macos") {
@@ -341,6 +342,7 @@ impl RemoteDesktop {
         let mut runtime = self.runtime.lock().await;
         if runtime.is_none() {
             *runtime = Some(Runtime::start(&self.state_dir, &self.config).await?);
+            // Browser activation awaits without holding the synchronous last-session mutex.
             let session_id = mobius::sync::recover_lock(&self.last_session).clone();
             if let Some(session_id) = session_id {
                 runtime
@@ -380,7 +382,7 @@ impl RemoteDesktop {
 
     pub(crate) async fn cancel_takeover(self: &Arc<Self>) {
         if mobius::sync::recover_lock(&self.user).is_none() {
-            let _execution = Arc::clone(&self.executions).write_owned().await;
+            let _execution = self.executions.write().await;
             let has_runtime = self.runtime.lock().await.is_some();
             if has_runtime && self.set_input(false).await.is_err() {
                 self.shutdown().await;
@@ -459,7 +461,7 @@ impl RemoteDesktop {
     pub(crate) async fn shutdown(&self) {
         let mut runtime = self.runtime.lock().await;
         if let Some(runtime) = runtime.take() {
-            gateway_log!("gateway desktop stopping: shutdown");
+            tracing::info!("gateway desktop stopping: shutdown");
             runtime.stop().await;
         }
     }
@@ -529,7 +531,7 @@ impl Runtime {
         clean_socket(&socket).await?;
         let mut children = Vec::new();
         let mut browser = None;
-        gateway_log!("gateway desktop starting");
+        tracing::info!("gateway desktop starting");
         let started: Result<_> = async {
             let display =
                 start_display(&directory, &authority, &socket, &mut children, config).await?;
@@ -561,7 +563,7 @@ impl Runtime {
         let (display, chromium, endpoint, websocket) = match started {
             Ok(started) => started,
             Err(error) => {
-                gateway_log!("gateway desktop startup failed: {error}");
+                tracing::warn!(%error, "gateway desktop startup failed");
                 if let Some(browser) = browser {
                     browser.stop().await;
                 }
@@ -595,8 +597,8 @@ impl Runtime {
         if let Some(browser) = self.browser.as_mut()
             && let Some(status) = browser.exit_status()?
         {
-            gateway_log!(
-                "gateway desktop browser exited ({status}); native desktop remains available"
+            tracing::warn!(
+                %status, "gateway desktop browser exited; native desktop remains available"
             );
             self.browser.take().ok_or_else(unavailable)?.stop().await;
         }
@@ -893,9 +895,12 @@ async fn cdp(endpoint: &str, method: &str, params: Value) -> Result<Value> {
         while let Some(message) = socket.next().await {
             let message = message.map_err(crate::wire::websocket_error)?;
             if let tokio_tungstenite::tungstenite::Message::Text(text) = message {
-                let reply: Value = serde_json::from_str(&text)?;
+                let mut reply: Value = serde_json::from_str(&text)?;
                 if reply["id"] == 1 {
-                    return reply.get("result").cloned().ok_or_else(unavailable);
+                    return reply
+                        .get_mut("result")
+                        .map(Value::take)
+                        .ok_or_else(unavailable);
                 }
             }
         }

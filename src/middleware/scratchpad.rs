@@ -493,8 +493,8 @@ impl Middleware for Scratchpad {
 
     fn prepare_compacted_input(
         &self,
-        _original: &[serde_json::Value],
-        compacted: &mut Vec<serde_json::Value>,
+        _original: crate::backend::model::ModelInput<'_>,
+        compacted: &mut Vec<Arc<serde_json::Value>>,
     ) {
         compacted.retain(|item| !is_projection_item(item));
     }
@@ -510,7 +510,7 @@ impl Middleware for Scratchpad {
                     context.source(),
                     SessionStartSource::Startup | SessionStartSource::Compact
                 )
-                && let Some(item) = next_projection(context.input, &snapshot)?
+                && let Some(item) = next_projection(context.input.as_slice().into(), &snapshot)?
             {
                 context.push_input(item);
             }

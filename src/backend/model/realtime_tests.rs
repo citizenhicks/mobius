@@ -571,6 +571,28 @@ fn live_captions_preserve_both_speakers_deduplicate_and_finalize_before_delegati
 }
 
 #[test]
+fn completing_live_caption_moves_the_buffer_and_emits_only_once() {
+    let mut turns = VoiceTurns::default();
+    let event = json!({
+        "type": "session.input_transcript.delta", "event_id": "first",
+        "delta": "Keep this caption", "start_ms": 0, "end_ms": 500
+    });
+    turns.observe(VoiceApi::OpenAi, &event).unwrap();
+    let pointer = turns.streams["live-0-1"].text.as_ptr();
+    let closed = json!({"type": "session.closed"});
+    let completed = turns.observe(VoiceApi::OpenAi, &closed).unwrap();
+    assert!(matches!(
+        completed.as_slice(),
+        [RealtimeVoiceEvent::Transcript { text, complete: true, .. }]
+            if text == "Keep this caption" && text.as_ptr() == pointer
+    ));
+    assert!(turns.streams["live-0-1"].complete);
+    assert!(turns.streams["live-0-1"].text.is_empty());
+    assert!(turns.observe(VoiceApi::OpenAi, &closed).unwrap().is_empty());
+    assert!(turns.observe(VoiceApi::OpenAi, &event).unwrap().is_empty());
+}
+
+#[test]
 fn live_caption_gaps_and_late_fragments_keep_text_in_separate_groups() {
     let mut turns = VoiceTurns::default();
     let fragment = |start, end, text| json!({"type":"session.input_transcript.delta","delta":text,"start_ms":start,"end_ms":end});

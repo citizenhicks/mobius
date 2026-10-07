@@ -134,6 +134,7 @@ impl SessionFileStore {
                 height,
             }));
         }
+        // Blocking image work retains its semaphore permit even when the async caller is cancelled.
         let permit = Arc::clone(&self.image_work)
             .acquire_owned()
             .await
@@ -617,6 +618,7 @@ async fn validated_image(
     bytes: Vec<u8>,
     work: &Arc<tokio::sync::Semaphore>,
 ) -> Result<(Vec<u8>, &'static str, u32, u32, u8)> {
+    // Blocking decoding retains its semaphore permit even when the async caller is cancelled.
     let permit = Arc::clone(work)
         .acquire_owned()
         .await
@@ -634,39 +636,41 @@ async fn validated_image(
 /// # Errors
 ///
 /// Returns an error if validation or an operation required by this function fails.
-pub async fn grant_context(
+pub async fn grant_context<T: std::borrow::Borrow<serde_json::Value> + Sync>(
     files: Option<&SessionFileStore>,
     parent: &str,
     child: &str,
-    input: &[serde_json::Value],
+    input: &[T],
 ) -> Result<()> {
-    for part in input
-        .iter()
-        .filter_map(crate::protocol::content_parts)
-        .flatten()
-    {
-        let kind = part.get("type").and_then(serde_json::Value::as_str);
-        if !matches!(kind, Some("input_image" | "file")) {
-            continue;
-        }
-        let files = files
-            .ok_or_else(|| Error::Config("forking media requires session file storage".into()))?;
-        if kind == Some("input_image") {
-            let image = part.get("image").ok_or_else(|| {
-                Error::Config("forked observation requires an image reference".into())
-            })?;
-            let image: ImageReference = serde::Deserialize::deserialize(image)?;
-            files.grant_file(parent, child, &image.file).await?;
-            if let Some(rendition) = files.prepare_image(parent, &image).await? {
-                files.grant_file(parent, child, &rendition.file).await?;
+    for item in input {
+        for part in crate::protocol::content_parts(item.borrow())
+            .into_iter()
+            .flatten()
+        {
+            let kind = part.get("type").and_then(serde_json::Value::as_str);
+            if !matches!(kind, Some("input_image" | "file")) {
+                continue;
             }
-        } else {
-            let file = part.get("file").ok_or_else(|| {
-                Error::Config("forked observation requires a file reference".into())
+            let files = files.ok_or_else(|| {
+                Error::Config("forking media requires session file storage".into())
             })?;
-            files
-                .grant_file(parent, child, &serde::Deserialize::deserialize(file)?)
-                .await?;
+            if kind == Some("input_image") {
+                let image = part.get("image").ok_or_else(|| {
+                    Error::Config("forked observation requires an image reference".into())
+                })?;
+                let image: ImageReference = serde::Deserialize::deserialize(image)?;
+                files.grant_file(parent, child, &image.file).await?;
+                if let Some(rendition) = files.prepare_image(parent, &image).await? {
+                    files.grant_file(parent, child, &rendition.file).await?;
+                }
+            } else {
+                let file = part.get("file").ok_or_else(|| {
+                    Error::Config("forked observation requires a file reference".into())
+                })?;
+                files
+                    .grant_file(parent, child, &serde::Deserialize::deserialize(file)?)
+                    .await?;
+            }
         }
     }
     Ok(())

@@ -12,6 +12,8 @@ pub(super) mod runtime;
 mod shimmer;
 mod view;
 
+use std::sync::Arc;
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -172,14 +174,22 @@ struct PickerState {
 }
 
 impl PickerState {
-    fn matching_options(&self) -> impl Iterator<Item = &PickerOption> {
+    fn matching_indices(&self) -> impl Iterator<Item = usize> {
         let query = self.query.to_lowercase();
-        self.options.iter().filter(move |option| {
-            query.is_empty()
-                || option.label.to_lowercase().contains(&query)
-                || option.description.to_lowercase().contains(&query)
-                || option.detail.to_lowercase().contains(&query)
-        })
+        self.options
+            .iter()
+            .enumerate()
+            .filter(move |(_, option)| {
+                query.is_empty()
+                    || option.label.to_lowercase().contains(&query)
+                    || option.description.to_lowercase().contains(&query)
+                    || option.detail.to_lowercase().contains(&query)
+            })
+            .map(|(index, _)| index)
+    }
+
+    fn matching_options(&self) -> impl Iterator<Item = &PickerOption> {
+        self.matching_indices().map(|index| &self.options[index])
     }
 
     fn match_count(&self) -> usize {
@@ -365,7 +375,7 @@ struct TuiState {
     git_diff: [Option<String>; 2],
     git_diff_requests: BTreeMap<String, usize>,
     git_diff_refresh: bool,
-    streamed_step_phases: BTreeMap<String, StreamedStepPhases>,
+    streamed_step_phases: BTreeMap<Arc<str>, StreamedStepPhases>,
     input: String,
     cursor: usize,
     pastes: BTreeMap<char, String>,
@@ -686,11 +696,12 @@ impl TuiState {
     }
 
     fn recall_composer_input(&mut self, index: usize) {
-        let input = self.composer_history[index].clone();
+        let input = std::mem::take(&mut self.composer_history[index]);
         self.input.clear();
         self.pastes.clear();
         self.cursor = 0;
         self.insert_paste(&input);
+        self.composer_history[index] = input;
         self.composer_history_index = Some(index);
     }
 
@@ -757,9 +768,9 @@ impl TuiState {
         self.trim_transcript();
     }
 
-    fn remember_streamed_phase(&mut self, model_step_id: &str, phase: ModelStepContentPhase) {
+    fn remember_streamed_phase(&mut self, model_step_id: &Arc<str>, phase: ModelStepContentPhase) {
         self.streamed_step_phases
-            .entry(model_step_id.into())
+            .entry(Arc::clone(model_step_id))
             .or_default()
             .insert(phase);
     }
@@ -912,11 +923,11 @@ fn latest_summary_line(text: &str) -> Option<String> {
             return None;
         }
         let line = line.trim_start_matches('#').trim();
-        let title = if let Some(bold) = line.strip_prefix("**") {
+        let title: std::borrow::Cow<'_, str> = if let Some(bold) = line.strip_prefix("**") {
             let (title, suffix) = bold.split_once("**")?;
-            format!("{title}{suffix}")
+            format!("{title}{suffix}").into()
         } else {
-            line.to_owned()
+            line.into()
         };
         (!title.is_empty()).then(|| title.chars().take(160).collect())
     })

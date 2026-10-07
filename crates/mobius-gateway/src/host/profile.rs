@@ -28,51 +28,53 @@ pub(super) async fn gateway_session_summaries(
     }
 }
 
-pub(super) async fn provider_usage(
+pub(super) fn provider_usage(
     config: &GatewayConfig,
     store: &ConfigStore,
-) -> Result<Vec<ProviderUsage>> {
+) -> impl std::future::Future<Output = Result<Vec<ProviderUsage>>> + Send + use<> {
     let provider_ids = config
         .configured_providers
         .values()
         .map(|configured| configured.selection.provider.clone())
         .collect::<BTreeSet<_>>();
     let auth_path = store.provider_auth_path();
-    let mut requests = Vec::new();
-    for provider_id in provider_ids {
-        let definition = provider(&provider_id)?;
-        let ProviderAuth::Browser(auth) = definition.auth() else {
-            continue;
-        };
-        if !auth
-            .configured(&auth_path)
-            .is_ok_and(|configured| configured)
-        {
-            continue;
-        }
-        let Some(fetch) = auth.usage_limits_with_transport(&auth_path, config.model_transport)
-        else {
-            continue;
-        };
-        requests.push((provider_id, fetch));
-    }
-    Ok(
-        futures_util::future::join_all(requests.into_iter().map(|(provider, fetch)| async move {
-            match fetch.await {
-                Ok(limits) => ProviderUsage {
-                    provider,
-                    limits: Some(limits),
-                    error: None,
-                },
-                Err(error) => ProviderUsage {
-                    provider,
-                    limits: None,
-                    error: Some(error.to_string()),
-                },
+    let transport = config.model_transport;
+    async move {
+        let mut requests = Vec::new();
+        for provider_id in provider_ids {
+            let definition = provider(&provider_id)?;
+            let ProviderAuth::Browser(auth) = definition.auth() else {
+                continue;
+            };
+            if !auth
+                .configured(&auth_path)
+                .is_ok_and(|configured| configured)
+            {
+                continue;
             }
-        }))
-        .await,
-    )
+            let Some(fetch) = auth.usage_limits_with_transport(&auth_path, transport) else {
+                continue;
+            };
+            requests.push((provider_id, fetch));
+        }
+        Ok(futures_util::future::join_all(requests.into_iter().map(
+            |(provider, fetch)| async move {
+                match fetch.await {
+                    Ok(limits) => ProviderUsage {
+                        provider,
+                        limits: Some(limits),
+                        error: None,
+                    },
+                    Err(error) => ProviderUsage {
+                        provider,
+                        limits: None,
+                        error: Some(error.to_string()),
+                    },
+                }
+            },
+        ))
+        .await)
+    }
 }
 
 pub(super) fn session_tree_ids(
@@ -83,20 +85,20 @@ pub(super) fn session_tree_ids(
         .iter()
         .any(|session| session.session_id == root_session_id)
         .then_some(())?;
-    let mut seen = HashSet::from([root_session_id.to_owned()]);
+    let mut seen = HashSet::from([root_session_id]);
     let mut ordered = vec![root_session_id.to_owned()];
     loop {
         let mut changed = false;
         for session in sessions {
-            if seen.contains(&session.session_id)
+            if seen.contains(session.session_id.as_str())
                 || !session
                     .parent_session_id
                     .as_ref()
-                    .is_some_and(|parent| seen.contains(parent))
+                    .is_some_and(|parent| seen.contains(parent.as_str()))
             {
                 continue;
             }
-            seen.insert(session.session_id.clone());
+            seen.insert(session.session_id.as_str());
             ordered.push(session.session_id.clone());
             changed = true;
         }
@@ -229,22 +231,38 @@ pub(super) fn active_run_summary(session_id: &str, active: &ActiveExecution) -> 
 }
 
 pub(super) async fn gateway_ready(
-    state: &GatewayReadySnapshot,
+    state: GatewayReadySnapshot,
 ) -> std::result::Result<ReadyPayload, Rejection> {
     let (routes, provider_instances) = {
         let _credentials = state.credential_catalog_gate.lock().await;
         (
-            configured_model_routes(&state.config, &state.store, &state.credentials)
-                .map_err(internal)?,
-            provider_instances(&state.config, &state.store, &state.credentials)
-                .map_err(internal)?,
+            configured_model_routes(
+                &state.configured_providers,
+                state
+                    .bot_defaults
+                    .as_ref()
+                    .map(|defaults| defaults.config.provider.instance.as_str()),
+                &state.store,
+                &state.credentials,
+            )
+            .map_err(internal)?,
+            provider_instances(
+                &state.configured_providers,
+                &state.store,
+                &state.credentials,
+            )
+            .map_err(internal)?,
         )
     };
-    let media = crate::provider_catalog::media_routes(&state.config, &routes).map_err(internal)?;
-    let models: Vec<_> = routes.iter().map(|route| route.choice.clone()).collect();
-    let mut model_providers: BTreeMap<_, _> = routes
+    let media = crate::provider_catalog::media_routes(&state.configured_providers, &routes)
+        .map_err(internal)?;
+    let mut model_providers = BTreeMap::new();
+    let models: Vec<_> = routes
         .into_iter()
-        .map(|route| (route.choice.route, route.provider.instance))
+        .map(|route| {
+            model_providers.insert(route.choice.route.clone(), route.provider.instance);
+            route.choice
+        })
         .collect();
     let mut media_choices = |routes: Vec<crate::provider_catalog::MediaRoute>| {
         routes
@@ -257,11 +275,7 @@ pub(super) async fn gateway_ready(
     };
     let image_models = media_choices(media.images);
     let voice_models = media_choices(media.voices);
-    let subagent_ceilings = state
-        .config
-        .execution
-        .subagent_ceilings()
-        .map_err(internal)?;
+    let subagent_ceilings = state.subagent_ceilings;
     let middleware_features = crate::middleware_manifest::features_with_ceilings(
         mobius::middleware::manifest::ModelCatalogs {
             models: &models,
@@ -276,8 +290,8 @@ pub(super) async fn gateway_ready(
             Some(subagent_ceilings),
         );
     }
-    let extensions = crate::extensions::records(&state.config);
-    let mut contributions = state.contributions.clone();
+    let extensions = state.extensions;
+    let mut contributions = state.contributions;
     contributions.push(
         state
             .scratchpad
@@ -290,13 +304,7 @@ pub(super) async fn gateway_ready(
         .map_err(internal)?;
     let mut ready = ReadyPayload {
         gateway_version: env!("CARGO_PKG_VERSION").into(),
-        computer_view: if !state.config.desktop_enabled {
-            crate::wire::ComputerView::Unavailable
-        } else if cfg!(target_os = "linux") {
-            crate::wire::ComputerView::RemoteDesktop
-        } else {
-            crate::wire::ComputerView::EmbeddedBrowser
-        },
+        computer_view: state.computer_view,
         machine_name: local_machine_name().map_err(internal)?,
         bots,
         sessions,
@@ -307,7 +315,7 @@ pub(super) async fn gateway_ready(
         model_providers,
         image_models,
         voice_models,
-        bot_defaults: state.config.bot_defaults.clone().map(|mut defaults| {
+        bot_defaults: state.bot_defaults.map(|mut defaults| {
             crate::middleware_manifest::materialize_integer_defaults(
                 &mut defaults.config.middleware,
                 Some(subagent_ceilings),
@@ -317,7 +325,7 @@ pub(super) async fn gateway_ready(
         middleware_features,
         extensions,
         contributions,
-        max_active_sessions: state.config.connections.active_sessions,
+        max_active_sessions: state.max_active_sessions,
         session_file_limits: session_file_limits(),
         revisions: BTreeMap::new(),
         omitted: BTreeSet::new(),

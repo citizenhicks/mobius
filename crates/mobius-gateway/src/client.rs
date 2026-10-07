@@ -244,7 +244,7 @@ impl Endpoint {
                     ));
                 }
             }
-            let frame = read_frame::<serde_json::Value>(&mut reader)
+            let mut frame = read_frame::<serde_json::Value>(&mut reader)
                 .await?
                 .ok_or_else(|| {
                     Error::Protocol("gateway disconnected before reporting its version".into())
@@ -254,10 +254,14 @@ impl Endpoint {
                     "gateway did not report a valid ready frame".into(),
                 ));
             }
-            return frame["payload"]["gateway_version"]
-                .as_str()
-                .map(str::to_owned)
-                .ok_or_else(|| Error::Protocol("gateway did not report its version".into()));
+            return match frame
+                .get_mut("payload")
+                .and_then(|payload| payload.get_mut("gateway_version"))
+                .map(serde_json::Value::take)
+            {
+                Some(serde_json::Value::String(version)) => Ok(version),
+                _ => Err(Error::Protocol("gateway did not report its version".into())),
+            };
         }
         Err(Error::Protocol("gateway did not report its version".into()))
     }

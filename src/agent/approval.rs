@@ -83,7 +83,8 @@ impl Runner {
                     .await
             }
             None => {
-                self.state.pending_approval = Some(pending.clone());
+                // Persist recovery data while the approval wait mutates runner state using this snapshot.
+                self.state.make_mut().pending_approval = Some(pending.clone());
                 events.push(approval_event(&pending));
                 self.persist_with_events(events, None).await?;
                 self.resolve_pending(inbox, &pending, false).await
@@ -119,7 +120,7 @@ impl Runner {
             return Ok(None);
         };
         let decision = approval.decision;
-        if let Some(current) = self.state.pending_approval.as_mut()
+        if let Some(current) = self.state.make_mut().pending_approval.as_mut()
             && current.request_id == pending.request_id
         {
             current.decision_received = true;
@@ -178,14 +179,11 @@ impl Runner {
                     .calls
                     .iter()
                     .filter(|call| !approval_call_ids.contains(call.call_id.as_str()))
-                    .cloned()
                     .collect::<Vec<_>>();
                 let denied_calls = pending
                     .calls
                     .iter()
-                    .filter(|call| approval_call_ids.contains(call.call_id.as_str()))
-                    .cloned()
-                    .collect::<Vec<_>>();
+                    .filter(|call| approval_call_ids.contains(call.call_id.as_str()));
                 let mut completion = if allowed_calls.is_empty() {
                     ToolCompletion::default()
                 } else {
@@ -206,7 +204,7 @@ impl Runner {
                     completion
                 };
                 completion.results.extend(denied_results(
-                    &denied_calls,
+                    denied_calls,
                     &rejection,
                     self.config.sandbox.output_limit(),
                 ));
@@ -262,7 +260,7 @@ impl Runner {
 
 fn approval_event(pending: &PendingApproval) -> Event {
     Event {
-        submission_id: Some(pending.submission_id.clone()),
+        submission_id: Some(pending.submission_id.as_str().into()),
         msg: EventMsg::ExecApprovalRequest(pending.request_event()),
     }
 }
@@ -284,9 +282,13 @@ fn validate_approval_selection(calls: &[ToolCall], call_ids: &[String]) -> Resul
     Ok(())
 }
 
-fn denied_results(calls: &[ToolCall], rejection: &str, output_limit: usize) -> Vec<ToolResult> {
+fn denied_results<'a>(
+    calls: impl IntoIterator<Item = &'a ToolCall>,
+    rejection: &str,
+    output_limit: usize,
+) -> Vec<ToolResult> {
     calls
-        .iter()
+        .into_iter()
         .map(|call| ToolResult::error(call, format!("tool denied: {rejection}"), output_limit))
         .collect()
 }

@@ -217,6 +217,7 @@ impl GatewaySandbox {
         Ok(Self {
             delegate: std::sync::Arc::new(delegate),
             full_access_delegate: std::sync::Arc::new(full_access_delegate),
+            // Isolated execution shares desktop devices while giving each backend its own execution state.
             desktop: self.desktop.clone(),
             remote_desktop: self.remote_desktop.as_ref().map(std::sync::Arc::clone),
             desktop_use: tokio::sync::Mutex::new(None),

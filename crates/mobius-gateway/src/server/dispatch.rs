@@ -744,17 +744,9 @@ async fn unpair_client(
     client: &AuthenticatedClient<'_>,
     gateway: &GatewayHost,
 ) -> Result<()> {
-    match auth.unpair_client(client.id, &client_id) {
-        Ok(true) => {
-            let _ = client.revocations.send(client_id.clone());
-            gateway
-                .forget_provider_login(&client_id)
-                .await
-                .map_err(|rejection| Error::Protocol(rejection.message))?;
-            write_client_inventory(writer, request_id, client.id, auth, client.connections).await
-        }
+    let publication = match auth.unpair_client(client.id, &client_id) {
         Ok(false) => {
-            write_rejection(
+            return write_rejection(
                 writer,
                 request_id,
                 Rejection::new(
@@ -762,16 +754,26 @@ async fn unpair_client(
                     "that paired device cannot be unpaired from this connection",
                 ),
             )
-            .await
+            .await;
         }
-        Err(_) => {
-            write_rejection(
+        Err(error) if !matches!(error, Error::PublicationApplied { .. }) => {
+            return write_rejection(
                 writer,
                 request_id,
                 internal_rejection("failed to update paired devices".into()),
             )
-            .await
+            .await;
         }
+        result => result.map(|_| ()),
+    };
+    // Broadcast retains identity independently of cleanup; visible revocation must precede its await.
+    let _ = client.revocations.send(client_id.clone());
+    let follow_up = gateway.forget_provider_login(&client_id).await;
+    match crate::host::finish_publication(publication, follow_up) {
+        Ok(()) => {
+            write_client_inventory(writer, request_id, client.id, auth, client.connections).await
+        }
+        Err(rejection) => write_rejection(writer, request_id, rejection).await,
     }
 }
 
@@ -989,7 +991,7 @@ async fn delete_sessions(
     writer: &mut (impl AsyncWrite + Unpin),
     connection: &mut ConnectionSessionState<'_>,
     request_id: String,
-    session_ids: Vec<String>,
+    mut session_ids: Vec<String>,
     mut selection: SessionFileSelection,
     gateway: &GatewayHost,
 ) -> Result<()> {
@@ -997,12 +999,15 @@ async fn delete_sessions(
         && session_ids.len() == 1
         && !ids.is_empty()
     {
-        ids.retain(|id| {
-            connection
-                .uploads
-                .remove(&(session_ids[0].clone(), id.clone()))
-                .is_none()
+        // Reuse the owned IDs as a lookup key, restoring the selection before any await.
+        let mut key = (std::mem::take(&mut session_ids[0]), String::new());
+        ids.retain_mut(|id| {
+            std::mem::swap(id, &mut key.1);
+            let retained = connection.uploads.remove(&key).is_none();
+            std::mem::swap(id, &mut key.1);
+            retained
         });
+        session_ids[0] = key.0;
         if ids.is_empty() {
             return write_result(writer, request_id, Ok(())).await;
         }
@@ -1186,8 +1191,8 @@ async fn upload_session_file_chunk(
     offset: u64,
     data: Vec<u8>,
 ) -> Result<()> {
-    let key = (session_id.clone(), upload_id.clone());
-    let host = match require_uploads_enabled(connection.selected, &session_id).await {
+    let key = (session_id, upload_id);
+    let host = match require_uploads_enabled(connection.selected, &key.0).await {
         Ok(host) => host,
         Err(rejection) => {
             connection.uploads.remove(&key);
@@ -1218,8 +1223,8 @@ async fn upload_session_file_chunk(
                 writer,
                 &ServerFrame::new(ServerMessage::SessionFileUploadChunkAccepted {
                     request_id,
-                    session_id,
-                    upload_id,
+                    session_id: key.0,
+                    upload_id: key.1,
                     next_offset,
                 }),
             )
@@ -1239,8 +1244,8 @@ async fn finish_session_file_upload(
     session_id: String,
     upload_id: String,
 ) -> Result<()> {
-    let key = (session_id.clone(), upload_id);
-    let host = match require_uploads_enabled(connection.selected, &session_id).await {
+    let key = (session_id, upload_id);
+    let host = match require_uploads_enabled(connection.selected, &key.0).await {
         Ok(host) => host,
         Err(rejection) => {
             connection.uploads.remove(&key);
@@ -1271,7 +1276,7 @@ async fn finish_session_file_upload(
                 writer,
                 &ServerFrame::new(ServerMessage::SessionFileUploadCompleted {
                     request_id,
-                    session_id,
+                    session_id: key.0,
                     file,
                 }),
             )

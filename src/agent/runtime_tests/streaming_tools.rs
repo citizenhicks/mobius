@@ -35,6 +35,7 @@ struct StreamingTool {
 
 #[derive(Default)]
 struct StreamingHooks {
+    rewrite_second: bool,
     post_calls: AtomicUsize,
     pre_calls: AtomicUsize,
 }
@@ -374,10 +375,16 @@ impl Middleware for StreamingHooks {
 
     fn pre_tool_use<'a>(
         &'a self,
-        _context: &'a mut PreToolUseContext<'_>,
+        context: &'a mut PreToolUseContext<'_>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             self.pre_calls.fetch_add(1, Ordering::SeqCst);
+            if self.rewrite_second && context.call().call_id == "parallel-2" {
+                context.replace(
+                    "parallel_streaming_tool",
+                    serde_json::json!({"call_id": "parallel-2", "rewritten": true}),
+                )?;
+            }
             Ok(())
         })
     }
@@ -538,7 +545,7 @@ async fn collect_until_turn_end(agent: &mut Agent) -> Vec<EventMsg> {
     .expect("streaming turn did not reach a terminal event")
 }
 
-fn canonical_tool_items(context: &[Value]) -> Vec<String> {
+fn canonical_tool_items(context: &[Arc<Value>]) -> Vec<String> {
     context
         .iter()
         .filter_map(|item| {
@@ -846,7 +853,10 @@ async fn streaming_parallel_tools_start_before_final_model_output_and_keep_order
     let started = Arc::new(Notify::new());
     let started_count = Arc::new(AtomicUsize::new(0));
     let calls = Arc::new(AtomicUsize::new(0));
-    let hooks = Arc::new(StreamingHooks::default());
+    let hooks = Arc::new(StreamingHooks {
+        rewrite_second: true,
+        ..StreamingHooks::default()
+    });
     let model = Arc::new(ParallelStreamingModel {
         calls: AtomicUsize::new(0),
         started: Arc::clone(&started),
@@ -893,6 +903,23 @@ async fn streaming_parallel_tools_start_before_final_model_output_and_keep_order
             .expect("tool end");
         assert!(begin < completed && completed < end);
     }
+    let begin_arguments = events
+        .iter()
+        .filter_map(|event| match event {
+            EventMsg::ToolCallBegin(call) => Some((&*call.call_id, &call.arguments)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        begin_arguments,
+        [
+            ("parallel-1", &serde_json::json!({"call_id": "parallel-1"})),
+            (
+                "parallel-2",
+                &serde_json::json!({"call_id": "parallel-2", "rewritten": true})
+            ),
+        ]
+    );
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_eq!(model.calls.load(Ordering::SeqCst), 2);
     assert_eq!(hooks.pre_calls.load(Ordering::SeqCst), 2);
@@ -910,6 +937,22 @@ async fn streaming_parallel_tools_start_before_final_model_output_and_keep_order
             .filter(|item| internal_message_kind(item) == Some("streaming_once_after"))
             .count(),
         1
+    );
+    let saved_arguments = saved
+        .context
+        .iter()
+        .filter(|item| item["type"] == "function_call")
+        .map(|item| {
+            serde_json::from_str::<Value>(item["arguments"].as_str().expect("arguments"))
+                .expect("valid arguments")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        saved_arguments,
+        [
+            serde_json::json!({"call_id": "parallel-1"}),
+            serde_json::json!({"call_id": "parallel-2", "rewritten": true}),
+        ]
     );
     assert!(saved.delivered_once["streaming_hooks"].contains("after"));
     let after = saved
@@ -958,8 +1001,8 @@ async fn failed_tool_save_does_not_consume_once_guidance() {
     rusqlite::Connection::open(&database)
         .unwrap()
         .execute_batch(
-            "CREATE TRIGGER reject_tool_guidance BEFORE UPDATE ON sessions
-         WHEN instr(NEW.latest_checkpoint_json, 'streaming_once_after') > 0
+            "CREATE TRIGGER reject_tool_guidance BEFORE INSERT ON context_items
+         WHEN instr(NEW.item_json, 'streaming_once_after') > 0
          BEGIN SELECT RAISE(ABORT, 'injected tool save failure'); END;",
         )
         .unwrap();
@@ -988,7 +1031,7 @@ async fn failed_tool_save_does_not_consume_once_guidance() {
             .iter()
             .any(|item| internal_message_kind(item) == Some("streaming_once_after"))
     );
-    let mut retry_input = Vec::new();
+    let mut retry_input: Vec<Value> = Vec::new();
     let mut delivery = crate::middleware::delivery_once::DeliveryOnce::new(&saved.delivered_once);
     delivery.owner = "streaming_hooks";
     assert!(
@@ -1174,7 +1217,9 @@ async fn interrupt_drops_a_running_streaming_tool() {
     .expect("tool started");
     agent
         .sender()
-        .submit(Op::Interrupt { turn_id })
+        .submit(Op::Interrupt {
+            turn_id: turn_id.to_string(),
+        })
         .expect("interrupt turn");
     while !matches!(
         agent.next_event().await.expect("agent event").msg,

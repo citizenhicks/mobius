@@ -85,7 +85,7 @@ async fn bounded_output_reports_when_the_stream_was_truncated() {
     let output = read_output(
         &b"abcdef"[..],
         CommandStream::Stdout,
-        CommandOutputSink::default(),
+        &CommandOutputSink::default(),
         3,
     )
     .await
@@ -100,7 +100,7 @@ async fn bounded_output_replaces_invalid_and_truncated_utf8() {
     let output = read_output(
         &b"\xffa\xf0\x9f\x92\xa9z"[..],
         CommandStream::Stdout,
-        CommandOutputSink::default(),
+        &CommandOutputSink::default(),
         4,
     )
     .await
@@ -1747,4 +1747,40 @@ async fn configured_shell_is_rechecked_after_filesystem_policy_changes() {
             Err(Error::Config(message)) if message.contains("execution helper")
         ));
     }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn changing_denied_reads_preserves_existing_execution_policy() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let resources = tempfile::tempdir().expect("resources");
+    let first = resources.path().join("first");
+    let second = resources.path().join("second");
+    std::fs::write(&first, "first").expect("first file");
+    std::fs::write(&second, "second").expect("second file");
+    let parent = local_sandbox(workspace.path())
+        .deny_read(&first)
+        .expect("deny first");
+    let child = parent.isolated_execution().expect("child");
+    let parent = parent.deny_read(resources.path()).expect("deny directory");
+    let second = second.to_str().expect("path");
+    assert!(
+        parent
+            .read(second, SandboxMode::DangerFullAccess)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        child
+            .read(second, SandboxMode::DangerFullAccess)
+            .await
+            .expect("child policy"),
+        "second"
+    );
+    assert!(
+        child
+            .read(first.to_str().expect("path"), SandboxMode::DangerFullAccess)
+            .await
+            .is_err()
+    );
 }

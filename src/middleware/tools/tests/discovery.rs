@@ -65,7 +65,7 @@ impl Tool for DefaultDeferredTool {
     }
 }
 
-fn names(definitions: &[ToolDefinition]) -> Vec<&str> {
+fn names(definitions: &[Arc<ToolDefinition>]) -> Vec<&str> {
     definitions
         .iter()
         .map(|definition| definition.name.as_str())
@@ -181,24 +181,33 @@ fn model_steps_and_search_reuse_registered_tool_definitions() {
     let registered = catalog.registered_definitions();
     let direct_definitions = catalog.direct_definitions();
     let deferred_definitions = catalog.deferred_definitions();
+    let registered_direct = registered
+        .iter()
+        .find(|tool| tool.name == "direct")
+        .unwrap();
+    let registered_deferred = registered
+        .iter()
+        .find(|tool| tool.name == "deferred")
+        .unwrap();
+    assert!(Arc::ptr_eq(registered_direct, &direct_definitions[0]));
+    assert!(Arc::ptr_eq(registered_deferred, &deferred_definitions[0]));
 
     for _ in 0..3 {
         let prepared = catalog
-            .prepare(&[], catalog.exposed_names())
+            .prepare((&[]).into(), Cow::Owned(catalog.exposed_names()))
             .expect("model step");
         assert_eq!(names(prepared.direct()), ["direct", TOOLS_SEARCH_NAME]);
         assert_eq!(names(prepared.deferred()), ["deferred"]);
+        assert!(Arc::ptr_eq(registered_direct, &prepared.direct()[0]));
+        assert!(Arc::ptr_eq(registered_deferred, &prepared.deferred()[0]));
         catalog
             .bind_prepared(function_call("direct"), &prepared)
             .expect("bind tool");
-        assert_eq!(
-            names(
-                &catalog
-                    .search_deferred("work", &prepared.searchable)
-                    .expect("search")
-            ),
-            ["deferred"]
-        );
+        let found = catalog
+            .search_deferred("work", &prepared.searchable)
+            .expect("search");
+        assert_eq!(names(&found), ["deferred"]);
+        assert!(Arc::ptr_eq(registered_deferred, &found[0]));
         assert!(Arc::ptr_eq(&registered, &catalog.registered_definitions()));
         assert!(Arc::ptr_eq(
             &direct_definitions,
@@ -209,8 +218,66 @@ fn model_steps_and_search_reuse_registered_tool_definitions() {
             &catalog.deferred_definitions()
         ));
     }
+    let restricted = catalog
+        .prepare((&[]).into(), Cow::Owned(BTreeSet::from(["direct".into()])))
+        .expect("restricted model step");
+    assert!(Arc::ptr_eq(registered_direct, &restricted.direct()[0]));
     assert_eq!(direct.definitions.load(Ordering::Relaxed), 1);
     assert_eq!(deferred.definitions.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn borrowed_preparation_copies_only_when_hiding_search() {
+    let mut catalog = Catalog::default();
+    catalog
+        .register(Arc::new(NamedTool::new(
+            "direct",
+            "direct work",
+            ToolExposure::Direct,
+        )))
+        .expect("direct");
+    catalog
+        .register(Arc::new(NamedTool::new(
+            "deferred",
+            "deferred work",
+            ToolExposure::Deferred,
+        )))
+        .expect("deferred");
+    finalize(&mut catalog);
+    let available = catalog.exposed_names();
+    let prepared = catalog
+        .prepare((&[]).into(), Cow::Borrowed(&available))
+        .expect("borrowed");
+    assert!(matches!(prepared.available, Cow::Borrowed(_)));
+    let visible = prepared
+        .direct()
+        .iter()
+        .chain(
+            prepared
+                .deferred()
+                .iter()
+                .filter(|tool| prepared.materialized().contains(&tool.name)),
+        )
+        .collect::<Vec<_>>();
+    assert_eq!(
+        prepared.serialized_schema_bytes().expect("visible schemas"),
+        crate::serialized_len(&visible).expect("reference schemas")
+    );
+
+    let restricted = BTreeSet::from(["direct".into(), TOOLS_SEARCH_NAME.into()]);
+    let prepared = catalog
+        .prepare((&[]).into(), Cow::Borrowed(&restricted))
+        .expect("hide search");
+    assert!(matches!(prepared.available, Cow::Owned(_)));
+    assert!(restricted.contains(TOOLS_SEARCH_NAME));
+    assert!(!prepared.available.contains(TOOLS_SEARCH_NAME));
+    assert_eq!(names(prepared.direct()), ["direct"]);
+
+    let direct_only = BTreeSet::from(["direct".into()]);
+    let prepared = catalog
+        .prepare((&[]).into(), Cow::Borrowed(&direct_only))
+        .expect("already hidden");
+    assert!(matches!(prepared.available, Cow::Borrowed(_)));
 }
 
 #[test]
@@ -458,11 +525,12 @@ fn binding_enforces_current_exposure_and_step_materialization() {
         "tool error: unknown tool `missing`"
     );
     let prepared = catalog
-        .prepare(&[], BTreeSet::from(["direct".into()]))
+        .prepare((&[]).into(), Cow::Owned(BTreeSet::from(["direct".into()])))
         .expect("active tool catalog");
     let calls = [function_call("missing")];
-    let (bound, mut rejected) = catalog.bind_live_batch(&calls, &prepared, 8);
+    let (bound, callable, mut rejected) = catalog.bind_live_batch(&calls, &prepared, 8);
     assert!(bound.is_empty());
+    assert!(callable.is_empty());
     assert_eq!(rejected.len(), 1);
     assert_eq!(rejected[0].call_id, calls[0].call_id);
     assert!(rejected[0].is_error);
@@ -502,7 +570,7 @@ async fn dispatch_rechecks_exposure_in_the_current_catalog() {
 
     let result = execute_batch(
         &hidden,
-        &[bound],
+        [bound],
         test_sandbox(),
         &test_permissions(&[]),
         "turn",
@@ -546,7 +614,7 @@ async fn tools_search_executes_as_a_normal_bound_tool_and_reports_loaded_names()
 
     let result = execute_batch(
         &catalog,
-        &[call],
+        [call],
         test_sandbox(),
         &test_permissions(&[]),
         "turn",

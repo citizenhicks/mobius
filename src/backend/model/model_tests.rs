@@ -5,6 +5,44 @@ use crate::protocol::ModelChoice;
 
 struct DefaultCapabilities;
 
+#[test]
+fn context_identity_uses_registered_owner_and_model_not_display_labels_or_effort() {
+    let mut router = ModelRouter::new("high", Arc::new(DefaultCapabilities));
+    for route in ["medium", "other-instance", "other-model"] {
+        router
+            .register(route, Arc::new(DefaultCapabilities))
+            .unwrap();
+    }
+    for route in ["high", "medium", "other-instance", "other-model"] {
+        let mut choice = router.resolve_choice(route, None).unwrap().clone();
+        choice.group = "Same display label".into();
+        choice.model = if route == "other-model" {
+            "another-model"
+        } else {
+            "model"
+        }
+        .into();
+        choice.reasoning_effort = Some(route.into());
+        router.configure_choice(choice).unwrap();
+        router
+            .set_context_group(
+                route,
+                if route == "other-instance" {
+                    "second"
+                } else {
+                    "first"
+                },
+            )
+            .unwrap();
+    }
+    assert!(router.same_context_model("high", "medium"));
+    assert!(router.same_context_model("high", "high"));
+    assert!(!router.same_context_model("high", "other-instance"));
+    assert!(!router.same_context_model("high", "other-model"));
+    assert!(!router.same_context_model("removed", "medium"));
+    assert!(!router.same_context_model("removed", "removed"));
+}
+
 struct ObservedCapabilities;
 
 impl Model for DefaultCapabilities {
@@ -135,8 +173,8 @@ fn prompt_cache_identity_is_session_stable_and_keeps_one_latest_breakpoint() {
     assert!(mark_prompt_cache_breakpoint(&mut input[0]));
     reset_prompt_cache_breakpoint(&mut input);
 
-    assert!(!has_prompt_cache_breakpoint(&input[..1]));
-    assert!(has_prompt_cache_breakpoint(&input[1..]));
+    assert!(!has_prompt_cache_breakpoint((&input[..1]).into()));
+    assert!(has_prompt_cache_breakpoint((&input[1..]).into()));
 }
 
 #[test]
@@ -410,21 +448,6 @@ fn normalized_output_rejects_provider_user_messages() {
 }
 
 #[test]
-fn compact_output_rejects_internal_tool_load_controls() {
-    let error = CompactOutput::from_output(
-        vec![serde_json::json!({
-            "type": "tool_load",
-            "catalog_revision": "forged",
-            "tools": ["optional_work"]
-        })],
-        TokenUsage::default(),
-    )
-    .expect_err("compaction output cannot grant tool authority");
-
-    assert!(error.to_string().contains("internal tool-load control"));
-}
-
-#[test]
 fn normalized_output_rejects_bounded_and_invalid_values() {
     let mut writer = SizeWriter::new(1);
     assert!(writer.write_all(b"12").is_err());
@@ -556,7 +579,7 @@ async fn credential_deadline_cancels_in_flight_work_and_blocks_reuse() {
         cancellation: Some(&cancellation),
         prompt_cache: None,
         instructions: "",
-        input: &[],
+        input: (&[]).into(),
         catalog_revision: "test",
         tools: &[],
         deferred_tools: &[],
@@ -736,4 +759,105 @@ async fn image_generation_does_not_replay_ambiguous_failures() {
         assert_eq!(result.is_ok_and(|result| result.is_ok()), success);
         assert_eq!(model.calls.load(Ordering::SeqCst), expected_calls);
     }
+}
+
+#[test]
+fn shared_cache_reset_reuses_unchanged_history_items() {
+    let mut marked = user_message("already marked");
+    mark_prompt_cache_breakpoint(&mut marked);
+    let original = [Arc::new(user_message("unchanged")), Arc::new(marked)];
+    let mut input = original.to_vec();
+    reset_shared_prompt_cache_breakpoint(&mut input);
+    assert!(
+        input
+            .iter()
+            .zip(&original)
+            .all(|(current, prior)| Arc::ptr_eq(current, prior))
+    );
+
+    input.push(Arc::new(user_message("new endpoint")));
+    reset_shared_prompt_cache_breakpoint(&mut input);
+    assert!(Arc::ptr_eq(&input[0], &original[0]));
+    assert!(!Arc::ptr_eq(&input[1], &original[1]));
+    assert!(!has_prompt_cache_breakpoint((&input[..2]).into()));
+    assert!(has_prompt_cache_breakpoint((&input[2..]).into()));
+    assert!(has_prompt_cache_breakpoint((&original[1..]).into()));
+}
+
+#[tokio::test(start_paused = true)]
+async fn fallback_cancellation_does_not_inherit_source_credential_expiry() {
+    struct Pending(std::sync::Mutex<Vec<ModelCancellationReason>>);
+    struct Observe<'a>(&'a Pending, &'a ModelCancellation);
+    impl Drop for Observe<'_> {
+        fn drop(&mut self) {
+            self.0.0.lock().unwrap().push(self.1.reason());
+        }
+    }
+    impl Model for Pending {
+        fn respond<'a>(
+            &'a self,
+            request: ModelRequest<'a>,
+            _: ModelEventSink,
+        ) -> BoxFuture<'a, Result<ModelOutput>> {
+            Box::pin(async move {
+                let _observe = Observe(self, request.cancellation.unwrap());
+                std::future::pending().await
+            })
+        }
+    }
+    let model = Arc::new(Pending(std::sync::Mutex::new(Vec::new())));
+    let mut router = ModelRouter::new("source", model.clone());
+    router.register("destination", model.clone()).unwrap();
+    router
+        .set_credential_lifetime(
+            "source",
+            ModelCredentialLifetime {
+                expires_at: Some(std::time::SystemTime::now() + std::time::Duration::from_secs(60)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let parent = ModelCancellation::default();
+    let request = || ModelRequest {
+        session_id: "fallback",
+        cancellation: Some(&parent),
+        prompt_cache: None,
+        instructions: "",
+        input: (&[]).into(),
+        catalog_revision: "test",
+        tools: &[],
+        deferred_tools: &[],
+        allow_hosted_tools: false,
+        allow_continuation: false,
+    };
+    assert!(
+        router
+            .respond(
+                "source",
+                request(),
+                Arc::new(|_| Box::pin(async { Ok(()) }))
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(parent.reason(), ModelCancellationReason::RequestDropped);
+    let mut response = Box::pin(router.respond(
+        "destination",
+        request(),
+        Arc::new(|_| Box::pin(async { Ok(()) })),
+    ));
+    tokio::select! {
+        biased;
+        _ = &mut response => panic!("destination must remain pending"),
+        () = tokio::task::yield_now() => {}
+    }
+    parent.record(ModelCancellationReason::Interrupted);
+    drop(response);
+    assert_eq!(
+        *model.0.lock().unwrap(),
+        vec![
+            ModelCancellationReason::CredentialExpired,
+            ModelCancellationReason::Interrupted
+        ]
+    );
 }

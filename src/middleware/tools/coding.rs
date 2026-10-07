@@ -315,7 +315,7 @@ impl Tool for ApplyPatch {
 
     fn hook_input(&self, arguments: &Value) -> Value {
         serde_json::json!({
-            "command": arguments.get("patch").cloned().unwrap_or(Value::Null)
+            "command": arguments.get("patch")
         })
     }
 

@@ -62,7 +62,7 @@ impl ConnectionAdmission {
 
 impl PreAuthConnectionAdmission {
     pub(super) fn promote(self) -> Option<OwnedSemaphorePermit> {
-        Arc::clone(&self.authenticated).try_acquire_owned().ok()
+        self.authenticated.try_acquire_owned().ok()
     }
 }
 
@@ -351,9 +351,8 @@ impl ClientConnections {
             .checked_add(1)
             .ok_or_else(|| Error::Config("client connection count overflow".into()))?;
         if first_native && let Err(error) = record_client_presence(&bots, &key.0, true) {
-            gateway_log!(
-                "client lifecycle persistence failed: {}",
-                connection_diagnostic(&error)
+            tracing::warn!(
+                error = %connection_diagnostic(&error), "client lifecycle persistence failed"
             );
         }
         drop(entries);
@@ -413,9 +412,8 @@ impl Drop for ClientConnectionGuard {
                 && !native_client_present(&entries, &self.key.0)
                 && let Err(error) = record_client_presence(&self.bots, &self.key.0, false)
             {
-                gateway_log!(
-                    "client lifecycle persistence failed: {}",
-                    connection_diagnostic(&error)
+                tracing::warn!(
+                    error = %connection_diagnostic(&error), "client lifecycle persistence failed"
                 );
             }
             drop(entries);
@@ -436,21 +434,23 @@ impl Drop for ClientConnectionGuard {
     }
 }
 
-pub(super) fn connection_diagnostic(error: &Error) -> String {
-    match error {
-        Error::Io(error) => format!("I/O {:?}", error.kind()),
-        Error::Json(error) => format!(
+pub(super) fn connection_diagnostic(error: &Error) -> impl std::fmt::Display + '_ {
+    std::fmt::from_fn(move |formatter| match error {
+        Error::Io(error) => write!(formatter, "I/O {:?}", error.kind()),
+        Error::Json(error) => write!(
+            formatter,
             "JSON {:?} at {}:{}",
             error.classify(),
             error.line(),
             error.column()
         ),
-        Error::Config(_) => "configuration".into(),
-        Error::Protocol(_) | Error::WebSocketUpgrade { .. } => "protocol".into(),
-        Error::Unauthorized => "authentication".into(),
-        Error::Mobius(_) => "agent".into(),
-        Error::Sqlite(_) => "storage".into(),
-    }
+        Error::Config(_) => formatter.write_str("configuration"),
+        Error::Protocol(_) | Error::WebSocketUpgrade { .. } => formatter.write_str("protocol"),
+        Error::Unauthorized => formatter.write_str("authentication"),
+        Error::Mobius(_) => formatter.write_str("agent"),
+        Error::Sqlite(_) => formatter.write_str("storage"),
+        Error::PublicationApplied { .. } => formatter.write_str("storage publication uncertainty"),
+    })
 }
 
 pub(super) async fn serve_plaintext_connection(
@@ -948,6 +948,10 @@ async fn authenticate_client(
             .await?;
             Ok(Some((client_id, client_kind)))
         }
+        Err(error @ Error::PublicationApplied { .. }) => {
+            write_server_error(writer, "publication_uncertain", &error.to_string(), true).await?;
+            Ok(None)
+        }
         Err(_) => {
             write_server_error(writer, "unauthorized", "pairing failed", true).await?;
             Ok(None)
@@ -983,8 +987,8 @@ async fn next_profile(
     let Some(pending) = pending.as_mut() else {
         return std::future::pending().await;
     };
-    let request_id = pending.request_id.clone();
-    (request_id, pending.future.as_mut().await)
+    let result = pending.future.as_mut().await;
+    (std::mem::take(&mut pending.request_id), result)
 }
 
 async fn complete_profile_request(
@@ -1298,6 +1302,13 @@ mod tests {
             } if request_id == "profile-2" && code == "profile_superseded"
         ));
         assert_eq!(queued.as_ref(), Some(&("profile-3".into(), true)));
+
+        tokio::select! {
+            biased;
+            _ = next_profile(&mut pending) => panic!("profile completed before release"),
+            () = std::future::ready(()) => {}
+        }
+        assert_eq!(pending.as_ref().unwrap().request_id, "profile-1");
 
         release.send(()).expect("release active profile");
         let (request_id, result) = next_profile(&mut pending).await;

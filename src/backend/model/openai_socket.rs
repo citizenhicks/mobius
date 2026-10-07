@@ -8,6 +8,7 @@ use std::io::Write;
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
+#[cfg(test)]
 use std::time::Duration;
 
 use futures_util::future::join_all;
@@ -33,8 +34,6 @@ use self::connection::failed_exchange;
 use self::connection::read_exchange;
 #[cfg(test)]
 use self::connection::websocket_error_cause;
-use super::CompactOutput;
-use super::CompactRequest;
 use super::GeneratedImage;
 use super::ImageGenerationRequest;
 use super::Model;
@@ -43,7 +42,6 @@ use super::ModelOutput;
 use super::ModelRequest;
 use super::PromptCacheMode;
 use super::openai::decode_response;
-use super::openai::wire_input_with_cache;
 use super::openai::wire_tools;
 use super::openai::{CATALOG, OpenAi};
 use super::openai_auth::ApiKeyAuthorization;
@@ -53,6 +51,7 @@ use super::openai_auth::ResolvedAuthorization;
 use super::provider::HostedWebSearch;
 use super::provider::ProviderBuildConfig;
 use super::provider::ProviderDefinition;
+use super::responses_wire::{ResponsesBody, WireInput};
 use super::{RealtimeVoiceCall, RealtimeVoiceRequest};
 use crate::BoxFuture;
 use crate::Error;
@@ -199,7 +198,7 @@ impl OpenAiSocket {
         self
     }
 
-    /// Configures validated model sockets, compaction retries and realtime calls.
+    /// Configures validated model sockets and realtime calls.
     /// # Errors
     /// Returns an error for invalid operational settings.
     pub fn with_transport_settings(
@@ -226,7 +225,7 @@ impl OpenAiSocket {
 
     /// Uses explicit caching at user/developer messages and tool-result endpoints.
     /// Preserves earlier endpoints for prefix reuse instead of relying on implicit caching.
-    /// Applies to WebSocket requests, HTTP fallback, and native compaction.
+    /// Applies to WebSocket requests and HTTP fallback.
     pub fn with_explicit_prompt_cache(mut self) -> Self {
         self.explicit_prompt_cache = true;
         self.http = self.http.with_explicit_prompt_cache();
@@ -321,10 +320,8 @@ impl OpenAiSocket {
                             return self.send_http_response(request, events, media).await;
                         }
                         Err(Error::Provider(error)) if error.is_stream_interrupted() => {
-                            return Err(websocket_failure(
-                                &mut state,
-                                error.retry_after().map(str::to_owned),
-                            ));
+                            state.last_used_at = Instant::now();
+                            return Err(Error::Provider(error));
                         }
                         Err(error) => return Err(error),
                     },
@@ -343,35 +340,26 @@ impl OpenAiSocket {
                 envelope_fingerprint,
             )?;
             let used_previous_response = previous_response_id.is_some();
-            let mut prepared;
-            let wire_input = if let Some(media) = media {
-                prepared = media
-                    .prepare(request.session_id, input, self, !used_previous_response)
-                    .await?;
-                super::media::bound_request(
-                    &mut prepared,
-                    input,
-                    media.limits,
-                    self.transport.max_request_bytes,
-                    !used_previous_response,
-                    |input| {
-                        super::media::serialized_size(&self.prepared_body(
-                            &request,
-                            input,
-                            previous_response_id.as_deref(),
-                        )?)
-                    },
-                )?;
-                prepared.as_slice()
-            } else {
-                input
-            };
-            let body = self.prepared_body(&request, wire_input, previous_response_id.as_deref())?;
+            let body = super::media::encode_request(
+                self,
+                ModelRequest { input, ..request },
+                media,
+                !used_previous_response,
+                |input| {
+                    Ok(serde_json::to_vec(&self.prepared_body(
+                        &request,
+                        input,
+                        previous_response_id.as_deref(),
+                    )?)?)
+                },
+            )
+            .await?;
+            let body = String::from_utf8(body).expect("JSON serialization produces valid UTF-8");
             // Until sending begins, cancellation or preparation failure must retain the live connection.
             let mut connection = state.connection.take().ok_or_else(|| {
                 Error::Provider("model connection disappeared before send".into())
             })?;
-            match exchange(&mut connection, &body, &events, request.cancellation).await? {
+            match exchange(&mut connection, body, &events, request.cancellation).await? {
                 Exchange::Completed(response) => {
                     let response_id = response
                         .get("id")
@@ -447,12 +435,12 @@ impl OpenAiSocket {
         })
     }
 
-    fn prepared_body(
-        &self,
-        request: &ModelRequest<'_>,
-        input: &[Value],
+    fn prepared_body<'a>(
+        &'a self,
+        request: &ModelRequest<'a>,
+        input: super::ModelInput<'a>,
         previous: Option<&str>,
-    ) -> Result<Value> {
+    ) -> Result<ResponsesBody<'a>> {
         let mut body = response_body(
             &self.model,
             request,
@@ -462,75 +450,8 @@ impl OpenAiSocket {
             &self.hosted_tools,
             self.explicit_prompt_cache,
         )?;
-        self.http.apply_service_tier(&mut body);
+        self.http.apply_service_tier(&mut body.metadata);
         Ok(body)
-    }
-
-    async fn compact_response(
-        &self,
-        request: CompactRequest<'_>,
-        media: Option<super::MediaPreparation<'_>>,
-    ) -> Result<CompactOutput> {
-        let mut input = request.input.to_vec();
-        input.push(serde_json::json!({"type": "compaction_trigger"}));
-        let mut retries = 0;
-        let output = loop {
-            let model_request = ModelRequest {
-                session_id: request.session_id,
-                cancellation: request.cancellation,
-                prompt_cache: request.prompt_cache,
-                instructions: request.instructions,
-                input: &input,
-                catalog_revision: request.catalog_revision,
-                tools: request.tools,
-                deferred_tools: request.deferred_tools,
-                allow_hosted_tools: true,
-                allow_continuation: true,
-            };
-            match self
-                .send_response(
-                    model_request,
-                    Arc::new(|_| Box::pin(async { Ok(()) })),
-                    media,
-                )
-                .await
-            {
-                Ok(output) => break output,
-                Err(Error::Provider(error)) if error.is_stream_interrupted() => {
-                    let delay = compaction_retry_delay(&error, retries, &self.transport);
-                    let delay = if retries < self.transport.compaction_retry_limit {
-                        retries += 1;
-                        delay
-                    } else if self.fallback_transport(request.session_id).await? {
-                        retries = 0;
-                        if error.retry_after().is_some() {
-                            delay
-                        } else {
-                            Duration::ZERO
-                        }
-                    } else {
-                        return Err(Error::Provider(error));
-                    };
-                    tokio::time::sleep(delay).await;
-                }
-                Err(error) => return Err(error),
-            }
-        };
-        let compaction = output
-            .output
-            .into_iter()
-            .filter(|item| item.get("type").and_then(Value::as_str) == Some("compaction"))
-            .collect::<Vec<_>>();
-        if compaction.len() != 1 {
-            return Err(Error::Provider(
-                format!(
-                    "Responses compaction expected exactly one compaction item, got {}",
-                    compaction.len()
-                )
-                .into(),
-            ));
-        }
-        CompactOutput::from_output(compaction, output.usage)
     }
 
     async fn session(&self, session_id: &str) -> Result<Arc<Mutex<SocketState>>> {
@@ -546,10 +467,10 @@ impl OpenAiSocket {
                 .filter(|(_, session)| Arc::strong_count(session) == 1)
                 .filter_map(|(id, session)| {
                     let state = session.try_lock().ok()?;
-                    Some((id.clone(), state.last_used_at))
+                    Some((id, state.last_used_at))
                 })
                 .min_by_key(|(_, last_used_at)| *last_used_at)
-                .map(|(id, _)| id);
+                .map(|(id, _)| id.clone());
             if let Some(idle) = idle {
                 if let Some(session) = sessions.remove(&idle)
                     && let Ok(mut state) = session.try_lock()
@@ -595,20 +516,6 @@ impl OpenAiSocket {
     }
 }
 
-fn compaction_retry_delay(
-    error: &crate::ProviderError,
-    retry: u32,
-    transport: &super::ModelTransportSettings,
-) -> Duration {
-    let backoff = Duration::from_millis(transport.compaction_retry_backoff_ms)
-        .saturating_mul(1_u32 << retry.min(4));
-    super::transport::bounded_retry_delay(
-        error,
-        backoff,
-        Duration::from_millis(transport.stream_retry_max_backoff_ms),
-    )
-}
-
 async fn close_connections(connections: Vec<OpenAiWsConnection>) {
     join_all(connections.into_iter().map(OpenAiWsConnection::close)).await;
 }
@@ -620,10 +527,10 @@ fn websocket_failure(state: &mut SocketState, retry_after: Option<String>) -> Er
 
 fn response_input<'a>(
     state: &mut SocketState,
-    input: &'a [Value],
+    input: super::ModelInput<'a>,
     allow_continuation: bool,
     envelope_fingerprint: u64,
-) -> Result<(Option<String>, &'a [Value])> {
+) -> Result<(Option<String>, super::ModelInput<'a>)> {
     if allow_continuation {
         continuation_input(state, input, envelope_fingerprint)
     } else {
@@ -695,14 +602,6 @@ impl Model for OpenAiSocket {
         Box::pin(self.send_response(request, events, Some(media)))
     }
 
-    fn compact_prepared<'a>(
-        &'a self,
-        request: CompactRequest<'a>,
-        media: super::MediaPreparation<'a>,
-    ) -> BoxFuture<'a, Result<CompactOutput>> {
-        Box::pin(self.compact_response(request, Some(media)))
-    }
-
     fn respond<'a>(
         &'a self,
         request: ModelRequest<'a>,
@@ -724,37 +623,21 @@ impl Model for OpenAiSocket {
             Ok(true)
         })
     }
-
-    fn compaction_endpoint(&self) -> bool {
-        true
-    }
-
-    fn compact<'a>(&'a self, request: CompactRequest<'a>) -> BoxFuture<'a, Result<CompactOutput>> {
-        Box::pin(self.compact_response(request, None))
-    }
 }
 
-fn response_body(
+fn response_body<'a>(
     model: &str,
-    request: &ModelRequest<'_>,
-    input: &[Value],
+    request: &ModelRequest<'a>,
+    input: super::ModelInput<'a>,
     previous_response_id: Option<&str>,
     reasoning_effort: Option<&str>,
-    hosted_tools: &[Value],
+    hosted_tools: &'a [Value],
     explicit_prompt_cache: bool,
-) -> Result<Value> {
+) -> Result<ResponsesBody<'a>> {
     let mut body = serde_json::json!({
         "type": "response.create",
         "model": model,
         "instructions": request.instructions,
-        "input": wire_input_with_cache(
-            input,
-            true,
-            explicit_prompt_cache,
-            request.catalog_revision,
-            request.deferred_tools,
-        )?,
-        "tools": wire_tools(request.tools, hosted_tools, request.allow_hosted_tools),
         "tool_choice": "auto",
         "parallel_tool_calls": true,
         "include": ["reasoning.encrypted_content"],
@@ -772,7 +655,17 @@ fn response_body(
     if let Some(effort) = reasoning_effort {
         body["reasoning"] = serde_json::json!({"effort": effort, "summary": "auto"});
     }
-    Ok(body)
+    Ok(ResponsesBody {
+        metadata: body,
+        tools: wire_tools(request.tools, hosted_tools, request.allow_hosted_tools),
+        input: WireInput::new(
+            input,
+            true,
+            explicit_prompt_cache,
+            request.catalog_revision,
+            request.deferred_tools,
+        )?,
+    })
 }
 
 fn envelope_fingerprint(
@@ -781,45 +674,62 @@ fn envelope_fingerprint(
     reasoning_effort: Option<&str>,
     hosted_tools: &[Value],
 ) -> Result<u64> {
-    let envelope = serde_json::json!({
-        "model": model,
-        "instructions": request.instructions,
-        "catalog_revision": request.catalog_revision,
-        "tools": wire_tools(request.tools, hosted_tools, request.allow_hosted_tools),
-        "reasoning_effort": reasoning_effort,
-        "prompt_cache": request.prompt_cache.map(|cache| {
-            serde_json::json!({
-                "key": cache.key,
-                "context_epoch": cache.context_epoch,
-                "mode": "explicit"
-            })
-        })
-    });
+    #[derive(serde::Serialize)]
+    struct Cache<'a> {
+        context_epoch: u64,
+        key: &'a str,
+        mode: &'static str,
+    }
+    #[derive(serde::Serialize)]
+    struct Settings<'a> {
+        catalog_revision: &'a str,
+        instructions: &'a str,
+        model: &'a str,
+        prompt_cache: Option<Cache<'a>>,
+        reasoning_effort: Option<&'a str>,
+        tools: super::responses_wire::WireTools<'a>,
+    }
+    // Keep the sorted field order of the previous JSON settings projection.
+    let envelope = Settings {
+        catalog_revision: request.catalog_revision,
+        instructions: request.instructions,
+        model,
+        prompt_cache: request.prompt_cache.map(|cache| Cache {
+            context_epoch: cache.context_epoch,
+            key: cache.key,
+            mode: "explicit",
+        }),
+        reasoning_effort,
+        tools: wire_tools(request.tools, hosted_tools, request.allow_hosted_tools),
+    };
     fingerprint(std::iter::once(&envelope))
 }
 
 fn continuation_input<'a>(
     state: &mut SocketState,
-    input: &'a [Value],
+    input: super::ModelInput<'a>,
     envelope_fingerprint: u64,
-) -> Result<(Option<String>, &'a [Value])> {
+) -> Result<(Option<String>, super::ModelInput<'a>)> {
     let Some(continuation) = &state.continuation else {
         return Ok((None, input));
     };
     if continuation.envelope_fingerprint == envelope_fingerprint
         && continuation.known_items <= input.len()
-        && fingerprint(input[..continuation.known_items].iter())? == continuation.fingerprint
+        && fingerprint(input.prefix(continuation.known_items).iter())? == continuation.fingerprint
     {
         return Ok((
+            // Keep the live cursor intact if preparing this continuation fails or is cancelled.
             Some(continuation.response_id.clone()),
-            &input[continuation.known_items..],
+            input.suffix(continuation.known_items),
         ));
     }
     state.continuation = None;
     Ok((None, input))
 }
 
-fn fingerprint<'a>(items: impl IntoIterator<Item = &'a Value>) -> Result<u64> {
+fn fingerprint<'a, T: serde::Serialize + 'a>(
+    items: impl IntoIterator<Item = &'a T>,
+) -> Result<u64> {
     let mut hasher = DefaultHasher::new();
     for item in items {
         let mut item_hasher = DefaultHasher::new();

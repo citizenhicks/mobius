@@ -87,10 +87,6 @@ crate::embedded_config! {
         pub stream_retry_backoff_ms: u64,
         /// Ceiling for retry waits, including jitter and server hints.
         pub stream_retry_max_backoff_ms: u64,
-        /// Retries before native compaction fails.
-        pub compaction_retry_limit: u32,
-        /// Initial native compaction retry backoff.
-        pub compaction_retry_backoff_ms: u64,
         /// Voice negotiation deadline.
         pub voice_start_timeout_ms: u64,
         /// Voice socket write and cleanup deadline.
@@ -125,7 +121,6 @@ impl ModelTransportSettings {
             self.socket_idle_timeout_ms,
             self.stream_retry_backoff_ms,
             self.stream_retry_max_backoff_ms,
-            self.compaction_retry_backoff_ms,
             self.voice_start_timeout_ms,
             self.voice_io_timeout_ms,
             self.voice_call_timeout_ms,
@@ -142,7 +137,7 @@ impl ModelTransportSettings {
                 "model transport deadlines must be positive and at most one year".into(),
             ));
         }
-        if self.stream_retry_limit > 100 || self.compaction_retry_limit > 100 {
+        if self.stream_retry_limit > 100 {
             return Err(Error::Config(
                 "model transport retry limits must be at most 100".into(),
             ));
@@ -674,8 +669,6 @@ mod settings_tests {
                 stream_retry_limit: 5,
                 stream_retry_backoff_ms: 200,
                 stream_retry_max_backoff_ms: 3_200,
-                compaction_retry_limit: 2,
-                compaction_retry_backoff_ms: 200,
                 voice_start_timeout_ms: 30_000,
                 voice_io_timeout_ms: 5_000,
                 voice_call_timeout_ms: 3_600_000,

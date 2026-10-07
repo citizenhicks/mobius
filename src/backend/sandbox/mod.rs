@@ -88,47 +88,6 @@ mod text {
             definition
         });
 }
-static APPROVAL_POLICIES: std::sync::LazyLock<Vec<MiddlewareSettingChoice>> =
-    std::sync::LazyLock::new(|| {
-        vec![
-            MiddlewareSettingChoice {
-                disables: vec![],
-                value: "ask".into(),
-                label: text::DEFINITION.approval_policy_ask_label.clone(),
-                description: text::DEFINITION.approval_policy_ask_description.clone(),
-                symbol: Some("shield_check".into()),
-                tone: FrontendTone::Neutral,
-            },
-            MiddlewareSettingChoice {
-                disables: vec![],
-                value: "allow".into(),
-                label: text::DEFINITION.approval_policy_allow_label.clone(),
-                description: text::DEFINITION.approval_policy_allow_description.clone(),
-                symbol: Some("shield".into()),
-                tone: FrontendTone::Warning,
-            },
-            MiddlewareSettingChoice {
-                disables: vec![],
-                value: "allow_network".into(),
-                label: text::DEFINITION.approval_policy_allow_network_label.clone(),
-                description: text::DEFINITION
-                    .approval_policy_allow_network_description
-                    .clone(),
-                symbol: Some("shield_alert".into()),
-                tone: FrontendTone::Warning,
-            },
-            MiddlewareSettingChoice {
-                disables: vec![],
-                value: "full_access".into(),
-                label: text::DEFINITION.approval_policy_full_access_label.clone(),
-                description: text::DEFINITION
-                    .approval_policy_full_access_description
-                    .clone(),
-                symbol: Some("shield_off".into()),
-                tone: FrontendTone::Error,
-            },
-        ]
-    });
 static SETTINGS: std::sync::LazyLock<Vec<MiddlewareSettingManifest>> =
     std::sync::LazyLock::new(|| {
         vec![
@@ -136,7 +95,44 @@ static SETTINGS: std::sync::LazyLock<Vec<MiddlewareSettingManifest>> =
                 id: "approval_policy".into(),
                 label: text::DEFINITION.setting_approval_policy_label.clone(),
                 description: text::DEFINITION.setting_approval_policy_description.clone(),
-                choices: MiddlewareSettingChoices::Static(APPROVAL_POLICIES.clone()),
+                choices: MiddlewareSettingChoices::Static(vec![
+                    MiddlewareSettingChoice {
+                        disables: vec![],
+                        value: "ask".into(),
+                        label: text::DEFINITION.approval_policy_ask_label.clone(),
+                        description: text::DEFINITION.approval_policy_ask_description.clone(),
+                        symbol: Some("shield_check".into()),
+                        tone: FrontendTone::Neutral,
+                    },
+                    MiddlewareSettingChoice {
+                        disables: vec![],
+                        value: "allow".into(),
+                        label: text::DEFINITION.approval_policy_allow_label.clone(),
+                        description: text::DEFINITION.approval_policy_allow_description.clone(),
+                        symbol: Some("shield".into()),
+                        tone: FrontendTone::Warning,
+                    },
+                    MiddlewareSettingChoice {
+                        disables: vec![],
+                        value: "allow_network".into(),
+                        label: text::DEFINITION.approval_policy_allow_network_label.clone(),
+                        description: text::DEFINITION
+                            .approval_policy_allow_network_description
+                            .clone(),
+                        symbol: Some("shield_alert".into()),
+                        tone: FrontendTone::Warning,
+                    },
+                    MiddlewareSettingChoice {
+                        disables: vec![],
+                        value: "full_access".into(),
+                        label: text::DEFINITION.approval_policy_full_access_label.clone(),
+                        description: text::DEFINITION
+                            .approval_policy_full_access_description
+                            .clone(),
+                        symbol: Some("shield_off".into()),
+                        tone: FrontendTone::Error,
+                    },
+                ]),
                 unset_label: None,
                 default: Some(text::DEFINITION.defaults_approval_policy.clone()),
                 max_bytes: 32,
@@ -735,11 +731,11 @@ impl Sandbox {
         self.approval.session_start(session_id)
     }
 
-    pub(crate) fn authorize(
+    pub(crate) fn authorize<'a>(
         &self,
         session_id: &str,
         calls: &[ToolCall],
-        mutation_call_ids: &[String],
+        mutation_call_ids: impl IntoIterator<Item = &'a str>,
     ) -> Result<SandboxAuthorization> {
         self.approval
             .authorize(session_id, calls, mutation_call_ids)

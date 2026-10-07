@@ -121,9 +121,9 @@ pub(super) async fn apply(
         .bots
         .iter()
         .find(|bot| bot.id == bot_id)
-        .ok_or_else(|| Error::Config("this chat's Bot is not in the gateway catalog".into()))?
-        .clone();
+        .ok_or_else(|| Error::Config("this chat's Bot is not in the gateway catalog".into()))?;
     let config = state.agent_composition(&bot.config.config)?;
+    let expected_revision = bot.config.revision;
     if state.mode == SetupMode::Login {
         state.set_progress(
             "Registering provider",
@@ -135,13 +135,27 @@ pub(super) async fn apply(
             register_provider(terminal, state, sender, events, config.provider.clone()).await?,
         );
     }
+    let bot = gateway
+        .bots
+        .iter()
+        .find(|bot| bot.id == bot_id)
+        .ok_or_else(|| Error::Config("this chat's Bot is not in the gateway catalog".into()))?;
     if config == bot.config.config {
         return Ok(());
     }
     state.set_progress("Updating Bot", "Applying this profile to the Bot's chats…");
     draw(terminal, state)?;
-    let updated = update_bot(terminal, state, sender, events, &bot, config).await?;
-    if let Some(current) = gateway.bots.iter_mut().find(|current| current.id == bot.id) {
+    let updated = update_bot(
+        terminal,
+        state,
+        sender,
+        events,
+        bot,
+        expected_revision,
+        config,
+    )
+    .await?;
+    if let Some(current) = gateway.bots.iter_mut().find(|current| current.id == bot_id) {
         *current = updated;
     }
     Ok(())
@@ -154,6 +168,10 @@ pub(super) async fn apply_gateway(
     events: &mut GatewayEvents,
     gateway: &mut ReadyPayload,
 ) -> Result<()> {
+    let expected_revision = gateway
+        .bot_defaults
+        .as_ref()
+        .map(|default| default.revision);
     let config = state.agent_composition(&state.original)?;
     if state.mode == SetupMode::Login {
         state.set_progress(
@@ -179,7 +197,15 @@ pub(super) async fn apply_gateway(
     );
     draw(terminal, state)?;
     gateway.update(
-        configure_bot_defaults(terminal, state, sender, events, default.revision, config).await?,
+        configure_bot_defaults(
+            terminal,
+            state,
+            sender,
+            events,
+            expected_revision.unwrap_or(default.revision),
+            config,
+        )
+        .await?,
     );
     Ok(())
 }
@@ -193,7 +219,7 @@ pub(super) async fn register_provider(
 ) -> Result<ReadyPayload> {
     let model_ids = state.configured_model_ids()?;
     let reasoning_efforts = state.instance_reasoning_efforts().to_vec();
-    let label = state.effective_label();
+    let label = state.effective_label().into();
     let request_id = Uuid::new_v4().to_string();
     sender
         .send(ClientMessage::RegisterProvider {
@@ -248,6 +274,7 @@ pub(super) async fn update_bot(
     sender: &GatewaySender,
     events: &mut GatewayEvents,
     bot: &BotRecord,
+    expected_revision: u64,
     config: AgentComposition,
 ) -> Result<BotRecord> {
     let request_id = Uuid::new_v4().to_string();
@@ -255,7 +282,7 @@ pub(super) async fn update_bot(
         .send(ClientMessage::UpdateBot {
             request_id: request_id.clone(),
             id: bot.id.clone(),
-            expected_revision: bot.config.revision,
+            expected_revision,
             name: bot.name.clone(),
             description: bot.description.clone(),
             tint: bot.tint,
@@ -345,7 +372,7 @@ pub(super) async fn set_credential(
     events: &mut GatewayEvents,
     api_key: String,
 ) -> Result<()> {
-    let instance = state.target_instance();
+    let instance = state.target_instance().to_owned();
     let provider = state.definition().provider.clone();
     let request_id = Uuid::new_v4().to_string();
     let message = match state.selected_base_url() {
@@ -360,7 +387,7 @@ pub(super) async fn set_credential(
             request_id: request_id.clone(),
             instance: instance.clone(),
             provider: provider.clone(),
-            base_url,
+            base_url: base_url.into(),
             api_key,
             expires_at: None,
         },
@@ -417,28 +444,30 @@ pub(super) async fn device_login(
             return Ok(false);
         };
         auth_response_error(&frame.message, &request_id)?;
-        match &frame.message {
-            ServerMessage::Accepted { request_id: actual } if actual == &request_id => {
-                accepted = true
-            }
+        match frame.message {
+            ServerMessage::Accepted {
+                request_id: ref actual,
+            } if actual == &request_id => accepted = true,
             ServerMessage::ProviderLoginStarted {
                 request_id: actual,
                 provider: actual_provider,
                 verification_url,
                 user_code,
                 ..
-            } if actual == &request_id && actual_provider == &provider => {
-                state.show_device_code(verification_url.clone(), user_code.clone());
+            } if actual == request_id && actual_provider == provider => {
+                state.show_device_code(verification_url, user_code);
                 draw(terminal, state)?;
             }
             ServerMessage::ProviderLoginFinished {
                 request_id: actual,
                 provider: actual_provider,
                 ..
-            } if actual == &request_id && actual_provider == &provider => completed = true,
-            _ => {
-                reject_invalid_setup_response(&frame.message, &request_id)?;
-                events.defer(frame).map_err(gateway_error)?;
+            } if actual == request_id && actual_provider == provider => completed = true,
+            message => {
+                reject_invalid_setup_response(&message, &request_id)?;
+                events
+                    .defer(ServerFrame { message, ..frame })
+                    .map_err(gateway_error)?;
             }
         }
         if accepted && completed {

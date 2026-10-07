@@ -65,6 +65,13 @@ impl GatewayAccounts {
             .map(String::as_str)
     }
 
+    /// Consumes this loaded snapshot and returns its saved token without copying secret bytes.
+    /// This does not change the persisted account store.
+    #[must_use]
+    pub fn into_token(mut self, endpoint: &Endpoint) -> Option<String> {
+        self.record.tokens.remove(&endpoint.to_string())
+    }
+
     /// Selects a saved gateway endpoint.
     /// # Errors
     ///
@@ -186,7 +193,7 @@ pub fn configured_token(endpoint: &Endpoint) -> Result<Option<String>> {
     if env::var_os("MOBIUS_GATEWAY_TOKEN").is_some() {
         return token_from_env().map(Some);
     }
-    Ok(GatewayAccounts::load()?.token(endpoint).map(str::to_owned))
+    Ok(GatewayAccounts::load()?.into_token(endpoint))
 }
 
 /// Returns the dashboard gateway endpoint.

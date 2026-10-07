@@ -1,6 +1,6 @@
 symbol = "chat_gpt"
 label = "OpenAI"
-description = "Persistent Responses WebSocket with native compaction"
+description = "Persistent Responses WebSocket"
 base_url = "https://api.openai.com/v1"
 tool_discovery = "native"
 search = ["off", "cached", "live"]

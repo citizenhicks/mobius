@@ -30,7 +30,7 @@ async fn failed_message_submit_leaves_the_accepted_message_for_restart() {
             .expect("checkpoint store"),
     );
     let failed = Arc::new(AtomicBool::new(false));
-    let model = Arc::new(NativeCompactionModel::default());
+    let model = Arc::new(HandoffModel::default());
     let make_config = |checkpoints: Arc<dyn CheckpointStore>| {
         AgentConfig::new(
             Arc::new(ModelRouter::new("test", model.clone())),
@@ -275,6 +275,10 @@ async fn explicit_model_route_replaces_a_saved_route_that_is_still_registered() 
     .expect("create original agent");
     original.next_event().await.expect("configured event");
     drop(original);
+    let mut owned_context = checkpoints.load("target").await.unwrap().unwrap();
+    owned_context.context_model_route = Some("kimi-k3".into());
+    owned_context.sequence += 1;
+    checkpoints.save(&owned_context, &[], None).await.unwrap();
 
     let checkpoint_store: Arc<dyn CheckpointStore> = checkpoints.clone();
     let mut restarted = create_agent(
@@ -302,6 +306,236 @@ async fn explicit_model_route_replaces_a_saved_route_that_is_still_registered() 
 
     assert_eq!(configured.model.route, "kimi-k2.7");
     assert_eq!(saved.model_route.as_deref(), Some("kimi-k2.7"));
+    assert_eq!(saved.context_model_route.as_deref(), Some("kimi-k3"));
+}
+
+#[tokio::test]
+async fn context_owner_changes_only_after_selected_model_output_is_accepted() {
+    for succeeds in [false, true] {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let checkpoints = Arc::new(
+            SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+                .expect("checkpoint store"),
+        );
+        let mut saved = Checkpoint::empty("owner-transition");
+        saved.session_context = test_session_context();
+        saved.model_route = Some("source".into());
+        saved.context_model_route = Some("source".into());
+        checkpoints.save(&saved, &[], None).await.unwrap();
+        let mut models = ModelRouter::new("source", Arc::new(TestModel));
+        let destination: Arc<dyn Model> = if succeeds {
+            Arc::new(HandoffModel::default())
+        } else {
+            Arc::new(TestModel)
+        };
+        models.register("destination", destination).unwrap();
+        let mut agent = create_agent(
+            AgentConfig::new(
+                Arc::new(models),
+                Arc::new(Sandbox::new(
+                    Arc::new(LocalSandbox::new(workspace.path()).unwrap()),
+                    ApprovalPolicy::Ask,
+                )),
+                Arc::clone(&checkpoints) as Arc<dyn CheckpointStore>,
+                test_middleware(Vec::new()),
+                "test prompt",
+            )
+            .session_context(test_session_context())
+            .session_id("owner-transition"),
+        )
+        .await
+        .unwrap();
+        agent
+            .sender()
+            .submit(Op::SetModel {
+                route: "destination".into(),
+            })
+            .unwrap();
+        while !matches!(
+            agent.next_event().await.unwrap().msg,
+            EventMsg::ModelChanged(_)
+        ) {}
+        let selected = checkpoints.load("owner-transition").await.unwrap().unwrap();
+        assert_eq!(selected.model_route.as_deref(), Some("destination"));
+        assert_eq!(selected.context_model_route.as_deref(), Some("source"));
+        agent.sender().submit(user_op("continue")).unwrap();
+        while !matches!(
+            agent.next_event().await.unwrap().msg,
+            EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
+        ) {}
+        let handled = checkpoints.load("owner-transition").await.unwrap().unwrap();
+        assert_eq!(handled.model_route.as_deref(), Some("destination"));
+        assert_eq!(
+            handled.context_model_route.as_deref(),
+            Some(if succeeds { "destination" } else { "source" })
+        );
+    }
+}
+
+#[tokio::test]
+async fn route_change_omits_private_reasoning_but_keeps_visible_history_and_tool_pairs() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let checkpoints = Arc::new(
+        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+            .expect("checkpoint store"),
+    );
+    let (mut first_output, _, _) = scripted_tool_call().into_parts();
+    first_output.insert(
+        0,
+        serde_json::json!({
+            "type": "reasoning",
+            "encrypted_content": "provider-private",
+            "summary": [{"type": "summary_text", "text": "Private plan"}]
+        }),
+    );
+    let (mut original_reply, _, usage) = scripted_message("Original answer.").into_parts();
+    original_reply[0]["_anthropic_content"] = serde_json::json!([
+        {"type": "thinking", "thinking": "Signed plan", "signature": "signed-private"},
+        {"type": "text", "text": "Original answer."}
+    ]);
+    original_reply[0][crate::backend::model::REPLAY_REASONING_FIELD] = "Signed plan".into();
+    let source = Arc::new(ScriptedModel {
+        outputs: Mutex::new(VecDeque::from([
+            ModelOutput::from_output(first_output, false, scripted_usage())
+                .expect("reasoning and real tool call"),
+            ModelOutput::from_output(original_reply, true, usage).expect("signed source reply"),
+            scripted_message("Same route answer."),
+        ])),
+        tool_counts: Mutex::new(Vec::new()),
+        inputs: Mutex::new(Vec::new()),
+    });
+    let destination = Arc::new(ScriptedModel {
+        outputs: Mutex::new(VecDeque::from([scripted_message("Changed route answer.")])),
+        tool_counts: Mutex::new(Vec::new()),
+        inputs: Mutex::new(Vec::new()),
+    });
+    let mut models = ModelRouter::new("source", Arc::clone(&source) as Arc<dyn Model>);
+    models
+        .register("destination", Arc::clone(&destination) as Arc<dyn Model>)
+        .unwrap();
+    let mut agent = create_agent(
+        AgentConfig::new(
+            Arc::new(models),
+            Arc::new(Sandbox::new(
+                Arc::new(LocalSandbox::new(workspace.path()).unwrap()),
+                ApprovalPolicy::Allow,
+            )),
+            Arc::clone(&checkpoints) as Arc<dyn CheckpointStore>,
+            test_middleware(vec![Arc::new(Tools::new(vec![Arc::new(
+                ApprovalRequiredTestTool,
+            )]))]),
+            "test prompt",
+        )
+        .session_context(test_session_context())
+        .session_id("reasoning-route-change"),
+    )
+    .await
+    .unwrap();
+    for message in ["run the tool", "continue on the same route"] {
+        agent.sender().submit(user_op(message)).unwrap();
+        while !matches!(
+            agent.next_event().await.unwrap().msg,
+            EventMsg::TurnComplete(_)
+        ) {}
+    }
+    {
+        let inputs = source.inputs.lock().unwrap();
+        assert!(inputs[2].iter().any(|item| {
+            item.get("encrypted_content").and_then(Value::as_str) == Some("provider-private")
+        }));
+        assert!(
+            inputs[2]
+                .iter()
+                .any(|item| item.get("_anthropic_content").is_some())
+        );
+    }
+    agent
+        .sender()
+        .submit(Op::SetModel {
+            route: "destination".into(),
+        })
+        .unwrap();
+    while !matches!(
+        agent.next_event().await.unwrap().msg,
+        EventMsg::ModelChanged(_)
+    ) {}
+    let selected = checkpoints
+        .load("reasoning-route-change")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        selected.context_epoch, 0,
+        "selection alone keeps the cached prefix"
+    );
+    agent
+        .sender()
+        .submit(user_op("continue on the new route"))
+        .unwrap();
+    while !matches!(
+        agent.next_event().await.unwrap().msg,
+        EventMsg::TurnComplete(_)
+    ) {}
+
+    {
+        let inputs = destination.inputs.lock().unwrap();
+        assert_eq!(
+            inputs.len(),
+            1,
+            "a fitting history needs no checkpoint preparation"
+        );
+        let replay = &inputs[0];
+        assert!(!replay.iter().any(|item| {
+            item.get("type").and_then(Value::as_str) == Some("reasoning")
+                || item.get("_anthropic_content").is_some()
+                || item
+                    .get(crate::backend::model::REPLAY_REASONING_FIELD)
+                    .is_some()
+        }));
+        for kind in ["function_call", "function_call_output"] {
+            assert!(replay.iter().any(|item| {
+                item.get("type").and_then(Value::as_str) == Some(kind)
+                    && item.get("call_id").and_then(Value::as_str) == Some("reviewed-call")
+            }));
+        }
+        let visible = serde_json::to_string(replay).unwrap();
+        for text in [
+            "run the tool",
+            "Original answer.",
+            "Same route answer.",
+            "continue on the new route",
+        ] {
+            assert!(visible.contains(text), "visible history retains {text}");
+        }
+    }
+    let saved = checkpoints
+        .load("reasoning-route-change")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.context_epoch, 1);
+    assert_eq!(saved.compaction_count, 0);
+    assert_eq!(saved.context_model_route.as_deref(), Some("destination"));
+    let journal = checkpoints
+        .transcript_page(
+            "reasoning-route-change",
+            TranscriptPageRequest {
+                before_sequence: None,
+                max_batches: 100,
+            },
+        )
+        .await
+        .unwrap()
+        .into_positioned_items_chronological();
+    assert!(journal.iter().any(
+        |(_, item)| item.get("encrypted_content").and_then(Value::as_str)
+            == Some("provider-private")
+    ));
+    assert!(
+        journal
+            .iter()
+            .any(|(_, item)| item.get("_anthropic_content").is_some())
+    );
 }
 
 #[tokio::test]
@@ -359,7 +593,10 @@ async fn model_route_change_is_recorded_with_its_checkpoint() {
         EventMsg::ModelChanged(event) if event.route == "kimi-k2.7"
     ));
     assert_eq!(saved.model_route.as_deref(), Some("kimi-k2.7"));
-    assert_eq!(recorded.event.submission_id, Some(submission_id));
+    assert_eq!(
+        recorded.event.submission_id.as_deref(),
+        Some(submission_id.as_str())
+    );
     assert!(matches!(
         recorded.event.msg,
         EventMsg::ModelChanged(event) if event.route == "kimi-k2.7"
@@ -429,7 +666,8 @@ async fn stale_save_does_not_leapfrog_winning_checkpoint() {
         .expect("load checkpoint")
         .expect("initial checkpoint");
     winner.sequence += 1;
-    winner.context.push(serde_json::json!({"winner": true}));
+    std::sync::Arc::make_mut(&mut winner.context)
+        .push(std::sync::Arc::new(serde_json::json!({"winner": true})));
     checkpoints
         .save(&winner, &winner.context, None)
         .await
@@ -626,7 +864,7 @@ async fn resume_request_carries_the_target_session_context() {
 
     assert_eq!(
         (event.submission_id, request.session_id, request.context),
-        (Some(submission_id), "target".into(), target_context)
+        (Some(submission_id.into()), "target".into(), target_context)
     );
 }
 
@@ -658,12 +896,12 @@ async fn zero_replay_mode_emits_uncertain_tool_recovery_as_individual_events() {
         stop_hook_active: false,
         phase: crate::backend::checkpoint::ExecutionPhase::Model,
     });
-    target.context.push(serde_json::json!({
+    std::sync::Arc::make_mut(&mut target.context).push(std::sync::Arc::new(serde_json::json!({
         "type": "function_call",
         "call_id": call.call_id.clone(),
         "name": call.name.clone(),
         "arguments": call.arguments.to_string()
-    }));
+    })));
     target.pending_tools.push(call);
     target.pending_messages.push(queued_user_message(
         "message-1",
@@ -757,6 +995,26 @@ async fn zero_replay_mode_emits_uncertain_tool_recovery_as_individual_events() {
 
 #[tokio::test]
 async fn restart_resolves_a_durable_turn_completion_instead_of_aborting_it() {
+    struct CheckCompletion(Arc<AtomicBool>);
+    impl Middleware for CheckCompletion {
+        fn name(&self) -> &'static str {
+            "check_completion"
+        }
+
+        fn stop<'a>(
+            &'a self,
+            context: &'a mut crate::middleware::StopContext<'_>,
+        ) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async move {
+                assert_eq!(context.last_assistant_message(), Some("finished"));
+                assert!(!context.stop_hook_active());
+                assert_eq!(context.turn.turn_id, "turn-1");
+                self.0.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+        }
+    }
+    let stopped = Arc::new(AtomicBool::new(false));
     let workspace = tempfile::tempdir().expect("workspace");
     let checkpoints = Arc::new(
         SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
@@ -787,7 +1045,11 @@ async fn restart_resolves_a_durable_turn_completion_instead_of_aborting_it() {
     let checkpoint_store: Arc<dyn CheckpointStore> = checkpoints.clone();
 
     let mut agent = create_agent(
-        config(workspace.path(), checkpoint_store, "resume-completion").initial_replay_batches(0),
+        config(workspace.path(), checkpoint_store, "resume-completion")
+            .middleware(test_middleware(vec![Arc::new(CheckCompletion(
+                Arc::clone(&stopped),
+            ))]))
+            .initial_replay_batches(0),
     )
     .await
     .expect("resume completion");
@@ -806,6 +1068,7 @@ async fn restart_resolves_a_durable_turn_completion_instead_of_aborting_it() {
         .expect("load checkpoint")
         .expect("saved checkpoint");
     assert!(saved.active_execution.is_none());
+    assert!(stopped.load(Ordering::SeqCst));
     assert_eq!(saved.execution_stats.run_count, 1);
     assert_eq!(saved.execution_stats.aborted_run_count, 0);
 }
@@ -931,7 +1194,7 @@ async fn restart_closes_an_active_model_step_with_the_recovery_checkpoint() {
     assert!(matches!(
         completed.msg,
         EventMsg::ModelStepCompleted(event)
-            if event.model_step_id == "step-1"
+            if event.model_step_id.as_ref() == "step-1"
                 && event.outcome == ModelStepOutcome::Interrupted
     ));
     assert!(matches!(
@@ -1003,8 +1266,8 @@ async fn restart_recovers_streamed_calls_without_reexecuting_them() {
     assert!(saved.pending_tools.is_empty());
     assert!(!workspace.path().join("never-replay.txt").exists());
     assert_eq!(
-        saved.context,
-        vec![
+        saved.context.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
+        [
             serde_json::json!({
                 "type": "function_call",
                 "call_id": "streamed-call",
@@ -1013,9 +1276,89 @@ async fn restart_recovers_streamed_calls_without_reexecuting_them() {
             }),
             crate::backend::model::tool_output(
                 "streamed-call",
-                "execution interrupted; result unknown after restart",
+                &"execution interrupted; result unknown after restart".into(),
                 true
             ),
         ]
+        .iter()
+        .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn effort_only_route_change_preserves_private_reasoning_and_context_epoch() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let checkpoints =
+        Arc::new(SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3")).unwrap());
+    let (mut output, _, usage) = scripted_message("First answer").into_parts();
+    output.insert(
+        0,
+        serde_json::json!({"type": "reasoning", "encrypted_content": "private"}),
+    );
+    let model = Arc::new(ScriptedModel {
+        outputs: Mutex::new(VecDeque::from([
+            ModelOutput::from_output(output, true, usage).unwrap(),
+            scripted_message("Second answer"),
+        ])),
+        tool_counts: Mutex::new(Vec::new()),
+        inputs: Mutex::new(Vec::new()),
+    });
+    let mut router = ModelRouter::new("high", model.clone() as Arc<dyn Model>);
+    router
+        .register("medium", model.clone() as Arc<dyn Model>)
+        .unwrap();
+    let choices: Vec<_> = router.choices().cloned().collect();
+    for mut choice in choices {
+        choice.group = "same-provider-instance".into();
+        choice.model = "same-model".into();
+        choice.reasoning_effort = Some(choice.route.clone());
+        router
+            .set_context_group(&choice.route, "same-provider-instance")
+            .unwrap();
+        router.configure_choice(choice).unwrap();
+    }
+    let mut agent = create_agent(
+        AgentConfig::new(
+            Arc::new(router),
+            Arc::new(Sandbox::new(
+                Arc::new(LocalSandbox::new(workspace.path()).unwrap()),
+                ApprovalPolicy::Allow,
+            )),
+            checkpoints.clone() as Arc<dyn CheckpointStore>,
+            test_middleware(Vec::new()),
+            "test prompt",
+        )
+        .session_context(test_session_context())
+        .session_id("effort-only"),
+    )
+    .await
+    .unwrap();
+    agent.sender().submit(user_op("first")).unwrap();
+    while !matches!(
+        agent.next_event().await.unwrap().msg,
+        EventMsg::TurnComplete(_)
+    ) {}
+    let before = checkpoints.load("effort-only").await.unwrap().unwrap();
+    agent
+        .sender()
+        .submit(Op::SetModel {
+            route: "medium".into(),
+        })
+        .unwrap();
+    while !matches!(
+        agent.next_event().await.unwrap().msg,
+        EventMsg::ModelChanged(_)
+    ) {}
+    agent.sender().submit(user_op("second")).unwrap();
+    while !matches!(
+        agent.next_event().await.unwrap().msg,
+        EventMsg::TurnComplete(_)
+    ) {}
+    let after = checkpoints.load("effort-only").await.unwrap().unwrap();
+    assert_eq!(before.context_epoch, after.context_epoch);
+    assert!(
+        model.inputs.lock().unwrap()[1]
+            .iter()
+            .any(|item| item.get("encrypted_content").and_then(Value::as_str) == Some("private"))
     );
 }

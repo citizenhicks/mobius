@@ -20,6 +20,10 @@ fn call(call_id: &str, name: &str) -> Value {
     })
 }
 
+fn shared(input: Vec<Value>) -> Vec<Arc<Value>> {
+    input.into_iter().map(Arc::new).collect()
+}
+
 #[test]
 fn handoff_limit_counts_utf8_bytes_and_reports_overage() {
     for notes in ["a".repeat(21_000), "🦀".repeat(5_250)] {
@@ -48,7 +52,7 @@ fn fresh_input_preserves_the_active_request_steers_attachments_and_mixed_batch()
     let batch = vec![
         call("work", "read_file"),
         call("reset", "new_context"),
-        tool_output("reset", "reset requested", false),
+        tool_output("reset", &"reset requested".into(), false),
         internal_user_message(REQUEST, ""),
         serde_json::json!({"type":"function_call_output", "call_id":"work", "output":[
             {"type":"input_text", "text":"result that arrived after the checkpoint"},
@@ -61,32 +65,45 @@ fn fresh_input_preserves_the_active_request_steers_attachments_and_mixed_batch()
         active.clone(),
         attachment.clone(),
         call("old-work", "read_file"),
-        tool_output("old-work", "old output now recoverable from history", false),
+        tool_output(
+            "old-work",
+            &"old output now recoverable from history".into(),
+            false,
+        ),
         steer.clone(),
         internal_user_message(NOTES, "stale projection"),
-        internal_user_message(WARNING, "handoff soon"),
+        internal_user_message(NOTES, "old checkpoint"),
     ];
     input.extend(batch.clone());
     input.extend([later_steer.clone(), later_attachment.clone()]);
 
-    let fresh = fresh_input(&input, "reset").expect("fresh context");
+    let input = shared(input);
+    let fresh = retained_input(input.as_slice().into()).expect("fresh context");
     let mut expected = vec![active, attachment, steer];
     expected.extend(batch.into_iter().filter(|item| !is_control(item)));
     expected.extend([later_steer, later_attachment]);
 
-    assert_eq!(fresh, expected);
-    assert_eq!(tool_complete_boundaries(&fresh).last(), Some(&fresh.len()));
+    assert_eq!(fresh, shared(expected));
+    assert!(
+        fresh
+            .iter()
+            .all(|retained| input.iter().any(|original| Arc::ptr_eq(retained, original)))
+    );
+    assert_eq!(
+        tool_complete_boundaries(fresh.iter().map(AsRef::as_ref)).last(),
+        Some(&fresh.len())
+    );
 }
 
 #[test]
 fn fresh_input_uses_the_latest_batch_when_tool_call_ids_repeat() {
     let active = message("current task", MessageDelivery::Turn);
     let current_call = call("reset", "new_context");
-    let current_result = tool_output("reset", "current reset", false);
+    let current_result = tool_output("reset", &"current reset".into(), false);
     let input = vec![
         message("previous task", MessageDelivery::Turn),
         call("reset", "new_context"),
-        tool_output("reset", "previous reset", false),
+        tool_output("reset", &"previous reset".into(), false),
         serde_json::json!({"role": "assistant", "content": "old work"}),
         active.clone(),
         serde_json::json!({"role": "assistant", "content": "intervening work"}),
@@ -95,9 +112,10 @@ fn fresh_input_uses_the_latest_batch_when_tool_call_ids_repeat() {
         internal_user_message(REQUEST, ""),
     ];
 
+    let input = shared(input);
     assert_eq!(
-        fresh_input(&input, "reset").expect("latest request"),
-        vec![active, current_call, current_result]
+        retained_input(input.as_slice().into()).expect("latest request"),
+        shared(vec![active, current_call, current_result])
     );
 }
 
@@ -107,9 +125,40 @@ fn fresh_input_rejects_an_incomplete_mixed_tool_batch() {
         message("current task", MessageDelivery::Turn),
         call("pending", "read_file"),
         call("reset", "new_context"),
-        tool_output("reset", "reset requested", false),
+        tool_output("reset", &"reset requested".into(), false),
         internal_user_message(REQUEST, ""),
     ];
 
-    assert!(fresh_input(&input, "reset").is_err());
+    let input = shared(input);
+    assert!(retained_input(input.as_slice().into()).is_err());
+}
+
+#[test]
+fn reset_request_does_not_survive_its_originating_turn() {
+    let mut input = vec![
+        message("original task", MessageDelivery::Turn),
+        internal_user_message(REQUEST, "reset requested"),
+        message("a correction", MessageDelivery::Steer),
+    ];
+    assert!(requested_in_active_turn(input.as_slice().into()));
+    input.push(message(
+        "continue after failed preparation",
+        MessageDelivery::Turn,
+    ));
+    assert!(!requested_in_active_turn(input.as_slice().into()));
+}
+
+#[test]
+fn partial_checkpoint_retains_every_unsummarized_parallel_result() {
+    let input = shared(vec![
+        message("old task", MessageDelivery::Turn),
+        serde_json::json!({"role":"assistant", "content":"old answer"}),
+        call("a", "read_file"),
+        call("b", "read_file"),
+        tool_output("a", &"first large result".into(), false),
+        tool_output("b", &"second large result".into(), false),
+        message("continue", MessageDelivery::Turn),
+    ]);
+    let retained = retained_input_until(input.as_slice().into(), 2).expect("partial reset");
+    assert_eq!(retained, input[2..]);
 }

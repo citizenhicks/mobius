@@ -6,8 +6,8 @@ use mobius::backend::model::ModelCredentialLifetime;
 pub struct ConfigStore {
     #[cfg(test)]
     pub(crate) runtime_operations: std::sync::Arc<RuntimeOperations>,
-    state_dir: PathBuf,
-    path: PathBuf,
+    state_dir: std::sync::Arc<Path>,
+    path: std::sync::Arc<Path>,
 }
 
 /// Owner-only API-key storage kept outside frontend-readable configuration.
@@ -25,7 +25,7 @@ pub struct ResolvedCredential {
     pub lifetime: ModelCredentialLifetime,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredCredential {
     provider: String,
@@ -101,6 +101,9 @@ impl ConfigStore {
             .map_or(Ok(()), |token| store.save_cloudflare_token(token))
             .and_then(|()| store.save_with_mode(&config, true));
         if let Err(error) = result {
+            if matches!(error, Error::PublicationApplied { .. }) {
+                return Err(error);
+            }
             fs::remove_dir_all(&store.state_dir).map_err(|cleanup| {
                 Error::Config(format!(
                     "{error}; failed to remove incomplete gateway state at {}: {cleanup}",
@@ -120,7 +123,20 @@ impl ConfigStore {
         let state_dir = fs::canonicalize(state_dir)?;
         validate_private_state_dir(&state_dir)?;
         let store = Self::at(state_dir);
-        let mut file = fs::File::open(&store.path)?;
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        options.custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK);
+        let mut file = options.open(&store.path)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(Error::Config(
+                "gateway configuration must be a regular file".into(),
+            ));
+        }
+        if metadata.len() > MAX_CONFIG_BYTES {
+            return Err(Error::Config("gateway configuration is too large".into()));
+        }
         let mut contents = Vec::new();
         std::io::Read::by_ref(&mut file)
             .take(MAX_CONFIG_BYTES + 1)
@@ -130,8 +146,8 @@ impl ConfigStore {
         }
         let config = toml::from_slice(&contents).map_err(|error| {
             Error::Config(format!(
-                "gateway state at {} is incompatible with this release; remove that directory and run `mobius` again: {error}",
-                store.state_dir.display()
+                "gateway configuration at {} could not be read; preserve the state directory and correct the configuration or follow the release upgrade instructions: {error}",
+                store.path.display()
             ))
         })?;
         store.validate_config(&config)?;
@@ -144,6 +160,26 @@ impl ConfigStore {
     /// Returns an error if the value cannot be encoded or persisted.
     pub fn save(&self, config: &GatewayConfig) -> Result<()> {
         self.save_with_mode(config, false)
+    }
+
+    pub(crate) fn record_usage(
+        &self,
+        config: &mut GatewayConfig,
+        provider: &str,
+        usage: &TokenUsage,
+    ) -> Result<()> {
+        let mut next = config.usage.clone();
+        if !next.observe(provider, usage, SystemTime::now())? {
+            return Ok(());
+        }
+        let previous = std::mem::replace(&mut config.usage, next);
+        if let Err(error) = self.save(config) {
+            if !matches!(error, Error::PublicationApplied { .. }) {
+                config.usage = previous;
+            }
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Returns the protected state directory.
@@ -192,8 +228,8 @@ impl ConfigStore {
         mobius::config::set_override_dir(state_dir.join("models"));
         let path = state_dir.join(CONFIG_FILE);
         Self {
-            state_dir,
-            path,
+            state_dir: state_dir.into(),
+            path: path.into(),
             #[cfg(test)]
             runtime_operations: Default::default(),
         }
@@ -234,8 +270,26 @@ impl CredentialStore {
     ///
     /// Returns an error if the resource cannot be read, decoded, or validated.
     pub fn open(path: PathBuf) -> Result<Self> {
-        let values = match fs::read(&path) {
-            Ok(contents) => {
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        options.custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK);
+        let values = match options.open(&path) {
+            Ok(file) => {
+                let metadata = file.metadata()?;
+                if !metadata.is_file() {
+                    return Err(Error::Config(
+                        "provider credential state must be a regular file".into(),
+                    ));
+                }
+                if metadata.len() > MAX_CREDENTIAL_STATE_BYTES as u64 {
+                    return Err(Error::Config(
+                        "provider credential state is too large".into(),
+                    ));
+                }
+                let mut contents = Vec::new();
+                file.take(MAX_CREDENTIAL_STATE_BYTES as u64 + 1)
+                    .read_to_end(&mut contents)?;
                 if contents.len() > MAX_CREDENTIAL_STATE_BYTES {
                     return Err(Error::Config(
                         "provider credential state is too large".into(),
@@ -295,10 +349,19 @@ impl CredentialStore {
         }) {
             return Ok(());
         }
-        let mut next = values.clone();
-        next.insert(instance.into(), credential);
-        save_private_map(&self.path, &next)?;
-        *values = next;
+        let previous = values.insert(instance.into(), credential);
+        if let Err(error) = save_private_map(&self.path, &values) {
+            if matches!(error, Error::PublicationApplied { .. }) {
+                // Dropping the replaced record revokes its lifetime after the new bytes became visible.
+                return Err(error);
+            }
+            if let Some(previous) = previous {
+                values.insert(instance.into(), previous);
+            } else {
+                values.remove(instance);
+            }
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -368,13 +431,15 @@ impl CredentialStore {
             .values
             .lock()
             .map_err(|_| Error::Config("provider credential lock is poisoned".into()))?;
-        if !values.contains_key(instance) {
+        let Some((key, previous)) = values.remove_entry(instance) else {
             return Ok(false);
+        };
+        if let Err(error) = save_private_map(&self.path, &values) {
+            if !matches!(error, Error::PublicationApplied { .. }) {
+                values.insert(key, previous);
+            }
+            return Err(error);
         }
-        let mut next = values.clone();
-        next.remove(instance);
-        save_private_map(&self.path, &next)?;
-        *values = next;
         Ok(true)
     }
 }
@@ -509,12 +574,7 @@ fn validate_stored_credential(instance: &str, credential: &StoredCredential) -> 
             credential.provider
         )));
     }
-    if credential.api_key.trim().is_empty() || credential.api_key.len() > MAX_PROVIDER_API_KEY_BYTES
-    {
-        return Err(Error::Config(format!(
-            "API key must be 1–{MAX_PROVIDER_API_KEY_BYTES} bytes"
-        )));
-    }
+    validate_new_api_key(&credential.api_key)?;
     definition.validate_base_url(credential.base_url.as_deref())?;
     Ok(())
 }
@@ -564,6 +624,7 @@ impl UsageHistory {
             return Ok(false);
         }
         let day = unix_day(now)?;
+        // Overflow validation must leave the committed daily counter unchanged on failure.
         let mut bucket = self
             .days
             .get(&day)

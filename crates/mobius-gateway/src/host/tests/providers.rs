@@ -723,8 +723,8 @@ fn credential_refresh_separates_instances_but_shares_a_browser_login() {
         provider_refresh_matches(
             &selection,
             &ProviderRefresh::Instance {
-                instance: "responses-work".into(),
-                base_url: Some("https://first.example/v1".into()),
+                instance: "responses-work",
+                base_url: Some("https://first.example/v1"),
             }
         )
         .expect("matching instance and endpoint")
@@ -733,8 +733,8 @@ fn credential_refresh_separates_instances_but_shares_a_browser_login() {
         !provider_refresh_matches(
             &selection,
             &ProviderRefresh::Instance {
-                instance: "responses-personal".into(),
-                base_url: Some("https://first.example/v1".into()),
+                instance: "responses-personal",
+                base_url: Some("https://first.example/v1"),
             }
         )
         .expect("different instance")
@@ -743,8 +743,8 @@ fn credential_refresh_separates_instances_but_shares_a_browser_login() {
         !provider_refresh_matches(
             &selection,
             &ProviderRefresh::Instance {
-                instance: "responses-work".into(),
-                base_url: Some("https://second.example/v1".into()),
+                instance: "responses-work",
+                base_url: Some("https://second.example/v1"),
             }
         )
         .expect("different endpoint")
@@ -752,11 +752,11 @@ fn credential_refresh_separates_instances_but_shares_a_browser_login() {
 
     // A browser login is stored per provider, so every instance of it refreshes.
     assert!(
-        provider_refresh_matches(&selection, &ProviderRefresh::Provider("responses".into()))
+        provider_refresh_matches(&selection, &ProviderRefresh::Provider("responses"))
             .expect("matching provider")
     );
     assert!(
-        !provider_refresh_matches(&selection, &ProviderRefresh::Provider("anthropic".into()))
+        !provider_refresh_matches(&selection, &ProviderRefresh::Provider("anthropic"))
             .expect("different provider")
     );
 }
@@ -1319,4 +1319,86 @@ async fn credential_refresh_retries_an_inflight_bot_preparation() {
     );
     drop(host);
     gateway.shutdown().await;
+}
+
+#[tokio::test]
+async fn applied_provider_removal_keeps_live_catalog_and_refreshes_epoch() {
+    for rollback_fails in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let (gateway, credentials, _, removable) = provider_removal_gateway(&root).await;
+        let state_dir = root.path().join("state");
+        let config_path = state_dir.join("gateway.toml");
+        let credential_path = {
+            let state = gateway.state.lock().await;
+            state.store.credentials_path()
+        };
+        if rollback_fails {
+            crate::publication::fail_next_directory_sync(&config_path);
+            crate::publication::fail_next_replacement(&credential_path);
+            crate::publication::fail_next_replacement(&config_path);
+        } else {
+            crate::publication::fail_next_directory_sync(&credential_path);
+        }
+        let epoch = gateway
+            .state
+            .lock()
+            .await
+            .provider_epoch
+            .load(Ordering::Acquire);
+        let error = gateway
+            .remove_provider(removable.instance.clone())
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("applied"));
+        {
+            let state = gateway.state.lock().await;
+            assert_eq!(state.provider_epoch.load(Ordering::Acquire), epoch + 1);
+            let current = state.config().unwrap();
+            assert!(
+                !current
+                    .configured_providers
+                    .contains_key(&removable.instance)
+            );
+            assert_eq!(*current, ConfigStore::open(state_dir).unwrap().1);
+            assert_eq!(
+                credentials
+                    .get(
+                        &removable.instance,
+                        &removable.provider,
+                        removable.base_url.as_deref()
+                    )
+                    .unwrap()
+                    .is_some(),
+                rollback_fails
+            );
+        }
+        gateway.shutdown().await;
+    }
+}
+
+#[test]
+fn applied_publication_retains_a_follow_up_failure_and_never_reports_success() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("state");
+    std::fs::write(&path, b"before").unwrap();
+    crate::publication::fail_next_directory_sync(&path);
+    let publication = crate::publication::publish(&path, b"after", false);
+    let error = finish_publication::<()>(
+        publication,
+        Err(Rejection::new("refresh_failed", "catalog refresh failed")),
+    )
+    .unwrap_err();
+    assert!(error.message.contains("state replacement was applied"));
+    assert!(error.message.contains("injected directory sync failure"));
+    assert!(error.message.contains("catalog refresh failed"));
+    assert_eq!(std::fs::read(path).unwrap(), b"after");
+    let error = finish_publication::<()>(
+        Err(Error::Mobius(mobius::Error::PublicationDurability(
+            std::io::Error::other("oauth sync failed"),
+        ))),
+        Err(Rejection::new("refresh_failed", "provider refresh failed")),
+    )
+    .unwrap_err();
+    assert!(error.message.contains("oauth sync failed"));
+    assert!(error.message.contains("provider refresh failed"));
 }

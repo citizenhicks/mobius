@@ -452,17 +452,16 @@ impl TuiState {
                 UiAction::None
             }
             KeyCode::Enter => {
-                let Some(action) = picker.selected_option().map(|option| option.action.clone())
-                else {
+                let Some(index) = picker.matching_indices().nth(picker.selected) else {
                     return UiAction::None;
                 };
+                let option = picker.options.swap_remove(index);
                 self.picker = None;
-                picker_action(action)
+                picker_action(option.action)
             }
             KeyCode::Delete => {
-                let Some(action) = picker
-                    .selected_option()
-                    .and_then(|option| option.secondary.clone())
+                let index = picker.matching_indices().nth(picker.selected);
+                let Some(action) = index.and_then(|index| picker.options[index].secondary.take())
                 else {
                     return UiAction::None;
                 };
@@ -884,8 +883,9 @@ impl TuiState {
 
     fn selected_slash_command(&self, catalog: &UiCatalog) -> Option<String> {
         self.slash_suggestions(catalog)?
-            .get(self.slash_selection)
-            .map(|item| item.value.clone())
+            .into_iter()
+            .nth(self.slash_selection)
+            .map(|item| item.value)
     }
 
     pub(super) fn slash_suggestions(&self, catalog: &UiCatalog) -> Option<Vec<MenuItem>> {
@@ -918,7 +918,7 @@ impl TuiState {
     pub(super) fn reference_suggestions(
         &mut self,
         catalog: &UiCatalog,
-    ) -> Option<(ReferenceToken, Vec<MenuItem>)> {
+    ) -> Option<(ReferenceToken, &[MenuItem])> {
         if self.reference_menu_dismissed {
             return None;
         }
@@ -926,29 +926,38 @@ impl TuiState {
             .reference_triggers()
             .find(|trigger| active_reference_token(&self.input, self.cursor, *trigger).is_some())?;
         let token = active_reference_token(&self.input, self.cursor, trigger)?;
-        let matches = if let Some((cached_trigger, cached_query, matches)) = &self.reference_cache
-            && *cached_trigger == trigger
-            && cached_query == &token.query
-        {
-            matches.clone()
-        } else {
+        let cached =
+            self.reference_cache
+                .as_ref()
+                .is_some_and(|(cached_trigger, cached_query, _)| {
+                    *cached_trigger == trigger && cached_query == &token.query
+                });
+        if !cached {
             let matches = catalog.reference_suggestions(trigger, &token.query);
-            self.reference_cache = Some((trigger, token.query.clone(), matches.clone()));
-            matches
-        };
-        (!matches.is_empty()).then_some((token, matches))
+            self.reference_cache = Some((trigger, token.query.clone(), matches));
+        }
+        let matches = &self.reference_cache.as_ref()?.2;
+        (!matches.is_empty()).then_some((token, matches.as_slice()))
     }
 
     fn complete_reference(&mut self, catalog: &UiCatalog) -> bool {
+        let selection = self.reference_selection;
         let Some((token, matches)) = self.reference_suggestions(catalog) else {
             return false;
         };
-        let Some(item) = matches.get(self.reference_selection) else {
+        let Some(item) = matches.get(selection) else {
             return false;
         };
-        if !self.accepts_input(item.value.len(), token.range.len()) {
+        let inserted = item.value.len();
+        if !self.accepts_input(inserted, token.range.len()) {
             return true;
         }
+        let Some((_, _, matches)) = &self.reference_cache else {
+            return false;
+        };
+        let Some(item) = matches.get(selection) else {
+            return false;
+        };
         let Some(cursor) = replace_reference_token(&mut self.input, &token, &item.value) else {
             return false;
         };
@@ -960,9 +969,11 @@ impl TuiState {
     }
 
     fn move_menu_up(&mut self, catalog: &UiCatalog) -> bool {
-        if let Some((_, matches)) = self.reference_suggestions(catalog) {
-            self.reference_selection =
-                (self.reference_selection + matches.len() - 1) % matches.len();
+        if let Some(count) = self
+            .reference_suggestions(catalog)
+            .map(|(_, matches)| matches.len())
+        {
+            self.reference_selection = (self.reference_selection + count - 1) % count;
             true
         } else {
             self.move_slash_up(catalog)
@@ -970,8 +981,11 @@ impl TuiState {
     }
 
     fn move_menu_down(&mut self, catalog: &UiCatalog) -> bool {
-        if let Some((_, matches)) = self.reference_suggestions(catalog) {
-            self.reference_selection = (self.reference_selection + 1) % matches.len();
+        if let Some(count) = self
+            .reference_suggestions(catalog)
+            .map(|(_, matches)| matches.len())
+        {
+            self.reference_selection = (self.reference_selection + 1) % count;
             true
         } else {
             self.move_slash_down(catalog)

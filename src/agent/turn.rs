@@ -1,6 +1,8 @@
 mod model;
 mod streaming;
 
+use std::sync::Arc;
+
 use uuid::Uuid;
 
 use super::FRONTEND_DISCONNECTED_REASON;
@@ -113,7 +115,6 @@ impl Runner {
         inbox: &mut SubmissionInbox,
         mut message: PreparedMessage,
     ) -> Result<()> {
-        let submission_id = message.submission_id.clone();
         let author = match &message.event {
             EventMsg::Message(event) => event.author.clone(),
             _ => return Err(Error::Checkpoint("prepared message has no author".into())),
@@ -130,14 +131,20 @@ impl Runner {
                 &self.state.delivered_once,
             )
             .await?;
+        let submission_id = std::mem::take(&mut message.submission_id);
         if let Some(rejection) = submitted.rejection {
-            let mut pending_messages = self.state.pending_messages.clone();
-            self.config
+            // Only the consumed item is needed to undo a failed turn start.
+            let (queue_index, queued_message) = self
+                .config
                 .middleware
-                .consume_next_turn(&mut pending_messages, &submission_id)?;
-            self.begin_turn(&submission_id, turn_id.clone(), author)?;
-            let previous_pending_messages =
-                std::mem::replace(&mut self.state.pending_messages, pending_messages);
+                .consume_next_turn(&mut self.state.make_mut().pending_messages, &submission_id)?;
+            if let Err(error) = self.begin_turn(&submission_id, turn_id.clone(), author) {
+                self.state
+                    .make_mut()
+                    .pending_messages
+                    .insert(queue_index, queued_message);
+                return Err(error);
+            }
             let mut events = vec![turn_event(
                 &submission_id,
                 EventMsg::TurnStarted(TurnStartedEvent {
@@ -166,14 +173,17 @@ impl Runner {
                 )
                 .await;
             if result.is_err() {
-                self.state.pending_messages = previous_pending_messages;
+                self.state
+                    .make_mut()
+                    .pending_messages
+                    .insert(queue_index, queued_message);
             }
             return result;
         }
         let mut model_input = message.input;
         self.config
             .model
-            .prepare_turn_input(&self.state.context, &mut model_input);
+            .prepare_turn_input(self.state.context.as_slice().into(), &mut model_input);
         let checkpoint_sequence = self
             .state
             .sequence
@@ -205,39 +215,53 @@ impl Runner {
             batch_item_count: self.transcript_delta.len() + 1,
         });
         events.push(turn_event(&submission_id, message.event));
-        let mut pending_messages = self.state.pending_messages.clone();
-        self.config
+        // Retain the removed item at its original position until turn-start publication succeeds.
+        let (queue_index, queued_message) = self
+            .config
             .middleware
-            .consume_next_turn(&mut pending_messages, &submission_id)?;
-        self.begin_turn(&submission_id, turn_id.clone(), author)?;
-        let previous_pending_messages =
-            std::mem::replace(&mut self.state.pending_messages, pending_messages);
+            .consume_next_turn(&mut self.state.make_mut().pending_messages, &submission_id)?;
+        if let Err(error) = self.begin_turn(&submission_id, turn_id.clone(), author) {
+            self.state
+                .make_mut()
+                .pending_messages
+                .insert(queue_index, queued_message);
+            return Err(error);
+        }
         let context_len = self.state.context.len();
         let transcript_len = self.transcript_delta.len();
-        let first_user_message = self.state.first_user_message.clone();
-        self.state
-            .context
-            .extend(submitted.input.into_iter().filter(|item| {
-                crate::middleware::delivery_once::accept(&mut self.state.delivered_once, item)
-            }));
+        let had_first_user_message = self.state.first_user_message.is_some();
+        let state = self.state.make_mut();
+        Arc::make_mut(&mut state.context).extend(
+            submitted
+                .input
+                .into_iter()
+                .filter(|item| {
+                    crate::middleware::delivery_once::accept(&mut state.delivered_once, item)
+                })
+                .map(Arc::new),
+        );
         if self.state.first_user_message.is_none()
             && let Some(title_seed) = message.title_seed.take()
         {
-            self.state.first_user_message = Some(title_seed);
+            self.state.make_mut().first_user_message = Some(title_seed);
         }
         self.push_context(model_input);
         if let Err(error) = self.persist_with_events(events, None).await {
-            self.state.pending_messages = previous_pending_messages;
+            let state = self.state.make_mut();
+            state.pending_messages.insert(queue_index, queued_message);
             crate::middleware::delivery_once::rollback(
-                &mut self.state.delivered_once,
-                &self.state.context[context_len..],
+                &mut state.delivered_once,
+                &state.context[context_len..],
             );
-            self.state.context.truncate(context_len);
+            Arc::make_mut(&mut self.state.make_mut().context).truncate(context_len);
             self.transcript_delta.truncate(transcript_len);
-            self.state.first_user_message = first_user_message;
-            self.state.active_execution = None;
+            if !had_first_user_message {
+                self.state.make_mut().first_user_message = None;
+            }
+            self.state.make_mut().active_execution = None;
             return Err(error);
         }
+        drop(queued_message);
         self.continue_turn(inbox, submission_id, turn_id).await
     }
 
@@ -252,7 +276,7 @@ impl Runner {
                 "cannot start a turn while another execution is active".into(),
             ));
         }
-        self.state.active_execution = Some(ActiveExecution {
+        self.state.make_mut().active_execution = Some(ActiveExecution {
             submission_id: submission_id.into(),
             author,
             turn_id,
@@ -359,12 +383,15 @@ impl Runner {
         outcome: ExecutionOutcome,
         mut events: Vec<Event>,
     ) -> Result<()> {
-        let previous_state = self.state.clone();
-        let previous_transcript = self.transcript_delta.clone();
+        let previous_state = super::LiveCheckpoint(Arc::clone(&self.state.0));
+        let transcript_len = self.transcript_delta.len();
         let result = async {
-            events.extend(self.finish_pending_tools(submission_id, turn_id, reason)?);
-            self.state.active_model_step = None;
-            self.state.pending_approval = None;
+            events.extend(
+                self.finish_pending_tools(submission_id, turn_id, reason)
+                    .await?,
+            );
+            self.state.make_mut().active_model_step = None;
+            self.state.make_mut().pending_approval = None;
             self.finish_turn(
                 submission_id,
                 turn_id,
@@ -380,7 +407,7 @@ impl Runner {
         .await;
         if result.is_err() {
             self.state = previous_state;
-            self.transcript_delta = previous_transcript;
+            self.transcript_delta.truncate(transcript_len);
         }
         result
     }
@@ -394,7 +421,7 @@ impl Runner {
         mut events: Vec<Event>,
     ) -> Result<()> {
         self.config.middleware.finish_message_turn(
-            &mut self.state.pending_messages,
+            &mut self.state.make_mut().pending_messages,
             turn_id,
             outcome,
         )?;
@@ -438,7 +465,7 @@ impl Runner {
 
 pub(super) fn turn_event(submission_id: &str, msg: EventMsg) -> Event {
     Event {
-        submission_id: Some(submission_id.to_string()),
+        submission_id: Some(submission_id.into()),
         msg,
     }
 }

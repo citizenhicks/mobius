@@ -73,10 +73,13 @@ existing identities and blocks new pairing beyond that limit.
 
 Bot middleware settings expose `sandbox.tool_output_bytes` (40000; maximum 1048576)
 and `sandbox.background_commands` (4; maximum 256). Command capture and final tool
-rendering share the output budget. Compaction exposes `keep_recent_tokens`,
-`native_retained_tokens`, `reserve_tokens`, `handoff_reserve_divisor`,
-`handoff_warning_reserves` and `handoff_urgent_reserves`. The host's byte/token estimate
-is shared by compaction and offloading; measured provider usage remains authoritative.
+rendering share the output budget. Compaction exposes `at_tokens` (250000),
+`reserve_tokens` (16384), and `allow_model_compaction` (`off` or `on`, default `off`).
+Automatic compaction saves a plaintext checkpoint and resets context when the
+token threshold or destination model budget requires it. Enabling
+`allow_model_compaction` also lets the model request an early reset. Original
+messages and tool results remain available in searchable history. The host's
+byte/token estimate guides compaction; measured provider usage remains authoritative.
 Advertised subagent controls and absent-setting defaults respect the host ceilings,
 which a paired client cannot raise. Explicit saved values above a lowered ceiling
 are rejected for the operator to resolve.
@@ -98,8 +101,6 @@ serialized outgoing model request, including images, text and tool schemas:
 | `stream_retry_limit` | 5 |
 | `stream_retry_backoff_ms` | 200 |
 | `stream_retry_max_backoff_ms` | 3200 |
-| `compaction_retry_limit` | 2 |
-| `compaction_retry_backoff_ms` | 200 |
 | `voice_start_timeout_ms` | 30000 |
 | `voice_io_timeout_ms` | 5000 |
 | `voice_call_timeout_ms` | 3600000 |

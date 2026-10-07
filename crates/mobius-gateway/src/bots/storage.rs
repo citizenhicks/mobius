@@ -388,7 +388,7 @@ impl BotStorage {
             .map_err(Error::from)
     }
 
-    pub(super) fn validate_run_owners(&self, bot_ids: &BTreeSet<String>) -> Result<()> {
+    pub(super) fn validate_run_owners(&self, bot_ids: &BTreeSet<&str>) -> Result<()> {
         let connection = self
             .connection
             .lock()
@@ -400,7 +400,7 @@ impl BotStorage {
             .query_map([], |row| row.get::<_, String>(0))
             .map_err(Error::from)?;
         for bot_id in owners {
-            if !bot_ids.contains(&bot_id?) {
+            if !bot_ids.contains(bot_id?.as_str()) {
                 return Err(Error::Config("persisted routine run has no Bot".into()));
             }
         }

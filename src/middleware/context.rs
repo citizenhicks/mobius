@@ -6,21 +6,22 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::MiddlewareStack;
+use super::TokenEstimate;
 use super::delivery_once::{DeliveryOnce, Receipts};
 use super::tools::Catalog;
 use super::tools::ToolResult;
-use super::{TokenEstimate, serialized_len};
 use crate::agent::{AgentRole, WeakAgentSender};
 use crate::backend::checkpoint::{
     Checkpoint, CheckpointStore, ContextRewriteReason, ExecutionOutcome, MAX_QUEUED_MESSAGES,
     QueuedMessage as DurableQueuedMessage, QueuedMessageBoundary,
 };
-use crate::backend::model::{ModelCancellation, ModelRouter, message_input};
+use crate::backend::model::{ModelCancellation, ModelInput, ModelRouter, message_input};
 use crate::backend::sandbox::ApprovalPolicy;
 use crate::protocol::{
     EventMsg, FrontendBlock, FrontendBlockRole, FrontendBlockState, FrontendEvent, FrontendTone,
-    MAX_CAPABILITY_INPUT_BYTES, MessageAuthor, MessageEvent, MessageSubmission, MessageTarget,
-    ReviewDecision, SessionContext, SessionFileReference, TokenUsage, ToolCall, message_metadata,
+    MAX_CAPABILITY_INPUT_BYTES, MessageAuthor, MessageDelivery, MessageEvent, MessageReply,
+    MessageSubmission, MessageTarget, ReviewDecision, SessionContext, SessionFileReference,
+    TokenUsage, ToolCall, message_metadata,
 };
 use crate::{Error, Result};
 
@@ -129,7 +130,7 @@ impl Drop for PreparationNotices<'_> {
             if let Err(error) =
                 (self.frontend)(notice.event(fallback, FrontendBlockState::Complete))
             {
-                eprintln!("failed to close preparation notice: {error}");
+                tracing::warn!(%error, "failed to close preparation notice");
             }
         }
     }
@@ -148,6 +149,36 @@ impl<'a> QueuedMessageView<'a> {
         self.item.id()
     }
 
+    /// Borrows the initiating author without materializing a presentation event.
+    #[must_use]
+    pub fn author(&self) -> &'a MessageAuthor {
+        self.item.author()
+    }
+
+    /// Returns the queued message's delivery boundary.
+    #[must_use]
+    pub fn delivery(&self) -> MessageDelivery {
+        self.item.boundary().delivery()
+    }
+
+    /// Borrows the queued message text.
+    #[must_use]
+    pub fn text(&self) -> &'a str {
+        self.item.text()
+    }
+
+    /// Borrows the references retained until delivery or a validated replacement.
+    #[must_use]
+    pub fn attachments(&self) -> &'a [SessionFileReference] {
+        self.item.attachments()
+    }
+
+    /// Borrows the reply snapshot retained with this queued message.
+    #[must_use]
+    pub fn reply(&self) -> Option<&'a MessageReply> {
+        self.item.reply()
+    }
+
     /// Returns the prepared presentation event.
     #[must_use]
     pub fn event(&self) -> MessageEvent {
@@ -156,25 +187,23 @@ impl<'a> QueuedMessageView<'a> {
 }
 
 /// Read-only startup snapshot containing only one middleware's queued messages.
-#[derive(Clone, Default)]
-pub struct QueuedMessageSnapshot {
-    items: Vec<DurableQueuedMessage>,
+#[derive(Clone, Copy, Default)]
+pub struct QueuedMessageSnapshot<'a> {
+    items: &'a [DurableQueuedMessage],
+    owner: &'a str,
 }
 
-impl QueuedMessageSnapshot {
+impl<'a> QueuedMessageSnapshot<'a> {
     /// Returns every queued item owned by this middleware, oldest first.
     pub fn views(&self) -> impl Iterator<Item = QueuedMessageView<'_>> {
-        self.items.iter().map(|item| QueuedMessageView { item })
+        self.items
+            .iter()
+            .filter(|item| item.owner() == self.owner)
+            .map(|item| QueuedMessageView { item })
     }
 
-    pub(super) fn for_owner(owner: &str, items: &[DurableQueuedMessage]) -> Self {
-        Self {
-            items: items
-                .iter()
-                .filter(|item| item.owner() == owner)
-                .cloned()
-                .collect(),
-        }
+    pub(super) fn for_owner(owner: &'a str, items: &'a [DurableQueuedMessage]) -> Self {
+        Self { items, owner }
     }
 }
 
@@ -301,12 +330,13 @@ impl<'a> MessageQueue<'a> {
         self.items
             .iter()
             .find(|item| item.owner() == owner && item.boundary().starts_turn())
+            // Keep the queued message durable until the prepared turn is successfully admitted.
             .cloned()
             .map(PreparedMessage::try_from)
             .transpose()
     }
 
-    pub(crate) fn consume_next_turn(&mut self, id: &str) -> Result<()> {
+    pub(crate) fn consume_next_turn(&mut self, id: &str) -> Result<(usize, DurableQueuedMessage)> {
         let owner = self.owner()?;
         let index = self
             .items
@@ -315,8 +345,7 @@ impl<'a> MessageQueue<'a> {
                 item.owner() == owner && item.id() == id && item.boundary().starts_turn()
             })
             .ok_or_else(|| Error::Checkpoint("prepared message is no longer queued".into()))?;
-        self.items.remove(index);
-        Ok(())
+        Ok((index, self.items.remove(index)))
     }
 
     pub(crate) fn promote_failed_turn(&mut self, turn_id: &str) -> Result<()> {
@@ -439,8 +468,8 @@ pub struct SessionStartContext<'a> {
     pub runtime: &'a RuntimeContext,
     pub(crate) delivery_once: DeliveryOnce<'a>,
     pub(crate) source: SessionStartSource,
-    pub(crate) queued_messages: QueuedMessageSnapshot,
-    pub(crate) input: &'a mut Vec<Value>,
+    pub(crate) queued_messages: QueuedMessageSnapshot<'a>,
+    pub(crate) input: &'a mut Vec<Arc<Value>>,
     pub(crate) input_changed: bool,
     pub(crate) stop_reason: Option<String>,
 }
@@ -464,13 +493,13 @@ impl SessionStartContext<'_> {
 
     #[must_use]
     /// Returns the queued messages.
-    pub fn queued_messages(&self) -> &QueuedMessageSnapshot {
+    pub fn queued_messages(&self) -> &QueuedMessageSnapshot<'_> {
         &self.queued_messages
     }
 
     /// Appends hidden provider context produced while the session starts.
     pub fn push_input(&mut self, item: Value) {
-        self.input.push(item);
+        self.input.push(Arc::new(item));
         self.input_changed = true;
     }
 
@@ -538,6 +567,62 @@ pub(crate) struct MessageSubmitResult {
     pub(crate) rejection: Option<String>,
 }
 
+/// Provisional history borrows its immutable prefix and owns only new or replaced items.
+pub(crate) struct StagedInput {
+    original: Arc<Vec<Arc<Value>>>,
+    appended: Vec<Arc<Value>>,
+    replacement: Option<Vec<Arc<Value>>>,
+}
+
+impl StagedInput {
+    pub(crate) fn new(original: Arc<Vec<Arc<Value>>>) -> Self {
+        Self {
+            original,
+            appended: Vec::new(),
+            replacement: None,
+        }
+    }
+
+    pub(crate) fn input(&self) -> ModelInput<'_> {
+        ModelInput::shared_parts(
+            self.replacement.as_deref().unwrap_or(&self.original),
+            &self.appended,
+        )
+    }
+
+    pub(crate) fn push(&mut self, item: Arc<Value>) {
+        self.appended.push(item);
+    }
+
+    pub(crate) fn replace(&mut self, input: Vec<Arc<Value>>) {
+        self.replacement = Some(input);
+        self.appended.clear();
+    }
+
+    pub(crate) fn make_mut(&mut self) -> &mut Vec<Arc<Value>> {
+        let input = self
+            .replacement
+            .get_or_insert_with(|| self.original.iter().map(Arc::clone).collect());
+        input.append(&mut self.appended);
+        input
+    }
+
+    pub(crate) fn commit(self, history: &mut Arc<Vec<Arc<Value>>>) {
+        let Self {
+            original,
+            appended,
+            replacement,
+        } = self;
+        drop(original);
+        if let Some(mut input) = replacement {
+            input.extend(appended);
+            *history = Arc::new(input);
+        } else if !appended.is_empty() {
+            Arc::make_mut(history).extend(appended);
+        }
+    }
+}
+
 /// Mutable state exposed immediately before a model request.
 pub struct ModelContext<'a> {
     /// Trusted provenance of the message that initiated the active turn.
@@ -546,6 +631,8 @@ pub struct ModelContext<'a> {
     pub model: &'a ModelRouter,
     /// The provider.
     pub provider: &'a str,
+    /// The route whose accepted output last contributed to durable context.
+    pub context_provider: &'a str,
     /// The session identifier.
     pub session_id: &'a str,
     /// Cause recorded before model preparation is cancelled.
@@ -567,9 +654,9 @@ pub struct ModelContext<'a> {
     pub(crate) checkpoint_sequence: u64,
     pub(crate) available_tools: &'a mut BTreeSet<String>,
     pub(crate) allow_hosted_tools: &'a mut bool,
-    pub(crate) durable_input: &'a mut Vec<Value>,
+    pub(crate) durable_input: &'a mut StagedInput,
     pub(crate) delivered_once: &'a mut Receipts,
-    pub(crate) transcript_delta: &'a mut Vec<Value>,
+    pub(crate) transcript_delta: &'a mut Vec<Arc<Value>>,
     pub(crate) context_epoch: &'a mut u64,
     pub(crate) compaction_count: &'a mut u64,
     pub(crate) rewrite_reasons: &'a mut Vec<ContextRewriteReason>,
@@ -581,8 +668,8 @@ pub struct ModelContext<'a> {
     pub tools: &'a Catalog,
     /// The events.
     pub events: &'a mut Vec<EventMsg>,
-    /// The usage.
-    pub usage: &'a mut Vec<TokenUsage>,
+    /// Completed preparation calls, with their actual routes and usage.
+    pub usage: &'a mut Vec<(String, TokenUsage)>,
     /// Set when this hook changes durable checkpoint state.
     pub(crate) checkpoint_changed: &'a mut bool,
     pub(crate) runtime: &'a RuntimeContext,
@@ -595,7 +682,7 @@ pub struct ToolExposureContext<'a> {
     /// The session identifier.
     pub session_id: &'a str,
     pub(crate) supports_tool_image_input: bool,
-    pub(crate) input: &'a [Value],
+    pub(crate) input: ModelInput<'a>,
     pub(crate) available: &'a mut BTreeSet<String>,
 }
 
@@ -621,6 +708,11 @@ impl ToolExposureContext<'_> {
 }
 
 impl ModelContext<'_> {
+    /// Accounts for a preparation call on its actual model route.
+    pub fn record_usage(&mut self, route: &str, usage: TokenUsage) {
+        self.usage.push((route.into(), usage));
+    }
+
     pub(crate) fn start_preparation_notice(
         &mut self,
         capability: &'static str,
@@ -647,8 +739,8 @@ impl ModelContext<'_> {
 
     /// Returns durable provider-neutral model context.
     #[must_use]
-    pub fn input(&self) -> &[Value] {
-        self.durable_input
+    pub fn input(&self) -> ModelInput<'_> {
+        self.durable_input.input()
     }
 
     /// Replaces active model context and advances its rewrite epoch once per boundary.
@@ -658,9 +750,10 @@ impl ModelContext<'_> {
     pub fn rewrite_input(
         &mut self,
         reason: ContextRewriteReason,
-        mut input: Vec<Value>,
+        input: impl IntoIterator<Item = impl Into<Arc<Value>>>,
     ) -> Result<()> {
-        if *self.durable_input == input {
+        let mut input = input.into_iter().map(Into::into).collect::<Vec<_>>();
+        if self.input().iter().eq(input.iter().map(AsRef::as_ref)) {
             return Ok(());
         }
         if self.rewrite_reasons.is_empty() {
@@ -672,8 +765,8 @@ impl ModelContext<'_> {
         if !self.rewrite_reasons.contains(&reason) {
             self.rewrite_reasons.push(reason);
         }
-        crate::backend::model::reset_prompt_cache_breakpoint(&mut input);
-        *self.durable_input = input;
+        crate::backend::model::reset_shared_prompt_cache_breakpoint(&mut input);
+        self.durable_input.replace(input);
         self.last_usage = None;
         *self.checkpoint_changed = true;
         Ok(())
@@ -681,13 +774,13 @@ impl ModelContext<'_> {
 
     /// Appends a durable replay item without adding it to provider context.
     pub(crate) fn record_transcript_item(&mut self, item: Value) {
-        self.transcript_delta.push(item);
+        self.transcript_delta.push(Arc::new(item));
         *self.checkpoint_changed = true;
     }
 
     /// Appends durable provider context without adding synthetic replay history.
     pub fn append_model_input(&mut self, item: Value) {
-        self.durable_input.push(item);
+        self.durable_input.push(Arc::new(item));
         *self.checkpoint_changed = true;
     }
 
@@ -696,7 +789,8 @@ impl ModelContext<'_> {
     ///
     /// Returns an error if validation or an operation required by this function fails.
     pub fn push_input(&mut self, item: Value) -> Result<MessageTarget> {
-        self.durable_input.push(item.clone());
+        let item = Arc::new(item);
+        self.durable_input.push(Arc::clone(&item));
         self.transcript_delta.push(item);
         *self.checkpoint_changed = true;
         provisional_message_target(self.checkpoint_sequence, self.transcript_delta.len())
@@ -707,26 +801,22 @@ impl ModelContext<'_> {
     pub fn estimated_input_tokens(&self) -> i64 {
         let Ok(tools) = self
             .tools
-            .prepare(self.input(), self.available_tools.clone())
+            .prepare(self.input(), Cow::Borrowed(self.available_tools))
         else {
             return i64::MAX;
         };
-        let visible = tools
-            .direct()
-            .iter()
-            .chain(
-                tools
-                    .deferred()
-                    .iter()
-                    .filter(|tool| tools.materialized().contains(&tool.name)),
-            )
-            .collect::<Vec<_>>();
-        let Some(tool_bytes) = serialized_len(&visible) else {
+        let Ok(tool_bytes) = tools.serialized_schema_bytes() else {
             return i64::MAX;
         };
+        let same_context_model = self
+            .model
+            .same_context_model(self.context_provider, self.provider);
         let history = self
-            .durable_input
+            .input()
             .iter()
+            .filter(|item| {
+                same_context_model || !crate::backend::model::is_provider_reasoning(item)
+            })
             .map(|item| self.token_estimate.item_tokens(item))
             .fold(0usize, usize::saturating_add);
         i64::try_from(
@@ -745,7 +835,7 @@ impl ModelContext<'_> {
                 session_id: self.session_id,
                 turn_id: self.turn_id,
                 model: &self.runtime.model,
-                input: self.durable_input,
+                input: self.durable_input.input(),
                 events: self.events,
                 stop_reason: None,
             })
@@ -761,7 +851,7 @@ impl ModelContext<'_> {
                 session_id: self.session_id,
                 turn_id: self.turn_id,
                 model: &self.runtime.model,
-                input: self.durable_input,
+                input: self.durable_input.input(),
                 events: self.events,
                 stop_reason: None,
             })
@@ -775,7 +865,7 @@ impl ModelContext<'_> {
                 self.runtime,
                 &self.queued_messages,
                 SessionStartSource::Compact,
-                self.durable_input,
+                self.durable_input.make_mut(),
                 self.delivered_once,
             )
             .await?;
@@ -805,19 +895,22 @@ pub struct ModelRequestContext<'a> {
     pub turn_id: &'a str,
     /// The model step.
     pub model_step: usize,
-    pub(crate) input: Cow<'a, [Value]>,
+    pub(crate) input: ModelInput<'a>,
+    pub(crate) replacement: Option<Vec<Value>>,
 }
 
 impl ModelRequestContext<'_> {
     /// Returns the input currently prepared for this one model request.
     #[must_use]
-    pub fn input(&self) -> &[Value] {
-        self.input.as_ref()
+    pub fn input(&self) -> ModelInput<'_> {
+        self.replacement
+            .as_deref()
+            .map_or(self.input, ModelInput::from)
     }
 
     /// Replaces only the input sent by this model request.
     pub fn replace_input(&mut self, input: Vec<Value>) {
-        self.input = Cow::Owned(input);
+        self.replacement = Some(input);
     }
 }
 
@@ -830,6 +923,7 @@ pub struct PreToolUseContext<'a> {
     pub(crate) delivery_once: DeliveryOnce<'a>,
     pub(crate) tools: &'a Catalog,
     pub(crate) call: &'a mut ToolCall,
+    pub(crate) changed: bool,
     pub(crate) input: Vec<Value>,
     pub(crate) denial: Option<String>,
 }
@@ -854,7 +948,11 @@ impl PreToolUseContext<'_> {
     ///
     /// Returns an error if validation or an operation required by this function fails.
     pub fn replace(&mut self, name: impl Into<String>, arguments: Value) -> Result<()> {
-        self.call.replace(name.into(), arguments)
+        let name = name.into();
+        let changed = self.call.name != name || self.call.arguments != arguments;
+        self.call.replace(name, arguments)?;
+        self.changed |= changed;
+        Ok(())
     }
 
     /// Adds durable provider-neutral context before this call at a tool-complete boundary.
@@ -973,7 +1071,7 @@ pub struct CompactContext<'a> {
     /// The model.
     pub model: &'a str,
     /// The input.
-    pub input: &'a [Value],
+    pub input: ModelInput<'a>,
     /// The events.
     pub events: &'a mut Vec<EventMsg>,
     pub(crate) stop_reason: Option<String>,
@@ -1222,12 +1320,41 @@ mod tests {
             session_id: "session",
             turn_id: "turn",
             model_step: 0,
-            input: Cow::Borrowed(&original),
+            input: original.as_slice().into(),
+            replacement: None,
         };
 
-        assert!(matches!(&context.input, Cow::Borrowed(_)));
+        assert!(std::ptr::eq(context.input().get(0).unwrap(), &original[0]));
         context.replace_input(vec![Value::String("replacement".into())]);
-        assert!(matches!(&context.input, Cow::Owned(_)));
+        assert!(context.replacement.is_some());
         assert_eq!(original, [Value::String("original".into())]);
+    }
+
+    #[test]
+    fn staged_history_shares_original_items_and_commits_only_when_accepted() {
+        let original = Arc::new(Value::String("original".into()));
+        let mut history = Arc::new(vec![Arc::clone(&original)]);
+        let mut rejected = StagedInput::new(Arc::clone(&history));
+        rejected.push(Arc::new(Value::String("rejected".into())));
+        assert_eq!(rejected.input().len(), 2);
+        assert!(Arc::ptr_eq(
+            rejected.input().shared_item(0).unwrap(),
+            &original
+        ));
+        drop(rejected);
+        assert_eq!(history.len(), 1);
+
+        let appended = Arc::new(Value::String("accepted".into()));
+        let mut accepted = StagedInput::new(Arc::clone(&history));
+        accepted.push(Arc::clone(&appended));
+        accepted.commit(&mut history);
+        assert!(Arc::ptr_eq(&history[0], &original));
+        assert!(Arc::ptr_eq(&history[1], &appended));
+
+        let mut rewritten = StagedInput::new(Arc::clone(&history));
+        rewritten.replace(vec![Arc::clone(&appended)]);
+        rewritten.commit(&mut history);
+        assert_eq!(history.len(), 1);
+        assert!(Arc::ptr_eq(&history[0], &appended));
     }
 }

@@ -45,6 +45,66 @@ async fn reading_and_publishing_images_retain_only_their_own_files() {
 }
 
 #[tokio::test]
+async fn failed_publication_does_not_charge_an_unpublished_blob() {
+    let state = tempfile::tempdir().unwrap();
+    let store = SessionFileStore::new(state.path(), Some(5));
+    let mut pending = store
+        .begin_upload("session", "input.txt".into(), 5, "text/plain".into())
+        .await
+        .unwrap();
+    pending.append(0, b"input").await.unwrap();
+    let staging = store
+        .session_dir("session")
+        .join(format!(".{}-partial", pending.id()));
+    tokio::fs::write(&staging, b"obstruction").await.unwrap();
+
+    assert!(pending.finish().await.is_err());
+    assert_eq!(store.stored_bytes().await.unwrap(), 0);
+    assert!(
+        store
+            .list_files("session", &[SessionFileOrigin::Upload])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    tokio::fs::remove_file(staging).await.unwrap();
+    store
+        .begin_upload("session", "next.txt".into(), 1, "text/plain".into())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn publication_failure_preserves_its_cleanup_error() {
+    let state = tempfile::tempdir().unwrap();
+    let store = SessionFileStore::new(state.path(), None);
+    let mut pending = store
+        .begin_upload("session", "input.txt".into(), 5, "text/plain".into())
+        .await
+        .unwrap();
+    pending.append(0, b"input").await.unwrap();
+    pending.file.as_mut().unwrap().flush().await.unwrap();
+    let content_hash = hash_file(pending.path.as_ref().unwrap()).await.unwrap();
+    let staging = store
+        .session_dir("session")
+        .join(format!(".{}-partial", pending.id()));
+    tokio::fs::write(store.blob_path(&content_hash), b"x")
+        .await
+        .unwrap();
+    tokio::fs::create_dir(store.blob_dir().join("invalid-blob"))
+        .await
+        .unwrap();
+
+    let error = pending.finish().await.unwrap_err();
+    let Error::Rollback { primary, rollback } = error else {
+        panic!("publication must preserve both failures: {error}");
+    };
+    assert!(primary.to_string().contains("size does not match"));
+    assert!(rollback.to_string().contains("not a regular file"));
+    assert!(!staging.exists());
+}
+
+#[tokio::test]
 async fn upload_round_trip_is_session_scoped_and_atomic() {
     let state = tempfile::tempdir().expect("state");
     let store = SessionFileStore::new(state.path(), None);
@@ -1425,6 +1485,43 @@ async fn selected_deletion_handles_damaged_payloads_and_missing_metadata() {
 }
 
 #[tokio::test]
+async fn selective_deletion_can_retry_after_a_repaired_failure() {
+    let state = tempfile::tempdir().unwrap();
+    let store = SessionFileStore::new(state.path(), None);
+    let file = store
+        .publish_artifact(
+            "session",
+            "result.txt".into(),
+            "text/plain".into(),
+            b"result",
+        )
+        .await
+        .unwrap();
+    let mut deletion = store
+        .prepare_delete_sessions(
+            &["session".into()],
+            SessionFileSelection::Ids(vec![file.id]),
+        )
+        .await
+        .unwrap();
+    let workspace = store.session_dir("session").join(ATTACHMENT_WORKSPACE_FILE);
+    tokio::fs::write(&workspace, b"invalid json").await.unwrap();
+    assert!(deletion.delete().await.is_err());
+    tokio::fs::remove_file(workspace).await.unwrap();
+
+    deletion.delete().await.unwrap();
+
+    assert!(
+        store
+            .list_files("session", &[SessionFileOrigin::Artifact])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(store.stored_bytes().await.unwrap(), 0);
+}
+
+#[tokio::test]
 async fn generated_images_survive_selective_cleanup_until_the_chat_is_deleted() {
     for legacy in [false, true] {
         let state = tempfile::tempdir().unwrap();
@@ -1476,17 +1573,18 @@ async fn generated_images_survive_selective_cleanup_until_the_chat_is_deleted() 
             vec![(SessionFileOrigin::Artifact, ordinary.clone())]
         );
 
-        let error = store
+        let mut deletion = store
             .prepare_delete_sessions(
                 &["session".into()],
                 SessionFileSelection::Ids(vec![ordinary.id.clone(), generated.id.clone()]),
             )
             .await
-            .unwrap()
-            .delete()
-            .await
-            .unwrap_err();
-        assert!(error.to_string().contains("generated images"));
+            .unwrap();
+        for _ in 0..2 {
+            let error = deletion.delete().await.unwrap_err();
+            assert!(error.to_string().contains("generated images"));
+        }
+        drop(deletion);
         assert_eq!(
             store.list_files("session", &origins).await.unwrap().len(),
             2

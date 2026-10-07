@@ -1,6 +1,7 @@
 //! Durable agent checkpoints.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -27,7 +28,7 @@ use crate::protocol::ToolCall;
 
 pub mod sqlite;
 
-pub(crate) const CHECKPOINT_VERSION: u32 = 18;
+pub(crate) const CHECKPOINT_VERSION: u32 = 19;
 pub(crate) const MAX_QUEUED_MESSAGES: usize = 1_024;
 const TURN_PAGE_BATCH_SIZE: usize = 100;
 const MAX_QUEUED_OWNER_BYTES: usize = 256;
@@ -154,10 +155,10 @@ pub struct ExecutionStats {
 pub enum ContextRewriteReason {
     /// Bounds materialized attachment images retained for replay.
     Attachments,
-    /// Selects the context offloading case.
-    ContextOffloading,
     /// Selects the compaction case.
     Compaction,
+    /// Discards provider-owned reasoning before a different model route replays context.
+    ModelChange,
     /// Selects the scratchpad case.
     Scratchpad,
 }
@@ -166,8 +167,8 @@ impl ContextRewriteReason {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Attachments => "attachments",
-            Self::ContextOffloading => "context_offloading",
             Self::Compaction => "compaction",
+            Self::ModelChange => "model_change",
             Self::Scratchpad => "scratchpad",
         }
     }
@@ -198,6 +199,7 @@ impl ExecutionStats {
 
     /// Adds completed execution totals, leaving this value unchanged on overflow.
     pub fn checked_add(&mut self, other: &Self) -> Option<()> {
+        // Stage counters so overflow leaves the existing aggregate unchanged.
         let mut usage = self.usage.clone();
         usage.checked_add(&other.usage)?;
         *self = Self {
@@ -307,6 +309,16 @@ pub struct QueuedMessage {
     reply: Option<MessageReply>,
 }
 
+#[derive(Serialize)]
+struct QueuedMessageEvent<'a> {
+    author: &'a MessageAuthor,
+    delivery: MessageDelivery,
+    text: &'a str,
+    attachments: &'a [SessionFileReference],
+    reply: Option<&'a MessageReply>,
+    message_target: Option<MessageTarget>,
+}
+
 impl QueuedMessage {
     pub(crate) fn new(
         owner: &str,
@@ -348,6 +360,33 @@ impl QueuedMessage {
         &self.boundary
     }
 
+    pub(crate) fn author(&self) -> &MessageAuthor {
+        &self.author
+    }
+
+    pub(crate) fn text(&self) -> &str {
+        &self.message
+    }
+
+    pub(crate) fn attachments(&self) -> &[SessionFileReference] {
+        &self.attachments
+    }
+
+    pub(crate) fn reply(&self) -> Option<&MessageReply> {
+        self.reply.as_ref()
+    }
+
+    fn borrowed_event(&self) -> QueuedMessageEvent<'_> {
+        QueuedMessageEvent {
+            author: &self.author,
+            delivery: self.boundary.delivery(),
+            text: &self.message,
+            attachments: &self.attachments,
+            reply: self.reply.as_ref(),
+            message_target: None,
+        }
+    }
+
     pub(crate) fn event(&self) -> MessageEvent {
         MessageEvent {
             author: self.author.clone(),
@@ -360,6 +399,7 @@ impl QueuedMessage {
     }
 
     pub(crate) fn replace(&mut self, id: &str, event: MessageEvent) -> Result<()> {
+        // Validation may fail; keep the original delivery boundary intact until replacement succeeds.
         let replacement = Self::new(&self.owner, id, self.boundary.clone(), event)?;
         *self = replacement;
         Ok(())
@@ -371,7 +411,14 @@ impl QueuedMessage {
     }
 
     pub(crate) fn into_parts(self) -> (String, MessageEvent) {
-        let event = self.event();
+        let event = MessageEvent {
+            author: self.author,
+            delivery: self.boundary.delivery(),
+            text: self.message,
+            attachments: self.attachments,
+            reply: self.reply,
+            message_target: None,
+        };
         (self.id, event)
     }
 }
@@ -395,8 +442,9 @@ fn validate_queued_message(message: &QueuedMessage) -> Result<()> {
         &message.message,
         &message.attachments,
     )?;
-    if serde_json::to_vec(&message.event())
-        .map_or(true, |value| value.len() > MAX_QUEUED_MESSAGE_BYTES)
+    if crate::serialized_len(&message.borrowed_event())
+        .ok()
+        .is_none_or(|bytes| bytes > MAX_QUEUED_MESSAGE_BYTES)
     {
         return Err(Error::Config("queued message is invalid".into()));
     }
@@ -423,14 +471,18 @@ pub struct Checkpoint {
     pub first_user_message: Option<String>,
     /// The model route.
     pub model_route: Option<String>,
-    /// The sequence.
+    /// The model route whose accepted output last contributed to active context.
+    pub context_model_route: Option<String>,
+    /// Monotonically increasing durable checkpoint revision for this session.
     pub sequence: u64,
-    /// The context.
-    pub context: Vec<Value>,
+    /// The complete active model context, reconstructed by storage when loaded.
+    pub context: Arc<Vec<Arc<Value>>>,
     /// Session-scoped receipts for middleware guidance durably added to context.
     #[serde(default)]
     pub delivered_once: std::sync::Arc<BTreeMap<String, BTreeSet<String>>>,
-    /// The context epoch.
+    /// Monotonically increasing revision of the active context prefix.
+    /// Advance it before changing or truncating already persisted context items;
+    /// an unchanged epoch permits only an identical prefix with optional appends.
     pub context_epoch: u64,
     /// The compaction count.
     pub compaction_count: u64,
@@ -489,8 +541,9 @@ impl Checkpoint {
             catalog_visible: true,
             first_user_message: None,
             model_route: None,
+            context_model_route: None,
             sequence: 0,
-            context: Vec::new(),
+            context: Arc::default(),
             delivered_once: Default::default(),
             context_epoch: 0,
             compaction_count: 0,
@@ -518,16 +571,15 @@ impl Checkpoint {
         }
         let active = self
             .active_execution
-            .as_ref()
+            .take()
             .ok_or_else(|| Error::Checkpoint("turn ended without an active execution".into()))?;
         let finished_at_ms = finished_at_ms.max(active.started_at_ms);
-        let elapsed_ms = u64::try_from(finished_at_ms - active.started_at_ms)
-            .map_err(|_| Error::Checkpoint("execution elapsed time is unsupported".into()))?;
+        let elapsed_ms = finished_at_ms.abs_diff(active.started_at_ms);
         let record = ExecutionRecord {
             session_id: self.session_id.clone(),
-            submission_id: active.submission_id.clone(),
-            author: active.author.clone(),
-            turn_id: active.turn_id.clone(),
+            submission_id: active.submission_id,
+            author: active.author,
+            turn_id: active.turn_id,
             started_at_ms: active.started_at_ms,
             finished_at_ms,
             elapsed_ms,
@@ -535,14 +587,20 @@ impl Checkpoint {
             model_calls: active.model_calls,
             tool_calls: active.tool_calls,
             failed_tool_calls: active.failed_tool_calls,
-            usage: active.usage.clone(),
+            usage: active.usage,
         };
-        let mut stats = self.execution_stats.clone();
-        stats.checked_record(&record).ok_or_else(|| {
-            Error::Checkpoint("execution statistics exceed the supported range".into())
-        })?;
-        self.active_execution = None;
-        self.execution_stats = stats;
+        if self.execution_stats.checked_record(&record).is_none() {
+            self.active_execution = Some(ActiveExecution {
+                submission_id: record.submission_id,
+                author: record.author,
+                turn_id: record.turn_id,
+                usage: record.usage,
+                ..active
+            });
+            return Err(Error::Checkpoint(
+                "execution statistics exceed the supported range".into(),
+            ));
+        }
         Ok(record)
     }
 }
@@ -849,24 +907,30 @@ pub trait CheckpointStore: Send + Sync {
     fn delete_sessions<'a>(&'a self, session_ids: &'a [String]) -> BoxFuture<'a, Result<bool>>;
 
     /// Atomically replaces the checkpoint, appends transcript items, and records a finished turn.
+    ///
+    /// Existing sessions must advance `sequence`. Within one `context_epoch`,
+    /// previously stored context items remain an immutable prefix; advance the
+    /// epoch when rewriting or truncating that prefix. SQLite rejects violations
+    /// rather than silently discarding the changed context.
     fn save<'a>(
         &'a self,
         checkpoint: &'a Checkpoint,
-        transcript_delta: &'a [Value],
+        transcript_delta: &'a [std::sync::Arc<Value>],
         execution: Option<&'a ExecutionRecord>,
     ) -> BoxFuture<'a, Result<()>>;
 
-    /// Atomically saves one owned checkpoint and appends its normalized event batch.
+    /// Atomically saves one immutable checkpoint snapshot and its normalized event batch.
     ///
-    /// Ownership lets storage transfer the snapshot to its worker without copying it.
+    /// Shared ownership lets storage transfer the snapshot without copying its payload.
     ///
     /// The checkpoint, transcript delta, optional execution record, and journal
     /// events form one commit boundary. Return the durably assigned event
-    /// sequences only after that commit succeeds.
+    /// sequences only after that commit succeeds. The sequence and context-prefix
+    /// requirements of [`Self::save`] also apply.
     fn save_with_events<'a>(
         &'a self,
-        checkpoint: Checkpoint,
-        transcript_delta: Vec<Value>,
+        checkpoint: Arc<Checkpoint>,
+        transcript_delta: Vec<std::sync::Arc<Value>>,
         execution: Option<ExecutionRecord>,
         events: Vec<TimestampedEvent>,
     ) -> BoxFuture<'a, Result<Vec<JournalEvent>>>;
@@ -1001,4 +1065,48 @@ pub trait CheckpointStore: Send + Sync {
         key: &'a str,
         value: &'a Value,
     ) -> BoxFuture<'a, Result<()>>;
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_queue_validation_matches_the_owned_event_encoding() {
+        for reply in [
+            None,
+            Some(MessageReply {
+                target: MessageTarget {
+                    checkpoint_sequence: 1,
+                    batch_item_count: 1,
+                },
+                text: "quoted \"text\" 🦀".into(),
+            }),
+        ] {
+            let event = MessageEvent {
+                author: MessageAuthor::User,
+                delivery: MessageDelivery::Queue,
+                text: "message\n\"🦀\"".into(),
+                attachments: vec![SessionFileReference {
+                    id: "00000000-0000-0000-0000-000000000001".into(),
+                    name: "image.png".into(),
+                    media_type: "image/png".into(),
+                    size: 42,
+                }],
+                reply,
+                message_target: None,
+            };
+            let queued = QueuedMessage::new("messages", "id", QueuedMessageBoundary::Queue, event)
+                .expect("queued");
+            let owned = serde_json::to_vec(&queued.event()).expect("event");
+            assert_eq!(
+                serde_json::to_vec(&queued.borrowed_event()).expect("borrowed"),
+                owned
+            );
+            assert_eq!(
+                crate::serialized_len(&queued.borrowed_event()).expect("serialized length"),
+                owned.len()
+            );
+        }
+    }
 }

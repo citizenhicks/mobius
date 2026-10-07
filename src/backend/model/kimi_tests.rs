@@ -1,4 +1,5 @@
 use serde_json::json;
+use std::sync::Arc;
 
 use super::*;
 use crate::backend::model::PromptCacheIdentity;
@@ -23,13 +24,24 @@ async fn credentialless_post_uses_custom_path_and_omits_authorization() {
     .expect("credentialless provider");
 
     provider
-        .post(&json!({}))
+        .post(b"{}".to_vec())
         .await
         .expect("credentialless request");
 
     let request = server.await.expect("HTTP server").to_ascii_lowercase();
     assert!(request.starts_with("post /proxy/chat/completions http/1.1\r\n"));
     assert!(!request.contains("authorization:"));
+}
+
+#[test]
+fn serialized_tool_arguments_are_borrowed_and_still_validated() {
+    let valid = Value::String("{\"path\":\"a.rs\"}".into());
+    assert!(matches!(argument_text(Some(&valid)), Ok(Cow::Borrowed(_))));
+    assert!(argument_text(Some(&Value::String("{broken".into()))).is_err());
+    assert_eq!(
+        argument_text(Some(&json!({"path": "a.rs"}))).expect("structured arguments"),
+        "{\"path\":\"a.rs\"}"
+    );
 }
 
 #[test]
@@ -61,7 +73,7 @@ fn responses_history_becomes_kimi_messages_and_tools() {
         json!({"type": "function_call_output", "call_id": "call-a", "output": [{"type": "input_text", "text": "A"}]}),
         json!({"type": "function_call_output", "call_id": "call-b", "output": [{"type": "input_text", "text": "B"}]}),
     ];
-    let tools = [ToolDefinition {
+    let tools = [Arc::new(ToolDefinition {
         name: "read".into(),
         description: "Read a file".into(),
         parameters: json!({
@@ -69,7 +81,7 @@ fn responses_history_becomes_kimi_messages_and_tools() {
             "properties": {"path": {"type": "string"}},
             "required": ["path"]
         }),
-    }];
+    })];
     let request = ModelRequest {
         session_id: "session-7",
         cancellation: None,
@@ -78,7 +90,7 @@ fn responses_history_becomes_kimi_messages_and_tools() {
             context_epoch: 0,
         }),
         instructions: "Be precise.",
-        input: &input,
+        input: (&input).into(),
         catalog_revision: "catalog-1",
         tools: &tools,
         deferred_tools: &[],
@@ -86,7 +98,7 @@ fn responses_history_becomes_kimi_messages_and_tools() {
         allow_continuation: true,
     };
 
-    let body = provider.request_body(&request).expect("request body");
+    let body = provider.request_body_value(&request).expect("request body");
 
     assert_eq!(body["model"], "kimi-k3");
     assert_eq!(body["reasoning_effort"], "high");

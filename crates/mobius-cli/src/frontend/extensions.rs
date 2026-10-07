@@ -146,11 +146,13 @@ impl ExtensionsState {
                 ScreenAction::None
             }
             KeyCode::Enter => {
-                let source = source.trim().to_owned();
-                if source.is_empty() {
+                if source.trim().is_empty() {
                     self.fail("Enter an HTTPS Git or GitHub tree URL.");
                     return ScreenAction::None;
                 }
+                let start = source.len() - source.trim_start().len();
+                source.truncate(source.trim_end().len());
+                source.drain(..start);
                 self.mode = Mode::Browse;
                 install_action(source)
             }
@@ -245,6 +247,7 @@ impl ExtensionsState {
                         extension.id.clone(),
                     );
                 } else {
+                    // Pin the reviewed hook snapshot and digest until the user confirms this exact version.
                     self.mode = Mode::Confirm(Confirmation::Trust {
                         id: extension.id.clone(),
                         name: extension.name.clone(),

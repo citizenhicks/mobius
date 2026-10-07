@@ -79,9 +79,9 @@ impl ResolvedPlugin {
         &self,
         gateway: Arc<Mutex<GatewayConfig>>,
     ) -> (PathBuf, Option<HookAuthorization>) {
-        let id = self.id.clone();
-        let digest = self.digest.clone();
         let authorization = self.hooks_trusted.then(|| {
+            let id = self.id.clone();
+            let digest = self.digest.clone();
             Arc::new(move |launch: &mut dyn FnMut() -> mobius::Result<()>| {
                 let Ok(config) = gateway.lock() else {
                     return Ok(());
@@ -258,11 +258,12 @@ impl ExtensionStore {
             .collect::<BTreeSet<_>>();
         for entry in fs::read_dir(snapshots)? {
             let entry = entry?;
-            let Some(digest) = entry.file_name().to_str().map(str::to_owned) else {
+            let name = entry.file_name();
+            let Some(digest) = name.to_str() else {
                 continue;
             };
-            if valid_digest(&digest) && !retained.contains(digest.as_str()) {
-                self.remove_snapshot(&digest)?;
+            if valid_digest(digest) && !retained.contains(digest) {
+                self.remove_snapshot(digest)?;
             }
         }
         Ok(())
@@ -306,7 +307,7 @@ impl ExtensionSource {
         if url.host_str() == Some("github.com") {
             let segments = url
                 .path_segments()
-                .map(|segments| segments.map(str::to_owned).collect::<Vec<_>>())
+                .map(|segments| segments.collect::<Vec<_>>())
                 .unwrap_or_default();
             if segments.len() >= 4 && segments[2] == "tree" {
                 if reference.is_some() || subdirectory.is_some() {
@@ -315,16 +316,18 @@ impl ExtensionSource {
                             .into(),
                     ));
                 }
-                reference = Some(segments[3].clone());
+                reference = Some(segments[3].into());
                 let path = format!("/{}/{}", segments[0], segments[1]);
-                url.set_path(&path);
                 if segments.len() > 4 {
                     subdirectory = Some(segments[4..].join("/"));
                 }
+                url.set_path(&path);
             }
         }
+        let mut url = String::from(url);
+        url.truncate(url.trim_end_matches('/').len());
         let source = Self {
-            url: url.to_string().trim_end_matches('/').to_owned(),
+            url,
             reference,
             subdirectory,
         };
@@ -571,6 +574,7 @@ fn confined_checkout_path(checkout: &Path, subdirectory: Option<&str>) -> Result
         return Ok(checkout);
     };
     validate_relative_path(subdirectory)?;
+    // Keep the canonical confinement root while walking and validating the candidate path.
     let mut path = checkout.clone();
     for component in Path::new(subdirectory).components() {
         let Component::Normal(component) = component else {

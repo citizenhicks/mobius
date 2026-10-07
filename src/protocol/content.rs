@@ -118,12 +118,6 @@ impl From<&String> for ToolContent {
     }
 }
 
-impl From<&ToolContent> for ToolContent {
-    fn from(content: &ToolContent) -> Self {
-        content.clone()
-    }
-}
-
 /// A completed tool observation, including observations from failed actions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolResponse {

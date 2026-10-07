@@ -113,7 +113,7 @@ impl GatewayHost {
 
     async fn drain_desktop_execution(&self) {
         // Startup owns this gate through publication. No actor may appear behind the drain.
-        let _capacity = Arc::clone(&self.capacity_gate).lock_owned().await;
+        let _capacity = self.capacity_gate.lock().await;
         let residents = {
             let mut state = self.state.lock().await;
             state

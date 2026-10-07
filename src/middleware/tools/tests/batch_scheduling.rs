@@ -148,7 +148,7 @@ fn spawn_test_batch(
     tokio::spawn(async move {
         execute_batch(
             &catalog,
-            &calls,
+            calls,
             sandbox,
             &permissions,
             "turn",

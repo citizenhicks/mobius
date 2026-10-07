@@ -6,6 +6,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
+use std::borrow::Cow;
 
 use super::state::{AuthField, MiddlewareRow, Page, Progress, SetupState};
 use super::{
@@ -70,9 +71,14 @@ pub(in crate::frontend) fn selection_scroll(lines: &[Line<'_>], area: Rect) -> u
         .iter()
         .position(|line| line.style != selection)
         .map_or(lines.len(), |length| start + length);
-    let selected_end = Paragraph::new(lines[..end].to_vec())
-        .wrap(Wrap { trim: false })
-        .line_count(area.width);
+    let selected_end = Paragraph::new(
+        lines[..end]
+            .iter()
+            .map(crate::frontend::terminal::borrow_line)
+            .collect::<Vec<_>>(),
+    )
+    .wrap(Wrap { trim: false })
+    .line_count(area.width);
     selected_end
         .saturating_sub(usize::from(area.height))
         .min(usize::from(u16::MAX)) as u16
@@ -390,9 +396,9 @@ fn render_agent_page(lines: &mut Vec<Line<'static>>, state: &SetupState, width: 
             MiddlewareRow::Feature(feature_index) => {
                 let feature = &state.features[feature_index];
                 let disabled_by = state.disabled_by(&feature.id);
-                let description = disabled_by.map_or_else(
-                    || feature.description.clone(),
-                    |label| format!("Unavailable while {label} is selected."),
+                let description: Cow<'_, str> = disabled_by.map_or_else(
+                    || Cow::Borrowed(feature.description.as_str()),
+                    |label| format!("Unavailable while {label} is selected.").into(),
                 );
                 let disclosure = if !state.feature_has_children(feature_index) {
                     ""
@@ -516,14 +522,14 @@ pub(super) fn agent_layout(state: &SetupState, width: usize) -> AgentLayout {
     }
 }
 
-pub(super) fn middleware_setting_value(
-    config: &MiddlewareConfig,
+pub(super) fn middleware_setting_value<'a>(
+    config: &'a MiddlewareConfig,
     middleware: &str,
-    setting: &FrontendSetting,
-) -> (String, Role) {
+    setting: &'a FrontendSetting,
+) -> (Cow<'a, str>, Role) {
     match (&setting.kind, config.setting(middleware, &setting.id)) {
         (FrontendSettingKind::Integer { .. }, Some(FrontendSettingValue::Integer(value))) => {
-            (value.to_string(), Role::Accent)
+            (value.to_string().into(), Role::Accent)
         }
         (
             FrontendSettingKind::Select { options, .. },
@@ -532,11 +538,12 @@ pub(super) fn middleware_setting_value(
             options
                 .iter()
                 .find(|option| option.value == *value)
-                .map_or_else(|| value.clone(), |option| option.label.clone()),
+                .map_or(value.as_str(), |option| option.label.as_str())
+                .into(),
             Role::Accent,
         ),
         (FrontendSettingKind::Select { unset_label, .. }, None) => (
-            unset_label.clone().unwrap_or_else(|| "Not selected".into()),
+            unset_label.as_deref().unwrap_or("Not selected").into(),
             Role::Info,
         ),
         _ => ("Invalid value".into(), Role::Error),
@@ -650,7 +657,7 @@ pub(super) fn push_described_row(
     } else {
         Role::Muted
     });
-    let content_width = Line::from(content.clone()).width();
+    let content_width = content.iter().map(Span::width).sum::<usize>();
 
     if let Some(column) = layout
         .description_column

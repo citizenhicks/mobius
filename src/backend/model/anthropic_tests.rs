@@ -1,4 +1,28 @@
 use super::*;
+
+#[test]
+fn replay_borrows_preserved_assistant_blocks() {
+    let input = [
+        serde_json::json!({
+            "type": "message", "role": "assistant",
+            RAW_CONTENT: [
+                {"type": "thinking", "thinking": "retained reasoning", "signature": "signed"},
+                {"type": "text", "text": "answer"}
+            ]
+        }),
+        user_message("continue"),
+    ];
+    let messages = translate_messages((&input).into(), ToolDiscoveryMode::Rebuild, "catalog", &[])
+        .expect("borrowed replay");
+    for (actual, original) in messages[0]
+        .content
+        .iter()
+        .zip(input[0][RAW_CONTENT].as_array().unwrap())
+    {
+        assert!(matches!(actual, Cow::Borrowed(value) if std::ptr::eq(*value, original)));
+    }
+    assert!(input[0][RAW_CONTENT][1].get("cache_control").is_none());
+}
 use crate::backend::model::provider::ProviderCredential;
 use crate::backend::model::transport::capture_http_request;
 use crate::backend::model::user_message;
@@ -61,7 +85,7 @@ async fn credentialless_post_uses_custom_path_and_omits_api_key() {
     .expect("credentialless provider");
 
     provider
-        .post(&serde_json::json!({}))
+        .post(b"{}".to_vec())
         .await
         .expect("credentialless request");
 
@@ -90,7 +114,14 @@ fn explicit_prompt_cache_breakpoint_is_sent_on_the_marked_content_block() {
     ));
 
     let body = provider
-        .request_body("instructions", &[input], "catalog-1", &[], &[], false)
+        .request_body_value(
+            "instructions",
+            (&[input]).into(),
+            "catalog-1",
+            &[],
+            &[],
+            false,
+        )
         .expect("request body");
 
     assert!(body.get("cache_control").is_none());
@@ -124,10 +155,24 @@ fn explicit_cache_endpoint_advances_and_keeps_the_stable_anchor() {
     };
 
     let short = provider
-        .request_body("instructions", &history[..1], "catalog-1", &[], &[], false)
+        .request_body_value(
+            "instructions",
+            (&history[..1]).into(),
+            "catalog-1",
+            &[],
+            &[],
+            false,
+        )
         .expect("first request");
     let long = provider
-        .request_body("instructions", &history, "catalog-1", &[], &[], false)
+        .request_body_value(
+            "instructions",
+            (&history).into(),
+            "catalog-1",
+            &[],
+            &[],
+            false,
+        )
         .expect("follow-up request");
 
     assert_eq!(cache_points(&short), 1);
@@ -149,8 +194,14 @@ fn explicit_cache_endpoint_advances_and_keeps_the_stable_anchor() {
 
 #[test]
 fn hosted_search_can_be_disabled_per_request() {
-    assert!(wire_tools(&[], &[], false).is_empty());
-    assert_eq!(wire_tools(&[], &[], true)[0]["name"], "web_search");
+    assert_eq!(
+        serde_json::to_value(wire_tools(&[], &[], false)).expect("tools"),
+        serde_json::json!([])
+    );
+    assert_eq!(
+        serde_json::to_value(wire_tools(&[], &[], true)).expect("tools")[0]["name"],
+        "web_search"
+    );
 }
 
 #[test]
@@ -162,9 +213,9 @@ fn native_discovery_defers_schemas_and_replays_tool_references() {
     for base_url in [MANIFEST.base_url.as_str(), "https://proxy.example/v1"] {
         let provider = Anthropic::new("test-key", base_url, "claude-sonnet-5-5").expect("provider");
         let body = provider
-            .request_body(
+            .request_body_value(
                 "instructions",
-                &input,
+                (&input).into(),
                 "catalog-1",
                 &direct,
                 &deferred,
@@ -202,13 +253,13 @@ fn native_discovery_replays_a_standalone_compacted_tool_load() {
             catalog_revision: "catalog-1".into(),
             tools: vec!["notebook_post".into()],
         }
-        .into_input(),
+        .to_input(),
     ];
 
     let body = provider
-        .request_body(
+        .request_body_value(
             "instructions",
-            &input,
+            (&input).into(),
             "catalog-1",
             &direct,
             &deferred,
@@ -238,9 +289,9 @@ fn native_discovery_ignores_tool_loads_from_an_old_catalog() {
     input.last_mut().expect("tool load")["catalog_revision"] = "catalog-0".into();
 
     let body = provider
-        .request_body(
+        .request_body_value(
             "instructions",
-            &input,
+            (&input).into(),
             "catalog-1",
             &direct,
             &deferred,
@@ -264,9 +315,9 @@ fn rebuild_discovery_omits_deferred_schemas_and_internal_markers() {
     let input = discovery_history();
 
     let body = provider
-        .request_body(
+        .request_body_value(
             "instructions",
-            &input,
+            (&input).into(),
             "catalog-1",
             &direct,
             &deferred,
@@ -284,12 +335,12 @@ fn rebuild_discovery_omits_deferred_schemas_and_internal_markers() {
     );
 }
 
-fn discovery_tool(name: &str) -> ToolDefinition {
-    ToolDefinition {
+fn discovery_tool(name: &str) -> Arc<ToolDefinition> {
+    Arc::new(ToolDefinition {
         name: name.into(),
         description: "test tool".into(),
         parameters: serde_json::json!({"type": "object"}),
-    }
+    })
 }
 
 fn discovery_history() -> Vec<Value> {
@@ -310,7 +361,7 @@ fn discovery_history() -> Vec<Value> {
             catalog_revision: "catalog-1".into(),
             tools: vec!["notebook_post".into()],
         }
-        .into_input(),
+        .to_input(),
     ]
 }
 
@@ -424,7 +475,7 @@ async fn anthropic_web_search_with_an_empty_streamed_query_is_other() {
 #[test]
 fn responses_history_translates_to_anthropic_tool_messages() {
     let messages = translate_messages(
-        &[
+        (&[
             user_message("inspect it"),
             serde_json::json!({
                 "type": "message",
@@ -442,11 +493,18 @@ fn responses_history_translates_to_anthropic_tool_messages() {
                 "call_id": "call_1",
                 "output": [{"type": "input_text", "text": "contents"}]
             }),
-        ],
+        ])
+            .into(),
         ToolDiscoveryMode::Rebuild,
         "catalog-1",
         &[],
     )
+    .map(|messages| {
+        messages
+            .into_iter()
+            .map(|message| serde_json::to_value(message).unwrap())
+            .collect::<Vec<_>>()
+    })
     .expect("translate history");
 
     assert_eq!(
@@ -484,14 +542,15 @@ fn responses_history_translates_to_anthropic_tool_messages() {
 
 #[test]
 fn neutral_image_becomes_anthropic_base64_source() {
+    let input = [serde_json::json!({
+        "role": "user",
+        "content": [
+            {"type": "input_text", "text": "Describe it."},
+            {"type": "input_image", "media_type": "image/webp", "data": "aGVsbG8="}
+        ]
+    })];
     let messages = translate_messages(
-        &[serde_json::json!({
-            "role": "user",
-            "content": [
-                {"type": "input_text", "text": "Describe it."},
-                {"type": "input_image", "media_type": "image/webp", "data": "aGVsbG8="}
-            ]
-        })],
+        (&input).into(),
         ToolDiscoveryMode::Rebuild,
         "catalog-1",
         &[],
@@ -499,7 +558,7 @@ fn neutral_image_becomes_anthropic_base64_source() {
     .expect("translate image");
 
     assert_eq!(
-        messages[0]["content"][1],
+        *messages[0].content[1],
         serde_json::json!({
             "type": "image",
             "source": {
@@ -854,8 +913,51 @@ fn selected_output_token_budget_reaches_the_native_request() {
         .with_max_output_tokens(2048)
         .expect("output policy");
     let body = provider
-        .request_body("test", &[user_message("test")], "test", &[], &[], false)
+        .request_body_value(
+            "test",
+            (&[user_message("test")]).into(),
+            "test",
+            &[],
+            &[],
+            false,
+        )
         .expect("native request");
     assert_eq!(body["max_tokens"], 2048);
     assert!(provider.with_max_output_tokens(0).is_err());
+}
+#[test]
+fn route_replay_strips_private_reasoning_without_copying_untouched_items() {
+    let visible = std::sync::Arc::new(serde_json::json!({
+        "type": "message", "role": "assistant", "content": "Visible answer"
+    }));
+    let private = std::sync::Arc::new(serde_json::json!({
+        "type": "message", "role": "assistant", "content": "Visible answer",
+        RAW_CONTENT: [{"type": "thinking", "thinking": "private"}]
+    }));
+    let call = std::sync::Arc::new(serde_json::json!({
+        "type": "function_call", "call_id": "call", "name": "read", "arguments": "{}"
+    }));
+    let result = std::sync::Arc::new(serde_json::json!({
+        "type": "function_call_output", "call_id": "call", "output": []
+    }));
+    let mut input = vec![
+        private.clone(),
+        call.clone(),
+        result.clone(),
+        visible.clone(),
+    ];
+    assert!(super::super::strip_shared_provider_reasoning(&mut input));
+    assert_eq!(input[0]["content"], "Visible answer");
+    assert!(!has_replay_reasoning(&input[0]));
+    assert!(has_replay_reasoning(&private));
+    assert!(std::sync::Arc::ptr_eq(&input[1], &call));
+    assert!(std::sync::Arc::ptr_eq(&input[2], &result));
+    assert!(std::sync::Arc::ptr_eq(&input[3], &visible));
+    assert!(
+        !input
+            .iter()
+            .any(|item| super::super::has_provider_reasoning(item))
+    );
+    assert!(!super::super::strip_shared_provider_reasoning(&mut input));
+    assert!(std::sync::Arc::ptr_eq(&input[3], &visible));
 }

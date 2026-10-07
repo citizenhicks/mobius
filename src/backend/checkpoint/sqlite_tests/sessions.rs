@@ -78,7 +78,7 @@ async fn session_catalog_rejects_a_blank_owner_id() {
         .await
         .expect("save session");
     store
-        .run(|connection| {
+        .run(|connection, _cache| {
             connection.execute(
                 "UPDATE sessions SET session_context_json = ?1 WHERE session_id = ?2",
                 [r#"{"owner_id":" "}"#, "session"],
@@ -113,7 +113,7 @@ async fn delete_sessions_remove_complete_trees_atomically() {
     store
         .save(
             &parent,
-            &[json!({"role": "user", "content": "hello"})],
+            &[json!({"role": "user", "content": "hello"}).into()],
             None,
         )
         .await
@@ -171,7 +171,7 @@ async fn delete_sessions_remove_complete_trees_atomically() {
     );
 
     let counts = store
-        .run(|connection| {
+        .run(|connection, _cache| {
             let sessions =
                 connection.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))?;
             let transcripts =
@@ -317,7 +317,7 @@ async fn session_catalog_reads_context_without_decoding_the_checkpoint() {
         .await
         .expect("save session");
     store
-        .run(|connection| {
+        .run(|connection, _cache| {
             connection.execute(
                 "UPDATE sessions SET latest_checkpoint_json = ?1 WHERE session_id = ?2",
                 ["invalid", "session"],

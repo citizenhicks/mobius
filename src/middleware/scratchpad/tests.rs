@@ -83,37 +83,37 @@ fn runtime(store: &ScratchpadStore, session_id: &str) -> RuntimeContext {
 #[tokio::test]
 async fn compaction_discards_projections_before_a_post_hook_stops_or_fails() {
     use crate::agent::{AgentConfig, create_agent};
-    use crate::backend::model::{
-        CompactOutput, CompactRequest, Model, ModelEventSink, ModelOutput, ModelRequest,
-        ModelRouter,
-    };
+    use crate::backend::model::{Model, ModelEventSink, ModelOutput, ModelRequest, ModelRouter};
     use crate::backend::sandbox::{ApprovalPolicy, Sandbox, local::LocalSandbox};
     use crate::middleware::{
         CompactContext, MiddlewareStack, compaction::Compaction, messages::Messages, tools::Tools,
     };
     use crate::protocol::MessageSubmission;
 
-    struct RetainingCompactor;
-    impl Model for RetainingCompactor {
+    struct CheckpointWriter(std::sync::atomic::AtomicBool);
+    impl Model for CheckpointWriter {
         fn respond<'a>(
             &'a self,
-            _request: ModelRequest<'a>,
+            request: ModelRequest<'a>,
             _events: ModelEventSink,
         ) -> BoxFuture<'a, Result<ModelOutput>> {
-            Box::pin(async { Err(Error::Config("unexpected model request".into())) })
-        }
-
-        fn compaction_endpoint(&self) -> bool {
-            true
-        }
-
-        fn compact<'a>(
-            &'a self,
-            request: CompactRequest<'a>,
-        ) -> BoxFuture<'a, Result<CompactOutput>> {
             Box::pin(async move {
-                assert!(request.input.iter().any(is_projection_item));
-                CompactOutput::from_output(request.input.to_vec(), Default::default())
+                if matches!(request.tools, [tool] if tool.name == "write_handoff") {
+                    assert!(!self.0.swap(true, std::sync::atomic::Ordering::Relaxed));
+                    assert!(request.input.iter().any(is_projection_item));
+                    ModelOutput::from_output(
+                        vec![serde_json::json!({
+                            "type": "function_call",
+                            "call_id": "checkpoint",
+                            "name": "write_handoff",
+                            "arguments": "{\"notes\":\"Goal: continue the active task.\"}"
+                        })],
+                        false,
+                        Default::default(),
+                    )
+                } else {
+                    ModelOutput::from_output(Vec::new(), true, Default::default())
+                }
             })
         }
     }
@@ -152,7 +152,10 @@ async fn compaction_discards_projections_before_a_post_hook_stops_or_fails() {
         .expect("middleware");
         let mut agent = create_agent(
             AgentConfig::new(
-                Arc::new(ModelRouter::new("model", Arc::new(RetainingCompactor))),
+                Arc::new(ModelRouter::new(
+                    "model",
+                    Arc::new(CheckpointWriter(std::sync::atomic::AtomicBool::new(false))),
+                )),
                 Arc::new(Sandbox::new(
                     Arc::new(LocalSandbox::new(temporary.path()).expect("sandbox")),
                     ApprovalPolicy::Ask,
@@ -198,7 +201,13 @@ async fn compaction_discards_projections_before_a_post_hook_stops_or_fails() {
             .expect("load")
             .expect("checkpoint");
         assert_eq!(checkpoint.compaction_count, u64::from(!fail));
-        assert_eq!(checkpoint.context.iter().any(is_projection_item), fail);
+        assert_eq!(
+            checkpoint
+                .context
+                .iter()
+                .any(|item| is_projection_item(item)),
+            fail
+        );
     }
 }
 
@@ -371,7 +380,7 @@ fn projections_include_all_notes_and_append_complete_changes_without_hidden_meta
         .map(|i| entry(format!("note {i} {}", "x".repeat(65))))
         .collect::<Vec<_>>();
     let previous = Snapshot { global: notes };
-    let mut baseline = next_projection(&[], &previous)
+    let mut baseline = next_projection((&[]).into(), &previous)
         .expect("projection")
         .expect("baseline");
     let text = baseline["content"][0]["text"].as_str().expect("text");
@@ -382,18 +391,22 @@ fn projections_include_all_notes_and_append_complete_changes_without_hidden_meta
     crate::backend::model::mark_prompt_cache_breakpoint(&mut baseline);
     let user = crate::backend::model::user_message("hello");
     let input = vec![baseline.clone(), user.clone()];
-    assert!(next_projection(&input, &previous).expect("same").is_none());
+    assert!(
+        next_projection((&input).into(), &previous)
+            .expect("same")
+            .is_none()
+    );
     let mut current = previous.clone();
     current.global[0].note = "edited first note".into();
     current.global.pop();
-    let update = next_projection(&input, &current)
+    let update = next_projection((&input).into(), &current)
         .expect("update")
         .expect("changed");
     let text = update["content"][0]["text"].as_str().expect("text");
     assert!(text.contains("edited first note"));
     assert!(text.contains("replace all prior scratchpad context"));
     assert_eq!(input, [baseline, user.clone()]);
-    let cleared = next_projection(&[update], &Snapshot::default())
+    let cleared = next_projection((&[update]).into(), &Snapshot::default())
         .expect("clear")
         .expect("clear projection");
     assert_eq!(
@@ -407,11 +420,11 @@ fn projections_include_all_notes_and_append_complete_changes_without_hidden_meta
             .contains("edited first note")
     );
     assert_eq!(
-        without_projection_items(&[cleared, user.clone()]).expect("remove projection"),
-        [user]
+        without_projection_items((&[cleared, user.clone()]).into()).expect("remove projection"),
+        [Arc::new(user)]
     );
     assert!(
-        next_projection(&[], &Snapshot::default())
+        next_projection((&[]).into(), &Snapshot::default())
             .expect("empty start")
             .is_none()
     );
@@ -446,7 +459,7 @@ async fn startup_and_compaction_restore_shared_notes_without_chat_menu_or_duplic
         middleware.frontend().widgets[0].slot,
         FrontendSlot::Navigation
     );
-    middleware.prepare_compacted_input(&[], &mut input);
+    middleware.prepare_compacted_input((&[]).into(), &mut input);
     assert!(input.is_empty());
 }
 
@@ -544,7 +557,7 @@ async fn oversized_saved_shared_scope_stays_manageable_and_is_never_silently_cli
         .await
         .expect("saved state");
     let snapshot = store.snapshot().await.expect("management can load notes");
-    let error = next_projection(&[], &snapshot).expect_err("projection must not clip");
+    let error = next_projection((&[]).into(), &snapshot).expect_err("projection must not clip");
     assert!(error.to_string().contains("shorten or remove a note"));
     assert_eq!(store.snapshot().await.expect("unchanged"), snapshot);
     store
@@ -560,7 +573,7 @@ async fn oversized_saved_shared_scope_stays_manageable_and_is_never_silently_cli
         .await
         .expect("can remove a note");
     assert!(
-        next_projection(&[], &store.snapshot().await.expect("reduced"))
+        next_projection((&[]).into(), &store.snapshot().await.expect("reduced"))
             .expect("all remaining notes fit")
             .is_some()
     );

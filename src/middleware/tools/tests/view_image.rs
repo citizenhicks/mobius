@@ -39,7 +39,7 @@ async fn ordered_images_are_durable_and_reinspectable_after_source_deletion() {
     );
     let result = execute_batch(
         &catalog,
-        &calls,
+        calls,
         sandbox.clone(),
         &test_permissions(&[]),
         "turn",
@@ -88,7 +88,7 @@ async fn ordered_images_are_durable_and_reinspectable_after_source_deletion() {
         .expect("bind");
     let result = execute_batch(
         &catalog,
-        std::slice::from_ref(&call),
+        [call.clone()],
         sandbox.clone(),
         &test_permissions(&[]),
         "turn",
@@ -107,7 +107,7 @@ async fn ordered_images_are_durable_and_reinspectable_after_source_deletion() {
     );
     let result = execute_batch(
         &catalog,
-        &[call],
+        [call],
         sandbox,
         &other_session,
         "turn",

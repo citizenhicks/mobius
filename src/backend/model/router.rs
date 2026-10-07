@@ -4,8 +4,6 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use super::CompactOutput;
-use super::CompactRequest;
 use super::GeneratedImage;
 use super::ImageGenerationRequest;
 use super::Model;
@@ -26,6 +24,8 @@ use crate::protocol::PromptCacheDiagnostics;
 use crate::protocol::TokenUsage;
 use crate::protocol::ToolDiscoveryMode;
 
+type ToolDefinitions = Vec<Arc<ToolDefinition>>;
+
 /// Selects a model Adapter by a stable provider ID.
 pub struct ModelRouter {
     default: String,
@@ -38,6 +38,7 @@ pub struct ModelRouter {
 
 struct ModelRoute {
     choice: ModelChoice,
+    context_group: Option<String>,
     provider: Arc<dyn Model>,
     credential: ModelCredentialLifetime,
 }
@@ -88,6 +89,7 @@ impl ModelRouter {
             voices: Vec::new(),
             routes: vec![ModelRoute {
                 choice,
+                context_group: None,
                 provider,
                 credential: ModelCredentialLifetime::default(),
             }],
@@ -141,6 +143,7 @@ impl ModelRouter {
         }
         self.routes.push(ModelRoute {
             choice: inferred_choice(&id, provider.as_ref()),
+            context_group: None,
             provider,
             credential: ModelCredentialLifetime::default(),
         });
@@ -254,7 +257,7 @@ impl ModelRouter {
         };
         self.choices()
             .find(|candidate| {
-                candidate.group == choice.group
+                self.same_context_model(&candidate.route, &choice.route)
                     && candidate.reasoning_effort.as_deref() == Some(reasoning_effort)
             })
             .ok_or_else(|| {
@@ -262,6 +265,41 @@ impl ModelRouter {
                     "reasoning effort `{reasoning_effort}` for model route `{route}`"
                 ))
             })
+    }
+
+    /// Whether two registered routes share a model's replay context.
+    /// Reasoning variants within the same registered context group remain compatible;
+    /// a removed route or a different group/model requires a context handoff.
+    #[must_use]
+    pub fn same_context_model(&self, source: &str, target: &str) -> bool {
+        match (self.route(source), self.route(target)) {
+            (Ok(source), Ok(target)) => {
+                source.choice.route == target.choice.route
+                    || source.context_group.as_ref().is_some_and(|group| {
+                        target.context_group.as_ref() == Some(group)
+                            && source.choice.model == target.choice.model
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    /// Associates reasoning variants with one stable provider-instance context owner.
+    /// Display labels are deliberately excluded from replay compatibility.
+    /// # Errors
+    /// Returns an error if the route is unknown or the group is empty.
+    pub fn set_context_group(&mut self, route: &str, group: impl Into<String>) -> Result<()> {
+        let group = group.into();
+        if group.trim().is_empty() {
+            return Err(Error::Config("model context group cannot be empty".into()));
+        }
+        let route = self
+            .routes
+            .iter_mut()
+            .find(|entry| entry.choice.route == route)
+            .ok_or_else(|| Error::Unknown(format!("model route `{route}`")))?;
+        route.context_group = Some(group);
+        Ok(())
     }
 
     /// Replaces display metadata for one registered route.
@@ -313,10 +351,20 @@ impl ModelRouter {
             files: self.files.as_ref(),
             limits: self.image_limits,
         };
-        while_valid(&route.credential, request.cancellation, || {
+        // Credential expiry belongs to this attempt, not a subsequent fallback in its parent.
+        let parent = request.cancellation;
+        let cancellation = ModelCancellation::default();
+        let request = ModelRequest {
+            cancellation: Some(&cancellation),
+            ..request
+        };
+        let response = while_valid(&route.credential, Some(&cancellation), || {
             route.provider.respond_prepared(request, events, media)
-        })
-        .await
+        });
+        tokio::pin!(response);
+        // This guard must drop before the pinned response reads its local cancellation reason.
+        let _inheritance = cancellation.inherit_on_drop(parent);
+        response.await
     }
 
     /// Activates a session's fallback transport after safe retries are exhausted.
@@ -337,25 +385,15 @@ impl ModelRouter {
         &self,
         provider: &str,
         session_id: &str,
-        input: &[serde_json::Value],
+        input: super::ModelInput<'_>,
     ) -> Result<()> {
-        super::media::hydrate(
-            self.files.as_ref(),
-            session_id,
-            input,
-            self.provider(provider)?,
-            0,
-        )
+        super::MediaPreparation {
+            files: self.files.as_ref(),
+            limits: self.image_limits,
+        }
+        .prepare(session_id, input, self.provider(provider)?, false)
         .await
         .map(|_| ())
-    }
-
-    /// Reports whether one route has a native compaction endpoint.
-    /// # Errors
-    ///
-    /// Returns an error if validation or an operation required by this function fails.
-    pub fn compaction_endpoint(&self, provider: &str) -> Result<bool> {
-        Ok(self.provider(provider)?.compaction_endpoint())
     }
 
     /// Reports whether one route accepts native image input.
@@ -432,6 +470,7 @@ impl ModelRouter {
         request.voice = media.choice.reasoning_effort.as_deref().map(Into::into);
         let route = self.route(&media.transport)?;
         let settings = self.transport_settings_for(&media.transport)?;
+        // Voice cleanup uses an earlier deadline without changing the route's shared credential lifetime.
         let mut credential = route.credential.clone();
         credential.expires_at = credential.expires_at.map(|expires_at| {
             super::RealtimeVoiceCall::cleanup_deadline(
@@ -459,18 +498,17 @@ impl ModelRouter {
     pub(crate) fn prepare_tool_definitions(
         &self,
         provider: &str,
-        mut direct: Vec<ToolDefinition>,
-        deferred: Vec<ToolDefinition>,
+        mut direct: ToolDefinitions,
+        deferred: ToolDefinitions,
         materialized: &BTreeSet<String>,
-    ) -> Result<(Vec<ToolDefinition>, Vec<ToolDefinition>)> {
+    ) -> Result<(ToolDefinitions, ToolDefinitions)> {
         match self.provider(provider)?.tool_discovery() {
             ToolDiscoveryMode::Native => Ok((direct, deferred)),
             ToolDiscoveryMode::Rebuild => {
                 direct.extend(
                     deferred
-                        .iter()
-                        .filter(|tool| materialized.contains(&tool.name))
-                        .cloned(),
+                        .into_iter()
+                        .filter(|tool| materialized.contains(&tool.name)),
                 );
                 Ok((direct, Vec::new()))
             }
@@ -480,7 +518,7 @@ impl ModelRouter {
     /// Applies transport-owned metadata to the first input of a new turn.
     pub(crate) fn prepare_turn_input(
         &self,
-        context: &[serde_json::Value],
+        context: super::ModelInput<'_>,
         input: &mut serde_json::Value,
     ) {
         if !has_prompt_cache_breakpoint(context) {
@@ -514,26 +552,6 @@ impl ModelRouter {
                 rewrite_reasons,
             },
         })
-    }
-
-    /// Compacts context through the selected provider.
-    /// # Errors
-    ///
-    /// Returns an error if validation or an operation required by this function fails.
-    pub async fn compact(
-        &self,
-        provider: &str,
-        request: CompactRequest<'_>,
-    ) -> Result<CompactOutput> {
-        let route = self.route(provider)?;
-        let media = super::MediaPreparation {
-            files: self.files.as_ref(),
-            limits: self.image_limits,
-        };
-        while_valid(&route.credential, request.cancellation, || {
-            route.provider.compact_prepared(request, media)
-        })
-        .await
     }
 
     fn provider(&self, id: &str) -> Result<&dyn Model> {
@@ -613,6 +631,7 @@ async fn while_valid<T, F: Future<Output = Result<T>>>(
     tokio::pin!(operation);
     tokio::select! {
         biased;
+        // Each operation needs its own watch cursor to observe revocation independently.
         _ = credential.clone().ended() => expired(),
         result = operation.as_mut() => result,
     }

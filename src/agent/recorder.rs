@@ -37,8 +37,8 @@ struct AppendCommand {
 }
 
 struct SaveCommand {
-    checkpoint: Checkpoint,
-    transcript_delta: Vec<Value>,
+    checkpoint: Arc<Checkpoint>,
+    transcript_delta: Vec<Arc<Value>>,
     execution: Option<ExecutionRecord>,
     events: Vec<TimestampedEvent>,
     byte_permit: OwnedSemaphorePermit,
@@ -102,8 +102,8 @@ impl RecorderIngress {
 
     pub(super) async fn save(
         &self,
-        checkpoint: &Checkpoint,
-        transcript_delta: &[Value],
+        checkpoint: Arc<Checkpoint>,
+        transcript_delta: &[Arc<Value>],
         execution: Option<&ExecutionRecord>,
         events: Vec<Event>,
     ) -> Result<()> {
@@ -120,7 +120,7 @@ impl RecorderIngress {
         let (result, saved) = oneshot::channel();
         self.commands
             .send(RecorderCommand::Save(Box::new(SaveCommand {
-                checkpoint: checkpoint.clone(),
+                checkpoint,
                 transcript_delta: transcript_delta.to_vec(),
                 execution: execution.cloned(),
                 events,
@@ -147,8 +147,7 @@ impl RecorderIngress {
 
     async fn reserve_bytes(&self, bytes: usize) -> Result<OwnedSemaphorePermit> {
         let permits = byte_permits(bytes)?;
-        self.event_bytes
-            .clone()
+        Arc::clone(&self.event_bytes)
             .acquire_many_owned(permits)
             .await
             .map_err(|_| Error::Stopped("event recorder stopped".into()))
@@ -156,8 +155,7 @@ impl RecorderIngress {
 
     fn try_reserve_bytes(&self, bytes: usize) -> Result<OwnedSemaphorePermit> {
         let permits = byte_permits(bytes)?;
-        self.event_bytes
-            .clone()
+        Arc::clone(&self.event_bytes)
             .try_acquire_many_owned(permits)
             .map_err(|_| queue_full())
     }

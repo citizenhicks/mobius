@@ -7,7 +7,6 @@ type DiscoveryRequest = (Vec<String>, Vec<String>, Vec<Value>);
 struct DiscoveryModel {
     mode: crate::protocol::ToolDiscoveryMode,
     outputs: Mutex<VecDeque<ModelOutput>>,
-    compact_outputs: Mutex<VecDeque<CompactOutput>>,
     requests: Mutex<Vec<DiscoveryRequest>>,
 }
 
@@ -28,32 +27,17 @@ impl Model for DiscoveryModel {
                 .iter()
                 .map(|tool| tool.name.clone())
                 .collect(),
-            request.input.to_vec(),
+            request.input.iter().cloned().collect(),
         ));
+        if request.tools.len() == 1 && request.tools[0].name == "write_handoff" {
+            return Box::pin(async { Ok(scripted_handoff("discovery-checkpoint")) });
+        }
         let output = self
             .outputs
             .lock()
             .expect("outputs")
             .pop_front()
             .ok_or_else(|| Error::Provider("discovery script exhausted".into()));
-        Box::pin(async move { output })
-    }
-
-    fn compaction_endpoint(&self) -> bool {
-        !self
-            .compact_outputs
-            .lock()
-            .expect("compact outputs")
-            .is_empty()
-    }
-
-    fn compact<'a>(&'a self, _request: CompactRequest<'a>) -> BoxFuture<'a, Result<CompactOutput>> {
-        let output = self
-            .compact_outputs
-            .lock()
-            .expect("compact outputs")
-            .pop_front()
-            .ok_or_else(|| Error::Provider("compaction script exhausted".into()));
         Box::pin(async move { output })
     }
 }
@@ -183,7 +167,6 @@ async fn rebuild_discovers_then_exposes_an_optional_tool() {
             tool_call("work", "optional_work", serde_json::json!({})),
             scripted_message("done"),
         ])),
-        compact_outputs: Mutex::new(VecDeque::new()),
         requests: Mutex::new(Vec::new()),
     });
     let executions = Arc::new(AtomicUsize::new(0));
@@ -243,7 +226,6 @@ async fn native_materialization_can_call_a_deferred_tool_in_the_same_step() {
     let model = Arc::new(DiscoveryModel {
         mode: crate::protocol::ToolDiscoveryMode::Native,
         outputs: Mutex::new(VecDeque::from([call, scripted_message("done")])),
-        compact_outputs: Mutex::new(VecDeque::new()),
         requests: Mutex::new(Vec::new()),
     });
     let executions = Arc::new(AtomicUsize::new(0));
@@ -295,7 +277,6 @@ async fn invalid_native_materialization_still_records_provider_usage() {
     let model = Arc::new(DiscoveryModel {
         mode: crate::protocol::ToolDiscoveryMode::Native,
         outputs: Mutex::new(VecDeque::from([output])),
-        compact_outputs: Mutex::new(VecDeque::new()),
         requests: Mutex::new(Vec::new()),
     });
     let checkpoint_store: Arc<dyn CheckpointStore> = checkpoints.clone();
@@ -351,7 +332,6 @@ async fn tool_hidden_after_inference_never_reaches_approval() {
             tool_call("approval", "approval_work", serde_json::json!({})),
             scripted_message("done"),
         ])),
-        compact_outputs: Mutex::new(VecDeque::new()),
         requests: Mutex::new(Vec::new()),
     });
     let executions = Arc::new(AtomicUsize::new(0));
@@ -428,14 +408,6 @@ async fn compaction_preserves_loaded_deferred_tools() {
             tool_call("work", "optional_work", serde_json::json!({})),
             scripted_message("done"),
         ])),
-        compact_outputs: Mutex::new(VecDeque::from([CompactOutput::from_output(
-            vec![serde_json::json!({
-                "type": "compaction",
-                "encrypted_content": "opaque"
-            })],
-            scripted_usage(),
-        )
-        .expect("compaction output")])),
         requests: Mutex::new(Vec::new()),
     });
     let executions = Arc::new(AtomicUsize::new(0));
@@ -468,12 +440,14 @@ async fn compaction_preserves_loaded_deferred_tools() {
 
     assert_eq!(executions.load(Ordering::SeqCst), 1);
     let requests = model.requests.lock().expect("requests");
-    assert_eq!(requests.len(), 4);
+    assert_eq!(requests.len(), 5);
+    assert_eq!(requests[2].0, ["write_handoff"]);
+    assert!(requests[2].1.is_empty());
     assert_eq!(
-        requests[2].0,
+        requests[3].0,
         [crate::backend::model::TOOLS_SEARCH_NAME, "optional_work"]
     );
-    let loads = requests[2]
+    let loads = requests[3]
         .2
         .iter()
         .filter_map(|item| crate::protocol::ToolLoad::from_input(item).expect("valid load"))

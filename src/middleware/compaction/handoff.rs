@@ -4,72 +4,59 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::{Compaction, apply_compaction, text};
-use crate::backend::checkpoint::CheckpointStore;
-use crate::backend::model::{ToolDefinition, internal_user_message};
-use crate::middleware::tools::{Catalog, Tool, ToolContext, ToolExposure};
-use crate::middleware::{
-    ModelContext, ModelRequestContext, PostToolUseContext, RuntimeContext, SessionStartContext,
+use crate::backend::model::{
+    ModelInput, ModelRequest, PromptCacheIdentity, ToolDefinition, internal_user_message,
+    prompt_cache_key, tool_output,
 };
+use crate::middleware::tools::{Catalog, Tool, ToolContext, ToolExposure};
+use crate::middleware::{ModelContext, PostToolUseContext};
 use crate::protocol::{
-    MessageDelivery, internal_message_kind, is_internal_message, message_metadata,
-    tool_complete_boundaries,
+    EventMsg, MessageDelivery, ToolCallBeginEvent, ToolCallEndEvent, internal_message_kind,
+    is_internal_message, message_metadata, tool_complete_boundaries,
 };
 use crate::{BoxFuture, Error, Result};
 
-const STATE_KEY: &str = "compaction.handoff";
 const MAX_NOTE_BYTES: usize = 21_000;
 const NOTES: &str = "handoff_notes";
-const SAVED: &str = "handoff_saved";
 const REQUEST: &str = "handoff_request";
-const WARNING: &str = "handoff_warning";
-const URGENT: &str = "handoff_urgent";
-const RESET_ONLY: &str = "handoff_reset_only";
-const CALL_ID: &str = "_mobius_handoff_call_id";
-const TURN_ID: &str = "_mobius_handoff_turn_id";
-const MODEL_STEP: &str = "_mobius_handoff_model_step";
 
-pub(super) fn register(catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
+pub(super) fn register(catalog: &mut Catalog, allow: bool) -> Result<()> {
     for write in [true, false] {
-        catalog.register(Arc::new(HandoffTool {
-            checkpoints: Arc::clone(&runtime.checkpoints),
-            session_id: runtime.session_id.clone(),
-            write,
-        }))?;
+        catalog.register(Arc::new(HandoffTool { write, allow }))?;
     }
     Ok(())
 }
 
 struct HandoffTool {
-    checkpoints: Arc<dyn CheckpointStore>,
-    session_id: String,
     write: bool,
+    allow: bool,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct WriteNotes {
-    notes: String,
+struct WriteNotes<'a> {
+    notes: &'a str,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NewContext {}
 
+fn write_definition() -> ToolDefinition {
+    let mut tool = text::DEFINITION.write_handoff.tool.clone();
+    tool.parameters["properties"]["notes"]["description"] =
+        text::DEFINITION.write_handoff.tool.parameters["properties"]["notes"]["description"]
+            .as_str()
+            .expect("handoff description")
+            .replace("{max_bytes}", &MAX_NOTE_BYTES.to_string())
+            .into();
+    tool
+}
+
 impl Tool for HandoffTool {
     fn definition(&self) -> ToolDefinition {
         if self.write {
-            {
-                let mut tool = text::DEFINITION.write_handoff.tool.clone();
-                tool.parameters["properties"]["notes"]["description"] = text::DEFINITION
-                    .write_handoff
-                    .tool
-                    .parameters["properties"]["notes"]["description"]
-                    .as_str()
-                    .expect("handoff description")
-                    .replace("{max_bytes}", &MAX_NOTE_BYTES.to_string())
-                    .into();
-                tool
-            }
+            write_definition()
         } else {
             text::DEFINITION.new_context.tool.clone()
         }
@@ -85,24 +72,15 @@ impl Tool for HandoffTool {
         arguments: Value,
     ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
+            if !self.allow {
+                return Err(Error::Tool("model-requested compaction is disabled".into()));
+            }
             if self.write {
-                let args: WriteNotes = serde_json::from_value(arguments)?;
-                let notes = args.notes.trim().to_owned();
-                validate_notes(&notes)?;
-                self.checkpoints
-                    .save_state(&self.session_id, STATE_KEY, &Value::String(notes))
-                    .await?;
+                let args = WriteNotes::deserialize(&arguments)?;
+                validate_notes(args.notes)?;
                 Ok(text::DEFINITION.handoff_saved_result.as_str().into())
             } else {
                 let _: NewContext = serde_json::from_value(arguments)?;
-                load_notes(&self.checkpoints, &self.session_id)
-                    .await?
-                    .ok_or_else(|| {
-                        Error::Tool(
-                            "save a checkpoint with write_handoff before requesting new_context"
-                                .into(),
-                        )
-                    })?;
                 Ok(text::DEFINITION.handoff_requested_result.as_str().into())
             }
         })
@@ -115,237 +93,332 @@ fn validate_notes(notes: &str) -> Result<()> {
             "handoff notes must contain non-whitespace text. Checkpoint unchanged.".into(),
         ));
     }
-    let size = notes.len();
-    if size > MAX_NOTE_BYTES {
+    if notes.len() > MAX_NOTE_BYTES {
         return Err(Error::Tool(format!(
-            "handoff notes contain {size} UTF-8 bytes; maximum {MAX_NOTE_BYTES}. Remove at least {} bytes. Checkpoint unchanged.",
-            size - MAX_NOTE_BYTES
+            "handoff notes contain {} UTF-8 bytes; maximum {MAX_NOTE_BYTES}. Remove at least {} bytes. Checkpoint unchanged.",
+            notes.len(),
+            notes.len() - MAX_NOTE_BYTES
         )));
     }
     Ok(())
 }
 
-async fn load_notes(store: &Arc<dyn CheckpointStore>, session_id: &str) -> Result<Option<String>> {
-    let notes = store
-        .load_state(session_id, STATE_KEY)
-        .await?
-        .map(serde_json::from_value::<String>)
-        .transpose()?;
-    if let Some(notes) = &notes {
-        validate_notes(notes)?;
-    }
-    Ok(notes)
-}
-
 pub(super) fn is_control(item: &Value) -> bool {
-    matches!(
-        internal_message_kind(item),
-        Some(NOTES | SAVED | REQUEST | WARNING | URGENT | RESET_ONLY)
-    )
+    matches!(internal_message_kind(item), Some(NOTES | REQUEST))
 }
 
 fn note_message(notes: &str) -> Value {
     internal_user_message(
         NOTES,
-        &format!("{}\n\n{notes}", text::DEFINITION.prompt_restored.as_str()),
+        &format!("{}\n\n{notes}", text::DEFINITION.prompt_restored),
     )
 }
 
-pub(super) async fn restore_notes(context: &mut SessionStartContext<'_>) -> Result<()> {
-    let Some(notes) = load_notes(&context.runtime.checkpoints, &context.runtime.session_id).await?
-    else {
-        return Ok(());
-    };
-    let item = note_message(&notes);
-    if context
-        .input
-        .iter()
-        .rev()
-        .find(|item| internal_message_kind(item) == Some(NOTES))
-        .map(|item| &item["content"])
-        != Some(&item["content"])
-    {
-        context.push_input(item);
-    }
-    Ok(())
-}
-
-pub(super) fn decorate(context: &mut ModelRequestContext<'_>) {
-    let prompt = context
-        .input()
-        .iter()
-        .rev()
-        .find_map(|item| match internal_message_kind(item) {
-            Some(RESET_ONLY) => Some(text::DEFINITION.prompt_reset.as_str()),
-            Some(URGENT) => Some(text::DEFINITION.prompt_urgent.as_str()),
-            Some(WARNING) => Some(text::DEFINITION.prompt_warning.as_str()),
-            _ => None,
-        });
-    if let Some(prompt) = prompt {
-        context
-            .input
-            .to_mut()
-            .push(internal_user_message("handoff_notice", prompt));
-    }
-}
-
 pub(super) fn post_tool(context: &mut PostToolUseContext<'_>) -> Result<()> {
-    if context.result().is_error
-        || !matches!(context.call.name.as_str(), "write_handoff" | "new_context")
-    {
+    if context.result().is_error {
         return Ok(());
     }
     if context.call.name == "write_handoff" {
+        let notes = WriteNotes::deserialize(&context.call.arguments)?.notes;
+        context.push_input(note_message(notes));
+    } else if context.call.name == "new_context" {
         context.push_input(internal_user_message(
-            SAVED,
-            &text::DEFINITION.handoff_saved_context,
+            REQUEST,
+            &text::DEFINITION.handoff_requested_context,
         ));
-    } else {
-        let mut request =
-            internal_user_message(REQUEST, &text::DEFINITION.handoff_requested_context);
-        request[CALL_ID] = Value::String(context.call.call_id.clone());
-        context.push_input(request);
     }
     Ok(())
-}
-
-fn reserve_tokens(policy: &Compaction, context_window: i64) -> i64 {
-    (context_window.max(1) / policy.handoff_reserve_divisor).clamp(1, policy.reserve_tokens)
-}
-
-pub(super) fn warning_tokens(policy: &Compaction, context_window: i64) -> i64 {
-    policy
-        .at_tokens
-        .min(context_window.max(1).saturating_sub(
-            reserve_tokens(policy, context_window).saturating_mul(policy.handoff_warning_reserves),
-        ))
-        .max(1)
 }
 
 pub(super) async fn prepare(context: &mut ModelContext<'_>, policy: &Compaction) -> Result<()> {
-    if let Some(request) = context
-        .input()
-        .iter()
-        .rev()
-        .find(|item| internal_message_kind(item) == Some(REQUEST))
-    {
-        let call_id = request
-            .get(CALL_ID)
-            .and_then(Value::as_str)
-            .ok_or_else(|| Error::Checkpoint("handoff request is missing its tool call".into()))?;
-        let input = fresh_input(context.input(), call_id)?;
-        context.pre_compact().await?;
-        if context.turn_stopped() {
-            return Ok(());
-        }
-        super::start_notice(context)?;
-        apply_compaction(context, input, None, policy.native_retained_tokens).await?;
-        if context.turn_stopped() {
-            return Ok(());
-        }
+    if !policy.allow_model_compaction {
+        context.available_tools.remove("new_context");
+        context.available_tools.remove("write_handoff");
     }
-
-    let observed = context
-        .last_usage
-        .map_or(0, |usage| usage.input_tokens)
-        .max(context.estimated_input_tokens());
-    let window = context.context_window.max(1);
-    let reserve = reserve_tokens(policy, window);
-    let hard = window
-        .saturating_sub(reserve.saturating_mul(policy.handoff_urgent_reserves))
-        .max(1);
-    let warning = warning_tokens(policy, window);
-    let last = |kind| {
+    // Requests belong to their originating turn; a failed reset must not replay on later turns.
+    let requested = policy.allow_model_compaction && requested_in_active_turn(context.input());
+    let estimated = context.estimated_input_tokens();
+    let switching = !context
+        .model
+        .same_context_model(context.context_provider, context.provider);
+    let threshold = if switching {
         context
-            .input()
-            .iter()
-            .rposition(|item| internal_message_kind(item) == Some(kind))
-    };
-    let current_attempt = |index: usize| {
-        context.input()[index].get(TURN_ID).and_then(Value::as_str) == Some(context.turn_id)
-    };
-    // A steer can repeat preparation before this model step has been sent.
-    let same_step = |index: usize| {
-        context.input()[index]
-            .get(MODEL_STEP)
-            .and_then(Value::as_u64)
-            == Some(context.model_step as u64)
-    };
-    let reset = last(RESET_ONLY).filter(|index| current_attempt(*index));
-    if observed >= window.saturating_sub(reserve).max(1)
-        || reset.is_some_and(|index| !same_step(index))
-    {
-        return Err(Error::Stopped("context handoff could not finish within the remaining budget; the chat and saved checkpoint are preserved".into()));
-    }
-    let reset_only = if reset.is_some() {
-        true
-    } else if let Some(urgent) = last(URGENT).filter(|index| current_attempt(*index)) {
-        if same_step(urgent) {
-            false
-        } else {
-            if last(SAVED).is_none_or(|notes| notes < urgent) {
-                return Err(Error::Stopped(
-                    "the model did not save its required handoff; the chat is preserved".into(),
-                ));
-            }
-            context.append_model_input(attempt_message(
-                RESET_ONLY,
-                "Context recovery checkpoint saved.",
-                context.turn_id,
-                context.model_step,
-            ));
-            true
-        }
-    } else if observed >= hard || last(URGENT).is_some() {
-        context.append_model_input(attempt_message(
-            URGENT,
-            "Context recovery pending.",
-            context.turn_id,
-            context.model_step,
-        ));
-        false
+            .context_window
+            .saturating_sub(policy.reserve(context.context_window))
+            .max(1)
     } else {
-        if observed >= warning && last(WARNING).is_none() {
-            context
-                .append_model_input(internal_user_message(WARNING, "Context threshold reached."));
-        }
-        return Ok(());
+        policy.trigger_tokens(context.context_window)
     };
-    context.disable_hosted_tools();
-    context
-        .available_tools
-        .retain(|name| name == "new_context" || (!reset_only && name == "write_handoff"));
-    Ok(())
+    let observed = estimated.max(if switching {
+        0
+    } else {
+        context.last_usage.map_or(0, |usage| usage.input_tokens)
+    });
+    if !requested && observed < threshold {
+        return Ok(());
+    }
+    context.pre_compact().await?;
+    if context.turn_stopped() {
+        return Ok(());
+    }
+    super::start_notice(context)?;
+    let attempts = tool_complete_boundaries(context.input().iter())
+        .len()
+        .max(1);
+    let fit = context
+        .context_window
+        .saturating_sub(policy.reserve(context.context_window))
+        .max(1);
+    let mut previous = context.estimated_input_tokens();
+    for _ in 0..attempts {
+        let (input, partial) = prepare_checkpoint(context, policy, switching).await?;
+        apply_compaction(context, input).await?;
+        if context.turn_stopped() {
+            return Ok(());
+        }
+        let remaining = context.estimated_input_tokens();
+        if remaining < fit {
+            return Ok(());
+        }
+        if !partial || remaining >= previous {
+            break;
+        }
+        previous = remaining;
+    }
+    Err(Error::Stopped("prepared checkpoint does not fit the selected model; a preserved input or complete tool batch exceeds its budget; the chat and pending input are preserved".into()))
 }
 
-fn attempt_message(kind: &str, text: &str, turn_id: &str, model_step: usize) -> Value {
-    let mut item = internal_user_message(kind, text);
-    item[TURN_ID] = Value::String(turn_id.into());
-    item[MODEL_STEP] = Value::from(model_step);
-    item
-}
-
-fn fresh_input(input: &[Value], call_id: &str) -> Result<Vec<Value>> {
-    let boundaries = tool_complete_boundaries(input);
-    if boundaries.last().copied() != Some(input.len()) {
-        return Err(Error::Checkpoint(
-            "handoff requires a completed tool batch".into(),
+async fn prepare_checkpoint(
+    context: &mut ModelContext<'_>,
+    policy: &Compaction,
+    switching: bool,
+) -> Result<(Vec<Arc<Value>>, bool)> {
+    let pending = if switching {
+        active_turn(context.input())
+    } else {
+        context.input().len()
+    };
+    let definitions = context.tools.direct_definitions();
+    let definition = definitions
+        .iter()
+        .find(|tool| tool.name == "write_handoff")
+        .ok_or_else(|| Error::Config("checkpoint writer is not registered".into()))?;
+    let tools = std::slice::from_ref(definition);
+    let source = context.context_provider;
+    let result = prepare_response(context, policy, source, context.input(), pending, tools).await;
+    let (output, summarized, route) = match result {
+        Ok((output, summarized)) => (output, summarized, source),
+        Err(error)
+            if switching
+                && matches!(
+                    error,
+                    Error::Provider(_)
+                        | Error::Auth(_)
+                        | Error::Unknown(_)
+                        | Error::Http(_)
+                        | Error::Io(_)
+                ) =>
+        {
+            let mut portable = (0..context.input().len())
+                .map(|index| {
+                    context
+                        .input()
+                        .shared_item(index)
+                        .map(Arc::clone)
+                        .ok_or_else(|| {
+                            Error::Checkpoint(
+                                "checkpoint preparation requires shared history".into(),
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            crate::backend::model::strip_shared_provider_reasoning(&mut portable);
+            let pending = active_turn(portable.as_slice().into());
+            let (output, summarized) = prepare_response(
+                context,
+                policy,
+                context.provider,
+                portable.as_slice().into(),
+                pending,
+                tools,
+            )
+            .await?;
+            // Top-level reasoning is omitted; map partial progress to its durable boundary.
+            let summarized = if summarized == pending {
+                active_turn(context.input())
+            } else {
+                context
+                    .input()
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, item)| !crate::backend::model::is_provider_reasoning(item))
+                    .nth(summarized - 1)
+                    .map(|(index, _)| index + 1)
+                    .ok_or_else(|| {
+                        Error::Checkpoint("checkpoint preparation lost its source boundary".into())
+                    })?
+            };
+            (output, summarized, context.provider)
+        }
+        Err(error) => return Err(error),
+    };
+    let (output, mut calls, usage) = output.into_parts();
+    context.record_usage(route, usage);
+    if calls.len() != 1 || calls[0].name != "write_handoff" {
+        return Err(Error::Provider(
+            "checkpoint preparation must return one write_handoff call; the chat is preserved"
+                .into(),
         ));
     }
-    let call = input
+    let call = calls.pop().expect("one validated checkpoint call");
+    let notes = WriteNotes::deserialize(&call.arguments)?.notes;
+    validate_notes(notes)?;
+    let mut fresh = retained_input_until(context.input(), summarized)?;
+    fresh.insert(0, Arc::new(note_message(notes)));
+    // Journal the genuine preparation output without retaining the checkpoint tool's duplicate notes.
+    for item in output {
+        context.record_transcript_item(item);
+    }
+    let result = tool_output(
+        &call.call_id,
+        &text::DEFINITION.handoff_saved_result.as_str().into(),
+        false,
+    );
+    context.record_transcript_item(result);
+    context
+        .events
+        .push(EventMsg::ToolCallBegin(ToolCallBeginEvent {
+            turn_id: context.turn_id.into(),
+            call_id: call.call_id.clone(),
+            name: call.name.clone(),
+            arguments: call.arguments,
+        }));
+    context.events.push(EventMsg::ToolCallEnd(ToolCallEndEvent {
+        turn_id: context.turn_id.into(),
+        call_id: call.call_id,
+        name: call.name,
+        output: text::DEFINITION.handoff_saved_result.as_str().into(),
+        is_error: false,
+    }));
+    Ok((fresh, summarized < pending))
+}
+
+async fn prepare_response(
+    context: &ModelContext<'_>,
+    policy: &Compaction,
+    route: &str,
+    history: ModelInput<'_>,
+    pending: usize,
+    tools: &[Arc<ToolDefinition>],
+) -> Result<(crate::backend::model::ModelOutput, usize)> {
+    let source_window = context
+        .model
+        .resolve_choice(route, None)?
+        .context_window
+        .unwrap_or(context.context_window);
+    let guidance = internal_user_message("handoff_preparation", &text::DEFINITION.prompt_prepare);
+    let overhead = context
+        .token_estimate
+        .tokens(
+            context
+                .instructions
+                .len()
+                .saturating_add(serde_json::to_vec(&tools)?.len()),
+        )
+        .saturating_add(context.token_estimate.item_tokens(&guidance));
+    let budget = usize::try_from(
+        source_window
+            .saturating_sub(policy.reserve(source_window))
+            .max(1),
+    )
+    .unwrap_or(usize::MAX);
+    let mut estimate = overhead;
+    let mut fitted = 0;
+    let boundaries = tool_complete_boundaries(history.iter());
+    for (index, item) in history.iter().take(pending).enumerate() {
+        estimate = estimate.saturating_add(context.token_estimate.item_tokens(item));
+        if estimate >= budget {
+            break;
+        }
+        if boundaries.binary_search(&(index + 1)).is_ok() {
+            fitted = index + 1;
+        }
+    }
+    if fitted == 0 {
+        return Err(Error::Provider("checkpoint preparation cannot fit one complete input or tool batch; the chat and pending input are preserved".into()));
+    }
+    let input = history
+        .prefix(fitted)
+        .with_appended(std::slice::from_ref(&guidance).into())?;
+    let cache_key = prompt_cache_key(context.session_id);
+    let request = ModelRequest {
+        session_id: context.session_id,
+        cancellation: context.cancellation,
+        prompt_cache: Some(PromptCacheIdentity {
+            key: &cache_key,
+            context_epoch: *context.context_epoch,
+        }),
+        instructions: context.instructions,
+        input,
+        catalog_revision: context.tools.revision()?,
+        tools,
+        deferred_tools: &[],
+        allow_hosted_tools: false,
+        allow_continuation: false,
+    };
+    let transport = context.model.transport_settings_for(route)?;
+    let retry_limit = usize::try_from(transport.stream_retry_limit)
+        .map_err(|_| Error::Config("stream retry limit exceeds platform range".into()))?;
+    let mut retries = 0;
+    let mut fallback_attempted = false;
+    loop {
+        let error = match context
+            .model
+            .respond(route, request, Arc::new(|_| Box::pin(async { Ok(()) })))
+            .await
+        {
+            Ok(output) => return Ok((output, fitted)),
+            Err(Error::Provider(error))
+                if error.is_stream_interrupted() || error.is_retryable() =>
+            {
+                error
+            }
+            Err(error) => return Err(error),
+        };
+        let mut delay =
+            crate::backend::model::retry_delay(&error, retries, context.turn_id, &transport);
+        if retries < retry_limit {
+            retries += 1;
+        } else {
+            if fallback_attempted {
+                return Err(Error::Provider(error));
+            }
+            fallback_attempted = true;
+            if !context
+                .model
+                .fallback_transport(route, context.session_id)
+                .await?
+            {
+                return Err(Error::Provider(error));
+            }
+            retries = 0;
+            if error.retry_after().is_none() {
+                delay = std::time::Duration::ZERO;
+            }
+        }
+        tokio::time::sleep(delay).await;
+    }
+}
+
+fn requested_in_active_turn(input: ModelInput<'_>) -> bool {
+    input
+        .suffix(active_turn(input))
         .iter()
-        .rposition(|item| {
-            item.get("type").and_then(Value::as_str) == Some("function_call")
-                && item.get("call_id").and_then(Value::as_str) == Some(call_id)
-        })
-        .ok_or_else(|| Error::Checkpoint("handoff tool call is missing".into()))?;
-    // Keep the entire requesting batch: other results may have arrived after the notes were written.
-    let tail = boundaries
-        .into_iter()
-        .take_while(|boundary| *boundary <= call)
-        .last()
-        .unwrap_or(0);
-    let active_turn = input
+        .any(|item| internal_message_kind(item) == Some(REQUEST))
+}
+
+fn active_turn(input: ModelInput<'_>) -> usize {
+    input
         .iter()
         .rposition(|item| {
             message_metadata(item).is_some_and(|message| message.delivery != MessageDelivery::Steer)
@@ -356,18 +429,53 @@ fn fresh_input(input: &[Value], call_id: &str) -> Result<Vec<Value>> {
                     && item.get("role").and_then(Value::as_str) == Some("user")
             })
         })
-        .unwrap_or(0);
-    Ok(input
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+fn retained_input(input: ModelInput<'_>) -> Result<Vec<Arc<Value>>> {
+    retained_input_until(input, input.len())
+}
+
+fn retained_input_until(input: ModelInput<'_>, summarized: usize) -> Result<Vec<Arc<Value>>> {
+    let boundaries = tool_complete_boundaries(input.iter());
+    if boundaries.last().copied() != Some(input.len()) {
+        return Err(Error::Checkpoint(
+            "handoff requires a completed tool batch".into(),
+        ));
+    }
+    let active = active_turn(input);
+    // Preserve the latest complete batch; other tool results may be newer than the notes.
+    let tail = input
+        .iter()
+        .rposition(|item| item.get("type").and_then(Value::as_str) == Some("function_call"))
+        .filter(|call| *call >= active)
+        .map(|call| {
+            boundaries
+                .iter()
+                .copied()
+                .take_while(|boundary| *boundary <= call)
+                .last()
+                .unwrap_or(0)
+        })
+        .unwrap_or(input.len());
+    input
         .iter()
         .enumerate()
         .filter(|(index, item)| {
-            !is_control(item)
-                && (*index >= tail
-                    || (*index >= active_turn
+            internal_message_kind(item) != Some(REQUEST)
+                && (!is_control(item) || *index >= summarized)
+                && (*index >= summarized
+                    || *index >= tail
+                    || (*index >= active
                         && item.get("role").and_then(Value::as_str) == Some("user")))
         })
-        .map(|(_, item)| item.clone())
-        .collect())
+        .map(|(index, _)| {
+            input.shared_item(index).map(Arc::clone).ok_or_else(|| {
+                Error::Checkpoint("checkpoint retention requires shared durable history".into())
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]

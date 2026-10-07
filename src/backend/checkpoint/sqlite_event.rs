@@ -1,22 +1,142 @@
 //! Event-journal indexing, compaction, and stream metrics.
 
+use std::sync::Arc;
+
+use rusqlite::Connection;
 use rusqlite::OptionalExtension;
 use rusqlite::Transaction;
 use rusqlite::params;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use super::super::JournalEvent;
 use super::super::StreamMetrics;
 use super::super::TimestampedEvent;
 use crate::Error;
 use crate::Result;
-use crate::protocol::EventMsg;
 use crate::protocol::FrontendEvent;
 use crate::protocol::ModelStepContentPhase;
+use crate::protocol::TOOL_ERROR_FIELD;
+use crate::protocol::{ContentPart, Event, EventMsg, ToolCallEndEvent};
+
+/// Current SQLite format, distinct from public events. Inline events include synthetic
+/// outputs; references only target exact outputs committed in the same transcript batch.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "storage", rename_all = "snake_case", deny_unknown_fields)]
+enum StoredEvent<E, S> {
+    Inline {
+        event: E,
+    },
+    ToolOutput {
+        submission_id: Option<S>,
+        turn_id: S,
+        call_id: S,
+        name: S,
+        is_error: bool,
+        transcript_sequence: i64,
+        item_index: usize,
+    },
+}
+
+fn stored_event<'a>(
+    event: &'a Event,
+    transcript: Option<(i64, &[Arc<Value>])>,
+) -> StoredEvent<&'a Event, &'a str> {
+    if let EventMsg::ToolCallEnd(call) = &event.msg
+        && let Some((transcript_sequence, items)) = transcript
+        && call
+            .output
+            .0
+            .iter()
+            .try_fold(0_usize, |bytes, part| match part {
+                ContentPart::Text { text } => Some(bytes.saturating_add(text.len())),
+                _ => None,
+            })
+            .is_some_and(|bytes| bytes > 4096)
+        && let Some(item_index) = items.iter().position(|item| matching_output(item, call))
+    {
+        return StoredEvent::ToolOutput {
+            submission_id: event.submission_id.as_deref(),
+            turn_id: &call.turn_id,
+            call_id: &call.call_id,
+            name: &call.name,
+            is_error: call.is_error,
+            transcript_sequence,
+            item_index,
+        };
+    }
+    StoredEvent::Inline { event }
+}
+
+fn matching_output(item: &Value, call: &ToolCallEndEvent) -> bool {
+    item["type"].as_str() == Some("function_call_output")
+        && item["call_id"].as_str() == Some(call.call_id.as_str())
+        && item[TOOL_ERROR_FIELD].as_bool() == Some(call.is_error)
+        && item["output"].as_array().is_some_and(|parts| {
+            parts.len() == call.output.0.len()
+                && parts.iter().zip(&call.output.0).all(|(stored, part)| {
+                    matches!(part, ContentPart::Text { text }
+                        if stored.as_object().is_some_and(|fields| fields.len() == 2)
+                            && stored["type"].as_str() == Some("input_text")
+                            && stored["text"].as_str() == Some(text.as_str()))
+                })
+        })
+}
+
+pub(super) fn decode_event(connection: &Connection, session_id: &str, json: &str) -> Result<Event> {
+    match serde_json::from_str::<StoredEvent<Event, String>>(json)? {
+        StoredEvent::Inline { event } => Ok(event),
+        StoredEvent::ToolOutput {
+            submission_id,
+            turn_id,
+            call_id,
+            name,
+            is_error,
+            transcript_sequence,
+            item_index,
+        } => {
+            // Resolve within this session, never via a globally reusable provider call ID.
+            let item_json: Option<String> = connection
+                .prepare_cached(
+                    "SELECT json_extract(items_json, ?3) FROM transcript_delta
+                 WHERE session_id = ?1 AND sequence = ?2",
+                )?
+                .query_row(
+                    params![session_id, transcript_sequence, format!("$[{item_index}]")],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten();
+            let invalid = || {
+                Error::Checkpoint("tool event transcript reference is missing or invalid".into())
+            };
+            let mut item: Value = serde_json::from_str(&item_json.ok_or_else(invalid)?)?;
+            if item["type"].as_str() != Some("function_call_output")
+                || item["call_id"].as_str() != Some(call_id.as_str())
+                || item[TOOL_ERROR_FIELD].as_bool() != Some(is_error)
+            {
+                return Err(invalid());
+            }
+            let output = serde_json::from_value(item["output"].take())?;
+            Ok(Event {
+                submission_id: submission_id.map(Arc::from),
+                msg: EventMsg::ToolCallEnd(ToolCallEndEvent {
+                    turn_id,
+                    call_id,
+                    name,
+                    is_error,
+                    output,
+                }),
+            })
+        }
+    }
+}
 
 pub(super) fn store_event(
     transaction: &Transaction<'_>,
     session_id: &str,
     timestamped: TimestampedEvent,
+    transcript: Option<(i64, &[Arc<Value>])>,
 ) -> Result<JournalEvent> {
     let TimestampedEvent {
         recorded_at_ms,
@@ -33,13 +153,10 @@ pub(super) fn store_event(
     );
     let discard_after_delivery = is_transient_event(&event.msg);
     let index = event_index(&event.msg)?;
-    let event_json = serde_json::to_string(&event)?;
+    let event_json = serde_json::to_string(&stored_event(&event, transcript))?;
     let latest = transaction
-        .query_row(
-            "SELECT latest_event_sequence FROM sessions WHERE session_id = ?1",
-            [session_id],
-            |row| row.get::<_, i64>(0),
-        )
+        .prepare_cached("SELECT latest_event_sequence FROM sessions WHERE session_id = ?1")?
+        .query_row([session_id], |row| row.get::<_, i64>(0))
         .optional()?
         .ok_or_else(|| Error::Checkpoint("event journal session does not exist".into()))?;
     let sequence = latest
@@ -55,12 +172,14 @@ pub(super) fn store_event(
         Vec::new()
     };
     let stream_metrics_json = serde_json::to_string(&stream_metrics)?;
-    transaction.execute(
-        "INSERT INTO event_journal (
+    transaction
+        .prepare_cached(
+            "INSERT INTO event_journal (
              session_id, sequence, recorded_at_ms, event_kind, model_step_id,
              stream_phase, delta_bytes, event_json, stream_metrics_json
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        params![
+        )?
+        .execute(params![
             session_id,
             sequence,
             recorded_at_ms,
@@ -70,39 +189,39 @@ pub(super) fn store_event(
             index.delta_bytes,
             event_json,
             stream_metrics_json,
-        ],
-    )?;
-    transaction.execute(
-        "UPDATE sessions SET latest_event_sequence = ?2 WHERE session_id = ?1",
-        params![session_id, sequence],
-    )?;
+        ])?;
+    transaction
+        .prepare_cached("UPDATE sessions SET latest_event_sequence = ?2 WHERE session_id = ?1")?
+        .execute(params![session_id, sequence])?;
     if matches!(&event.msg, EventMsg::Message(_)) {
-        transaction.execute(
-            "DELETE FROM event_journal WHERE session_id = ?1 AND event_kind = 'message_delta'
-             AND json_extract(event_json, '$.submission_id') = ?2",
-            params![session_id, event.submission_id],
-        )?;
+        transaction
+            .prepare_cached(
+                "DELETE FROM event_journal WHERE session_id = ?1 AND event_kind = 'message_delta'
+             AND json_extract(event_json, '$.event.submission_id') = ?2",
+            )?
+            .execute(params![session_id, event.submission_id.as_deref()])?;
     } else if has_authoritative_snapshot && let Some(model_step_id) = index.model_step_id {
-        transaction.execute(
-            "DELETE FROM event_journal
+        transaction
+            .prepare_cached(
+                "DELETE FROM event_journal
              WHERE session_id = ?1 AND model_step_id = ?2
                AND event_kind IN (
                    'assistant_content_delta'
                )",
-            params![session_id, model_step_id],
-        )?;
+            )?
+            .execute(params![session_id, model_step_id])?;
     } else if index.kind == "token_count" {
-        transaction.execute(
-            "DELETE FROM event_journal
+        transaction
+            .prepare_cached(
+                "DELETE FROM event_journal
              WHERE session_id = ?1 AND event_kind = 'token_count' AND sequence < ?2",
-            params![session_id, sequence],
-        )?;
+            )?
+            .execute(params![session_id, sequence])?;
     }
     if discard_after_delivery {
-        transaction.execute(
-            "DELETE FROM event_journal WHERE session_id = ?1 AND sequence = ?2",
-            params![session_id, sequence],
-        )?;
+        transaction
+            .prepare_cached("DELETE FROM event_journal WHERE session_id = ?1 AND sequence = ?2")?
+            .execute(params![session_id, sequence])?;
     }
     Ok(JournalEvent {
         sequence: u64::try_from(sequence)
@@ -249,7 +368,7 @@ fn load_stream_metrics(
     session_id: &str,
     model_step_id: &str,
 ) -> Result<Vec<StreamMetrics>> {
-    let mut statement = transaction.prepare(
+    let mut statement = transaction.prepare_cached(
         "SELECT stream_phase, recorded_at_ms, delta_bytes
          FROM event_journal
          WHERE session_id = ?1 AND model_step_id = ?2 AND stream_phase IS NOT NULL

@@ -207,6 +207,11 @@ async fn async_subagent_uses_configured_model_reasoning_and_durable_fork() {
             .configure_choice(choice)
             .expect("configure model choice");
     }
+    for route in ["child", "child-high"] {
+        routes
+            .set_context_group(route, "child-instance")
+            .expect("register reasoning variants of one provider model");
+    }
     let sandbox = Arc::new(Sandbox::new(
         Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
         ApprovalPolicy::Ask,

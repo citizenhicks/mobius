@@ -901,7 +901,7 @@ impl SessionFileDeletion {
         gc_unreferenced_blobs(&self.store.root).await
     }
     async fn delete_selected(&mut self) -> Result<()> {
-        let Some(_commit) = self.commit.take() else {
+        let Some(_commit) = self.commit.as_ref() else {
             return Ok(());
         };
         if let SessionFileSelection::Ids(ids) = &self.selection {
@@ -963,7 +963,9 @@ impl SessionFileDeletion {
                 tokio::fs::remove_dir_all(entry.path()).await?;
             }
         }
-        gc_unreferenced_blobs(&self.store.root).await
+        gc_unreferenced_blobs(&self.store.root).await?;
+        self.commit.take();
+        Ok(())
     }
 }
 
@@ -1062,40 +1064,54 @@ impl PendingSessionFileWrite {
         let source_path = source.to_path_buf();
         let content_hash = hash_file(&source_path).await?;
         validate_content_hash(&content_hash)?;
-        self.record.content_hash = content_hash.clone();
 
         let blob_dir = self.store.blob_dir();
         ensure_private_dir(&blob_dir).await?;
         let blob_path = self.store.blob_path(&content_hash);
-        match tokio::fs::hard_link(&source_path, &blob_path).await {
-            Ok(()) => set_private_file(&blob_path).await?,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                validate_content_blob(
-                    &blob_path,
-                    &content_hash,
-                    self.record.file.size,
-                    &self.store.validated_blobs,
-                )
-                .await?;
-            }
-            Err(error) => return Err(error.into()),
-        }
-        tokio::fs::remove_file(&source_path).await?;
-
+        self.record.content_hash = content_hash;
         let staging = session_dir.join(format!(".{}-partial", self.record.file.id));
         create_private_dir(&staging).await?;
-        if let Err(error) = save_metadata(&staging, &self.record).await {
-            let _ = tokio::fs::remove_dir_all(&staging).await;
-            let _ = gc_unreferenced_blobs(&self.store.root).await;
+        let publication: Result<()> = async {
+            match tokio::fs::hard_link(&source_path, &blob_path).await {
+                Ok(()) => set_private_file(&blob_path).await?,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    validate_content_blob(
+                        &blob_path,
+                        &self.record.content_hash,
+                        self.record.file.size,
+                        &self.store.validated_blobs,
+                    )
+                    .await?;
+                }
+                Err(error) => return Err(error.into()),
+            }
+            tokio::fs::remove_file(&source_path).await?;
+            save_metadata(&staging, &self.record).await?;
+            tokio::fs::rename(&staging, &directory).await?;
+            Ok(())
+        }
+        .await;
+        if let Err(mut error) = publication {
+            let staging_cleanup = match tokio::fs::remove_dir_all(&staging).await {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error.into()),
+            };
+            for cleanup in [
+                staging_cleanup,
+                gc_unreferenced_blobs(&self.store.root).await,
+            ] {
+                if let Err(rollback) = cleanup {
+                    error = Error::Rollback {
+                        primary: Box::new(error),
+                        rollback: Box::new(rollback),
+                    };
+                }
+            }
             return Err(error);
         }
-        if let Err(error) = tokio::fs::rename(&staging, &directory).await {
-            let _ = tokio::fs::remove_dir_all(&staging).await;
-            let _ = gc_unreferenced_blobs(&self.store.root).await;
-            return Err(error.into());
-        }
         self.reservation.release();
-        Ok(self.record.file.clone())
+        Ok(self.record.file)
     }
 }
 

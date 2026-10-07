@@ -408,6 +408,10 @@ mod tests {
         let mut create = RoutineForm::create("bot-a".into());
         create.workspace.value = "/srv/project".into();
         create.instructions.value = "build it".into();
+        create.schedule_value.value = "invalid".into();
+        assert!(create.action().is_err());
+        assert_eq!(create.instructions.value, "build it");
+        create.schedule_value.value = "3600".into();
         assert!(matches!(
             message(create.action().expect("valid create")),
             ClientMessage::CreateRoutine { bot_id, definition, .. }
@@ -415,7 +419,7 @@ mod tests {
         ));
 
         let routine = routine("routine-a");
-        let update = RoutineForm::update(&routine);
+        let mut update = RoutineForm::update(&routine);
         assert!(matches!(
             message(update.action().expect("valid update")),
             ClientMessage::RoutineCommand {command:mobius_gateway::wire::RoutineCommand{routine_id,action:mobius_gateway::wire::RoutineAction::Update{..}},..} if routine_id=="routine-a"

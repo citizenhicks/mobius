@@ -11,6 +11,7 @@ use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use ratatui::text::{Line, Span};
 
 pub(super) const INPUT_POLL: Duration = Duration::from_millis(16);
 pub(super) const MAX_INPUT_BATCH: usize = 64;
@@ -21,6 +22,18 @@ pub fn terminal_text(value: &str) -> String {
         .chars()
         .filter(|character| matches!(character, '\n' | '\t') || !character.is_control())
         .collect()
+}
+
+pub(super) fn borrow_line<'a>(line: &'a Line<'_>) -> Line<'a> {
+    Line {
+        style: line.style,
+        alignment: line.alignment,
+        spans: line
+            .spans
+            .iter()
+            .map(|span| Span::styled(span.content.as_ref(), span.style))
+            .collect(),
+    }
 }
 
 pub(super) fn poll_event() -> Result<Option<Event>> {
@@ -110,6 +123,25 @@ pub(super) fn append_text(target: &mut String, text: &str, limit: usize) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_line_projection_keeps_style_and_borrows_text() {
+        let original = Line::from(vec![Span::styled(
+            String::from("cached text"),
+            ratatui::style::Style::default().fg(ratatui::style::Color::Red),
+        )])
+        .alignment(ratatui::layout::Alignment::Right);
+        let projected = borrow_line(&original);
+        assert_eq!(projected, original);
+        assert!(matches!(
+            projected.spans[0].content,
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert_eq!(
+            projected.spans[0].content.as_ptr(),
+            original.spans[0].content.as_ptr()
+        );
+    }
 
     #[test]
     fn bounded_input_preserves_utf8_and_filters_control_characters() {

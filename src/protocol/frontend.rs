@@ -1,5 +1,7 @@
 //! Frontend-neutral contribution and presentation records.
 
+use std::sync::Arc;
+
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -463,7 +465,7 @@ pub struct FrontendEditor {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FrontendPreviewEvent {
     /// Canonical message identity retained from the recorded event.
-    pub submission_id: Option<String>,
+    pub submission_id: Option<Arc<str>>,
     /// The recorded at milliseconds.
     pub recorded_at_ms: i64,
     /// The event.
@@ -582,7 +584,7 @@ impl EventMsg {
             Self::ModelStepCompleted(step) if step.outcome == ModelStepOutcome::Retrying => {
                 FrontendBlock {
                     id: Some(format!("{}/retry", step.model_step_id)),
-                    group: Some(step.turn_id.clone()),
+                    group: Some(step.turn_id.to_string()),
                     role: FrontendBlockRole::Notice,
                     title: "Reconnecting…".into(),
                     tone: FrontendTone::Warning,
@@ -591,7 +593,7 @@ impl EventMsg {
             }
             Self::WebSearchBegin(search) => FrontendBlock {
                 id: Some(format!("{}/{}", search.model_step_id, search.call_id)),
-                group: Some(search.turn_id.clone()),
+                group: Some(search.turn_id.to_string()),
                 state: FrontendBlockState::Pending,
                 role: FrontendBlockRole::WebSearch,
                 title: "Searching the web".into(),
@@ -630,7 +632,7 @@ impl EventMsg {
                 };
                 FrontendBlock {
                     id: Some(format!("{}/{}", search.model_step_id, search.call_id)),
-                    group: Some(search.turn_id.clone()),
+                    group: Some(search.turn_id.to_string()),
                     update: FrontendBlockUpdate::Replace,
                     state: FrontendBlockState::Complete,
                     role: FrontendBlockRole::WebSearch,

@@ -372,7 +372,7 @@ impl VoiceConversation {
 
     /// Handles an ingress rejection that did not reach the agent's event journal.
     pub fn reject(&mut self, submission_id: &str, message: &str) -> Vec<RealtimeVoiceCommand> {
-        self.finish(submission_id, Some(message.to_owned()))
+        self.finish(submission_id, Some(message))
     }
 
     /// Returns speech only after a matching committed terminal event.
@@ -383,7 +383,7 @@ impl VoiceConversation {
                 if let Some(pending) = event
                     .submission_id
                     .as_ref()
-                    .and_then(|id| self.pending.get_mut(id))
+                    .and_then(|id| self.pending.get_mut(id.as_ref()))
                 {
                     pending.turn_id = Some(turn.turn_id.clone());
                 }
@@ -392,8 +392,9 @@ impl VoiceConversation {
                 if let Some(pending) = event
                     .submission_id
                     .as_ref()
-                    .and_then(|id| self.pending.get_mut(id))
+                    .and_then(|id| self.pending.get_mut(id.as_ref()))
                 {
+                    // A pending handoff retains its assigned turn even when the active turn later changes.
                     pending.turn_id.clone_from(&self.active_turn_id);
                 }
             }
@@ -406,18 +407,21 @@ impl VoiceConversation {
                     .collect::<Vec<_>>()
                     .join("\n");
                 if !text.is_empty() {
-                    for pending in self
+                    let mut recipients = self
                         .pending
                         .values_mut()
-                        .filter(|pending| pending.turn_id.as_deref() == Some(&message.turn_id))
-                    {
-                        pending.answer = Some(text.clone());
+                        .filter(|pending| pending.turn_id.as_deref() == Some(&message.turn_id));
+                    if let Some(first) = recipients.next() {
+                        for pending in recipients {
+                            pending.answer = Some(text.clone());
+                        }
+                        first.answer = Some(text);
                     }
                 }
             }
             EventMsg::Error(error) => {
                 for (id, pending) in &mut self.pending {
-                    if event.submission_id.as_ref() == Some(id)
+                    if event.submission_id.as_deref() == Some(id.as_str())
                         || pending.turn_id.is_some() && pending.turn_id == self.active_turn_id
                     {
                         pending.error = Some(error.message.clone());
@@ -428,11 +432,11 @@ impl VoiceConversation {
                 return event
                     .submission_id
                     .as_deref()
-                    .map(|id| self.finish(id, Some(rejection.message.clone())))
+                    .map(|id| self.finish(id, Some(&rejection.message)))
                     .unwrap_or_default();
             }
             EventMsg::TurnAborted(turn) => {
-                return self.finish_turn(&turn.turn_id, Some(turn.reason.clone()));
+                return self.finish_turn(&turn.turn_id, Some(&turn.reason));
             }
             EventMsg::TurnComplete(turn) => {
                 return self.finish_turn(&turn.turn_id, None);
@@ -442,35 +446,36 @@ impl VoiceConversation {
         Vec::new()
     }
 
-    fn finish_turn(&mut self, turn_id: &str, error: Option<String>) -> Vec<RealtimeVoiceCommand> {
+    fn finish_turn(&mut self, turn_id: &str, error: Option<&str>) -> Vec<RealtimeVoiceCommand> {
         if self.active_turn_id.as_deref() == Some(turn_id) {
             self.active_turn_id = None;
         }
-        let ids = self
-            .pending
-            .iter()
-            .filter(|(_, pending)| pending.turn_id.as_deref() == Some(turn_id))
-            .map(|(id, _)| id.clone())
-            .collect::<Vec<_>>();
-        ids.into_iter()
-            .flat_map(|id| self.finish(&id, error.clone()))
+        self.pending
+            .extract_if(.., |_, pending| pending.turn_id.as_deref() == Some(turn_id))
+            .map(|(_, pending)| pending.finish(error))
             .collect()
     }
 
-    fn finish(&mut self, submission_id: &str, error: Option<String>) -> Vec<RealtimeVoiceCommand> {
-        let Some(pending) = self.pending.remove(submission_id) else {
-            return Vec::new();
-        };
-        let text = match error.or(pending.error) {
-            Some(message) => return vec![reject_handoff(pending.handoff_id, &message)],
-            None => pending
+    fn finish(&mut self, submission_id: &str, error: Option<&str>) -> Vec<RealtimeVoiceCommand> {
+        self.pending
+            .remove(submission_id)
+            .map(|pending| pending.finish(error))
+            .into_iter()
+            .collect()
+    }
+}
+
+impl PendingHandoff {
+    fn finish(self, error: Option<&str>) -> RealtimeVoiceCommand {
+        if let Some(message) = error.or(self.error.as_deref()) {
+            return reject_handoff(self.handoff_id, message);
+        }
+        RealtimeVoiceCommand::Reply {
+            handoff_id: self.handoff_id,
+            text: self
                 .answer
                 .unwrap_or_else(|| text::DEFINITION.voice_request_empty.clone()),
-        };
-        vec![RealtimeVoiceCommand::Reply {
-            handoff_id: pending.handoff_id,
-            text,
-        }]
+        }
     }
 }
 
@@ -524,7 +529,12 @@ mod tests {
         let resumed = VoiceConversation::new("voice-session".into(), None, "Renamed".into());
         assert!(resumed.progress(&echo).is_none());
         let mut parent = crate::backend::checkpoint::Checkpoint::empty("parent");
-        parent.context = vec![crate::backend::model::message_input(&message).unwrap()];
+        parent.context = std::sync::Arc::new(
+            vec![crate::backend::model::message_input(&message).unwrap()]
+                .into_iter()
+                .map(std::sync::Arc::new)
+                .collect(),
+        );
         assert!(
             !instructions("Bot", &parent, "voice-session", "")
                 .unwrap()
@@ -544,7 +554,12 @@ mod tests {
             assert!(
                 matches!(voice.progress(&update), Some(RealtimeVoiceCommand::Context { text }) if text.ends_with("Do this"))
             );
-            parent.context = vec![crate::backend::model::message_input(&message).unwrap()];
+            parent.context = std::sync::Arc::new(
+                vec![crate::backend::model::message_input(&message).unwrap()]
+                    .into_iter()
+                    .map(std::sync::Arc::new)
+                    .collect(),
+            );
             assert!(
                 instructions("Bot", &parent, "voice-session", "")
                     .unwrap()
@@ -755,11 +770,11 @@ mod tests {
     #[test]
     fn startup_context_preserves_sources_order_and_voice_history_without_mutating_parent() {
         let mut parent = crate::backend::checkpoint::Checkpoint::empty("parent");
-        parent.context = vec![
+        parent.context = std::sync::Arc::new(vec![
             serde_json::json!({"role":"user","content":"Earlier agreed requirements"}),
             serde_json::json!({"role":"user","content":"Later updated requirements"}),
             serde_json::json!({"role":"assistant","content":[{"type":"output_text","text":"The Bot result"}]}),
-        ];
+        ].into_iter().map(std::sync::Arc::new).collect());
         let before = parent.context.clone();
         let history = vec![crate::backend::checkpoint::JournalEvent {
             sequence: 1,
@@ -795,9 +810,9 @@ mod tests {
         assert!(prompt.find("Earlier agreed").unwrap() < prompt.find("Later updated").unwrap());
         assert_eq!(parent.context, before);
         let retained = "🗣".repeat(20_000);
-        parent
-            .context
-            .push(serde_json::json!({"role":"user","content":retained}));
+        std::sync::Arc::make_mut(&mut parent.context).push(std::sync::Arc::new(
+            serde_json::json!({"role":"user","content":retained}),
+        ));
         assert!(
             instructions(identity, &parent, "voice-session", &voice_context)
                 .unwrap()

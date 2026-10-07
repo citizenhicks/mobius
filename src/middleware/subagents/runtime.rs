@@ -32,7 +32,7 @@ mod coordination;
 mod monitor;
 
 pub(super) use coordination::CompletionUpdate;
-pub(super) use coordination::Wake;
+pub(super) use coordination::{Wake, WakeTarget};
 pub(super) use monitor::monitor_agent;
 
 const STATE_KEY: &str = "subagents.v2";
@@ -96,7 +96,7 @@ pub(super) struct AgentRecord {
     last_message: Option<String>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum AgentStatus {
     PendingInit,
@@ -152,15 +152,15 @@ impl Shared {
         }
     }
 
-    pub(super) async fn session_start(&self, context: RuntimeContext) -> Result<()> {
+    pub(super) async fn session_start(&self, context: &RuntimeContext) -> Result<()> {
         let identity = super::AgentIdentity::read(&context.session_id, &context.metadata)?;
         let root_id = identity.root_session_id;
         let existing = self.roots.lock().await.get(&root_id).cloned();
         if let Some(root) = existing {
             let mut root = root.state.lock().await;
             if identity.depth == 0 {
-                root.root_sender = Some(context.sender);
-                root.frontend = context.frontend;
+                root.root_sender = Some(context.sender.clone());
+                root.frontend = Arc::clone(&context.frontend);
                 if !root.tree.agents.is_empty() {
                     emit_status(&root)?;
                 }
@@ -189,10 +189,10 @@ impl Shared {
             }
         }
         let root = Root {
-            checkpoints: context.checkpoints,
-            frontend: context.frontend,
+            checkpoints: Arc::clone(&context.checkpoints),
+            frontend: Arc::clone(&context.frontend),
             tree,
-            root_sender: (identity.depth == 0).then_some(context.sender),
+            root_sender: Some(context.sender.clone()),
             senders: BTreeMap::new(),
             parent_reports: BTreeMap::new(),
         };
@@ -390,31 +390,22 @@ impl Shared {
         if target == "/root" {
             return Err(Error::Tool("the root agent cannot interrupt itself".into()));
         }
-        let (sender, turn_id, status) = {
-            let root = self.root(root_id).await?;
-            let root = root.state.lock().await;
-            let entry = root
-                .tree
-                .agents
-                .get(target)
-                .ok_or_else(|| unknown_target(target))?;
-            (
-                root.senders.get(target).cloned(),
-                entry.active_turn_id.clone(),
-                entry.status.label(),
-            )
-        };
-        match (sender, turn_id) {
-            (Some(sender), Some(turn_id)) => {
-                sender.submit(Op::Interrupt { turn_id })?;
-            }
-            (Some(_), None) => {
-                return Err(Error::Tool(format!(
-                    "agent `{target}` has no active turn to interrupt"
-                )));
-            }
-            (None, _) => {}
+        let root = self.root(root_id).await?;
+        let root = root.state.lock().await;
+        let entry = root
+            .tree
+            .agents
+            .get(target)
+            .ok_or_else(|| unknown_target(target))?;
+        if let Some(sender) = root.senders.get(target) {
+            let turn_id = entry.active_turn_id.as_ref().ok_or_else(|| {
+                Error::Tool(format!("agent `{target}` has no active turn to interrupt"))
+            })?;
+            sender.submit(Op::Interrupt {
+                turn_id: turn_id.clone(),
+            })?;
         }
+        let status = entry.status.label();
         Ok(status.into())
     }
 
@@ -589,6 +580,7 @@ impl Shared {
         }
         let (mut candidate, output) = {
             let current = root.state.lock().await;
+            // Persistence can fail; stage an independent candidate so readers keep the last committed tree.
             let mut candidate = current.clone();
             match mutate(&mut candidate)? {
                 Stage::Unchanged(output) => return Ok(Stage::Unchanged(output)),

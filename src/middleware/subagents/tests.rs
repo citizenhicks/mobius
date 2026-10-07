@@ -177,9 +177,9 @@ async fn active_command_emits_a_subagent_transcript_preview() {
     let mut child = Checkpoint::empty("child");
     child.session_context.owner_id = "test-bot".into();
     child.sequence = 1;
-    child.context.push(transcript.clone());
+    std::sync::Arc::make_mut(&mut child.context).push(std::sync::Arc::new(transcript.clone()));
     checkpoints
-        .save(&child, &[transcript], None)
+        .save(&child, &[transcript.into()], None)
         .await
         .expect("save child");
     append_events(
@@ -213,7 +213,7 @@ async fn active_command_emits_a_subagent_transcript_preview() {
     .expect("subagents middleware");
     middleware
         .shared
-        .session_start(RuntimeContext {
+        .session_start(&RuntimeContext {
             sender: crate::agent::test_sender(),
             checkpoints: Arc::clone(&checkpoints),
             session_id: root.session_id.clone(),
@@ -381,7 +381,7 @@ async fn preview_continuation_loads_one_older_turn_through_registered_command() 
     let middleware = Arc::new(test_middleware());
     middleware
         .shared
-        .session_start(RuntimeContext {
+        .session_start(&RuntimeContext {
             sender: crate::agent::test_sender(),
             checkpoints: Arc::clone(&checkpoints),
             session_id: root.session_id.clone(),
@@ -625,7 +625,8 @@ fn forked_context_drops_session_owned_attachment_references() {
         }]
     })];
 
-    let fork = fork_context(&context, ForkTurns::All);
+    let context = context.into_iter().map(Arc::new).collect::<Vec<_>>();
+    let fork = fork_context(&context, ForkTurns::All, &BTreeSet::new());
 
     assert!(fork[0].get("_mobius_attachments").is_none());
 }
@@ -673,7 +674,7 @@ async fn detached_child_cannot_initialize_a_root_runtime() {
     let middleware = test_middleware();
     let result = middleware
         .shared
-        .session_start(RuntimeContext {
+        .session_start(&RuntimeContext {
             sender: crate::agent::test_sender(),
             checkpoints,
             session_id: "child".into(),
@@ -719,4 +720,28 @@ fn trusted_operator_ceilings_are_independent_of_per_bot_limits() {
     )
     .expect("configured capability");
     assert_eq!(capability.max_depth, 24);
+}
+
+#[test]
+fn fork_selects_shared_history_once_and_excludes_pending_calls() {
+    let context = [
+        serde_json::json!({"role":"user", "content":"old"}),
+        serde_json::json!({"role":"assistant", "content":"prior"}),
+        serde_json::json!({"role":"user", "content":"new"}),
+        serde_json::json!({"type":"function_call", "call_id":"pending"}),
+        serde_json::json!({"type":"function_call", "call_id":"finished"}),
+        serde_json::json!({"type":"function_call_output", "call_id":"finished", "output":"ok"}),
+    ]
+    .map(Arc::new);
+    let pending = BTreeSet::from(["pending"]);
+    assert!(fork_context(&context, ForkTurns::None, &pending).is_empty());
+    let last = fork_context(&context, ForkTurns::Last(1), &pending);
+    assert_eq!(last.len(), 3);
+    for (forked, index) in last.iter().zip([2, 4, 5]) {
+        assert!(Arc::ptr_eq(forked, &context[index]));
+    }
+    let all = fork_context(&context, ForkTurns::All, &pending);
+    assert_eq!(all.len(), 5);
+    assert!(Arc::ptr_eq(&all[0], &context[0]));
+    assert_eq!(Arc::strong_count(&context[3]), 1);
 }

@@ -437,15 +437,15 @@ mod tests {
         fn save<'a>(
             &'a self,
             checkpoint: &'a Checkpoint,
-            delta: &'a [Value],
+            delta: &'a [Arc<Value>],
             execution: Option<&'a ExecutionRecord>,
         ) -> BoxFuture<'a, mobius::Result<()>> {
             self.inner.save(checkpoint, delta, execution)
         }
         fn save_with_events<'a>(
             &'a self,
-            checkpoint: Checkpoint,
-            delta: Vec<Value>,
+            checkpoint: Arc<Checkpoint>,
+            delta: Vec<Arc<Value>>,
             execution: Option<ExecutionRecord>,
             events: Vec<TimestampedEvent>,
         ) -> BoxFuture<'a, mobius::Result<Vec<JournalEvent>>> {
@@ -918,10 +918,19 @@ mod tests {
         assert_eq!(counted.metadata_reads.load(Ordering::Relaxed), 0);
         assert_eq!(counted.summaries.load(Ordering::Relaxed), 2);
         let mut frames = 0;
-        while session_events.try_recv().is_ok() {
+        let mut identity = None;
+        while let Ok(frame) = session_events.try_recv() {
+            if let ServerMessage::AgentEvent { session_id, .. } = &frame.message {
+                let first = identity.get_or_insert_with(|| Arc::clone(session_id));
+                assert!(
+                    Arc::ptr_eq(first, session_id),
+                    "live events share their session ID"
+                );
+            }
             frames += 1;
         }
         assert!(frames > 0);
+        assert!(identity.is_some());
         assert_eq!(
             crate::host::replay::FRAME_SIZE_MEASUREMENTS.with(std::cell::Cell::get),
             frames,

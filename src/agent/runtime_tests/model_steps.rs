@@ -21,7 +21,7 @@ impl Model for TextOnlyImageToolModel {
         self.inputs
             .lock()
             .expect("input lock")
-            .push(request.input.to_vec());
+            .push(request.input.iter().cloned().collect());
         let output = self
             .outputs
             .lock()
@@ -74,7 +74,7 @@ async fn model_step_lifecycle_preserves_correlation_usage_and_content() {
     let started = started.expect("model step started");
     let completed = completed.expect("model step completed");
     let message = message.expect("agent message");
-    assert_eq!(started.session_id, "step-lifecycle");
+    assert_eq!(started.session_id.as_ref(), "step-lifecycle");
     assert_eq!(started.step_index, 0);
     assert!(started.started_at_ms >= 0);
     assert_eq!(completed.session_id, started.session_id);
@@ -319,7 +319,7 @@ async fn steer_during_stream_retry_rebuilds_the_request_input() {
         .sender()
         .submit(active_user_op(
             "new direction",
-            turn_id,
+            turn_id.as_ref(),
             ActiveMessageDelivery::Steer,
         ))
         .expect("submit steer");
@@ -441,7 +441,9 @@ async fn interrupt_during_stream_retry_backoff_cancels_the_retry() {
     };
     agent
         .sender()
-        .submit(Op::Interrupt { turn_id })
+        .submit(Op::Interrupt {
+            turn_id: turn_id.to_string(),
+        })
         .expect("interrupt turn");
 
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
@@ -630,7 +632,7 @@ async fn interrupted_model_request_emits_one_terminal_step() {
         if reason == ModelCancellationReason::Interrupted {
             sender
                 .submit(Op::Interrupt {
-                    turn_id: started.turn_id,
+                    turn_id: started.turn_id.to_string(),
                 })
                 .expect("interrupt turn");
         }

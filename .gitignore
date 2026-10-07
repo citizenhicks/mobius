@@ -2,6 +2,9 @@
 /examples/
 /scripts/*
 !/scripts/sync-gateway-contract.py
+!/scripts/upgrade-portable-config.py
+!/scripts/upgrade-portable-compaction.py
+!/scripts/README-portable-upgrade.md
 /.mobius
 /docs
 /.local

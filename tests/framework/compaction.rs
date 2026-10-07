@@ -1,781 +1,665 @@
 use super::*;
 
-#[tokio::test]
-async fn native_compaction_survives_recreation_with_current_prompt_and_tools() {
-    let workspace = TempDir::new().expect("create workspace");
-    let model = Arc::new(ScriptedModel::with_compaction(
-        vec![
-            text_response_with_usage("first done", usage(2_000)),
-            text_response("compacted done"),
-            text_response("second done"),
-        ],
-        vec![
-            CompactOutput::from_output(
-                vec![serde_json::json!({
-                    "type": "compaction",
-                    "encrypted_content": "opaque"
-                })],
-                usage(10),
-            )
-            .expect("compaction output"),
-        ],
-    ));
-    let route: Arc<dyn Model> = model.clone();
-    let router = Arc::new(ModelRouter::new("test", route));
-    let sandbox = Arc::new(Sandbox::new(
-        Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
-        ApprovalPolicy::Ask,
-    ));
-    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
-        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-            .expect("checkpoint store"),
-    );
-    let config = |base: &str, section: &'static str, coding_tools: bool| {
-        let mut middleware: Vec<Arc<dyn Middleware>> = vec![
-            Arc::new(Messages::default()),
-            Arc::new(StaticPrompt(section)),
-        ];
-        if coding_tools {
-            middleware.push(Arc::new(Tools::coding(
-                mobius::backend::session_files::SessionFileStore::new(
-                    tempfile::tempdir().expect("files").path(),
-                    None,
-                ),
-            )));
-        }
-        middleware.push(Arc::new(
-            Compaction::new(1_000).expect("compaction middleware"),
-        ));
-        AgentConfig::new(
-            Arc::clone(&router),
-            Arc::clone(&sandbox),
-            Arc::clone(&checkpoints),
-            MiddlewareStack::new(middleware).expect("middleware"),
-            base,
-        )
-        .session_id("prompt-refresh")
-        .session_context(test_session_context())
-    };
-
-    let mut first = create_agent(config("old base marker", "old section marker", true))
-        .await
-        .expect("first agent");
-    first
-        .sender()
-        .submit(user_message("first turn"))
-        .expect("first turn");
-    assert_eq!(final_message(&mut first).await, "first done");
-    first
-        .sender()
-        .submit(user_message("compact turn"))
-        .expect("compaction turn");
-    assert_eq!(final_message(&mut first).await, "compacted done");
-    let (sender, mut events) = first.into_parts();
-    drop(sender);
-    while events.recv().await.is_some() {}
-
-    let mut second = create_agent(config("new base marker", "new section marker", false))
-        .await
-        .expect("replacement agent");
-    second
-        .sender()
-        .submit(user_message("second turn"))
-        .expect("second turn");
-    assert_eq!(final_message(&mut second).await, "second done");
-
-    let requests = model.requests.lock().expect("requests");
-    assert_eq!(requests.len(), 3);
-    assert!(!requests[0].tools.is_empty());
-    assert!(requests[0].instructions.contains("**tools**"));
-    assert_eq!(requests[1].tools, requests[0].tools);
-    let replacement = &requests[2];
-    assert!(replacement.tools.is_empty());
-    assert!(!replacement.instructions.contains("**tools**"));
-    assert_eq!(
-        replacement.instructions.matches("new base marker").count(),
-        1
-    );
-    assert_eq!(
-        replacement
-            .instructions
-            .matches("new section marker")
-            .count(),
-        1
-    );
-    assert!(!replacement.instructions.contains("old base marker"));
-    assert!(!replacement.instructions.contains("old section marker"));
-    let history = serde_json::to_string(&replacement.input).expect("serialize history");
-    assert!(history.contains("opaque"));
-    assert!(history.contains("second turn"));
-    assert!(!history.contains("base marker"));
-    assert!(!history.contains("section marker"));
-    let first_tools = requests[0].tools.clone();
-    drop(requests);
-
-    let compact_requests = model.compact_requests.lock().expect("compact requests");
-    assert_eq!(compact_requests.len(), 1);
-    let compact_request = &compact_requests[0];
-    assert_eq!(compact_request.session_id, "prompt-refresh");
-    assert!(compact_request.instructions.contains("old base marker"));
-    assert!(compact_request.instructions.contains("old section marker"));
-    assert!(compact_request.instructions.contains("**tools**"));
-    assert_eq!(compact_request.tools, first_tools);
-    let compact_input = serde_json::to_string(&compact_request.input).expect("compact input");
-    assert!(compact_input.contains("first turn"));
-    assert!(compact_input.contains("compact turn"));
-    assert!(!compact_input.contains("old base marker"));
-    assert!(!compact_input.contains("old section marker"));
-    assert!(!compact_input.contains("read_file"));
-}
-
-#[tokio::test]
-async fn steering_is_injected_before_native_compaction() {
-    let workspace = TempDir::new().expect("create workspace");
-    let first = text_response_with_usage("draft", usage(1_000));
-    let scripted = Arc::new(ScriptedModel::with_compaction(
-        vec![first, text_response("done")],
-        vec![
-            CompactOutput::from_output(
-                vec![serde_json::json!({
-                    "type": "compaction",
-                    "encrypted_content": "opaque"
-                })],
-                usage(100),
-            )
-            .expect("compaction output"),
-        ],
-    ));
-    let model = Arc::new(GatedModel {
-        inner: Arc::clone(&scripted),
-        first: AtomicBool::new(true),
-        entered: Notify::new(),
-        release: Notify::new(),
-    });
-    let mut agent = create_agent(test_config(
-        workspace.path(),
-        Arc::clone(&model),
-        vec![Arc::new(Compaction::new(500).expect("compaction"))],
-    ))
-    .await
-    .expect("create agent");
-    let sender = agent.sender();
-    sender.submit(user_message("start")).expect("submit turn");
-
-    let turn_id = loop {
-        match agent.next_event().await.expect("turn event").msg {
-            EventMsg::TurnStarted(turn) => break turn.turn_id,
-            EventMsg::Error(error) => panic!("{}", error.message),
-            _ => {}
-        }
-    };
-    model.entered.notified().await;
-    sender
-        .submit(steer_message(turn_id, "steered"))
-        .expect("steer active turn");
-    model.release.notify_one();
-
-    let mut message = String::new();
-    let mut steered_target = None;
-    while let Some(event) = agent.next_event().await {
-        match event.msg {
-            EventMsg::Message(event)
-                if event.text == "steered" && event.delivery == MessageDelivery::Steer =>
-            {
-                steered_target = event.message_target;
-            }
-            EventMsg::AssistantMessage(event) => message = assistant_final_text(event),
-            EventMsg::TurnComplete(_) => break,
-            EventMsg::Error(error) => panic!("{}", error.message),
-            _ => {}
-        }
-    }
-    assert_eq!(message, "done");
-    assert_eq!(
-        steered_target,
-        Some(MessageTarget {
-            checkpoint_sequence: 6,
-            batch_item_count: 1,
-        })
-    );
-    let requests = scripted.compact_requests.lock().expect("compact requests");
-    assert_eq!(requests.len(), 1);
-    assert!(
-        serde_json::to_string(&requests[0].input)
-            .expect("serialize compact input")
-            .contains("steered")
-    );
-}
-
-#[tokio::test]
-async fn compaction_uses_the_context_window_of_a_new_model_route() {
-    let workspace = TempDir::new().expect("create workspace");
-    let large = Arc::new(ScriptedModel::new(vec![text_response("draft")]));
-    let small = Arc::new(ScriptedModel::with_compaction(
-        vec![text_response("done")],
-        vec![
-            CompactOutput::from_output(
-                vec![serde_json::json!({
-                    "type": "compaction",
-                    "encrypted_content": "opaque"
-                })],
-                usage(10),
-            )
-            .expect("compaction output"),
-        ],
-    ));
-    let large_model: Arc<dyn Model> = large.clone();
-    let small_model: Arc<dyn Model> = small.clone();
-    let mut router = ModelRouter::new("large", large_model);
-    router.register("small", small_model).expect("small route");
-    for (route, context_window) in [("large", 300_000), ("small", 8_000)] {
-        router
-            .configure_choice(ModelChoice {
-                route: route.into(),
-                group: route.into(),
-                model: route.into(),
-                reasoning_effort: None,
-                variant_label: None,
-                context_window: Some(context_window),
-                supports_image_input: true,
-                supports_image_generation: false,
-                supports_realtime_voice: false,
-                tool_discovery: ToolDiscoveryMode::Rebuild,
-            })
-            .expect("route metadata");
-    }
-    let mut agent = create_agent(test_config_with_router(
-        workspace.path(),
-        router,
-        vec![Arc::new(Compaction::default())],
-    ))
-    .await
-    .expect("create agent");
-
-    agent
-        .sender()
-        .submit(user_message("first"))
-        .expect("submit first turn");
-    assert_eq!(final_message(&mut agent).await, "draft");
-    agent
-        .sender()
-        .submit(Op::SetModel {
-            route: "small".into(),
-        })
-        .expect("select small route");
-    agent
-        .sender()
-        .submit(user_message("second"))
-        .expect("submit second turn");
-
-    assert_eq!(final_message(&mut agent).await, "done");
-    assert!(
-        large
-            .compact_requests
-            .lock()
-            .expect("large compact")
-            .is_empty()
-    );
-    assert_eq!(
-        small.compact_requests.lock().expect("small compact").len(),
-        1
-    );
-}
-
-#[tokio::test]
-async fn native_compaction_uses_fresh_usage_after_a_retained_user() {
-    let workspace = TempDir::new().expect("create workspace");
-    let model = Arc::new(ScriptedModel::with_compaction(
-        vec![
-            text_response_with_usage("first done", usage(2_000)),
-            text_response_with_usage("second done", usage(2_000)),
-            text_response("third done"),
-        ],
-        vec![
-            CompactOutput::from_output(
-                vec![
-                    serde_json::json!({
-                        "type": "message",
-                        "id": "message-2",
-                        "role": "user",
-                        "content": [{"type": "input_text", "text": "second"}]
-                    }),
-                    serde_json::json!({
-                        "type": "compaction",
-                        "encrypted_content": "opaque"
-                    }),
-                ],
-                usage(10),
-            )
-            .expect("compaction output"),
-            CompactOutput::from_output(
-                vec![serde_json::json!({"type":"compaction", "encrypted_content":"opaque-again"})],
-                usage(10),
-            )
-            .expect("second compaction"),
-        ],
-    ));
-    let mut agent = create_agent(test_config(
-        workspace.path(),
-        Arc::clone(&model),
-        vec![Arc::new(Compaction::new(1_000).expect("compaction"))],
-    ))
-    .await
-    .expect("create agent");
-
-    for (prompt, expected) in [
-        ("first", "first done"),
-        ("second", "second done"),
-        ("third", "third done"),
-    ] {
-        agent
-            .sender()
-            .submit(user_message(prompt))
-            .expect("submit turn");
-        assert_eq!(final_message(&mut agent).await, expected);
-    }
-
-    assert_eq!(
-        model
-            .compact_requests
-            .lock()
-            .expect("compact requests")
-            .len(),
-        2
-    );
-    let requests = model.requests.lock().expect("requests");
-    let second_users = requests[2]
-        .input
-        .iter()
-        .filter(|item| {
-            item.get("role").and_then(Value::as_str) == Some("user")
-                && item.pointer("/content/0/text").and_then(Value::as_str) == Some("second")
-        })
-        .count();
-    let rebuilt = serde_json::to_string(&requests[2].input).expect("serialize rebuilt context");
-    assert_eq!(second_users, 1);
-    assert!(rebuilt.contains("opaque"));
-}
-
-#[tokio::test]
-async fn compaction_falls_back_to_a_model_summary_and_keeps_recent_context() {
-    let workspace = TempDir::new().expect("create workspace");
-    let files = SessionFileStore::new(workspace.path(), None);
-    let attachment = upload_attachment(
-        &files,
-        "summary-media",
-        "screen.png",
-        "image/png",
-        &super::attachments::png(),
+pub(super) fn checkpoint_response(notes: &str) -> ModelOutput {
+    tool_response(
+        "checkpoint",
+        "write_handoff",
+        serde_json::json!({"notes": notes}),
     )
-    .await;
-    let first = text_response_with_usage("draft", usage(40_000));
-    let model = Arc::new(
-        ScriptedModel::new(vec![
-            first,
-            text_response("## Goal\nContinue the task."),
-            text_response("done"),
+}
+
+fn config_with_store<M: Model + 'static>(
+    workspace: &std::path::Path,
+    model: Arc<M>,
+    checkpoints: Arc<dyn CheckpointStore>,
+    session: &str,
+) -> AgentConfig {
+    AgentConfig::new(
+        Arc::new(ModelRouter::new("test", model)),
+        Arc::new(Sandbox::new(
+            Arc::new(LocalSandbox::new(workspace).expect("sandbox")),
+            ApprovalPolicy::Ask,
+        )),
+        checkpoints,
+        MiddlewareStack::new(vec![
+            Arc::new(Messages::default()),
+            Arc::new(Compaction::new(1_000).expect("policy")),
         ])
-        .with_image_input(),
-    );
-    let mut agent = create_agent(
-        test_config(
+        .expect("middleware"),
+        "test system prompt",
+    )
+    .session_id(session)
+    .session_context(test_session_context())
+}
+
+#[tokio::test(start_paused = true)]
+async fn checkpoint_preparation_retries_are_bounded_and_interruptible() {
+    use mobius::backend::model::ModelTransportSettings;
+    use std::time::Duration;
+    use tokio::time::Instant;
+
+    struct RetryingModel {
+        inner: ScriptedModel,
+        failures: usize,
+        failure_kind: &'static str,
+        retry_after: Option<&'static str>,
+        attempts: Mutex<Vec<Instant>>,
+        fallbacks: AtomicUsize,
+        entered: Notify,
+    }
+
+    impl Model for RetryingModel {
+        fn transport_settings(&self) -> ModelTransportSettings {
+            ModelTransportSettings {
+                stream_retry_limit: 1,
+                stream_retry_backoff_ms: 10,
+                stream_retry_max_backoff_ms: 100,
+                ..Default::default()
+            }
+        }
+
+        fn respond<'a>(
+            &'a self,
+            request: ModelRequest<'a>,
+            events: ModelEventSink,
+        ) -> BoxFuture<'a, Result<ModelOutput>> {
+            Box::pin(async move {
+                if request.tools.len() == 1 && request.tools[0].name == "write_handoff" {
+                    assert!(!request.allow_hosted_tools);
+                    assert!(!request.allow_continuation);
+                    let attempt = {
+                        let mut attempts = self.attempts.lock().expect("attempts");
+                        attempts.push(Instant::now());
+                        attempts.len()
+                    };
+                    self.entered.notify_one();
+                    if attempt <= self.failures {
+                        return Err(Error::Provider(match self.failure_kind {
+                            "stream" => mobius::ProviderError::stream_interrupted(
+                                self.retry_after.map(str::to_owned),
+                            ),
+                            "retryable" => {
+                                mobius::ProviderError::retryable("checkpoint unavailable")
+                            }
+                            _ => mobius::ProviderError::new("checkpoint unavailable"),
+                        }));
+                    }
+                }
+                self.inner.respond(request, events).await
+            })
+        }
+
+        fn fallback_transport<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<bool>> {
+            self.fallbacks.fetch_add(1, Ordering::SeqCst);
+            // Even a provider that always offers fallback must not create an unbounded retry loop.
+            Box::pin(async { Ok(true) })
+        }
+    }
+
+    for (
+        failures,
+        failure_kind,
+        hint,
+        interrupt,
+        expected_attempts,
+        expected_fallbacks,
+        succeeds,
+    ) in [
+        (1, "stream", Some("3600"), false, 2, 0, true),
+        (1, "retryable", None, false, 2, 0, true),
+        (2, "stream", None, false, 3, 1, true),
+        (9, "stream", None, false, 4, 1, false),
+        (1, "permanent", None, false, 1, 0, false),
+        (9, "stream", Some("3600"), true, 1, 0, false),
+    ] {
+        let workspace = TempDir::new().expect("workspace");
+        let model = Arc::new(RetryingModel {
+            inner: ScriptedModel::new(vec![
+                text_response_with_usage("draft", usage(2_000)),
+                checkpoint_response("Goal: finish the original task."),
+                text_response("done"),
+            ]),
+            failures,
+            failure_kind,
+            retry_after: hint,
+            attempts: Mutex::new(Vec::new()),
+            fallbacks: AtomicUsize::new(0),
+            entered: Notify::new(),
+        });
+        let checkpoints = Arc::new(MemoryCheckpoints::default());
+        let mut agent = create_agent(config_with_store(
             workspace.path(),
             Arc::clone(&model),
-            vec![
-                Arc::new(Tools::new(Vec::new())),
-                Arc::new(Attachments::new(files)),
-                Arc::new(Compaction::new(30_000).expect("compaction middleware")),
-            ],
-        )
-        .session_id("summary-media"),
-    )
-    .await
-    .expect("create agent");
-
-    agent
-        .sender()
-        .submit(user_message_with_attachments(
-            "x".repeat(80_000),
-            vec![attachment],
+            checkpoints.clone(),
+            "checkpoint-retry",
         ))
-        .expect("submit first turn");
-    assert_eq!(final_message(&mut agent).await, "draft");
-    agent
-        .sender()
-        .submit(user_message("continue"))
-        .expect("submit second turn");
-    assert_eq!(final_message(&mut agent).await, "done");
-
-    let requests = model.requests.lock().expect("requests");
-    assert_eq!(requests.len(), 3);
-    assert_eq!(request_image_count(&requests[1].input), 1);
-    let summary_evidence = serde_json::to_string(&requests[1].input).expect("summary evidence");
-    assert!(summary_evidence.contains("screen.png"));
-    assert!(summary_evidence.contains("file"));
-    assert!(requests[1].instructions.contains("Summarize coding-agent"));
-    assert_eq!(requests[2].instructions, requests[0].instructions);
-    assert_eq!(
-        requests[2].instructions.matches("**instructions**").count(),
-        1
-    );
-    let rebuilt = serde_json::to_string(&requests[2].input).expect("serialize rebuilt context");
-    assert!(rebuilt.contains("<compacted_context>"));
-    assert!(rebuilt.contains("continue"));
-    assert_eq!(
-        requests[2]
-            .input
-            .iter()
-            .filter(|item| {
-                item.get("role").and_then(Value::as_str) == Some("user")
-                    && item.pointer("/content/0/text").and_then(Value::as_str) == Some("continue")
-            })
-            .count(),
-        1
-    );
-    assert!(
-        model
-            .compact_requests
-            .lock()
-            .expect("compact requests")
-            .is_empty()
-    );
-}
-
-struct PauseHandoff;
-
-impl Middleware for PauseHandoff {
-    fn name(&self) -> &'static str {
-        "pause_handoff"
-    }
-
-    fn pre_compact<'a>(
-        &'a self,
-        context: &'a mut mobius::middleware::CompactContext<'_>,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { context.stop("pause at the durable handoff boundary") })
+        .await
+        .expect("agent");
+        agent
+            .sender()
+            .submit(user_message("original task"))
+            .expect("first input");
+        assert_eq!(final_message(&mut agent).await, "draft");
+        agent
+            .sender()
+            .submit(user_message("pending request"))
+            .expect("next input");
+        if interrupt {
+            let turn_id = loop {
+                if let EventMsg::TurnStarted(turn) = agent.next_event().await.expect("event").msg {
+                    break turn.turn_id;
+                }
+            };
+            model.entered.notified().await;
+            agent
+                .sender()
+                .submit(Op::Interrupt { turn_id })
+                .expect("interrupt retry wait");
+            loop {
+                match agent.next_event().await.expect("interrupt event").msg {
+                    EventMsg::TurnAborted(_) => break,
+                    EventMsg::TurnComplete(_) => panic!("interrupted preparation completed"),
+                    _ => {}
+                }
+            }
+            tokio::time::advance(Duration::from_secs(1)).await;
+        } else if succeeds {
+            assert_eq!(final_message(&mut agent).await, "done");
+        } else {
+            failed_turn(&mut agent).await;
+        }
+        {
+            let attempts = model.attempts.lock().expect("attempts");
+            assert_eq!(attempts.len(), expected_attempts);
+            assert_eq!(model.fallbacks.load(Ordering::SeqCst), expected_fallbacks);
+            if hint.is_some() && !interrupt {
+                assert_eq!(attempts[1] - attempts[0], Duration::from_millis(100));
+            }
+            if expected_fallbacks == 1 {
+                assert_eq!(attempts[2] - attempts[1], Duration::ZERO);
+            }
+        }
+        if !succeeds {
+            let saved = checkpoints
+                .load("checkpoint-retry")
+                .await
+                .expect("load")
+                .expect("saved checkpoint");
+            assert_eq!(saved.compaction_count, 0);
+            assert_eq!(saved.context_epoch, 0);
+            let input = serde_json::to_string(&saved.context).expect("context");
+            assert!(input.contains("original task"));
+            assert!(input.contains("pending request"));
+            assert!(!input.contains("handoff_notes"));
+        }
     }
 }
 
 #[tokio::test]
-async fn handoff_resumes_one_durable_reset_in_the_same_chat() {
-    use mobius::middleware::compaction::CompactionMode;
+async fn automatic_plaintext_checkpoint_survives_recreation_and_keeps_the_prefix() {
     let workspace = TempDir::new().expect("workspace");
-    let old = format!("old-result {}", "x".repeat(6_000));
-    let model = Arc::new(ScriptedModel::with_compaction(
-        vec![
-            text_response(&old),
-            tool_response(
-                "save",
-                "write_handoff",
-                serde_json::json!({"notes":"Goal: finish the active task. Done: inspected old-result. Next: verify."}),
-            ),
-            tool_response(
-                "oversize",
-                "write_handoff",
-                serde_json::json!({"notes": "x".repeat(21_001)}),
-            ),
-            tool_response("reset", "new_context", serde_json::json!({})),
-            text_response("continued"),
-            text_response("finished"),
-        ],
-        vec![
-            CompactOutput::from_output(
-                vec![
-                    serde_json::json!({"type":"compaction","encrypted_content":"must-not-be-used"}),
-                ],
-                usage(10),
-            )
-            .expect("unused native result"),
-        ],
-    ));
-    let store: Arc<dyn CheckpointStore> =
-        Arc::new(SqliteCheckpoint::new(workspace.path().join("history.sqlite")).expect("store"));
-    let config = |pause| {
-        let route: Arc<dyn Model> = model.clone();
-        let mut middleware: Vec<Arc<dyn Middleware>> = vec![
-            Arc::new(Messages::default()),
-            Arc::new(
-                Compaction::new(1_000)
-                    .expect("policy")
-                    .mode(CompactionMode::Handoff),
-            ),
-        ];
-        if pause {
-            middleware.push(Arc::new(PauseHandoff));
-        }
-        AgentConfig::new(
-            Arc::new(ModelRouter::new("test", route)),
-            Arc::new(Sandbox::new(
-                Arc::new(LocalSandbox::new(workspace.path()).expect("sandbox")),
-                ApprovalPolicy::Ask,
-            )),
-            Arc::clone(&store),
-            MiddlewareStack::new(middleware).expect("middleware"),
-            "current instructions",
+    let model = Arc::new(ScriptedModel::new(vec![
+        text_response_with_usage("draft", usage(2_000)),
+        checkpoint_response("Goal: continue the task. Verified: the first step finished."),
+        text_response("done"),
+        text_response("resumed"),
+    ]));
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+        SqliteCheckpoint::new(workspace.path().join("checkpoint.sqlite3")).expect("store"),
+    );
+    let config = || {
+        config_with_store(
+            workspace.path(),
+            Arc::clone(&model),
+            Arc::clone(&checkpoints),
+            "portable",
         )
-        .session_id("handoff-chat")
-        .session_context(test_session_context())
-        .context_window(16_000)
     };
-    let mut agent = create_agent(config(true)).await.expect("agent");
+    let mut agent = create_agent(config()).await.expect("agent");
+    agent.sender().submit(user_message("first")).expect("first");
+    assert_eq!(final_message(&mut agent).await, "draft");
     agent
         .sender()
-        .submit(user_message("old request"))
-        .expect("first");
-    assert_eq!(final_message(&mut agent).await, old);
-    agent
-        .sender()
-        .submit(user_message("finish the active task"))
-        .expect("handoff turn");
-    assert_eq!(final_message(&mut agent).await, "");
-    let paused = store
-        .load("handoff-chat")
-        .await
-        .expect("load")
-        .expect("checkpoint");
-    assert_eq!(paused.compaction_count, 0);
-    assert!(paused.context.iter().any(
-        |item| item.get("_mobius_internal").and_then(Value::as_str) == Some("handoff_request")
-    ));
+        .submit(user_message("continue exactly"))
+        .expect("second");
+    assert_eq!(final_message(&mut agent).await, "done");
     let (sender, mut events) = agent.into_parts();
     drop(sender);
     while events.recv().await.is_some() {}
-
-    let mut resumed = create_agent(config(false)).await.expect("resume");
-    resumed
-        .sender()
-        .submit(user_message("continue with this correction: verify twice"))
-        .expect("correction");
-    assert_eq!(final_message(&mut resumed).await, "continued");
-    resumed
-        .sender()
-        .submit(user_message("finish"))
-        .expect("next turn");
-    assert_eq!(final_message(&mut resumed).await, "finished");
-    let checkpoint = store
-        .load("handoff-chat")
-        .await
-        .expect("load")
-        .expect("checkpoint");
-    assert_eq!(checkpoint.compaction_count, 1);
-    assert_eq!(checkpoint.context_epoch, 1);
-    assert!(!checkpoint.context.iter().any(|item| {
-        item.get("_mobius_internal").and_then(Value::as_str) == Some("handoff_request")
-    }));
-    {
-        let requests = model.requests.lock().expect("requests");
-        assert_eq!(requests.len(), 6);
-        let notes = &requests[0]
-            .tools
-            .iter()
-            .find(|tool| tool.name == "write_handoff")
-            .expect("handoff tool")
-            .parameters["properties"]["notes"];
-        assert!(notes.get("maxLength").is_none());
-        assert!(
-            notes["description"]
-                .as_str()
-                .expect("notes description")
-                .contains("21000 UTF-8 bytes")
-        );
-        let reset_input = serde_json::to_string(&requests[4].input).expect("reset input");
-        assert!(!reset_input.contains("old-result xxxx"));
-        assert!(reset_input.contains("Goal: finish the active task"));
-        assert!(reset_input.contains("verify twice"));
-        assert!(reset_input.contains("finish the active task"));
-        assert!(reset_input.contains("new_context"));
-        assert!(
-            requests[1]
-                .input
-                .iter()
-                .any(|item| item.get("_mobius_internal").and_then(Value::as_str)
-                    == Some("handoff_warning"))
-        );
-        assert_eq!(requests[4].tools, requests[0].tools);
-    }
-    assert!(
-        model
-            .compact_requests
-            .lock()
-            .expect("compact requests")
-            .is_empty()
-    );
-    let history = store
-        .transcript_page(
-            "handoff-chat",
-            TranscriptPageRequest {
-                before_sequence: None,
-                max_batches: 100,
-            },
-        )
-        .await
-        .expect("history");
-    let original = serde_json::to_string(&history).expect("serialized journal");
-    assert!(original.contains("old-result xxxx"));
-}
-
-#[tokio::test]
-async fn handoff_small_window_bounds_a_model_that_ignores_the_warning() {
-    use mobius::middleware::compaction::CompactionMode;
-    let workspace = TempDir::new().expect("workspace");
-    let model = Arc::new(ScriptedModel::new(vec![
-        text_response_with_usage("first", usage(6_100)),
-        tool_response(
-            "save",
-            "write_handoff",
-            serde_json::json!({"notes":"Goal: finish. Next: reset."}),
-        ),
-        tool_response(
-            "wrong",
-            "write_handoff",
-            serde_json::json!({"notes":"ignored reset"}),
-        ),
-        tool_response("retry", "new_context", serde_json::json!({})),
-        text_response("recovered"),
-    ]));
-    let mut agent = create_agent(
-        test_config(
-            workspace.path(),
-            Arc::clone(&model),
-            vec![Arc::new(
-                Compaction::default().mode(CompactionMode::Handoff),
-            )],
-        )
-        .context_window(8_000),
-    )
-    .await
-    .expect("agent");
-    agent.sender().submit(user_message("start")).expect("first");
-    assert_eq!(final_message(&mut agent).await, "first");
-    agent
-        .sender()
-        .submit(user_message("continue"))
-        .expect("recovery turn");
-    let error = loop {
-        if let EventMsg::Error(error) = agent.next_event().await.expect("event").msg {
-            break error.message;
-        }
-    };
-    assert!(error.contains("handoff could not finish"));
-    while !matches!(
-        agent.next_event().await.expect("terminal event").msg,
-        EventMsg::TurnAborted(_)
-    ) {}
-    agent
-        .sender()
-        .submit(user_message("retry the handoff"))
-        .expect("retry");
-    assert_eq!(final_message(&mut agent).await, "recovered");
+    let mut agent = create_agent(config()).await.expect("resume");
+    agent.sender().submit(user_message("next")).expect("next");
+    assert_eq!(final_message(&mut agent).await, "resumed");
     let requests = model.requests.lock().expect("requests");
-    assert_eq!(requests.len(), 5);
-    assert_eq!(
+    assert_eq!(requests.len(), 4);
+    assert_eq!(requests[1].tools.len(), 1);
+    assert_eq!(requests[1].tools[0].name, "write_handoff");
+    assert!(!requests[1].allow_hosted_tools);
+    let fresh = serde_json::to_string(&requests[2].input).expect("fresh");
+    assert!(fresh.contains("Goal: continue the task"));
+    assert!(fresh.contains("continue exactly"));
+    assert!(!fresh.contains("encrypted_content"));
+    assert!(
         requests[2]
             .tools
             .iter()
-            .map(|tool| tool.name.as_str())
-            .collect::<Vec<_>>(),
-        ["new_context"]
+            .all(|tool| tool.name != "new_context")
     );
-    assert!(!requests[1].allow_hosted_tools);
-    assert!(!requests[2].allow_hosted_tools);
-    assert!(requests[4].allow_hosted_tools);
+    assert!(requests[3].input.starts_with(&requests[2].input));
+}
+
+#[tokio::test]
+async fn voluntary_reset_refreshes_stale_notes_through_the_same_writer() {
+    let workspace = TempDir::new().expect("workspace");
+    let model = Arc::new(ScriptedModel::new(vec![
+        tool_response(
+            "old-notes",
+            "write_handoff",
+            serde_json::json!({"notes":"stale checkpoint"}),
+        ),
+        tool_response("request", "new_context", serde_json::json!({})),
+        checkpoint_response(
+            "Fresh checkpoint: finish the current task and preserve the correction.",
+        ),
+        text_response("done"),
+    ]));
+    let mut agent = create_agent(test_config(
+        workspace.path(),
+        Arc::clone(&model),
+        vec![Arc::new(Compaction::default().allow_model_compaction(true))],
+    ))
+    .await
+    .expect("agent");
+    agent
+        .sender()
+        .submit(user_message("finish the current task"))
+        .expect("input");
+    assert_eq!(final_message(&mut agent).await, "done");
+    let requests = model.requests.lock().expect("requests");
+    assert_eq!(requests.len(), 4);
+    assert_eq!(requests[2].tools.len(), 1);
+    let fresh = serde_json::to_string(&requests[3].input).expect("fresh");
+    assert!(fresh.contains("Fresh checkpoint"));
+    assert!(!fresh.contains("stale checkpoint"));
+}
+
+#[tokio::test]
+async fn disabled_model_request_rejects_a_stale_tool_call() {
+    let workspace = TempDir::new().expect("workspace");
+    let model = Arc::new(ScriptedModel::new(vec![
+        tool_response("stale", "new_context", serde_json::json!({})),
+        text_response("done"),
+    ]));
+    let mut agent = create_agent(test_config(
+        workspace.path(),
+        Arc::clone(&model),
+        vec![Arc::new(Compaction::default())],
+    ))
+    .await
+    .expect("agent");
+    agent
+        .sender()
+        .submit(user_message("continue"))
+        .expect("input");
+    assert_eq!(final_message(&mut agent).await, "done");
+    let requests = model.requests.lock().expect("requests");
+    assert!(
+        requests[0]
+            .tools
+            .iter()
+            .all(|tool| tool.name != "new_context")
+    );
+    let result = requests[1]
+        .input
+        .iter()
+        .find(|item| item["type"] == "function_call_output" && item["call_id"] == "stale")
+        .expect("denied tool result");
+    assert_eq!(result["_mobius_is_error"], true);
     assert!(
         requests[1]
             .input
             .iter()
-            .any(|item| item.get("_mobius_internal").and_then(Value::as_str)
-                == Some("handoff_urgent"))
+            .all(|item| item["_mobius_internal"] != "handoff_notes")
     );
 }
 
-struct GateHandoffPreparation {
-    kind: &'static str,
-    first: AtomicBool,
-    entered: Notify,
-    release: Notify,
+#[tokio::test]
+async fn invalid_checkpoint_preserves_original_and_pending_input() {
+    let workspace = TempDir::new().expect("workspace");
+    let model = Arc::new(ScriptedModel::new(vec![
+        text_response_with_usage("first result", usage(2_000)),
+        text_response("I answered instead of saving notes"),
+    ]));
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+        SqliteCheckpoint::new(workspace.path().join("checkpoint.sqlite3")).expect("store"),
+    );
+    let mut agent = create_agent(config_with_store(
+        workspace.path(),
+        Arc::clone(&model),
+        Arc::clone(&checkpoints),
+        "failed-checkpoint",
+    ))
+    .await
+    .expect("agent");
+    agent
+        .sender()
+        .submit(user_message("original task"))
+        .expect("original");
+    assert_eq!(final_message(&mut agent).await, "first result");
+    agent
+        .sender()
+        .submit(user_message("pending request"))
+        .expect("pending");
+    assert!(failed_turn(&mut agent).await.contains("one write_handoff"));
+    let checkpoints =
+        SqliteCheckpoint::new(workspace.path().join("checkpoint.sqlite3")).expect("store");
+    let saved = checkpoints
+        .load("failed-checkpoint")
+        .await
+        .expect("load")
+        .expect("saved");
+    let input = serde_json::to_string(&saved.context).expect("input");
+    assert!(input.contains("original task"));
+    assert!(input.contains("pending request"));
+    assert!(input.contains("first result"));
+    assert_eq!(saved.context_epoch, 0);
+    assert_eq!(saved.compaction_count, 0);
 }
 
-impl Middleware for GateHandoffPreparation {
-    fn name(&self) -> &'static str {
-        "gate_handoff_preparation"
-    }
-
-    fn pre_model<'a>(
-        &'a self,
-        context: &'a mut mobius::middleware::ModelContext<'_>,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            if context
-                .input()
+#[tokio::test]
+async fn smaller_model_uses_old_model_for_notes_without_answering_new_input() {
+    for (needs_checkpoint, fits) in [(true, true), (true, false), (false, true)] {
+        let workspace = TempDir::new().expect("workspace");
+        let notes = if fits {
+            "Checkpoint: the prior request was inspected.".into()
+        } else {
+            "x".repeat(21_000)
+        };
+        let mut first_output = vec![
+            serde_json::json!({"type":"message", "role":"assistant", "content":[{"type":"output_text", "text":"draft"}]}),
+        ];
+        if !needs_checkpoint {
+            first_output.insert(
+                0,
+                serde_json::json!({
+                    "type": "reasoning", "encrypted_content": "x".repeat(100_000)
+                }),
+            );
+        }
+        let large = Arc::new(ScriptedModel::new(vec![
+            ModelOutput::from_output(first_output, true, TokenUsage::default())
+                .expect("source reply"),
+            checkpoint_response(&notes),
+        ]));
+        let small = Arc::new(ScriptedModel::new(vec![text_response("done")]));
+        let mut router = ModelRouter::new("large", Arc::clone(&large) as Arc<dyn Model>);
+        router
+            .register("small", Arc::clone(&small) as Arc<dyn Model>)
+            .expect("small");
+        for (route, context_window) in [
+            ("large", 300_000),
+            ("small", if fits { 8_000 } else { 4_000 }),
+        ] {
+            router
+                .configure_choice(ModelChoice {
+                    route: route.into(),
+                    group: route.into(),
+                    model: route.into(),
+                    reasoning_effort: None,
+                    variant_label: None,
+                    context_window: Some(context_window),
+                    supports_image_input: false,
+                    supports_image_generation: false,
+                    supports_realtime_voice: false,
+                    tool_discovery: ToolDiscoveryMode::Rebuild,
+                })
+                .expect("choice");
+        }
+        let checkpoints: Arc<dyn CheckpointStore> = Arc::new(MemoryCheckpoints::default());
+        let config = AgentConfig::new(
+            Arc::new(router),
+            Arc::new(Sandbox::new(
+                Arc::new(LocalSandbox::new(workspace.path()).expect("sandbox")),
+                ApprovalPolicy::Ask,
+            )),
+            Arc::clone(&checkpoints),
+            MiddlewareStack::new(vec![
+                Arc::new(Messages::default()),
+                Arc::new(Compaction::default()),
+            ])
+            .expect("middleware"),
+            "test system prompt",
+        )
+        .session_id("smaller-model")
+        .session_context(test_session_context());
+        let mut agent = create_agent(config).await.expect("agent");
+        agent
+            .sender()
+            .submit(user_message(
+                "large historical request ".repeat(if needs_checkpoint { 3_000 } else { 1 }),
+            ))
+            .expect("first");
+        assert_eq!(final_message(&mut agent).await, "draft");
+        agent
+            .sender()
+            .submit(Op::SetModel {
+                route: "small".into(),
+            })
+            .expect("select");
+        agent
+            .sender()
+            .submit(user_message("new pending request marker"))
+            .expect("next");
+        if !fits {
+            assert!(failed_turn(&mut agent).await.contains("does not fit"));
+            assert!(small.requests.lock().expect("destination").is_empty());
+            let saved = checkpoints
+                .load("smaller-model")
+                .await
+                .expect("load")
+                .expect("saved");
+            assert_eq!(saved.context_epoch, 0);
+            assert_eq!(saved.compaction_count, 0);
+            assert_eq!(saved.context_model_route.as_deref(), Some("large"));
+            let original = serde_json::to_string(&saved.context).expect("preserved context");
+            assert!(original.contains("large historical request"));
+            assert!(original.contains("new pending request marker"));
+            continue;
+        }
+        assert_eq!(final_message(&mut agent).await, "done");
+        let source = large.requests.lock().expect("source");
+        assert_eq!(source.len(), if needs_checkpoint { 2 } else { 1 });
+        if needs_checkpoint {
+            assert_eq!(source[1].tools[0].name, "write_handoff");
+            assert!(
+                !serde_json::to_string(&source[1].input)
+                    .expect("source input")
+                    .contains("new pending request marker")
+            );
+        }
+        let destination = small.requests.lock().expect("destination");
+        assert_eq!(destination.len(), 1);
+        let input = serde_json::to_string(&destination[0].input).expect("destination input");
+        assert_eq!(
+            input.contains("Checkpoint: the prior request"),
+            needs_checkpoint
+        );
+        assert!(!input.contains("encrypted_content"));
+        assert_eq!(
+            destination[0]
+                .input
                 .iter()
-                .any(|item| item.get("_mobius_internal").and_then(Value::as_str) == Some(self.kind))
-                && self.first.swap(false, Ordering::SeqCst)
-            {
-                self.entered.notify_one();
-                self.release.notified().await;
-            }
-            Ok(())
-        })
+                .filter(
+                    |item| item.pointer("/content/0/text").and_then(Value::as_str)
+                        == Some("new pending request marker")
+                )
+                .count(),
+            1
+        );
     }
 }
 
 #[tokio::test]
-async fn handoff_preparation_steers_do_not_consume_recovery_model_attempts() {
-    use mobius::middleware::compaction::CompactionMode;
-    for kind in ["handoff_urgent", "handoff_reset_only"] {
+async fn failed_voluntary_reset_is_not_retried_on_the_next_turn() {
+    let workspace = TempDir::new().expect("workspace");
+    let model = Arc::new(ScriptedModel::new(vec![
+        tool_response("reset", "new_context", serde_json::json!({})),
+        text_response("invalid checkpoint response"),
+        text_response("continued without retrying the failed reset"),
+    ]));
+    let mut agent = create_agent(test_config(
+        workspace.path(),
+        Arc::clone(&model),
+        vec![Arc::new(Compaction::default().allow_model_compaction(true))],
+    ))
+    .await
+    .expect("agent");
+    agent.sender().submit(user_message("start")).expect("input");
+    assert!(failed_turn(&mut agent).await.contains("one write_handoff"));
+    agent
+        .sender()
+        .submit(user_message("continue"))
+        .expect("next turn");
+    assert_eq!(
+        final_message(&mut agent).await,
+        "continued without retrying the failed reset"
+    );
+    let requests = model.requests.lock().expect("requests");
+    assert_eq!(requests.len(), 3);
+    assert!(
+        requests[2]
+            .tools
+            .iter()
+            .any(|tool| tool.name == "new_context")
+    );
+}
+
+#[tokio::test]
+async fn oversized_history_summarizes_a_complete_prefix_and_preserves_parallel_results() {
+    let workspace = TempDir::new().expect("workspace");
+    let model = Arc::new(ScriptedModel::new(vec![
+        checkpoint_response("old task completed"),
+        text_response("continued"),
+    ]));
+    let checkpoints = Arc::new(MemoryCheckpoints::default());
+    let mut checkpoint = Checkpoint::empty("over-budget");
+    checkpoint.session_context = test_session_context();
+    checkpoint.model_route = Some("test".into());
+    checkpoint.context_model_route = Some("test".into());
+    let first_result = "parallel-a ".repeat(350);
+    let second_result = "parallel-b ".repeat(350);
+    checkpoint.context = Arc::new(vec![
+        mobius::backend::model::user_message(&"old context ".repeat(2_000)),
+        serde_json::json!({"type":"function_call", "call_id":"a", "name":"read_file", "arguments":"{}"}),
+        serde_json::json!({"type":"function_call", "call_id":"b", "name":"read_file", "arguments":"{}"}),
+        mobius::backend::model::tool_output("a", &first_result.as_str().into(), false),
+        mobius::backend::model::tool_output("b", &second_result.as_str().into(), false),
+    ].into_iter().map(Arc::new).collect());
+    checkpoints
+        .sessions
+        .lock()
+        .expect("sessions")
+        .insert(checkpoint.session_id.clone(), checkpoint);
+    let mut agent = create_agent(
+        config_with_store(
+            workspace.path(),
+            Arc::clone(&model),
+            checkpoints,
+            "over-budget",
+        )
+        .context_window(8_000)
+        .initial_replay_batches(0),
+    )
+    .await
+    .expect("agent");
+    agent
+        .sender()
+        .submit(user_message("continue"))
+        .expect("input");
+    assert_eq!(final_message(&mut agent).await, "continued");
+    let requests = model.requests.lock().expect("requests");
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].tools.len(), 1);
+    assert!(!requests[0].input.iter().any(|item| item["call_id"] == "a"));
+    let output = serde_json::to_string(&requests[1].input).expect("request");
+    assert!(output.contains(&first_result));
+    assert!(output.contains(&second_result));
+}
+
+#[tokio::test]
+async fn unavailable_or_too_small_source_uses_the_selected_model_for_checkpoint_preparation() {
+    for source_window in [None, Some(500), Some(20_000)] {
         let workspace = TempDir::new().expect("workspace");
         let model = Arc::new(ScriptedModel::new(vec![
-            text_response_with_usage("first", usage(6_100)),
-            tool_response(
-                "save",
-                "write_handoff",
-                serde_json::json!({"notes":"Goal: finish. Next: reset."}),
-            ),
-            tool_response("reset", "new_context", serde_json::json!({})),
-            text_response("recovered"),
+            checkpoint_response("old history summarized"),
+            text_response("continued"),
         ]));
-        let gate = Arc::new(GateHandoffPreparation {
-            kind,
-            first: AtomicBool::new(true),
-            entered: Notify::new(),
-            release: Notify::new(),
-        });
+        let checkpoints = Arc::new(MemoryCheckpoints::default());
+        let mut checkpoint = Checkpoint::empty("removed-source");
+        checkpoint.session_context = test_session_context();
+        checkpoint.model_route = Some("test".into());
+        checkpoint.context_model_route = Some("removed".into());
+        checkpoint.context = Arc::new(
+            (0..10)
+                .map(|_| {
+                    Arc::new(mobius::backend::model::user_message(
+                        &"old history ".repeat(250),
+                    ))
+                })
+                .collect(),
+        );
+        checkpoints
+            .sessions
+            .lock()
+            .expect("sessions")
+            .insert(checkpoint.session_id.clone(), checkpoint);
+        let mut router = ModelRouter::new("test", Arc::clone(&model) as Arc<dyn Model>);
+        if let Some(window) = source_window {
+            router
+                .register("removed", Arc::new(ScriptedModel::new(Vec::new())))
+                .expect("source");
+            let mut choice = router
+                .resolve_choice("removed", None)
+                .expect("choice")
+                .clone();
+            choice.context_window = Some(window);
+            router.configure_choice(choice).expect("source window");
+        }
         let mut agent = create_agent(
-            test_config(
-                workspace.path(),
-                Arc::clone(&model),
-                vec![
-                    Arc::new(Compaction::default().mode(CompactionMode::Handoff)),
-                    gate.clone(),
-                ],
+            AgentConfig::new(
+                Arc::new(router),
+                Arc::new(Sandbox::new(
+                    Arc::new(LocalSandbox::new(workspace.path()).expect("sandbox")),
+                    ApprovalPolicy::Ask,
+                )),
+                checkpoints,
+                MiddlewareStack::new(vec![
+                    Arc::new(Messages::default()),
+                    Arc::new(Compaction::default()),
+                ])
+                .expect("middleware"),
+                "test system prompt",
             )
-            .context_window(8_000),
+            .session_id("removed-source")
+            .session_context(test_session_context())
+            .context_window(8_000)
+            .initial_replay_batches(0),
         )
         .await
         .expect("agent");
-        let sender = agent.sender();
-        sender.submit(user_message("start")).expect("first");
-        assert_eq!(final_message(&mut agent).await, "first");
-        sender.submit(user_message("continue")).expect("recovery");
-        let turn_id = loop {
-            if let EventMsg::TurnStarted(turn) = agent.next_event().await.expect("event").msg {
-                break turn.turn_id;
-            }
-        };
-        gate.entered.notified().await;
-        sender
-            .submit(steer_message(turn_id, "also verify the correction"))
-            .expect("steer during preparation");
-        gate.release.notify_one();
-        assert_eq!(final_message(&mut agent).await, "recovered", "{kind}");
+        agent
+            .sender()
+            .submit(user_message("continue"))
+            .expect("input");
+        assert_eq!(final_message(&mut agent).await, "continued");
         let requests = model.requests.lock().expect("requests");
-        assert_eq!(requests.len(), 4, "{kind}");
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].tools.len(), 1);
+        assert_eq!(requests[0].tools[0].name, "write_handoff");
         assert!(
-            serde_json::to_string(&requests[3].input)
-                .expect("fresh context")
-                .contains("also verify the correction")
+            requests[1]
+                .input
+                .iter()
+                .any(|item| item.to_string().contains("old history summarized"))
         );
-        assert!(!requests[1].allow_hosted_tools);
-        assert!(!requests[2].allow_hosted_tools);
     }
 }

@@ -1,5 +1,7 @@
 //! Chat catalog, durable forking, and bounded owner-scoped history retrieval.
 
+use std::borrow::Cow;
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -332,8 +334,8 @@ struct HistoryCursor {
 }
 
 #[derive(Serialize)]
-struct HistoryHit {
-    session_id: String,
+struct HistoryHit<'a> {
+    session_id: &'a str,
     target: MessageTarget,
     kind: &'static str,
     offset: usize,
@@ -376,7 +378,7 @@ struct MessageChatArgs {
 }
 
 impl MessageChatArgs {
-    fn command(&self) -> Result<(ChatTarget<'_>, Op)> {
+    fn command(&mut self) -> Result<(ChatTarget<'_>, Op)> {
         let target = match (self.target.as_deref(), self.workspace.as_deref()) {
             (Some(target), None) => ChatTarget::Existing(target),
             (None, Some(workspace)) => ChatTarget::Workspace(workspace),
@@ -386,11 +388,15 @@ impl MessageChatArgs {
                 ));
             }
         };
-        let op = match (&self.text, &self.interrupt_turn_id, self.delivery) {
+        let op = match (
+            self.text.take(),
+            self.interrupt_turn_id.take(),
+            self.delivery,
+        ) {
             (Some(text), None, delivery) => Op::Message {
                 message: crate::protocol::MessageSubmission {
                     author: crate::protocol::MessageAuthor::User,
-                    text: text.clone(),
+                    text,
                     attachments: Vec::new(),
                     reply: None,
                     requested_delivery: Some(
@@ -399,9 +405,7 @@ impl MessageChatArgs {
                     target_turn_id: None,
                 },
             },
-            (None, Some(turn_id), None) if self.workspace.is_none() => Op::Interrupt {
-                turn_id: turn_id.clone(),
-            },
+            (None, Some(turn_id), None) if self.workspace.is_none() => Op::Interrupt { turn_id },
             _ => return Err(Error::Tool(
                 "provide text with optional delivery, or interrupt_turn_id with an existing target"
                     .into(),
@@ -463,7 +467,7 @@ impl Tool for MessageChat {
         arguments: Value,
     ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
-            let args: MessageChatArgs = serde_json::from_value(arguments)?;
+            let mut args: MessageChatArgs = serde_json::from_value(arguments)?;
             let (target, op) = args.command()?;
             let target = self
                 .0
@@ -663,17 +667,14 @@ impl History {
                 break;
             }
         }
-        let searchable = documents
-            .iter()
-            .map(|document| document.text.clone())
-            .collect::<Vec<_>>();
-        let hits = rank_bm25(&searchable, &cursor.query, MAX_HISTORY_RESULTS)
+        let searchable = documents.iter().map(|document| document.text.as_str());
+        let hits = rank_bm25(searchable, &cursor.query, MAX_HISTORY_RESULTS)
             .into_iter()
             .map(|index| {
                 let document = &documents[index];
                 let (offset, excerpt) = history_excerpt(&document.text, &cursor.query);
                 HistoryHit {
-                    session_id: document.session_id.clone(),
+                    session_id: &document.session_id,
                     target: document.target,
                     kind: document.kind,
                     offset: document.offset + offset,
@@ -695,7 +696,7 @@ impl History {
             .checkpoints
             .list_sessions_page(SessionPageRequest {
                 owner_id: Some(self.owner_id.clone()),
-                cursor: cursor.catalog.clone(),
+                cursor: cursor.catalog.take(),
                 limit: 1,
             })
             .await?;
@@ -837,7 +838,7 @@ fn scan_history_batch(
     Ok(())
 }
 
-fn history_text(item: &Value) -> Option<(&'static str, String)> {
+fn history_text(item: &Value) -> Option<(&'static str, Cow<'_, str>)> {
     if let Some(message) = crate::protocol::message_metadata(item) {
         return Some(match message.author {
             crate::protocol::MessageAuthor::User => {
@@ -851,11 +852,11 @@ fn history_text(item: &Value) -> Option<(&'static str, String)> {
                     }
                     text.push_str(&reference);
                 }
-                ("user", text)
+                ("user", Cow::Owned(text))
             }
             crate::protocol::MessageAuthor::Source { source, handle, .. } => (
                 "assistant",
-                format!("@{handle} ({}): {}", source.id(), message.text),
+                Cow::Owned(format!("@{handle} ({}): {}", source.id(), message.text)),
             ),
         });
     }
@@ -870,25 +871,27 @@ fn history_text(item: &Value) -> Option<(&'static str, String)> {
             })
             .filter_map(crate::protocol::content_part_text)
             .collect::<Vec<_>>();
-        return (!attachments.is_empty()).then(|| ("user", attachments.join("\n")));
+        return (!attachments.is_empty()).then(|| ("user", Cow::Owned(attachments.join("\n"))));
     }
     match item.get("type").and_then(Value::as_str) {
         Some("function_call") => Some((
             "tool_call",
-            format!(
+            Cow::Owned(format!(
                 "{}\n{}",
                 item.get("name")?.as_str()?,
                 history_value_text(item.get("arguments")?)
-            ),
+            )),
         )),
         Some("function_call_output") => Some((
             "tool_result",
-            item.get("output")?
-                .as_array()?
-                .iter()
-                .filter_map(crate::protocol::content_part_text)
-                .collect::<Vec<_>>()
-                .join("\n"),
+            Cow::Owned(
+                item.get("output")?
+                    .as_array()?
+                    .iter()
+                    .filter_map(crate::protocol::content_part_text)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
         )),
         Some("reasoning" | "compaction") => None,
         _ => {
@@ -899,12 +902,14 @@ fn history_text(item: &Value) -> Option<(&'static str, String)> {
             };
             let content = item.get("content")?;
             let text = match content {
-                Value::String(text) => text.clone(),
-                Value::Array(parts) => parts
-                    .iter()
-                    .filter_map(crate::protocol::content_part_text)
-                    .collect::<Vec<_>>()
-                    .join("\n"),
+                Value::String(text) => Cow::Borrowed(text.as_str()),
+                Value::Array(parts) => Cow::Owned(
+                    parts
+                        .iter()
+                        .filter_map(crate::protocol::content_part_text)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                ),
                 _ => return None,
             };
             Some((kind, text))
@@ -912,10 +917,10 @@ fn history_text(item: &Value) -> Option<(&'static str, String)> {
     }
 }
 
-fn history_value_text(value: &Value) -> String {
+fn history_value_text(value: &Value) -> Cow<'_, str> {
     value
         .as_str()
-        .map_or_else(|| value.to_string(), str::to_owned)
+        .map_or_else(|| Cow::Owned(value.to_string()), Cow::Borrowed)
 }
 
 fn history_chunk(text: &str, offset: usize, max_chars: usize) -> Result<(String, Option<usize>)> {
@@ -1136,8 +1141,9 @@ fn compact_message(message: &str) -> String {
 
 fn manual_fork_checkpoint(parent: &Checkpoint, context: Vec<serde_json::Value>) -> Checkpoint {
     let mut checkpoint = Checkpoint::empty(Uuid::new_v4().to_string());
-    checkpoint.context = context;
-    strip_attachment_references(&mut checkpoint.context);
+    let mut context = context.into_iter().map(Arc::new).collect();
+    strip_attachment_references(&mut context);
+    checkpoint.context = Arc::new(context);
     checkpoint
         .first_user_message
         .clone_from(&parent.first_user_message);
@@ -1262,16 +1268,20 @@ fn resume_option(
 }
 
 fn session_description(session: &SessionSummary) -> String {
-    let mut details = [
+    let mut details = String::new();
+    for label in [
         session.session_context.workspace_label.as_deref(),
         session.session_context.origin_label.as_deref(),
     ]
     .into_iter()
     .flatten()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    details.push(format!("created at Unix time {}", session.created_at));
-    details.join(" · ")
+    {
+        details.push_str(label);
+        details.push_str(" · ");
+    }
+    write!(details, "created at Unix time {}", session.created_at)
+        .expect("writing to a String cannot fail");
+    details
 }
 
 #[cfg(test)]
@@ -1451,7 +1461,7 @@ mod tests {
             serde_json::json!({"workspace":"/project", "text":"Start", "delivery":"queue"}),
             serde_json::json!({"target":"chat", "interrupt_turn_id":"turn"}),
         ] {
-            let args: MessageChatArgs = serde_json::from_value(arguments).unwrap();
+            let mut args: MessageChatArgs = serde_json::from_value(arguments).unwrap();
             assert!(args.command().is_ok());
         }
         for arguments in [
@@ -1462,7 +1472,7 @@ mod tests {
             serde_json::json!({"workspace":"/project", "interrupt_turn_id":"turn"}),
             serde_json::json!({"target":"chat", "interrupt_turn_id":"turn", "delivery":"queue"}),
         ] {
-            let args: MessageChatArgs = serde_json::from_value(arguments).unwrap();
+            let mut args: MessageChatArgs = serde_json::from_value(arguments).unwrap();
             assert!(args.command().is_err());
         }
     }
@@ -1537,9 +1547,10 @@ mod tests {
         let mut checkpoint = Checkpoint::empty(session_id);
         checkpoint.sequence = 1;
         checkpoint.session_context.owner_id = owner_id.into();
-        checkpoint.context.clone_from(&items);
+        let items = items.into_iter().map(Arc::new).collect::<Vec<_>>();
+        checkpoint.context = Arc::new(items);
         checkpoints
-            .save(&checkpoint, &items, None)
+            .save(&checkpoint, &checkpoint.context, None)
             .await
             .expect("save history");
         checkpoint
@@ -1571,17 +1582,21 @@ mod tests {
         let mut checkpoint = save_history(history.checkpoints.as_ref(), "current", "researcher", vec![
             crate::backend::model::user_message("Investigate"),
             serde_json::json!({"type":"function_call", "call_id":"call-1", "name":"read_file", "arguments":"{\"path\":\"earlier.rs\"}"}),
-            crate::backend::model::tool_output("call-1", &output, false),
+            crate::backend::model::tool_output("call-1", &output.as_str().into(), false),
         ]).await;
-        checkpoint.context[2]["output"] =
+        Arc::make_mut(&mut Arc::make_mut(&mut checkpoint.context)[2])["output"] =
             serde_json::json!([{"type":"input_text", "text":"[offloaded]"}]);
+        checkpoint.context_epoch += 1;
         for sequence in 2..=70 {
             checkpoint.sequence = sequence;
             history
                 .checkpoints
                 .save(
                     &checkpoint,
-                    &[serde_json::json!({"role":"assistant", "content":"newer unrelated work"})],
+                    &[
+                        serde_json::json!({"role":"assistant", "content":"newer unrelated work"})
+                            .into(),
+                    ],
                     None,
                 )
                 .await
@@ -2003,6 +2018,22 @@ mod tests {
     }
 
     #[test]
+    fn history_arguments_borrow_strings_and_format_json_values() {
+        let arguments = Value::String("large tool arguments".into());
+        assert!(matches!(history_value_text(&arguments), Cow::Borrowed(_)));
+        assert_eq!(
+            history_value_text(&serde_json::json!({"n": 1})),
+            "{\"n\":1}"
+        );
+        assert_eq!(
+            history_text(&serde_json::json!({
+                "type": "function_call", "name": "tool", "arguments": "raw"
+            })),
+            Some(("tool_call", Cow::Owned("tool\nraw".into())))
+        );
+    }
+
+    #[test]
     fn resume_lists_fresh_forks() {
         let summary = |session_id: &str, parent_session_id: Option<&str>| SessionSummary {
             session_id: session_id.into(),
@@ -2016,6 +2047,15 @@ mod tests {
             created_at: 0,
             updated_at: 0,
         };
+
+        let mut described = summary("branch-id", Some("parent"));
+        assert_eq!(session_description(&described), "created at Unix time 0");
+        described.session_context.workspace_label = Some(String::new());
+        described.session_context.origin_label = Some("origin".into());
+        assert_eq!(
+            session_description(&described),
+            " · origin · created at Unix time 0"
+        );
 
         assert_eq!(
             resume_option(summary("branch-id", Some("parent")), "current")
@@ -2157,16 +2197,21 @@ mod tests {
     #[test]
     fn manual_fork_keeps_context_workspace_and_metadata_but_clears_origin() {
         let mut parent = Checkpoint::empty("parent");
-        parent.context = vec![serde_json::json!({
-            "role": "user",
-            "content": "Hello",
-            "_mobius_attachments": [{
-                "id": "378b8581-e96c-4413-a138-93e74561cb87",
-                "name": "photo.png",
-                "size": 1,
-                "media_type": "image/png"
-            }]
-        })];
+        parent.context = std::sync::Arc::new(
+            vec![serde_json::json!({
+                "role": "user",
+                "content": "Hello",
+                "_mobius_attachments": [{
+                    "id": "378b8581-e96c-4413-a138-93e74561cb87",
+                    "name": "photo.png",
+                    "size": 1,
+                    "media_type": "image/png"
+                }]
+            })]
+            .into_iter()
+            .map(std::sync::Arc::new)
+            .collect(),
+        );
         parent.first_user_message = Some("Hello".into());
         parent.metadata.insert(
             "gateway.chat".into(),
@@ -2180,7 +2225,14 @@ mod tests {
             ..crate::protocol::SessionContext::default()
         };
 
-        let fork = manual_fork_checkpoint(&parent, parent.context.clone());
+        let fork = manual_fork_checkpoint(
+            &parent,
+            parent
+                .context
+                .iter()
+                .map(|item| item.as_ref().to_owned())
+                .collect(),
+        );
 
         assert!(fork.context[0].get("_mobius_attachments").is_none());
         assert_eq!(fork.first_user_message, parent.first_user_message);

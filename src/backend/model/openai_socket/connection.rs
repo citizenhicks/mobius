@@ -35,6 +35,7 @@ use super::super::openai::emit_reasoning_event;
 use super::super::openai::emit_text_event;
 use super::super::openai::emit_web_event;
 use super::super::openai::response_error;
+use super::super::openai::validate_stream_output;
 use super::super::openai_auth::OpenAiAuthorization;
 use super::super::openai_auth::ResolvedAuthorization;
 use super::super::transport::account_stream_bytes;
@@ -446,11 +447,11 @@ fn unauthorized(error: &tokio_tungstenite::tungstenite::Error) -> bool {
 
 pub(super) async fn exchange(
     connection: &mut OpenAiWsConnection,
-    body: &Value,
+    body: String,
     events: &ModelEventSink,
     cancellation: Option<&ModelCancellation>,
 ) -> Result<Exchange> {
-    let message = Message::text(serde_json::to_string(body)?);
+    let message = Message::text(body);
     let mut exchange = CloseReasonOnDrop {
         connection,
         cancellation,
@@ -550,7 +551,7 @@ async fn read_exchange_with_timeout(
             ));
         }
         account_stream_bytes(&mut stream_bytes, message.len(), "WebSocket")?;
-        let event = match message {
+        let mut event = match message {
             Message::Text(text) => serde_json::from_str(text.as_ref())?,
             Message::Binary(bytes) => serde_json::from_slice(&bytes)?,
             Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
@@ -559,30 +560,29 @@ async fn read_exchange_with_timeout(
                 return Ok(Exchange::Reconnect);
             }
         };
-        collect_stream_output(&event, &mut output)?;
+        let pending = validate_stream_output(&event, &output)?;
         emit_ready_tool_calls(
             &output,
+            pending.map(|index| (index, &event["item"])),
             &mut next_output_index,
             &mut streamed_tool_calls,
             &tracked_events,
         )
         .await?;
-        if emit_web_event(&event, &mut web_searches, &tracked_events).await? {
-            continue;
-        }
-        if emit_reasoning_event(&event, &mut reasoning_part, &tracked_events).await? {
-            continue;
-        }
-        if emit_text_event(&event, &mut commentary, &tracked_events).await? {
+        let handled = emit_web_event(&event, &mut web_searches, &tracked_events).await?
+            || emit_reasoning_event(&event, &mut reasoning_part, &tracked_events).await?
+            || emit_text_event(&event, &mut commentary, &tracked_events).await?;
+        collect_stream_output(&mut event, &mut output)?;
+        if handled {
             continue;
         }
         match event.get("type").and_then(Value::as_str) {
             Some("response.completed") => {
                 let response = event
-                    .get("response")
-                    .cloned()
+                    .get_mut("response")
+                    .map(Value::take)
                     .ok_or_else(|| Error::Provider("completion omitted response".into()))?;
-                return Ok(Exchange::Completed(attach_stream_output(response, &output)));
+                return Ok(Exchange::Completed(attach_stream_output(response, output)));
             }
             Some("error" | "response.failed" | "response.incomplete") => {
                 return failed_exchange(&event, output_delivered.load(Ordering::Acquire));
@@ -673,27 +673,34 @@ fn websocket_error_kind(error: &WebSocketError) -> &'static str {
 }
 
 fn log_websocket_error(context: &str, error: &WebSocketError) {
-    log_interruption(context, &websocket_error_cause(error));
+    log_interruption(context, websocket_error_cause(error));
 }
 
-pub(super) fn websocket_error_cause(error: &WebSocketError) -> String {
-    match error {
-        WebSocketError::Io(error) => format!("I/O:{:?}", error.kind()),
-        WebSocketError::Http(response) => format!("HTTP:{}", response.status()),
-        _ => websocket_error_kind(error).into(),
-    }
+pub(super) fn websocket_error_cause(error: &WebSocketError) -> impl std::fmt::Display + '_ {
+    std::fmt::from_fn(move |formatter| match error {
+        WebSocketError::Io(error) => write!(formatter, "I/O:{:?}", error.kind()),
+        WebSocketError::Http(response) => write!(formatter, "HTTP:{}", response.status()),
+        _ => formatter.write_str(websocket_error_kind(error)),
+    })
 }
 
-fn log_interruption(context: &str, cause: &str) {
-    eprintln!(
-        "{} OpenAI Responses WebSocket interrupted: context={context} cause={cause}",
-        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-    );
+fn log_interruption(context: &str, cause: impl std::fmt::Display) {
+    tracing::warn!(context, %cause, "OpenAI Responses WebSocket interrupted");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disabled_interruption_logging_does_not_format_diagnostics() {
+        tracing::subscriber::with_default(tracing::subscriber::NoSubscriber::default(), || {
+            log_interruption(
+                "test",
+                std::fmt::from_fn(|_| panic!("disabled diagnostic was formatted")),
+            );
+        });
+    }
 
     #[tokio::test]
     async fn send_failure_records_request_failed_and_finishes_closing() {
@@ -721,7 +728,7 @@ mod tests {
         };
         let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
         assert!(matches!(
-            exchange(&mut connection, &serde_json::json!({}), &events, None).await,
+            exchange(&mut connection, "{}".into(), &events, None).await,
             Ok(Exchange::Reconnect)
         ));
         assert_eq!(

@@ -973,7 +973,7 @@ async fn paired_client_uploads_lists_reads_and_submits_a_session_file() {
         else {
             continue;
         };
-        if actual_session != session_id
+        if actual_session.as_ref() != session_id
             || record.event.submission_id.as_deref() != Some(&submission_id)
         {
             continue;
@@ -1129,6 +1129,15 @@ async fn paired_client_deletes_routine_sessions_with_the_routine() {
 
 #[tokio::test]
 async fn unpairing_disconnects_the_client_and_rejects_its_token() {
+    assert_unpairing_disconnects(false).await;
+}
+
+#[tokio::test]
+async fn applied_unpairing_still_disconnects_the_client() {
+    assert_unpairing_disconnects(true).await;
+}
+
+async fn assert_unpairing_disconnects(sync_fails: bool) {
     let root = tempfile::tempdir().expect("temporary directory");
     let (server, grant) = GatewayServer::bootstrap(
         root.path().join("state"),
@@ -1163,6 +1172,9 @@ async fn unpairing_disconnects_the_client_and_rejects_its_token() {
     let (_device_sender, mut device_events) = device.into_parts();
     wait_gateway_ready(&mut device_events).await;
 
+    if sync_fails {
+        crate::publication::fail_next_directory_sync(&root.path().join("state/auth.json"));
+    }
     let request_id = Uuid::new_v4().to_string();
     dashboard_sender
         .send(ClientMessage::UnpairClient {
@@ -1177,6 +1189,17 @@ async fn unpairing_disconnects_the_client_and_rejects_its_token() {
             .await
             .expect("inventory frame")
             .expect("dashboard open");
+        if sync_fails
+            && let ServerMessage::Rejected {
+                request_id: actual,
+                message,
+                ..
+            } = &frame.message
+            && actual == &request_id
+        {
+            assert!(message.contains("state replacement was applied"));
+            break (dashboard_identity.client_id.clone(), Vec::new());
+        }
         if let ServerMessage::Clients {
             request_id: actual,
             current_client_id,

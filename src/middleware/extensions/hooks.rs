@@ -474,15 +474,18 @@ fn load_manifest_sources(
 }
 
 fn inline_document(object: &Map<String, Value>) -> Result<HookDocument> {
-    let value = if object.contains_key("hooks") {
-        Value::Object(object.clone())
+    let fields = serde::de::value::MapDeserializer::new(
+        object.iter().map(|(key, value)| (key.as_str(), value)),
+    );
+    let document = if object.contains_key("hooks") {
+        HookDocument::deserialize(fields)
     } else {
-        let mut document = Map::new();
-        document.insert("hooks".into(), Value::Object(object.clone()));
-        Value::Object(document)
+        BTreeMap::deserialize(fields).map(|hooks| HookDocument {
+            description: None,
+            hooks,
+        })
     };
-    serde_json::from_value(value)
-        .map_err(|error| Error::Config(format!("invalid inline plugin hooks: {error}")))
+    document.map_err(|error| Error::Config(format!("invalid inline plugin hooks: {error}")))
 }
 
 fn read_document(path: &Path) -> Result<HookDocument> {

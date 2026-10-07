@@ -71,8 +71,26 @@ fn open_regular_file(root: Dir, relative: &Path, requested: &str) -> Result<cap_
     if before.is_symlink() || !before.is_file() {
         return Err(Error::Sandbox(requested.to_string()));
     }
+    open_checked_file(&parent, name, &before, requested)
+}
+
+fn open_checked_file(
+    parent: &Dir,
+    name: &std::ffi::OsStr,
+    before: &cap_std::fs::Metadata,
+    requested: &str,
+) -> Result<cap_std::fs::File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use cap_std::fs::OpenOptionsExt as _;
+
+        // A checked regular file may become a FIFO before open; reject it without blocking.
+        options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+    }
     let file = parent
-        .open(name)
+        .open_with(name, &options)
         .map_err(|_| Error::Sandbox(requested.to_string()))?;
     let opened = file.metadata()?;
     let current = parent
@@ -80,7 +98,7 @@ fn open_regular_file(root: Dir, relative: &Path, requested: &str) -> Result<cap_
         .map_err(|_| Error::Sandbox(requested.to_string()))?;
     if !opened.is_file()
         || current.is_symlink()
-        || !same_cap_file(&before, &opened)
+        || !same_cap_file(before, &opened)
         || !same_cap_file(&opened, &current)
     {
         return Err(Error::Sandbox(requested.to_string()));
@@ -183,4 +201,48 @@ fn same_cap_file(left: &cap_std::fs::Metadata, right: &cap_std::fs::Metadata) ->
 #[cfg(not(unix))]
 fn same_cap_file(_left: &cap_std::fs::Metadata, _right: &cap_std::fs::Metadata) -> bool {
     false
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    use std::time::Duration;
+
+    #[test]
+    fn sandbox_file_open_is_nonblocking() {
+        let directory = tempfile::tempdir().expect("workspace");
+        let path = directory.path().join("file");
+        std::fs::write(&path, b"regular").expect("regular file");
+        let parent = Dir::open_ambient_dir(directory.path(), cap_std::ambient_authority())
+            .expect("workspace capability");
+        let before = parent.symlink_metadata("file").expect("checked metadata");
+        std::fs::remove_file(&path).expect("replace regular file");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&path)
+                .status()
+                .expect("create FIFO")
+                .success()
+        );
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let _reader = std::thread::spawn(move || {
+            let rejected =
+                open_checked_file(&parent, std::ffi::OsStr::new("file"), &before, "file").is_err();
+            let _ = sender.send(rejected);
+        });
+        match receiver.recv_timeout(Duration::from_secs(2)) {
+            Ok(rejected) => assert!(rejected, "a replaced FIFO must be rejected"),
+            Err(error) => {
+                // Release a regressed blocking open before failing, without blocking this test.
+                let _rescue = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(&path);
+                let _ = receiver.recv_timeout(Duration::from_secs(2));
+                panic!("file open did not reject the FIFO promptly: {error}");
+            }
+        }
+    }
 }

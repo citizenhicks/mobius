@@ -121,7 +121,7 @@ impl Writer {
             }
             Tag::CodeBlock(kind) => {
                 self.start_block();
-                self.code_language = match kind {
+                let language: String = match kind {
                     CodeBlockKind::Fenced(language) => language
                         .split_whitespace()
                         .next()
@@ -129,10 +129,11 @@ impl Writer {
                         .into(),
                     CodeBlockKind::Indented => String::new(),
                 };
-                if !self.code_language.is_empty() {
-                    self.push_styled(&self.code_language.clone(), current().style(Role::Muted));
+                if !language.is_empty() {
+                    self.push_styled(&language, current().style(Role::Muted));
                     self.flush();
                 }
+                self.code_language = language;
                 self.in_code_block = true;
             }
             Tag::List(start) => {
@@ -326,11 +327,11 @@ impl Writer {
         }
         if let Some(item) = self.items.last_mut() {
             let prefix = if std::mem::take(&mut item.first_line) {
-                &item.first_prefix
+                std::mem::take(&mut item.first_prefix)
             } else {
-                &item.continuation
+                item.continuation.clone()
             };
-            line.push_span(Span::raw(prefix.clone()));
+            line.push_span(Span::raw(prefix));
         }
         if self.in_code_block {
             line.push_span(Span::styled("│ ", current().style(Role::Border)));

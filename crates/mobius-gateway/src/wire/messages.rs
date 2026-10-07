@@ -976,8 +976,8 @@ pub enum ServerMessage {
     },
     /// Selects the agent event case.
     AgentEvent {
-        /// The session identifier.
-        session_id: String,
+        /// Shared across the token events retained by a running session.
+        session_id: std::sync::Arc<str>,
         /// The record.
         record: RecordedEvent,
     },

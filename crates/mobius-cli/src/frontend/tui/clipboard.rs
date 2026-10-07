@@ -26,10 +26,16 @@ static CLIPBOARD_PREPARATION_GATE: Semaphore = Semaphore::const_new(1);
 pub(super) type ClipboardPreparation = oneshot::Receiver<Result<Vec<UploadCandidate>, String>>;
 
 pub(super) fn prepare_clipboard(
-    existing: Vec<SessionFileReference>,
+    existing: &[SessionFileReference],
     limits: SessionFileLimits,
 ) -> Result<ClipboardPreparation, String> {
-    spawn_preparation(move || read_clipboard(&existing, &limits))
+    let count = existing.len();
+    let bytes = existing.iter().try_fold(0_u64, |total, file| {
+        total
+            .checked_add(file.size)
+            .ok_or_else(|| "attachment sizes overflowed".to_string())
+    })?;
+    spawn_preparation(move || read_clipboard(count, bytes, &limits))
 }
 
 fn spawn_preparation(
@@ -64,14 +70,15 @@ fn client_limits(limits: &SessionFileLimits) -> SessionFileLimits {
     }
 }
 
-pub(super) fn read_clipboard(
-    existing: &[SessionFileReference],
+fn read_clipboard(
+    existing_count: usize,
+    existing_bytes: u64,
     limits: &SessionFileLimits,
 ) -> Result<Vec<UploadCandidate>, String> {
     let limits = client_limits(limits);
     let remaining = limits
         .max_attachment_references
-        .saturating_sub(existing.len());
+        .saturating_sub(existing_count);
     if remaining == 0 {
         return Err(format!(
             "a message cannot contain more than {} attachments",
@@ -83,20 +90,20 @@ pub(super) fn read_clipboard(
         arboard::Clipboard::new().map_err(|error| format!("clipboard unavailable: {error}"))?;
     let files = clipboard.get().file_list().unwrap_or_default();
     if !files.is_empty() {
-        return file_candidates(files, existing, remaining, &limits);
+        return file_candidates(files, existing_bytes, remaining, &limits);
     }
 
     let image = clipboard
         .get_image()
         .map_err(|error| format!("clipboard has no files or image: {error}"))?;
     let candidate = bitmap_candidate(image.width, image.height, image.bytes.as_ref(), &limits)?;
-    validate_total_size(existing, std::slice::from_ref(&candidate), &limits)?;
+    validate_total_size(existing_bytes, std::slice::from_ref(&candidate), &limits)?;
     Ok(vec![candidate])
 }
 
 fn file_candidates(
     paths: Vec<PathBuf>,
-    existing: &[SessionFileReference],
+    existing_bytes: u64,
     remaining: usize,
     limits: &SessionFileLimits,
 ) -> Result<Vec<UploadCandidate>, String> {
@@ -111,7 +118,7 @@ fn file_candidates(
         .into_iter()
         .map(|path| UploadCandidate::from_file(path, limits))
         .collect::<Result<Vec<_>, _>>()?;
-    validate_total_size(existing, &candidates, limits)?;
+    validate_total_size(existing_bytes, &candidates, limits)?;
     Ok(candidates)
 }
 
@@ -138,20 +145,17 @@ fn bitmap_candidate(
 }
 
 fn validate_total_size(
-    existing: &[SessionFileReference],
+    existing_bytes: u64,
     candidates: &[UploadCandidate],
     limits: &SessionFileLimits,
 ) -> Result<(), String> {
-    let existing = existing.iter().try_fold(0_u64, |total, file| {
-        total
-            .checked_add(file.size)
-            .ok_or_else(|| "attachment sizes overflowed".to_string())
-    })?;
-    let total = candidates.iter().try_fold(existing, |total, candidate| {
-        total
-            .checked_add(candidate.size)
-            .ok_or_else(|| "attachment sizes overflowed".to_string())
-    })?;
+    let total = candidates
+        .iter()
+        .try_fold(existing_bytes, |total, candidate| {
+            total
+                .checked_add(candidate.size)
+                .ok_or_else(|| "attachment sizes overflowed".to_string())
+        })?;
     if total > limits.max_session_bytes {
         return Err(format!(
             "pasted attachments exceed the {}-byte session limit",
@@ -376,18 +380,18 @@ impl ClipboardUploads {
         session_id: &str,
         limits: &SessionFileLimits,
     ) -> Option<Result<UploadAdvance, String>> {
-        let expected_request_id = self.current.as_ref()?.phase.request_id().to_owned();
+        let expected_request_id = self.current.as_ref()?.phase.request_id();
         if let ServerMessage::Rejected {
             request_id,
             message,
             ..
         } = message
-            && request_id == &expected_request_id
+            && request_id == expected_request_id
         {
-            let name = self.current.as_ref()?.candidate.name.clone();
-            let message = message.clone();
+            let name = &self.current.as_ref()?.candidate.name;
+            let error = format!("could not attach `{name}`: {message}");
             self.abort();
-            return Some(Err(format!("could not attach `{name}`: {message}")));
+            return Some(Err(error));
         }
 
         let response_request_id = match message {
@@ -396,7 +400,7 @@ impl ClipboardUploads {
             | ServerMessage::SessionFileUploadCompleted { request_id, .. } => request_id,
             _ => return None,
         };
-        if response_request_id != &expected_request_id {
+        if response_request_id != expected_request_id {
             return None;
         }
 
@@ -621,7 +625,7 @@ mod tests {
 
         let candidates = file_candidates(
             vec![first, second],
-            &[],
+            0,
             TEST_LIMITS.max_attachment_references,
             &TEST_LIMITS,
         )
@@ -647,7 +651,7 @@ mod tests {
         assert!(
             file_candidates(
                 vec![directory.path().to_path_buf()],
-                &[],
+                0,
                 TEST_LIMITS.max_attachment_references,
                 &TEST_LIMITS,
             )
@@ -660,7 +664,7 @@ mod tests {
         assert!(
             file_candidates(
                 vec![PathBuf::new(), PathBuf::new()],
-                &[],
+                0,
                 one_reference.max_attachment_references,
                 &one_reference,
             )
@@ -698,7 +702,21 @@ mod tests {
             media_type: "application/octet-stream".into(),
         }];
 
-        assert!(validate_total_size(&existing, &[candidate], &limits).is_err());
+        assert!(validate_total_size(existing[0].size, &[candidate], &limits).is_err());
+    }
+
+    #[test]
+    fn attachment_size_overflow_is_rejected_before_clipboard_access() {
+        let existing = [u64::MAX, 1].map(|size| SessionFileReference {
+            id: String::new(),
+            name: String::new(),
+            size,
+            media_type: String::new(),
+        });
+        assert!(matches!(
+            prepare_clipboard(&existing, TEST_LIMITS),
+            Err(error) if error == "attachment sizes overflowed"
+        ));
     }
 
     #[test]

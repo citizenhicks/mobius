@@ -1,8 +1,6 @@
 //! Ordered middleware and capability registration.
 
-use std::borrow::Cow;
 use std::collections::BTreeSet;
-use std::io::{self, Write};
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -27,13 +25,13 @@ use crate::protocol::FrontendWidgetContent;
 use crate::protocol::RenderedBlock;
 use crate::protocol::ToolCallBeginEvent;
 use crate::protocol::ToolCallEndEvent;
+use crate::serialized_len;
 
 pub mod artifacts;
 pub mod attachments;
 pub mod compaction;
 pub mod computer_control;
 mod context;
-pub mod context_offloading;
 pub(crate) mod delivery_once;
 pub mod extensions;
 pub mod image_generation;
@@ -54,7 +52,7 @@ pub use context::{
     QueuedMessageView, RuntimeContext, SessionStartContext, SessionStartSource, StopContext,
     SubmissionResult, ToolExposureContext, TurnEndContext, TurnIdentity,
 };
-pub(crate) use context::{MessageSubmitResult, PreparationNotices, PreparedMessage};
+pub(crate) use context::{MessageSubmitResult, PreparationNotices, PreparedMessage, StagedInput};
 use tools::Catalog;
 
 /// Configurable heuristic for text context budgets, not a model tokenizer.
@@ -347,7 +345,12 @@ pub trait Middleware: Send + Sync {
 
     /// Repairs or discards capability-owned projections before compacted input is committed.
     /// The original input is read-only; changes are validated before the rewrite is saved.
-    fn prepare_compacted_input(&self, _original: &[Value], _compacted: &mut Vec<Value>) {}
+    fn prepare_compacted_input(
+        &self,
+        _original: crate::backend::model::ModelInput<'_>,
+        _compacted: &mut Vec<Arc<Value>>,
+    ) {
+    }
 
     /// Intercepts the committed compacted context and may stop the active turn.
     fn post_compact<'a>(
@@ -454,10 +457,9 @@ impl MiddlewareStack {
         Ok(Self { entries })
     }
 
-    pub(crate) fn with_sandbox(&self, sandbox: Arc<Sandbox>) -> Result<Self> {
-        let mut entries: Vec<Arc<dyn Middleware>> = vec![sandbox];
-        entries.extend(self.entries.iter().cloned());
-        Self::new(entries)
+    pub(crate) fn with_sandbox(mut self, sandbox: Arc<Sandbox>) -> Result<Self> {
+        self.entries.insert(0, sandbox);
+        Self::new(self.entries)
     }
 
     /// Builds the immutable tool catalog once.
@@ -467,16 +469,16 @@ impl MiddlewareStack {
     pub fn catalog(&self, runtime: &RuntimeContext) -> Result<Catalog> {
         let mut catalog = Catalog::default();
         for entry in &self.entries {
-            let registered = catalog
-                .registered_definitions()
+            let previous = catalog.registered_definitions();
+            let registered = previous
                 .iter()
-                .map(|definition| definition.name.clone())
+                .map(|definition| definition.name.as_str())
                 .collect::<BTreeSet<_>>();
             entry.register(&mut catalog, runtime)?;
             for definition in catalog
                 .registered_definitions()
                 .iter()
-                .filter(|definition| !registered.contains(&definition.name))
+                .filter(|definition| !registered.contains(definition.name.as_str()))
             {
                 validate_tool_rendering(entry.as_ref(), &definition.name, &runtime.session_id)?;
             }
@@ -642,7 +644,7 @@ impl MiddlewareStack {
         &self,
         queued_messages: &mut Vec<DurableQueuedMessage>,
         submission_id: &str,
-    ) -> Result<()> {
+    ) -> Result<(usize, DurableQueuedMessage)> {
         let entry = self.message_handler_required()?;
         let mut queue = MessageQueue::new(queued_messages);
         queue.scope(entry.name());
@@ -700,10 +702,11 @@ impl MiddlewareStack {
         runtime: &RuntimeContext,
         queued_messages: &[DurableQueuedMessage],
         source: SessionStartSource,
-        input: &mut Vec<Value>,
+        input: &mut Vec<Arc<Value>>,
         receipts: &mut delivery_once::Receipts,
     ) -> Result<SessionStartResult> {
-        let compact_input = (source == SessionStartSource::Compact).then(|| input.clone());
+        let compact_input = (source == SessionStartSource::Compact)
+            .then(|| input.iter().map(Arc::clone).collect::<Vec<_>>());
         let mut context = SessionStartContext {
             runtime,
             delivery_once: delivery_once::DeliveryOnce::new(receipts),
@@ -756,7 +759,7 @@ impl MiddlewareStack {
         self.resolve_tool_exposure(
             context.session_id,
             supports_tool_image_input,
-            context.durable_input,
+            context.durable_input.input(),
             context.available_tools,
         )
         .await?;
@@ -774,22 +777,20 @@ impl MiddlewareStack {
             session_id: context.session_id,
             turn_id: context.turn_id,
             model_step: context.model_step,
-            input: Cow::Borrowed(context.durable_input),
+            input: context.input(),
+            replacement: None,
         };
         for entry in &self.entries {
             entry.model_request(&mut request_context).await?;
         }
-        Ok(match request_context.input {
-            Cow::Borrowed(_) => None,
-            Cow::Owned(input) => Some(input),
-        })
+        Ok(request_context.replacement)
     }
 
     pub(crate) async fn resolve_tool_exposure(
         &self,
         session_id: &str,
         supports_tool_image_input: bool,
-        input: &[Value],
+        input: crate::backend::model::ModelInput<'_>,
         available: &mut BTreeSet<String>,
     ) -> Result<()> {
         for entry in &self.entries {
@@ -841,7 +842,11 @@ impl MiddlewareStack {
         Ok(context.stop_reason)
     }
 
-    pub(crate) fn prepare_compacted_input(&self, original: &[Value], compacted: &mut Vec<Value>) {
+    pub(crate) fn prepare_compacted_input(
+        &self,
+        original: crate::backend::model::ModelInput<'_>,
+        compacted: &mut Vec<Arc<Value>>,
+    ) {
         for entry in &self.entries {
             entry.prepare_compacted_input(original, compacted);
         }
@@ -968,7 +973,7 @@ fn validate_frontend(contributions: &[FrontendContribution]) -> Result<()> {
                     command.name
                 )));
             }
-            if !commands.insert(command.name.clone()) {
+            if !commands.insert(command.name.as_str()) {
                 return Err(Error::Duplicate(format!(
                     "frontend command `{}`",
                     command.name
@@ -977,7 +982,7 @@ fn validate_frontend(contributions: &[FrontendContribution]) -> Result<()> {
         }
         for item in &contribution.widgets {
             if item.id.is_empty()
-                || !widgets.insert((contribution.capability.clone(), item.id.clone()))
+                || !widgets.insert((contribution.capability.as_str(), item.id.as_str()))
             {
                 return Err(Error::Duplicate(format!(
                     "frontend status `{}/{}`",
@@ -1014,7 +1019,7 @@ fn validate_frontend(contributions: &[FrontendContribution]) -> Result<()> {
                     reference.trigger, reference.value
                 )));
             }
-            if !references.insert((reference.trigger, reference.value.clone())) {
+            if !references.insert((reference.trigger, reference.value.as_str())) {
                 return Err(Error::Duplicate(format!(
                     "frontend reference `{}{}`",
                     reference.trigger, reference.value
@@ -1080,48 +1085,25 @@ fn validate_actions(actions: &[crate::protocol::FrontendAction]) -> Result<()> {
 }
 
 fn approximate_item_tokens(item: &Value, estimate: TokenEstimate) -> usize {
-    let has_image = crate::protocol::content_parts(item).is_some_and(|parts| {
-        parts
-            .iter()
-            .any(|part| part.get("type").and_then(Value::as_str) == Some("input_image"))
-    });
-    if !has_image {
-        return serialized_len(&PublicItem(item))
-            .map_or(0, |bytes| estimate.tokens(bytes))
-            .max(1);
-    }
-    let mut item = item.clone();
-    let mut image_tokens = 0usize;
-    if let Some(parts) = crate::protocol::content_parts_mut(&mut item) {
-        for part in parts {
-            if part.get("type").and_then(Value::as_str) == Some("input_image") {
-                let width = part["image"]["width"].as_u64().unwrap_or(2048);
-                let height = part["image"]["height"].as_u64().unwrap_or(2048);
-                // Conservative tile estimate; observed provider usage also drives compaction.
-                let tokens = width
-                    .div_ceil(512)
-                    .saturating_mul(height.div_ceil(512))
-                    .saturating_mul(256)
-                    .saturating_add(256);
-                image_tokens =
-                    image_tokens.saturating_add(usize::try_from(tokens).unwrap_or(usize::MAX));
-                *part = Value::Null;
-            }
-        }
-    }
-    if let Some(fields) = item.as_object_mut() {
-        fields.retain(|name, _| !name.starts_with('_'));
-    }
-    serialized_len(&item)
+    let image_tokens = crate::protocol::content_parts(item)
+        .into_iter()
+        .flatten()
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some("input_image"))
+        .fold(0usize, |total, part| {
+            let width = part["image"]["width"].as_u64().unwrap_or(2048);
+            let height = part["image"]["height"].as_u64().unwrap_or(2048);
+            // Conservative tile estimate; observed provider usage also drives compaction.
+            let tokens = width
+                .div_ceil(512)
+                .saturating_mul(height.div_ceil(512))
+                .saturating_mul(256)
+                .saturating_add(256);
+            total.saturating_add(usize::try_from(tokens).unwrap_or(usize::MAX))
+        });
+    serialized_len(&PublicItem(item))
         .map_or(0, |bytes| estimate.tokens(bytes))
         .saturating_add(image_tokens)
         .max(1)
-}
-
-fn serialized_len<T: Serialize + ?Sized>(value: &T) -> Option<usize> {
-    let mut bytes = ByteCounter::default();
-    serde_json::to_writer(&mut bytes, value).ok()?;
-    Some(bytes.0)
 }
 
 struct PublicItem<'a>(&'a Value);
@@ -1136,23 +1118,29 @@ impl Serialize for PublicItem<'_> {
         };
         let mut map = serializer.serialize_map(None)?;
         for (name, value) in fields.iter().filter(|(name, _)| !name.starts_with('_')) {
-            map.serialize_entry(name, value)?;
+            if let Some(parts) = value.as_array()
+                && crate::protocol::content_parts(self.0)
+                    .is_some_and(|content| std::ptr::eq(parts, content))
+            {
+                map.serialize_entry(name, &ImageTokenContent(parts))?;
+            } else {
+                map.serialize_entry(name, value)?;
+            }
         }
         map.end()
     }
 }
 
-#[derive(Default)]
-struct ByteCounter(usize);
+struct ImageTokenContent<'a>(&'a [Value]);
 
-impl Write for ByteCounter {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        self.0 = self.0.saturating_add(buffer.len());
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+impl Serialize for ImageTokenContent<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_seq(self.0.iter().map(|part| {
+            (part.get("type").and_then(Value::as_str) != Some("input_image")).then_some(part)
+        }))
     }
 }
 

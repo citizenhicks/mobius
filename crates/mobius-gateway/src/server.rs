@@ -285,7 +285,7 @@ impl GatewayServer {
                         let host = self.host.clone();
                         routine_dispatchers.spawn(async move {
                             if let Err(error) = host.dispatch_bot_events().await {
-                                gateway_log!("Bot delivery failed: code={}", error.code);
+                                tracing::warn!(code = %error.code, "Bot delivery failed");
                             }
                         });
                     }
@@ -310,7 +310,7 @@ impl GatewayServer {
                         if routine_dispatchers.is_empty() {
                             routine_dispatchers.spawn(async move {
                                 if let Err(error) = host.dispatch_bot_events().await {
-                                    gateway_log!("Bot delivery failed: code={}", error.code);
+                                    tracing::warn!(code = %error.code, "Bot delivery failed");
                                 }
                             });
                         }
@@ -321,7 +321,7 @@ impl GatewayServer {
                     }
                     Some(result) = telemetry_tasks.join_next(), if !telemetry_tasks.is_empty() => {
                         if let Err(error) = result {
-                            gateway_log!("telemetry worker failed: {error}");
+                            tracing::warn!(%error, "telemetry worker failed");
                         }
                     }
                     Some(_) = connections.join_next(), if !connections.is_empty() => {
@@ -379,14 +379,13 @@ impl GatewayServer {
                                 {
                                     Ok(Ok(stream)) => stream,
                                     Ok(Err(error)) => {
-                                        gateway_log!(
-                                            "gateway TLS handshake failed: {:?}",
-                                            error.kind()
+                                        tracing::warn!(
+                                            kind = ?error.kind(), "gateway TLS handshake failed"
                                         );
                                         return;
                                     }
                                     Err(_) => {
-                                        gateway_log!("gateway TLS handshake timed out");
+                                        tracing::warn!("gateway TLS handshake timed out");
                                         return;
                                     }
                                 };
@@ -403,9 +402,8 @@ impl GatewayServer {
                                 .await
                             };
                             if let Err(error) = result {
-                                gateway_log!(
-                                    "gateway connection failed: {}",
-                                    connection_diagnostic(&error)
+                                tracing::warn!(
+                                    error = %connection_diagnostic(&error), "gateway connection failed"
                                 );
                             }
                         });
@@ -474,7 +472,7 @@ impl GatewayServer {
             Ok(clients) => {
                 crate::telemetry::Telemetry::tick(&self.host, clients, trigger, tasks).await
             }
-            Err(error) => gateway_log!("telemetry client count unavailable: {error}"),
+            Err(error) => tracing::warn!(%error, "telemetry client count unavailable"),
         }
     }
 

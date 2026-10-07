@@ -2,7 +2,6 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::AgentRecord;
 use super::AgentStatus;
 use super::OnPersistFailure;
 use super::Shared;
@@ -53,9 +52,18 @@ impl CompletionUpdate {
 }
 
 pub(in crate::middleware::subagents) struct Wake {
-    pub(in crate::middleware::subagents) record: AgentRecord,
-    pub(in crate::middleware::subagents) sender: Option<AgentSender>,
+    pub(in crate::middleware::subagents) message: MessageSubmission,
+    pub(in crate::middleware::subagents) target: WakeTarget,
     pub(in crate::middleware::subagents) previous: AgentStatus,
+}
+
+pub(in crate::middleware::subagents) enum WakeTarget {
+    Live(AgentSender),
+    Resume {
+        session_id: String,
+        depth: u8,
+        model: String,
+    },
 }
 
 impl Shared {
@@ -63,7 +71,7 @@ impl Shared {
         &self,
         root_id: &str,
         recipient: &str,
-        acknowledged: &BTreeSet<String>,
+        acknowledged: &BTreeSet<&str>,
     ) -> Result<Vec<CompletionUpdate>> {
         if !acknowledged.is_empty() {
             let root = self.root(root_id).await?;
@@ -126,12 +134,13 @@ impl Shared {
                 .agents
                 .get(from)
                 .is_some_and(|entry| entry.parent == target);
-            let admission = sender.send_with_admission(Submission::message(message.clone()))?;
-            if reports_to_parent {
+            let report = reports_to_parent.then(|| message.clone());
+            let admission = sender.send_with_admission(Submission::message(message))?;
+            if let Some(report) = report {
                 root.parent_reports
                     .entry(from.into())
                     .or_default()
-                    .push(message);
+                    .push(report);
             }
             drop(root);
             drop(_writer);
@@ -144,8 +153,7 @@ impl Shared {
             .agents
             .get(target)
             .ok_or_else(|| unknown_target(target))?
-            .status
-            .clone();
+            .status;
         match &status {
             AgentStatus::PendingInit => {
                 Err(Error::Busy(format!("agent `{target}` is initializing")))
@@ -159,14 +167,14 @@ impl Shared {
                 let sender = root
                     .senders
                     .get(target)
-                    .cloned()
                     .ok_or_else(|| Error::Stopped("agent runtime is unavailable".into()))?;
-                let admission = sender.send_with_admission(Submission::message(message.clone()))?;
-                if reports_to_parent {
+                let report = reports_to_parent.then(|| message.clone());
+                let admission = sender.send_with_admission(Submission::message(message))?;
+                if let Some(report) = report {
                     root.parent_reports
                         .entry(from.into())
                         .or_default()
-                        .push(message);
+                        .push(report);
                 }
                 drop(root);
                 drop(_writer);
@@ -190,13 +198,19 @@ impl Shared {
                             .agents
                             .get_mut(target)
                             .ok_or_else(|| unknown_target(target))?;
-                        let record = entry.clone();
+                        let wake_target = match root.senders.get(target) {
+                            Some(sender) => WakeTarget::Live(sender.clone()),
+                            None => WakeTarget::Resume {
+                                session_id: entry.session_id.clone(),
+                                depth: entry.depth,
+                                model: entry.model.clone(),
+                            },
+                        };
                         entry.status = AgentStatus::PendingInit;
                         entry.last_message = None;
-                        let sender = root.senders.get(target).cloned();
                         Ok(Stage::Changed(Some(Wake {
-                            record,
-                            sender,
+                            message,
+                            target: wake_target,
                             previous: status,
                         })))
                     },
@@ -240,9 +254,10 @@ impl Shared {
             .updates
             .iter()
             .filter(|update| update.recipient == recipient)
-            .map(|update| update.agent.clone())
+            .map(|update| &update.agent)
             .collect::<BTreeSet<_>>()
             .into_iter()
+            .cloned()
             .collect();
         let active = root
             .tree

@@ -278,7 +278,7 @@ impl GatewayHost {
             })
             .cloned()
             .collect::<Vec<_>>();
-        let (_, deleted) = session_trees(roots.clone(), &summaries);
+        let (roots, deleted) = session_trees(roots, &summaries);
         let mut file_deletion =
             prepare_session_tree_deletion(&mut state, &deleted, SessionFileSelection::All).await?;
         let cleanup =
@@ -307,16 +307,16 @@ fn bot_session_trees(bot_id: &str, summaries: &[SessionSummary]) -> (Vec<String>
     let owned = summaries
         .iter()
         .filter(|session| session.session_context.owner_id == bot_id)
-        .map(|session| session.session_id.clone())
+        .map(|session| session.session_id.as_str())
         .collect::<HashSet<_>>();
     let roots = summaries
         .iter()
         .filter(|session| {
-            owned.contains(&session.session_id)
+            owned.contains(session.session_id.as_str())
                 && session
                     .parent_session_id
                     .as_ref()
-                    .is_none_or(|parent| !owned.contains(parent))
+                    .is_none_or(|parent| !owned.contains(parent.as_str()))
         })
         .map(|session| session.session_id.clone())
         .collect::<Vec<_>>();
@@ -391,7 +391,7 @@ pub(super) async fn prepare_session_tree_deletion(
     }
     let residents = session_ids
         .iter()
-        .filter_map(|id| state.sessions.get(id).cloned())
+        .filter_map(|id| state.sessions.get(id))
         .collect::<Vec<_>>();
     for host in &residents {
         match host.provider_cutover_status().await {
@@ -448,9 +448,9 @@ pub(super) async fn remove_session_trees(
                 existing.push(root.clone());
             }
         }
-        existing
+        std::borrow::Cow::Owned(existing)
     } else {
-        roots.to_vec()
+        std::borrow::Cow::Borrowed(roots)
     };
     let mut closures = Vec::new();
     for session_id in session_ids {
@@ -503,8 +503,7 @@ pub(super) async fn remove_session_trees(
     if let Err(error) = file_deletion.stage().await {
         cleanup_errors.push(error.to_string());
     }
-    let catalog_lock = Arc::clone(&state.catalog_lock);
-    let _catalog = catalog_lock.lock().await;
+    let _catalog = state.catalog_lock.lock().await;
     match load_session_metadata(&state.checkpoints).await {
         Ok(mut metadata) => {
             for id in session_ids {

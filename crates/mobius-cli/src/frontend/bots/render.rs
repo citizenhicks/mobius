@@ -3,6 +3,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, HighlightSpacing, List, ListState, Paragraph, Wrap};
+use std::borrow::Cow;
 
 use super::form::{BotFormMode, Form};
 use super::state::{
@@ -505,14 +506,14 @@ fn render_list_page<'a>(
 
 fn render_notice(frame: &mut ratatui::Frame<'_>, area: Rect, state: &BotsState) {
     let theme = current();
-    let (text, role) = if let Some(confirmation) = &state.confirmation {
-        (confirmation_text(confirmation), Role::Warning)
+    let (text, role): (Cow<'_, str>, _) = if let Some(confirmation) = &state.confirmation {
+        (confirmation_text(confirmation).into(), Role::Warning)
     } else if let Some(pending) = &state.pending {
-        (format!("{}…", pending.label), Role::Muted)
+        (format!("{}…", pending.label).into(), Role::Muted)
     } else if let Some(notice) = &state.notice {
-        (notice.text.clone(), notice.role)
+        (Cow::Borrowed(&notice.text), notice.role)
     } else {
-        (String::new(), Role::Muted)
+        (Cow::Borrowed(""), Role::Muted)
     };
     frame.render_widget(Paragraph::new(text).style(theme.style(role)), area);
 }

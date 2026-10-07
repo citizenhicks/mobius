@@ -279,7 +279,11 @@ impl Telemetry {
             "protocol_version": crate::wire::PROTOCOL_VERSION, "started_at_ms": self.started_at_ms,
             "uptime_seconds": self.started.elapsed().as_secs(), "fields": sink.fields})
     }
-    pub(crate) fn configure(&self, config: TelemetryConfig) -> Result<()> {
+    // Reserve runtime mutation before changing durable configuration, so assignment cannot fail afterward.
+    pub(crate) fn configure_after(
+        &self,
+        operation: impl FnOnce() -> Result<(TelemetryConfig, crate::publication::Outcome)>,
+    ) -> Result<()> {
         let mut live = self
             .config
             .write()
@@ -288,15 +292,18 @@ impl Telemetry {
             .statuses
             .lock()
             .map_err(|_| Error::Config("telemetry status lock poisoned".into()))?;
+        let (config, publication) = operation()?;
         statuses.retain(|id, _| config.sinks.iter().any(|sink| &sink.id == id));
         for sink in &config.sinks {
-            statuses.entry(sink.id.clone()).or_default();
-        }
-        for status in statuses.values_mut() {
-            status.next_at = None;
+            match statuses.get_mut(&sink.id) {
+                Some(status) => status.next_at = None,
+                None => {
+                    statuses.insert(sink.id.clone(), TelemetrySinkStatus::default());
+                }
+            }
         }
         *live = Arc::new(config);
-        Ok(())
+        publication.confirm()
     }
     pub(crate) fn request_manual(&self, id: String) -> Result<()> {
         if !self
@@ -344,7 +351,7 @@ impl Telemetry {
         let config = match host.telemetry.config() {
             Ok(config) => config,
             Err(error) => {
-                gateway_log!("telemetry scheduling failed: {error}");
+                tracing::warn!(%error, "telemetry scheduling failed");
                 return;
             }
         };
@@ -363,7 +370,7 @@ impl Telemetry {
             )
             .await
             {
-                gateway_log!("telemetry scheduling failed: {error}");
+                tracing::warn!(%error, "telemetry scheduling failed");
             }
             while deliveries.join_next().await.is_some() {}
         });
@@ -382,7 +389,7 @@ impl Telemetry {
                     status.in_flight = false;
                 }
             }
-            Err(_) => gateway_log!("telemetry stop status lock poisoned"),
+            Err(_) => tracing::warn!("telemetry stop status lock poisoned"),
         }
         Self::tick(host, 0, Trigger::Stop(cause), tasks).await;
         if tokio::time::timeout(Duration::from_secs(5), async {
@@ -391,7 +398,7 @@ impl Telemetry {
         .await
         .is_err()
         {
-            gateway_log!("telemetry stop delivery timed out");
+            tracing::warn!("telemetry stop delivery timed out");
         }
         tasks.shutdown().await;
     }
@@ -425,7 +432,7 @@ impl Telemetry {
             )
             .await
             {
-                gateway_log!("telemetry scheduling failed for {}: {error}", sink.id);
+                tracing::warn!(sink_id = %sink.id, %error, "telemetry scheduling failed");
                 match host.telemetry.statuses.lock() {
                     Ok(mut statuses) => {
                         let Some(status) = statuses.get_mut(&sink.id) else {
@@ -437,7 +444,7 @@ impl Telemetry {
                         status.consecutive_failures = status.consecutive_failures.saturating_add(1);
                         status.next_at = Some(now.saturating_add(i64::from(sink.every_seconds)));
                     }
-                    Err(_) => gateway_log!("telemetry status lock poisoned"),
+                    Err(_) => tracing::warn!("telemetry status lock poisoned"),
                 }
             }
         }
@@ -586,7 +593,7 @@ impl Telemetry {
                         status.last_error = error;
                     }
                 }
-                Err(_) => gateway_log!("telemetry delivery status lock poisoned"),
+                Err(_) => tracing::warn!("telemetry delivery status lock poisoned"),
             }
             host.telemetry.notify.notify_one();
         });
@@ -596,7 +603,7 @@ impl Telemetry {
         match host.telemetry_pending().await {
             Ok(pending) => pending,
             Err(error) => {
-                gateway_log!("telemetry pending check failed: {error}");
+                tracing::warn!(%error, "telemetry pending check failed");
                 false
             }
         }

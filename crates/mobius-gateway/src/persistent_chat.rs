@@ -78,14 +78,10 @@ impl Middleware for PersistentChat {
         _: &str,
     ) -> Option<mobius::protocol::FrontendBlock> {
         ACTIONS.into_iter().find_map(|action| {
-            RoutineTool {
-                action,
-                bot_id: self.bot_id.clone(),
-                host: Arc::clone(&self.host),
-            }
-            .render(event)
+            mobius::middleware::tools::render_named_tool_event(event, action.name())
         })
     }
+
     fn prompt_section(&self, _: &RuntimeContext) -> Result<Option<PromptSection>> {
         Ok(Some(PromptSection::new(&TEXT.prompt)))
     }
@@ -123,6 +119,18 @@ enum Action {
     Subscribe,
     Emit,
 }
+impl Action {
+    fn name(self) -> &'static str {
+        match self {
+            Self::List => "list_routines",
+            Self::Create => "schedule_routine",
+            Self::Command => "routine_command",
+            Self::Reporting => "list_subscriptions",
+            Self::Subscribe => "set_subscription",
+            Self::Emit => "emit_hook",
+        }
+    }
+}
 const ACTIONS: [Action; 6] = [
     Action::List,
     Action::Create,
@@ -139,41 +147,32 @@ struct RoutineTool {
 
 impl Tool for RoutineTool {
     fn definition(&self) -> ToolDefinition {
-        let (name, description, properties, required) = match self.action {
-            Action::List => ("list_routines", &TEXT.list_routines, json!({}), vec![]),
+        let (description, properties, required) = match self.action {
+            Action::List => (&TEXT.list_routines, json!({}), vec![]),
             Action::Create => (
-                "schedule_routine",
                 &TEXT.schedule_routine,
                 json!({"workspace":{"type":"string"},"instructions":{"type":"string"},"bindings":{"type":"array","items":{"$ref":"#/$defs/routine_binding"}}}),
                 vec!["instructions", "bindings"],
             ),
             Action::Command => (
-                "routine_command",
                 &TEXT.routine_command,
                 json!({"command":{"$ref":"#/$defs/routine_command"}}),
                 vec!["command"],
             ),
-            Action::Reporting => (
-                "list_subscriptions",
-                &TEXT.list_subscriptions,
-                json!({}),
-                vec![],
-            ),
+            Action::Reporting => (&TEXT.list_subscriptions, json!({}), vec![]),
             Action::Subscribe => (
-                "set_subscription",
                 &TEXT.set_subscription,
                 json!({"binding":{"$ref":"#/$defs/bot_binding"},"enabled":{"type":"boolean"}}),
                 vec!["binding", "enabled"],
             ),
             Action::Emit => (
-                "emit_hook",
                 &TEXT.emit_hook,
                 json!({"name":{"type":"string"},"data":{}}),
                 vec!["name", "data"],
             ),
         };
         ToolDefinition {
-            name: name.into(),
+            name: self.action.name().into(),
             description: description.clone(),
             parameters: json!({"type":"object","properties":properties,"required":required,"additionalProperties":false,"$defs":hook_definitions()}),
         }
@@ -354,6 +353,31 @@ mod tests {
             assert_eq!(schema["properties"][field]["type"], "string");
             assert_eq!(schema["required"], json!(["type", field]));
             assert!(schema["properties"].get("field").is_none());
+        }
+    }
+    #[test]
+    fn routine_rendering_reuses_default_tool_presentation() {
+        let chat = PersistentChat::new(
+            "bot".into(),
+            Arc::new(|| Err(crate::Error::Config("unused".into()))),
+        );
+        for action in ACTIONS {
+            let tool = RoutineTool {
+                action,
+                bot_id: "bot".into(),
+                host: Arc::clone(&chat.host),
+            };
+            let event =
+                mobius::protocol::EventMsg::ToolCallBegin(mobius::protocol::ToolCallBeginEvent {
+                    turn_id: "turn".into(),
+                    call_id: "call".into(),
+                    name: action.name().into(),
+                    arguments: json!({"name":"demo"}),
+                });
+            assert_eq!(
+                serde_json::to_value(chat.render(&event, "session")).unwrap(),
+                serde_json::to_value(tool.render(&event)).unwrap()
+            );
         }
     }
 }

@@ -22,7 +22,6 @@ pub(crate) enum BuiltinMiddleware {
     Questions,
     Subagents,
     Messages,
-    ContextOffloading,
     Compaction,
     ComputerControl,
     Scratchpad,
@@ -35,7 +34,7 @@ pub(crate) struct MiddlewareRegistration {
     pub(crate) manifest: &'static MiddlewareManifest,
 }
 
-pub(crate) static MIDDLEWARE: std::sync::LazyLock<[MiddlewareRegistration; 17]> =
+pub(crate) static MIDDLEWARE: std::sync::LazyLock<[MiddlewareRegistration; 16]> =
     std::sync::LazyLock::new(|| {
         [
             MiddlewareRegistration {
@@ -81,10 +80,6 @@ pub(crate) static MIDDLEWARE: std::sync::LazyLock<[MiddlewareRegistration; 17]> 
             MiddlewareRegistration {
                 kind: BuiltinMiddleware::Messages,
                 manifest: &mobius::middleware::messages::MANIFEST,
-            },
-            MiddlewareRegistration {
-                kind: BuiltinMiddleware::ContextOffloading,
-                manifest: &mobius::middleware::context_offloading::MANIFEST,
             },
             MiddlewareRegistration {
                 kind: BuiltinMiddleware::ComputerControl,
@@ -384,7 +379,6 @@ fn setting_type(middleware: &str, setting: &str, expected: &str) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use mobius::middleware::context_offloading::default_stale_after_tokens;
     use mobius::protocol::FrontendSettingKind;
 
     use super::*;
@@ -397,21 +391,19 @@ mod tests {
         assert!(validate(&config).is_ok());
         assert_eq!(config.setting("bots", "collaboration"), None);
         assert_eq!(
+            config.setting("compaction", "allow_model_compaction"),
+            Some(&FrontendSettingValue::String("off".into()))
+        );
+        assert_eq!(
             config.entries().collect::<BTreeSet<_>>(),
             BTreeSet::from([
                 "artifacts",
                 "attachments",
                 "compaction",
-                "context_offloading",
                 "questions",
                 "scratchpad",
                 "subagents",
             ])
-        );
-        assert_eq!(
-            integer_setting(&config, "context_offloading", "stale_after_tokens")
-                .expect("context setting"),
-            default_stale_after_tokens(),
         );
         assert_eq!(
             config.setting("messages", "delivery"),
@@ -438,26 +430,19 @@ mod tests {
     }
 
     #[test]
-    fn handoff_excludes_offloading_but_keeps_tasks_independent() {
+    fn model_requested_compaction_keeps_tasks_independent() {
         let mut config = default_config();
         config.set_setting(
             "compaction",
-            "mode",
-            Some(FrontendSettingValue::String("handoff".into())),
+            "allow_model_compaction",
+            Some(FrontendSettingValue::String("on".into())),
         );
         config.set_enabled("tasks", true);
-        assert!(
-            validate(&config)
-                .expect_err("conflicting policies")
-                .to_string()
-                .contains("incompatible")
-        );
+        validate(&config).expect("independent settings");
         config.reconcile(&features(ModelCatalogs::default()), None);
-        assert!(!config.enabled("context_offloading"));
         assert!(config.enabled("tasks"));
         assert!(validate(&config).is_ok());
         config.set_enabled("compaction", false);
-        config.set_enabled("context_offloading", true);
         assert!(validate(&config).is_ok());
     }
 
@@ -624,16 +609,16 @@ mod tests {
 
         config.set_setting("tools", "extra", None);
         config.set_setting(
-            "context_offloading",
-            "stale_after_tokens",
+            "compaction",
+            "at_tokens",
             Some(FrontendSettingValue::String("50000".into())),
         );
         assert!(validate(&config).is_err());
         let mut config = default_config();
         config.set_setting(
             "compaction",
-            "handoff_warning_reserves",
-            Some(FrontendSettingValue::Integer(1)),
+            "allow_model_compaction",
+            Some(FrontendSettingValue::String("invalid".into())),
         );
         assert!(validate(&config).is_err());
 
@@ -735,7 +720,7 @@ mod tests {
             .settings
             .get_mut("compaction")
             .expect("compaction")
-            .retain(|id, _| id == "mode" || id == "at_tokens");
+            .retain(|id, _| id == "allow_model_compaction" || id == "at_tokens");
         let encoded = serde_json::to_string(&config).expect("old persisted settings");
         let restored = serde_json::from_str::<MiddlewareConfig>(&encoded)
             .expect("deserialize persisted settings");

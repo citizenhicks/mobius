@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::str::FromStr;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -81,7 +81,7 @@ impl FromStr for ApprovalPolicy {
 
 #[derive(Default)]
 struct ApprovalState {
-    approved_for_session: BTreeSet<[u8; 32]>,
+    approved_for_session: Arc<BTreeSet<[u8; 32]>>,
 }
 
 pub(super) struct Approval {
@@ -139,16 +139,16 @@ impl Approval {
         }])
     }
 
-    pub(super) fn authorize(
+    pub(super) fn authorize<'a>(
         &self,
         session_id: &str,
         calls: &[ToolCall],
-        mutation_call_ids: &[String],
+        mutation_call_ids: impl IntoIterator<Item = &'a str>,
     ) -> Result<SandboxAuthorization> {
         let approved_for_session = {
             let states = self.states.lock().map_err(|_| state_lock_error())?;
             let state = states.get(session_id).ok_or_else(state_not_initialized)?;
-            state.approved_for_session.clone()
+            Arc::clone(&state.approved_for_session)
         };
         let policy = self.default_policy;
         let calls_by_id = calls
@@ -159,14 +159,14 @@ impl Approval {
         let mut requested = Vec::new();
         for call_id in mutation_call_ids {
             let call = calls_by_id
-                .get(call_id.as_str())
+                .get(call_id)
                 .ok_or_else(|| Error::Tool(format!("unknown mutation call `{call_id}`")))?;
             if policy != ApprovalPolicy::Ask
                 || approved_for_session.contains(&call_key(session_id, call)?)
             {
-                approved.push(call_id.clone());
+                approved.push(call_id.to_owned());
             } else {
-                requested.push(call_id.clone());
+                requested.push(call_id.to_owned());
             }
         }
         let permissions = SandboxPermissions::new(
@@ -226,11 +226,13 @@ impl Approval {
         let state = states
             .get_mut(session_id)
             .ok_or_else(state_not_initialized)?;
+        // In-flight admissions retain the old snapshot; only approval changes may copy it.
+        let approved = Arc::make_mut(&mut state.approved_for_session);
         for key in keys {
-            if state.approved_for_session.len() >= MAX_SESSION_APPROVALS {
-                state.approved_for_session.clear();
+            if approved.len() >= MAX_SESSION_APPROVALS {
+                approved.clear();
             }
-            state.approved_for_session.insert(key);
+            approved.insert(key);
         }
         Ok(permissions)
     }
@@ -340,7 +342,7 @@ mod tests {
         }];
 
         let SandboxAuthorization::Execute(permissions) = approval
-            .authorize("session", &calls, &["write".into()])
+            .authorize("session", &calls, ["write"])
             .expect("authorization")
         else {
             panic!("full access must execute without review");
@@ -380,7 +382,7 @@ mod tests {
         approval.states.lock().expect("approval state").insert(
             "session".into(),
             ApprovalState {
-                approved_for_session: BTreeSet::new(),
+                approved_for_session: Arc::default(),
             },
         );
         let calls = [ToolCall {
@@ -392,7 +394,7 @@ mod tests {
             request,
             permissions,
         } = approval
-            .authorize("session", &calls, &["write".into()])
+            .authorize("session", &calls, ["write"])
             .expect("authorization")
         else {
             panic!("approval required");

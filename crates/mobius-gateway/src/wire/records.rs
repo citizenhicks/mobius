@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use mobius::backend::model::provider::MediaModelPreset;
 
@@ -854,6 +855,7 @@ impl MiddlewareConfig {
             .enabled
             .iter()
             .filter(|id| self.disabled_by(features, id, selected_model).is_some())
+            // Evaluate all exclusions against the unchanged enabled set before removing any selected IDs.
             .cloned()
             .collect::<Vec<_>>();
         for id in excluded {
@@ -939,7 +941,7 @@ pub struct RenderedPreview {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RenderedEvent {
     /// The submission identifier.
-    pub submission_id: Option<String>,
+    pub submission_id: Option<Arc<str>>,
     /// The recorded at milliseconds.
     pub recorded_at_ms: i64,
     /// The event.

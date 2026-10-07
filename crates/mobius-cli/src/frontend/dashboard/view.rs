@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use mobius::protocol::{
@@ -39,13 +40,13 @@ pub(super) fn render(frame: &mut ratatui::Frame<'_>, state: &mut DashboardState)
     render_providers(frame, areas.providers, state);
     render_bots(frame, areas.bots, state);
     render_usage(frame, areas.usage, state.profile.as_ref());
-    let (footer, role) = if let Some((_, label)) = &state.pending_unpair {
+    let (footer, role): (Cow<'_, str>, _) = if let Some((_, label)) = &state.pending_unpair {
         (
-            format!(" Unpair {}? · y confirm · n cancel ", terminal_text(label)),
+            format!(" Unpair {}? · y confirm · n cancel ", terminal_text(label)).into(),
             Role::Warning,
         )
     } else if let Some(error) = &state.error {
-        (error.clone(), Role::Error)
+        (Cow::Borrowed(error), Role::Error)
     } else if state.pending_open.is_some() {
         (" opening chat capabilities… ".into(), Role::Muted)
     } else {
@@ -80,12 +81,13 @@ pub(in crate::frontend) fn render_capability_overlay(
         render_navigation_widgets(frame, body, overlay);
         " ↑↓ select · enter open/run · esc close "
     } else {
+        let mut option_list = std::mem::take(&mut overlay.option_list);
         let content = overlay
             .open_widget()
-            .and_then(|widget| widget.content.clone());
-        match content {
+            .and_then(|widget| widget.content.as_ref());
+        let footer = match content {
             Some(FrontendWidgetContent::Blocks { title, blocks }) => {
-                render_blocks(frame, body, &title, &blocks);
+                render_blocks(frame, body, title, blocks);
                 if overlay
                     .open_widget()
                     .is_some_and(|widget| widget.action.is_some())
@@ -96,16 +98,16 @@ pub(in crate::frontend) fn render_capability_overlay(
                 }
             }
             Some(FrontendWidgetContent::Picker { title, options }) => {
-                render_overlay_picker(frame, body, &title, &options, &mut overlay.option_list);
+                render_overlay_picker(frame, body, title, options, &mut option_list);
                 " ↑↓ select · enter run · esc back "
             }
             Some(FrontendWidgetContent::ActionList { title, items, .. }) => {
                 render_action_list(
                     frame,
                     body,
-                    &title,
-                    &items,
-                    &mut overlay.option_list,
+                    title,
+                    items,
+                    &mut option_list,
                     overlay.action_index,
                 );
                 " ↑↓ note · ←→ action · enter run · esc back "
@@ -114,7 +116,9 @@ pub(in crate::frontend) fn render_capability_overlay(
                 frame.render_widget(Paragraph::new(" No content"), body);
                 " esc back "
             }
-        }
+        };
+        overlay.option_list = option_list;
+        footer
     };
     frame.render_widget(
         Paragraph::new(footer_text).style(current().style(Role::Muted)),
@@ -238,10 +242,10 @@ pub(super) fn render_overlay_picker(
     let lines = options
         .iter()
         .map(|option| {
-            let detail = if !option.shows_detail || option.detail.is_empty() {
-                option.description.clone()
+            let detail: Cow<'_, str> = if !option.shows_detail || option.detail.is_empty() {
+                Cow::Borrowed(&option.description)
             } else {
-                format!("{} · {}", option.description, option.detail)
+                format!("{} · {}", option.description, option.detail).into()
             };
             Line::from(vec![
                 Span::styled(
@@ -310,7 +314,7 @@ pub(super) fn render_action_list(
                 .saturating_add(item.actions.len().saturating_sub(1) * 2);
             let note_width = width.saturating_sub(actions_width.saturating_add(1));
             let note = truncate_terminal_width(
-                &format!("{marker}{}", terminal_text(&item.text)),
+                format!("{marker}{}", terminal_text(&item.text)),
                 note_width,
             );
             let used = Line::from(note.as_str())
@@ -349,9 +353,9 @@ pub(super) fn render_action_list(
     );
 }
 
-pub(super) fn truncate_terminal_width(value: &str, width: usize) -> String {
-    if Line::from(value).width() <= width {
-        return value.to_owned();
+pub(super) fn truncate_terminal_width(value: String, width: usize) -> String {
+    if Line::from(value.as_str()).width() <= width {
+        return value;
     }
     if width == 0 {
         return String::new();
@@ -718,4 +722,21 @@ pub(super) fn number(value: impl ToString) -> String {
         formatted.push(character);
     }
     formatted
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::truncate_terminal_width;
+
+    #[test]
+    fn truncation_moves_fitting_text_and_preserves_unicode_width() {
+        let text = String::from("界a");
+        let pointer = text.as_ptr();
+        let fitted = truncate_terminal_width(text, 3);
+        assert_eq!(fitted, "界a");
+        assert_eq!(fitted.as_ptr(), pointer);
+        assert_eq!(truncate_terminal_width("界ab".into(), 3), "界…");
+        assert_eq!(truncate_terminal_width("界ab".into(), 2), "…");
+        assert_eq!(truncate_terminal_width("界ab".into(), 0), "");
+    }
 }

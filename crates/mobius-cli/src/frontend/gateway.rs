@@ -76,6 +76,7 @@ pub(crate) async fn run(terminal: &mut GatewayTerminal, connected: &str) -> Resu
                     state.pairing = false;
                     match paired {
                         Ok((_client, paired)) => {
+                            // Publish the new account state only after the durable save succeeds.
                             let mut accounts = state.accounts.clone();
                             let saved = accounts
                                 .add(&endpoint, paired.token)
@@ -231,16 +232,12 @@ impl State {
 
     fn reconnect_selected(&mut self) -> mobius_gateway::Result<Action> {
         self.require_saved_management()?;
-        let Some(endpoint) = self
-            .accounts
-            .endpoints()
-            .nth(self.selection)
-            .map(str::to_owned)
-        else {
+        let Some(endpoint) = self.accounts.endpoints().nth(self.selection) else {
             return self.open_add();
         };
+        // Keep the current selection and credentials intact if saving the edited account list fails.
         let mut accounts = self.accounts.clone();
-        accounts.select(&endpoint)?;
+        accounts.select(endpoint)?;
         accounts.save()?;
         self.accounts = accounts;
         Ok(Action::Reconnect)
@@ -248,16 +245,12 @@ impl State {
 
     fn forget_selected(&mut self) -> mobius_gateway::Result<Action> {
         self.require_saved_management()?;
-        let Some(endpoint) = self
-            .accounts
-            .endpoints()
-            .nth(self.selection)
-            .map(str::to_owned)
-        else {
+        let Some(endpoint) = self.accounts.endpoints().nth(self.selection) else {
             return Ok(Action::None);
         };
+        // Keep the current selection and credentials intact if saving the edited account list fails.
         let mut accounts = self.accounts.clone();
-        accounts.forget(&endpoint);
+        accounts.forget(endpoint);
         accounts.save()?;
         self.accounts = accounts;
         self.selection = self

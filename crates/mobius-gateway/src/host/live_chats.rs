@@ -34,7 +34,7 @@ impl GatewayLiveChats {
             .0
             .upgrade()
             .ok_or_else(|| mobius::Error::Stopped("the gateway host stopped".into()))?;
-        let (hosts, checkpoints, activities) = {
+        let (mut hosts, checkpoints, activities) = {
             let state = state.lock().await;
             (
                 state
@@ -82,7 +82,7 @@ impl GatewayLiveChats {
                 && summary.session_context.owner_id == sender.session_context.owner_id
                 && !entry.as_ref().is_some_and(|entry| entry.hidden)
             {
-                let host = hosts.get(&summary.session_id).cloned();
+                let host = hosts.remove(&summary.session_id);
                 siblings.push((summary, entry.and_then(|entry| entry.title), host));
             }
         }
@@ -161,14 +161,15 @@ impl LiveChats for GatewayLiveChats {
                         ));
                     }
                     let (cause_id, ancestry) = initiating_author.causal_origin();
+                    let handle = sender.handle();
                     message.author = MessageAuthor::Source {
                         cause_id,
                         ancestry,
                         message_id: id.clone(),
                         source: mobius::protocol::MessageSource::Session {
-                            session_id: sender.session_id.clone(),
+                            session_id: sender.session_id,
                         },
-                        handle: sender.handle(),
+                        handle,
                         symbol: None,
                     };
                     message

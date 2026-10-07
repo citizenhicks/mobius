@@ -258,3 +258,129 @@ async fn runtime_activity_tracks_reservations_and_pending_deliveries() {
     gateway.state.lock().await.sessions.remove("activity-probe");
     gateway.shutdown().await;
 }
+
+#[tokio::test]
+async fn telemetry_update_rolls_back_only_changed_fields_on_publication_failure() {
+    let (root, gateway, _) = super::bots::gateway_with_bot().await;
+    let state_dir = root.path().join("state");
+    let mut sink: crate::telemetry::TelemetrySink = serde_json::from_value(serde_json::json!({
+        "id": "original", "url": "https://telemetry.example.test/events", "every_seconds": 300,
+        "events": ["routine_created"], "enabled": false
+    }))
+    .unwrap();
+    gateway
+        .configure_telemetry(0, vec![sink.clone()], &[])
+        .await
+        .unwrap();
+    let before = {
+        let state = gateway.state.lock().await;
+        let config = state.config().unwrap();
+        serde_json::to_value(&*config).unwrap()
+    };
+    let database = rusqlite::Connection::open(state_dir.join("bots.sqlite3")).unwrap();
+    let cursor: i64 = database
+        .query_row(
+            "SELECT after_rowid FROM telemetry_cursors WHERE sink_id='original'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    database.execute_batch("CREATE TRIGGER reject_telemetry_cursor BEFORE INSERT ON telemetry_cursors BEGIN SELECT RAISE(ABORT, 'test cursor failure'); END;").unwrap();
+    sink.id = "replacement".into();
+    assert!(
+        gateway
+            .configure_telemetry(1, vec![sink.clone()], &[])
+            .await
+            .is_err()
+    );
+    {
+        let state = gateway.state.lock().await;
+        let config = state.config().unwrap();
+        assert_eq!(serde_json::to_value(&*config).unwrap(), before);
+    }
+    let (_, restored) = ConfigStore::open(state_dir.clone()).unwrap();
+    assert_eq!(serde_json::to_value(restored).unwrap(), before);
+    assert_eq!(
+        database
+            .query_row(
+                "SELECT after_rowid FROM telemetry_cursors WHERE sink_id='original'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        cursor
+    );
+    assert_eq!(gateway.telemetry.config().unwrap().sinks[0].id, "original");
+    database
+        .execute_batch("DROP TRIGGER reject_telemetry_cursor;")
+        .unwrap();
+    let config_path = state_dir.join("gateway.toml");
+    let backup = state_dir.join("gateway.toml.test-backup");
+    std::fs::rename(&config_path, &backup).unwrap();
+    std::fs::create_dir(&config_path).unwrap();
+    assert!(
+        gateway
+            .configure_telemetry(1, vec![sink], &[])
+            .await
+            .is_err()
+    );
+    {
+        let state = gateway.state.lock().await;
+        let config = state.config().unwrap();
+        assert_eq!(serde_json::to_value(&*config).unwrap(), before);
+    }
+    std::fs::remove_dir(&config_path).unwrap();
+    std::fs::rename(&backup, &config_path).unwrap();
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
+async fn applied_telemetry_publication_keeps_runtime_and_visible_config_aligned() {
+    for rollback_fails in [false, true] {
+        let (root, gateway, _) = super::bots::gateway_with_bot().await;
+        let state_dir = root.path().join("state");
+        let config_path = state_dir.join("gateway.toml");
+        let database = rusqlite::Connection::open(state_dir.join("bots.sqlite3")).unwrap();
+        if rollback_fails {
+            database.execute_batch("CREATE TRIGGER reject_telemetry_cursor BEFORE INSERT ON telemetry_cursors BEGIN SELECT RAISE(ABORT, 'test cursor failure'); END;").unwrap();
+        }
+        let sink: crate::telemetry::TelemetrySink = serde_json::from_value(serde_json::json!({
+            "id": "applied", "url": "https://telemetry.example.test/events", "every_seconds": 300,
+            "events": ["routine_created"], "enabled": false
+        }))
+        .unwrap();
+        crate::publication::fail_next_directory_sync(&config_path);
+        if rollback_fails {
+            crate::publication::fail_next_replacement(&config_path);
+        }
+        let error = gateway
+            .configure_telemetry(0, vec![sink], &[])
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("applied") || error.message.contains("remains changed"));
+        let (_, reopened) = ConfigStore::open(state_dir).unwrap();
+        let state = gateway.state.lock().await;
+        assert_eq!(*state.config().unwrap(), reopened);
+        assert_eq!(reopened.telemetry.revision, 1);
+        assert_eq!(gateway.telemetry.config().unwrap().sinks[0].id, "applied");
+        let count: i64 = database
+            .query_row(
+                "SELECT COUNT(*) FROM telemetry_cursors WHERE sink_id='applied'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, if rollback_fails { 0 } else { 1 });
+        if rollback_fails {
+            assert!(
+                state
+                    .bots
+                    .telemetry_count(&reopened.telemetry.sinks[0])
+                    .is_err()
+            );
+            assert!(error.message.contains("cursor synchronization failed"));
+        }
+        drop(state);
+        gateway.shutdown().await;
+    }
+}

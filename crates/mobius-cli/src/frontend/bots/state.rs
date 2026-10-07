@@ -146,13 +146,13 @@ impl BotsState {
         }
         if let Page::Routine { bot_id, routine_id }
         | Page::Runs { bot_id, routine_id }
-        | Page::Run { bot_id, routine_id } = &self.page
+        | Page::Run { bot_id, routine_id } = &mut self.page
             && !self
                 .routines
                 .iter()
                 .any(|routine| routine.id == *routine_id)
         {
-            self.page = Page::Routines(bot_id.clone());
+            self.page = Page::Routines(std::mem::take(bot_id));
             self.selected = 0;
         }
         self.selected = self.selected.min(self.row_count(gateway).saturating_sub(1));
@@ -207,25 +207,23 @@ impl BotsState {
             }
             _ => {}
         }
-        match self.page.clone() {
+        match &self.page {
             Page::Root => self.handle_root_key(key, gateway),
-            Page::Bot(id) => self.handle_bot_key(key, gateway, id),
+            Page::Bot(_) => self.handle_bot_key(key, gateway),
             Page::Conversations(id) => {
                 if key.code != KeyCode::Enter {
                     Action::None
                 } else {
-                    sessions_for_bot(gateway, &id)
+                    sessions_for_bot(gateway, id)
                         .get(self.selected)
                         .map_or(Action::None, |session| {
                             Action::OpenSession(session.session_id.clone())
                         })
                 }
             }
-            Page::Routines(id) => self.handle_routine_key(key, id),
-            Page::Routine { bot_id, routine_id } => {
-                self.handle_routine_detail_key(key, bot_id, routine_id)
-            }
-            Page::Runs { bot_id, routine_id } => self.handle_runs_key(key, bot_id, routine_id),
+            Page::Routines(_) => self.handle_routine_key(key),
+            Page::Routine { .. } => self.handle_routine_detail_key(key),
+            Page::Runs { .. } => self.handle_runs_key(key),
             Page::Run { .. } => Action::None,
         }
     }
@@ -264,9 +262,12 @@ impl BotsState {
         Action::None
     }
 
-    fn handle_bot_key(&mut self, key: KeyEvent, gateway: &ReadyPayload, id: String) -> Action {
+    fn handle_bot_key(&mut self, key: KeyEvent, gateway: &ReadyPayload) -> Action {
+        let Page::Bot(id) = &mut self.page else {
+            return Action::None;
+        };
         if key.code == KeyCode::Char('e') {
-            if let Some(bot) = gateway.bots.iter().find(|bot| bot.id == id) {
+            if let Some(bot) = gateway.bots.iter().find(|bot| bot.id == *id) {
                 self.form = Some(Form::Bot(Box::new(BotForm::update(bot))));
             }
             return Action::None;
@@ -279,80 +280,82 @@ impl BotsState {
         };
         match row {
             BotRow::Identity => {
-                if let Some(bot) = gateway.bots.iter().find(|bot| bot.id == id) {
+                if let Some(bot) = gateway.bots.iter().find(|bot| bot.id == *id) {
                     self.form = Some(Form::Bot(Box::new(BotForm::update(bot))));
                 }
                 Action::None
             }
             BotRow::Model => Action::Setup {
-                bot_id: id,
+                bot_id: id.clone(),
                 mode: SetupMode::BotModel,
             },
             BotRow::Capabilities => Action::Setup {
-                bot_id: id,
+                bot_id: id.clone(),
                 mode: SetupMode::Bot,
             },
             BotRow::Conversation => gateway
                 .bots
                 .iter()
-                .find(|bot| bot.id == id)
+                .find(|bot| bot.id == *id)
                 .map_or(Action::None, |bot| {
                     Action::OpenSession(bot.conversation_session_id.clone())
                 }),
             BotRow::Conversations => {
-                self.page = Page::Conversations(id);
+                self.page = Page::Conversations(std::mem::take(id));
                 self.selected = 0;
                 Action::None
             }
             BotRow::Routines => {
-                self.page = Page::Routines(id);
+                self.page = Page::Routines(std::mem::take(id));
                 self.selected = 0;
                 Action::None
             }
         }
     }
 
-    fn handle_routine_key(&mut self, key: KeyEvent, bot_id: String) -> Action {
+    fn handle_routine_key(&mut self, key: KeyEvent) -> Action {
+        let Page::Routines(bot_id) = &mut self.page else {
+            return Action::None;
+        };
         if key.code == KeyCode::Char('n') {
-            self.form = Some(Form::Routine(Box::new(RoutineForm::create(bot_id))));
+            self.form = Some(Form::Routine(Box::new(RoutineForm::create(bot_id.clone()))));
             return Action::None;
         }
         let Some(routine) = self
             .routines
             .iter()
-            .filter(|routine| routine.bot_id == bot_id)
+            .filter(|routine| routine.bot_id == *bot_id)
             .nth(self.selected)
-            .cloned()
         else {
             return Action::None;
         };
         match key.code {
             KeyCode::Enter => {
                 self.page = Page::Routine {
-                    bot_id,
-                    routine_id: routine.id,
+                    bot_id: std::mem::take(bot_id),
+                    routine_id: routine.id.clone(),
                 };
                 self.selected = 0;
                 Action::None
             }
             KeyCode::Char('e') => {
-                self.form = Some(Form::Routine(Box::new(RoutineForm::update(&routine))));
+                self.form = Some(Form::Routine(Box::new(RoutineForm::update(routine))));
                 Action::None
             }
-            KeyCode::Char(' ') => update_routine_action(&routine, !routine.enabled),
+            KeyCode::Char(' ') => update_routine_action(routine, !routine.enabled),
             KeyCode::Char('r') => request_action("Run routine", FollowUp::Routines, |request_id| {
                 ClientMessage::RoutineCommand {
                     request_id,
                     command: RoutineCommand {
-                        routine_id: routine.id,
+                        routine_id: routine.id.clone(),
                         action: RoutineAction::Start,
                     },
                 }
             }),
             KeyCode::Delete | KeyCode::Char('x') => {
                 self.confirmation = Some(Confirmation::Routine {
-                    id: routine.id,
-                    label: routine.instructions,
+                    id: routine.id.clone(),
+                    label: routine.instructions.clone(),
                 });
                 Action::None
             }
@@ -360,17 +363,14 @@ impl BotsState {
         }
     }
 
-    fn handle_routine_detail_key(
-        &mut self,
-        key: KeyEvent,
-        bot_id: String,
-        routine_id: String,
-    ) -> Action {
+    fn handle_routine_detail_key(&mut self, key: KeyEvent) -> Action {
+        let Page::Routine { bot_id, routine_id } = &mut self.page else {
+            return Action::None;
+        };
         let Some(routine) = self
             .routines
             .iter()
-            .find(|routine| routine.id == routine_id)
-            .cloned()
+            .find(|routine| routine.id == *routine_id)
         else {
             return Action::None;
         };
@@ -381,18 +381,18 @@ impl BotsState {
             RoutineRow::History,
         ][self.selected];
         if key.code == KeyCode::Char('e') {
-            self.form = Some(Form::Routine(Box::new(RoutineForm::update(&routine))));
+            self.form = Some(Form::Routine(Box::new(RoutineForm::update(routine))));
             return Action::None;
         }
         if key.code == KeyCode::Char(' ') {
-            return update_routine_action(&routine, !routine.enabled);
+            return update_routine_action(routine, !routine.enabled);
         }
         if key.code == KeyCode::Char('r') {
             return request_action("Run routine", FollowUp::Routines, |request_id| {
                 ClientMessage::RoutineCommand {
                     request_id,
                     command: RoutineCommand {
-                        routine_id: routine.id,
+                        routine_id: routine.id.clone(),
                         action: RoutineAction::Start,
                     },
                 }
@@ -403,37 +403,40 @@ impl BotsState {
         }
         match row {
             RoutineRow::Edit => {
-                self.form = Some(Form::Routine(Box::new(RoutineForm::update(&routine))));
+                self.form = Some(Form::Routine(Box::new(RoutineForm::update(routine))));
                 Action::None
             }
-            RoutineRow::Toggle => update_routine_action(&routine, !routine.enabled),
+            RoutineRow::Toggle => update_routine_action(routine, !routine.enabled),
             RoutineRow::Run => request_action("Run routine", FollowUp::Routines, |request_id| {
                 ClientMessage::RoutineCommand {
                     request_id,
                     command: RoutineCommand {
-                        routine_id: routine.id,
+                        routine_id: routine.id.clone(),
                         action: RoutineAction::Start,
                     },
                 }
             }),
             RoutineRow::History => {
                 self.page = Page::Runs {
-                    bot_id,
-                    routine_id: routine.id.clone(),
+                    bot_id: std::mem::take(bot_id),
+                    routine_id: std::mem::take(routine_id),
                 };
                 self.selected = 0;
                 request_action("Load run history", FollowUp::None, |request_id| {
                     ClientMessage::ListRoutineHistory {
                         request_id,
-                        id: Some(routine.id),
+                        id: Some(routine.id.clone()),
                     }
                 })
             }
         }
     }
 
-    fn handle_runs_key(&mut self, key: KeyEvent, bot_id: String, routine_id: String) -> Action {
-        let Some(run) = runs_for_routine(&self.runs, &routine_id)
+    fn handle_runs_key(&mut self, key: KeyEvent) -> Action {
+        let Page::Runs { bot_id, routine_id } = &mut self.page else {
+            return Action::None;
+        };
+        let Some(run) = runs_for_routine(&self.runs, routine_id)
             .into_iter()
             .nth(self.selected)
         else {
@@ -442,7 +445,10 @@ impl BotsState {
         match key.code {
             KeyCode::Enter => {
                 self.preview = None;
-                self.page = Page::Run { bot_id, routine_id };
+                self.page = Page::Run {
+                    bot_id: std::mem::take(bot_id),
+                    routine_id: std::mem::take(routine_id),
+                };
                 request_action("Load run", FollowUp::None, |request_id| {
                     ClientMessage::GetRoutineRunPreview {
                         request_id,
@@ -455,7 +461,7 @@ impl BotsState {
                 let label = routine_run_label(run);
                 self.confirmation = Some(Confirmation::Run {
                     id: run.id.clone(),
-                    routine_id,
+                    routine_id: routine_id.clone(),
                     label,
                 });
                 Action::None
@@ -507,7 +513,7 @@ impl BotsState {
     }
 
     pub(super) fn back(&mut self) -> Action {
-        match &self.page {
+        match std::mem::replace(&mut self.page, Page::Root) {
             Page::Root => Action::Exit,
             Page::Bot(_) => {
                 self.page = Page::Root;
@@ -515,28 +521,22 @@ impl BotsState {
                 Action::None
             }
             Page::Conversations(id) | Page::Routines(id) => {
-                self.page = Page::Bot(id.clone());
+                self.page = Page::Bot(id);
                 self.selected = 0;
                 Action::None
             }
             Page::Routine { bot_id, .. } => {
-                self.page = Page::Routines(bot_id.clone());
+                self.page = Page::Routines(bot_id);
                 self.selected = 0;
                 Action::None
             }
             Page::Runs { bot_id, routine_id } => {
-                self.page = Page::Routine {
-                    bot_id: bot_id.clone(),
-                    routine_id: routine_id.clone(),
-                };
+                self.page = Page::Routine { bot_id, routine_id };
                 self.selected = 0;
                 Action::None
             }
             Page::Run { bot_id, routine_id } => {
-                self.page = Page::Runs {
-                    bot_id: bot_id.clone(),
-                    routine_id: routine_id.clone(),
-                };
+                self.page = Page::Runs { bot_id, routine_id };
                 self.selected = 0;
                 Action::None
             }

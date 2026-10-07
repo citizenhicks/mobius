@@ -227,7 +227,7 @@ impl HostState {
                             bot.handle,
                             self.running.prepared.instructions()
                         ),
-                        bot_name: bot.name.clone(),
+                        bot_name: bot.name,
                         router: Arc::clone(router),
                         voice,
                         route: route.into(),
@@ -245,12 +245,13 @@ impl HostState {
                 usage,
                 reply,
             } => {
-                let result = crate::assembly::persist_usage(
+                let result = crate::assembly::publish_usage(
                     &self.gateway,
                     &self.store,
                     &provider_instance,
                     &usage,
                 )
+                .await
                 .map_err(internal);
                 let _ = reply.send(result);
             }
@@ -322,8 +323,7 @@ impl HostState {
                         return Ok(());
                     }
                     let mut next = self.spec.clone();
-                    let previous_bot_id = next.bot_id.clone();
-                    next.bot_id = bot_id;
+                    let previous_bot_id = std::mem::replace(&mut next.bot_id, bot_id);
                     self.replace_running(next, None).await?;
                     super::super::bot_events::close_reassigned_source(
                         &self.checkpoints,
@@ -479,7 +479,8 @@ impl HostState {
             let _ = reply.send(result);
             return;
         }
-        if self.running.session_id == crate::bots::conversation_session_id(&self.spec.bot_id)
+        if self.running.session_id.as_ref()
+            == crate::bots::conversation_session_id(&self.spec.bot_id)
             && let Op::Message { message } = &mut submission.op
         {
             message.requested_delivery = Some(mobius::protocol::ActiveMessageDelivery::Queue);
@@ -493,17 +494,18 @@ impl HostState {
                     "the chat now belongs to another Bot",
                 ));
             }
+            let id = submission.id.clone();
             self.running
                 .sender
                 .as_ref()
                 .ok_or_else(stopped)?
-                .send_with_admission(submission.clone())
+                .send_with_admission(submission)
+                .map(|admission| (id, admission))
                 .map_err(internal)
         }
         .await;
         match result {
-            Ok(admission) => {
-                let id = submission.id;
+            Ok((id, admission)) => {
                 let reserved = self.pending_messages.insert(id.clone());
                 self.pending_turns += usize::from(reserved);
                 self.work_activity.mark();
@@ -537,7 +539,7 @@ impl HostState {
             let mut replay = Vec::new();
             for journal in page.into_chronological() {
                 let frame = ServerFrame::new(ServerMessage::AgentEvent {
-                    session_id: self.running.session_id.clone(),
+                    session_id: Arc::clone(&self.running.session_id),
                     record: project_record(&self.running.frontend, journal),
                 });
                 if replayable(&frame) {
@@ -779,8 +781,8 @@ impl HostState {
     ) -> std::result::Result<(), Rejection> {
         // Keep replacement and rollback futures off every command handler's stack.
         Box::pin(async {
-            let session_id = self.running.session_id.clone();
-            let old_spec = self.spec.clone();
+            let session_id = Arc::clone(&self.running.session_id);
+            // Failed replacement restarts from the old prepared bot after draining the running agent.
             let old_prepared = Arc::clone(&self.running.prepared);
             self.stop_and_drain_running().await.map_err(internal)?;
             let replacement = match start_agent(
@@ -795,7 +797,7 @@ impl HostState {
                 Arc::clone(&self.discovery_gate),
                 Arc::clone(&self.desktop),
                 Arc::clone(&self.remote_desktop),
-                session_id,
+                &session_id,
                 "mobius-gateway",
                 prepared,
                 Arc::clone(&self.provider_epoch),
@@ -808,7 +810,7 @@ impl HostState {
                 Err(primary) => {
                     let recovery = start_agent(
                         Arc::clone(&self.gateway),
-                        &old_spec,
+                        &self.spec,
                         &self.store,
                         Arc::clone(&self.credentials),
                         Arc::clone(&self.bots),
@@ -818,7 +820,7 @@ impl HostState {
                         Arc::clone(&self.discovery_gate),
                         Arc::clone(&self.desktop),
                         Arc::clone(&self.remote_desktop),
-                        self.running.session_id.clone(),
+                        &self.running.session_id,
                         "mobius-gateway-rollback",
                         Some(old_prepared),
                         Arc::clone(&self.provider_epoch),

@@ -101,6 +101,9 @@ pub(super) fn direct_loopback_endpoint(config: &GatewayConfig) -> Result<Endpoin
 }
 
 fn cleanup_failed_initialization<T>(store: &ConfigStore, error: Error) -> Result<T> {
+    if matches!(error, Error::PublicationApplied { .. }) {
+        return Err(error);
+    }
     std::fs::remove_dir_all(store.state_dir()).map_err(|cleanup| {
         Error::Config(format!(
             "{error}; failed to remove incomplete gateway state at {}: {cleanup}",

@@ -57,7 +57,7 @@ pub async fn run(
                 session_id: actual,
                 record,
                 ..
-            } if actual == session_id => record.event,
+            } if actual.as_ref() == session_id => record.event,
             _ => continue,
         };
         match event.msg {
@@ -93,7 +93,7 @@ pub async fn run(
                 first_error.get_or_insert(error.message);
             }
             EventMsg::AssistantMessage(message)
-                if turn_id.as_deref() == Some(message.turn_id.as_str()) =>
+                if turn_id.as_deref() == Some(message.turn_id.as_ref()) =>
             {
                 let final_answer = message
                     .content

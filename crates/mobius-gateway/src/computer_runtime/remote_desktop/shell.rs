@@ -191,10 +191,8 @@ fn panel_config(
     if directory_text.contains(['\n', '\r']) {
         return Err(invalid_path());
     }
-    let template = match source {
-        Some(source) => fs::read_to_string(source)?,
-        None => bundled.to_owned(),
-    };
+    let loaded = source.map(fs::read_to_string).transpose()?;
+    let template = loaded.as_deref().unwrap_or(bundled);
     let template = template.replace("@DIRECTORY@", directory_text);
     let template = if source.is_none() {
         template

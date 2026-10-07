@@ -346,6 +346,9 @@ impl Extensions {
         event: hooks::HookEvent,
         context: &mut CompactContext<'_>,
     ) -> Result<()> {
+        if self.hook_runtime.is_none() {
+            return Ok(());
+        }
         let mut input = hook_input(
             context.session_id,
             context.model,
@@ -680,6 +683,9 @@ impl Middleware for Extensions {
         context: &'a mut SessionStartContext<'_>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            if self.hook_runtime.is_none() {
+                return Ok(());
+            }
             let source = match context.source() {
                 SessionStartSource::Startup => "startup",
                 SessionStartSource::Resume => "resume",
@@ -759,6 +765,9 @@ impl Middleware for Extensions {
         context: &'a mut MessageSubmitContext<'_>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            if self.hook_runtime.is_none() {
+                return Ok(());
+            }
             if !matches!(context.author, crate::protocol::MessageAuthor::User) {
                 return Ok(());
             }
@@ -800,7 +809,9 @@ impl Middleware for Extensions {
         context: &'a mut PreToolUseContext<'_>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            let original_name = context.call().name.clone();
+            if self.hook_runtime.is_none() {
+                return Ok(());
+            }
             let tool = context.tools.hook_tool(context.call(), None);
             let mut input = hook_input(
                 context.turn.session_id,
@@ -840,14 +851,15 @@ impl Middleware for Extensions {
                 return context.deny(hook_stop_reason(outcome));
             }
             let mut rewrites = outcomes
-                .iter()
-                .filter_map(|outcome| outcome.updated_input.clone());
+                .into_iter()
+                .filter_map(|outcome| outcome.updated_input);
             let Some(rewrite) = rewrites.next() else {
                 return Ok(());
             };
             if rewrites.any(|candidate| candidate != rewrite) {
                 return context.deny("conflicting extension hook tool rewrites");
             }
+            let original_name = context.call().name.clone();
             match context
                 .tools
                 .rewrite_hook_input(&original_name, rewrite)
@@ -864,6 +876,9 @@ impl Middleware for Extensions {
         context: &'a mut PermissionRequestContext<'_>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            if self.hook_runtime.is_none() {
+                return Ok(());
+            }
             let mut all_allowed = !context.requested_call_ids.is_empty();
             for call_id in context.requested_call_ids {
                 let call = context
@@ -913,6 +928,9 @@ impl Middleware for Extensions {
         context: &'a mut PostToolUseContext<'_>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            if self.hook_runtime.is_none() {
+                return Ok(());
+            }
             let tool = context.tools.hook_tool(context.call, None);
             let mut input = hook_input(
                 context.turn.session_id,
@@ -977,6 +995,9 @@ impl Middleware for Extensions {
 
     fn stop<'a>(&'a self, context: &'a mut StopContext<'_>) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            if self.hook_runtime.is_none() {
+                return Ok(());
+            }
             let (event, mut input, subjects) = match context.role() {
                 AgentRole::Main => (
                     hooks::HookEvent::Stop,
@@ -1047,6 +1068,9 @@ impl Middleware for Extensions {
 
     fn session_end<'a>(&'a self, runtime: &'a RuntimeContext) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            if self.hook_runtime.is_none() {
+                return Ok(());
+            }
             if runtime.role == AgentRole::Main {
                 let mut input = hook_input(&runtime.session_id, &runtime.model, None, None);
                 input.insert("reason".into(), Value::String("other".into()));
@@ -1146,20 +1170,22 @@ fn unavailable_skill_resource() -> Error {
 }
 
 fn skill_metadata(path: &std::path::Path, content: &str) -> (String, String) {
-    let fallback = path
-        .parent()
-        .and_then(std::path::Path::file_name)
-        .map_or_else(
-            || "skill".into(),
-            |name| name.to_string_lossy().into_owned(),
-        );
+    let fallback = || {
+        path.parent()
+            .and_then(std::path::Path::file_name)
+            .map_or_else(
+                || "skill".into(),
+                |name| name.to_string_lossy().into_owned(),
+            )
+    };
     let frontmatter = content
         .strip_prefix("---\n")
         .and_then(|content| content.split("\n---").next());
     let name = frontmatter.and_then(|value| frontmatter_value(value, "name"));
     let description = frontmatter.and_then(|value| frontmatter_value(value, "description"));
     (
-        name.filter(|value| !value.is_empty()).unwrap_or(fallback),
+        name.filter(|value| !value.is_empty())
+            .unwrap_or_else(fallback),
         description
             .as_deref()
             .filter(|value| !value.is_empty())
@@ -1564,7 +1590,7 @@ fi
             }),
         };
         let prefix = serde_json::json!({"role": "user", "content": "keep this prefix"});
-        let mut input = vec![prefix];
+        let mut input = vec![Arc::new(prefix)];
         let mut context = SessionStartContext {
             runtime: &runtime,
             delivery_once: super::super::delivery_once::DeliveryOnce::testing(),
@@ -1759,6 +1785,7 @@ fi
             events: &mut events,
             tools,
             call: &mut call,
+            changed: false,
             input: Vec::new(),
             denial: None,
         };
@@ -1769,6 +1796,43 @@ fi
         let denial = context.denial().map(str::to_owned);
         drop(context);
         (denial, call)
+    }
+
+    #[tokio::test]
+    async fn skills_only_extensions_do_not_project_tool_hook_input() {
+        struct NoHookProjection;
+        impl crate::middleware::tools::Tool for NoHookProjection {
+            fn definition(&self) -> crate::backend::model::ToolDefinition {
+                crate::backend::model::ToolDefinition {
+                    name: "no_hook_projection".into(),
+                    description: "Checks unused hook input is never materialized".into(),
+                    parameters: serde_json::json!({"type": "object"}),
+                }
+            }
+
+            fn hook_input(&self, _: &Value) -> Value {
+                panic!("a skills-only extension must not materialize hook input")
+            }
+
+            fn call<'a>(
+                &'a self,
+                _: crate::middleware::tools::ToolContext,
+                _: Value,
+            ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
+                Box::pin(async { Ok("unused".into()) })
+            }
+        }
+        let extensions = Extensions::discover(Vec::<PathBuf>::new()).expect("extensions");
+        let mut catalog = crate::middleware::tools::Catalog::default();
+        catalog.register(Arc::new(NoHookProjection)).expect("tool");
+        let call = crate::protocol::ToolCall {
+            call_id: "call".into(),
+            name: "no_hook_projection".into(),
+            arguments: serde_json::json!({"large": "unchanged"}),
+        };
+        let (denial, returned) = run_pre_tool(&extensions, &catalog, call.clone()).await;
+        assert!(denial.is_none());
+        assert_eq!(returned, call);
     }
 
     #[test]

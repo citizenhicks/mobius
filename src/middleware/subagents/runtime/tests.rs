@@ -213,7 +213,7 @@ async fn errored_subagent_preview_ends_with_its_terminal_message() {
     }
     let shared = test_shared();
     shared
-        .session_start(test_context(checkpoints, Arc::new(|_| Ok(()))))
+        .session_start(&test_context(checkpoints, Arc::new(|_| Ok(()))))
         .await
         .expect("initialize runtime");
     shared
@@ -283,7 +283,7 @@ impl CheckpointStore for BlockingRetryStore {
     fn save<'a>(
         &'a self,
         _checkpoint: &'a Checkpoint,
-        _transcript_delta: &'a [Value],
+        _transcript_delta: &'a [Arc<Value>],
         _execution: Option<&'a ExecutionRecord>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async { Ok(()) })
@@ -291,8 +291,8 @@ impl CheckpointStore for BlockingRetryStore {
 
     fn save_with_events<'a>(
         &'a self,
-        checkpoint: Checkpoint,
-        transcript_delta: Vec<Value>,
+        checkpoint: Arc<Checkpoint>,
+        transcript_delta: Vec<Arc<Value>>,
         execution: Option<ExecutionRecord>,
         events: Vec<TimestampedEvent>,
     ) -> BoxFuture<'a, Result<Vec<JournalEvent>>> {
@@ -385,7 +385,7 @@ impl CheckpointStore for FailOnceStore {
     fn save<'a>(
         &'a self,
         _checkpoint: &'a Checkpoint,
-        _transcript_delta: &'a [Value],
+        _transcript_delta: &'a [Arc<Value>],
         _execution: Option<&'a ExecutionRecord>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async { Ok(()) })
@@ -393,8 +393,8 @@ impl CheckpointStore for FailOnceStore {
 
     fn save_with_events<'a>(
         &'a self,
-        checkpoint: Checkpoint,
-        transcript_delta: Vec<Value>,
+        checkpoint: Arc<Checkpoint>,
+        transcript_delta: Vec<Arc<Value>>,
         execution: Option<ExecutionRecord>,
         events: Vec<TimestampedEvent>,
     ) -> BoxFuture<'a, Result<Vec<JournalEvent>>> {
@@ -473,7 +473,7 @@ async fn failed_persist_does_not_mutate_runtime_state() {
         saved_state: StdMutex::new(None),
     });
     shared
-        .session_start(test_context(checkpoints, Arc::new(|_| Ok(()))))
+        .session_start(&test_context(checkpoints, Arc::new(|_| Ok(()))))
         .await
         .expect("initialize runtime");
 
@@ -518,7 +518,7 @@ async fn empty_initial_tree_is_silent_and_empty_transition_removes_widget() {
     let frontend_events = Arc::new(StdMutex::new(Vec::new()));
     let events = Arc::clone(&frontend_events);
     shared
-        .session_start(test_context(
+        .session_start(&test_context(
             checkpoints,
             Arc::new(move |event| {
                 events.lock().expect("frontend events").push(event);
@@ -568,7 +568,7 @@ async fn coordination_targets_require_canonical_paths_in_the_current_task_tree()
         saved_state: StdMutex::new(None),
     });
     shared
-        .session_start(test_context(checkpoints.clone(), Arc::new(|_| Ok(()))))
+        .session_start(&test_context(checkpoints.clone(), Arc::new(|_| Ok(()))))
         .await
         .expect("initialize runtime");
     shared
@@ -643,6 +643,9 @@ async fn coordination_targets_require_canonical_paths_in_the_current_task_tree()
         .expect("wake canonical target")
         .expect("completed child wake");
     assert!(matches!(wake.previous, AgentStatus::Completed));
+    assert!(
+        matches!(wake.target, WakeTarget::Resume { session_id, depth: 1, .. } if session_id == "analyst-session")
+    );
 
     let root_message = MessageSubmission {
         author: crate::protocol::MessageAuthor::User,
@@ -668,7 +671,7 @@ async fn wait_returns_immediately_without_an_active_peer() {
         saved_state: StdMutex::new(None),
     });
     shared
-        .session_start(test_context(checkpoints, Arc::new(|_| Ok(()))))
+        .session_start(&test_context(checkpoints, Arc::new(|_| Ok(()))))
         .await
         .expect("initialize runtime");
     shared
@@ -706,7 +709,7 @@ async fn active_children_tracks_pending_and_terminal_agents() {
         saved_state: StdMutex::new(None),
     });
     shared
-        .session_start(test_context(checkpoints, Arc::new(|_| Ok(()))))
+        .session_start(&test_context(checkpoints, Arc::new(|_| Ok(()))))
         .await
         .expect("initialize runtime");
     shared
@@ -748,7 +751,7 @@ async fn reserve_enforces_configured_concurrency_including_root() {
         saved_state: StdMutex::new(None),
     });
     shared
-        .session_start(test_context(checkpoints, Arc::new(|_| Ok(()))))
+        .session_start(&test_context(checkpoints, Arc::new(|_| Ok(()))))
         .await
         .expect("initialize runtime");
     for index in 0..2 {
@@ -791,7 +794,7 @@ async fn reserve_enforces_configured_agent_limit_including_root() {
         saved_state: StdMutex::new(None),
     });
     shared
-        .session_start(test_context(checkpoints, Arc::new(|_| Ok(()))))
+        .session_start(&test_context(checkpoints, Arc::new(|_| Ok(()))))
         .await
         .expect("initialize runtime");
     for index in 0..2 {
@@ -840,7 +843,7 @@ async fn terminal_update_is_retained_until_its_checkpoint_marker_is_acknowledged
     });
     let checkpoints: Arc<dyn CheckpointStore> = store.clone();
     shared
-        .session_start(test_context(checkpoints, Arc::new(|_| Ok(()))))
+        .session_start(&test_context(checkpoints, Arc::new(|_| Ok(()))))
         .await
         .expect("initialize runtime");
     shared
@@ -883,7 +886,7 @@ async fn terminal_update_is_retained_until_its_checkpoint_marker_is_acknowledged
     assert_eq!(updates_len, Some(1));
 
     shared
-        .receive_updates("root", "/root", &BTreeSet::from([id]))
+        .receive_updates("root", "/root", &BTreeSet::from([id.as_str()]))
         .await
         .expect("acknowledge update");
 
@@ -906,7 +909,10 @@ async fn running_parent_records_real_child_message_for_terminal_dedup() {
         saved_state: StdMutex::new(None),
     });
     shared
-        .session_start(test_context(Arc::clone(&checkpoints), Arc::new(|_| Ok(()))))
+        .session_start(&test_context(
+            Arc::clone(&checkpoints),
+            Arc::new(|_| Ok(())),
+        ))
         .await
         .expect("initialize runtime");
     shared
@@ -1012,7 +1018,7 @@ async fn remove_root_evicts_runtime_state() {
         saved_state: StdMutex::new(None),
     });
     shared
-        .session_start(test_context(checkpoints, Arc::new(|_| Ok(()))))
+        .session_start(&test_context(checkpoints, Arc::new(|_| Ok(()))))
         .await
         .expect("initialize runtime");
 
@@ -1032,7 +1038,10 @@ async fn remove_root_persists_interrupted_children_before_eviction() {
         .expect("checkpoint store"),
     );
     shared
-        .session_start(test_context(Arc::clone(&checkpoints), Arc::new(|_| Ok(()))))
+        .session_start(&test_context(
+            Arc::clone(&checkpoints),
+            Arc::new(|_| Ok(())),
+        ))
         .await
         .expect("initialize runtime");
     shared
@@ -1070,7 +1079,10 @@ async fn stale_root_teardown_cannot_evict_a_reconnected_root() {
         saved_state: StdMutex::new(None),
     });
     shared
-        .session_start(test_context(Arc::clone(&checkpoints), Arc::new(|_| Ok(()))))
+        .session_start(&test_context(
+            Arc::clone(&checkpoints),
+            Arc::new(|_| Ok(())),
+        ))
         .await
         .expect("initialize runtime");
     shared
@@ -1101,7 +1113,10 @@ async fn stale_root_teardown_cannot_evict_a_reconnected_root() {
 
     assert!(shared.roots.lock().await.remove("root").is_some());
     shared
-        .session_start(test_context(Arc::clone(&checkpoints), Arc::new(|_| Ok(()))))
+        .session_start(&test_context(
+            Arc::clone(&checkpoints),
+            Arc::new(|_| Ok(())),
+        ))
         .await
         .expect("reinitialize runtime");
     drop(writer);
@@ -1125,7 +1140,10 @@ async fn detached_root_mutation_cannot_persist_after_root_eviction() {
     });
     let checkpoints: Arc<dyn CheckpointStore> = store.clone();
     shared
-        .session_start(test_context(Arc::clone(&checkpoints), Arc::new(|_| Ok(()))))
+        .session_start(&test_context(
+            Arc::clone(&checkpoints),
+            Arc::new(|_| Ok(())),
+        ))
         .await
         .expect("initialize runtime");
     shared
@@ -1182,7 +1200,10 @@ async fn detached_root_mutation_cannot_persist_after_root_eviction() {
 
     removing.await.expect("teardown task").expect("remove root");
     shared
-        .session_start(test_context(Arc::clone(&checkpoints), Arc::new(|_| Ok(()))))
+        .session_start(&test_context(
+            Arc::clone(&checkpoints),
+            Arc::new(|_| Ok(())),
+        ))
         .await
         .expect("reinitialize runtime");
 
@@ -1209,7 +1230,7 @@ async fn terminal_persist_failure_is_retried_as_a_durable_error() {
     let events = Arc::clone(&frontend_events);
     let checkpoints: Arc<dyn CheckpointStore> = store.clone();
     shared
-        .session_start(test_context(
+        .session_start(&test_context(
             checkpoints,
             Arc::new(move |event| {
                 events.lock().expect("frontend events").push(event);
@@ -1290,7 +1311,7 @@ async fn terminal_persist_failure_notifies_after_the_retry_commits() {
     });
     let checkpoints: Arc<dyn CheckpointStore> = store.clone();
     shared
-        .session_start(test_context(checkpoints, Arc::new(|_| Ok(()))))
+        .session_start(&test_context(checkpoints, Arc::new(|_| Ok(()))))
         .await
         .expect("initialize runtime");
     shared
@@ -1363,7 +1384,7 @@ async fn root_teardown_waits_for_pending_launch_and_child_cleanup_lifetimes() {
         saved_state: StdMutex::new(None),
     });
     shared
-        .session_start(test_context(checkpoints, Arc::new(|_| Ok(()))))
+        .session_start(&test_context(checkpoints, Arc::new(|_| Ok(()))))
         .await
         .unwrap();
     let launch = shared.track_execution("root").await.unwrap();

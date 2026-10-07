@@ -8,7 +8,7 @@ use futures_util::{SinkExt as _, StreamExt as _};
 use snow::resolvers::{CryptoResolver as _, DefaultResolver};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, DuplexStream};
 use tokio_tungstenite::WebSocketStream;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{Bytes, Message};
 
 use crate::wire::websocket_error;
 use crate::{Error, Result};
@@ -181,7 +181,7 @@ where
     Ok(())
 }
 
-async fn next_binary<S>(websocket: &mut WebSocketStream<S>) -> Result<Option<Vec<u8>>>
+async fn next_binary<S>(websocket: &mut WebSocketStream<S>) -> Result<Option<Bytes>>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -192,7 +192,7 @@ where
             .transpose()
             .map_err(websocket_error)?
         {
-            Some(Message::Binary(bytes)) => return Ok(Some(bytes.to_vec())),
+            Some(Message::Binary(bytes)) => return Ok(Some(bytes)),
             Some(Message::Ping(_) | Message::Pong(_)) => {}
             None | Some(Message::Close(_)) => return Ok(None),
             _ => {

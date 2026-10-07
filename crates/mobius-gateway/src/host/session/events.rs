@@ -5,13 +5,15 @@ impl HostState {
     pub(super) async fn apply_event(&mut self, record: JournalEvent) -> Result<()> {
         let was_active = self.pending_turns > 0;
         let timestamp_ms = record.recorded_at_ms;
-        let event = record.event.clone();
-        if self
-            .project_and_publish(record, JournalDelivery::Live)?
-            .is_none()
-        {
+        let Some(frame) = self.project_and_publish(record, JournalDelivery::Live)? else {
             return Ok(());
-        }
+        };
+        let ServerMessage::AgentEvent { record, .. } = &frame.message else {
+            return Err(Error::Config(
+                "projected journal frame omitted agent event".into(),
+            ));
+        };
+        let event = &record.event;
         match &event.msg {
             EventMsg::TurnStarted(_) => self.last_assistant_text = None,
             EventMsg::AssistantMessage(message) => {
@@ -19,28 +21,26 @@ impl HostState {
                     self.last_assistant_text = Some(text);
                 }
             }
-            EventMsg::TurnAborted(turn) => gateway_log!(
-                "{}",
-                serde_json::json!({
-                    "event": "turn_aborted",
-                    "timestamp_ms": timestamp_ms,
-                    "session_id": self.running.session_id,
-                    "bot_id": self.spec.bot_id,
-                    "turn_id": turn.turn_id,
-                    "submission_id": event.submission_id,
-                    "reason": cancellation_reason(&turn.reason, self.turn_error.is_some()),
-                })
+            EventMsg::TurnAborted(turn) => tracing::info!(
+                event = "turn_aborted",
+                timestamp_ms,
+                session_id = %self.running.session_id,
+                bot_id = %self.spec.bot_id,
+                turn_id = %turn.turn_id,
+                submission_id = ?event.submission_id,
+                reason = cancellation_reason(&turn.reason, self.turn_error.is_some()),
+                "turn aborted"
             ),
             _ => {}
         }
         let next_activity = self.activity_for_event(&event.msg).await?;
-        account_turn_event(&mut self.pending_turns, &mut self.pending_messages, &event);
+        account_turn_event(&mut self.pending_turns, &mut self.pending_messages, event);
         match &event.msg {
             EventMsg::ExecApprovalRequest(_) => self.approval_active = true,
             EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_) => self.approval_active = false,
             _ => {}
         }
-        let routine_completion = self.observe_routine_event(&event);
+        let routine_completion = self.observe_routine_event(event);
         if let Some((active, mut status, message)) = routine_completion {
             if matches!(event.msg, EventMsg::TurnAborted(_))
                 && self.bots.run_cancel_requested(active.run.id())?
@@ -78,7 +78,7 @@ impl HostState {
         let sequence_kind = classify_journal_sequence(self.sequence, journal.sequence, delivery)?;
         let sequence = journal.sequence;
         let frame = ServerFrame::new(ServerMessage::AgentEvent {
-            session_id: self.running.session_id.clone(),
+            session_id: Arc::clone(&self.running.session_id),
             record: project_record(&self.running.frontend, journal),
         });
         let entry = ReplayEntry::new(frame)?;
@@ -128,13 +128,14 @@ impl HostState {
                 None
             }
             EventMsg::Error(error) => {
+                // Keep the first failure until a later completion event persists the routine result.
                 active.failure.get_or_insert_with(|| error.message.clone());
                 None
             }
             EventMsg::TurnComplete(turn)
                 if active.turn_id.as_deref() == Some(turn.turn_id.as_str()) =>
             {
-                Some(match active.failure.clone() {
+                Some(match active.failure.take() {
                     Some(message) => (RoutineRunStatus::Failed, Some(message)),
                     None => (RoutineRunStatus::Succeeded, None),
                 })
@@ -144,12 +145,7 @@ impl HostState {
             {
                 Some((
                     RoutineRunStatus::Failed,
-                    Some(
-                        active
-                            .failure
-                            .clone()
-                            .unwrap_or_else(|| turn.reason.clone()),
-                    ),
+                    Some(active.failure.take().unwrap_or_else(|| turn.reason.clone())),
                 ))
             }
             _ => None,
@@ -188,8 +184,7 @@ impl HostState {
         Ok(SessionReadyPayload {
             active_turn_ids: checkpoint
                 .active_execution
-                .as_ref()
-                .map(|active| active.turn_id.clone())
+                .map(|active| active.turn_id)
                 .into_iter()
                 .collect(),
             pending_approvals: checkpoint
@@ -366,7 +361,7 @@ impl HostState {
             .lock()
             .await
             .activities
-            .get(&self.running.session_id)
+            .get(self.running.session_id.as_ref())
             .cloned()
             .unwrap_or_default())
     }

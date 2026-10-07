@@ -131,7 +131,7 @@ async fn persisted_bot_without_new_scalar_settings_assembles_and_runs_with_owner
     settings["compaction"]
         .as_object_mut()
         .expect("compaction settings")
-        .retain(|id, _| id == "mode" || id == "at_tokens");
+        .retain(|id, _| id == "allow_model_compaction" || id == "at_tokens");
     let composition =
         serde_json::from_value(encoded).expect("deserialize existing Bot configuration");
     let bot = {

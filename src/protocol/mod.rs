@@ -1,5 +1,7 @@
 //! The small event protocol shared by agent frontends.
 
+use std::sync::Arc;
+
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -177,7 +179,7 @@ pub struct ToolLoad {
 impl ToolLoad {
     /// Converts the typed control item into checkpoint model context.
     #[must_use]
-    pub fn into_input(self) -> serde_json::Value {
+    pub fn to_input(&self) -> serde_json::Value {
         serde_json::json!({
             "type": TOOL_LOAD_MARKER,
             "catalog_revision": self.catalog_revision,
@@ -656,7 +658,7 @@ where
 pub struct Event {
     /// Submission ID that caused this event, if it was command-driven.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub submission_id: Option<String>,
+    pub submission_id: Option<Arc<str>>,
     /// Event payload.
     pub msg: EventMsg,
 }
@@ -841,48 +843,48 @@ impl ModelEvent {
     #[must_use]
     pub fn into_event(
         self,
-        session_id: &str,
-        turn_id: &str,
-        model_step_id: &str,
+        session_id: Arc<str>,
+        turn_id: Arc<str>,
+        model_step_id: Arc<str>,
     ) -> Option<EventMsg> {
         Some(match self {
             Self::ToolCallReady(_) => return None,
             Self::TextDelta(delta) => EventMsg::AssistantContentDelta(AssistantContentDeltaEvent {
-                session_id: session_id.into(),
-                turn_id: turn_id.into(),
-                model_step_id: model_step_id.into(),
+                session_id,
+                turn_id,
+                model_step_id,
                 delta,
                 phase: ModelStepContentPhase::FinalAnswer,
             }),
             Self::CommentaryDelta(delta) => {
                 EventMsg::AssistantContentDelta(AssistantContentDeltaEvent {
-                    session_id: session_id.into(),
-                    turn_id: turn_id.into(),
-                    model_step_id: model_step_id.into(),
+                    session_id,
+                    turn_id,
+                    model_step_id,
                     delta,
                     phase: ModelStepContentPhase::Commentary,
                 })
             }
             Self::ReasoningDelta(delta) => {
                 EventMsg::AssistantContentDelta(AssistantContentDeltaEvent {
-                    session_id: session_id.into(),
-                    turn_id: turn_id.into(),
-                    model_step_id: model_step_id.into(),
+                    session_id,
+                    turn_id,
+                    model_step_id,
                     delta,
                     phase: ModelStepContentPhase::Reasoning,
                 })
             }
             Self::WebSearchStarted { call_id } => EventMsg::WebSearchBegin(WebSearchBeginEvent {
-                session_id: session_id.into(),
-                turn_id: turn_id.into(),
-                model_step_id: model_step_id.into(),
+                session_id,
+                turn_id,
+                model_step_id,
                 call_id,
             }),
             Self::WebSearchCompleted { call_id, action } => {
                 EventMsg::WebSearchEnd(WebSearchEndEvent {
-                    session_id: session_id.into(),
-                    turn_id: turn_id.into(),
-                    model_step_id: model_step_id.into(),
+                    session_id,
+                    turn_id,
+                    model_step_id,
                     call_id,
                     action,
                 })
@@ -899,8 +901,15 @@ mod tests {
 
     #[test]
     fn model_events_keep_typed_correlation_and_web_search_fields() {
+        let session_id = Arc::from("session-1");
+        let turn_id = Arc::from("turn-1");
+        let model_step_id = Arc::from("step-1");
         let delta = ModelEvent::CommentaryDelta("Checking".into())
-            .into_event("session-1", "turn-1", "step-1")
+            .into_event(
+                Arc::clone(&session_id),
+                Arc::clone(&turn_id),
+                Arc::clone(&model_step_id),
+            )
             .expect("frontend delta");
         let search = ModelEvent::WebSearchCompleted {
             call_id: "search-1".into(),
@@ -908,8 +917,24 @@ mod tests {
                 queries: vec!["möbius framework".into(), "möbius gateway".into()],
             },
         }
-        .into_event("session-1", "turn-1", "step-1")
+        .into_event(
+            Arc::clone(&session_id),
+            Arc::clone(&turn_id),
+            Arc::clone(&model_step_id),
+        )
         .expect("frontend search");
+        let EventMsg::AssistantContentDelta(delta_ids) = &delta else {
+            panic!("expected a content delta");
+        };
+        let EventMsg::WebSearchEnd(search_ids) = &search else {
+            panic!("expected a web search result");
+        };
+        assert!(Arc::ptr_eq(&delta_ids.session_id, &session_id));
+        assert!(Arc::ptr_eq(&delta_ids.turn_id, &turn_id));
+        assert!(Arc::ptr_eq(&delta_ids.model_step_id, &model_step_id));
+        assert!(Arc::ptr_eq(&search_ids.session_id, &session_id));
+        assert!(Arc::ptr_eq(&search_ids.turn_id, &turn_id));
+        assert!(Arc::ptr_eq(&search_ids.model_step_id, &model_step_id));
 
         assert_eq!(
             serde_json::to_value(delta).expect("serialize delta"),
@@ -946,7 +971,11 @@ mod tests {
                 name: "read_file".into(),
                 arguments: json!({"path": "README.md"}),
             })
-            .into_event("session-1", "turn-1", "step-1"),
+            .into_event(
+                Arc::from("session-1"),
+                Arc::from("turn-1"),
+                Arc::from("step-1")
+            ),
             None
         );
     }

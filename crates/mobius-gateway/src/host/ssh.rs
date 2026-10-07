@@ -53,7 +53,8 @@ fn identities_in(directory: &Path) -> std::result::Result<Vec<SshIdentityRecord>
         if !file_type.is_file() {
             continue;
         }
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+        let filename = entry.file_name();
+        let Some(name) = filename.to_str() else {
             continue;
         };
         let Some(label) = name.strip_suffix(".pub") else {

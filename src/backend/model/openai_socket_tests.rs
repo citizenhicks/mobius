@@ -1,5 +1,3 @@
-#[path = "openai_socket_tests/compaction.rs"]
-mod compaction;
 #[path = "openai_socket_tests/connection.rs"]
 mod connection;
 #[path = "openai_socket_tests/exchange.rs"]

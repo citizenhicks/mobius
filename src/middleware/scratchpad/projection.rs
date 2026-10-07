@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use crate::backend::model::ModelInput;
 use serde_json::Value;
 
 use super::text;
@@ -10,17 +13,22 @@ pub(super) fn is_projection_item(item: &Value) -> bool {
     internal_message_kind(item) == Some(PROJECTION_KIND)
 }
 
-pub(super) fn without_projection_items(input: &[Value]) -> Option<Vec<Value>> {
+pub(super) fn without_projection_items(input: ModelInput<'_>) -> Option<Vec<Arc<Value>>> {
     input.iter().any(is_projection_item).then(|| {
         input
             .iter()
-            .filter(|item| !is_projection_item(item))
-            .cloned()
+            .enumerate()
+            .filter(|(_, item)| !is_projection_item(item))
+            .map(|(index, item)| {
+                input
+                    .shared_item(index)
+                    .map_or_else(|| Arc::new(item.to_owned()), Arc::clone)
+            })
             .collect()
     })
 }
 
-pub(super) fn next_projection(input: &[Value], snapshot: &Snapshot) -> Result<Option<Value>> {
+pub(super) fn next_projection(input: ModelInput<'_>, snapshot: &Snapshot) -> Result<Option<Value>> {
     let previous = input.iter().rev().find(|item| is_projection_item(item));
     if previous.is_none() && snapshot.global.is_empty() {
         return Ok(None);

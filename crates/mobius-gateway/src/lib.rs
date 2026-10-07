@@ -1,15 +1,5 @@
 //! Authenticated, frontend-neutral access to independent möbius chats.
 
-macro_rules! gateway_log {
-    ($($args:tt)*) => {
-        eprintln!(
-            "{} {}",
-            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-            format_args!($($args)*)
-        )
-    };
-}
-
 mod assembly;
 pub mod auth;
 pub mod bots;
@@ -64,6 +54,13 @@ pub enum Error {
     #[error(transparent)]
     /// Selects the I/O case.
     Io(#[from] std::io::Error),
+    #[error("state replacement was applied, but completion could not be confirmed: {source}")]
+    /// The destination changed; callers must not restore stale memory or blindly retry.
+    PublicationApplied {
+        /// Failure after the replacement became visible, such as parent-directory synchronization.
+        #[source]
+        source: Box<Error>,
+    },
     #[error(transparent)]
     /// Selects the JSON case.
     Json(#[from] serde_json::Error),

@@ -968,7 +968,7 @@ mod tests {
                 "openai_socket",
                 "OpenAI",
                 "chat_gpt",
-                "Persistent Responses WebSocket with native compaction",
+                "Persistent Responses WebSocket",
                 "https://api.openai.com/v1",
                 Some("OPENAI_API_KEY"),
                 Native,

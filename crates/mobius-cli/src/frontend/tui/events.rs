@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::BlockKey;
 use super::MAX_ENTRY_BYTES;
 use super::PickerState;
@@ -33,7 +35,7 @@ impl TuiState {
         &mut self,
         event: EventMsg,
         blocks: Vec<RenderedBlock>,
-        submission_id: Option<String>,
+        submission_id: Option<Arc<str>>,
         live: bool,
     ) {
         self.prepare_agent_event(&event);
@@ -57,7 +59,7 @@ impl TuiState {
                 if let Some(id) = submission_id {
                     let key = BlockKey {
                         capability: "message".into(),
-                        value: id,
+                        value: id.to_string(),
                     };
                     let text = if self
                         .transcript
@@ -186,19 +188,16 @@ impl TuiState {
         }
     }
 
-    fn handle_message(&mut self, message: MessageEvent, submission_id: Option<String>) {
+    fn handle_message(&mut self, message: MessageEvent, submission_id: Option<Arc<str>>) {
         let (mut text, tone, submission_id) = match message.author {
             MessageAuthor::User => {
-                self.remember_composer_input(message.text.clone());
-                (
-                    if message.text.is_empty() {
-                        "›".into()
-                    } else {
-                        format!("› {}", message.text)
-                    },
-                    TranscriptTone::User,
-                    submission_id,
-                )
+                let text = if message.text.is_empty() {
+                    "›".into()
+                } else {
+                    format!("› {}", message.text)
+                };
+                self.remember_composer_input(message.text);
+                (text, TranscriptTone::User, submission_id)
             }
             MessageAuthor::Source {
                 message_id,
@@ -208,10 +207,7 @@ impl TuiState {
             } => (
                 format!("@{handle}\n{}", message.text),
                 TranscriptTone::Neutral,
-                Some(format!(
-                    "source:{}:{session_id}:{message_id}",
-                    session_id.len()
-                )),
+                Some(format!("source:{}:{session_id}:{message_id}", session_id.len()).into()),
             ),
             MessageAuthor::Source {
                 source: mobius::protocol::MessageSource::External { .. },
@@ -226,7 +222,7 @@ impl TuiState {
             self.upsert_text(
                 BlockKey {
                     capability: "message".into(),
-                    value: id,
+                    value: id.to_string(),
                 },
                 &text,
                 false,
@@ -329,7 +325,11 @@ impl TuiState {
     }
 
     fn handle_frontend_event(&mut self, update: FrontendEvent) {
-        if let Some(overlay) = self.capability_overlay.as_mut() {
+        if matches!(
+            update,
+            FrontendEvent::Widget { .. } | FrontendEvent::RemoveWidget { .. }
+        ) && let Some(overlay) = self.capability_overlay.as_mut()
+        {
             overlay.apply(update.clone());
         }
         match update {
@@ -415,7 +415,7 @@ pub(super) fn handle_gateway_event(state: &mut TuiState, record: RecordedEvent, 
         .event
         .submission_id
         .as_ref()
-        .is_some_and(|id| state.preview_request_id.as_ref() == Some(id));
+        .is_some_and(|id| state.preview_request_id.as_deref() == Some(id.as_ref()));
     if requested
         && (record.preview.is_some()
             || matches!(
@@ -468,9 +468,9 @@ fn apply_preview(state: &mut TuiState, preview: RenderedPreview, requested: bool
     let steps = events
         .iter()
         .filter_map(|rendered| match &rendered.event {
-            EventMsg::AssistantContentDelta(delta) => Some(delta.model_step_id.clone()),
-            EventMsg::AssistantMessage(message) => Some(message.model_step_id.clone()),
-            EventMsg::ModelStepCompleted(step) => Some(step.model_step_id.clone()),
+            EventMsg::AssistantContentDelta(delta) => Some(Arc::clone(&delta.model_step_id)),
+            EventMsg::AssistantMessage(message) => Some(Arc::clone(&message.model_step_id)),
+            EventMsg::ModelStepCompleted(step) => Some(Arc::clone(&step.model_step_id)),
             _ => None,
         })
         .collect::<std::collections::BTreeSet<_>>();

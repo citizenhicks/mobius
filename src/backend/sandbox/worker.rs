@@ -170,7 +170,7 @@ struct Entry {
 
 #[derive(Default)]
 pub(super) struct Workers {
-    // ponytail: one serialized worker per session; per-worker locks if a capability needs several.
+    // ponytail: all sessions serialize through one map lock; per-session locks if concurrency matters.
     entries: Mutex<BTreeMap<String, Entry>>,
 }
 
@@ -212,6 +212,7 @@ impl Workers {
             entries.insert(
                 permissions.session_id.clone(),
                 Entry {
+                    // The persistent worker retains its launch contract to reject policy drift on later requests.
                     command: command.clone(),
                     sandbox_mode: permissions.sandbox_mode,
                     network_access: permissions.network_access,

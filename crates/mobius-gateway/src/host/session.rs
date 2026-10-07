@@ -86,7 +86,7 @@ struct SourceAdmission {
 }
 
 struct RunningAgent {
-    session_id: String,
+    session_id: Arc<str>,
     sender: Option<AgentSender>,
     events: mpsc::Receiver<JournalEvent>,
     model_router: Arc<ModelRouter>,
@@ -283,7 +283,7 @@ impl HostHandle {
             Arc::clone(&discovery_gate),
             Arc::clone(&desktop),
             Arc::clone(&remote_desktop),
-            session_id.clone(),
+            &session_id,
             origin_label,
             None,
             Arc::clone(&provider_epoch),
@@ -723,19 +723,19 @@ fn try_begin_session_mutation(
 
 /// Which configured setups one credential change invalidates.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum ProviderRefresh {
+pub(super) enum ProviderRefresh<'a> {
     /// One API-key credential, stored against a single instance.
     Instance {
-        instance: String,
-        base_url: Option<String>,
+        instance: &'a str,
+        base_url: Option<&'a str>,
     },
     /// One browser login, shared by every instance of that provider.
-    Provider(String),
+    Provider(&'a str),
 }
 
 pub(super) fn provider_refresh_matches(
     selection: &ProviderConfig,
-    scope: &ProviderRefresh,
+    scope: &ProviderRefresh<'_>,
 ) -> Result<bool> {
     match scope {
         ProviderRefresh::Instance { instance, base_url } => {
@@ -745,7 +745,7 @@ pub(super) fn provider_refresh_matches(
             let definition = provider(&selection.provider)?;
             let selected_base_url =
                 crate::provider_catalog::selected_base_url(definition, selection);
-            Ok(selected_base_url == base_url.as_deref())
+            Ok(selected_base_url == *base_url)
         }
         ProviderRefresh::Provider(provider) => Ok(selection.provider == *provider),
     }
@@ -783,7 +783,7 @@ async fn start_agent(
     discovery_gate: Arc<Mutex<()>>,
     desktop: Arc<DesktopControl>,
     remote_desktop: Arc<RemoteDesktop>,
-    session_id: String,
+    session_id: &str,
     origin_label: &str,
     prepared: Option<Arc<crate::assembly::PreparedBot>>,
     provider_epoch: Arc<AtomicU64>,
@@ -807,20 +807,21 @@ async fn start_agent(
             if let Some(prepared) = cached {
                 break prepared;
             }
-            let config = gateway
-                .lock()
-                .map_err(|_| Error::Config("gateway configuration lock is poisoned".into()))?
-                .clone();
-            let prepared = crate::assembly::prepare_bot(
-                &config,
-                bot.clone(),
-                store,
-                &credentials,
-                session_files.clone(),
-                epoch,
-                Arc::clone(remote_desktop.configuration()),
-            )
-            .await;
+            let preparation = {
+                let config = gateway
+                    .lock()
+                    .map_err(|_| Error::Config("gateway configuration lock is poisoned".into()))?;
+                crate::assembly::prepare_bot(
+                    &config,
+                    bot.clone(),
+                    store,
+                    &credentials,
+                    session_files.clone(),
+                    epoch,
+                    Arc::clone(remote_desktop.configuration()),
+                )
+            };
+            let prepared = preparation.await;
             let mut cache = bots.prepared.lock().await;
             let current_bot = bots.bot(&spec.bot_id)?;
             // A refresh can finish while preparation waits for external resources.
@@ -844,7 +845,7 @@ async fn start_agent(
             break prepared;
         }
     };
-    if let Some(mut checkpoint) = checkpoints.load(&session_id).await?
+    if let Some(mut checkpoint) = checkpoints.load(session_id).await?
         && checkpoint.session_context.owner_id != spec.bot_id
     {
         checkpoint.sequence = checkpoint
@@ -872,19 +873,17 @@ async fn start_agent(
         discovery_gate,
         desktop,
         remote_desktop,
-        Some(session_id),
+        Some(session_id.into()),
         origin_label,
         Arc::clone(&prepared),
         Some(live_chats),
         Some(host_access),
     )
     .await?;
-    let session = agent.session().clone();
-    let frontend = agent.frontend().clone();
     let frontend_sink = agent.frontend_sink();
     let tool_count = agent.tool_count();
-    let session_id = session.session_id.clone();
-    let (sender, events) = agent.into_recorded_parts();
+    let (sender, events, session, frontend) = agent.into_recorded_parts();
+    let session_id = Arc::from(session.session_id.as_str());
     Ok(RunningAgent {
         session_id,
         sender: Some(sender),

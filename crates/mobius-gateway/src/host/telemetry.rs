@@ -126,22 +126,47 @@ impl GatewayHost {
             replacement.bearer_env.clone_from(&previous.bearer_env);
             replacement.bearer_file.clone_from(&previous.bearer_file);
         }
-        let mut config = live.clone();
-        config.telemetry.revision = expected
+        let revision = expected
             .checked_add(1)
             .ok_or_else(|| invalid_config("telemetry revision overflow"))?;
-        config.telemetry.sinks = sinks;
-        config.validate().map_err(invalid_config)?;
-        state.store.save(&config).map_err(internal)?;
-        if let Err(error) = state.bots.sync_telemetry_cursors(&config.telemetry.sinks) {
-            state.store.save(&live).map_err(internal)?;
-            return Err(internal(error));
-        }
-        self.telemetry
-            .configure(config.telemetry.clone())
-            .map_err(internal)?;
-        *live = config;
-        Ok(())
+        self.telemetry.configure_after(|| {
+            // Keep only replaced fields; restore memory only after establishing which file is visible.
+            let mut previous = std::mem::replace(&mut live.telemetry.sinks, sinks);
+            live.telemetry.revision = revision;
+            let publication = match crate::publication::Outcome::applied(
+                live.validate().and_then(|()| state.store.save(&live))
+            ) {
+                    Ok(publication) => publication,
+                    Err(error) => {
+                        live.telemetry.sinks = previous;
+                        live.telemetry.revision = expected;
+                        return Err(error);
+                    }
+            };
+            if let Err(error) = state.bots.sync_telemetry_cursors(&live.telemetry.sinks) {
+                std::mem::swap(&mut live.telemetry.sinks, &mut previous);
+                live.telemetry.revision = expected;
+                match state.store.save(&live) {
+                    Ok(()) => return Err(error),
+                    Err(rollback @ Error::PublicationApplied { .. }) => {
+                        return Err(crate::publication::applied_error(Error::Config(format!(
+                            "{error}; telemetry rollback applied but completion failed: {rollback}"
+                        ))));
+                    }
+                    Err(rollback) => {
+                        // Rollback never replaced the file: keep the published configuration live.
+                        live.telemetry.sinks = previous;
+                        live.telemetry.revision = revision;
+                        let failure = crate::publication::applied_error(Error::Config(format!(
+                            "telemetry configuration remains changed; cursor synchronization failed: {error}; rollback failed: {rollback}"
+                        )));
+                        // Runtime follows the visible config; missing cursor state continues to fail closed.
+                        return Ok((live.telemetry.clone(), crate::publication::Outcome::applied(Err(failure))?));
+                    }
+                }
+            }
+            Ok((live.telemetry.clone(), publication))
+        }).map_err(internal)
     }
 
     pub(crate) async fn schedule_telemetry(&self, id: String) -> Result<()> {
@@ -197,8 +222,9 @@ impl GatewayHost {
         let config = self.telemetry.config()?;
         let state = self.state.lock().await;
         let mut reports = Vec::new();
-        for sink in &config.sinks {
-            let mut sink = sink.clone();
+        for configured in &config.sinks {
+            // Reporting redacts credentials without changing the live sink configuration.
+            let mut sink = configured.clone();
             let mut status = self.telemetry.status(&sink.id)?;
             if !sink.events.is_empty() {
                 status.events_pending = state.bots.telemetry_count(&sink)?;

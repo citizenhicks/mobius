@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::VecDeque;
 
 use diffy::Line as DiffLine;
@@ -30,7 +31,7 @@ use super::shimmer;
 use crate::frontend::catalog::MenuItem;
 use crate::frontend::catalog::UiCatalog;
 use crate::frontend::dashboard::centered_area;
-use crate::frontend::terminal::terminal_text;
+use crate::frontend::terminal::{borrow_line, terminal_text};
 use crate::frontend::theme::Role;
 use crate::frontend::theme::current;
 use mobius::protocol::ActiveMessageDelivery;
@@ -56,15 +57,13 @@ pub(super) fn render(frame: &mut Frame<'_>, state: &mut TuiState, catalog: &UiCa
         .then(|| {
             state
                 .reference_suggestions(catalog)
-                .map(|(_, matches)| matches)
+                .map(|(_, matches)| matches.len())
         })
         .flatten();
     let slash_suggestions = (state.picker.is_none() && reference_suggestions.is_none())
         .then(|| state.slash_suggestions(catalog))
         .flatten();
     let menu_height = reference_suggestions
-        .as_ref()
-        .map(Vec::len)
         .or_else(|| slash_suggestions.as_ref().map(Vec::len))
         .map_or(0, |length| {
             u16::try_from(length.clamp(1, MAX_MENU_ROWS)).unwrap_or(0)
@@ -94,11 +93,13 @@ pub(super) fn render(frame: &mut Frame<'_>, state: &mut TuiState, catalog: &UiCa
     .split(frame.area());
 
     render_transcript(frame, state, areas[0]);
-    if let Some(suggestions) = reference_suggestions {
+    if reference_suggestions.is_some()
+        && let Some((_, _, suggestions)) = &state.reference_cache
+    {
         state.reference_selection = state
             .reference_selection
             .min(suggestions.len().saturating_sub(1));
-        render_menu(frame, areas[1], &suggestions, state.reference_selection);
+        render_menu(frame, areas[1], suggestions, state.reference_selection);
     } else if let Some(suggestions) = slash_suggestions {
         state.slash_selection = state
             .slash_selection
@@ -170,11 +171,7 @@ pub(super) fn live_transcript_lines(
     lines
 }
 
-fn live_transcript_window(
-    state: &mut TuiState,
-    width: u16,
-    height: u16,
-) -> (Vec<Line<'static>>, u16) {
+fn live_transcript_window(state: &mut TuiState, width: u16, height: u16) -> (Vec<Line<'_>>, u16) {
     let (content_height, tail) = prepare_live_transcript(state, width);
     render_transcript_window(
         &mut state.transcript,
@@ -291,14 +288,14 @@ fn prepare_live_transcript(state: &mut TuiState, width: u16) -> (usize, Vec<Line
     (content_height, tail)
 }
 
-fn render_transcript_window(
-    transcript: &mut VecDeque<TranscriptEntry>,
+fn render_transcript_window<'a>(
+    transcript: &'a mut VecDeque<TranscriptEntry>,
     width: u16,
     viewport: &mut super::Viewport,
     height: u16,
     tail: Vec<Line<'static>>,
     entry_height: usize,
-) -> (Vec<Line<'static>>, u16) {
+) -> (Vec<Line<'a>>, u16) {
     let tail_heights = tail
         .iter()
         .map(|line| wrapped_line_height(line, width))
@@ -311,7 +308,7 @@ fn render_transcript_window(
     let mut cursor = 0_usize;
     let mut first_skip = None;
     let mut lines = Vec::new();
-    let mut collect = |line: &Line<'static>, line_height: usize| {
+    let mut collect = |line: Cow<'a, Line<'static>>, line_height: usize| {
         let start = cursor;
         cursor = cursor.saturating_add(line_height);
         if line_height == 0 || start >= end || cursor <= scroll {
@@ -320,11 +317,14 @@ fn render_transcript_window(
         if first_skip.is_none() {
             first_skip = Some(scroll.saturating_sub(start));
         }
-        lines.push(line.clone());
+        lines.push(match line {
+            Cow::Borrowed(line) => borrow_line(line),
+            Cow::Owned(line) => line,
+        });
     };
     visit_transcript_lines(transcript, width, &mut collect);
-    for (line, line_height) in tail.iter().zip(tail_heights) {
-        collect(line, line_height);
+    for (line, line_height) in tail.into_iter().zip(tail_heights) {
+        collect(Cow::Owned(line), line_height);
     }
 
     (
@@ -333,33 +333,34 @@ fn render_transcript_window(
     )
 }
 
-fn visit_transcript_lines(
-    transcript: &mut VecDeque<TranscriptEntry>,
+fn visit_transcript_lines<'a>(
+    transcript: &'a mut VecDeque<TranscriptEntry>,
     width: u16,
-    mut visit: impl FnMut(&Line<'static>, usize),
+    mut visit: impl FnMut(Cow<'a, Line<'static>>, usize),
 ) -> bool {
     let mut previous_group = None;
     let mut has_previous = false;
     let mut has_lines = false;
     for entry in transcript {
-        let grouped = entry.group.is_some() && entry.group == previous_group;
+        let grouped = entry.group.is_some() && entry.group.as_ref() == previous_group;
         if has_previous && !grouped {
             let line = if matches!(entry.tone, TranscriptTone::User) {
                 separator_line(width)
             } else {
                 Line::default()
             };
-            visit(&line, wrapped_line_height(&line, width));
+            let height = wrapped_line_height(&line, width);
+            visit(Cow::Owned(line), height);
             has_lines = true;
         }
         ensure_rendered(entry, width);
         if let Some((_, rendered)) = &entry.rendered {
             for (line, height) in rendered.lines.iter().zip(&rendered.wrapped_heights) {
-                visit(line, *height);
+                visit(Cow::Borrowed(line), *height);
             }
             has_lines |= !rendered.lines.is_empty();
         }
-        previous_group.clone_from(&entry.group);
+        previous_group = entry.group.as_ref();
         has_previous = true;
     }
     has_lines
@@ -403,7 +404,7 @@ fn ensure_rendered(entry: &mut TranscriptEntry, width: u16) {
 }
 
 fn wrapped_line_height(line: &Line<'static>, width: u16) -> usize {
-    Paragraph::new(Text::from(line.clone()))
+    Paragraph::new(borrow_line(line))
         .wrap(Wrap { trim: false })
         .line_count(width)
 }
@@ -466,7 +467,7 @@ pub(super) fn render_preview(frame: &mut Frame<'_>, state: &mut TuiState) {
     frame.render_widget(paragraph, area);
 }
 
-fn text_preview_window(state: &mut TuiState, width: u16, height: u16) -> (Vec<Line<'static>>, u16) {
+fn text_preview_window(state: &mut TuiState, width: u16, height: u16) -> (Vec<Line<'_>>, u16) {
     let preview = state.preview.as_mut().expect("preview checked");
     let PreviewContent::Text { text, format, tone } = &preview.content else {
         return (Vec::new(), 0);
@@ -484,7 +485,7 @@ fn text_preview_window(state: &mut TuiState, width: u16, height: u16) -> (Vec<Li
     )
 }
 
-fn live_preview_window(state: &mut TuiState, width: u16, height: u16) -> (Vec<Line<'static>>, u16) {
+fn live_preview_window(state: &mut TuiState, width: u16, height: u16) -> (Vec<Line<'_>>, u16) {
     let (content_height, tail) = prepare_live_transcript(state, width);
     let preview = state.preview.as_mut().expect("preview checked");
     render_transcript_window(
@@ -497,11 +498,7 @@ fn live_preview_window(state: &mut TuiState, width: u16, height: u16) -> (Vec<Li
     )
 }
 
-fn snapshot_preview_window(
-    state: &mut TuiState,
-    width: u16,
-    height: u16,
-) -> (Vec<Line<'static>>, u16) {
+fn snapshot_preview_window(state: &mut TuiState, width: u16, height: u16) -> (Vec<Line<'_>>, u16) {
     let preview = state.preview.as_mut().expect("preview checked");
     let PreviewContent::Snapshot(snapshot) = &mut preview.content else {
         return (Vec::new(), 0);
@@ -797,7 +794,7 @@ pub(super) fn push_diff_patch(lines: &mut Vec<Line<'static>>, text: &str, width:
                 | DiffLine::Context(content) => *content,
             })
             .collect::<String>();
-        let syntax = highlight::lines(&hunk_text, raw_path)
+        let mut syntax = highlight::lines(&hunk_text, raw_path)
             .filter(|syntax| syntax.len() == hunk.lines().len());
         for (index, line) in hunk.lines().iter().enumerate() {
             let (old_number, new_number, sign, sign_role, background, content) = match line {
@@ -840,10 +837,10 @@ pub(super) fn push_diff_patch(lines: &mut Vec<Line<'static>>, text: &str, width:
                 Span::styled(sign, theme.style(sign_role)),
             ];
             if let Some(syntax) = syntax
-                .as_ref()
-                .and_then(|syntax_lines| syntax_lines.get(index))
+                .as_mut()
+                .and_then(|syntax_lines| syntax_lines.get_mut(index))
             {
-                spans.extend(syntax.iter().cloned());
+                spans.append(syntax);
             } else {
                 spans.push(Span::styled(
                     content.trim_end_matches(['\n', '\r']).to_string(),
@@ -883,7 +880,7 @@ fn transcript_role(tone: TranscriptTone) -> Role {
 }
 
 pub(super) fn welcome_card(state: &TuiState) -> String {
-    bordered_card(state.agent_summary.lines().map(str::to_owned).collect())
+    bordered_card(state.agent_summary.lines().collect())
 }
 
 fn responsive_welcome_card(state: &TuiState, width: u16) -> String {
@@ -891,14 +888,7 @@ fn responsive_welcome_card(state: &TuiState, width: u16) -> String {
     if card_fits(&welcome, width) {
         return welcome;
     }
-    let compact = bordered_card(
-        state
-            .agent_summary
-            .lines()
-            .take(2)
-            .map(str::to_owned)
-            .collect(),
-    );
+    let compact = bordered_card(state.agent_summary.lines().take(2).collect());
     if card_fits(&compact, width) {
         compact
     } else {
@@ -911,16 +901,16 @@ fn card_fits(card: &str, width: u16) -> bool {
         .all(|line| Line::from(line).width() <= usize::from(width))
 }
 
-fn bordered_card(rows: Vec<String>) -> String {
+fn bordered_card(rows: Vec<&str>) -> String {
     let width = rows
         .iter()
-        .map(|row| Line::from(row.as_str()).width())
+        .map(|row| Line::from(*row).width())
         .max()
         .unwrap_or_default();
     let border = "─".repeat(width + 2);
     let mut lines = vec![format!("╭{border}╮")];
     lines.extend(rows.into_iter().map(|row| {
-        let padding = width.saturating_sub(Line::from(row.as_str()).width());
+        let padding = width.saturating_sub(Line::from(row).width());
         format!("│ {row}{} │", " ".repeat(padding))
     }));
     lines.push(format!("╰{border}╯"));
@@ -968,7 +958,7 @@ fn render_footer(frame: &mut Frame<'_>, state: &TuiState, area: Rect) {
     );
 }
 
-fn footer_line(state: &TuiState, width: u16) -> Line<'static> {
+fn footer_line(state: &TuiState, width: u16) -> Line<'_> {
     let theme = current();
     let reasoning = state.model.reasoning_effort.as_deref().unwrap_or("—");
     let context = state
@@ -1021,39 +1011,44 @@ fn footer_line(state: &TuiState, width: u16) -> Line<'static> {
         separator(&mut widget_spans);
         widget_spans.extend(footer_widgets.spans);
     }
-    let mut spans = widget_spans.clone();
-    for (value, role) in &values {
-        separator(&mut spans);
-        spans.push(Span::styled(value.clone(), theme.style(*role)));
-    }
-    let full = Line::from(spans);
-    if full.width() <= usize::from(width) {
-        return full;
+    let mut spans = widget_spans;
+    let full_width = values.iter().enumerate().fold(
+        spans.iter().map(Span::width).sum::<usize>(),
+        |width, (index, (value, _))| {
+            width
+                + usize::from(!spans.is_empty() || index > 0) * 3
+                + Span::raw(value.as_str()).width()
+        },
+    );
+    if full_width <= usize::from(width) {
+        for (value, role) in values {
+            separator(&mut spans);
+            spans.push(Span::styled(value, theme.style(role)));
+        }
+        return Line::from(spans);
     }
 
-    let mut spans = widget_spans;
-    for (value, role) in [2, 4, 5, 1, 3]
-        .into_iter()
-        .filter_map(|index| values.get(index))
-    {
-        let mut candidate = spans.clone();
-        separator(&mut candidate);
-        candidate.push(Span::styled(value.clone(), theme.style(*role)));
-        if Line::from(candidate.clone()).width() <= usize::from(width) {
-            spans = candidate;
+    let mut used = spans.iter().map(Span::width).sum::<usize>();
+    for index in [2, 4, 5, 1, 3] {
+        let Some((value, role)) = values.get_mut(index) else {
+            continue;
+        };
+        let next = used + usize::from(!spans.is_empty()) * 3 + Span::raw(value.as_str()).width();
+        if next <= usize::from(width) {
+            separator(&mut spans);
+            spans.push(Span::styled(std::mem::take(value), theme.style(*role)));
+            used = next;
         }
     }
     if spans.is_empty() {
-        Line::styled(values[2].0.clone(), theme.style(values[2].1))
+        let (value, role) = values.swap_remove(2);
+        Line::styled(value, theme.style(role))
     } else {
         Line::from(spans)
     }
 }
 
-fn widget_line(
-    widgets: &[((String, String), FrontendWidget)],
-    slot: FrontendSlot,
-) -> Line<'static> {
+fn widget_line(widgets: &[((String, String), FrontendWidget)], slot: FrontendSlot) -> Line<'_> {
     let theme = current();
     let mut spans = Vec::new();
     for (_, item) in widgets.iter().filter(|(_, item)| item.slot == slot) {
@@ -1063,12 +1058,12 @@ fn widget_line(
         } else {
             theme.style(tone_role(item.tone))
         };
-        spans.push(Span::styled(item.text.clone(), style));
+        spans.push(Span::styled(item.text.as_str(), style));
     }
     Line::from(spans)
 }
 
-fn composer_header_line(state: &TuiState, catalog: &UiCatalog) -> Line<'static> {
+fn composer_header_line<'a>(state: &'a TuiState, catalog: &UiCatalog) -> Line<'a> {
     let mut line = status_line(state, catalog);
     let widgets = widget_line(&state.widgets, FrontendSlot::ComposerHeader);
     if line.width() > 0 && widgets.width() > 0 {
@@ -1080,7 +1075,7 @@ fn composer_header_line(state: &TuiState, catalog: &UiCatalog) -> Line<'static> 
     line
 }
 
-fn separator(spans: &mut Vec<Span<'static>>) {
+fn separator(spans: &mut Vec<Span<'_>>) {
     if !spans.is_empty() {
         spans.push(Span::styled(" · ", current().style(Role::Muted)));
     }
@@ -1214,14 +1209,14 @@ fn render_picker_menu(frame: &mut Frame<'_>, area: Rect, picker: &super::PickerS
         .matching_options()
         .map(|option| {
             let description = if !option.shows_detail || option.detail.is_empty() {
-                option.description.clone()
+                terminal_text(&option.description)
             } else {
-                format!("{} · {}", option.description, option.detail)
+                terminal_text(&format!("{} · {}", option.description, option.detail))
             };
             MenuItem {
                 value: String::new(),
                 label: terminal_text(&option.label),
-                description: terminal_text(&description),
+                description,
             }
         })
         .collect::<Vec<_>>();
@@ -1335,4 +1330,45 @@ fn sentence_case(value: &str) -> String {
         first.make_ascii_uppercase();
     }
     value
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+
+    #[test]
+    fn visible_cached_text_is_borrowed_until_the_frame_is_rendered() {
+        let line = Line::from("cached transcript text".to_string());
+        let pointer = line.spans[0].content.as_ptr();
+        let mut transcript = VecDeque::from([TranscriptEntry {
+            id: None,
+            group: None,
+            title: None,
+            role: None,
+            detail: None,
+            text: String::new(),
+            format: FrontendBlockFormat::PlainText,
+            tone: TranscriptTone::Neutral,
+            pending: false,
+            rendered: Some((
+                80,
+                RenderedTranscript {
+                    lines: vec![line],
+                    wrapped_heights: vec![1],
+                },
+            )),
+        }]);
+        let (lines, scroll) = render_transcript_window(
+            &mut transcript,
+            80,
+            &mut super::super::Viewport::default(),
+            4,
+            vec![Line::from("live tail")],
+            1,
+        );
+        assert_eq!(scroll, 0);
+        assert_eq!(lines[0].spans[0].content.as_ptr(), pointer);
+        assert!(matches!(lines[0].spans[0].content, Cow::Borrowed(_)));
+        assert_eq!(lines[1].spans[0].content, "live tail");
+    }
 }

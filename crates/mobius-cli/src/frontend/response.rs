@@ -22,9 +22,9 @@ pub async fn await_response<T>(
                 Error::Stopped("gateway disconnected while awaiting a response".into())
             })?;
         if request_id.is_none()
-            && let ServerMessage::Rejected { message, .. } = &message
+            && let ServerMessage::Rejected { message, .. } = message
         {
-            return Err(Error::Stopped(message.clone()));
+            return Err(Error::Stopped(message));
         }
         if let Some(error) = message.response_error(request_id) {
             return Err(Error::Stopped(error.message.into()));

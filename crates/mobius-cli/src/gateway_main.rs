@@ -9,6 +9,13 @@ use mobius_gateway::gateway_accounts::GatewayAccounts;
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let cli = GatewayCli::parse();
+    let filter =
+        std::env::var("RUST_LOG").unwrap_or_else(|_| "off,mobius=info,mobius_gateway=info".into());
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::try_new(filter)?)
+        .with_writer(std::io::stderr)
+        .try_init()
+        .map_err(std::io::Error::other)?;
     match cli.frontend_command()? {
         Some(FrontendCommand::Init(state_dir)) => initialize_cloudflare(state_dir).await?,
         Some(FrontendCommand::Dashboard(state_dir)) => {
@@ -63,7 +70,7 @@ fn save_local_client(endpoint: &Endpoint, token: String) -> mobius_gateway::Resu
 }
 
 fn load_local_client(endpoint: &Endpoint) -> mobius_gateway::Result<Option<String>> {
-    Ok(GatewayAccounts::load()?.token(endpoint).map(str::to_owned))
+    Ok(GatewayAccounts::load()?.into_token(endpoint))
 }
 
 #[cfg(test)]

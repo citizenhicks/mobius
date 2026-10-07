@@ -16,7 +16,7 @@ pub(super) async fn connect(
     )
     .await?;
     if let Some((client_endpoint, pairing_endpoint)) =
-        running_connection_endpoints(&store, &config, configured_endpoint.clone())?
+        running_connection_endpoints(&store, &config, configured_endpoint.as_ref())?
     {
         let token = load_local_client(&client_endpoint)?.ok_or_else(|| {
             Error::Config(
@@ -177,14 +177,14 @@ pub(super) async fn connect(
 pub(super) fn running_connection_endpoints(
     store: &ConfigStore,
     config: &GatewayConfig,
-    configured_endpoint: Option<Endpoint>,
+    configured_endpoint: Option<&Endpoint>,
 ) -> Result<Option<(Endpoint, Endpoint)>> {
     let Some(process) = running_process_record(&store.state_dir().join(PROCESS_FILE))? else {
         return Ok(None);
     };
     let pairing_endpoint = process
         .endpoint()?
-        .or(configured_endpoint)
+        .or_else(|| configured_endpoint.cloned())
         .ok_or_else(|| Error::Config("gateway did not publish its runtime endpoint".into()))?;
     let client_endpoint = if config.cloudflare.is_some() {
         loopback_endpoint(config)?

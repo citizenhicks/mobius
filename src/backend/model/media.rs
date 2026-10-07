@@ -1,8 +1,12 @@
 //! Prepare transport-owned image copies while preserving durable observation history.
 
+use std::fmt::Write as _;
+use std::sync::Arc;
+
 use base64::Engine as _;
 use serde_json::Value;
 
+use super::ModelInput;
 use crate::backend::session_files::SessionFileStore;
 use crate::protocol::{ImageReference, content_parts, content_parts_mut};
 use crate::{Error, Result};
@@ -36,10 +40,18 @@ impl MediaPreparation<'_> {
     pub(super) async fn prepare<M: super::Model + ?Sized>(
         self,
         session_id: &str,
-        input: &[Value],
+        input: ModelInput<'_>,
         model: &M,
         replay: bool,
-    ) -> Result<Vec<Value>> {
+    ) -> Result<Option<Vec<Arc<Value>>>> {
+        if !input.iter().any(|item| {
+            content_parts(item)
+                .into_iter()
+                .flatten()
+                .any(|part| part.get("type").and_then(Value::as_str) == Some("input_image"))
+        }) {
+            return Ok(None);
+        }
         let historical_end = if replay {
             input
                 .iter()
@@ -48,18 +60,60 @@ impl MediaPreparation<'_> {
         } else {
             0
         };
-        hydrate(self.files, session_id, input, model, historical_end).await
+        hydrate(self.files, session_id, input, model, historical_end)
+            .await
+            .map(Some)
     }
+}
+
+/// Serializes the admitted transport body, retaining the exact bytes that passed admission.
+/// Providers own encoding; continuation transports pass only their selected logical suffix.
+pub(super) async fn encode_request<M: super::Model + ?Sized>(
+    model: &M,
+    request: super::ModelRequest<'_>,
+    media: Option<MediaPreparation<'_>>,
+    replay: bool,
+    mut encode: impl FnMut(ModelInput<'_>) -> Result<Vec<u8>>,
+) -> Result<Vec<u8>> {
+    let mut prepared = match media {
+        Some(media) => {
+            media
+                .prepare(request.session_id, request.input, model, replay)
+                .await?
+        }
+        None => None,
+    };
+    let max_bytes = model.transport_settings().max_request_bytes;
+    let (Some(input), Some(media)) = (prepared.as_mut(), media) else {
+        let body = encode(request.input)?;
+        check_request_bytes(body.len(), max_bytes)?;
+        return Ok(body);
+    };
+    let mut body = Vec::new();
+    bound_request(
+        input,
+        request.input,
+        media.limits,
+        max_bytes,
+        replay,
+        |input| {
+            // A demoted replay cannot reuse the old bytes; release them before re-encoding.
+            drop(std::mem::take(&mut body));
+            body = encode(input.into())?;
+            Ok(body.len())
+        },
+    )?;
+    Ok(body)
 }
 
 /// Removes historical images only from the prepared copy, measuring the complete wire body.
 pub(super) fn bound_request(
-    prepared: &mut [Value],
-    original: &[Value],
+    prepared: &mut [Arc<Value>],
+    original: ModelInput<'_>,
     limits: ImageInputLimits,
     max_request_bytes: usize,
     replay: bool,
-    mut size: impl FnMut(&[Value]) -> Result<usize>,
+    mut size: impl FnMut(&[Arc<Value>]) -> Result<usize>,
 ) -> Result<()> {
     let fresh = if replay {
         newest_observation_start(original)
@@ -87,7 +141,8 @@ pub(super) fn bound_request(
         let original_part = &content_parts(&original[item_index])
             .ok_or_else(|| Error::Provider("missing original observation".into()))?[part_index];
         let file = &original_part["image"]["file"];
-        let part = &mut content_parts_mut(&mut prepared[item_index])
+        // Replay demotion edits only the outgoing item; durable history keeps its original image.
+        let part = &mut content_parts_mut(Arc::make_mut(&mut prepared[item_index]))
             .ok_or_else(|| Error::Provider("missing prepared observation".into()))?[part_index];
         replace_image(
             part,
@@ -105,7 +160,7 @@ pub(super) fn bound_request(
     Ok(())
 }
 
-fn newest_observation_start(input: &[Value]) -> usize {
+fn newest_observation_start(input: ModelInput<'_>) -> usize {
     let Some(last_image) = input.iter().rposition(|item| {
         content_parts(item)
             .into_iter()
@@ -114,7 +169,8 @@ fn newest_observation_start(input: &[Value]) -> usize {
     }) else {
         return input.len();
     };
-    input[..last_image]
+    input
+        .prefix(last_image)
         .iter()
         .rposition(observation_boundary)
         .map_or(0, |index| index + 1)
@@ -124,40 +180,46 @@ fn observation_boundary(item: &Value) -> bool {
     item.get("role").and_then(Value::as_str) == Some("assistant")
         || matches!(
             item.get("type").and_then(Value::as_str),
-            Some("function_call" | "reasoning" | "compaction")
+            Some("function_call" | "reasoning")
         )
 }
 
-pub(super) fn serialized_size(body: &Value) -> Result<usize> {
-    struct Counter(usize);
-    impl std::io::Write for Counter {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0 = self
-                .0
-                .checked_add(bytes.len())
-                .ok_or_else(|| std::io::Error::other("request size overflow"))?;
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
+pub(super) use crate::serialized_len as serialized_size;
+
+pub(super) fn check_request_bytes(bytes: usize, max_bytes: usize) -> Result<()> {
+    if bytes > max_bytes {
+        return Err(Error::Provider("the newest observation batch and retained text exceed the model request budget; use fewer or smaller images, or reduce the text before retrying".into()));
     }
-    let mut counter = Counter(0);
-    serde_json::to_writer(&mut counter, body)?;
-    Ok(counter.0)
+    Ok(())
 }
 
 pub(super) async fn hydrate<M: super::Model + ?Sized>(
     files: Option<&SessionFileStore>,
     session_id: &str,
-    input: &[Value],
+    input: ModelInput<'_>,
     model: &M,
     historical_end: usize,
-) -> Result<Vec<Value>> {
-    let mut prepared = input.to_vec();
+) -> Result<Vec<Arc<Value>>> {
+    let mut prepared = input
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            input
+                .shared_item(index)
+                .map_or_else(|| Arc::new(item.clone()), Arc::clone)
+        })
+        .collect::<Vec<_>>();
     for (item_index, item) in prepared.iter_mut().enumerate() {
         let tool_result = item.get("type").and_then(Value::as_str) == Some("function_call_output");
-        let Some(parts) = content_parts_mut(item) else {
+        if !content_parts(item).is_some_and(|parts| {
+            parts
+                .iter()
+                .any(|part| part.get("type").and_then(Value::as_str) == Some("input_image"))
+        }) {
+            continue;
+        }
+        // Hydrated pixels belong only to the outgoing request, never the shared durable item.
+        let Some(parts) = content_parts_mut(Arc::make_mut(item)) else {
             continue;
         };
         for part in parts {
@@ -220,70 +282,32 @@ fn replace_image(part: &mut Value, replacement: Value) {
     }
 }
 
-pub(super) fn restore_references(
-    output: &mut [Value],
-    original: &[Value],
-    prepared: &[Value],
-) -> Result<()> {
-    let images = original
-        .iter()
-        .zip(prepared)
-        .flat_map(|(original, prepared)| {
-            content_parts(original)
-                .into_iter()
-                .flatten()
-                .zip(content_parts(prepared).into_iter().flatten())
-        })
-        .filter(|(original, _)| original.get("image").is_some())
-        .collect::<Vec<_>>();
-    for item in output {
-        let Some(parts) = content_parts_mut(item) else {
-            continue;
-        };
-        for part in parts {
-            if part.get("type").and_then(Value::as_str) != Some("input_image") {
-                continue;
-            }
-            let retained = images
-                .iter()
-                .find(|(original, prepared)| *original == part || *prepared == part)
-                .or_else(|| {
-                    images.iter().find(|(_, prepared)| {
-                        prepared.get("data").is_some()
-                            && prepared.get("data") == part.get("data")
-                            && prepared.get("media_type") == part.get("media_type")
-                            && prepared.get("detail") == part.get("detail")
-                    })
-                })
-                .ok_or_else(|| {
-                    Error::Provider("compaction returned an unrecognized image observation".into())
-                })?;
-            *part = retained.0.clone();
-        }
-    }
-    Ok(())
-}
-
 /// Extracts readable text from typed tool results for text-only consumers.
 pub(crate) fn output_text(value: &Value) -> Result<String> {
     let parts = value
         .as_array()
         .ok_or_else(|| Error::Provider("tool result content must be an array".into()))?;
-    parts
-        .iter()
-        .map(|part| match part.get("type").and_then(Value::as_str) {
-            Some("input_text") => part
-                .get("text")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .ok_or_else(|| Error::Provider("invalid tool text".into())),
-            Some("file") => Ok(format!("Stored file: {}", part["file"])),
-            _ => Err(Error::Provider(
-                "selected provider cannot represent this tool observation".into(),
-            )),
-        })
-        .collect::<Result<Vec<_>>>()
-        .map(|text| text.join("\n"))
+    let mut text = String::new();
+    for (index, part) in parts.iter().enumerate() {
+        if index != 0 {
+            text.push('\n');
+        }
+        match part.get("type").and_then(Value::as_str) {
+            Some("input_text") => text.push_str(
+                part.get("text")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| Error::Provider("invalid tool text".into()))?,
+            ),
+            Some("file") => write!(text, "Stored file: {}", part["file"])
+                .expect("writing to a String cannot fail"),
+            _ => {
+                return Err(Error::Provider(
+                    "selected provider cannot represent this tool observation".into(),
+                ));
+            }
+        }
+    }
+    Ok(text)
 }
 
 #[cfg(test)]
@@ -291,6 +315,78 @@ mod tests {
     use super::*;
     use crate::backend::model::{Model, ModelEventSink, ModelOutput, ModelRequest};
     use crate::protocol::{ContentPart, ImageDetail, ToolContent};
+
+    #[test]
+    fn tool_text_keeps_empty_parts_and_file_references() {
+        let parts = serde_json::json!([
+            {"type": "input_text", "text": ""},
+            {"type": "input_text", "text": "hello"},
+            {"type": "file", "file": {"id": "reference"}},
+            {"type": "input_text", "text": ""}
+        ]);
+        assert_eq!(
+            output_text(&parts).expect("tool text"),
+            "\nhello\nStored file: {\"id\":\"reference\"}\n"
+        );
+        assert!(output_text(&serde_json::json!([{"type": "input_image"}])).is_err());
+    }
+
+    #[tokio::test]
+    async fn text_requests_keep_borrowed_history_without_materialization() {
+        let input = [super::super::user_message("plain text")];
+        let media = MediaPreparation {
+            files: None,
+            limits: ImageInputLimits::default(),
+        };
+        assert!(
+            media
+                .prepare("text", (&input).into(), &Vision, true)
+                .await
+                .expect("borrowed text request")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn admitted_bytes_are_encoded_once_and_returned_without_copying() {
+        let input = [super::super::user_message("plain text")];
+        for media in [
+            None,
+            Some(MediaPreparation {
+                files: None,
+                limits: ImageInputLimits::default(),
+            }),
+        ] {
+            let request = ModelRequest {
+                session_id: "single-encoding",
+                cancellation: None,
+                prompt_cache: None,
+                instructions: "instructions",
+                input: (&input).into(),
+                catalog_revision: "catalog",
+                tools: &[],
+                deferred_tools: &[],
+                allow_hosted_tools: false,
+                allow_continuation: false,
+            };
+            let mut count = 0;
+            let mut allocation = 0;
+            let body = encode_request(&Vision, request, media, true, |input| {
+                count += 1;
+                let bytes = serde_json::to_vec(&input)?;
+                allocation = bytes.as_ptr() as usize;
+                Ok(bytes)
+            })
+            .await
+            .expect("admitted request");
+            assert_eq!(count, 1);
+            assert_eq!(body.as_ptr() as usize, allocation);
+            assert_eq!(
+                serde_json::from_slice::<Value>(&body).expect("body"),
+                serde_json::json!(input)
+            );
+        }
+    }
 
     #[test]
     fn replay_drops_only_old_images_after_measuring_full_body_and_keeps_fresh_batch() {
@@ -307,14 +403,15 @@ mod tests {
                 *part = serde_json::json!({"type":"input_image", "data":"x".repeat(1000)});
             }
         }
-        let measure = |input: &[Value]| {
+        let mut prepared = prepared.into_iter().map(Arc::new).collect::<Vec<_>>();
+        let measure = |input: &[Arc<Value>]| {
             serialized_size(&serde_json::json!({"input":input,"tools":"schema".repeat(40)}))
         };
         let initial = measure(&prepared).expect("size");
         let unchanged = prepared.to_vec();
         bound_request(
             &mut prepared,
-            &original,
+            (&original).into(),
             ImageInputLimits::default(),
             initial,
             true,
@@ -324,7 +421,7 @@ mod tests {
         assert_eq!(prepared, unchanged);
         bound_request(
             &mut prepared,
-            &original,
+            (&original).into(),
             ImageInputLimits::default(),
             initial - 500,
             true,
@@ -342,7 +439,7 @@ mod tests {
         assert!(
             bound_request(
                 &mut prepared,
-                &original,
+                (&original).into(),
                 ImageInputLimits::default(),
                 1000,
                 true,
@@ -355,7 +452,7 @@ mod tests {
         assert!(
             bound_request(
                 &mut suffix,
-                &original,
+                (&original).into(),
                 ImageInputLimits::default(),
                 initial - 1,
                 false,
@@ -378,10 +475,11 @@ mod tests {
         for part in prepared.iter_mut().filter_map(content_parts_mut).flatten() {
             *part = serde_json::json!({"type":"input_image", "data":"x".repeat(10_000)});
         }
+        let mut prepared = prepared.into_iter().map(Arc::new).collect::<Vec<_>>();
         let mut measurements = 0;
         bound_request(
             &mut prepared,
-            &original,
+            (&original).into(),
             ImageInputLimits {
                 max_encoded_bytes: 1,
                 ..ImageInputLimits::default()
@@ -402,20 +500,6 @@ mod tests {
                 .len(),
             10_000
         );
-    }
-
-    #[test]
-    fn compaction_does_not_match_unknown_references_against_image_placeholders() {
-        let original = [
-            serde_json::json!({"role":"user","content":[{"type":"input_image","image":{"file":{"id":"old"}}}]}),
-        ];
-        let prepared = [
-            serde_json::json!({"role":"user","content":[{"type":"input_text","text":"historical image omitted"}]}),
-        ];
-        let mut output = [
-            serde_json::json!({"role":"user","content":[{"type":"input_image","image":{"file":{"id":"unknown"}}}]}),
-        ];
-        assert!(restore_references(&mut output, &original, &prepared).is_err());
     }
 
     #[tokio::test]
@@ -468,17 +552,17 @@ mod tests {
         let original = [
             serde_json::json!({"type":"function_call_output", "call_id":"photos", "output":parts}),
         ];
-        let mut prepared = hydrate(Some(&store), "photos", &original, &Vision, 0)
+        let mut prepared = hydrate(Some(&store), "photos", (&original).into(), &Vision, 0)
             .await
             .expect("prepare batch");
-        let size = |input: &[Value]| {
+        let size = |input: &[Arc<Value>]| {
             serialized_size(
-                &serde_json::json!({"input":super::super::openai::wire_input_with_cache(input, true, true, "catalog", &[])?}),
+                &serde_json::json!({"input":super::super::openai::wire_input_with_cache((input).into(), true, true, "catalog", &[])?}),
             )
         };
         bound_request(
             &mut prepared,
-            &original,
+            (&original).into(),
             ImageInputLimits::default(),
             24 * 1024 * 1024,
             true,
@@ -561,9 +645,10 @@ mod tests {
             limits: ImageInputLimits::default(),
         };
         let prepared = media
-            .prepare("history", &input, &Vision, true)
+            .prepare("history", (&input).into(), &Vision, true)
             .await
-            .expect("cold replay after purge");
+            .expect("cold replay after purge")
+            .expect("image materialization");
         for part in [&prepared[0]["content"][0], &prepared[2]["output"][1]] {
             assert_eq!(part["type"], "input_text");
             assert!(
@@ -573,23 +658,30 @@ mod tests {
                     .contains("unavailable")
             );
         }
-        assert!(super::super::has_prompt_cache_breakpoint(&prepared));
+        assert!(super::super::has_prompt_cache_breakpoint(
+            (&prepared).into()
+        ));
         assert_eq!(prepared[2]["output"][0]["text"], "failed capture");
         assert_eq!(prepared[4]["content"][1]["type"], "input_image");
         assert_eq!(input[0]["content"][0]["type"], "input_image");
         assert_eq!(input[2]["output"][1]["type"], "input_image");
         assert!(
             media
-                .prepare("history", &input, &Vision, false)
+                .prepare("history", (&input).into(), &Vision, false)
                 .await
                 .is_err()
         );
-        assert!(media.prepare("other", &input, &Vision, true).await.is_err());
+        assert!(
+            media
+                .prepare("other", (&input).into(), &Vision, true)
+                .await
+                .is_err()
+        );
 
         let mut continued = input[..4].to_vec();
         continued.push(serde_json::json!({"role":"user","content":"continue without images"}));
         media
-            .prepare("history", &continued, &Vision, true)
+            .prepare("history", (&continued).into(), &Vision, true)
             .await
             .expect("purged prior batch does not poison later text turns");
         continued.push(
@@ -597,7 +689,7 @@ mod tests {
         );
         assert!(
             media
-                .prepare("history", &continued, &Vision, true)
+                .prepare("history", (&continued).into(), &Vision, true)
                 .await
                 .is_err()
         );
@@ -606,13 +698,15 @@ mod tests {
         invalid[0]["content"][0]["image"] = serde_json::to_value(fresh).expect("image reference");
         invalid[0]["content"][0]["image"]["file"]["size"] = serde_json::json!(1);
         assert!(matches!(
-            media.prepare("history", &invalid, &Vision, true).await,
+            media
+                .prepare("history", (&invalid).into(), &Vision, true)
+                .await,
             Err(Error::Tool(_))
         ));
     }
 
     #[tokio::test]
-    async fn large_native_observations_keep_exact_prefix_and_durable_compaction_references() {
+    async fn large_native_observations_keep_exact_prefix_and_durable_file_references() {
         use image::ImageEncoder as _;
         let state = tempfile::tempdir().expect("state");
         let store = SessionFileStore::new(state.path(), None);
@@ -648,18 +742,30 @@ mod tests {
                 image: observation.clone(),
             },
         ]);
-        let mut input = vec![super::super::tool_output("call", content.clone(), true)];
+        let mut input = vec![super::super::tool_output("call", &content, true)];
         super::super::reset_prompt_cache_breakpoint(&mut input);
-        let prepared = hydrate(Some(&store), "parent", &input, &Vision, 0)
+        input.push(super::super::user_message("retained text beside the image"));
+        let mut input = input.into_iter().map(Arc::new).collect::<Vec<_>>();
+        let prepared = hydrate(Some(&store), "parent", (&input).into(), &Vision, 0)
             .await
             .expect("large images admitted");
+        assert!(Arc::ptr_eq(&prepared[1], &input[1]));
+        assert!(!Arc::ptr_eq(&prepared[0], &input[0]));
+        assert!(input[0]["output"][1].get("image").is_some());
         assert_eq!(prepared[0]["output"][0]["text"], "before");
         assert_eq!(prepared[0]["output"][2]["text"], "after");
         assert_eq!(prepared[0]["output"][1]["detail"], "high");
-        assert!(super::super::has_prompt_cache_breakpoint(&prepared));
-        let wired =
-            super::super::openai::wire_input_with_cache(&prepared, true, true, "catalog", &[])
-                .expect("native result");
+        assert!(super::super::has_prompt_cache_breakpoint(
+            (&prepared).into()
+        ));
+        let wired = super::super::openai::wire_input_with_cache(
+            (&prepared).into(),
+            true,
+            true,
+            "catalog",
+            &[],
+        )
+        .expect("native result");
         assert!(
             wired[0]["output"][1]["image_url"]
                 .as_str()
@@ -671,25 +777,19 @@ mod tests {
                 .get("prompt_cache_breakpoint")
                 .is_some()
         );
-        input.push(super::super::tool_output(
+        input.push(Arc::new(super::super::tool_output(
             "next",
-            ToolContent(vec![ContentPart::Image {
+            &ToolContent(vec![ContentPart::Image {
                 image: observation.clone(),
             }]),
             false,
-        ));
-        let appended = hydrate(Some(&store), "parent", &input, &Vision, 0)
+        )));
+        let appended = hydrate(Some(&store), "parent", (&input).into(), &Vision, 0)
             .await
             .expect("append");
-        assert_eq!(prepared, appended[..1]);
-        let mut compacted = prepared.clone();
-        restore_references(&mut compacted, &input[..1], &prepared).expect("restore");
-        assert_eq!(compacted, input[..1]);
-        let mut unknown = prepared.clone();
-        unknown[0]["output"][1]["data"] = Value::String("unknown".into());
-        assert!(restore_references(&mut unknown, &input[..1], &prepared).is_err());
+        assert_eq!(prepared, appended[..2]);
         assert!(
-            hydrate(Some(&store), "other", &input, &Vision, 0)
+            hydrate(Some(&store), "other", (&input).into(), &Vision, 0)
                 .await
                 .is_err()
         );
@@ -712,7 +812,7 @@ mod tests {
         );
         store.delete_session("parent").await.expect("delete parent");
         assert_eq!(
-            hydrate(Some(&store), "child", &input, &Vision, 0)
+            hydrate(Some(&store), "child", (&input).into(), &Vision, 0)
                 .await
                 .expect("fork retains blobs"),
             appended

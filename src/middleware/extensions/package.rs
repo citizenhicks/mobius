@@ -264,7 +264,7 @@ fn agent_plugin_schema(root: &Path) -> Result<Option<String>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     }
-    let value = match serde_json::from_slice::<Value>(&read_bounded_file(
+    let mut value = match serde_json::from_slice::<Value>(&read_bounded_file(
         &path,
         MAX_PLUGIN_MANIFEST_BYTES,
         "Agent Plugin manifest",
@@ -273,11 +273,13 @@ fn agent_plugin_schema(root: &Path) -> Result<Option<String>> {
         Err(_) => return Ok(Some(String::new())),
     };
     Ok(Some(
-        value
-            .get("$schema")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned(),
+        match value
+            .as_object_mut()
+            .and_then(|object| object.remove("$schema"))
+        {
+            Some(Value::String(schema)) => schema,
+            _ => String::new(),
+        },
     ))
 }
 

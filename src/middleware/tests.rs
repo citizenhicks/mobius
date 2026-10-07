@@ -64,9 +64,30 @@ fn token_estimation_serializes_borrowed_public_fields() {
 
     assert_eq!(TokenEstimate::default().item_tokens(&item), expected);
     assert_eq!(
-        serialized_len(&public),
-        Some(serde_json::to_vec(&public).expect("json").len())
+        serialized_len(&public).expect("serialized length"),
+        serde_json::to_vec(&public).expect("json").len()
     );
+}
+
+#[test]
+fn image_token_estimation_replaces_only_public_image_parts() {
+    for field in ["content", "output"] {
+        let item = serde_json::json!({
+            "type": if field == "output" { "function_call_output" } else { "message" },
+            field: [{"type": "input_text", "text": "hello"}, {
+                "type": "input_image", "image": {"width": 512, "height": 512},
+                "image_url": "x".repeat(100_000)
+            }],
+            "_private": "ignored"
+        });
+        let mut public = item.clone();
+        public.as_object_mut().unwrap().remove("_private");
+        public[field][1] = Value::Null;
+        let expected =
+            TokenEstimate::default().tokens(serde_json::to_vec(&public).expect("json").len()) + 512;
+        assert_eq!(TokenEstimate::default().item_tokens(&item), expected);
+        assert_eq!(item[field][1]["image_url"].as_str().unwrap().len(), 100_000);
+    }
 }
 
 impl Middleware for CompactInputRewrite {
@@ -79,7 +100,7 @@ impl Middleware for CompactInputRewrite {
         context: &'a mut SessionStartContext<'_>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            context.input.retain(|item| item != "remove");
+            context.input.retain(|item| item.as_ref() != "remove");
             context.input_changed = true;
             context.input.reverse();
             Ok(())
@@ -165,14 +186,15 @@ async fn computer_control_resumes_preserve_context_without_adding_notices() {
         .expect("computer control"),
     )])
     .expect("middleware stack");
-    for mut input in [
+    for input in [
         Vec::new(),
         vec![
             crate::backend::model::user_message("hello"),
             serde_json::json!({"type":"function_call", "name":"computer_control", "call_id":"call", "arguments":"{}"}),
-            crate::backend::model::tool_output("call", "observed", false),
+            crate::backend::model::tool_output("call", &"observed".into(), false),
         ],
     ] {
+        let mut input = input.into_iter().map(Arc::new).collect::<Vec<_>>();
         let expected = serde_json::to_vec(&input).expect("original context");
         for _ in 0..30 {
             let started = stack
@@ -217,7 +239,13 @@ async fn session_lifecycle_starts_forward_and_ends_or_rolls_back_in_reverse() {
         .await
         .expect("session start");
     stack.session_end(&runtime).await.expect("session end");
-    assert_eq!(input, [serde_json::json!("a"), serde_json::json!("b")]);
+    assert_eq!(
+        input,
+        [
+            Arc::new(serde_json::json!("a")),
+            Arc::new(serde_json::json!("b"))
+        ]
+    );
     assert!(started.input_changed);
     assert_eq!(
         *calls.lock().expect("lifecycle calls"),
@@ -249,7 +277,7 @@ async fn session_lifecycle_starts_forward_and_ends_or_rolls_back_in_reverse() {
     );
 
     calls.lock().expect("lifecycle calls").clear();
-    let mut compact_input = vec![serde_json::json!("compacted")];
+    let mut compact_input = vec![Arc::new(serde_json::json!("compacted"))];
     assert!(
         failing
             .session_start(
@@ -262,7 +290,7 @@ async fn session_lifecycle_starts_forward_and_ends_or_rolls_back_in_reverse() {
             .await
             .is_err()
     );
-    assert_eq!(compact_input, [serde_json::json!("compacted")]);
+    assert_eq!(compact_input, [Arc::new(serde_json::json!("compacted"))]);
     assert_eq!(
         *calls.lock().expect("lifecycle calls"),
         ["start:a", "start:b"]
@@ -283,7 +311,10 @@ async fn compact_session_start_restores_removed_and_reordered_input_on_failure()
         serde_json::json!("first"),
         serde_json::json!("remove"),
         serde_json::json!("last"),
-    ];
+    ]
+    .into_iter()
+    .map(Arc::new)
+    .collect::<Vec<_>>();
     let mut input = original.clone();
 
     stack
@@ -371,7 +402,7 @@ fn lifecycle_stop_decisions_keep_the_first_reason() {
         session_id: "session",
         turn_id: "turn",
         model: "model",
-        input: &[],
+        input: (&[]).into(),
         events: &mut events,
         stop_reason: None,
     };
@@ -398,7 +429,7 @@ fn pre_tool_rewrite_rejects_invalid_calls_without_mutation() {
     ] {
         let mut call = original.clone();
         let mut events = Vec::new();
-        let error = PreToolUseContext {
+        let mut context = PreToolUseContext {
             delivery_once: crate::middleware::delivery_once::DeliveryOnce::testing(),
             turn: TurnIdentity {
                 author: &crate::protocol::MessageAuthor::User,
@@ -410,14 +441,28 @@ fn pre_tool_rewrite_rejects_invalid_calls_without_mutation() {
             events: &mut events,
             tools: &tools,
             call: &mut call,
+            changed: false,
             input: Vec::new(),
             denial: None,
-        }
-        .replace(name, arguments)
-        .expect_err("invalid rewrite must fail");
-
+        };
+        let error = context
+            .replace(name, arguments)
+            .expect_err("invalid rewrite must fail");
         assert!(matches!(error, Error::Tool(_)));
-        assert_eq!(call, original);
+        assert!(!context.changed);
+        assert_eq!(context.call(), &original);
+        context
+            .replace(original.name.clone(), original.arguments.clone())
+            .unwrap();
+        assert!(
+            !context.changed,
+            "identical replacements do not rewrite output"
+        );
+        context
+            .replace("read", serde_json::json!({"path": "Cargo.toml"}))
+            .unwrap();
+        assert!(context.changed);
+        assert_eq!(context.call().call_id, original.call_id);
     }
 }
 
@@ -477,6 +522,29 @@ fn queued_message_queue_cannot_observe_or_consume_another_owner() {
 
     assert_eq!(prepared.submission_id, "one");
     assert_eq!(items, vec![queued("beta", "one", "private")]);
+}
+
+#[test]
+fn consumed_message_can_restore_its_exact_position_without_copying_the_queue() {
+    let mut items = vec![
+        queued("beta", "one", "other owner before"),
+        queued("alpha", "one", "consumed"),
+        queued("alpha", "two", "following input"),
+    ];
+    let before = items.clone();
+    let (index, removed) = scoped_queue(&mut items, "alpha")
+        .consume_next_turn("one")
+        .expect("consume owner-scoped message");
+    assert_eq!(index, 1);
+    assert_eq!(items, [before[0].clone(), before[2].clone()]);
+    items.insert(index, removed);
+    assert_eq!(items, before);
+    assert!(
+        scoped_queue(&mut items, "alpha")
+            .consume_next_turn("missing")
+            .is_err()
+    );
+    assert_eq!(items, before);
 }
 
 #[test]

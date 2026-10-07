@@ -78,17 +78,7 @@ impl FileDiff {
         } else {
             "M"
         };
-        let mut in_hunk = false;
-        let (mut added, mut removed) = (0, 0);
-        for line in text.lines() {
-            if line.starts_with("@@ ") {
-                in_hunk = true;
-            } else if in_hunk && line.starts_with('+') {
-                added += 1;
-            } else if in_hunk && line.starts_with('-') {
-                removed += 1;
-            }
-        }
+        let (added, removed) = changed_lines(text);
         Self {
             text: text.to_owned(),
             path,
@@ -99,12 +89,23 @@ impl FileDiff {
     }
 }
 
+fn changed_lines(text: &str) -> (usize, usize) {
+    text.lines()
+        .skip_while(|line| !line.starts_with("@@ "))
+        .fold((0, 0), |(added, removed), line| {
+            (
+                added + usize::from(line.starts_with('+')),
+                removed + usize::from(line.starts_with('-')),
+            )
+        })
+}
+
 pub(super) fn summary(text: &str) -> String {
     let (mut files, mut added, mut removed) = (0, 0, 0);
-    for file in view::diff_sections(text).map(FileDiff::new) {
+    for (file_added, file_removed) in view::diff_sections(text).map(changed_lines) {
         files += 1;
-        added += file.added;
-        removed += file.removed;
+        added += file_added;
+        removed += file_removed;
     }
     let partial = if text.lines().any(|line| line == "[diff truncated]") {
         " (partial)"
@@ -280,7 +281,7 @@ impl DiffBrowser {
                     .first()
                     .is_some_and(|span| span.content.starts_with("@@ "))
                     .then_some(row);
-                row += Paragraph::new(Text::from(line.clone()))
+                row += Paragraph::new(Text::from(crate::frontend::terminal::borrow_line(line)))
                     .wrap(Wrap { trim: false })
                     .line_count(width);
                 hunk
@@ -335,7 +336,7 @@ impl DiffBrowser {
                     Span::styled(format!("{} ", file.status), theme.style(Role::Accent)),
                     Span::styled(format!("+{} ", file.added), theme.style(Role::Success)),
                     Span::styled(format!("-{} ", file.removed), theme.style(Role::Error)),
-                    Span::styled(name.to_owned(), theme.style(Role::Text)),
+                    Span::styled(name, theme.style(Role::Text)),
                     Span::styled(format!(" {directory}"), theme.style(Role::Muted)),
                 ]))
             });
@@ -349,21 +350,21 @@ impl DiffBrowser {
             );
         }
         if panes[1].width > 0 {
-            let block = Block::default()
-                .title(self.files[self.selected].path.clone())
-                .border_style(theme.style(if self.files_focused {
-                    Role::Border
-                } else {
-                    Role::Accent
-                }));
-            self.diff_area = block.inner(panes[1]);
+            let block = Block::default().border_style(theme.style(if self.files_focused {
+                Role::Border
+            } else {
+                Role::Accent
+            }));
+            self.diff_area = Block::default()
+                .title(self.files[self.selected].path.as_str())
+                .inner(panes[1]);
             self.ensure_lines(self.diff_area.width);
             let scroll = self.viewport.scroll;
             let content_height = self
                 .lines
                 .iter()
                 .map(|line| {
-                    Paragraph::new(Text::from(line.clone()))
+                    Paragraph::new(Text::from(crate::frontend::terminal::borrow_line(line)))
                         .wrap(Wrap { trim: false })
                         .line_count(self.diff_area.width)
                 })
@@ -375,13 +376,18 @@ impl DiffBrowser {
                 self.viewport.top();
             }
             frame.render_widget(
-                Paragraph::new(Text::from(self.lines.clone()))
-                    .wrap(Wrap { trim: false })
-                    .block(block)
-                    .scroll((
-                        u16::try_from(self.viewport.effective_scroll()).unwrap_or(u16::MAX),
-                        0,
-                    )),
+                Paragraph::new(Text::from(
+                    self.lines
+                        .iter()
+                        .map(crate::frontend::terminal::borrow_line)
+                        .collect::<Vec<_>>(),
+                ))
+                .wrap(Wrap { trim: false })
+                .block(block.title(self.files[self.selected].path.as_str()))
+                .scroll((
+                    u16::try_from(self.viewport.effective_scroll()).unwrap_or(u16::MAX),
+                    0,
+                )),
                 panes[1],
             );
         }

@@ -43,10 +43,32 @@ impl ModelCancellation {
         }
     }
 
+    /// Copy an enclosing cause before this request's pinned provider future is dropped.
+    /// Declare this guard after pinning that future so reverse drop order preserves diagnostics.
+    pub(super) fn inherit_on_drop<'a>(&'a self, parent: Option<&'a Self>) -> impl Drop + 'a {
+        CancellationInheritance {
+            local: self,
+            parent,
+        }
+    }
+
     /// Returns the recorded cause, or [`ModelCancellationReason::RequestDropped`].
     #[must_use]
     pub fn reason(&self) -> ModelCancellationReason {
         self.0.get().copied().unwrap_or_default()
+    }
+}
+
+struct CancellationInheritance<'a> {
+    local: &'a ModelCancellation,
+    parent: Option<&'a ModelCancellation>,
+}
+
+impl Drop for CancellationInheritance<'_> {
+    fn drop(&mut self) {
+        if let Some(parent) = self.parent {
+            self.local.record(parent.reason());
+        }
     }
 }
 

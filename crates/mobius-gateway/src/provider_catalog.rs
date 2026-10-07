@@ -38,12 +38,11 @@ pub(crate) fn selected_base_url<'a>(
 }
 
 pub(crate) fn provider_instances(
-    gateway: &GatewayConfig,
+    configured_providers: &BTreeMap<String, ConfiguredProvider>,
     store: &ConfigStore,
     credentials: &CredentialStore,
 ) -> Result<Vec<ProviderInstance>> {
-    gateway
-        .configured_providers
+    configured_providers
         .values()
         .map(|configured| {
             let definition = provider(&configured.selection.provider)?;
@@ -75,7 +74,7 @@ pub(crate) struct ConfiguredChoices {
 
 impl ConfiguredChoices {
     fn from_routes(gateway: &GatewayConfig, routes: Vec<CatalogRoute>) -> Result<Self> {
-        let media = media_routes(gateway, &routes)?;
+        let media = media_routes(&gateway.configured_providers, &routes)?;
         Ok(Self {
             images: media.images.into_iter().map(|media| media.choice).collect(),
             voices: media.voices.into_iter().map(|media| media.choice).collect(),
@@ -110,7 +109,15 @@ pub(crate) fn configured_model_choices(
 ) -> Result<ConfiguredChoices> {
     ConfiguredChoices::from_routes(
         gateway,
-        configured_model_routes(gateway, store, credentials)?,
+        configured_model_routes(
+            &gateway.configured_providers,
+            gateway
+                .bot_defaults
+                .as_ref()
+                .map(|defaults| defaults.config.provider.instance.as_str()),
+            store,
+            credentials,
+        )?,
     )
 }
 
@@ -132,10 +139,18 @@ pub(crate) fn configured_model_providers(
     store: &ConfigStore,
     credentials: &CredentialStore,
 ) -> Result<BTreeMap<String, String>> {
-    Ok(configured_model_routes(gateway, store, credentials)?
-        .into_iter()
-        .map(|route| (route.choice.route, route.provider.instance))
-        .collect())
+    Ok(configured_model_routes(
+        &gateway.configured_providers,
+        gateway
+            .bot_defaults
+            .as_ref()
+            .map(|defaults| defaults.config.provider.instance.as_str()),
+        store,
+        credentials,
+    )?
+    .into_iter()
+    .map(|route| (route.choice.route, route.provider.instance))
+    .collect())
 }
 
 pub(crate) fn configured_route_exists(gateway: &GatewayConfig, route: &str) -> Result<bool> {
@@ -152,16 +167,13 @@ pub(crate) fn configured_route_exists(gateway: &GatewayConfig, route: &str) -> R
 }
 
 pub(crate) fn configured_model_routes(
-    gateway: &GatewayConfig,
+    configured_providers: &BTreeMap<String, ConfiguredProvider>,
+    default_instance: Option<&str>,
     store: &ConfigStore,
     credentials: &CredentialStore,
 ) -> Result<Vec<CatalogRoute>> {
     let mut routes = Vec::new();
-    let default_instance = gateway
-        .bot_defaults
-        .as_ref()
-        .map(|default| default.config.provider.instance.as_str());
-    let mut configured = gateway.configured_providers.values().collect::<Vec<_>>();
+    let mut configured = configured_providers.values().collect::<Vec<_>>();
     configured
         .sort_by_key(|configured| Some(configured.selection.instance.as_str()) != default_instance);
     for configured in configured {
@@ -221,12 +233,20 @@ pub(crate) fn catalog_routes(
             efforts.push((None, None));
         }
         for (effort, variant_label) in efforts {
-            let mut provider = selection.clone();
-            provider.service_tier = provider
-                .service_tier
-                .or_else(|| configured.selection.service_tier.clone());
-            provider.model = model.into();
-            provider.reasoning_effort = effort.map(str::to_string);
+            let provider = ProviderConfig {
+                instance: selection.instance.clone(),
+                provider: selection.provider.clone(),
+                base_url: selection.base_url.clone(),
+                endpoint_auth: selection.endpoint_auth,
+                model: model.into(),
+                reasoning_effort: effort.map(str::to_string),
+                service_tier: selection
+                    .service_tier
+                    .as_ref()
+                    .or(configured.selection.service_tier.as_ref())
+                    .cloned(),
+                web_search: selection.web_search,
+            };
             let route = model_route_id(&selection.instance, model, effort);
             routes.push(CatalogRoute {
                 choice: ModelChoice {
@@ -281,11 +301,11 @@ pub(crate) struct MediaRoutes {
 
 /// Derives image and voice choices from the configured instances behind `routes`.
 pub(crate) fn media_routes(
-    gateway: &GatewayConfig,
+    configured_providers: &BTreeMap<String, ConfiguredProvider>,
     routes: &[CatalogRoute],
 ) -> Result<MediaRoutes> {
     let mut media = MediaRoutes::default();
-    for configured in gateway.configured_providers.values() {
+    for configured in configured_providers.values() {
         let instance = configured.selection.instance.as_str();
         let Some(transport) = routes.iter().find(|route| {
             route.provider.instance == instance
@@ -718,7 +738,7 @@ mod tests {
                 &configured.selection,
             ));
         }
-        let media = media_routes(&config, &routes).expect("media");
+        let media = media_routes(&config.configured_providers, &routes).expect("media");
         let images = media
             .images
             .iter()

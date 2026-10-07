@@ -7,21 +7,20 @@ use std::sync::Arc;
 use reqwest::Client;
 use serde_json::Value;
 
-use super::CompactOutput;
-use super::CompactRequest;
 use super::GeneratedImage;
 use super::ImageGenerationRequest;
 use super::Model;
 use super::ModelEventSink;
+#[cfg(test)]
+use super::ModelInput;
 use super::ModelOutput;
 use super::ModelRequest;
 use super::PromptCacheMode;
 use super::StreamingToolCalls;
+#[cfg(test)]
 use super::TOOLS_SEARCH_NAME;
 use super::ToolDefinition;
-use super::image_data_url;
 use super::image_generation::{IMAGE_APIS, ImageApi};
-use super::image_input;
 use super::openai_auth::ApiKeyAuthorization;
 use super::openai_auth::OpenAiAuthorization;
 #[cfg(test)]
@@ -30,6 +29,7 @@ use super::provider::ProviderBuildConfig;
 use super::provider::ProviderDefinition;
 use super::provider::validate_base_url;
 use super::realtime::RealtimeTransport;
+use super::responses_wire::{ResponsesBody, WireInput, WireTools};
 use super::transport::SseDecoder;
 use super::transport::frame_data;
 use super::transport::read_limited;
@@ -45,12 +45,12 @@ use crate::protocol::ModelInfo;
 use crate::protocol::ModelStepAnnotation;
 use crate::protocol::TokenUsage;
 use crate::protocol::ToolDiscoveryMode;
+#[cfg(test)]
 use crate::protocol::ToolLoad;
 use crate::protocol::WebSearchAction;
 
 pub(super) static MANIFEST: std::sync::LazyLock<super::provider::ProviderMetadata> =
     std::sync::LazyLock::new(|| crate::config::embedded(include_str!("openai_provider.toml")));
-const MAX_JSON_BYTES: usize = 16 * 1024 * 1024;
 const MAX_IMAGE_RESPONSE_BYTES: usize = 65 * 1024 * 1024;
 const MAX_STREAM_OUTPUT_ITEMS: usize = 1_024;
 
@@ -91,7 +91,6 @@ pub struct OpenAi {
     service_tier: Option<String>,
     reasoning_summary: bool,
     hosted_tools: Vec<Value>,
-    compaction_endpoint: bool,
     image_input: bool,
     image_api: Option<&'static ImageApi>,
     explicit_prompt_cache: bool,
@@ -189,7 +188,6 @@ impl OpenAi {
             service_tier: None,
             reasoning_summary: false,
             hosted_tools: Vec::new(),
-            compaction_endpoint: false,
             image_input: true,
             image_api,
             explicit_prompt_cache: false,
@@ -288,13 +286,6 @@ impl OpenAi {
         self
     }
 
-    /// Marks an endpoint that implements native Responses compaction.
-    #[must_use]
-    pub fn with_compaction_endpoint(mut self) -> Self {
-        self.compaction_endpoint = true;
-        self
-    }
-
     /// Disables image input for a Responses-compatible endpoint that rejects it.
     #[must_use]
     pub(super) fn without_image_input(mut self) -> Self {
@@ -324,12 +315,28 @@ impl OpenAi {
         &self,
         request: ModelRequest<'_>,
         events: ModelEventSink,
+        media: Option<super::MediaPreparation<'_>>,
     ) -> Result<ModelOutput> {
         let session_id = request.session_id;
         let deferred_tools = request.deferred_tools;
-        let body = self.response_body(request)?;
+        let body = super::media::encode_request(self, request, media, true, |input| {
+            Ok(serde_json::to_vec(
+                &self.response_body(ModelRequest { input, ..request })?,
+            )?)
+        })
+        .await?;
+        let template = self
+            .client
+            .post(format!("{}/responses", self.base_url))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body);
         let mut response = self
-            .send_authorized("responses", &body, true, Some(session_id))
+            .send_authorized_with(true, Some(session_id), || {
+                // A refreshed authorization retries the same immutable bytes, sharing reqwest's body buffer.
+                template.try_clone().ok_or_else(|| {
+                    Error::Provider("prepared Responses body cannot be retried".into())
+                })
+            })
             .await?;
         if !response.status().is_success() {
             return Err(status_error(response, "Responses").await);
@@ -351,25 +358,26 @@ impl OpenAi {
                 if data == "[DONE]" {
                     continue;
                 }
-                let event: Value = serde_json::from_str(&data)?;
-                collect_stream_output(&event, &mut output)?;
+                let mut event: Value = serde_json::from_str(&data)?;
+                let pending = validate_stream_output(&event, &output)?;
                 emit_ready_tool_calls(
                     &output,
+                    pending.map(|index| (index, &event["item"])),
                     &mut next_output_index,
                     &mut streamed_tool_calls,
                     &events,
                 )
                 .await?;
-                if emit_web_event(&event, &mut web_searches, &events).await? {
+                let handled = emit_web_event(&event, &mut web_searches, &events).await?
+                    || emit_reasoning_event(&event, &mut reasoning_part, &events).await?
+                    || emit_text_event(&event, &mut commentary, &events).await?;
+                collect_stream_output(&mut event, &mut output)?;
+                if handled {
                     continue;
                 }
-                if emit_reasoning_event(&event, &mut reasoning_part, &events).await? {
-                    continue;
-                }
-                if emit_text_event(&event, &mut commentary, &events).await? {
-                    continue;
-                }
-                if let Some(response) = self.finish_stream_event(&event, &output, deferred_tools)? {
+                if let Some(response) =
+                    self.finish_stream_event(event, &mut output, deferred_tools)?
+                {
                     emit_citation_web_search(&response, &web_searches, &events).await?;
                     return Ok(response);
                 }
@@ -384,8 +392,11 @@ impl OpenAi {
             Error::Provider("image generation is unavailable for this provider".into())
         })?;
         let response = if api.uses_multipart(&request) {
-            self.send_authorized_with(&api.edit_path, false, None, |builder| {
-                Ok(builder.multipart(api.edit_form(&request)?))
+            self.send_authorized_with(false, None, || {
+                Ok(self
+                    .client
+                    .post(format!("{}/{}", self.base_url, api.edit_path))
+                    .multipart(api.edit_form(&request)?))
             })
             .await?
         } else {
@@ -400,27 +411,27 @@ impl OpenAi {
 
     fn finish_stream_event(
         &self,
-        event: &Value,
-        output: &BTreeMap<u64, Value>,
-        deferred_tools: &[ToolDefinition],
+        mut event: Value,
+        output: &mut BTreeMap<u64, Value>,
+        deferred_tools: &[Arc<ToolDefinition>],
     ) -> Result<Option<ModelOutput>> {
         match event.get("type").and_then(Value::as_str) {
             Some("response.completed") => {
                 let response = event
-                    .get("response")
-                    .cloned()
-                    .map(|response| attach_stream_output(response, output))
+                    .get_mut("response")
+                    .map(Value::take)
+                    .map(|response| attach_stream_output(response, std::mem::take(output)))
                     .ok_or_else(|| Error::Provider("completion omitted response".into()))?;
                 self.decode_response(response, deferred_tools).map(Some)
             }
             Some("error" | "response.failed" | "response.incomplete") => {
-                Err(Error::Provider(response_provider_error(event, None)))
+                Err(Error::Provider(response_provider_error(&event, None)))
             }
             _ => Ok(None),
         }
     }
 
-    fn response_body(&self, request: ModelRequest<'_>) -> Result<Value> {
+    fn response_body<'a>(&'a self, request: ModelRequest<'a>) -> Result<ResponsesBody<'a>> {
         let additional_tools = match self.tool_discovery {
             ToolDiscoveryWire::AdditionalTools => request.deferred_tools,
             ToolDiscoveryWire::Rebuild | ToolDiscoveryWire::OpenRouter => &[],
@@ -428,14 +439,6 @@ impl OpenAi {
         let mut body = serde_json::json!({
             "model": self.model,
             "instructions": request.instructions,
-            "input": wire_input_with_cache(
-                request.input,
-                self.image_input,
-                self.explicit_prompt_cache,
-                request.catalog_revision,
-                additional_tools,
-            )?,
-            "tools": self.wire_request_tools(&request),
             "tool_choice": "auto",
             "parallel_tool_calls": true,
             "include": ["reasoning.encrypted_content"],
@@ -452,41 +455,46 @@ impl OpenAi {
             body["reasoning"] = reasoning;
         }
         self.apply_service_tier(&mut body);
-        Ok(body)
+        Ok(ResponsesBody {
+            metadata: body,
+            tools: self.wire_request_tools(&request),
+            input: WireInput::new(
+                request.input,
+                self.image_input,
+                self.explicit_prompt_cache,
+                request.catalog_revision,
+                additional_tools,
+            )?,
+        })
     }
 
-    fn wire_request_tools(&self, request: &ModelRequest<'_>) -> Vec<Value> {
-        if self.tool_discovery != ToolDiscoveryWire::OpenRouter {
-            return wire_tools(
-                request.tools,
-                &self.hosted_tools,
-                request.allow_hosted_tools,
-            );
-        }
+    #[cfg(test)]
+    fn response_body_value(&self, request: ModelRequest<'_>) -> Result<Value> {
+        Ok(serde_json::to_value(self.response_body(request)?)?)
+    }
 
-        let mut tools = vec![serde_json::json!({"type": "openrouter:tool_search"})];
-        tools.extend(
-            request
-                .tools
-                .iter()
-                .filter(|tool| tool.name != TOOLS_SEARCH_NAME)
-                .map(wire_function_tool),
-        );
-        tools.extend(request.deferred_tools.iter().map(|tool| {
-            let mut tool = wire_function_tool(tool);
-            tool["defer_loading"] = Value::Bool(true);
-            tool
-        }));
-        if request.allow_hosted_tools {
-            tools.extend_from_slice(&self.hosted_tools);
+    fn wire_request_tools<'a>(&'a self, request: &ModelRequest<'a>) -> WireTools<'a> {
+        let openrouter = self.tool_discovery == ToolDiscoveryWire::OpenRouter;
+        WireTools {
+            functions: request.tools,
+            deferred: if openrouter {
+                request.deferred_tools
+            } else {
+                &[]
+            },
+            hosted: if request.allow_hosted_tools {
+                &self.hosted_tools
+            } else {
+                &[]
+            },
+            openrouter,
         }
-        tools
     }
 
     fn decode_response(
         &self,
         response: Value,
-        deferred_tools: &[ToolDefinition],
+        deferred_tools: &[Arc<ToolDefinition>],
     ) -> Result<ModelOutput> {
         let output = decode_response(response)?;
         if self.tool_discovery != ToolDiscoveryWire::OpenRouter {
@@ -505,47 +513,30 @@ impl OpenAi {
         output.with_materialized_tools(loaded)
     }
 
-    async fn compact_response(&self, request: CompactRequest<'_>) -> Result<CompactOutput> {
-        if !self.compaction_endpoint {
-            return Err(Error::Provider(
-                "OpenAI-compatible provider has no compaction endpoint".into(),
-            ));
-        }
-        let session_id = request.session_id;
-        let body = self.compact_body(request)?;
-        let response = self
-            .send_authorized("responses/compact", &body, false, Some(session_id))
-            .await?;
-        if !response.status().is_success() {
-            return Err(status_error(response, "Responses").await);
-        }
-        let response: Value =
-            serde_json::from_slice(&read_limited(response, MAX_JSON_BYTES, "Responses").await?)?;
-        decode_compact_response(response)
-    }
-
     async fn send_authorized(
         &self,
         endpoint: &str,
-        body: &Value,
+        body: &(impl serde::Serialize + Sync),
         streaming: bool,
         session_id: Option<&str>,
     ) -> Result<reqwest::Response> {
-        self.send_authorized_with(endpoint, streaming, session_id, |builder| {
-            Ok(builder.json(body))
+        self.send_authorized_with(streaming, session_id, || {
+            Ok(self
+                .client
+                .post(format!("{}/{endpoint}", self.base_url))
+                .json(body))
         })
         .await
     }
 
     async fn send_authorized_with(
         &self,
-        endpoint: &str,
         streaming: bool,
         session_id: Option<&str>,
-        mut body: impl FnMut(reqwest::RequestBuilder) -> Result<reqwest::RequestBuilder>,
+        mut body: impl FnMut() -> Result<reqwest::RequestBuilder>,
     ) -> Result<reqwest::Response> {
         for attempt in 0..2 {
-            let mut request = body(self.client.post(format!("{}/{endpoint}", self.base_url)))?;
+            let mut request = body()?;
             let Some(auth) = &self.auth else {
                 return Ok(request.send().await?);
             };
@@ -563,36 +554,6 @@ impl OpenAi {
             }
         }
         unreachable!("authorized request retry is bounded")
-    }
-
-    fn compact_body(&self, request: CompactRequest<'_>) -> Result<Value> {
-        let additional_tools = match self.tool_discovery {
-            ToolDiscoveryWire::AdditionalTools => request.deferred_tools,
-            ToolDiscoveryWire::Rebuild | ToolDiscoveryWire::OpenRouter => &[],
-        };
-        let mut body = serde_json::json!({
-            "model": self.model,
-            "instructions": request.instructions,
-            "input": wire_input_with_cache(
-                request.input,
-                self.image_input,
-                self.explicit_prompt_cache,
-                request.catalog_revision,
-                additional_tools,
-            )?,
-            "tools": wire_tools(request.tools, &self.hosted_tools, true),
-            "parallel_tool_calls": true,
-        });
-        if let Some(prompt_cache) = request.prompt_cache {
-            body["prompt_cache_key"] = Value::String(prompt_cache.key.into());
-        }
-        if self.explicit_prompt_cache {
-            body["prompt_cache_options"] = serde_json::json!({"mode": "explicit"});
-        }
-        if let Some(reasoning) = self.reasoning() {
-            body["reasoning"] = reasoning;
-        }
-        Ok(body)
     }
 
     fn reasoning(&self) -> Option<Value> {
@@ -672,6 +633,15 @@ impl Model for OpenAi {
         self.tool_discovery.mode()
     }
 
+    fn respond_prepared<'a>(
+        &'a self,
+        request: ModelRequest<'a>,
+        events: ModelEventSink,
+        media: super::MediaPreparation<'a>,
+    ) -> BoxFuture<'a, Result<ModelOutput>> {
+        Box::pin(self.send_response(request, events, Some(media)))
+    }
+
     fn request_size(&self, request: ModelRequest<'_>) -> Result<usize> {
         super::media::serialized_size(&self.response_body(request)?)
     }
@@ -681,128 +651,42 @@ impl Model for OpenAi {
         request: ModelRequest<'a>,
         events: ModelEventSink,
     ) -> BoxFuture<'a, Result<ModelOutput>> {
-        Box::pin(self.send_response(request, events))
-    }
-
-    fn compaction_endpoint(&self) -> bool {
-        self.compaction_endpoint
-    }
-
-    fn compact_size(&self, request: CompactRequest<'_>) -> Result<usize> {
-        super::media::serialized_size(&self.compact_body(request)?)
-    }
-
-    fn compact<'a>(&'a self, request: CompactRequest<'a>) -> BoxFuture<'a, Result<CompactOutput>> {
-        Box::pin(self.compact_response(request))
+        Box::pin(self.send_response(request, events, None))
     }
 }
 
+#[cfg(test)]
 pub(super) fn wire_input_with_cache(
-    input: &[Value],
+    input: ModelInput<'_>,
     allow_images: bool,
     explicit_prompt_cache: bool,
     catalog_revision: &str,
-    additional_tools: &[ToolDefinition],
+    additional_tools: &[Arc<ToolDefinition>],
 ) -> Result<Vec<Value>> {
-    let mut wired = Vec::with_capacity(input.len());
-    for item in input {
-        if let Some(load) = ToolLoad::from_input(item)? {
-            if load.catalog_revision == catalog_revision {
-                let tools = load
-                    .tools
-                    .iter()
-                    .filter_map(|name| additional_tools.iter().find(|tool| tool.name == *name))
-                    .map(wire_function_tool)
-                    .collect::<Vec<_>>();
-                if !tools.is_empty() {
-                    wired.push(serde_json::json!({
-                        "type": "additional_tools",
-                        "role": "developer",
-                        "tools": tools,
-                    }));
-                }
-            }
-            continue;
-        }
-        let mut item = item.clone();
-        if let Some(fields) = item.as_object_mut() {
-            fields.retain(|name, _| !name.starts_with('_'));
-        }
-        strip_replay_wire_metadata(&mut item);
-        let cache_endpoint = explicit_prompt_cache
-            && (item.get("type").and_then(Value::as_str) == Some("function_call_output")
-                || matches!(
-                    item.get("role").and_then(Value::as_str),
-                    Some("user" | "developer" | "system")
-                ));
-        if cache_endpoint {
-            let field = if item.get("type").and_then(Value::as_str) == Some("function_call_output")
-            {
-                "output"
-            } else {
-                "content"
-            };
-            if item.get(field).is_some_and(Value::is_string) {
-                let text = item[field].take();
-                item[field] = serde_json::json!([{"type": "input_text", "text": text}]);
-            }
-        }
-        let Some(content) = crate::protocol::content_parts_mut(&mut item) else {
-            wired.push(item);
-            continue;
-        };
-        for part in content.iter_mut() {
-            if let Some(fields) = part.as_object_mut() {
-                fields.retain(|name, _| !name.starts_with('_'));
-            }
-            match part.get("type").and_then(Value::as_str) {
-                Some("file") => {
-                    *part = serde_json::json!({"type":"input_text", "text":format!("Stored file: {}", part["file"])});
-                }
-                Some("input_image") => {
-                    if !allow_images {
-                        return Err(Error::Provider(
-                            "this model provider does not support image attachments".into(),
-                        ));
-                    }
-                    let Some((media_type, data)) = image_input(part, "Responses")? else {
-                        continue;
-                    };
-                    let detail = part.get("detail").cloned();
-                    *part = serde_json::json!({ "type": "input_image", "image_url": image_data_url(media_type, data) });
-                    if let Some(detail) = detail {
-                        part["detail"] = detail;
-                    }
-                }
-                _ => {}
-            }
-        }
-        // Keep earlier endpoints: explicit-only lookup cannot reuse an unmarked prefix.
-        if cache_endpoint
-            && let Some(part) = content.iter_mut().rev().find(|part| {
-                matches!(
-                    part.get("type").and_then(Value::as_str),
-                    Some("input_text" | "input_image")
-                )
-            })
-        {
-            part["prompt_cache_breakpoint"] = serde_json::json!({"mode":"explicit"});
-        }
-        wired.push(item);
+    let input = WireInput::new(
+        input,
+        allow_images,
+        explicit_prompt_cache,
+        catalog_revision,
+        additional_tools,
+    )?;
+    match serde_json::to_value(input)? {
+        Value::Array(items) => Ok(items),
+        _ => Err(Error::Provider(
+            "Responses wire input must be an array".into(),
+        )),
     }
-    Ok(wired)
 }
 
-pub(super) fn collect_stream_output(
+pub(super) fn validate_stream_output(
     event: &Value,
-    output: &mut BTreeMap<u64, Value>,
-) -> Result<()> {
+    output: &BTreeMap<u64, Value>,
+) -> Result<Option<u64>> {
     if event.get("type").and_then(Value::as_str) != Some("response.output_item.done") {
-        return Ok(());
+        return Ok(None);
     }
-    let item = event
+    event
         .get("item")
-        .cloned()
         .ok_or_else(|| Error::Provider("completed output item omitted item".into()))?;
     let index = event
         .get("output_index")
@@ -817,21 +701,37 @@ pub(super) fn collect_stream_output(
             format!("response returned more than {MAX_STREAM_OUTPUT_ITEMS} output items").into(),
         ));
     }
-    if output.insert(index, item).is_some() {
+    if output.contains_key(&index) {
         return Err(Error::Provider(
             format!("response repeated output item index {index}").into(),
         ));
+    }
+    Ok(Some(index))
+}
+
+pub(super) fn collect_stream_output(
+    event: &mut Value,
+    output: &mut BTreeMap<u64, Value>,
+) -> Result<()> {
+    if let Some(index) = validate_stream_output(event, output)? {
+        output.insert(index, event["item"].take());
     }
     Ok(())
 }
 
 pub(super) async fn emit_ready_tool_calls(
     output: &BTreeMap<u64, Value>,
+    pending: Option<(u64, &Value)>,
     next_output_index: &mut u64,
     tool_calls: &mut StreamingToolCalls,
     events: &ModelEventSink,
 ) -> Result<()> {
-    while let Some(item) = output.get(next_output_index) {
+    // A newly completed item can release buffered calls before its borrowed event handlers run.
+    while let Some(item) = output.get(next_output_index).or_else(|| {
+        pending
+            .filter(|(index, _)| *index == *next_output_index)
+            .map(|(_, item)| item)
+    }) {
         if item.get("type").and_then(Value::as_str) == Some("function_call") {
             let call = super::decode_tool_call(item)?;
             tool_calls.accept(&call)?;
@@ -844,38 +744,33 @@ pub(super) async fn emit_ready_tool_calls(
     Ok(())
 }
 
-pub(super) fn attach_stream_output(mut response: Value, output: &BTreeMap<u64, Value>) -> Value {
+pub(super) fn attach_stream_output(mut response: Value, output: BTreeMap<u64, Value>) -> Value {
     // Completed output owns its final annotations; item snapshots only fill omitted output.
     let needs_stream_output = response.is_object()
         && response
             .get("output")
             .is_none_or(|value| matches!(value, Value::Array(items) if items.is_empty()));
     if needs_stream_output && !output.is_empty() {
-        response["output"] = Value::Array(output.values().cloned().collect());
+        response["output"] = Value::Array(output.into_values().collect());
     }
     response
 }
 
-pub(super) fn wire_tools(
-    tools: &[ToolDefinition],
-    hosted_tools: &[Value],
+pub(super) fn wire_tools<'a>(
+    tools: &'a [Arc<ToolDefinition>],
+    hosted_tools: &'a [Value],
     allow_hosted_tools: bool,
-) -> Vec<Value> {
-    let mut tools = tools.iter().map(wire_function_tool).collect::<Vec<_>>();
-    if allow_hosted_tools {
-        tools.extend_from_slice(hosted_tools);
+) -> WireTools<'a> {
+    WireTools {
+        functions: tools,
+        deferred: &[],
+        hosted: if allow_hosted_tools {
+            hosted_tools
+        } else {
+            &[]
+        },
+        openrouter: false,
     }
-    tools
-}
-
-fn wire_function_tool(tool: &ToolDefinition) -> Value {
-    serde_json::json!({
-        "type": "function",
-        "name": tool.name,
-        "description": tool.description,
-        "parameters": tool.parameters,
-        "strict": false
-    })
 }
 
 pub(super) fn generic_provider() -> ProviderDefinition {
@@ -964,17 +859,17 @@ pub(super) async fn emit_web_event(
     let Some(item) = web_search_item(event) else {
         return Ok(false);
     };
-    let call_id = required_string(item, "id")?.to_string();
-    let added = seen.insert(call_id.clone());
-    if added {
+    let call_id = required_string(item, "id")?;
+    if !seen.contains(call_id) {
+        seen.insert(call_id.to_string());
         events(ModelEvent::WebSearchStarted {
-            call_id: call_id.clone(),
+            call_id: call_id.to_string(),
         })
         .await?;
     }
     if event.get("type").and_then(Value::as_str) == Some("response.output_item.done") {
         events(ModelEvent::WebSearchCompleted {
-            call_id,
+            call_id: call_id.to_string(),
             action: decode_web_action(item),
         })
         .await?;
@@ -1141,7 +1036,7 @@ pub(super) fn decode_response(mut response: Value) -> Result<ModelOutput> {
         .map(std::mem::take)
         .ok_or_else(|| Error::Provider("response omitted output".into()))?;
     for item in &mut output {
-        normalize_replay_item(item);
+        strip_replay_wire_metadata(item);
         if item.get("type").and_then(Value::as_str) != Some("reasoning") {
             continue;
         }
@@ -1165,47 +1060,6 @@ pub(super) fn decode_response(mut response: Value) -> Result<ModelOutput> {
         }
     }
     ModelOutput::from_output(output, end_turn, decode_usage(response.get("usage"))?)
-}
-
-pub(super) fn decode_compact_response(mut response: Value) -> Result<CompactOutput> {
-    let mut output = response
-        .get_mut("output")
-        .and_then(Value::as_array_mut)
-        .map(std::mem::take)
-        .unwrap_or_default();
-    for item in &mut output {
-        normalize_replay_item(item);
-        if let Some(parts) = crate::protocol::content_parts_mut(item) {
-            for part in parts {
-                if part.get("type").and_then(Value::as_str) != Some("input_image") {
-                    continue;
-                }
-                if let Some(url) = part.get("image_url").and_then(Value::as_str) {
-                    let (media_type, data) = url
-                        .strip_prefix("data:")
-                        .and_then(|url| url.split_once(";base64,"))
-                        .ok_or_else(|| {
-                            Error::Provider("compaction returned an unsupported image URL".into())
-                        })?;
-                    let detail = part
-                        .get("detail")
-                        .cloned()
-                        .unwrap_or_else(|| serde_json::json!("auto"));
-                    *part = serde_json::json!({"type":"input_image", "media_type":media_type,"data":data,"detail":detail});
-                }
-            }
-        }
-    }
-    CompactOutput::from_output(output, decode_usage(response.get("usage"))?)
-}
-
-fn normalize_replay_item(item: &mut Value) {
-    if item.get("type").and_then(Value::as_str) == Some("compaction_summary")
-        && let Some(fields) = item.as_object_mut()
-    {
-        fields.insert("type".into(), Value::String("compaction".into()));
-    }
-    strip_replay_wire_metadata(item);
 }
 
 fn strip_replay_wire_metadata(item: &mut Value) {

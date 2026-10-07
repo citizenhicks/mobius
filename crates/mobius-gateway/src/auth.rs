@@ -5,6 +5,9 @@ pub use config::AuthConfig;
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::Read as _;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -19,6 +22,7 @@ use crate::{Error, Result};
 /// Maximum UTF-8 byte length of one gateway client bearer credential.
 pub const MAX_CLIENT_CREDENTIAL_BYTES: usize = 512;
 const MAX_CLIENT_LABEL_BYTES: usize = 128;
+const MAX_AUTH_STATE_BYTES: u64 = 2 * 1024 * 1024;
 const REVOKED_PAIRING_EXPIRY: i64 = 0;
 const LOCAL_CLIENT_ID: &str = "00000000-0000-0000-0000-000000000001";
 const LOCAL_CLIENT_LABEL: &str = "Local möbius CLI";
@@ -135,8 +139,24 @@ impl AuthStore {
     pub fn open(path: impl Into<PathBuf>, config: AuthConfig) -> Result<Self> {
         config.validate()?;
         let path = path.into();
-        let contents = fs::read(&path)?;
-        if contents.len() > 2 * 1024 * 1024 {
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        options.custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK);
+        let file = options.open(&path)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(Error::Config(
+                "authentication state must be a regular file".into(),
+            ));
+        }
+        if metadata.len() > MAX_AUTH_STATE_BYTES {
+            return Err(Error::Config("authentication state is too large".into()));
+        }
+        let mut contents = Vec::new();
+        file.take(MAX_AUTH_STATE_BYTES + 1)
+            .read_to_end(&mut contents)?;
+        if u64::try_from(contents.len()).unwrap_or(u64::MAX) > MAX_AUTH_STATE_BYTES {
             return Err(Error::Config("authentication state is too large".into()));
         }
         let state: AuthState = serde_json::from_slice(&contents)?;
@@ -181,8 +201,10 @@ impl AuthStore {
             digest: digest(&token),
             created_at: now,
         });
-        save_auth_state(&self.path, &next, false)?;
+        let publication =
+            crate::publication::Outcome::applied(save_auth_state(&self.path, &next, false))?;
         *state = next;
+        publication.confirm()?;
         Ok(IssuedToken { client_id, token })
     }
 
@@ -223,8 +245,10 @@ impl AuthStore {
         client.digest = digest(&token);
         client.created_at = now;
         let client_id = client.id.clone();
-        save_auth_state(&self.path, &next, false)?;
+        let publication =
+            crate::publication::Outcome::applied(save_auth_state(&self.path, &next, false))?;
         *state = next;
+        publication.confirm()?;
         Ok(IssuedToken { client_id, token })
     }
 
@@ -251,8 +275,10 @@ impl AuthStore {
                 created_at: now,
             });
         }
-        save_auth_state(&self.path, &next, false)?;
+        let publication =
+            crate::publication::Outcome::applied(save_auth_state(&self.path, &next, false))?;
         *state = next;
+        publication.confirm()?;
         Ok(IssuedToken {
             client_id: LOCAL_CLIENT_ID.into(),
             token,
@@ -272,8 +298,10 @@ impl AuthStore {
             digest: digest(&grant.code),
             expires_at: grant.expires_at,
         });
-        save_auth_state(&self.path, &next, false)?;
+        let publication =
+            crate::publication::Outcome::applied(save_auth_state(&self.path, &next, false))?;
         *state = next;
+        publication.confirm()?;
         Ok(grant)
     }
 
@@ -331,8 +359,10 @@ impl AuthStore {
         };
         let mut next = state.clone();
         next.clients.remove(index);
-        save_auth_state(&self.path, &next, false)?;
+        let publication =
+            crate::publication::Outcome::applied(save_auth_state(&self.path, &next, false))?;
         *state = next;
+        publication.confirm()?;
         Ok(true)
     }
 
@@ -366,8 +396,10 @@ impl AuthStore {
             digest: digest(&random_secret(1)),
             expires_at: REVOKED_PAIRING_EXPIRY,
         });
-        save_auth_state(&self.path, &next, false)?;
+        let publication =
+            crate::publication::Outcome::applied(save_auth_state(&self.path, &next, false))?;
         *state = next;
+        publication.confirm()?;
         Ok(())
     }
 
@@ -492,6 +524,71 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
+
+    #[test]
+    fn applied_auth_publication_keeps_revocation_and_consumed_pairing_visible() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("auth.json");
+        let (auth, grant) = AuthStore::initialize(&path, AuthConfig::default()).unwrap();
+        let actor = auth.pair(&grant.code, "actor").unwrap();
+        let grant = auth.create_pairing_code().unwrap();
+        let device = auth.pair(&grant.code, "device").unwrap();
+        crate::publication::fail_next_directory_sync(&path);
+        assert!(matches!(
+            auth.unpair_client(&actor.client_id, &device.client_id),
+            Err(Error::PublicationApplied { .. })
+        ));
+        assert!(auth.authenticate(&device.token).is_err());
+        assert!(
+            AuthStore::open(&path, AuthConfig::default())
+                .unwrap()
+                .authenticate(&device.token)
+                .is_err()
+        );
+        let grant = auth.create_pairing_code().unwrap();
+        crate::publication::fail_next_directory_sync(&path);
+        assert!(matches!(
+            auth.pair(&grant.code, "uncertain"),
+            Err(Error::PublicationApplied { .. })
+        ));
+        assert!(auth.pair(&grant.code, "retry").is_err());
+        assert_eq!(
+            serde_json::to_value(&*auth.lock_state().unwrap()).unwrap(),
+            serde_json::from_slice::<serde_json::Value>(&fs::read(path).unwrap()).unwrap()
+        );
+    }
+
+    #[test]
+    fn persisted_auth_rejects_oversized_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("auth.json");
+        fs::File::create(&path)
+            .unwrap()
+            .set_len(MAX_AUTH_STATE_BYTES + 1)
+            .unwrap();
+        let Err(error) = AuthStore::open(path, AuthConfig::default()) else {
+            panic!("oversized auth must fail");
+        };
+        assert!(error.to_string().contains("too large"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persisted_auth_rejects_fifo_without_a_writer() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("auth.json");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let Err(error) = AuthStore::open(path, AuthConfig::default()) else {
+            panic!("FIFO auth must fail");
+        };
+        assert!(error.to_string().contains("regular file"));
+    }
 
     fn client(id: &str, label: &str, digest_byte: u8) -> ClientToken {
         ClientToken {

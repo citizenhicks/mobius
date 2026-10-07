@@ -5,7 +5,7 @@ use super::*;
 #[tokio::test]
 async fn idle_session_start_stop_does_not_consume_the_next_prompt() {
     let workspace = tempfile::tempdir().expect("workspace");
-    let model = Arc::new(NativeCompactionModel::default());
+    let model = Arc::new(HandoffModel::default());
     let config = AgentConfig::new(
         Arc::new(ModelRouter::new("main", model.clone())),
         Arc::new(Sandbox::new(
@@ -41,7 +41,7 @@ async fn rejected_prompt_aborts_without_persisting_or_wedging_the_next_turn() {
         SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
             .expect("checkpoint store"),
     );
-    let model = Arc::new(NativeCompactionModel::default());
+    let model = Arc::new(HandoffModel::default());
     let config = AgentConfig::new(
         Arc::new(ModelRouter::new("main", model.clone())),
         Arc::new(Sandbox::new(
@@ -278,7 +278,7 @@ async fn assert_compaction_stop(
         SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
             .expect("checkpoint store"),
     );
-    let model = Arc::new(NativeCompactionModel::default());
+    let model = Arc::new(HandoffModel::default());
     let config = AgentConfig::new(
         Arc::new(ModelRouter::new("main", model.clone())),
         Arc::new(Sandbox::new(
@@ -396,21 +396,13 @@ async fn compaction_notice_is_live_and_closes_on_success_failure_and_interrupt()
     impl Model for PausedCompaction {
         fn respond<'a>(
             &'a self,
-            _: ModelRequest,
+            request: ModelRequest<'a>,
             _: ModelEventSink,
         ) -> BoxFuture<'a, Result<ModelOutput>> {
-            Box::pin(async { Ok(scripted_message("done")) })
-        }
-
-        fn compaction_endpoint(&self) -> bool {
-            true
-        }
-
-        fn compact<'a>(
-            &'a self,
-            request: CompactRequest<'a>,
-        ) -> BoxFuture<'a, Result<CompactOutput>> {
             Box::pin(async move {
+                if request.tools.len() != 1 || request.tools[0].name != "write_handoff" {
+                    return Ok(scripted_message("done"));
+                }
                 let _interrupt = (request.session_id == "interrupt").then(|| {
                     InterruptedRequest(request.cancellation.expect("compaction cancellation"))
                 });
@@ -419,10 +411,7 @@ async fn compaction_notice_is_live_and_closes_on_success_failure_and_interrupt()
                 if self.fail {
                     return Err(Error::Provider("compaction failed".into()));
                 }
-                CompactOutput::from_output(
-                    vec![serde_json::json!({"type": "compaction", "encrypted_content": "opaque"})],
-                    scripted_usage(),
-                )
+                Ok(scripted_handoff("paused-checkpoint"))
             })
         }
     }
@@ -438,6 +427,16 @@ async fn compaction_notice_is_live_and_closes_on_success_failure_and_interrupt()
             let checkpoints = Arc::new(
                 SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3")).unwrap(),
             );
+            let mut checkpoint = Checkpoint::empty(outcome);
+            checkpoint.model_route = Some("main".into());
+            checkpoint.session_context = test_session_context();
+            checkpoint.context = Arc::new(vec![Arc::new(crate::backend::model::user_message(
+                &"prior history ".repeat(1_000),
+            ))]);
+            checkpoints
+                .save(&checkpoint, &checkpoint.context, None)
+                .await
+                .unwrap();
             let router_model = Arc::clone(&model) as Arc<dyn Model>;
             let store = Arc::clone(&checkpoints) as Arc<dyn CheckpointStore>;
             let mut agent = create_agent(
@@ -448,7 +447,7 @@ async fn compaction_notice_is_live_and_closes_on_success_failure_and_interrupt()
                         ApprovalPolicy::Ask,
                     )),
                     store,
-                    test_middleware(vec![Arc::new(Compaction::new(1).unwrap())]),
+                    test_middleware(vec![Arc::new(Compaction::new(1_000).unwrap())]),
                     "test prompt",
                 )
                 .session_context(test_session_context())
@@ -474,6 +473,36 @@ async fn compaction_notice_is_live_and_closes_on_success_failure_and_interrupt()
             assert!(pending.id.is_some());
             // The pending row must arrive while the provider is still blocked.
             model.entered.notified().await;
+            if outcome == "success" {
+                let before = checkpoints.load(outcome).await.unwrap().unwrap();
+                let admission = agent
+                    .sender()
+                    .send_with_admission(crate::protocol::Submission {
+                        id: "steer-during-writer".into(),
+                        op: active_user_op(
+                            "keep this correction after compaction",
+                            turn_id.as_ref().unwrap(),
+                            ActiveMessageDelivery::Steer,
+                        ),
+                    })
+                    .unwrap();
+                assert_eq!(
+                    admission.wait().await.unwrap(),
+                    super::super::MessageAcceptance::Accepted
+                );
+                let queued = checkpoints.load(outcome).await.unwrap().unwrap();
+                assert_eq!(
+                    queued.context, before.context,
+                    "the source writer cannot persist provisional history while accepting a steer"
+                );
+                assert_eq!((queued.context_epoch, queued.compaction_count), (0, 0));
+                assert!(
+                    queued
+                        .pending_messages
+                        .iter()
+                        .any(|message| message.id() == "steer-during-writer")
+                );
+            }
             if outcome == "interrupt" {
                 agent
                     .sender()
@@ -510,6 +539,13 @@ async fn compaction_notice_is_live_and_closes_on_success_failure_and_interrupt()
             assert_eq!(completions, 1);
             let saved = checkpoints.load(outcome).await.unwrap().unwrap();
             assert_eq!(saved.compaction_count, u64::from(outcome == "success"));
+            if outcome == "success" {
+                assert!(saved.pending_messages.is_empty());
+                assert!(saved.context.iter().any(|item| {
+                    item.to_string()
+                        .contains("keep this correction after compaction")
+                }));
+            }
         })
         .await
         .expect("compaction notice lifecycle completed");
@@ -573,7 +609,7 @@ async fn compaction_notice_waits_for_later_preparation_hooks_to_settle() {
                 let checkpoints = Arc::new(
                     SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3")).unwrap(),
                 );
-                let model = Arc::new(NativeCompactionModel::default());
+                let model = Arc::new(HandoffModel::default());
                 let later = Arc::new(LaterHook {
                     request,
                     fail: outcome == "failure",
@@ -677,6 +713,26 @@ async fn compaction_notice_waits_for_later_preparation_hooks_to_settle() {
                 let saved = checkpoints.load(outcome).await.unwrap().unwrap();
                 assert_eq!(saved.compaction_count, u64::from(outcome == "success"));
                 assert_eq!(saved.context_epoch, u64::from(outcome == "success"));
+                assert_eq!(
+                    saved.total_usage.total_tokens,
+                    if outcome == "success" { 2 } else { 1 },
+                    "completed checkpoint preparation is charged even when later hooks reject it"
+                );
+                assert_eq!(
+                    saved.execution_stats.model_calls,
+                    if outcome == "success" { 2 } else { 1 },
+                    "completed preparation calls count alongside ordinary model calls"
+                );
+                if outcome != "success" {
+                    assert!(
+                        checkpoints
+                            .load_state(outcome, "compaction.handoff")
+                            .await
+                            .unwrap()
+                            .is_none(),
+                        "rejected preparation must not restore provisional handoff notes"
+                    );
+                }
                 let transcript = checkpoints
                     .transcript_page(
                         outcome,
@@ -703,6 +759,99 @@ async fn compaction_notice_waits_for_later_preparation_hooks_to_settle() {
 }
 
 #[tokio::test]
+async fn rejected_preparation_discards_appended_history_but_keeps_completed_usage() {
+    struct RejectRequest;
+
+    impl Middleware for RejectRequest {
+        fn name(&self) -> &'static str {
+            "reject_request"
+        }
+
+        fn model_request<'a>(
+            &'a self,
+            _: &'a mut ModelRequestContext<'_>,
+        ) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async { Err(Error::Provider("request preparation rejected".into())) })
+        }
+    }
+
+    let workspace = tempfile::tempdir().unwrap();
+    let checkpoints =
+        Arc::new(SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3")).unwrap());
+    let model = Arc::new(HandoffModel::default());
+    let mut agent = create_agent(
+        AgentConfig::new(
+            Arc::new(ModelRouter::new(
+                "main",
+                Arc::clone(&model) as Arc<dyn Model>,
+            )),
+            Arc::new(Sandbox::new(
+                Arc::new(LocalSandbox::new(workspace.path()).unwrap()),
+                ApprovalPolicy::Ask,
+            )),
+            Arc::clone(&checkpoints) as Arc<dyn CheckpointStore>,
+            test_middleware(vec![Arc::new(DurableBeforeModel), Arc::new(RejectRequest)]),
+            "test prompt",
+        )
+        .session_context(test_session_context())
+        .session_id("rejected-preparation"),
+    )
+    .await
+    .unwrap();
+    agent
+        .sender()
+        .submit(user_op("preserve this user input"))
+        .unwrap();
+    loop {
+        let event = agent.next_event().await.unwrap();
+        assert!(!matches!(event.msg, EventMsg::ContextCompacted));
+        if matches!(event.msg, EventMsg::TurnAborted(_)) {
+            break;
+        }
+    }
+
+    let checkpoint = checkpoints
+        .load("rejected-preparation")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !checkpoint
+            .context
+            .iter()
+            .any(|item| internal_message_kind(item) == Some("settled"))
+    );
+    assert_eq!(checkpoint.total_usage.total_tokens, 1);
+    assert_eq!(checkpoint.execution_stats.model_calls, 1);
+    assert_eq!(
+        (checkpoint.context_epoch, checkpoint.compaction_count),
+        (0, 0)
+    );
+    assert_eq!(model.responses.load(Ordering::SeqCst), 0);
+    let transcript = checkpoints
+        .transcript_page(
+            "rejected-preparation",
+            TranscriptPageRequest {
+                before_sequence: None,
+                max_batches: 100,
+            },
+        )
+        .await
+        .unwrap()
+        .into_positioned_items_chronological();
+    assert!(
+        !transcript
+            .iter()
+            .any(|(_, item)| internal_message_kind(item) == Some("settled"))
+    );
+    assert!(
+        transcript
+            .iter()
+            .any(|(_, item)| item.to_string().contains("preserve this user input"))
+    );
+}
+
+#[tokio::test]
 async fn compaction_marker_survives_transcript_replay() {
     let workspace = tempfile::tempdir().expect("workspace");
     let checkpoints = Arc::new(
@@ -711,10 +860,7 @@ async fn compaction_marker_survives_transcript_replay() {
     );
     let checkpoint_store: Arc<dyn CheckpointStore> = checkpoints.clone();
     let config = AgentConfig::new(
-        Arc::new(ModelRouter::new(
-            "main",
-            Arc::new(NativeCompactionModel::default()),
-        )),
+        Arc::new(ModelRouter::new("main", Arc::new(HandoffModel::default()))),
         Arc::new(Sandbox::new(
             Arc::new(LocalSandbox::new(workspace.path()).expect("local sandbox")),
             ApprovalPolicy::Ask,
@@ -895,7 +1041,7 @@ async fn cloned_agent_config_inherits_route_aware_usage_observer() {
             .lock()
             .expect("usage observer lock")
             .push((route.to_owned(), usage.total_tokens));
-        Ok(())
+        Box::pin(async { Ok(()) })
     });
     let config = template
         .clone()
@@ -946,7 +1092,12 @@ async fn failing_usage_observer_aborts_before_checkpoint_usage_is_committed() {
     )
     .session_context(test_session_context())
     .session_id("usage-observer-failure")
-    .usage_observer(|_, _| Err(Error::Checkpoint("usage sink failed".into())));
+    .usage_observer(|_, _| {
+        Box::pin(async {
+            tokio::task::yield_now().await;
+            Err(Error::Checkpoint("usage sink failed".into()))
+        })
+    });
     let mut agent = create_agent(config).await.expect("create agent");
     agent
         .sender()

@@ -19,12 +19,13 @@ fn implicit_prompt_cache_omits_options() {
         let body = response_body(
             "test-model",
             &model_request(),
-            &[],
+            (&[]).into(),
             None,
             None,
             &[],
             provider.explicit_prompt_cache,
         )
+        .and_then(|body| Ok(serde_json::to_value(body)?))
         .expect("response body");
 
         assert_eq!(
@@ -42,34 +43,43 @@ fn implicit_prompt_cache_omits_options() {
 
 #[test]
 fn tool_load_becomes_additional_tools_at_its_context_position() {
-    let direct = [ToolDefinition {
+    let direct = [Arc::new(ToolDefinition {
         name: "read_file".into(),
         description: "Read a file".into(),
         parameters: serde_json::json!({"type": "object"}),
-    }];
-    let deferred = [ToolDefinition {
+    })];
+    let deferred = [Arc::new(ToolDefinition {
         name: "notebook_post".into(),
         description: "Post to the notebook".into(),
         parameters: serde_json::json!({"type": "object"}),
-    }];
+    })];
     let input = [
         serde_json::json!({"role": "user", "content": "before"}),
         ToolLoad {
             catalog_revision: "catalog-1".into(),
             tools: vec!["notebook_post".into()],
         }
-        .into_input(),
+        .to_input(),
         serde_json::json!({"role": "user", "content": "after"}),
     ];
     let request = ModelRequest {
-        input: &input,
+        input: (&input).into(),
         tools: &direct,
         deferred_tools: &deferred,
         ..model_request()
     };
 
-    let body = response_body("test-model", &request, &input, None, None, &[], false)
-        .expect("response body");
+    let body = response_body(
+        "test-model",
+        &request,
+        (&input).into(),
+        None,
+        None,
+        &[],
+        false,
+    )
+    .and_then(|body| Ok(serde_json::to_value(body)?))
+    .expect("response body");
 
     assert_eq!(
         (&body["input"], &body["tools"]),
@@ -193,18 +203,19 @@ fn continuation_ignores_searchable_inventory_and_resets_on_catalog_change() {
     continued.push(serde_json::json!({"type": "function_call_output"}));
     let envelope = envelope_fingerprint("test-model", &model_request(), None, &[])
         .expect("envelope fingerprint");
-    let (response, input) = continuation_input(&mut state, &continued, envelope).expect("continue");
+    let (response, input) =
+        continuation_input(&mut state, (&continued).into(), envelope).expect("continue");
     assert_eq!(response.as_deref(), Some("resp-1"));
     assert_eq!(
-        input,
-        &[serde_json::json!({"type": "function_call_output"})]
+        serde_json::to_value(input).expect("input"),
+        serde_json::json!([{ "type": "function_call_output" }])
     );
 
-    let deferred_tools = [ToolDefinition {
+    let deferred_tools = [Arc::new(ToolDefinition {
         name: "notebook_post".into(),
         description: "Post to the notebook".into(),
         parameters: serde_json::json!({"type": "object"}),
-    }];
+    })];
     let inventory_envelope = envelope_fingerprint(
         "test-model",
         &ModelRequest {
@@ -216,12 +227,12 @@ fn continuation_ignores_searchable_inventory_and_resets_on_catalog_change() {
     )
     .expect("searchable inventory fingerprint");
     assert_eq!(inventory_envelope, envelope);
-    let (response, input) = continuation_input(&mut state, &continued, inventory_envelope)
+    let (response, input) = continuation_input(&mut state, (&continued).into(), inventory_envelope)
         .expect("inventory continuation");
     assert_eq!(response.as_deref(), Some("resp-1"));
     assert_eq!(
-        input,
-        &[serde_json::json!({"type": "function_call_output"})]
+        serde_json::to_value(input).expect("input"),
+        serde_json::json!([{ "type": "function_call_output" }])
     );
 
     let changed_envelope = envelope_fingerprint(
@@ -235,16 +246,23 @@ fn continuation_ignores_searchable_inventory_and_resets_on_catalog_change() {
         &[],
     )
     .expect("changed catalog fingerprint");
-    let (response, input) =
-        continuation_input(&mut state, &continued, changed_envelope).expect("catalog reset");
+    let (response, input) = continuation_input(&mut state, (&continued).into(), changed_envelope)
+        .expect("catalog reset");
     assert_eq!(response, None);
-    assert_eq!(input, continued);
+    assert_eq!(
+        input.iter().collect::<Vec<_>>(),
+        continued.iter().collect::<Vec<_>>()
+    );
     assert!(state.continuation.is_none());
 
-    let rewritten = vec![serde_json::json!({"type": "compaction"})];
-    let (response, input) = continuation_input(&mut state, &rewritten, envelope).expect("reset");
+    let rewritten = vec![serde_json::json!({"role": "user", "content": "Working checkpoint"})];
+    let (response, input) =
+        continuation_input(&mut state, (&rewritten).into(), envelope).expect("reset");
     assert_eq!(response, None);
-    assert_eq!(input, rewritten);
+    assert_eq!(
+        input.iter().collect::<Vec<_>>(),
+        rewritten.iter().collect::<Vec<_>>()
+    );
     assert!(state.continuation.is_none());
 
     state.continuation = Some(Continuation {
@@ -254,8 +272,45 @@ fn continuation_ignores_searchable_inventory_and_resets_on_catalog_change() {
         envelope_fingerprint: envelope,
     });
     let (response, input) =
-        response_input(&mut state, &known, false, envelope).expect("stateless request");
+        response_input(&mut state, (&known).into(), false, envelope).expect("stateless request");
     assert_eq!(response, None);
-    assert_eq!(input, known);
+    assert_eq!(
+        input.iter().collect::<Vec<_>>(),
+        known.iter().collect::<Vec<_>>()
+    );
     assert!(state.continuation.is_none());
+}
+
+#[test]
+fn borrowed_settings_keep_the_existing_schema_and_cache_fingerprint() {
+    let tools = [Arc::new(ToolDefinition {
+        name: "inspect".into(),
+        description: "Inspect a file".into(),
+        parameters: serde_json::json!({"type":"object", "properties":{"path":{"type":"string"}}}),
+    })];
+    let hosted = [serde_json::json!({"type":"web_search", "search_context_size":"medium"})];
+    let request = ModelRequest {
+        tools: &tools,
+        allow_hosted_tools: true,
+        ..model_request()
+    };
+    let legacy = serde_json::json!({
+        "model":"test-model",
+        "instructions": request.instructions,
+        "catalog_revision": request.catalog_revision,
+        "tools":[{
+            "type":"function",
+            "name":tools[0].name,
+            "description":tools[0].description,
+            "parameters":tools[0].parameters,
+            "strict":false,
+        }, hosted[0]],
+        "reasoning_effort":"high",
+        "prompt_cache":{"key":"hashed-cache-key", "context_epoch":1, "mode":"explicit"},
+    });
+    assert_eq!(
+        envelope_fingerprint("test-model", &request, Some("high"), &hosted)
+            .expect("borrowed settings"),
+        fingerprint(std::iter::once(&legacy)).expect("existing JSON settings"),
+    );
 }

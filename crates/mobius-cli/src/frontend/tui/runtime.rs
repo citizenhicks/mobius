@@ -364,7 +364,7 @@ fn refresh_workspace_inventory(
     reference_open: bool,
 ) -> bool {
     matches!(message, ServerMessage::AgentEvent { session_id: actual, record }
-        if actual == session_id && (matches!(record.event.msg, EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_))
+        if actual.as_ref() == session_id && (matches!(record.event.msg, EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_))
             || reference_open && matches!(record.event.msg, EventMsg::ToolCallEnd(_))))
 }
 
@@ -504,7 +504,6 @@ async fn handle_incoming_message(
     uploads: &mut ClipboardUploads,
     pending_session_creation: &mut Option<PendingSessionCreation>,
 ) -> Option<(FrontendExit, bool)> {
-    let session_id = session.session.session_id.clone();
     if settle_session_deletion(&message, state) {
         return Some((FrontendExit::Fresh, true));
     }
@@ -516,15 +515,16 @@ async fn handle_incoming_message(
     };
     let should_clear = settle_session_creation(&message, pending_session_creation);
     if !handle_file_download_message(&message, sender, state).await
-        && !handle_upload_message(&message, sender, gateway, state, uploads, &session_id).await
-        && let Some(exit) = handle_server_message(
-            message,
+        && !handle_upload_message(
+            &message,
+            sender,
             gateway,
-            session,
             state,
-            &session_id,
-            session_opened,
+            uploads,
+            &session.session.session_id,
         )
+        .await
+        && let Some(exit) = handle_server_message(message, gateway, session, state, session_opened)
     {
         return Some((exit, should_clear));
     }
@@ -690,14 +690,14 @@ fn handle_server_message(
     gateway: &mut ReadyPayload,
     session: &mut SessionReadyPayload,
     state: &mut TuiState,
-    session_id: &str,
     session_opened: bool,
 ) -> Option<FrontendExit> {
+    let session_id = session.session.session_id.as_str();
     match message {
         ServerMessage::AgentEvent {
             session_id: actual,
             mut record,
-        } if actual == session_id => {
+        } if actual.as_ref() == session_id => {
             settle_message_draft(state, &record.event);
             enrich_resume_picker(
                 &mut record.event.msg,
@@ -769,7 +769,7 @@ fn handle_server_message(
                 }
             } else {
                 *session = payload;
-                return Some(FrontendExit::Resume(session_id.into()));
+                return Some(FrontendExit::Resume(session.session.session_id.clone()));
             }
         }
         ServerMessage::SessionFiles {
@@ -872,7 +872,7 @@ fn disconnect(
     state.upload_in_progress = false;
     replay_hydration.finish();
     state.disconnected = true;
-    for turn_id in state.active_turns.clone() {
+    while let Some(turn_id) = state.active_turns.pop() {
         state.finish_turn(&turn_id);
     }
     state.recover_unconfirmed_messages();
@@ -936,9 +936,8 @@ fn paste_clipboard(
         );
         return;
     }
-    let existing = state.attachments.clone();
     let limits = gateway.session_file_limits;
-    match prepare_clipboard(existing, limits) {
+    match prepare_clipboard(&state.attachments, limits) {
         Ok(preparation) => {
             *clipboard_preparation = Some(preparation);
             state.upload_in_progress = true;
@@ -1349,14 +1348,14 @@ async fn open_bots(
     state: &mut TuiState,
     session_id: &str,
 ) -> Option<FrontendExit> {
-    let bot_id = session.session.context.owner_id.clone();
+    let bot_id = &session.session.context.owner_id;
     let result = bots::run(
         terminal,
         sender,
         events,
         gateway,
-        Some(&bot_id),
-        Some(&bot_id),
+        Some(bot_id),
+        Some(bot_id),
     )
     .await;
     if !gateway
@@ -1468,7 +1467,7 @@ fn enrich_resume_picker(
         if let Some(title) = &session.title {
             option.label.clone_from(title);
         }
-        let mut details = vec![session_status(session).into()];
+        let mut details: Vec<std::borrow::Cow<'_, str>> = vec![session_status(session).into()];
         details.push(
             if current_workspace_id.is_some()
                 && session.session_context.workspace_id.as_deref() == current_workspace_id
@@ -1484,12 +1483,12 @@ fn enrich_resume_picker(
             .into(),
         );
         if let Some(origin) = &session.session_context.origin_label {
-            details.push(origin.clone());
+            details.push(origin.as_str().into());
         }
         if let Some(handle) = bot_handle(&session.session_context.owner_id, bots) {
-            details.push(format!("@{handle}"));
+            details.push(format!("@{handle}").into());
         }
-        details.push(format!("started {}", human_time(session.created_at)));
+        details.push(format!("started {}", human_time(session.created_at)).into());
         option.description = details.join(" · ");
     }
 }
@@ -1924,7 +1923,6 @@ mod tests {
                 &mut gateway,
                 &mut session,
                 &mut state,
-                "session-current",
                 session_opened,
             )
             .is_none()
@@ -1997,7 +1995,6 @@ mod tests {
             &mut gateway,
             &mut session,
             &mut state,
-            "session-a",
             false,
         );
         assert!(state.preview.is_none());
@@ -2014,7 +2011,6 @@ mod tests {
             &mut gateway,
             &mut session,
             &mut state,
-            "session-a",
             false,
         );
         assert!(state.git_diff[0].is_none());
@@ -2044,7 +2040,6 @@ mod tests {
             &mut gateway,
             &mut session,
             &mut state,
-            "session-a",
             false,
         );
         handle_server_message(
@@ -2059,7 +2054,6 @@ mod tests {
             &mut gateway,
             &mut session,
             &mut state,
-            "session-a",
             false,
         );
         handle_server_message(
@@ -2072,7 +2066,6 @@ mod tests {
             &mut gateway,
             &mut session,
             &mut state,
-            "session-a",
             false,
         );
 
@@ -2102,7 +2095,6 @@ mod tests {
             &mut gateway,
             &mut session,
             &mut state,
-            "session-a",
             false,
         );
         assert_eq!(
@@ -2139,14 +2131,7 @@ mod tests {
             calls: Vec::new(),
             reason: "Already decided".into(),
         });
-        handle_server_message(
-            message,
-            &mut gateway,
-            &mut session,
-            &mut state,
-            "session-a",
-            false,
-        );
+        handle_server_message(message, &mut gateway, &mut session, &mut state, false);
         let mut completion = replay_event(2);
         let ServerMessage::AgentEvent { record, .. } = &mut completion else {
             unreachable!()
@@ -2159,7 +2144,6 @@ mod tests {
             &mut gateway,
             &mut session,
             &mut state,
-            "session-a",
             false,
         );
         assert_eq!(state.active_turn(), Some("current-turn"));
@@ -2173,7 +2157,6 @@ mod tests {
             &mut gateway,
             &mut session,
             &mut state,
-            "session-a",
             false,
         );
         assert_eq!(state.approval().unwrap().id, "current-approval");
@@ -2181,14 +2164,7 @@ mod tests {
             unreachable!()
         };
         record.sequence = 3;
-        handle_server_message(
-            completion,
-            &mut gateway,
-            &mut session,
-            &mut state,
-            "session-a",
-            false,
-        );
+        handle_server_message(completion, &mut gateway, &mut session, &mut state, false);
         assert!(state.active_turn().is_none());
         assert!(state.approval().is_none());
         handle_server_message(
@@ -2198,7 +2174,6 @@ mod tests {
             &mut gateway,
             &mut session,
             &mut state,
-            "session-a",
             false,
         );
         assert!(state.active_turn().is_none());

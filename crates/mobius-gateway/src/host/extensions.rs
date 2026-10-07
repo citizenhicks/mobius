@@ -36,11 +36,14 @@ impl GatewayHost {
                     .insert(staged.id, staged.installed);
                 next
             };
-            if !self.commit_extensions(&state, next)? {
+            let Some(publication) = self.commit_extensions(&state, next)? else {
                 return gateway_ready_after_unlock(state).await;
-            }
+            };
             drop(state);
-            self.finish_extension_mutation(&id, sessions_guard).await
+            finish_publication(
+                publication.confirm(),
+                self.finish_extension_mutation(&id, sessions_guard).await,
+            )
         }
         .await;
         if result.is_err() {
@@ -65,6 +68,7 @@ impl GatewayHost {
             config
                 .installed_extensions
                 .get(&id)
+                // Asynchronous staging retains the original installation for concurrent-change validation.
                 .cloned()
                 .ok_or_else(|| unknown_extension(&id))?
         };
@@ -108,11 +112,14 @@ impl GatewayHost {
                     .insert(id.clone(), staged.installed);
                 next
             };
-            if !self.commit_extensions(&state, next)? {
+            let Some(publication) = self.commit_extensions(&state, next)? else {
                 return gateway_ready_after_unlock(state).await;
-            }
+            };
             drop(state);
-            self.finish_extension_mutation(&id, sessions_guard).await
+            finish_publication(
+                publication.confirm(),
+                self.finish_extension_mutation(&id, sessions_guard).await,
+            )
         }
         .await;
         if result.is_err() {
@@ -163,11 +170,14 @@ impl GatewayHost {
                 .ok_or_else(|| unknown_extension(&id))?;
             next
         };
-        if !self.commit_extensions(&state, next)? {
+        let Some(publication) = self.commit_extensions(&state, next)? else {
             return gateway_ready_after_unlock(state).await;
-        }
+        };
         drop(state);
-        self.finish_extension_mutation(&id, sessions_guard).await
+        finish_publication(
+            publication.confirm(),
+            self.finish_extension_mutation(&id, sessions_guard).await,
+        )
     }
 
     pub(crate) async fn set_extension_hooks_trusted(
@@ -204,25 +214,29 @@ impl GatewayHost {
             installed.trusted_hook_digest = trusted.then(|| installed.digest.clone());
             next
         };
-        if !self.commit_extensions(&state, next)? {
+        let Some(publication) = self.commit_extensions(&state, next)? else {
             return gateway_ready_after_unlock(state).await;
-        }
+        };
         drop(state);
-        self.finish_extension_mutation(&id, sessions_guard).await
+        finish_publication(
+            publication.confirm(),
+            self.finish_extension_mutation(&id, sessions_guard).await,
+        )
     }
 
     fn commit_extensions(
         &self,
         state: &GatewayState,
         next: GatewayConfig,
-    ) -> std::result::Result<bool, Rejection> {
+    ) -> std::result::Result<Option<crate::publication::Outcome>, Rejection> {
         let mut current = state.config()?;
         if *current == next {
-            return Ok(false);
+            return Ok(None);
         }
-        state.store.save(&next).map_err(internal)?;
+        let publication =
+            crate::publication::Outcome::applied(state.store.save(&next)).map_err(internal)?;
         *current = next;
-        Ok(true)
+        Ok(Some(publication))
     }
 
     async fn finish_extension_mutation(

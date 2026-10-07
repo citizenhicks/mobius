@@ -33,14 +33,14 @@ impl<'a> DeliveryOnce<'a> {
         }
     }
 
-    pub(crate) fn deliver(
+    pub(crate) fn deliver<T: std::borrow::Borrow<Value> + From<Value>>(
         &self,
-        input: &mut Vec<Value>,
+        input: &mut Vec<T>,
         key: Option<&str>,
         make: impl FnOnce() -> Value,
     ) -> Result<bool> {
         let Some(key) = key else {
-            input.push(make());
+            input.push(make().into());
             return Ok(true);
         };
         if self.owner.is_empty() || !valid_ascii_identifier(key, 384, AsciiCase::Any, b"_-.:/") {
@@ -49,7 +49,7 @@ impl<'a> DeliveryOnce<'a> {
         if contains(self.receipts, self.owner, key)
             || input
                 .iter()
-                .any(|item| identity(item) == Some((self.owner, key)))
+                .any(|item| identity(item.borrow()) == Some((self.owner, key)))
         {
             return Ok(false);
         }
@@ -62,7 +62,7 @@ impl<'a> DeliveryOnce<'a> {
             ));
         }
         item[FIELD] = serde_json::json!({"owner": self.owner, "key": key});
-        input.push(item);
+        input.push(item.into());
         Ok(true)
     }
 }
@@ -95,9 +95,10 @@ pub(crate) fn accept(receipts: &mut Receipts, item: &Value) -> bool {
 }
 
 /// Preserve inherited receipts and accept newly appended session-start guidance.
-pub(crate) fn record(receipts: &mut Receipts, input: &[Value]) -> bool {
+pub(crate) fn record<T: std::borrow::Borrow<Value>>(receipts: &mut Receipts, input: &[T]) -> bool {
     let mut changed = false;
     for item in input {
+        let item = item.borrow();
         if identity(item).is_some() {
             changed |= accept(receipts, item);
         }
@@ -106,8 +107,9 @@ pub(crate) fn record(receipts: &mut Receipts, input: &[Value]) -> bool {
 }
 
 /// Undo only receipts inserted by the context suffix being rolled back.
-pub(crate) fn rollback(receipts: &mut Receipts, input: &[Value]) {
+pub(crate) fn rollback<T: std::borrow::Borrow<Value>>(receipts: &mut Receipts, input: &[T]) {
     for item in input {
+        let item = item.borrow();
         let Some((owner, key)) = identity(item) else {
             continue;
         };
@@ -175,7 +177,12 @@ mod tests {
             "repeated notices cannot copy receipts"
         );
         let mut checkpoint = Checkpoint::empty("session");
-        checkpoint.context = vec![user_message("compacted context")];
+        checkpoint.context = std::sync::Arc::new(
+            vec![user_message("compacted context")]
+                .into_iter()
+                .map(std::sync::Arc::new)
+                .collect(),
+        );
         checkpoint.delivered_once = receipts;
         let mut encoded = serde_json::to_value(checkpoint).unwrap();
         let checkpoint = <Checkpoint as serde::Deserialize>::deserialize(&encoded).unwrap();
@@ -190,7 +197,7 @@ mod tests {
         delivery.owner = "first";
         assert!(
             !delivery
-                .deliver(&mut Vec::new(), Some("intro"), || panic!(
+                .deliver(&mut Vec::<Value>::new(), Some("intro"), || panic!(
                     "resume must not reissue guidance"
                 ))
                 .unwrap()

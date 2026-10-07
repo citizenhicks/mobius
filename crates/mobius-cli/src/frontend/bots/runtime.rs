@@ -152,26 +152,33 @@ pub(super) fn handle_frame(
             request_id,
             sessions,
         } => {
-            gateway.sessions = sessions.clone();
             if request_id.is_some() {
+                // The correlated reply must still reach its waiter after this screen updates its catalog.
+                gateway.sessions = sessions.clone();
                 deferred = Some(ServerFrame::new(ServerMessage::Sessions {
                     request_id,
                     sessions,
                 }));
+            } else {
+                gateway.sessions = sessions;
             }
         }
         ServerMessage::SessionsChanged { sessions, .. } => {
             apply_session_changes(&mut gateway.sessions, sessions)
         }
         ServerMessage::Bots { request_id, bots } => {
-            gateway.bots = bots.clone();
             if request_id
                 .as_ref()
                 .is_some_and(|id| pending_matches(state, id))
             {
+                gateway.bots = bots;
                 follow_up = state.complete().unwrap_or(FollowUp::None);
             } else if request_id.is_some() {
+                // Apply the catalog here while preserving the correlated payload for its actual waiter.
+                gateway.bots = bots.clone();
                 deferred = Some(ServerFrame::new(ServerMessage::Bots { request_id, bots }));
+            } else {
+                gateway.bots = bots;
             }
         }
         ServerMessage::Routines {

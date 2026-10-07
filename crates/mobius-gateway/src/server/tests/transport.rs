@@ -251,7 +251,7 @@ fn connection_diagnostics_do_not_render_peer_controlled_errors() {
             "I/O ConnectionReset",
         ),
     ] {
-        assert_eq!(connection_diagnostic(&error), expected);
+        assert_eq!(connection_diagnostic(&error).to_string(), expected);
     }
 }
 

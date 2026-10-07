@@ -14,7 +14,7 @@ fn model_request() -> ModelRequest<'static> {
             context_epoch: 3,
         }),
         instructions: "Test instructions",
-        input: &[],
+        input: (&[]).into(),
         catalog_revision: "catalog-1",
         tools: &[],
         deferred_tools: &[],
@@ -23,12 +23,12 @@ fn model_request() -> ModelRequest<'static> {
     }
 }
 
-fn tool_definition(name: &str) -> ToolDefinition {
-    ToolDefinition {
+fn tool_definition(name: &str) -> Arc<ToolDefinition> {
+    Arc::new(ToolDefinition {
         name: name.into(),
         description: format!("Use {name}"),
         parameters: serde_json::json!({"type": "object"}),
-    }
+    })
 }
 
 #[test]
@@ -38,7 +38,7 @@ fn service_tier_is_optional_and_preserves_native_values() {
             .expect("provider")
             .with_service_tier(tier.map(str::to_owned));
         let body = provider
-            .response_body(model_request())
+            .response_body_value(model_request())
             .expect("request body");
         assert_eq!(body.get("service_tier").and_then(Value::as_str), tier);
     }
@@ -78,7 +78,7 @@ fn endpoint_url_does_not_infer_reasoning_summary_support() {
 
     assert_eq!(
         provider
-            .response_body(model_request())
+            .response_body_value(model_request())
             .expect("response body")["reasoning"],
         serde_json::json!({"effort": "medium"})
     );
@@ -93,7 +93,7 @@ fn compatible_endpoint_does_not_assume_reasoning_summary_support() {
 
     assert_eq!(
         provider
-            .response_body(model_request())
+            .response_body_value(model_request())
             .expect("response body")["reasoning"],
         serde_json::json!({"effort": "medium"})
     );
@@ -109,7 +109,7 @@ fn compatible_endpoint_can_opt_into_automatic_reasoning_summaries() {
 
     assert_eq!(
         provider
-            .response_body(model_request())
+            .response_body_value(model_request())
             .expect("response body")["reasoning"],
         serde_json::json!({"effort": "medium", "summary": "auto"})
     );
@@ -123,7 +123,7 @@ fn reasoning_summary_opt_in_can_use_the_models_default_effort() {
 
     assert_eq!(
         provider
-            .response_body(model_request())
+            .response_body_value(model_request())
             .expect("response body")["reasoning"],
         serde_json::json!({"summary": "auto"})
     );
@@ -166,7 +166,7 @@ fn responses_input_strips_only_top_level_provider_metadata() {
     ];
 
     assert_eq!(
-        wire_input_with_cache(&input, true, false, "catalog-1", &[]).expect("wire input"),
+        wire_input_with_cache((&input).into(), true, false, "catalog-1", &[]).expect("wire input"),
         vec![
             serde_json::json!({
                 "type": "function_call",
@@ -215,7 +215,7 @@ fn compatible_responses_are_implicit_while_first_party_breakpoints_are_explicit(
             context_epoch: 4,
         }),
         instructions: "Instructions",
-        input: &input,
+        input: (&input).into(),
         catalog_revision: "catalog-1",
         tools: &[],
         deferred_tools: &[],
@@ -225,7 +225,9 @@ fn compatible_responses_are_implicit_while_first_party_breakpoints_are_explicit(
 
     let compatible = OpenAi::new("test-key", "https://example.com/v1", "test-model")
         .expect("compatible provider");
-    let compatible_body = compatible.response_body(request).expect("compatible body");
+    let compatible_body = compatible
+        .response_body_value(request)
+        .expect("compatible body");
     assert_eq!(compatible_body["prompt_cache_key"], "opaque-cache-key");
     assert!(compatible_body.get("prompt_cache_options").is_none());
     assert_eq!(
@@ -241,7 +243,7 @@ fn compatible_responses_are_implicit_while_first_party_breakpoints_are_explicit(
             context_epoch: 4,
         }),
         instructions: "Instructions",
-        input: &input,
+        input: (&input).into(),
         catalog_revision: "catalog-1",
         tools: &[],
         deferred_tools: &[],
@@ -252,7 +254,7 @@ fn compatible_responses_are_implicit_while_first_party_breakpoints_are_explicit(
         .expect("first-party provider")
         .with_explicit_prompt_cache();
     let first_party_body = first_party
-        .response_body(request)
+        .response_body_value(request)
         .expect("first-party body");
     assert_eq!(
         first_party_body["prompt_cache_options"],
@@ -281,7 +283,7 @@ fn explicit_cache_endpoints_advance_and_preserve_previous_lookup_boundaries() {
             {"type":"input_image", "media_type":"image/png", "data":"pixels"}
         ]},
         {"role":"developer", "content":[{"type":"input_text", "text":"continue"}]},
-        {"type":"compaction", "encrypted_content":"opaque"}
+        {"type":"reasoning", "encrypted_content":"opaque"}
     ]);
     let original = input.to_string();
     let history = input.as_array().expect("history");
@@ -293,7 +295,7 @@ fn explicit_cache_endpoints_advance_and_preserve_previous_lookup_boundaries() {
         (6, "content", 0),
     ];
     for end in 1..=history.len() {
-        let wired = wire_input_with_cache(&history[..end], true, true, "catalog-1", &[])
+        let wired = wire_input_with_cache((&history[..end]).into(), true, true, "catalog-1", &[])
             .expect("explicit replay");
         for &(index, field, part) in &endpoints {
             if index < end {
@@ -315,14 +317,14 @@ fn explicit_cache_endpoints_advance_and_preserve_previous_lookup_boundaries() {
             expected_count
         );
     }
-    let suffix = wire_input_with_cache(&history[4..6], true, true, "catalog-1", &[])
+    let suffix = wire_input_with_cache((&history[4..6]).into(), true, true, "catalog-1", &[])
         .expect("continuation suffix");
     assert_eq!(
         suffix[1]["output"][1]["prompt_cache_breakpoint"],
         serde_json::json!({"mode":"explicit"})
     );
-    let implicit =
-        wire_input_with_cache(history, true, false, "catalog-1", &[]).expect("implicit replay");
+    let implicit = wire_input_with_cache((history).into(), true, false, "catalog-1", &[])
+        .expect("implicit replay");
     assert!(
         !serde_json::to_string(&implicit)
             .expect("wire JSON")
@@ -353,52 +355,6 @@ fn responses_decode_strips_reasoning_wire_metadata() {
 }
 
 #[test]
-fn compact_decode_normalizes_provider_wire_items() {
-    let decoded = decode_compact_response(serde_json::json!({
-        "output": [
-            {
-                "type": "message",
-                "id": "message-1",
-                "role": "user",
-                "status": "completed",
-                "content": [{"type": "input_text", "text": "inspect"}]
-            },
-            {
-                "type": "reasoning",
-                "format": "openai-responses-v1",
-                "status": "completed",
-                "encrypted_content": "reasoning"
-            },
-            {
-                "type": "compaction_summary",
-                "encrypted_content": "opaque"
-            }
-        ]
-    }))
-    .expect("decode compact response");
-
-    assert_eq!(
-        decoded.output(),
-        &[
-            serde_json::json!({
-                "type": "message",
-                "id": "message-1",
-                "role": "user",
-                "content": [{"type": "input_text", "text": "inspect"}]
-            }),
-            serde_json::json!({
-                "type": "reasoning",
-                "encrypted_content": "reasoning"
-            }),
-            serde_json::json!({
-                "type": "compaction",
-                "encrypted_content": "opaque"
-            })
-        ]
-    );
-}
-
-#[test]
 fn responses_converts_neutral_images_and_rejects_them_when_disabled() {
     let input = [serde_json::json!({
         "role": "user",
@@ -408,7 +364,8 @@ fn responses_converts_neutral_images_and_rejects_them_when_disabled() {
         ]
     })];
 
-    let wired = wire_input_with_cache(&input, true, false, "catalog-1", &[]).expect("wire image");
+    let wired =
+        wire_input_with_cache((&input).into(), true, false, "catalog-1", &[]).expect("wire image");
     assert_eq!(
         wired[0]["content"][1],
         serde_json::json!({
@@ -417,7 +374,7 @@ fn responses_converts_neutral_images_and_rejects_them_when_disabled() {
         })
     );
     assert!(
-        wire_input_with_cache(&input, false, false, "catalog-1", &[])
+        wire_input_with_cache((&input).into(), false, false, "catalog-1", &[])
             .expect_err("disabled image input")
             .to_string()
             .contains("does not support image attachments")
@@ -435,7 +392,7 @@ fn responses_applies_cache_markers_after_mapping_each_observation_kind() {
         ]
     })];
     for explicit in [false, true] {
-        let wired = wire_input_with_cache(&input, true, explicit, "catalog", &[])
+        let wired = wire_input_with_cache((&input).into(), true, explicit, "catalog", &[])
             .expect("wire observations");
         let parts = wired[0]["output"].as_array().expect("ordered content");
         for (index, part) in parts.iter().enumerate() {
@@ -456,8 +413,14 @@ fn responses_applies_cache_markers_after_mapping_each_observation_kind() {
 fn hosted_tools_can_be_disabled_per_request() {
     let hosted = [serde_json::json!({"type": "web_search"})];
 
-    assert!(wire_tools(&[], &hosted, false).is_empty());
-    assert_eq!(wire_tools(&[], &hosted, true), hosted);
+    assert_eq!(
+        serde_json::to_value(wire_tools(&[], &hosted, false)).expect("tools"),
+        serde_json::json!([])
+    );
+    assert_eq!(
+        serde_json::to_value(wire_tools(&[], &hosted, true)).expect("tools"),
+        serde_json::json!(hosted)
+    );
 }
 
 #[test]
@@ -467,15 +430,31 @@ fn rebuild_filters_tool_load_control_items() {
         catalog_revision: "catalog-1".into(),
         tools: vec!["notebook_post".into()],
     }
-    .into_input()];
-    let body = OpenAi::new("test-key", "https://example.com/v1", "test-model")
-        .expect("provider")
+    .to_input()];
+    let provider =
+        OpenAi::new("test-key", "https://example.com/v1", "test-model").expect("provider");
+    let borrowed = provider
         .response_body(ModelRequest {
-            input: &input,
+            input: (&input).into(),
             tools: &loaded,
             ..model_request()
         })
-        .expect("response body");
+        .expect("borrowed response body");
+    assert!(std::ptr::eq(
+        &borrowed.tools.functions[0].parameters,
+        &loaded[0].parameters
+    ));
+    let body = serde_json::to_value(borrowed).expect("response body");
+    assert_eq!(
+        body["tools"][0],
+        serde_json::json!({
+            "type": "function",
+            "name": loaded[0].name,
+            "description": loaded[0].description,
+            "parameters": loaded[0].parameters,
+            "strict": false,
+        })
+    );
 
     assert_eq!(
         (&body["input"], &body["tools"][0]["name"]),
@@ -485,8 +464,8 @@ fn rebuild_filters_tool_load_control_items() {
     let native = OpenAi::new("test-key", "https://api.openai.com/v1", "test-model")
         .expect("provider")
         .with_tool_discovery(ToolDiscoveryMode::Native)
-        .response_body(ModelRequest {
-            input: &input,
+        .response_body_value(ModelRequest {
+            input: (&input).into(),
             deferred_tools: &loaded,
             ..model_request()
         })
@@ -504,13 +483,13 @@ fn native_discovery_ignores_tool_loads_from_an_old_catalog() {
         catalog_revision: "catalog-0".into(),
         tools: vec!["notebook_post".into()],
     }
-    .into_input()];
+    .to_input()];
 
     let body = OpenAi::new("test-key", "https://api.openai.com/v1", "test-model")
         .expect("provider")
         .with_tool_discovery(ToolDiscoveryMode::Native)
-        .response_body(ModelRequest {
-            input: &input,
+        .response_body_value(ModelRequest {
+            input: (&input).into(),
             deferred_tools: &deferred,
             ..model_request()
         })
@@ -530,14 +509,15 @@ fn openrouter_defers_optional_tools_and_uses_hosted_search() {
         catalog_revision: "catalog-1".into(),
         tools: vec!["notebook_post".into()],
     }
-    .into_input()];
+    .to_input()];
     let body = OpenAi::new("test-key", "https://openrouter.ai/api/v1", "test-model")
         .expect("provider")
         .with_openrouter_tool_search()
-        .response_body(ModelRequest {
-            input: &input,
+        .response_body_value(ModelRequest {
+            input: (&input).into(),
             tools: &direct,
             deferred_tools: &deferred,
+            allow_hosted_tools: false,
             ..model_request()
         })
         .expect("response body");
@@ -563,6 +543,27 @@ fn openrouter_defers_optional_tools_and_uses_hosted_search() {
                 "defer_loading": true
             }
         ])
+    );
+}
+
+#[test]
+fn openrouter_omits_tool_search_without_deferred_tools() {
+    let body = OpenAi::new("test-key", "https://openrouter.ai/api/v1", "test-model")
+        .expect("provider")
+        .with_openrouter_tool_search()
+        .response_body_value(ModelRequest {
+            tools: &[tool_definition("write_handoff")],
+            allow_hosted_tools: false,
+            ..model_request()
+        })
+        .expect("checkpoint request");
+
+    assert_eq!(
+        (
+            body["tools"].as_array().expect("tools").len(),
+            body["tools"][0]["name"].as_str(),
+        ),
+        (1, Some("write_handoff")),
     );
 }
 
@@ -641,7 +642,7 @@ fn stream_completion_preserves_final_annotations_and_completion_only_items() {
         }]
     });
 
-    let attached = attach_stream_output(response.clone(), &BTreeMap::from([(0, streamed)]));
+    let attached = attach_stream_output(response.clone(), BTreeMap::from([(0, streamed)]));
 
     assert_eq!(attached, response);
     let decoded = decode_response(attached).expect("completed output");
@@ -660,7 +661,7 @@ fn stream_completion_falls_back_only_for_missing_or_empty_output() {
     });
     let streamed = BTreeMap::from([(0, item.clone())]);
     for response in [serde_json::json!({}), serde_json::json!({"output": []})] {
-        let attached = attach_stream_output(response, &streamed);
+        let attached = attach_stream_output(response, streamed.clone());
         assert_eq!(attached["output"], serde_json::json!([item]));
     }
     for response in [
@@ -670,7 +671,7 @@ fn stream_completion_falls_back_only_for_missing_or_empty_output() {
         serde_json::json!({"output": {}}),
         serde_json::json!({"output": "invalid"}),
     ] {
-        let attached = attach_stream_output(response.clone(), &streamed);
+        let attached = attach_stream_output(response.clone(), streamed.clone());
         assert_eq!(attached, response);
         assert!(decode_response(attached).is_err());
     }
@@ -832,6 +833,7 @@ async fn responses_emits_complete_tool_calls_in_output_order() {
     );
     emit_ready_tool_calls(
         &output,
+        None,
         &mut next_output_index,
         &mut streamed_tool_calls,
         &events,
@@ -850,6 +852,7 @@ async fn responses_emits_complete_tool_calls_in_output_order() {
     );
     emit_ready_tool_calls(
         &output,
+        None,
         &mut next_output_index,
         &mut streamed_tool_calls,
         &events,
@@ -1099,92 +1102,6 @@ fn responses_web_search_without_queries_is_other() {
     assert_eq!(action, WebSearchAction::Other);
 }
 
-#[test]
-fn compaction_shape_matches_the_responses_contract() {
-    let provider = OpenAi::new("test-key", "https://api.openai.com/v1", "test-model")
-        .expect("provider")
-        .with_reasoning_effort("medium")
-        .expect("reasoning effort")
-        .with_reasoning_summary()
-        .with_web_search();
-    assert!(!provider.compaction_endpoint());
-    let input = [serde_json::json!({
-        "role": "user",
-        "content": "hello",
-        "_private": true
-    })];
-    let tools = [ToolDefinition {
-        name: "read".into(),
-        description: "Read a file".into(),
-        parameters: serde_json::json!({"type": "object"}),
-    }];
-    let body = provider
-        .with_compaction_endpoint()
-        .compact_body(CompactRequest {
-            session_id: "test-session",
-            cancellation: None,
-            prompt_cache: Some(PromptCacheIdentity {
-                key: "hashed-cache-key",
-                context_epoch: 3,
-            }),
-            instructions: "Compact the conversation",
-            input: &input,
-            catalog_revision: "catalog-1",
-            tools: &tools,
-            deferred_tools: &[],
-        })
-        .expect("compact body");
-
-    assert_eq!(
-        body,
-        serde_json::json!({
-            "model": "test-model",
-            "instructions": "Compact the conversation",
-            "input": [{"role": "user", "content": "hello"}],
-            "tools": [
-                {
-                    "type": "function",
-                    "name": "read",
-                    "description": "Read a file",
-                    "parameters": {"type": "object"},
-                    "strict": false
-                },
-                {"type": "web_search"}
-            ],
-            "parallel_tool_calls": true,
-            "prompt_cache_key": "hashed-cache-key",
-            "reasoning": {"effort": "medium", "summary": "auto"}
-        })
-    );
-}
-
-#[test]
-fn native_compaction_ignores_tool_loads_from_an_old_catalog() {
-    let deferred = [tool_definition("notebook_post")];
-    let input = [ToolLoad {
-        catalog_revision: "catalog-0".into(),
-        tools: vec!["notebook_post".into()],
-    }
-    .into_input()];
-    let body = OpenAi::new("test-key", "https://api.openai.com/v1", "test-model")
-        .expect("provider")
-        .with_tool_discovery(ToolDiscoveryMode::Native)
-        .with_compaction_endpoint()
-        .compact_body(CompactRequest {
-            session_id: "test-session",
-            cancellation: None,
-            prompt_cache: None,
-            instructions: "Compact the conversation",
-            input: &input,
-            catalog_revision: "catalog-1",
-            tools: &[],
-            deferred_tools: &deferred,
-        })
-        .expect("compaction body");
-
-    assert_eq!(body["input"], serde_json::json!([]));
-}
-
 struct HttpRefreshingAuthorization {
     token: std::sync::Mutex<String>,
     refreshes: std::sync::atomic::AtomicUsize,
@@ -1316,8 +1233,11 @@ async fn http_stream_emits_citation_search_before_completion_and_eof() {
         let _ = event_sender.send(event);
         Box::pin(async { Ok(()) })
     });
-    let response =
-        tokio::spawn(async move { provider.send_response(model_request(), event_sink).await });
+    let response = tokio::spawn(async move {
+        provider
+            .send_response(model_request(), event_sink, None)
+            .await
+    });
 
     assert_eq!(
         tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
@@ -1361,10 +1281,14 @@ async fn http_unauthorized_refreshes_and_retries_once() {
     let address = listener.local_addr().expect("HTTP address");
     let server = tokio::spawn(async move {
         let mut requests = Vec::new();
+        let completed = "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"response-test\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}],\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"total_tokens\":0}}}\n\n";
         for response in [
-            b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                .as_slice(),
-            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".as_slice(),
+            "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_owned(),
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{completed}",
+                completed.len()
+            ),
         ] {
             let (mut stream, _) = listener.accept().await.expect("HTTP connection");
             let mut request = Vec::new();
@@ -1374,14 +1298,40 @@ async fn http_unauthorized_refreshes_and_retries_once() {
                 assert_ne!(count, 0, "request ended before its headers");
                 request.extend_from_slice(&chunk[..count]);
             }
-            requests.push(String::from_utf8_lossy(&request).into_owned());
-            stream.write_all(response).await.expect("HTTP response");
+            let header_end = request
+                .windows(4)
+                .position(|bytes| bytes == b"\r\n\r\n")
+                .expect("headers")
+                + 4;
+            let headers = std::str::from_utf8(&request[..header_end]).expect("headers UTF-8");
+            let length: usize = headers
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(str::trim)
+                        .map(str::to_owned)
+                })
+                .expect("content length")
+                .parse()
+                .expect("body length");
+            while request.len() < header_end + length {
+                let mut chunk = [0; 1024];
+                let count = stream.read(&mut chunk).await.expect("request body");
+                assert_ne!(count, 0);
+                request.extend_from_slice(&chunk[..count]);
+            }
+            requests.push(String::from_utf8(request).expect("request UTF-8"));
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("HTTP response");
         }
         requests
     });
 
     let auth = Arc::new(HttpRefreshingAuthorization::new());
-    let provider = OpenAi::with_authorization(
+    let mut provider = OpenAi::with_authorization(
         auth.clone(),
         format!("http://{address}"),
         "test-model",
@@ -1389,18 +1339,37 @@ async fn http_unauthorized_refreshes_and_retries_once() {
         crate::backend::model::ModelTransportSettings::default(),
     )
     .expect("provider");
-    let response = provider
-        .send_authorized(
-            "responses",
-            &serde_json::json!({}),
-            true,
-            Some("test-session"),
+    let expected =
+        serde_json::to_vec(&provider.response_body(model_request()).expect("body")).expect("JSON");
+    provider.transport.max_request_bytes = expected.len();
+    provider
+        .respond_prepared(
+            model_request(),
+            Arc::new(|_| Box::pin(async { Ok(()) })),
+            super::super::MediaPreparation {
+                files: None,
+                limits: super::super::ImageInputLimits::default(),
+            },
         )
         .await
-        .expect("request should recover");
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
+        .expect("exact-budget request should refresh and recover");
 
     let requests = server.await.expect("HTTP server");
+    for request in &requests {
+        let (headers, body) = request.split_once("\r\n\r\n").expect("HTTP body");
+        assert!(
+            headers
+                .to_ascii_lowercase()
+                .contains("content-type: application/json")
+        );
+        assert_eq!(body.as_bytes(), expected);
+    }
+    provider.transport.max_request_bytes = expected.len() - 1;
+    let error = provider
+        .respond(model_request(), Arc::new(|_| Box::pin(async { Ok(()) })))
+        .await
+        .expect_err("direct requests also reject one byte over budget before sending");
+    assert!(error.to_string().contains("request budget"));
     assert!(requests[0].contains("Bearer rejected-token"));
     assert!(requests[1].contains("Bearer fresh-token"));
     assert_eq!(auth.refreshes.load(std::sync::atomic::Ordering::Relaxed), 1);
@@ -1620,9 +1589,48 @@ async fn eof_without_response_completed_is_a_retryable_interruption() {
     let provider =
         OpenAi::new("test-key", format!("http://{address}"), "test-model").expect("provider");
     let error = provider
-        .send_response(model_request(), Arc::new(|_| Box::pin(async { Ok(()) })))
+        .send_response(
+            model_request(),
+            Arc::new(|_| Box::pin(async { Ok(()) })),
+            None,
+        )
         .await
         .expect_err("missing completion");
     assert!(matches!(error, Error::Provider(error) if error.is_stream_interrupted()));
     server.await.expect("HTTP server");
+}
+
+#[test]
+fn completed_stream_items_move_payloads_and_validate_before_collection() {
+    let mut event = serde_json::json!({
+        "type": "response.output_item.done",
+        "item": {"text": "large payload".repeat(1024)}
+    });
+    let payload = event["item"]["text"].as_str().expect("payload").as_ptr();
+    let mut output = BTreeMap::new();
+    assert_eq!(
+        validate_stream_output(&event, &output).expect("valid item"),
+        Some(0)
+    );
+    collect_stream_output(&mut event, &mut output).expect("collect item");
+    assert_eq!(
+        output[&0]["text"]
+            .as_str()
+            .expect("stored payload")
+            .as_ptr(),
+        payload
+    );
+    assert!(event["item"].is_null());
+
+    let duplicate = serde_json::json!({
+        "type": "response.output_item.done", "output_index": 0, "item": {}
+    });
+    assert!(validate_stream_output(&duplicate, &output).is_err());
+    let missing = serde_json::json!({"type": "response.output_item.done"});
+    assert!(validate_stream_output(&missing, &output).is_err());
+    for index in 1..MAX_STREAM_OUTPUT_ITEMS as u64 {
+        output.insert(index, Value::Null);
+    }
+    let overflow = serde_json::json!({"type": "response.output_item.done", "item": {}});
+    assert!(validate_stream_output(&overflow, &output).is_err());
 }

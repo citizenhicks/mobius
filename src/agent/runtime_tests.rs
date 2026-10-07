@@ -27,8 +27,6 @@ use crate::backend::checkpoint::QueuedMessage;
 use crate::backend::checkpoint::QueuedMessageBoundary;
 use crate::backend::checkpoint::TranscriptPageRequest;
 use crate::backend::checkpoint::sqlite::SqliteCheckpoint;
-use crate::backend::model::CompactOutput;
-use crate::backend::model::CompactRequest;
 use crate::backend::model::Model;
 use crate::backend::model::ModelEventSink;
 use crate::backend::model::ModelOutput;
@@ -123,7 +121,7 @@ struct InterruptedStreamModel {
 }
 
 #[derive(Default)]
-struct NativeCompactionModel {
+struct HandoffModel {
     responses: AtomicUsize,
     compactions: AtomicUsize,
 }
@@ -311,7 +309,7 @@ impl Middleware for RequestOnlyMiddleware {
         context: &'a mut ModelRequestContext<'_>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            let mut input = context.input().to_vec();
+            let mut input = context.input().iter().cloned().collect::<Vec<_>>();
             input.push(crate::backend::model::internal_user_message(
                 "request_only",
                 "temporary",
@@ -332,7 +330,7 @@ impl Middleware for DurableBeforeModel {
             context.push_input(crate::backend::model::internal_user_message(
                 "settled", "durable",
             ))?;
-            context.usage.push(scripted_usage());
+            context.record_usage(context.provider, scripted_usage());
             context.events.push(EventMsg::ContextCompacted);
             Ok(())
         })
@@ -488,7 +486,7 @@ impl Model for RecoveringStreamModel {
         self.inputs
             .lock()
             .expect("stream input lock")
-            .push(request.input.to_vec());
+            .push(request.input.iter().cloned().collect());
         let attempt = self.calls.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move {
             if attempt == 0 {
@@ -526,35 +524,24 @@ impl Model for InterruptedStreamModel {
     }
 }
 
-impl Model for NativeCompactionModel {
+impl Model for HandoffModel {
     fn prompt_cache_capability(&self) -> PromptCacheMode {
         PromptCacheMode::Explicit
     }
 
     fn respond<'a>(
         &'a self,
-        _request: ModelRequest,
+        request: ModelRequest,
         _events: ModelEventSink,
     ) -> BoxFuture<'a, Result<ModelOutput>> {
-        self.responses.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async { Ok(scripted_message("done")) })
-    }
-
-    fn compaction_endpoint(&self) -> bool {
-        true
-    }
-
-    fn compact<'a>(&'a self, _request: CompactRequest<'a>) -> BoxFuture<'a, Result<CompactOutput>> {
-        self.compactions.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async {
-            CompactOutput::from_output(
-                vec![serde_json::json!({
-                    "type": "compaction",
-                    "encrypted_content": "opaque"
-                })],
-                scripted_usage(),
-            )
-        })
+        let output = if request.tools.len() == 1 && request.tools[0].name == "write_handoff" {
+            let count = self.compactions.fetch_add(1, Ordering::SeqCst);
+            scripted_handoff(&format!("handoff-{count}"))
+        } else {
+            self.responses.fetch_add(1, Ordering::SeqCst);
+            scripted_message("done")
+        };
+        Box::pin(async move { Ok(output) })
     }
 }
 
@@ -571,7 +558,7 @@ impl Model for ScriptedModel {
         self.inputs
             .lock()
             .expect("input lock")
-            .push(request.input.to_vec());
+            .push(request.input.iter().cloned().collect());
         let output = self
             .outputs
             .lock()
@@ -645,6 +632,20 @@ fn scripted_tool_call() -> ModelOutput {
         scripted_usage(),
     )
     .expect("tool output")
+}
+
+fn scripted_handoff(call_id: &str) -> ModelOutput {
+    ModelOutput::from_output(
+        vec![serde_json::json!({
+            "type": "function_call",
+            "call_id": call_id,
+            "name": "write_handoff",
+            "arguments": r#"{"notes":"The task is in progress. Preserve the latest request and continue."}"#
+        })],
+        false,
+        scripted_usage(),
+    )
+    .expect("scripted handoff output")
 }
 
 fn scripted_message(text: &str) -> ModelOutput {

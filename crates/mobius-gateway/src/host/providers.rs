@@ -20,7 +20,10 @@ use crate::wire::{
 };
 
 use super::session::ProviderRefresh;
-use super::{GatewayHost, Rejection, gateway_ready_after_unlock, internal, invalid_config};
+use super::{
+    GatewayHost, Rejection, finish_publication, gateway_ready_after_unlock, internal,
+    invalid_config,
+};
 
 const MAX_LOGIN_REQUEST_ID_BYTES: usize = 128;
 
@@ -62,7 +65,7 @@ impl GatewayHost {
     ) -> std::result::Result<ReadyPayload, Rejection> {
         let _mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
-        {
+        let publication = {
             let mut current = state.config()?;
             let models = configured_model_choices(&current, &state.store, &state.credentials)
                 .map_err(internal)?;
@@ -83,14 +86,20 @@ impl GatewayHost {
             let next = current
                 .replacing_bot_defaults(expected_revision, config)
                 .map_err(invalid_config)?;
-            state.store.save(&next).map_err(internal)?;
+            let publication =
+                crate::publication::Outcome::applied(state.store.save(&next)).map_err(internal)?;
             *current = next;
+            publication
+        };
+        let follow_up = async {
+            let payload = gateway_ready_after_unlock(state).await?;
+            let _ = self.events.send(ServerFrame::new(ServerMessage::Ready {
+                payload: payload.clone(),
+            }));
+            Ok(payload)
         }
-        let payload = gateway_ready_after_unlock(state).await?;
-        let _ = self.events.send(ServerFrame::new(ServerMessage::Ready {
-            payload: payload.clone(),
-        }));
-        Ok(payload)
+        .await;
+        finish_publication(publication.confirm(), follow_up)
     }
 
     pub(crate) async fn clear_credential(
@@ -98,14 +107,10 @@ impl GatewayHost {
         instance: String,
     ) -> std::result::Result<(), Rejection> {
         let credential_mutation = self.begin_credential_mutation().await;
-        let base_url = {
+        let (base_url, publication) = {
             let state = self.state.lock().await;
-            state
-                .credentials
-                .remove(&instance)
-                .map_err(invalid_config)?;
             let config = state.config()?;
-            config
+            let base_url = config
                 .configured_providers
                 .get(&instance)
                 .map(|configured| {
@@ -115,11 +120,22 @@ impl GatewayHost {
                 })
                 .transpose()
                 .map_err(invalid_config)?
-                .flatten()
+                .flatten();
+            let publication = crate::publication::Outcome::applied(
+                state.credentials.remove(&instance).map(|_| ()),
+            )
+            .map_err(invalid_config)?;
+            (base_url, publication)
         };
         drop(credential_mutation);
-        self.refresh_provider_sessions(ProviderRefresh::Instance { instance, base_url })
-            .await
+        finish_publication(
+            publication.confirm(),
+            self.refresh_provider_sessions(ProviderRefresh::Instance {
+                instance: &instance,
+                base_url: base_url.as_deref(),
+            })
+            .await,
+        )
     }
 
     pub(crate) async fn set_credential(
@@ -131,26 +147,18 @@ impl GatewayHost {
         expires_at: Option<u64>,
     ) -> std::result::Result<(), Rejection> {
         let credential_mutation = self.begin_credential_mutation().await;
-        let (base_url, configured) = {
+        let (base_url, configured, publication) = {
             let state = self.state.lock().await;
             let definition = provider(&provider_id).map_err(invalid_config)?;
             let base_url = if definition.configurable_base_url() {
-                base_url.or_else(|| definition.default_base_url().map(str::to_owned))
-            } else {
                 base_url
+                    .as_deref()
+                    .or_else(|| definition.default_base_url())
+            } else {
+                base_url.as_deref()
             };
             definition
-                .validate_base_url(base_url.as_deref())
-                .map_err(invalid_config)?;
-            state
-                .credentials
-                .set(
-                    &instance,
-                    &provider_id,
-                    &api_key,
-                    base_url.as_deref(),
-                    expires_at,
-                )
+                .validate_base_url(base_url)
                 .map_err(invalid_config)?;
             let configured = state
                 .config()?
@@ -161,20 +169,36 @@ impl GatewayHost {
                     configured.selection.provider == provider_id.as_str()
                         && configured.selection.endpoint_auth
                             == ProviderEndpointAuth::Credentialless
-                        && configured_base_url == base_url.as_deref()
+                        && configured_base_url == base_url
                 })
                 .cloned();
-            (base_url, configured)
+            let publication = crate::publication::Outcome::applied(state.credentials.set(
+                &instance,
+                &provider_id,
+                &api_key,
+                base_url,
+                expires_at,
+            ))
+            .map_err(invalid_config)?;
+            (base_url, configured, publication)
         };
         drop(credential_mutation);
         if let Some(configured) = configured {
             let mut configured = configured;
             configured.selection.endpoint_auth = ProviderEndpointAuth::ProviderDefault;
-            self.register_provider(false, configured).await?;
-            return Ok(());
+            return finish_publication(
+                publication.confirm(),
+                self.register_provider(false, configured).await.map(|_| ()),
+            );
         }
-        self.refresh_provider_sessions(ProviderRefresh::Instance { instance, base_url })
-            .await
+        finish_publication(
+            publication.confirm(),
+            self.refresh_provider_sessions(ProviderRefresh::Instance {
+                instance: &instance,
+                base_url,
+            })
+            .await,
+        )
     }
 
     pub(crate) async fn start_provider_login(
@@ -256,10 +280,15 @@ impl GatewayHost {
                     .await
                     .map_err(|rejection| rejection.message)?;
                 let path = gateway.state.lock().await.store.provider_auth_path();
-                login
-                    .complete(path)
-                    .await
-                    .map_err(|error| error.to_string())
+                let completion = login.complete(path).await;
+                if matches!(&completion, Err(mobius::Error::PublicationDurability(_))) {
+                    let refresh = gateway
+                        .refresh_provider_sessions(ProviderRefresh::Provider(&provider))
+                        .await;
+                    return finish_publication(completion.map_err(Error::from), refresh)
+                        .map_err(|rejection| rejection.message);
+                }
+                completion.map_err(|error| error.to_string())
             }
             .await;
             gateway
@@ -303,7 +332,7 @@ impl GatewayHost {
         }
         if refresh
             && let Err(rejection) = self
-                .refresh_provider_sessions(ProviderRefresh::Provider(provider))
+                .refresh_provider_sessions(ProviderRefresh::Provider(&provider))
                 .await
         {
             self.broadcast(ServerMessage::Error {
@@ -343,7 +372,7 @@ impl GatewayHost {
 
     async fn refresh_provider_sessions(
         &self,
-        scope: ProviderRefresh,
+        scope: ProviderRefresh<'_>,
     ) -> std::result::Result<(), Rejection> {
         let state = self.state.lock().await;
         let cache = state.bots.prepared.lock().await;
@@ -377,6 +406,7 @@ impl GatewayHost {
         let _mutation = self.begin_exclusive_mutation().await?;
         let state = self.state.lock().await;
         let mut bots = state.bots.bots().map_err(internal)?;
+        let mut publication = None;
         let (changed, target_epoch) = {
             let current = state.config()?;
             validate_browser_endpoint_registration(&current, selection, operator)?;
@@ -414,36 +444,49 @@ impl GatewayHost {
                             .ok_or_else(|| internal("provider catalog epoch overflow"))
                     })
                     .transpose()?;
-                commit_provider_registration(&state, current, next).map_err(internal)?;
+                publication = Some(
+                    crate::publication::Outcome::applied(commit_provider_registration(
+                        &state, current, next,
+                    ))
+                    .map_err(internal)?,
+                );
                 (true, target_epoch)
             }
         };
         if !changed {
             return gateway_ready_after_unlock(state).await;
         }
-        let defaults = state
-            .config()?
-            .bot_defaults
-            .clone()
-            .ok_or_else(|| internal("registered provider did not establish Bot defaults"))?;
-        if state
-            .bots
-            .seed_default(&defaults)
-            .map_err(internal)?
-            .is_some()
-        {
-            bots = state.bots.bots().map_err(internal)?;
-            self.broadcast_bots(&bots);
-        }
         if let Some(target_epoch) = target_epoch {
             state.provider_epoch.store(target_epoch, Ordering::Release);
         }
-        let payload = gateway_ready_after_unlock(state).await?;
-        let frame = ServerFrame::new(ServerMessage::Ready {
-            payload: payload.clone(),
-        });
-        let _ = self.events.send(frame);
-        Ok(payload)
+        let follow_up = async {
+            let seeded = {
+                let config = state.config()?;
+                let defaults = config.bot_defaults.as_ref().ok_or_else(|| {
+                    internal("registered provider did not establish Bot defaults")
+                })?;
+                state
+                    .bots
+                    .seed_default(defaults)
+                    .map_err(internal)?
+                    .is_some()
+            };
+            if seeded {
+                bots = state.bots.bots().map_err(internal)?;
+                self.broadcast_bots(&bots);
+            }
+            let payload = gateway_ready_after_unlock(state).await?;
+            let frame = ServerFrame::new(ServerMessage::Ready {
+                payload: payload.clone(),
+            });
+            let _ = self.events.send(frame);
+            Ok(payload)
+        }
+        .await;
+        finish_publication(
+            publication.map_or(Ok(()), crate::publication::Outcome::confirm),
+            follow_up,
+        )
     }
 
     pub(crate) async fn remove_provider(
@@ -452,35 +495,44 @@ impl GatewayHost {
     ) -> std::result::Result<ReadyPayload, Rejection> {
         let _mutation = self.begin_exclusive_mutation().await?;
         let state = self.state.lock().await;
-        let current = state.config()?.clone();
-        let next = current
-            .removing_provider(&instance)
-            .map_err(invalid_config)?;
-        let bots = state.bots.bots().map_err(internal)?;
-        for bot in &bots {
-            if bot_references_removed_provider(bot, &instance, &next).map_err(invalid_config)? {
-                return Err(Rejection::new(
-                    "provider_in_use",
-                    format!(
-                        "provider `{instance}` is selected by Bot @{}; update that Bot first",
-                        bot.handle
-                    ),
-                ));
+        let next = {
+            let current = state.config()?;
+            let next = current
+                .removing_provider(&instance)
+                .map_err(invalid_config)?;
+            let bots = state.bots.bots().map_err(internal)?;
+            for bot in &bots {
+                if bot_references_removed_provider(bot, &instance, &next).map_err(invalid_config)? {
+                    return Err(Rejection::new(
+                        "provider_in_use",
+                        format!(
+                            "provider `{instance}` is selected by Bot @{}; update that Bot first",
+                            bot.handle
+                        ),
+                    ));
+                }
             }
-        }
-        validate_bot_catalog(&state, &current, &next, &bots)?;
+            validate_bot_catalog(&state, &current, &next, &bots)?;
+            next
+        };
         let target_epoch = state
             .provider_epoch
             .load(Ordering::Acquire)
             .checked_add(1)
             .ok_or_else(|| internal("provider catalog epoch overflow"))?;
-        commit_provider_removal(&state, &instance).map_err(internal)?;
+        let publication =
+            crate::publication::Outcome::applied(commit_provider_removal(&state, &instance, next))
+                .map_err(internal)?;
         state.provider_epoch.store(target_epoch, Ordering::Release);
-        let payload = gateway_ready_after_unlock(state).await?;
-        let _ = self.events.send(ServerFrame::new(ServerMessage::Ready {
-            payload: payload.clone(),
-        }));
-        Ok(payload)
+        let follow_up = async {
+            let payload = gateway_ready_after_unlock(state).await?;
+            let _ = self.events.send(ServerFrame::new(ServerMessage::Ready {
+                payload: payload.clone(),
+            }));
+            Ok(payload)
+        }
+        .await;
+        finish_publication(publication.confirm(), follow_up)
     }
 }
 
@@ -518,28 +570,48 @@ fn commit_provider_registration(
     mut current: std::sync::MutexGuard<'_, GatewayConfig>,
     next: GatewayConfig,
 ) -> crate::Result<()> {
-    state.store.save(&next)?;
+    let publication = crate::publication::Outcome::applied(state.store.save(&next))?;
     *current = next;
-    Ok(())
+    publication.confirm()
 }
 
-fn commit_provider_removal(state: &super::GatewayState, instance: &str) -> crate::Result<()> {
+fn commit_provider_removal(
+    state: &super::GatewayState,
+    instance: &str,
+    next: GatewayConfig,
+) -> crate::Result<()> {
     let mut current = state
         .config
         .lock()
         .map_err(|_| Error::Config("gateway configuration lock is poisoned".into()))?;
-    let next = current.removing_provider(instance)?;
-    state.store.save(&next)?;
-    if let Err(error) = state.credentials.remove(instance) {
-        if let Err(rollback) = state.store.save(&current) {
-            return Err(Error::Config(format!(
-                "{error}; failed to roll back provider configuration: {rollback}"
-            )));
+    let publication = crate::publication::Outcome::applied(state.store.save(&next))?;
+    match state.credentials.remove(instance) {
+        Ok(_) => {
+            *current = next;
+            publication.confirm()
         }
-        return Err(error);
+        Err(error @ Error::PublicationApplied { .. }) => {
+            *current = next;
+            Err(error)
+        }
+        Err(error) => {
+            // Restore memory only if the rollback bytes actually became visible.
+            match state.store.save(&current) {
+                Ok(()) => Err(error),
+                Err(rollback @ Error::PublicationApplied { .. }) => {
+                    Err(crate::publication::applied_error(Error::Config(format!(
+                        "{error}; rollback was applied but completion failed: {rollback}"
+                    ))))
+                }
+                Err(rollback) => {
+                    *current = next;
+                    Err(crate::publication::applied_error(Error::Config(format!(
+                        "{error}; provider configuration remains changed because rollback failed: {rollback}"
+                    ))))
+                }
+            }
+        }
     }
-    *current = next;
-    Ok(())
 }
 
 fn validate_bot_catalog(

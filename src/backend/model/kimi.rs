@@ -1,14 +1,18 @@
 //! Native Kimi Chat Completions provider.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use reqwest::Client;
+use serde::Serialize;
+use serde::ser::SerializeSeq as _;
 use serde_json::Value;
 
 use super::MAX_TOOL_CALLS;
 use super::Model;
 use super::ModelEventSink;
+use super::ModelInput;
 use super::ModelOutput;
 use super::ModelRequest;
 use super::PromptCacheMode;
@@ -48,6 +52,14 @@ pub struct Kimi {
     base_url: String,
     model: String,
     reasoning_effort: Option<String>,
+}
+
+#[derive(Serialize)]
+struct RequestBody<'a> {
+    #[serde(flatten)]
+    metadata: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<WireTools<'a>>,
 }
 
 impl Kimi {
@@ -142,9 +154,15 @@ impl Kimi {
         &self,
         request: ModelRequest<'_>,
         events: ModelEventSink,
+        media: Option<super::MediaPreparation<'_>>,
     ) -> Result<ModelOutput> {
-        let body = self.request_body(&request)?;
-        let mut response = self.post(&body).await?;
+        let body = super::media::encode_request(self, request, media, true, |input| {
+            Ok(serde_json::to_vec(
+                &self.request_body(&ModelRequest { input, ..request })?,
+            )?)
+        })
+        .await?;
+        let mut response = self.post(body).await?;
         let mut sse = SseDecoder::default();
         let mut stream = StreamState::default();
         while let Some(chunk) = response.chunk().await? {
@@ -158,23 +176,30 @@ impl Kimi {
         stream.finish()
     }
 
-    fn request_body(&self, request: &ModelRequest<'_>) -> Result<Value> {
+    fn request_body<'a>(&self, request: &ModelRequest<'a>) -> Result<RequestBody<'a>> {
         let mut body = serde_json::json!({
             "model": self.model,
-            "messages": wire_messages(request.instructions, request.input)?,
             "stream": true,
             "stream_options": {"include_usage": true}
         });
+        body["messages"] = Value::Array(wire_messages(request.instructions, request.input)?);
         if let Some(prompt_cache) = request.prompt_cache {
             body["prompt_cache_key"] = Value::String(prompt_cache.key.into());
         }
         if !request.tools.is_empty() {
-            body["tools"] = Value::Array(wire_tools(request.tools));
             body["tool_choice"] = Value::String("auto".into());
             body["parallel_tool_calls"] = Value::Bool(true);
         }
         self.apply_reasoning(&mut body);
-        Ok(body)
+        Ok(RequestBody {
+            metadata: body,
+            tools: (!request.tools.is_empty()).then_some(WireTools(request.tools)),
+        })
+    }
+
+    #[cfg(test)]
+    fn request_body_value(&self, request: &ModelRequest<'_>) -> Result<Value> {
+        Ok(serde_json::to_value(self.request_body(request)?)?)
     }
 
     fn apply_reasoning(&self, body: &mut Value) {
@@ -183,14 +208,18 @@ impl Kimi {
         }
     }
 
-    async fn post(&self, body: &Value) -> Result<reqwest::Response> {
+    async fn post(&self, body: Vec<u8>) -> Result<reqwest::Response> {
         let mut request = self
             .client
             .post(format!("{}/chat/completions", self.base_url));
         if let Some(api_key) = &self.api_key {
             request = request.bearer_auth(api_key);
         }
-        let response = request.json(body).send().await?;
+        let response = request
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .send()
+            .await?;
         if !response.status().is_success() {
             return Err(status_error(response, "Kimi").await);
         }
@@ -218,6 +247,15 @@ impl Model for Kimi {
         PromptCacheMode::Implicit
     }
 
+    fn respond_prepared<'a>(
+        &'a self,
+        request: ModelRequest<'a>,
+        events: ModelEventSink,
+        media: super::MediaPreparation<'a>,
+    ) -> BoxFuture<'a, Result<ModelOutput>> {
+        Box::pin(self.send_response(request, events, Some(media)))
+    }
+
     fn request_size(&self, request: ModelRequest<'_>) -> Result<usize> {
         super::media::serialized_size(&self.request_body(&request)?)
     }
@@ -227,7 +265,7 @@ impl Model for Kimi {
         request: ModelRequest<'a>,
         events: ModelEventSink,
     ) -> BoxFuture<'a, Result<ModelOutput>> {
-        Box::pin(self.send_response(request, events))
+        Box::pin(self.send_response(request, events, None))
     }
 }
 
@@ -359,12 +397,12 @@ impl StreamState {
     }
 }
 
-fn wire_messages(instructions: &str, input: &[Value]) -> Result<Vec<Value>> {
+fn wire_messages(instructions: &str, input: ModelInput<'_>) -> Result<Vec<Value>> {
     let mut messages = Vec::new();
     if !instructions.trim().is_empty() {
         messages.push(serde_json::json!({"role": "system", "content": instructions}));
     }
-    for item in input {
+    for item in input.iter() {
         match item.get("type").and_then(Value::as_str) {
             Some("function_call") => push_tool_call(&mut messages, item)?,
             Some("function_call_output") => messages.push(serde_json::json!({
@@ -401,10 +439,8 @@ fn push_history_message(messages: &mut Vec<Value>, item: &Value) -> Result<()> {
             ));
         }
     };
-    let mut message = serde_json::json!({
-        "role": role,
-        "content": wire_content(item.get("content"))?
-    });
+    let mut message = serde_json::json!({"role": role});
+    message["content"] = wire_content(item.get("content"))?;
     if role == "assistant"
         && let Some(reasoning) = item.get(REPLAY_REASONING_FIELD).and_then(Value::as_str)
         && !reasoning.is_empty()
@@ -432,10 +468,8 @@ fn push_tool_call(messages: &mut Vec<Value>, item: &Value) -> Result<()> {
     {
         messages.push(serde_json::json!({
             "role": "assistant",
-            "content": null,
-            "tool_calls": [call]
+            "content": null
         }));
-        return Ok(());
     }
     let calls = messages
         .last_mut()
@@ -450,20 +484,38 @@ fn push_tool_call(messages: &mut Vec<Value>, item: &Value) -> Result<()> {
     Ok(())
 }
 
-fn wire_tools(tools: &[ToolDefinition]) -> Vec<Value> {
-    tools
-        .iter()
-        .map(|tool| {
-            serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.parameters
-                }
-            })
-        })
-        .collect()
+struct WireTools<'a>(&'a [Arc<ToolDefinition>]);
+
+impl Serialize for WireTools<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Function<'a> {
+            description: &'a str,
+            name: &'a str,
+            parameters: &'a Value,
+        }
+        #[derive(Serialize)]
+        struct Tool<'a> {
+            function: Function<'a>,
+            #[serde(rename = "type")]
+            kind: &'static str,
+        }
+        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
+        for tool in self.0 {
+            sequence.serialize_element(&Tool {
+                function: Function {
+                    description: &tool.description,
+                    name: &tool.name,
+                    parameters: &tool.parameters,
+                },
+                kind: "function",
+            })?;
+        }
+        sequence.end()
+    }
 }
 
 fn content_text(content: Option<&Value>) -> String {
@@ -516,13 +568,13 @@ fn wire_content(content: Option<&Value>) -> Result<Value> {
     Ok(Value::Array(output))
 }
 
-fn argument_text(arguments: Option<&Value>) -> Result<String> {
+fn argument_text(arguments: Option<&Value>) -> Result<Cow<'_, str>> {
     match arguments {
         Some(Value::String(arguments)) => {
-            serde_json::from_str::<Value>(arguments)?;
-            Ok(arguments.clone())
+            serde_json::from_str::<serde::de::IgnoredAny>(arguments)?;
+            Ok(Cow::Borrowed(arguments))
         }
-        Some(arguments) => Ok(serde_json::to_string(arguments)?),
+        Some(arguments) => Ok(Cow::Owned(serde_json::to_string(arguments)?)),
         None => Err(Error::Provider("function call omitted arguments".into())),
     }
 }

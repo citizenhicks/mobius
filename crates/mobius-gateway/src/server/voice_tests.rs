@@ -148,7 +148,7 @@ async fn voice_delegation_consumes_committed_speech_without_echoing_or_replaying
     .await
     .unwrap();
     let voice_id = transcript.session_id().to_owned();
-    let model = crate::host::RealtimeModel {
+    let mut model = crate::host::RealtimeModel {
         bot_name: "Builder".into(),
         bot_instructions: "You are Builder.".into(),
         router: Arc::new(ModelRouter::new(
@@ -199,6 +199,7 @@ async fn voice_delegation_consumes_committed_speech_without_echoing_or_replaying
         .unwrap();
     }
     let (stop, stopped) = oneshot::channel();
+    let frontend = Arc::clone(&model.frontend);
     let check_reply = async {
         let mut replies = 0;
         loop {
@@ -216,7 +217,7 @@ async fn voice_delegation_consumes_committed_speech_without_echoing_or_replaying
                     let persisted = VoiceTranscript::open(
                         Arc::clone(&checkpoints),
                         host.session_id(),
-                        Arc::clone(&model.frontend),
+                        Arc::clone(&frontend),
                     )
                     .await
                     .unwrap();
@@ -259,7 +260,7 @@ async fn voice_delegation_consumes_committed_speech_without_echoing_or_replaying
         let (result, ()) = tokio::join!(
             drive(
                 &host,
-                &model,
+                &mut model,
                 &mut call,
                 &mut transcript,
                 &mut events,

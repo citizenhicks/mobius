@@ -11,10 +11,9 @@ conversations or subscribe to the same one.
 Bots store enabled optional middleware IDs and generic scalar settings. The gateway advertises
 the ordered middleware catalog plus integer and select control schemas, so terminal and iOS
 clients render new middleware and settings without capability-specific code. New Bots enable
-attachments, artifacts, context offloading, compaction, scratchpad, and subagents by default;
-tasks, workspace instructions, and extensions start disabled. Context offloading masks successful
-tool output after a 50,000-token trailing window. Project chats install sandboxing and workspace
-tools; project-free chats expose file and image reads under the same sandbox policy, including
+attachments, artifacts, compaction, scratchpad, and subagents by default;
+tasks, workspace instructions, and extensions start disabled. Project chats install
+sandboxing and workspace tools; project-free chats expose file and image reads under the same sandbox policy, including
 skill guides, while commands and file mutations remain unavailable. All chats use turn steering
 and durable sessions. Only the canonical Bot conversation
 installs the mandatory Persistent Chat middleware and its routine, subscription and internal
@@ -24,18 +23,15 @@ or creates a new project chat when given a workspace and its first task. `list_c
 the active turn ID for interruption. Saved session hooks use the same message/interrupt protocol.
 New gateways use Full Access as their Bot-creation default; saved policies remain explicit.
 
-Compaction exposes an Automatic or Handoff policy in the same settings UI. Automatic uses the
-provider compaction endpoint when available and otherwise summarizes. Handoff exposes
-`write_handoff` and `new_context`: the model saves a working checkpoint and continues in the
-same chat with a fresh context. The existing 250,000-token threshold requests that handoff,
-clamped to leave room on smaller models. Bounded recovery restricts tools near the limit and
-stops safely if the model cannot complete the transition; an explicit later turn can retry.
+Compaction saves a plaintext working checkpoint and continues the same chat with
+a fresh context. The default 250,000-token threshold is clamped to leave response
+space on smaller models. Preparation restricts tools to checkpoint writing and
+preserves the current context if it fails. The optional **Allow model-requested
+compaction** setting also exposes `new_context` for early resets; it defaults to Off.
 Original messages and tool results remain available through `search_history` and `read_history`.
 
-Policy choices advertise incompatible capabilities in their schemas. Selecting Handoff turns
-off context offloading, and the UI and gateway prevent enabling both. Tasks remain independently
-optional and restore their durable list across every compaction style. Shared scratchpad notes
-remain separate from the chat-local handoff checkpoint.
+Tasks remain independently optional and restore their durable list across compaction.
+Shared scratchpad notes remain separate from the chat-local handoff checkpoint.
 
 Install the gateway with Homebrew, or install `mobius-cli` for both commands:
 

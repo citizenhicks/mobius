@@ -161,10 +161,8 @@ impl Tool for GenerateImage {
             let mut owned_references = Vec::with_capacity(arguments.reference_file_ids.len());
             for id in &arguments.reference_file_ids {
                 let file = self.store.file_reference(&self.session_id, id).await?;
-                owned_references.push((
-                    file.media_type.clone(),
-                    self.store.read_image(&self.session_id, &file).await?,
-                ));
+                let bytes = self.store.read_image(&self.session_id, &file).await?;
+                owned_references.push((file.media_type, bytes));
             }
             let references = owned_references
                 .iter()

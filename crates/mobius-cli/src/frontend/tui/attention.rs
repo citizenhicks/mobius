@@ -9,6 +9,9 @@ use mobius::protocol::{
 
 impl TuiState {
     pub(super) fn sync_attention_approvals(&mut self) {
+        let Some(overlay) = &mut self.capability_overlay else {
+            return;
+        };
         let items = self
             .approvals
             .iter()
@@ -77,9 +80,7 @@ impl TuiState {
                 },
             }
         };
-        if let Some(overlay) = &mut self.capability_overlay {
-            overlay.apply(event);
-        }
+        overlay.apply(event);
     }
 
     pub(super) fn submit_attention_operation(&mut self, op: Op) -> UiAction {

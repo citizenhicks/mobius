@@ -70,13 +70,13 @@ impl ConnectionVoice {
                 return;
             };
             match started {
-                Ok((_lease, model, mut call, mut transcript)) => {
+                Ok((_lease, mut model, mut call, mut transcript)) => {
                     if updates
                         .send(ServerMessage::RealtimeVoiceStarted {
                             request_id: id.clone(),
                             session_id: session.clone(),
                             voice_id: id.clone(),
-                            answer_sdp: call.answer_sdp.clone(),
+                            answer_sdp: std::mem::take(&mut call.answer_sdp),
                         })
                         .await
                         .is_err()
@@ -85,7 +85,7 @@ impl ConnectionVoice {
                     }
                     let result = drive(
                         &host,
-                        &model,
+                        &mut model,
                         &mut call,
                         &mut transcript,
                         &mut events,
@@ -259,7 +259,7 @@ pub(super) async fn end(voice: &mut Option<ConnectionVoice>) {
 
 async fn drive(
     host: &HostHandle,
-    model: &crate::host::RealtimeModel,
+    model: &mut crate::host::RealtimeModel,
     call: &mut RealtimeVoiceCall,
     transcript: &mut VoiceTranscript,
     events: &mut broadcast::Receiver<SharedFrame>,
@@ -268,8 +268,8 @@ async fn drive(
     transcript.start_call(&call.voice).await?;
     let mut conversation = VoiceConversation::new(
         transcript.session_id().into(),
-        model.active_turn_id.clone(),
-        model.bot_name.clone(),
+        model.active_turn_id.take(),
+        std::mem::take(&mut model.bot_name),
     );
     let result = drive_conversation(
         host,
@@ -345,7 +345,7 @@ async fn drive_conversation(
                         }
                         if matches!(&record.event.msg, EventMsg::Message(_) | EventMsg::SubmissionRejected(_))
                             && let Some(id) = &record.event.submission_id
-                            && let Some(context) = handoffs.remove(id)
+                            && let Some(context) = handoffs.remove(id.as_ref())
                             && matches!(&record.event.msg, EventMsg::Message(_))
                         {
                             transcript.acknowledge(context).await?;

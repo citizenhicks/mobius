@@ -27,6 +27,7 @@ pub(super) async fn load_replay(
     session_id: &str,
     frontend: &FrontendExtensions,
 ) -> Result<LoadedReplay> {
+    let shared_session_id: Arc<str> = session_id.into();
     let mut latest_sequence = 0;
     let mut before_sequence = None;
     let mut scanned = 0;
@@ -56,7 +57,7 @@ pub(super) async fn load_replay(
             scanned += 1;
             latest_sequence = latest_sequence.max(journal.sequence);
             let frame = ServerFrame::new(ServerMessage::AgentEvent {
-                session_id: session_id.into(),
+                session_id: Arc::clone(&shared_session_id),
                 record: project_record(frontend, journal),
             });
             if !replayable(&frame) {
@@ -203,29 +204,27 @@ pub(super) fn validate_gateway_event(event: &EventMsg) -> Result<()> {
 
 pub(super) fn flatten_preview(events: &[FrontendPreviewEvent]) -> Vec<FrontendPreviewEvent> {
     let mut flattened = Vec::new();
-    for event in events.iter().cloned() {
-        flatten_preview_event(event, &mut flattened);
+    for event in events {
+        flatten_preview_event(
+            &event.event,
+            &event.submission_id,
+            event.recorded_at_ms,
+            &mut flattened,
+        );
     }
     flattened
 }
 
-pub(super) fn flatten_preview_event(
-    event: FrontendPreviewEvent,
+fn flatten_preview_event(
+    event: &EventMsg,
+    submission_id: &Option<Arc<str>>,
+    recorded_at_ms: i64,
     flattened: &mut Vec<FrontendPreviewEvent>,
 ) {
-    let recorded_at_ms = event.recorded_at_ms;
-    let submission_id = event.submission_id;
-    match event.event {
+    match event {
         EventMsg::SessionHistory(history) => {
-            for nested in history.events {
-                flatten_preview_event(
-                    FrontendPreviewEvent {
-                        submission_id: submission_id.clone(),
-                        recorded_at_ms,
-                        event: nested,
-                    },
-                    flattened,
-                );
+            for nested in &history.events {
+                flatten_preview_event(nested, submission_id, recorded_at_ms, flattened);
             }
         }
         EventMsg::Frontend(
@@ -235,9 +234,9 @@ pub(super) fn flatten_preview_event(
             | FrontendEvent::Preview { .. },
         ) => {}
         event => flattened.push(FrontendPreviewEvent {
-            submission_id,
+            submission_id: submission_id.clone(),
             recorded_at_ms,
-            event,
+            event: event.clone(),
         }),
     }
 }
@@ -260,11 +259,13 @@ pub(super) fn attention_count(widgets: &SessionWidgets) -> u32 {
 pub(super) fn update_widgets(widgets: &mut SessionWidgets, event: &EventMsg) {
     match event {
         EventMsg::Frontend(FrontendEvent::Widget { capability, item }) => {
-            let key = (capability.clone(), item.id.clone());
-            if let Some((_, current)) = widgets.iter_mut().find(|(candidate, _)| candidate == &key)
+            if let Some((_, current)) = widgets
+                .iter_mut()
+                .find(|((owner, id), _)| owner == capability && id == &item.id)
             {
                 *current = item.clone();
             } else {
+                let key = (capability.clone(), item.id.clone());
                 widgets.push((key, item.clone()));
             }
         }
@@ -331,7 +332,7 @@ pub(super) fn compact_replay_deltas(
                     ..
                 },
                 ..
-            } if delta.model_step_id == model_step_id
+            } if delta.model_step_id.as_ref() == model_step_id
         );
         if remove {
             *replay_bytes = replay_bytes.saturating_sub(entry.bytes);

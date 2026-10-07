@@ -123,6 +123,7 @@ impl Runner {
             reject(&self.events, submission_id, message).await?;
             return Ok(AdmissionOutcome::Rejected(message.into()));
         }
+        // Admission hooks stage edits; rejection or publication failure must retain the live queue.
         let mut pending_messages = self.state.pending_messages.clone();
         let mut messages = Vec::new();
         let result = self
@@ -211,11 +212,14 @@ impl Runner {
             .into_iter()
             .map(|msg| crate::agent::turn::turn_event(&submission_id, msg))
             .collect();
-        let previous = std::mem::replace(&mut self.state.pending_messages, pending_messages);
+        let previous = std::mem::replace(
+            &mut self.state.make_mut().pending_messages,
+            pending_messages,
+        );
         match self.persist_with_events(events, None).await {
             Ok(_) => Ok(()),
             Err(error) => {
-                self.state.pending_messages = previous;
+                self.state.make_mut().pending_messages = previous;
                 Err(error)
             }
         }
@@ -276,7 +280,7 @@ impl Runner {
             session_id: &self.config.session_id,
             metadata: &self.config.metadata,
             turn_id,
-            queued_messages: &mut self.state.pending_messages,
+            queued_messages: &mut self.state.make_mut().pending_messages,
             events: &self.events,
             expected_approval,
         })
@@ -371,7 +375,7 @@ async fn validate_message_reply(
             };
             if let Some(original) = original {
                 return Ok(match original {
-                    Some(original) if original == reply.text => None,
+                    Some(original) if original.as_ref() == reply.text => None,
                     Some(_) => Some(CHANGED_REPLY_TEXT),
                     None => Some(INVALID_REPLY_TARGET),
                 });
@@ -389,6 +393,7 @@ impl ActiveTurnRouter<'_> {
         let Submission { id, op } = submission;
         match op {
             Op::Message { message } => {
+                // Stage hook mutations until the accepted route is durably committed.
                 let mut pending_messages = self.queued_messages.clone();
                 let mut messages = Vec::new();
                 let result = self.middleware.route_message(&mut MessageRouteContext {
@@ -432,6 +437,7 @@ impl ActiveTurnRouter<'_> {
                 input,
                 target,
             } => {
+                // Commands can fail after modifying their queue; keep those changes provisional.
                 let mut pending_messages = self.queued_messages.clone();
                 let mut messages = Vec::new();
                 let result = self
@@ -502,7 +508,7 @@ async fn route_submission_result(
             send_event(
                 events,
                 Event {
-                    submission_id: Some(submission_id),
+                    submission_id: Some(submission_id.into()),
                     msg: EventMsg::SubmissionRejected(SubmissionRejectedEvent {
                         message: message.clone(),
                     }),
@@ -529,7 +535,7 @@ async fn warn(events: &EventRecorder, id: String, message: &str) -> Result<()> {
     send_event(
         events,
         Event {
-            submission_id: Some(id),
+            submission_id: Some(id.into()),
             msg: EventMsg::Warning(WarningEvent {
                 message: message.into(),
             }),
@@ -542,7 +548,7 @@ async fn reject(events: &EventRecorder, id: String, message: &str) -> Result<()>
     send_event(
         events,
         Event {
-            submission_id: Some(id),
+            submission_id: Some(id.into()),
             msg: EventMsg::SubmissionRejected(SubmissionRejectedEvent {
                 message: message.into(),
             }),
@@ -916,7 +922,7 @@ mod tests {
             Event {
                 submission_id: Some(id),
                 msg: EventMsg::Frontend(crate::protocol::FrontendEvent::Preview { title, .. }),
-            } if id == "preview-1" && title == "preview"
+            } if id.as_ref() == "preview-1" && title == "preview"
         ));
     }
 
@@ -951,7 +957,7 @@ mod tests {
             Event {
                 submission_id: Some(id),
                 msg: EventMsg::Warning(WarningEvent { message }),
-            } if id == submission.id && message == "command is unavailable during an active turn"
+            } if id.as_ref() == submission.id && message == "command is unavailable during an active turn"
         ));
     }
 
@@ -1027,7 +1033,7 @@ mod tests {
                     Event {
                         submission_id: Some(id),
                         msg: EventMsg::SubmissionRejected(SubmissionRejectedEvent { message }),
-                    } if id == "message-1" && message == "rejected"
+                    } if id.as_ref() == "message-1" && message == "rejected"
                 ));
             }
         }

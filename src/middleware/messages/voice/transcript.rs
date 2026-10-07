@@ -336,6 +336,7 @@ impl VoiceTranscript {
             .recordings
             .iter()
             .filter(|(_, recording)| !recording.complete)
+            // Finishing persists each partial recording while the original remains available if persistence fails.
             .map(|(input_id, recording)| (input_id.clone(), recording.role, recording.text.clone()))
             .collect::<Vec<_>>();
         for (input_id, role, text) in pending {
@@ -524,16 +525,18 @@ async fn history_page(
             )
             .await?;
         page.next_before_sequence = older.next_before_sequence;
-        for (index, event) in older.events.iter().enumerate() {
-            bytes += serde_json::to_vec(event)?.len();
+        let older_count = older.events.len();
+        for (index, event) in older.events.into_iter().enumerate() {
+            bytes += serde_json::to_vec(&event)?.len();
             if bytes > MAX_PREVIEW_BYTES {
                 return Err(Error::Tool("voice preview exceeds its size limit".into()));
             }
-            page.events.push(event.clone());
-            if !is_delta(event) {
-                if index + 1 < older.events.len() {
-                    page.next_before_sequence = Some(event.sequence);
-                }
+            let complete = !is_delta(&event);
+            if complete && index + 1 < older_count {
+                page.next_before_sequence = Some(event.sequence);
+            }
+            page.events.push(event);
+            if complete {
                 break;
             }
         }

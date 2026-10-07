@@ -24,7 +24,8 @@ pub(super) async fn run(
         return Ok(());
     }
     let expected_revision = config.telemetry.revision;
-    let previous = config.clone();
+    let previous =
+        (!running && !matches!(command, TelemetryCommand::List)).then(|| config.telemetry.clone());
     match command {
         TelemetryCommand::List => {
             for sink in &mut config.telemetry.sinks {
@@ -101,11 +102,19 @@ pub(super) async fn run(
         .await?;
     } else {
         let bots = crate::bots::BotStore::open(store.state_dir())?;
-        store.save(&config)?;
+        let publication = crate::publication::Outcome::applied(store.save(&config))?;
         if let Err(error) = bots.sync_telemetry_cursors(&config.telemetry.sinks) {
-            store.save(&previous)?;
+            if let Some(previous) = previous {
+                config.telemetry = previous;
+                if let Err(rollback) = store.save(&config) {
+                    return Err(crate::publication::applied_error(Error::Config(format!(
+                        "{error}; telemetry rollback did not complete: {rollback}"
+                    ))));
+                }
+            }
             return Err(error);
         }
+        publication.confirm()?;
     }
     Ok(())
 }

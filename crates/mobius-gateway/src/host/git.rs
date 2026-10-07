@@ -172,12 +172,14 @@ fn credential_target(value: &str) -> std::result::Result<String, Rejection> {
     {
         return Err(invalid_credential("enter a valid HTTPS Git host or URL"));
     }
+    let prefixed;
     let candidate = if value.contains("://") {
-        value.to_owned()
+        value
     } else {
-        format!("https://{value}")
+        prefixed = format!("https://{value}");
+        &prefixed
     };
-    let url = Url::parse(&candidate)
+    let url = Url::parse(candidate)
         .map_err(|_| invalid_credential("enter a valid HTTPS Git host or URL"))?;
     if url.scheme() != "https"
         || url.host_str().is_none()
@@ -236,15 +238,14 @@ fn parse_credential_username(
         output.strip_suffix(b"\n").unwrap_or(output)
     };
     let target = Url::parse(target).map_err(|_| invalid_credential_output())?;
+    let authority;
+    let hostname = target.host_str().ok_or_else(invalid_credential_output)?;
     let expected_host = match target.port() {
-        Some(port) => format!(
-            "{}:{port}",
-            target.host_str().ok_or_else(invalid_credential_output)?
-        ),
-        None => target
-            .host_str()
-            .ok_or_else(invalid_credential_output)?
-            .to_owned(),
+        Some(port) => {
+            authority = format!("{hostname}:{port}");
+            authority.as_str()
+        }
+        None => hostname,
     };
     let expected_path = target.path().trim_start_matches('/').as_bytes();
     let mut protocol = None;

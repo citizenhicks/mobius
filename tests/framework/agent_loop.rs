@@ -289,7 +289,7 @@ async fn interrupt_only_aborts_its_target_turn() {
             assert_eq!(
                 (event.submission_id, warning.message),
                 (
-                    Some(stale_submission),
+                    Some(stale_submission.into()),
                     "interrupt targeted a stale turn".to_string()
                 )
             );
@@ -307,7 +307,7 @@ async fn interrupt_only_aborts_its_target_turn() {
         if let EventMsg::TurnAborted(turn) = event.msg {
             assert_eq!(
                 (event.submission_id, turn.turn_id),
-                (Some(interrupt_submission), turn_id)
+                (Some(interrupt_submission.into()), turn_id)
             );
             break;
         }

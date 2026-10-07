@@ -278,7 +278,12 @@ async fn voice_transcript_is_linked_read_only_and_resumes_without_reusing_messag
         Arc::new(SqliteCheckpoint::new(&path).expect("store"));
     let mut parent = Checkpoint::empty("parent");
     parent.session_context.owner_id = "bot".into();
-    parent.context = vec![serde_json::json!({"role":"user","content":"private parent task"})];
+    parent.context = std::sync::Arc::new(
+        vec![serde_json::json!({"role":"user","content":"private parent task"})]
+            .into_iter()
+            .map(std::sync::Arc::new)
+            .collect(),
+    );
     checkpoints
         .save(&parent, &parent.context, None)
         .await

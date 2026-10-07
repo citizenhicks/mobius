@@ -164,13 +164,12 @@ pub(super) async fn handle_key(
         return Ok(false);
     }
     if state.focus == DashboardFocus::Bots && key.code == KeyCode::Enter {
-        let selected = state.selected_bot_id.clone();
         match bots::run(
             terminal,
             sender,
             events,
             &mut state.gateway,
-            selected.as_deref(),
+            state.selected_bot_id.as_deref(),
             None,
         )
         .await
@@ -274,12 +273,7 @@ pub(super) async fn handle_overlay_key(
         KeyCode::Char('a') => {
             if let Some(op) = overlay
                 .open_widget()
-                .or_else(|| {
-                    overlay
-                        .selected_key()
-                        .as_ref()
-                        .and_then(|key| overlay.widget(key))
-                })
+                .or_else(|| overlay.selected_key().and_then(|key| overlay.widget(key)))
                 .and_then(|widget| widget.action.clone())
                 && let Some(op) = prepare_overlay_operation(overlay, op)
             {
@@ -354,10 +348,10 @@ pub(in crate::frontend) fn activate_overlay(overlay: &mut CapabilityOverlay) -> 
         };
     }
     let key = overlay.selected_key()?;
-    let widget = overlay.widget(&key)?;
+    let widget = overlay.widget(key)?;
     let action = widget.action.clone();
     if widget.content.is_some() {
-        overlay.open = Some(key);
+        overlay.open = Some(key.clone());
         overlay.sync_selection();
         action
     } else {
@@ -389,17 +383,15 @@ pub(in crate::frontend) fn prepare_overlay_operation(
     let seed = match &op {
         Op::CapabilityCommand {
             input: Some(input), ..
-        } => input.clone(),
-        Op::CapabilityCommand { .. } if action.is_some_and(|action| action.editor.is_some()) => {
-            String::new()
-        }
+        } => input.as_str(),
+        Op::CapabilityCommand { .. } if action.is_some_and(|action| action.editor.is_some()) => "",
         Op::ExecApproval {
             decision: mobius::protocol::ReviewDecision::Denied { rejection },
             ..
-        } => rejection.clone(),
+        } => rejection.as_str(),
         _ => return Some(op),
     };
-    let text = truncate_input(terminal_text(&seed));
+    let text = truncate_input(terminal_text(seed));
     overlay.input = Some(ActionInput {
         cursor: text.len(),
         text,
@@ -596,7 +588,11 @@ pub(super) fn move_selection(state: &mut DashboardState, delta: isize) {
                 .as_deref()
                 .and_then(|id| ordered.iter().position(|client| client.client_id == id));
             let selected = moved_index(current, ordered.len(), delta);
-            state.selected_client_id = selected.map(|index| ordered[index].client_id.clone());
+            if state.selected_client_id.as_deref()
+                != selected.map(|index| ordered[index].client_id.as_str())
+            {
+                state.selected_client_id = selected.map(|index| ordered[index].client_id.clone());
+            }
             state.device_list.select(selected);
         }
         DashboardFocus::Chats => {
@@ -606,7 +602,11 @@ pub(super) fn move_selection(state: &mut DashboardState, delta: isize) {
                 .as_deref()
                 .and_then(|id| ordered.iter().position(|session| session.session_id == id));
             let selected = moved_index(current, ordered.len(), delta);
-            state.selected_session_id = selected.map(|index| ordered[index].session_id.clone());
+            if state.selected_session_id.as_deref()
+                != selected.map(|index| ordered[index].session_id.as_str())
+            {
+                state.selected_session_id = selected.map(|index| ordered[index].session_id.clone());
+            }
             state.chat_list.select(selected);
         }
         DashboardFocus::Bots => {
@@ -615,7 +615,11 @@ pub(super) fn move_selection(state: &mut DashboardState, delta: isize) {
                 .as_deref()
                 .and_then(|id| state.gateway.bots.iter().position(|bot| bot.id == id));
             let selected = moved_index(current, state.gateway.bots.len(), delta);
-            state.selected_bot_id = selected.map(|index| state.gateway.bots[index].id.clone());
+            if state.selected_bot_id.as_deref()
+                != selected.map(|index| state.gateway.bots[index].id.as_str())
+            {
+                state.selected_bot_id = selected.map(|index| state.gateway.bots[index].id.clone());
+            }
             state.bot_list.select(selected);
         }
     }
@@ -759,7 +763,7 @@ pub(super) fn handle_frame(state: &mut DashboardState, message: ServerMessage) -
             if let Some(overlay) = state
                 .overlay
                 .as_mut()
-                .filter(|overlay| overlay.session_id == session_id)
+                .filter(|overlay| overlay.session_id == session_id.as_ref())
                 && let EventMsg::Frontend(event) = record.event.msg
             {
                 overlay.apply(event);
@@ -805,7 +809,11 @@ pub(super) fn sync_device_selection(state: &mut DashboardState) {
         .as_deref()
         .and_then(|id| ordered.iter().position(|client| client.client_id == id))
         .or_else(|| (!ordered.is_empty()).then_some(0));
-    state.selected_client_id = selected.map(|index| ordered[index].client_id.clone());
+    if state.selected_client_id.as_deref()
+        != selected.map(|index| ordered[index].client_id.as_str())
+    {
+        state.selected_client_id = selected.map(|index| ordered[index].client_id.clone());
+    }
     state.device_list.select(selected);
 }
 
@@ -816,7 +824,11 @@ pub(super) fn sync_chat_selection(state: &mut DashboardState) {
         .as_deref()
         .and_then(|id| ordered.iter().position(|session| session.session_id == id))
         .or_else(|| (!ordered.is_empty()).then_some(0));
-    state.selected_session_id = selected.map(|index| ordered[index].session_id.clone());
+    if state.selected_session_id.as_deref()
+        != selected.map(|index| ordered[index].session_id.as_str())
+    {
+        state.selected_session_id = selected.map(|index| ordered[index].session_id.clone());
+    }
     state.chat_list.select(selected);
 }
 
@@ -826,7 +838,11 @@ pub(super) fn sync_bot_selection(state: &mut DashboardState) {
         .as_deref()
         .and_then(|id| state.gateway.bots.iter().position(|bot| bot.id == id))
         .or_else(|| (!state.gateway.bots.is_empty()).then_some(0));
-    state.selected_bot_id = selected.map(|index| state.gateway.bots[index].id.clone());
+    if state.selected_bot_id.as_deref()
+        != selected.map(|index| state.gateway.bots[index].id.as_str())
+    {
+        state.selected_bot_id = selected.map(|index| state.gateway.bots[index].id.clone());
+    }
     state.bot_list.select(selected);
 }
 

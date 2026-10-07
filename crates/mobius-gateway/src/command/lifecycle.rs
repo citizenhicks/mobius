@@ -258,8 +258,10 @@ pub(super) async fn reuse_current_gateway(
         return Ok(None);
     };
     let endpoint = if config.tls.is_some() {
-        let endpoint =
-            configured_endpoint.map_or_else(Endpoint::from_env, |endpoint| Ok(endpoint.clone()))?;
+        let endpoint = match configured_endpoint {
+            Some(endpoint) => std::borrow::Cow::Borrowed(endpoint),
+            None => std::borrow::Cow::Owned(Endpoint::from_env()?),
+        };
         if endpoint.is_plaintext() || endpoint.is_websocket() {
             return Err(Error::Config(
                 "TLS gateway upgrades require MOBIUS_GATEWAY_ENDPOINT with the certificate hostname".into(),
@@ -267,7 +269,7 @@ pub(super) async fn reuse_current_gateway(
         }
         endpoint
     } else {
-        loopback_endpoint(config)?
+        std::borrow::Cow::Owned(loopback_endpoint(config)?)
     };
     let token = load_local_client(&endpoint)?.ok_or_else(|| {
         Error::Config("local gateway credential is unavailable; cannot check its version".into())

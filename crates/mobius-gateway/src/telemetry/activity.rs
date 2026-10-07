@@ -247,7 +247,7 @@ impl<'a> ActivityHook<'a> {
                 }
                 Some(result) = self.retiring.join_next(), if !self.retiring.is_empty() => {
                     if let Err(error) = result {
-                        gateway_log!("activity hook cleanup failed: {error}");
+                        tracing::warn!(%error, "activity hook cleanup failed");
                     }
                 }
             }
@@ -259,7 +259,7 @@ impl<'a> ActivityHook<'a> {
             match self.acquire() {
                 Ok(()) => *retry_at = None,
                 Err(error) => {
-                    gateway_log!("activity hook acquisition failed: {error}");
+                    tracing::warn!(%error, "activity hook acquisition failed");
                     *retry_at = Some(
                         Instant::now()
                             + Duration::from_secs(
@@ -279,8 +279,8 @@ impl<'a> ActivityHook<'a> {
         retry: Duration,
     ) {
         match result {
-            Ok(status) => gateway_log!("activity hook command exited ({status})"),
-            Err(error) => gateway_log!("activity hook command status failed: {error}"),
+            Ok(status) => tracing::warn!(%status, "activity hook command exited"),
+            Err(error) => tracing::warn!(%error, "activity hook command status failed"),
         }
         self.process = None;
         *retry_at = Some(Instant::now() + retry);
@@ -347,7 +347,7 @@ impl<'a> ActivityHook<'a> {
         }
         while let Some(result) = self.retiring.join_next().await {
             if let Err(error) = result {
-                gateway_log!("activity hook cleanup failed: {error}");
+                tracing::warn!(%error, "activity hook cleanup failed");
             }
         }
     }
@@ -364,16 +364,16 @@ fn measured_idle(
         Ok(Ok(activity)) => match clients() {
             Ok(clients) => activity.idle && clients == 0,
             Err(error) => {
-                gateway_log!("activity hook client count failed: {error}");
+                tracing::warn!(%error, "activity hook client count failed");
                 false
             }
         },
         Ok(Err(error)) => {
-            gateway_log!("activity hook measurement failed: {}", error.message);
+            tracing::warn!(error = %error.message, "activity hook measurement failed");
             false
         }
         Err(_) => {
-            gateway_log!("activity hook measurement timed out");
+            tracing::warn!("activity hook measurement timed out");
             false
         }
     }
@@ -407,7 +407,7 @@ async fn stop_process(mut process: HookProcess, timeout: Duration) {
                 tokio::time::timeout(timeout, process.child.wait()).await,
                 Ok(Ok(_))
             ) {
-                gateway_log!("activity hook command did not reap after termination");
+                tracing::warn!("activity hook command did not reap after termination");
             }
         }
     }

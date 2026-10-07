@@ -1,5 +1,7 @@
 //! möbius terminal frontend.
 
+use std::fmt::Write as _;
+
 use mobius::Result;
 use mobius::protocol::FrontendBlock;
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
@@ -53,24 +55,34 @@ fn block_text(block: &FrontendBlock) -> String {
         text.push('\n');
         match part {
             mobius::protocol::ContentPart::Text { text: part } => text.push_str(part),
-            mobius::protocol::ContentPart::Image { image } => text.push_str(&format!(
-                "[image] {} · {} × {} · file_id={}",
-                image.file.name, image.width, image.height, image.file.id
-            )),
-            mobius::protocol::ContentPart::File { file } => text.push_str(&format!(
-                "[file] {} · {} bytes · file_id={}",
-                file.name, file.size, file.id
-            )),
+            mobius::protocol::ContentPart::Image { image } => {
+                write!(
+                    text,
+                    "[image] {} · {} × {} · file_id={}",
+                    image.file.name, image.width, image.height, image.file.id
+                )
+                .expect("writing to String cannot fail");
+            }
+            mobius::protocol::ContentPart::File { file } => {
+                write!(
+                    text,
+                    "[file] {} · {} bytes · file_id={}",
+                    file.name, file.size, file.id
+                )
+                .expect("writing to String cannot fail");
+            }
         }
     }
     for file in &block.files {
         if !text.is_empty() {
             text.push('\n');
         }
-        text.push_str(&format!(
+        write!(
+            text,
             "[file] {} · {} · {} bytes",
             file.name, file.media_type, file.size
-        ));
+        )
+        .expect("writing to String cannot fail");
     }
     text
 }

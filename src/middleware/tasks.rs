@@ -121,7 +121,11 @@ impl Middleware for Tasks {
         )
     }
 
-    fn prepare_compacted_input(&self, _original: &[Value], compacted: &mut Vec<Value>) {
+    fn prepare_compacted_input(
+        &self,
+        _original: crate::backend::model::ModelInput<'_>,
+        compacted: &mut Vec<Arc<Value>>,
+    ) {
         compacted.retain(|item| internal_message_kind(item) != Some(PROJECTION_KIND));
     }
 
@@ -145,7 +149,7 @@ impl Middleware for Tasks {
                 context.push_input(internal_user_message(PROJECTION_KIND, &text));
             }
             if context.source() != SessionStartSource::Compact {
-                (context.runtime.frontend)(widget_event(&todos))?;
+                (context.runtime.frontend)(widget_event(todos))?;
             }
             Ok(())
         })
@@ -202,8 +206,9 @@ impl Tool for WriteTodos {
                     &serde_json::to_value(&arguments.todos)?,
                 )
                 .await?;
-            (self.frontend)(widget_event(&arguments.todos))?;
-            Ok((format!("updated {} todos", arguments.todos.len())).into())
+            let count = arguments.todos.len();
+            (self.frontend)(widget_event(arguments.todos))?;
+            Ok(format!("updated {count} todos").into())
         })
     }
 }
@@ -234,7 +239,7 @@ async fn load_todos(checkpoints: &Arc<dyn CheckpointStore>, session_id: &str) ->
     Ok(todos)
 }
 
-fn widget_event(todos: &[Todo]) -> FrontendEvent {
+fn widget_event(todos: Vec<Todo>) -> FrontendEvent {
     if todos.is_empty() {
         return FrontendEvent::RemoveWidget {
             capability: MANIFEST.id.into(),
@@ -266,11 +271,11 @@ fn widget_event(todos: &[Todo]) -> FrontendEvent {
                 actions: Vec::new(),
                 title: text::DEFINITION.render_heading.clone(),
                 items: todos
-                    .iter()
+                    .into_iter()
                     .enumerate()
                     .map(|(index, todo)| FrontendActionListItem {
                         id: index.to_string(),
-                        text: todo.content.clone(),
+                        text: todo.content,
                         state: match todo.status {
                             TodoStatus::Pending => FrontendListItemState::Pending,
                             TodoStatus::InProgress => FrontendListItemState::InProgress,
@@ -398,7 +403,7 @@ mod tests {
             .expect("bind call");
         let result = execute_batch(
             &catalog,
-            &[bound],
+            [bound],
             Arc::clone(&sandbox),
             &permissions,
             "turn-a",
@@ -442,7 +447,7 @@ mod tests {
                     )
         ));
 
-        let user = crate::backend::model::user_message("continue the work");
+        let user = Arc::new(crate::backend::model::user_message("continue the work"));
         let mut input = vec![user.clone()];
         for source in [SessionStartSource::Startup, SessionStartSource::Resume] {
             tasks
@@ -464,9 +469,9 @@ mod tests {
                     .expect("task text")
                     .contains("Implement tasks")
             );
-            crate::backend::model::mark_prompt_cache_breakpoint(&mut input[1]);
+            crate::backend::model::mark_prompt_cache_breakpoint(Arc::make_mut(&mut input[1]));
         }
-        tasks.prepare_compacted_input(&[], &mut input);
+        tasks.prepare_compacted_input((&[]).into(), &mut input);
         assert_eq!(input.as_slice(), std::slice::from_ref(&user));
         let previous_events = frontend_events.lock().expect("events").len();
         tasks
@@ -501,7 +506,7 @@ mod tests {
             .expect("bind clear");
         let result = execute_batch(
             &catalog,
-            &[clear],
+            [clear],
             sandbox,
             &permissions,
             "turn-a",
@@ -518,7 +523,7 @@ mod tests {
         ));
         for source in [SessionStartSource::Resume, SessionStartSource::Compact] {
             if source == SessionStartSource::Compact {
-                tasks.prepare_compacted_input(&[], &mut input);
+                tasks.prepare_compacted_input((&[]).into(), &mut input);
             }
             tasks
                 .session_start(&mut SessionStartContext {

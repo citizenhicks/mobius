@@ -95,9 +95,12 @@ impl State {
         let hostname = cloudflare
             .hostname()
             .ok_or_else(|| Error::Config("named Cloudflare hostname is missing".into()))?;
+        let start = self.token.len() - self.token.trim_start().len();
+        self.token.truncate(self.token.trim_end().len());
+        self.token.drain(..start);
         Ok(CloudflareInit::Named {
             hostname: hostname.to_owned(),
-            token: std::mem::take(&mut self.token).trim().to_owned(),
+            token: std::mem::take(&mut self.token),
         })
     }
 }
@@ -291,6 +294,7 @@ mod tests {
             (hostname.as_str(), token.as_str()),
             ("mobius.example.com", "secret-tunnel-token")
         );
+        assert!(state.token.is_empty());
     }
 
     #[test]

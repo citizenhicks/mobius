@@ -252,7 +252,10 @@ fn saved_auth_is_owner_only() {
         account_id: "account-123".into(),
     };
 
-    write_credential(&path, &credential).expect("save credential");
+    write_credential(&path, credential)
+        .expect("save credential")
+        .1
+        .expect("durable credential");
 
     assert_eq!(
         fs::metadata(path)
@@ -276,34 +279,35 @@ async fn codex_requests_include_session_and_thread_identity() {
     );
     write_credential(
         &path,
-        &OAuthCredential {
+        OAuthCredential {
             access: format!("e30.{payload}.signature"),
             refresh: "refresh-token".into(),
             expires: u64::MAX,
             account_id: "account-123".into(),
         },
     )
-    .expect("save credential");
+    .expect("save credential")
+    .1
+    .expect("durable credential");
     let auth = ChatGptAuth::load(path).expect("load auth");
 
-    let compact = auth
+    let http = auth
         .authorize_http(false, Some("session-123"))
         .await
-        .expect("compaction authorization");
-    assert_eq!(header(&compact, "version"), Some("0.160.1"));
-    assert_eq!(header(&compact, "originator"), Some("mobius"));
+        .expect("HTTP authorization");
+    assert_eq!(header(&http, "version"), Some("0.160.1"));
+    assert_eq!(header(&http, "originator"), Some("mobius"));
     assert!(
-        compact
-            .headers
+        http.headers
             .iter()
             .filter(|(name, _)| ["originator", "version", "user-agent"].contains(name))
             .all(|(_, value)| matches!(value, Cow::Borrowed(_))),
         "static authorization values remain borrowed"
     );
-    assert_eq!(header(&compact, "session-id"), Some("session-123"));
-    assert_eq!(header(&compact, "thread-id"), Some("session-123"));
-    assert_eq!(header(&compact, "x-client-request-id"), None);
-    assert_eq!(header(&compact, "openai-beta"), None);
+    assert_eq!(header(&http, "session-id"), Some("session-123"));
+    assert_eq!(header(&http, "thread-id"), Some("session-123"));
+    assert_eq!(header(&http, "x-client-request-id"), None);
+    assert_eq!(header(&http, "openai-beta"), None);
 
     let responses = auth
         .authorize_http(true, Some("session-123"))
@@ -349,14 +353,16 @@ async fn usage_limits_read_saved_auth_and_mocked_http() {
     );
     write_credential(
         &path,
-        &OAuthCredential {
+        OAuthCredential {
             access: format!("e30.{payload}.signature"),
             refresh: "refresh-token".into(),
             expires: u64::MAX,
             account_id: "account-123".into(),
         },
     )
-    .expect("save credential");
+    .expect("save credential")
+    .1
+    .expect("durable credential");
 
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -576,7 +582,8 @@ async fn codex_custom_root_routes_http_fallback_to_proxy() {
         expires: u64::MAX,
         account_id: "proxy-account".into(),
     };
-    write_credential(&path, &credential).expect("stored credential");
+    let (credential, durability) = write_credential(&path, credential).expect("stored credential");
+    durability.expect("durable credential");
     let access = credential.access;
     let auth = BROWSER_AUTH.load(&path).expect("browser credential");
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -631,7 +638,7 @@ async fn codex_custom_root_routes_http_fallback_to_proxy() {
                 cancellation: None,
                 prompt_cache: None,
                 instructions: "test",
-                input: &[],
+                input: (&[]).into(),
                 catalog_revision: "test",
                 tools: &[],
                 deferred_tools: &[],
@@ -644,4 +651,42 @@ async fn codex_custom_root_routes_http_fallback_to_proxy() {
         .expect_err("proxy denial");
     assert!(matches!(error, Error::Provider(ref error) if error.status() == Some(403)));
     server.await.expect("proxy assertion");
+}
+
+#[test]
+fn credential_publication_keeps_applied_state_when_directory_sync_fails() {
+    let directory = tempfile::tempdir().expect("auth directory");
+    let path = directory.path().join("auth.json");
+    let credential = OAuthCredential {
+        access: "new-access".into(),
+        refresh: "new-refresh".into(),
+        account_id: "account".into(),
+        expires: u64::MAX,
+    };
+    let access_pointer = credential.access.as_ptr();
+    let (applied, durability) = write_credential_with_sync(&path, credential, |_| {
+        Err(io::Error::other("injected directory sync failure"))
+    })
+    .expect("replacement occurred");
+    assert_eq!(applied.access.as_ptr(), access_pointer);
+    let saved: AuthFile =
+        serde_json::from_slice(&fs::read(&path).expect("visible file")).expect("auth");
+    assert_eq!(saved[PROVIDER_ID].access, applied.access);
+    assert_eq!(saved[PROVIDER_ID].refresh, applied.refresh);
+    let error = durability.expect_err("durability uncertainty must be reported");
+    assert!(matches!(error, Error::PublicationDurability(_)));
+    let event = crate::protocol::ErrorEvent::from_error(&error);
+    assert!(!event.retryable);
+    assert!(event.message.contains("state was replaced"));
+
+    let rejected = OAuthCredential {
+        access: "not-applied".into(),
+        refresh: "not-applied".into(),
+        account_id: "account".into(),
+        expires: u64::MAX,
+    };
+    assert!(write_credential(&path.join("missing"), rejected).is_err());
+    let unchanged: AuthFile =
+        serde_json::from_slice(&fs::read(path).expect("unchanged file")).expect("auth");
+    assert_eq!(unchanged[PROVIDER_ID].access, "new-access");
 }

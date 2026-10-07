@@ -102,7 +102,7 @@ async fn paid_tool_usage_retains_the_execution_route() {
     );
     let result = execute_batch(
         &catalog,
-        &calls,
+        calls,
         test_sandbox(),
         &test_permissions(&[]),
         "turn",
@@ -168,7 +168,7 @@ async fn each_call_receives_its_own_permissions() {
     assert_eq!(
         execute_batch(
             &catalog,
-            &calls,
+            calls,
             test_sandbox(),
             &test_permissions(&["allowed"]),
             "turn",
@@ -231,7 +231,7 @@ async fn parallel_tool_panic_preserves_call_identity() {
     assert_eq!(
         execute_batch(
             &catalog,
-            &calls,
+            calls,
             sandbox,
             &permissions,
             "turn",
@@ -278,7 +278,7 @@ async fn approval_required_handler_cannot_run_without_exact_call_authority() {
 
     let result = execute_batch(
         &catalog,
-        &calls,
+        calls,
         sandbox,
         &permissions,
         "turn",
@@ -339,7 +339,7 @@ async fn dispatch_uses_the_execution_boundary_output_budget() {
     );
     let results = execute_batch(
         &catalog,
-        &calls,
+        calls,
         sandbox,
         &test_permissions(&[]),
         "turn",

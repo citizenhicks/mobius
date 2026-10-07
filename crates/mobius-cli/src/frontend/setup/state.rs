@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use mobius::backend::model::provider::HostedWebSearch;
 use mobius::protocol::{
@@ -18,7 +19,7 @@ use super::{
 };
 
 pub(super) struct ProviderEntry {
-    pub(super) status: ProviderStatus,
+    pub(super) status: Arc<ProviderStatus>,
     /// The configured setup this row edits, or `None` when it starts a new one.
     pub(super) instance: Option<ProviderInstance>,
 }
@@ -327,20 +328,18 @@ impl SetupState {
     }
 
     /// The label the setup will be registered under, defaulting to the manifest name.
-    pub(super) fn effective_label(&self) -> String {
+    pub(super) fn effective_label(&self) -> &str {
         let label = self.label.trim();
         if label.is_empty() {
-            self.definition().label.clone()
+            &self.definition().label
         } else {
-            label.to_string()
+            label
         }
     }
 
-    pub(super) fn target_instance(&self) -> String {
-        self.instance().map_or_else(
-            || self.new_instance.clone(),
-            |entry| entry.selection.instance.clone(),
-        )
+    pub(super) fn target_instance(&self) -> &str {
+        self.instance()
+            .map_or(&self.new_instance, |entry| &entry.selection.instance)
     }
 
     pub(super) fn instance(&self) -> Option<&ProviderInstance> {
@@ -544,9 +543,9 @@ impl SetupState {
         if !self.feature_has_children(feature) {
             return;
         }
-        let id = self.features[feature].id.clone();
-        if !self.expanded_features.remove(&id) {
-            self.expanded_features.insert(id);
+        let id = &self.features[feature].id;
+        if !self.expanded_features.remove(id) {
+            self.expanded_features.insert(id.clone());
         }
     }
 
@@ -793,13 +792,15 @@ impl SetupState {
                 else {
                     unreachable!()
                 };
-                let extension = &self.available_extensions[extension];
-                let id = extension.id.clone();
                 self.error = None;
-                if !self.selected_extensions.remove(&id) {
+                if !self
+                    .selected_extensions
+                    .remove(&self.available_extensions[extension].id)
+                {
                     match self.set_middleware_enabled(feature, true) {
                         Ok(()) => {
-                            self.selected_extensions.insert(id);
+                            self.selected_extensions
+                                .insert(self.available_extensions[extension].id.clone());
                         }
                         Err(error) => self.error = Some(error.to_string()),
                     }
@@ -980,7 +981,7 @@ impl SetupState {
         self.credential.clear();
         self.api_key_entered = false;
         self.authenticated = None;
-        let definition = self.entry().status.clone();
+        let definition = &self.providers[self.provider].status;
         let current = &self.original.provider;
         let same_instance = self
             .instance()
@@ -1007,9 +1008,13 @@ impl SetupState {
             0
         };
         self.custom_model = if definition.model_ids_configurable {
-            let mut model_ids = self.instance_model_ids().to_vec();
-            if same_instance && !model_ids.contains(&current.model) {
-                model_ids.insert(0, current.model.clone());
+            let mut model_ids = self
+                .instance_model_ids()
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            if same_instance && !model_ids.contains(&current.model.as_str()) {
+                model_ids.insert(0, current.model.as_str());
             }
             model_ids.join(", ")
         } else {
@@ -1070,18 +1075,19 @@ impl SetupState {
         Ok(model_ids)
     }
 
-    pub(super) fn selected_base_url(&self) -> Option<String> {
+    pub(super) fn selected_base_url(&self) -> Option<&str> {
         self.definition()
             .configurable_base_url()
-            .then(|| self.endpoint.trim().to_string())
+            .then(|| self.endpoint.trim())
     }
 
-    pub(super) fn authentication_target(&self) -> (String, Option<String>) {
-        (self.definition().provider.clone(), self.selected_base_url())
+    fn authentication_target(&self) -> (&str, Option<&str>) {
+        (&self.definition().provider, self.selected_base_url())
     }
 
     pub(super) fn authentication_succeeded(&mut self) {
-        self.authenticated = Some(self.authentication_target());
+        let (provider, endpoint) = self.authentication_target();
+        self.authenticated = Some((provider.into(), endpoint.map(str::to_owned)));
         self.credential.clear();
         self.error = None;
         self.progress = None;
@@ -1112,11 +1118,13 @@ impl SetupState {
 
     pub(super) fn has_matching_credential(&self) -> bool {
         let target = self.authentication_target();
-        self.authenticated.as_ref() == Some(&target)
+        self.authenticated
+            .as_ref()
+            .is_some_and(|(provider, endpoint)| (provider.as_str(), endpoint.as_deref()) == target)
             || self.instance().is_some_and(|entry| {
                 entry.configured
-                    && entry.selection.provider == target.0.as_str()
-                    && entry.selection.base_url.as_deref() == target.1.as_deref()
+                    && entry.selection.provider == target.0
+                    && entry.selection.base_url.as_deref() == target.1
             })
             || self.definition().auth == ProviderAuthKind::DeviceCode
                 && self.providers.iter().any(|entry| {
@@ -1165,11 +1173,29 @@ impl SetupState {
     }
 
     pub(super) fn agent_composition(&self, current: &AgentComposition) -> Result<AgentComposition> {
-        let mut config = current.clone();
+        let (mut middleware, extensions) = if self.mode == SetupMode::Bot {
+            (self.middleware.clone(), self.selected_extensions.clone())
+        } else {
+            (current.middleware.clone(), current.extensions.clone())
+        };
+        let provider = self.selected_provider(&current.provider)?;
+        if self.mode == SetupMode::BotModel {
+            let (choice, _) = &self.bot_model_routes[self.model];
+            middleware.reconcile(&self.features, Some(choice));
+        }
+        Ok(AgentComposition {
+            provider,
+            middleware,
+            extensions,
+            realtime_voice: current.realtime_voice.clone(),
+            system_prompt: current.system_prompt.clone(),
+            max_model_steps: current.max_model_steps,
+        })
+    }
+
+    fn selected_provider(&self, current: &ProviderConfig) -> Result<ProviderConfig> {
         if self.mode == SetupMode::Bot {
-            config.middleware = self.middleware.clone();
-            config.extensions = self.selected_extensions.clone();
-            return Ok(config);
+            return Ok(current.clone());
         }
         if self.mode == SetupMode::BotModel {
             let (choice, provider) = self
@@ -1180,21 +1206,23 @@ impl SetupState {
                 .instance
                 .as_ref()
                 .ok_or_else(|| Error::Config("selected model setup is missing".into()))?;
-            let mut selection = instance.selection.clone();
-            selection.model.clone_from(&choice.model);
-            selection
-                .reasoning_effort
-                .clone_from(&choice.reasoning_effort);
-            selection.web_search = self
-                .definition()
-                .web_search
-                .get(self.web_search)
-                .ok_or_else(|| Error::Config("hosted web-search selection is invalid".into()))?
-                .value
-                .parse::<HostedWebSearch>()?;
-            config.provider = selection;
-            config.middleware.reconcile(&self.features, Some(choice));
-            return Ok(config);
+            let selection = &instance.selection;
+            return Ok(ProviderConfig {
+                instance: selection.instance.clone(),
+                provider: selection.provider.clone(),
+                base_url: selection.base_url.clone(),
+                endpoint_auth: selection.endpoint_auth,
+                service_tier: selection.service_tier.clone(),
+                model: choice.model.clone(),
+                reasoning_effort: choice.reasoning_effort.clone(),
+                web_search: self
+                    .definition()
+                    .web_search
+                    .get(self.web_search)
+                    .ok_or_else(|| Error::Config("hosted web-search selection is invalid".into()))?
+                    .value
+                    .parse::<HostedWebSearch>()?,
+            });
         }
         let definition = self.definition();
         let model_ids = self.configured_model_ids()?;
@@ -1207,10 +1235,8 @@ impl SetupState {
                 .checked_sub(1)
                 .and_then(|index| model.reasoning.get(index))
                 .map(|preset| preset.id.to_string())
-        } else if current.provider.instance == self.target_instance()
-            && current.provider.model == model
-        {
-            current.provider.reasoning_effort.clone()
+        } else if current.instance == self.target_instance() && current.model == model {
+            current.reasoning_effort.clone()
         } else {
             None
         };
@@ -1223,33 +1249,32 @@ impl SetupState {
         let base_url = self.selected_base_url();
         let endpoint_auth = if self.api_key_entered {
             ProviderEndpointAuth::ProviderDefault
-        } else if current.provider.instance == self.target_instance()
-            && current.provider.base_url.as_deref() == base_url.as_deref()
+        } else if current.instance == self.target_instance()
+            && current.base_url.as_deref() == base_url
         {
-            current.provider.endpoint_auth
+            current.endpoint_auth
         } else {
             ProviderEndpointAuth::ProviderDefault
         };
         if model.is_empty() {
             return Err(Error::Config("model is required".into()));
         }
-        config.provider = ProviderConfig {
-            service_tier: if current.provider.instance == self.target_instance()
-                && current.provider.base_url.as_deref() == base_url.as_deref()
+        Ok(ProviderConfig {
+            service_tier: if current.instance == self.target_instance()
+                && current.base_url.as_deref() == base_url
             {
-                current.provider.service_tier.clone()
+                current.service_tier.clone()
             } else {
                 None
             },
-            instance: self.target_instance(),
+            instance: self.target_instance().into(),
             provider: definition.provider.clone(),
             model: model.into(),
-            base_url,
+            base_url: base_url.map(str::to_owned),
             endpoint_auth,
             reasoning_effort,
             web_search,
-        };
-        Ok(config)
+        })
     }
 
     pub(super) fn set_progress(&mut self, title: &'static str, detail: impl Into<String>) {
@@ -1300,7 +1325,7 @@ pub(super) fn validated_providers(
                     status.provider
                 )));
             }
-            Ok(status.clone())
+            Ok(Arc::new(status.clone()))
         })
         .collect::<Result<Vec<_>>>()?;
 
@@ -1326,7 +1351,7 @@ pub(super) fn validated_providers(
             })?;
         validate_active_provider(status, Some(instance), &instance.selection)?;
         rows.push(ProviderEntry {
-            status: status.clone(),
+            status: Arc::clone(status),
             instance: Some(instance.clone()),
         });
     }

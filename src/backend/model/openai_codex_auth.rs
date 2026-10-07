@@ -197,14 +197,13 @@ impl ChatGptAuth {
 
         let refreshed = refresh_token(&self.client, &saved.refresh).await?;
         let path = self.path.clone();
-        let refreshed = tokio::task::spawn_blocking(move || {
-            write_credential(&path, &refreshed)?;
-            Ok::<_, Error>(refreshed)
-        })
-        .await
-        .map_err(|error| Error::Auth(format!("credential save task failed: {error}")))??;
+        let (refreshed, durability) =
+            tokio::task::spawn_blocking(move || write_credential(&path, refreshed))
+                .await
+                .map_err(|error| Error::Auth(format!("credential save task failed: {error}")))??;
         *credential = refreshed;
         drop(lock);
+        durability?;
         Ok(resolved(&credential))
     }
 
@@ -446,7 +445,7 @@ where
 async fn save_login_credential(path: PathBuf, credential: OAuthCredential) -> Result<()> {
     tokio::task::spawn_blocking(move || {
         let _lock = acquire_lock(&path)?;
-        write_credential(&path, &credential)
+        write_credential(&path, credential)?.1
     })
     .await
     .map_err(|error| Error::Auth(format!("credential lock task failed: {error}")))?
@@ -630,7 +629,7 @@ async fn wait_for_callback_with_settings(
         }
         if let Some(error) = request
             .query_pairs()
-            .find_map(|(key, value)| (key == "error").then(|| value.into_owned()))
+            .find_map(|(key, value)| (key == "error").then_some(value))
         {
             respond(
                 &mut stream,
@@ -907,7 +906,18 @@ fn acquire_lock(path: &Path) -> Result<File> {
     Ok(lock)
 }
 
-fn write_credential(path: &Path, credential: &OAuthCredential) -> Result<()> {
+fn write_credential(
+    path: &Path,
+    credential: OAuthCredential,
+) -> Result<(OAuthCredential, Result<()>)> {
+    write_credential_with_sync(path, credential, File::sync_all)
+}
+
+fn write_credential_with_sync(
+    path: &Path,
+    credential: OAuthCredential,
+    sync_parent: impl FnOnce(&File) -> io::Result<()>,
+) -> Result<(OAuthCredential, Result<()>)> {
     secure_parent(path)?;
     let mut auth = match fs::read(path) {
         Ok(contents) => serde_json::from_slice(&contents)
@@ -915,8 +925,11 @@ fn write_credential(path: &Path, credential: &OAuthCredential) -> Result<()> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => AuthFile::new(),
         Err(error) => return Err(error.into()),
     };
-    auth.insert(PROVIDER_ID.into(), credential.clone());
+    auth.insert(PROVIDER_ID.into(), credential);
     let contents = serde_json::to_vec_pretty(&auth)?;
+    let credential = auth
+        .remove(PROVIDER_ID)
+        .ok_or_else(|| Error::Auth("credential missing from staged authentication state".into()))?;
     let parent = path
         .parent()
         .ok_or_else(|| Error::Auth("auth path has no parent".into()))?;
@@ -927,8 +940,8 @@ fn write_credential(path: &Path, credential: &OAuthCredential) -> Result<()> {
     file.write_all(&contents)?;
     file.as_file().sync_all()?;
     file.persist(path).map_err(|error| error.error)?;
-    parent_file.sync_all()?;
-    Ok(())
+    let durability = sync_parent(&parent_file).map_err(Error::PublicationDurability);
+    Ok((credential, durability))
 }
 
 fn secure_parent(path: &Path) -> Result<()> {

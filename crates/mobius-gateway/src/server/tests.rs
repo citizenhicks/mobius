@@ -269,7 +269,7 @@ async fn wait_session_activity(
         match frame.message {
             ServerMessage::AgentEvent {
                 session_id: actual, ..
-            } if actual == session_id => {
+            } if actual.as_ref() == session_id => {
                 panic!("a nonselected chat event crossed the gateway-wide stream")
             }
             ServerMessage::SessionsChanged { sessions, .. } => {

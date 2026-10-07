@@ -49,7 +49,7 @@ pub(crate) use self::workspace::{
 };
 pub use crate::server::ConnectionPolicy;
 
-const CONFIG_VERSION: u32 = 26;
+const CONFIG_VERSION: u32 = 27;
 pub(crate) const MAX_CAPACITY: usize = 4_096;
 
 pub(crate) fn bounded<T>(name: &str, value: T, range: std::ops::RangeInclusive<T>) -> Result<()>
@@ -176,12 +176,13 @@ pub(crate) struct ConfiguredProvider {
 }
 
 /// Chat ownership and workspace, independent of Bot configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct ChatSpec {
     version: u32,
     pub(crate) workspace: Option<PathBuf>,
     pub(crate) attached_folders: Vec<PathBuf>,
     pub(crate) bot_id: String,
+    #[serde(skip)]
     pub(crate) catalog_visible: bool,
 }
 
@@ -350,23 +351,17 @@ impl GatewayConfig {
         }
         let mut next = self.clone();
         next.configured_providers.remove(instance);
-        let mut bot_defaults = next
+        let mut default = next
             .bot_defaults
-            .as_ref()
-            .expect("a removable provider cannot be the only configured provider")
-            .config
-            .clone();
-        if clear_missing_model_routes(&mut bot_defaults, &next)? {
-            let default = next
-                .bot_defaults
-                .as_mut()
-                .expect("a removable provider cannot be the only configured provider");
-            default.config = bot_defaults;
+            .take()
+            .expect("a removable provider cannot be the only configured provider");
+        if clear_missing_model_routes(&mut default.config, &next)? {
             default.revision = default
                 .revision
                 .checked_add(1)
                 .ok_or_else(|| Error::Config("configuration revision overflow".into()))?;
         }
+        next.bot_defaults = Some(default);
         next.validate()?;
         Ok(next)
     }
@@ -578,7 +573,7 @@ impl ChatSpec {
         let Some(value) = metadata.get(CHAT_SPEC_METADATA_KEY) else {
             return Ok(None);
         };
-        let stored: StoredChatSpec = serde_json::from_value(value.clone())?;
+        let stored = StoredChatSpec::deserialize(value)?;
         let bot = bots.bot(&stored.bot_id)?;
         let spec = Self {
             version: stored.version,
@@ -598,12 +593,7 @@ impl ChatSpec {
     pub(crate) fn metadata(&self) -> Result<BTreeMap<String, Value>> {
         Ok(BTreeMap::from([(
             CHAT_SPEC_METADATA_KEY.into(),
-            serde_json::to_value(StoredChatSpec {
-                version: self.version,
-                workspace: self.workspace.clone(),
-                attached_folders: self.attached_folders.clone(),
-                bot_id: self.bot_id.clone(),
-            })?,
+            serde_json::to_value(self)?,
         )]))
     }
 
@@ -714,20 +704,19 @@ fn clear_missing_model_routes(
     composition: &mut AgentComposition,
     gateway: &GatewayConfig,
 ) -> Result<bool> {
-    let routes = crate::middleware_manifest::configured_model_routes(&composition.middleware)
-        .into_iter()
-        .map(|(middleware, setting, route)| {
-            (middleware.to_owned(), setting.to_owned(), route.to_owned())
-        })
-        .collect::<Vec<_>>();
-    let mut changed = false;
-    for (middleware, setting, route) in routes {
-        if !crate::provider_catalog::configured_route_exists(gateway, &route)? {
-            composition
-                .middleware
-                .set_setting(middleware, setting, None);
-            changed = true;
+    let mut removed = Vec::new();
+    for (middleware, setting, route) in
+        crate::middleware_manifest::configured_model_routes(&composition.middleware)
+    {
+        if !crate::provider_catalog::configured_route_exists(gateway, route)? {
+            removed.push((middleware.to_owned(), setting.to_owned()));
         }
+    }
+    let changed = !removed.is_empty();
+    for (middleware, setting) in removed {
+        composition
+            .middleware
+            .set_setting(middleware, setting, None);
     }
     Ok(changed)
 }

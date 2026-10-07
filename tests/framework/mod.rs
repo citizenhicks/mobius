@@ -22,8 +22,6 @@ use mobius::backend::checkpoint::SessionPageRequest;
 use mobius::backend::checkpoint::TimestampedEvent;
 use mobius::backend::checkpoint::TranscriptPageRequest;
 use mobius::backend::checkpoint::sqlite::SqliteCheckpoint;
-use mobius::backend::model::CompactOutput;
-use mobius::backend::model::CompactRequest;
 use mobius::backend::model::Model;
 use mobius::backend::model::ModelEventSink;
 use mobius::backend::model::ModelOutput;
@@ -50,12 +48,10 @@ use mobius::middleware::subagents::SubagentLaunch;
 use mobius::middleware::subagents::SubagentLauncher;
 use mobius::middleware::subagents::Subagents;
 use mobius::middleware::tools::Tools;
-use mobius::protocol::ActiveMessageDelivery;
 use mobius::protocol::AssistantMessageEvent;
 use mobius::protocol::Event;
 use mobius::protocol::EventMsg;
 use mobius::protocol::MessageAuthor;
-use mobius::protocol::MessageDelivery;
 use mobius::protocol::MessageSubmission;
 use mobius::protocol::MessageTarget;
 use mobius::protocol::ModelChoice;
@@ -79,10 +75,7 @@ mod storage;
 
 struct ScriptedModel {
     responses: Mutex<VecDeque<ModelOutput>>,
-    compact_outputs: Mutex<VecDeque<CompactOutput>>,
     requests: Mutex<Vec<RecordedRequest>>,
-    compact_requests: Mutex<Vec<RecordedCompactRequest>>,
-    compaction_endpoint: bool,
     image_input: bool,
 }
 
@@ -90,14 +83,7 @@ struct RecordedRequest {
     allow_hosted_tools: bool,
     instructions: String,
     input: Vec<Value>,
-    tools: Vec<ToolDefinition>,
-}
-
-struct RecordedCompactRequest {
-    session_id: String,
-    instructions: String,
-    input: Vec<Value>,
-    tools: Vec<ToolDefinition>,
+    tools: Vec<Arc<ToolDefinition>>,
 }
 
 #[derive(Default)]
@@ -105,8 +91,6 @@ struct PromptExtension {
     prompt_calls: AtomicUsize,
     registrations: AtomicUsize,
 }
-
-struct StaticPrompt(&'static str);
 
 fn test_session_context() -> SessionContext {
     SessionContext {
@@ -138,29 +122,11 @@ impl Middleware for PromptExtension {
     }
 }
 
-impl Middleware for StaticPrompt {
-    fn name(&self) -> &'static str {
-        "dynamic"
-    }
-
-    fn prompt_section(&self, _runtime: &RuntimeContext) -> Result<Option<PromptSection>> {
-        Ok(Some(PromptSection::new(self.0)))
-    }
-}
-
 impl ScriptedModel {
     fn new(responses: Vec<ModelOutput>) -> Self {
-        Self::with_compaction(responses, Vec::new())
-    }
-
-    fn with_compaction(responses: Vec<ModelOutput>, compact_outputs: Vec<CompactOutput>) -> Self {
-        let compaction_endpoint = !compact_outputs.is_empty();
         Self {
             responses: Mutex::new(responses.into()),
-            compact_outputs: Mutex::new(compact_outputs.into()),
             requests: Mutex::new(Vec::new()),
-            compact_requests: Mutex::new(Vec::new()),
-            compaction_endpoint,
             image_input: false,
         }
     }
@@ -191,7 +157,7 @@ impl Model for ScriptedModel {
                 .push(RecordedRequest {
                     allow_hosted_tools: request.allow_hosted_tools,
                     instructions: request.instructions.into(),
-                    input: request.input.to_vec(),
+                    input: request.input.iter().cloned().collect(),
                     tools: request.tools.to_vec(),
                 });
             let output = self
@@ -204,29 +170,6 @@ impl Model for ScriptedModel {
                 events(ModelEvent::TextDelta(output.text().into())).await?;
             }
             Ok(output)
-        })
-    }
-
-    fn compaction_endpoint(&self) -> bool {
-        self.compaction_endpoint
-    }
-
-    fn compact<'a>(&'a self, request: CompactRequest<'a>) -> BoxFuture<'a, Result<CompactOutput>> {
-        Box::pin(async move {
-            self.compact_requests
-                .lock()
-                .expect("compact requests")
-                .push(RecordedCompactRequest {
-                    session_id: request.session_id.into(),
-                    instructions: request.instructions.into(),
-                    input: request.input.to_vec(),
-                    tools: request.tools.to_vec(),
-                });
-            self.compact_outputs
-                .lock()
-                .expect("compact outputs")
-                .pop_front()
-                .ok_or_else(|| Error::Provider("compact script exhausted".into()))
         })
     }
 }
@@ -255,14 +198,6 @@ impl Model for GatedModel {
             }
             self.inner.respond(request, events).await
         })
-    }
-
-    fn compaction_endpoint(&self) -> bool {
-        self.inner.compaction_endpoint()
-    }
-
-    fn compact<'a>(&'a self, request: CompactRequest<'a>) -> BoxFuture<'a, Result<CompactOutput>> {
-        self.inner.compact(request)
     }
 }
 
@@ -323,7 +258,7 @@ impl CheckpointStore for MemoryCheckpoints {
     fn save<'a>(
         &'a self,
         checkpoint: &'a Checkpoint,
-        _transcript_delta: &'a [Value],
+        _transcript_delta: &'a [Arc<Value>],
         _execution: Option<&'a ExecutionRecord>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
@@ -341,8 +276,8 @@ impl CheckpointStore for MemoryCheckpoints {
 
     fn save_with_events<'a>(
         &'a self,
-        checkpoint: Checkpoint,
-        transcript_delta: Vec<Value>,
+        checkpoint: Arc<Checkpoint>,
+        transcript_delta: Vec<Arc<Value>>,
         execution: Option<ExecutionRecord>,
         events: Vec<TimestampedEvent>,
     ) -> BoxFuture<'a, Result<Vec<JournalEvent>>> {
@@ -465,19 +400,6 @@ fn user_message_with_attachments(
             reply: None,
             requested_delivery: None,
             target_turn_id: None,
-        },
-    }
-}
-
-fn steer_message(turn_id: impl Into<String>, text: impl Into<String>) -> Op {
-    Op::Message {
-        message: MessageSubmission {
-            author: MessageAuthor::User,
-            text: text.into(),
-            attachments: Vec::new(),
-            reply: None,
-            requested_delivery: Some(ActiveMessageDelivery::Steer),
-            target_turn_id: Some(turn_id.into()),
         },
     }
 }

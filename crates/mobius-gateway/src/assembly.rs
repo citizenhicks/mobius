@@ -16,8 +16,7 @@ use mobius::backend::sandbox::{ApprovalPolicy, Sandbox, SandboxBackend};
 use mobius::backend::session_files::SessionFileStore;
 use mobius::middleware::artifacts::Artifacts;
 use mobius::middleware::attachments::Attachments;
-use mobius::middleware::compaction::{Compaction, CompactionMode};
-use mobius::middleware::context_offloading::ContextOffloading;
+use mobius::middleware::compaction::Compaction;
 use mobius::middleware::extensions::{Extensions, MANIFEST as EXTENSIONS_MANIFEST};
 use mobius::middleware::image_generation::ImageGeneration;
 use mobius::middleware::instructions::Instructions;
@@ -38,7 +37,7 @@ use crate::extensions::{ExtensionStore, ResolvedExtensions};
 use crate::middleware_manifest::{BuiltinMiddleware, MIDDLEWARE};
 use crate::provider_catalog::{
     CatalogRoute, catalog_routes, configured_model_providers, configured_model_routes,
-    credential_is_configured, selected_base_url,
+    credential_is_configured,
 };
 use crate::sandbox::GatewaySandbox;
 use crate::wire::{
@@ -105,66 +104,76 @@ impl PreparedBot {
     }
 }
 
-pub(crate) async fn prepare_bot(
+pub(crate) fn prepare_bot<'a>(
     gateway: &GatewayConfig,
     bot: crate::wire::BotRecord,
-    store: &ConfigStore,
+    store: &'a ConfigStore,
     credentials: &CredentialStore,
     session_files: SessionFileStore,
     epoch: u64,
     computer_config: Arc<crate::computer_runtime::ComputerConfig>,
-) -> Result<PreparedBot> {
-    #[cfg(test)]
-    store
-        .runtime_operations
-        .preparations
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let config = &bot.config.config;
-    let model_providers = configured_model_providers(gateway, store, credentials)?;
-    let (models, context_window) =
-        if credential_is_configured(&config.provider, store, credentials)? {
-            build_models(gateway, &config.provider, store, credentials, session_files)?
-        } else {
-            unavailable_models(gateway, &config.provider, session_files)?
-        };
-    let choices = crate::provider_catalog::configured_model_catalog(gateway)?;
-    crate::config::validate_bot_compatibility(gateway, config, choices.catalogs())?;
-    let approval_policy = configured_approval_policy(&config.middleware)?;
-    let active_message_delivery = configured_message_delivery(&config.middleware)?;
-    let compaction = config
-        .middleware
-        .enabled(mobius::middleware::compaction::MANIFEST.id)
-        .then(|| configured_compaction(&config.middleware).map(Arc::new))
-        .transpose()?;
-    let computer_runtime =
-        crate::computer_runtime::prepare(store.state_dir(), &config.middleware, &computer_config)
+) -> impl std::future::Future<Output = Result<PreparedBot>> + Send + use<'a> {
+    // Resolve configuration while its owner can lend a lock guard; only runtime preparation awaits.
+    let prepared = (|| {
+        #[cfg(test)]
+        store
+            .runtime_operations
+            .preparations
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let config = &bot.config.config;
+        let model_providers = configured_model_providers(gateway, store, credentials)?;
+        let (models, context_window) =
+            if credential_is_configured(&config.provider, store, credentials)? {
+                build_models(gateway, &config.provider, store, credentials, session_files)?
+            } else {
+                unavailable_models(gateway, &config.provider, session_files)?
+            };
+        let choices = crate::provider_catalog::configured_model_catalog(gateway)?;
+        crate::config::validate_bot_compatibility(gateway, config, choices.catalogs())?;
+        let approval_policy = configured_approval_policy(&config.middleware)?;
+        let active_message_delivery = configured_message_delivery(&config.middleware)?;
+        let compaction = config
+            .middleware
+            .enabled(mobius::middleware::compaction::MANIFEST.id)
+            .then(|| configured_compaction(&config.middleware).map(Arc::new))
+            .transpose()?;
+        let extensions = ExtensionStore::new(store).resolve(gateway, &config.extensions)?;
+        let providers = std::iter::once(config.provider.clone())
+            .chain(
+                gateway
+                    .configured_providers
+                    .values()
+                    .filter(|provider| provider.selection.instance != config.provider.instance)
+                    .map(|provider| provider.selection.clone()),
+            )
+            .collect();
+        let subagent_ceilings = gateway.execution.subagent_ceilings()?;
+        Ok::<_, Error>(async move {
+            let computer_runtime = crate::computer_runtime::prepare(
+                store.state_dir(),
+                &bot.config.config.middleware,
+                &computer_config,
+            )
             .await?;
-    let extensions = ExtensionStore::new(store).resolve(gateway, &config.extensions)?;
-    let providers = std::iter::once(config.provider.clone())
-        .chain(
-            gateway
-                .configured_providers
-                .values()
-                .filter(|provider| provider.selection.instance != config.provider.instance)
-                .map(|provider| provider.selection.clone()),
-        )
-        .collect();
-    Ok(PreparedBot {
-        stale: std::sync::atomic::AtomicBool::new(false),
-        providers,
-        bot,
-        epoch,
-        models,
-        context_window,
-        model_providers,
-        approval_policy,
-        active_message_delivery,
-        compaction,
-        extensions,
-        computer_runtime,
-        computer_config,
-        subagent_ceilings: gateway.execution.subagent_ceilings()?,
-    })
+            Ok(PreparedBot {
+                stale: std::sync::atomic::AtomicBool::new(false),
+                providers,
+                bot,
+                epoch,
+                models,
+                context_window,
+                model_providers,
+                approval_policy,
+                active_message_delivery,
+                compaction,
+                extensions,
+                computer_runtime,
+                computer_config,
+                subagent_ceilings,
+            })
+        })
+    })();
+    async move { prepared?.await }
 }
 
 pub(crate) struct BuiltAgent {
@@ -210,27 +219,26 @@ pub(crate) async fn assemble(
     if let Some(session_id) = session_id.as_deref() {
         validate_session_id(session_id)?;
     }
-    let gateway_config = gateway
-        .lock()
-        .map_err(|_| Error::Config("gateway configuration lock is poisoned".into()))?
-        .clone();
-    crate::config::validate_desktop_bot_policy(&gateway_config, &prepared.bot.config.config)?;
+    let (workspace_path, execution, telemetry, tls, profile_directory) = {
+        let config = gateway
+            .lock()
+            .map_err(|_| Error::Config("gateway configuration lock is poisoned".into()))?;
+        crate::config::validate_desktop_bot_policy(&config, &prepared.bot.config.config)?;
+        (
+            chat.execution_root(store.state_dir(), config.tls.as_ref())?,
+            config.execution.clone(),
+            config.telemetry.clone(),
+            config.tls.clone(),
+            config.computer.browser.profile_directory.clone(),
+        )
+    };
     let models = Arc::clone(&prepared.models);
     let context_window = prepared.context_window;
-    let model_providers = prepared.model_providers.clone();
     let approval_policy = prepared.approval_policy;
-    let settings = prepared.bot.config.config.middleware.clone();
-    let workspace_path = chat.execution_root(store.state_dir(), gateway_config.tls.as_ref())?;
     let project = chat.workspace.is_some();
     let attached_folders = chat.attached_folders.clone();
     let state_dir = store.state_dir().to_path_buf();
-    let computer_runtime = prepared.computer_runtime.clone();
-    let tls_key = gateway_config
-        .tls
-        .as_ref()
-        .map(|tls| tls.private_key.clone());
-    let token_estimate =
-        mobius::middleware::TokenEstimate::new(gateway_config.execution.bytes_per_token)?;
+    let token_estimate = mobius::middleware::TokenEstimate::new(execution.bytes_per_token)?;
     let resources = Arc::clone(&prepared);
     let gateway_for_middleware = Arc::clone(&gateway);
     // Hidden routine and channel chats may carry third-party input.
@@ -244,7 +252,10 @@ pub(crate) async fn assemble(
             subagents,
         },
     ) = run_discovery(discovery_gate, move || {
-        if let Some(hook) = &gateway_config.telemetry.activity_hook {
+        let settings = &resources.bot.config.config.middleware;
+        let computer_runtime = &resources.computer_runtime;
+        let tls_key = tls.as_ref().map(|tls| tls.private_key.as_path());
+        if let Some(hook) = &telemetry.activity_hook {
             hook.validate_roots(
                 [&state_dir, &workspace_path]
                     .into_iter()
@@ -276,7 +287,7 @@ pub(crate) async fn assemble(
                     .map(|plugin| plugin.root.clone()),
             );
         }
-        if let Some(runtime) = &computer_runtime {
+        if let Some(runtime) = computer_runtime {
             read_roots.extend(crate::computer_runtime::resource_roots(
                 runtime,
                 &resources.computer_config,
@@ -286,9 +297,8 @@ pub(crate) async fn assemble(
             )?);
         }
         let output_bytes =
-            crate::middleware_manifest::usize_setting(&settings, "sandbox", "tool_output_bytes")?;
-        let credential_environment = gateway_config
-            .telemetry
+            crate::middleware_manifest::usize_setting(settings, "sandbox", "tool_output_bytes")?;
+        let credential_environment = telemetry
             .sinks
             .iter()
             .filter_map(|sink| sink.bearer_env.as_deref())
@@ -297,34 +307,28 @@ pub(crate) async fn assemble(
             GatewaySandbox::new_configured(
                 &workspace_path,
                 &state_dir,
-                tls_key.as_deref(),
-                &gateway_config.execution,
+                tls_key,
+                &execution,
                 output_bytes,
                 &credential_environment,
             )?
             .with_desktop(desktop)
             .with_remote_desktop(remote_desktop)
-            .deny_read_paths(
-                gateway_config
-                    .computer
-                    .browser
-                    .profile_directory
-                    .iter()
-                    .cloned()
-                    .chain(gateway_config.telemetry.sinks.iter().filter_map(|sink| {
-                        sink.bearer_file
-                            .as_ref()
-                            .map(|file| {
-                                let path = std::path::PathBuf::from(file);
-                                if path.is_absolute() {
-                                    path
-                                } else {
-                                    state_dir.join(path)
-                                }
-                            })
-                            .filter(|path| path.exists())
-                    })),
-            )?
+            .deny_read_paths(profile_directory.into_iter().chain(
+                telemetry.sinks.iter().filter_map(|sink| {
+                    sink.bearer_file
+                        .as_ref()
+                        .map(|file| {
+                            let path = std::path::PathBuf::from(file);
+                            if path.is_absolute() {
+                                path
+                            } else {
+                                state_dir.join(path)
+                            }
+                        })
+                        .filter(|path| path.exists())
+                }),
+            ))?
             .allow_attached_folders(attached_folders.iter().cloned())?
             .allow_read_roots(read_roots)?,
         );
@@ -332,14 +336,14 @@ pub(crate) async fn assemble(
         let sandbox = Sandbox::new(Arc::clone(&backend), approval_policy)
             .tool_output_limit(output_bytes)?
             .background_command_limit(crate::middleware_manifest::usize_setting(
-                &settings,
+                settings,
                 "sandbox",
                 "background_commands",
             )?)?;
         let sandbox = if attached_folders.is_empty() {
             sandbox
         } else {
-            sandbox.attached_folders(workspace_path.clone(), attached_folders.clone())
+            sandbox.attached_folders(workspace_path.clone(), attached_folders)
         };
         let extensions = extensions
             .map(|extensions| {
@@ -374,17 +378,28 @@ pub(crate) async fn assemble(
     };
     metadata.extend(chat.metadata()?);
     let workspace = chat.workspace_info();
-    let usage_store = store.clone();
+    let workspace_label = workspace
+        .as_ref()
+        .map(|workspace| workspace.path.display().to_string());
+    let usage_resources = Arc::clone(&prepared);
+    let usage_store = Arc::new(store.clone());
     let max_model_steps =
         usize::try_from(prepared.bot.config.config.max_model_steps).map_err(|_| {
             Error::Config("maximum model steps exceed this platform's supported range".into())
         })?;
+    let persistent = session_id.as_deref() == Some(prepared.bot.conversation_session_id.as_str());
+    let middleware = if persistent {
+        // The child template excludes persistent-chat middleware added to the parent below.
+        entries.clone()
+    } else {
+        std::mem::take(&mut entries)
+    };
     let system_prompt = prepared.instructions();
     let mut agent_config = AgentConfig::new(
         models,
         Arc::clone(&sandbox),
         checkpoints,
-        MiddlewareStack::new(entries.clone())?,
+        MiddlewareStack::new(middleware)?,
         system_prompt,
     )
     .context_window(context_window)
@@ -395,22 +410,26 @@ pub(crate) async fn assemble(
     .max_model_steps(max_model_steps)
     .metadata(metadata)
     .usage_observer(move |route, usage| {
-        let provider = model_providers.get(route).ok_or_else(|| {
-            MobiusError::Config("model route is not in the configured gateway usage catalog".into())
-        })?;
-        persist_usage(&gateway, &usage_store, provider, usage)
+        let resources = Arc::clone(&usage_resources);
+        let gateway = Arc::clone(&gateway);
+        let store = Arc::clone(&usage_store);
+        Box::pin(async move {
+            let provider = resources.model_providers.get(route).ok_or_else(|| {
+                MobiusError::Config(
+                    "model route is not in the configured gateway usage catalog".into(),
+                )
+            })?;
+            publish_usage(&gateway, &store, provider, usage).await
+        })
     })
     .session_context(SessionContext {
         owner_id: chat.bot_id.clone(),
         user_name: local_user_name(),
-        workspace_id: workspace.as_ref().map(|workspace| workspace.id.clone()),
-        workspace_label: workspace
-            .as_ref()
-            .map(|workspace| workspace.path.display().to_string()),
+        workspace_id: workspace.map(|workspace| workspace.id),
+        workspace_label,
         origin_label: Some(origin_label.into()),
         ..SessionContext::default()
     });
-    let persistent = session_id.as_deref() == Some(prepared.bot.conversation_session_id.as_str());
     if persistent && (project || !chat.catalog_visible) {
         return Err(Error::Config(
             "Persistent Chat must be visible and project-free".into(),
@@ -444,7 +463,30 @@ pub(crate) async fn assemble(
     })
 }
 
-pub(crate) fn persist_usage(
+// Usage publication is serialized before entering the blocking pool, including across chats.
+static USAGE_PUBLICATION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+pub(crate) async fn publish_usage(
+    gateway: &Arc<Mutex<GatewayConfig>>,
+    store: &ConfigStore,
+    provider: &str,
+    usage: &TokenUsage,
+) -> mobius::Result<()> {
+    let guard = USAGE_PUBLICATION.lock().await;
+    let gateway = Arc::clone(gateway);
+    let store = store.clone();
+    let provider = provider.to_owned();
+    let usage = usage.clone();
+    tokio::task::spawn_blocking(move || {
+        // Keep admission occupied until atomic publication finishes, even after caller cancellation.
+        let _guard = guard;
+        persist_usage(&gateway, &store, &provider, &usage)
+    })
+    .await
+    .map_err(|error| MobiusError::Config(format!("usage publication task failed: {error}")))?
+}
+
+fn persist_usage(
     gateway: &Mutex<GatewayConfig>,
     store: &ConfigStore,
     provider: &str,
@@ -453,17 +495,9 @@ pub(crate) fn persist_usage(
     let mut gateway = gateway
         .lock()
         .map_err(|_| MobiusError::Config("gateway configuration lock is poisoned".into()))?;
-    let mut next = gateway.clone();
-    if next
-        .observe_usage(provider, usage)
-        .map_err(|error| MobiusError::Config(error.to_string()))?
-    {
-        store
-            .save(&next)
-            .map_err(|error| MobiusError::Config(error.to_string()))?;
-        *gateway = next;
-    }
-    Ok(())
+    store
+        .record_usage(&mut gateway, provider, usage)
+        .map_err(|error| MobiusError::Config(error.to_string()))
 }
 
 fn subagent_launcher(template: &Arc<OnceLock<AgentConfig>>) -> SubagentLauncher {
@@ -504,9 +538,17 @@ fn build_models(
     let selected_route = model_route_id(&selection.instance, &selection.model, effort);
     let mut catalog = catalog_routes(definition, configured, selection);
     catalog.extend(
-        configured_model_routes(gateway, store, credentials)?
-            .into_iter()
-            .filter(|route| route.provider.instance != selection.instance),
+        configured_model_routes(
+            &gateway.configured_providers,
+            gateway
+                .bot_defaults
+                .as_ref()
+                .map(|defaults| defaults.config.provider.instance.as_str()),
+            store,
+            credentials,
+        )?
+        .into_iter()
+        .filter(|route| route.provider.instance != selection.instance),
     );
     catalog.sort_by_key(|route| route.choice.route != selected_route);
     if catalog.first().map(|route| route.choice.route.as_str()) != Some(selected_route.as_str()) {
@@ -514,22 +556,25 @@ fn build_models(
             "active model route is not in the configured gateway catalog".into(),
         ));
     }
-    let media = crate::provider_catalog::media_routes(gateway, &catalog)?;
+    let media = crate::provider_catalog::media_routes(&gateway.configured_providers, &catalog)?;
     let routes = instantiate_routes(catalog, store, credentials, &gateway.model_transport)?;
+    let mut routes = routes.into_iter();
     let first = routes
-        .first()
+        .next()
         .ok_or_else(|| Error::Config("provider has no model routes".into()))?;
     let context_window = first
         .choice
         .context_window
         .unwrap_or(DEFAULT_CONTEXT_WINDOW);
     let mut router =
-        ModelRouter::new(&first.id, Arc::clone(&first.model)).session_files(session_files);
-    for route in routes.iter().skip(1) {
-        router.register(&route.id, Arc::clone(&route.model))?;
-    }
+        ModelRouter::new(&first.choice.route, first.model).session_files(session_files);
+    router.set_credential_lifetime(&first.choice.route, first.lifetime)?;
+    router.set_context_group(&first.choice.route, first.instance)?;
+    router.configure_choice(first.choice)?;
     for route in routes {
-        router.set_credential_lifetime(&route.id, route.lifetime)?;
+        router.register(&route.choice.route, route.model)?;
+        router.set_credential_lifetime(&route.choice.route, route.lifetime)?;
+        router.set_context_group(&route.choice.route, route.instance)?;
         router.configure_choice(route.choice)?;
     }
     for image in media.images {
@@ -551,9 +596,17 @@ fn instantiate_routes(
     let mut provider_credentials =
         BTreeMap::<String, (ProviderCredential, ModelCredentialLifetime)>::new();
     let mut routes = Vec::with_capacity(catalog.len());
-    for route in catalog {
+    for mut route in catalog {
         let definition = provider(&route.provider.provider)?;
-        let base_url = selected_base_url(definition, &route.provider).map(str::to_owned);
+        let base_url = if definition.configurable_base_url() {
+            route
+                .provider
+                .base_url
+                .take()
+                .or_else(|| definition.default_base_url().map(str::to_owned))
+        } else {
+            None
+        };
         let (credential, lifetime) =
             if route.provider.endpoint_auth == ProviderEndpointAuth::Credentialless {
                 (ProviderCredential::Credentialless, Default::default())
@@ -640,18 +693,17 @@ fn build_route(
     let mut choice = route.choice;
     choice.supports_image_input = model.supports_image_input();
     choice.supports_image_generation = model.supports_image_generation();
-    let id = choice.route.clone();
     Ok(RouteValue {
+        instance: route.provider.instance,
         choice,
-        id,
         model,
         lifetime,
     })
 }
 
 struct RouteValue {
+    instance: String,
     lifetime: ModelCredentialLifetime,
-    id: String,
     choice: ModelChoice,
     model: Arc<dyn Model>,
 }
@@ -728,48 +780,28 @@ fn unavailable_models(
 }
 
 pub(crate) fn configured_compaction(settings: &MiddlewareConfig) -> Result<Compaction> {
-    Ok(Compaction::new(crate::middleware_manifest::integer_setting(
+    let compaction = Compaction::new(crate::middleware_manifest::integer_setting(
         settings,
         "compaction",
         "at_tokens",
-    )?)?
-    .mode(
-        crate::middleware_manifest::string_setting(settings, "compaction", "mode")?
-            .ok_or_else(|| Error::Config("unsupported compaction mode".into()))?
-            .parse::<CompactionMode>()?,
-    )
-    .keep_recent_tokens(crate::middleware_manifest::usize_setting(
-        settings,
-        "compaction",
-        "keep_recent_tokens",
-    )?)?
-    .native_retained_tokens(crate::middleware_manifest::usize_setting(
-        settings,
-        "compaction",
-        "native_retained_tokens",
     )?)?
     .reserve_tokens(crate::middleware_manifest::integer_setting(
         settings,
         "compaction",
         "reserve_tokens",
-    )?)?
-    .handoff_policy(
-        crate::middleware_manifest::integer_setting(
-            settings,
-            "compaction",
-            "handoff_reserve_divisor",
-        )?,
-        crate::middleware_manifest::integer_setting(
-            settings,
-            "compaction",
-            "handoff_warning_reserves",
-        )?,
-        crate::middleware_manifest::integer_setting(
-            settings,
-            "compaction",
-            "handoff_urgent_reserves",
-        )?,
-    )?)
+    )?)?;
+    match crate::middleware_manifest::string_setting(
+        settings,
+        "compaction",
+        "allow_model_compaction",
+    )? {
+        Some("on") => Ok(compaction.allow_model_compaction(true)),
+        Some("off") => Ok(compaction.allow_model_compaction(false)),
+        None => Ok(compaction),
+        Some(_) => Err(Error::Config(
+            "compaction.allow_model_compaction must be on or off".into(),
+        )),
+    }
 }
 
 fn build_middleware(
@@ -857,13 +889,6 @@ fn build_middleware(
             BuiltinMiddleware::Messages => Arc::new(Messages::new(
                 crate::middleware_manifest::usize_setting(settings, "messages", "max_pending")?,
                 prepared.active_message_delivery,
-            )?),
-            BuiltinMiddleware::ContextOffloading => Arc::new(ContextOffloading::new(
-                crate::middleware_manifest::integer_setting(
-                    settings,
-                    "context_offloading",
-                    "stale_after_tokens",
-                )?,
             )?),
             BuiltinMiddleware::ComputerControl => {
                 let runtime = prepared

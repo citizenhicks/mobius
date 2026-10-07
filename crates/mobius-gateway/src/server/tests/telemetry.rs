@@ -737,7 +737,7 @@ async fn telemetry_keeps_an_old_turn_cancellation_after_later_turns() {
                 &checkpoint.session_id,
                 timestamp_ms,
                 &Event {
-                    submission_id: Some(format!("stop-{turn_id}")),
+                    submission_id: Some(format!("stop-{turn_id}").into()),
                     msg: EventMsg::TurnAborted(TurnAbortedEvent {
                         turn_id: turn_id.into(),
                         reason: reason.into(),

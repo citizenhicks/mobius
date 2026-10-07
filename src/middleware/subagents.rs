@@ -377,31 +377,21 @@ impl AgentScope {
         let pending = parent
             .pending_tools
             .iter()
-            .map(|call| call.call_id.clone())
+            .map(|call| call.call_id.as_str())
             .collect::<BTreeSet<_>>();
-        let context = parent
-            .context
-            .into_iter()
-            .filter(|item| {
-                item.get("type").and_then(Value::as_str) != Some("function_call")
-                    || item
-                        .get("call_id")
-                        .and_then(Value::as_str)
-                        .is_none_or(|call_id| !pending.contains(call_id))
-            })
-            .collect::<Vec<_>>();
         let mut checkpoint = Checkpoint::empty(&session_id);
         checkpoint.catalog_visible = false;
-        checkpoint.context = fork_context(&context, turns);
+        checkpoint.context = Arc::new(fork_context(&parent.context, turns, &pending));
+        checkpoint.context_model_route = parent.context_model_route.or(parent.model_route);
         checkpoint.session_context = parent.session_context;
         let mut metadata = AgentIdentity {
             root_session_id: self.root_session_id.clone(),
-            agent_path: agent_path.clone(),
+            agent_path,
             depth: self.next_depth()?,
         }
         .metadata(self.metadata.clone());
         metadata.insert(SPAWN_CONTEXT_KEY.into(), Value::String(turns.label()));
-        checkpoint.metadata.clone_from(&metadata);
+        checkpoint.metadata = metadata;
         crate::backend::session_files::grant_context(
             self.files.as_ref(),
             &self.session_id,
@@ -420,7 +410,7 @@ impl AgentScope {
             session_id,
             model,
             reasoning_effort,
-            metadata,
+            metadata: checkpoint.metadata,
         })
         .await
     }
@@ -692,7 +682,7 @@ impl Middleware for Subagents {
         if context.source() == SessionStartSource::Compact {
             return Box::pin(async { Ok(()) });
         }
-        Box::pin(self.shared.session_start((*context.runtime).clone()))
+        Box::pin(self.shared.session_start(context.runtime))
     }
 
     fn register(&self, catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
@@ -816,7 +806,6 @@ impl Middleware for Subagents {
                 .iter()
                 .filter_map(internal_message_kind)
                 .filter_map(|kind| kind.strip_prefix("subagent_update:"))
-                .map(str::to_owned)
                 .collect();
             let delivered_message_ids = context
                 .input()

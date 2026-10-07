@@ -186,11 +186,10 @@ impl CapabilityOverlay {
             .map_or(0, |last| self.action_index.min(last));
     }
 
-    pub(super) fn selected_key(&self) -> Option<(String, String)> {
+    pub(super) fn selected_key(&self) -> Option<&(String, String)> {
         self.widgets
             .get(self.widget_list.selected()?)
             .map(|(key, _)| key)
-            .cloned()
     }
 
     pub(in crate::frontend) fn open_widget(&self) -> Option<&FrontendWidget> {

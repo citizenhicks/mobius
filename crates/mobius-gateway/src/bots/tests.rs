@@ -60,8 +60,6 @@ fn sparse_saved_bot_projects_integer_defaults_without_rewriting_storage() {
     for (owner, id) in [
         ("sandbox", "tool_output_bytes"),
         ("sandbox", "background_commands"),
-        ("compaction", "keep_recent_tokens"),
-        ("compaction", "native_retained_tokens"),
         ("compaction", "reserve_tokens"),
     ] {
         assert_eq!(

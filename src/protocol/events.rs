@@ -1,5 +1,8 @@
 //! Frontend-neutral event payload records.
 
+use std::borrow::Cow;
+use std::sync::Arc;
+
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -47,7 +50,9 @@ impl ErrorEvent {
                 (ErrorKind::Stopped, false, None, None)
             }
             crate::Error::Rollback { .. } => (ErrorKind::Rollback, false, None, None),
-            crate::Error::Io(_) => (ErrorKind::Io, false, None, None),
+            crate::Error::Io(_) | crate::Error::PublicationDurability(_) => {
+                (ErrorKind::Io, false, None, None)
+            }
             crate::Error::Http(_) => (ErrorKind::Http, false, None, None),
             crate::Error::Json(_) => (ErrorKind::Json, false, None, None),
             crate::Error::StorageFull => (ErrorKind::Storage, false, None, None),
@@ -221,9 +226,9 @@ pub struct MessageEvent {
 }
 
 impl MessageEvent {
-    pub(crate) fn reply_text(&self) -> Option<String> {
+    pub(crate) fn reply_text(&self) -> Option<Cow<'_, str>> {
         if !self.text.is_empty() {
-            return Some(self.text.clone());
+            return Some(Cow::Borrowed(&self.text));
         }
         (!self.attachments.is_empty()).then(|| {
             self.attachments
@@ -231,6 +236,7 @@ impl MessageEvent {
                 .map(|attachment| attachment.name.as_str())
                 .collect::<Vec<_>>()
                 .join(", ")
+                .into()
         })
     }
 }
@@ -239,11 +245,11 @@ impl MessageEvent {
 /// Data for assistant message event.
 pub struct AssistantMessageEvent {
     /// The session identifier.
-    pub session_id: String,
+    pub session_id: Arc<str>,
     /// The turn identifier.
-    pub turn_id: String,
+    pub turn_id: Arc<str>,
     /// The model step identifier.
-    pub model_step_id: String,
+    pub model_step_id: Arc<str>,
     /// The content.
     pub content: Vec<ModelStepContent>,
     #[serde(deserialize_with = "required_option")]
@@ -252,12 +258,12 @@ pub struct AssistantMessageEvent {
 }
 
 impl AssistantMessageEvent {
-    pub(crate) fn reply_text(&self) -> Option<String> {
+    pub(crate) fn reply_text(&self) -> Option<Cow<'_, str>> {
         self.content
             .iter()
             .rev()
             .find(|item| item.phase != ModelStepContentPhase::Reasoning && !item.text.is_empty())
-            .map(|item| item.text.clone())
+            .map(|item| Cow::Borrowed(item.text.as_str()))
     }
 }
 
@@ -265,11 +271,11 @@ impl AssistantMessageEvent {
 /// Data for assistant content delta event.
 pub struct AssistantContentDeltaEvent {
     /// The session identifier.
-    pub session_id: String,
+    pub session_id: Arc<str>,
     /// The turn identifier.
-    pub turn_id: String,
+    pub turn_id: Arc<str>,
     /// The model step identifier.
-    pub model_step_id: String,
+    pub model_step_id: Arc<str>,
     /// The delta.
     pub delta: String,
     /// The phase.
@@ -280,11 +286,11 @@ pub struct AssistantContentDeltaEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelStepStartedEvent {
     /// The session identifier.
-    pub session_id: String,
+    pub session_id: Arc<str>,
     /// The turn identifier.
-    pub turn_id: String,
+    pub turn_id: Arc<str>,
     /// The model step identifier.
-    pub model_step_id: String,
+    pub model_step_id: Arc<str>,
     /// The step index.
     pub step_index: usize,
     /// The started at milliseconds.
@@ -295,11 +301,11 @@ pub struct ModelStepStartedEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelStepCompletedEvent {
     /// The session identifier.
-    pub session_id: String,
+    pub session_id: Arc<str>,
     /// The turn identifier.
-    pub turn_id: String,
+    pub turn_id: Arc<str>,
     /// The model step identifier.
-    pub model_step_id: String,
+    pub model_step_id: Arc<str>,
     /// The step index.
     pub step_index: usize,
     /// The started at milliseconds.
@@ -710,11 +716,11 @@ pub struct TokenCountEvent {
 /// Data for web search begin event.
 pub struct WebSearchBeginEvent {
     /// The session identifier.
-    pub session_id: String,
+    pub session_id: Arc<str>,
     /// The turn identifier.
-    pub turn_id: String,
+    pub turn_id: Arc<str>,
     /// The model step identifier.
-    pub model_step_id: String,
+    pub model_step_id: Arc<str>,
     /// The call identifier.
     pub call_id: String,
 }
@@ -723,11 +729,11 @@ pub struct WebSearchBeginEvent {
 /// Data for web search end event.
 pub struct WebSearchEndEvent {
     /// The session identifier.
-    pub session_id: String,
+    pub session_id: Arc<str>,
     /// The turn identifier.
-    pub turn_id: String,
+    pub turn_id: Arc<str>,
     /// The model step identifier.
-    pub model_step_id: String,
+    pub model_step_id: Arc<str>,
     /// The call identifier.
     pub call_id: String,
     /// The action.

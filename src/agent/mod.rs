@@ -56,7 +56,8 @@ const EVENT_QUEUE_CAPACITY: usize = 256;
 const MAX_OPERATION_BYTES: usize = 256;
 const DEFAULT_INITIAL_REPLAY_BATCHES: usize = 100;
 
-type UsageObserver = Arc<dyn Fn(&str, &TokenUsage) -> Result<()> + Send + Sync>;
+type UsageObserver =
+    Arc<dyn for<'a> Fn(&'a str, &'a TokenUsage) -> crate::BoxFuture<'a, Result<()>> + Send + Sync>;
 
 /// Default maximum number of primary model steps in one turn.
 pub const DEFAULT_MAX_MODEL_STEPS: usize = 2042;
@@ -228,12 +229,16 @@ impl AgentConfig {
 
     /// Observes normalized token-usage increments with their selected model route.
     ///
-    /// Returning an error aborts the active turn before the increment is committed
+    /// The observer is awaited before committing the increment. Returning an error
+    /// aborts the active turn before the increment is committed
     /// to the session checkpoint.
     #[must_use]
     pub fn usage_observer(
         mut self,
-        observer: impl Fn(&str, &TokenUsage) -> Result<()> + Send + Sync + 'static,
+        observer: impl for<'a> Fn(&'a str, &'a TokenUsage) -> crate::BoxFuture<'a, Result<()>>
+        + Send
+        + Sync
+        + 'static,
     ) -> Self {
         self.usage_observer = Some(Arc::new(observer));
         self
@@ -256,16 +261,23 @@ impl AgentConfig {
         self
     }
 
-    fn select_model(&mut self, route: &str) -> Result<ModelChoice> {
-        self.select_model_with_reasoning(route, None)
+    fn select_model(&mut self, route: &str) -> Result<ModelChangedEvent> {
+        let default_window = self.default_context_window;
+        let choice = self.select_model_with_reasoning(route, None)?;
+        Ok(ModelChangedEvent {
+            route: choice.route.clone(),
+            model: choice.model.clone(),
+            reasoning_effort: choice.reasoning_effort.clone(),
+            model_context_window: Some(choice.context_window.unwrap_or(default_window)),
+        })
     }
 
     fn select_model_with_reasoning(
         &mut self,
         route: &str,
         reasoning_effort: Option<&str>,
-    ) -> Result<ModelChoice> {
-        let choice = self.model.resolve_choice(route, reasoning_effort)?.clone();
+    ) -> Result<&ModelChoice> {
+        let choice = self.model.resolve_choice(route, reasoning_effort)?;
         self.provider.clone_from(&choice.route);
         self.context_window = choice.context_window.unwrap_or(self.default_context_window);
         Ok(choice)
@@ -454,9 +466,7 @@ fn submission_channel(capacity: usize) -> (AgentSender, SubmissionInbox) {
         last_sequence: Arc::clone(&last_sequence),
     });
     (
-        AgentSender {
-            ingress: Arc::clone(&ingress),
-        },
+        AgentSender { ingress },
         SubmissionInbox {
             receiver,
             last_sent_sequence: last_sequence,
@@ -531,7 +541,6 @@ pub struct Agent {
     frontend_sink: crate::middleware::FrontendEventSink,
     session: SessionConfiguredEvent,
     model: ModelInfo,
-    model_choices: Vec<ModelChoice>,
     tool_count: usize,
     next_before_sequence: Option<u64>,
 }
@@ -588,9 +597,10 @@ impl Agent {
     }
 
     /// Returns every model route exposed to frontend selectors.
-    #[must_use]
-    pub fn model_choices(&self) -> &[ModelChoice] {
-        &self.model_choices
+    pub fn model_choices(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = &ModelChoice> + ExactSizeIterator {
+        self.model_router.choices()
     }
 
     /// Returns the number of tools registered for this agent.
@@ -613,10 +623,17 @@ impl Agent {
         (self.sender, AgentEvents { inner: self.events })
     }
 
-    /// Separates command and durably recorded event halves.
+    /// Moves command/event halves and startup descriptors into a durable frontend owner.
     #[must_use]
-    pub fn into_recorded_parts(self) -> (AgentSender, mpsc::Receiver<JournalEvent>) {
-        (self.sender, self.events)
+    pub fn into_recorded_parts(
+        self,
+    ) -> (
+        AgentSender,
+        mpsc::Receiver<JournalEvent>,
+        SessionConfiguredEvent,
+        FrontendExtensions,
+    ) {
+        (self.sender, self.events, self.session, self.frontend)
     }
 }
 
@@ -645,11 +662,28 @@ struct Runner {
     runtime: Arc<RuntimeContext>,
     system_prompt: Arc<str>,
     catalog: Arc<Catalog>,
-    state: Checkpoint,
-    transcript_delta: Vec<Value>,
+    state: LiveCheckpoint,
+    transcript_delta: Vec<Arc<Value>>,
     pending_session_start_stop: Option<String>,
     turn_end_turn_id: Option<String>,
     events: EventRecorder,
+}
+
+/// The actor mutates uniquely owned state; recorder snapshots share it until their ack.
+struct LiveCheckpoint(Arc<Checkpoint>);
+
+impl std::ops::Deref for LiveCheckpoint {
+    type Target = Checkpoint;
+
+    fn deref(&self) -> &Checkpoint {
+        &self.0
+    }
+}
+
+impl LiveCheckpoint {
+    fn make_mut(&mut self) -> &mut Checkpoint {
+        Arc::make_mut(&mut self.0)
+    }
 }
 
 impl Runner {
@@ -674,7 +708,7 @@ impl Runner {
             if let Some(message) = self
                 .config
                 .middleware
-                .next_turn(&mut self.state.pending_messages)?
+                .next_turn(&mut self.state.make_mut().pending_messages)?
             {
                 let submission_id = message.submission_id.clone();
                 if let Err(error) = self.start_message_turn(&mut inbox, message).await {
@@ -758,16 +792,11 @@ impl Runner {
         };
         let active_route = choice.route.clone();
         let active_model = choice.model.clone();
-        self.state.model_route = Some(choice.route.clone());
+        self.state.make_mut().model_route = Some(choice.route.clone());
         self.persist_with_events(
             vec![Event {
-                submission_id: Some(submission_id),
-                msg: EventMsg::ModelChanged(ModelChangedEvent {
-                    route: choice.route,
-                    model: choice.model,
-                    reasoning_effort: choice.reasoning_effort,
-                    model_context_window: Some(self.config.context_window),
-                }),
+                submission_id: Some(submission_id.into()),
+                msg: EventMsg::ModelChanged(choice),
             }],
             None,
         )
@@ -845,7 +874,8 @@ impl Runner {
         match output {
             Ok(events) => {
                 for event in events {
-                    self.emit(&submission_id, EventMsg::Frontend(event)).await?;
+                    self.emit(submission_id.as_str(), EventMsg::Frontend(event))
+                        .await?;
                 }
             }
             Err(error) => {
@@ -875,17 +905,22 @@ impl Runner {
         execution: Option<&ExecutionRecord>,
     ) -> Result<u64> {
         let previous_sequence = self.state.sequence;
-        self.state.sequence = self
+        self.state.make_mut().sequence = self
             .state
             .sequence
             .checked_add(1)
             .ok_or_else(|| Error::Checkpoint("checkpoint sequence overflow".into()))?;
         if let Err(error) = self
             .events
-            .save(&self.state, &self.transcript_delta, execution, events)
+            .save(
+                Arc::clone(&self.state.0),
+                &self.transcript_delta,
+                execution,
+                events,
+            )
             .await
         {
-            self.state.sequence = previous_sequence;
+            self.state.make_mut().sequence = previous_sequence;
             return Err(error);
         }
         self.transcript_delta.clear();
@@ -893,10 +928,12 @@ impl Runner {
     }
 
     fn record_model_call(&mut self) -> Result<()> {
-        let active =
-            self.state.active_execution.as_mut().ok_or_else(|| {
-                Error::Checkpoint("model called without an active execution".into())
-            })?;
+        let active = self
+            .state
+            .make_mut()
+            .active_execution
+            .as_mut()
+            .ok_or_else(|| Error::Checkpoint("model called without an active execution".into()))?;
         active.model_calls = active
             .model_calls
             .checked_add(1)
@@ -904,43 +941,55 @@ impl Runner {
         Ok(())
     }
 
-    fn record_usage(&mut self, route: &str, usage: &TokenUsage) -> Result<()> {
-        let mut total_usage = self.state.total_usage.clone();
+    async fn record_usage(&mut self, route: &str, usage: &TokenUsage) -> Result<()> {
+        let state = self.state.make_mut();
+        // Stage usage totals so overflow or observer failure leaves durable counters unchanged.
+        let mut total_usage = state.total_usage.clone();
         total_usage.checked_add(usage).ok_or_else(|| {
             Error::Provider("provider token usage exceeds the supported range".into())
         })?;
-        let active = self.state.active_execution.as_mut().ok_or_else(|| {
+        let active = state.active_execution.as_mut().ok_or_else(|| {
             Error::Checkpoint("usage recorded without an active execution".into())
         })?;
+        // Stage execution usage alongside totals before committing either counter.
         let mut execution_usage = active.usage.clone();
         execution_usage.checked_add(usage).ok_or_else(|| {
             Error::Provider("provider token usage exceeds the supported range".into())
         })?;
         if let Some(observer) = &self.config.usage_observer {
-            observer(route, usage)?;
+            observer(route, usage).await?;
         }
-        self.state.total_usage = total_usage;
+        state.total_usage = total_usage;
         active.usage = execution_usage;
         Ok(())
     }
 
     fn record_tools(&mut self, tool_calls: u64, failed_tool_calls: u64) -> Result<()> {
-        let active = self.state.active_execution.as_mut().ok_or_else(|| {
-            Error::Checkpoint("tools recorded without an active execution".into())
-        })?;
-        active.tool_calls = active
+        let active = self
+            .state
+            .make_mut()
+            .active_execution
+            .as_mut()
+            .ok_or_else(|| {
+                Error::Checkpoint("tools recorded without an active execution".into())
+            })?;
+        let tool_calls = active
             .tool_calls
             .checked_add(tool_calls)
             .ok_or_else(|| Error::Checkpoint("execution tool-call count overflow".into()))?;
-        active.failed_tool_calls = active
+        let failed_tool_calls = active
             .failed_tool_calls
             .checked_add(failed_tool_calls)
             .ok_or_else(|| Error::Checkpoint("execution failed-tool count overflow".into()))?;
+        active.tool_calls = tool_calls;
+        active.failed_tool_calls = failed_tool_calls;
         Ok(())
     }
 
     fn finish_execution(&mut self, outcome: ExecutionOutcome) -> Result<ExecutionRecord> {
-        self.state.finish_execution(outcome, unix_timestamp_ms()?)
+        self.state
+            .make_mut()
+            .finish_execution(outcome, unix_timestamp_ms()?)
     }
 
     async fn finish_and_persist_execution(
@@ -948,33 +997,38 @@ impl Runner {
         outcome: ExecutionOutcome,
         events: Vec<Event>,
     ) -> Result<u64> {
+        // Restore the active execution if its completed record cannot be persisted.
         let active_execution = self.state.active_execution.clone();
         let execution_stats = self.state.execution_stats.clone();
         let execution = self.finish_execution(outcome)?;
         match self.persist_with_events(events, Some(&execution)).await {
             Ok(sequence) => Ok(sequence),
             Err(error) => {
-                self.state.active_execution = active_execution;
-                self.state.execution_stats = execution_stats;
+                self.state.make_mut().active_execution = active_execution;
+                self.state.make_mut().execution_stats = execution_stats;
                 Err(error)
             }
         }
     }
 
     fn push_context(&mut self, item: Value) {
-        self.state.context.push(item.clone());
+        let item = Arc::new(item);
+        Arc::make_mut(&mut self.state.make_mut().context).push(Arc::clone(&item));
         self.transcript_delta.push(item);
     }
 
     fn extend_context(&mut self, items: Vec<Value>) {
         for item in items {
-            if crate::middleware::delivery_once::accept(&mut self.state.delivered_once, &item) {
+            if crate::middleware::delivery_once::accept(
+                &mut self.state.make_mut().delivered_once,
+                &item,
+            ) {
                 self.push_context(item);
             }
         }
     }
 
-    async fn emit(&self, submission_id: impl Into<String>, msg: EventMsg) -> Result<()> {
+    async fn emit(&self, submission_id: impl Into<Arc<str>>, msg: EventMsg) -> Result<()> {
         send_event(
             &self.events,
             Event {

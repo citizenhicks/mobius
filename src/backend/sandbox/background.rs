@@ -213,13 +213,9 @@ impl BackgroundCommands {
     pub(super) async fn shutdown(&self, owner: &str) -> Result<()> {
         let entries = {
             let mut entries = self.entries.lock().map_err(|_| state_error())?;
-            let ids = entries
-                .iter()
-                .filter(|(_, entry)| entry.owner == owner)
-                .map(|(id, _)| id.clone())
-                .collect::<Vec<_>>();
-            ids.into_iter()
-                .filter_map(|id| entries.remove(&id))
+            entries
+                .extract_if(.., |_, entry| entry.owner == owner)
+                .map(|(_, entry)| entry)
                 .collect::<Vec<_>>()
         };
         for entry in &entries {

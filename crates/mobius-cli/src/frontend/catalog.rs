@@ -423,18 +423,23 @@ impl UiCatalog {
 
 impl UiCommand {
     fn usage(&self) -> CommandAction {
-        CommandAction::Print(format!("usage: {}", self.menu_item().label))
+        CommandAction::Print(if self.arguments.is_empty() {
+            format!("usage: {COMMAND_PREFIX}{}", self.name)
+        } else {
+            format!("usage: {COMMAND_PREFIX}{} {}", self.name, self.arguments)
+        })
     }
 
     fn menu_item(&self) -> MenuItem {
         let command = format!("{COMMAND_PREFIX}{}", self.name);
+        let label = if self.arguments.is_empty() {
+            command.clone()
+        } else {
+            format!("{command} {}", self.arguments)
+        };
         MenuItem {
-            value: command.clone(),
-            label: if self.arguments.is_empty() {
-                command
-            } else {
-                format!("{command} {}", self.arguments)
-            },
+            value: command,
+            label,
             description: self.description.clone(),
         }
     }

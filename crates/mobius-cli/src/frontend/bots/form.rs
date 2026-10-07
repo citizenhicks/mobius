@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use mobius::protocol::MAX_MESSAGE_BYTES;
 use mobius_gateway::bots::{MAX_BOT_DESCRIPTION_BYTES, MAX_BOT_NAME_BYTES};
 use mobius_gateway::wire::{
-    BotRecord, ClientMessage, HookSelector, ReadyPayload, Routine, RoutineAction, RoutineBinding,
-    RoutineCommand, RoutineDefinition, RoutineSchedule, RoutineScheduleKind,
+    AgentComposition, BotRecord, ClientMessage, HookSelector, ReadyPayload, Routine, RoutineAction,
+    RoutineBinding, RoutineCommand, RoutineDefinition, RoutineSchedule, RoutineScheduleKind,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -130,7 +130,7 @@ impl RoutineForm {
 
     pub(super) fn create(bot_id: String) -> Self {
         Self {
-            mode: RoutineFormMode::Create(bot_id.clone()),
+            mode: RoutineFormMode::Create(bot_id),
             workspace: TextForm::new("", MAX_MESSAGE_BYTES),
             instructions: TextForm::multiline("", MAX_MESSAGE_BYTES),
             schedule_kind: RoutineScheduleKind::Interval,
@@ -150,24 +150,22 @@ impl RoutineForm {
             matches!(binding.on, HookSelector::Schedule { .. })
                 && binding.action == RoutineAction::Start
         });
+        let default_schedule = RoutineSchedule {
+            kind: RoutineScheduleKind::Interval,
+            at: None,
+            every_seconds: Some(3600),
+            expression: None,
+            time_zone: None,
+        };
         let (schedule, ends_at) = timer
             .and_then(|binding| {
                 if let HookSelector::Schedule { schedule, ends_at } = &binding.on {
-                    Some((schedule.clone(), *ends_at))
+                    Some((schedule, *ends_at))
                 } else {
                     None
                 }
             })
-            .unwrap_or((
-                RoutineSchedule {
-                    kind: RoutineScheduleKind::Interval,
-                    at: None,
-                    every_seconds: Some(3600),
-                    expression: None,
-                    time_zone: None,
-                },
-                None,
-            ));
+            .unwrap_or((&default_schedule, None));
         let schedule_value = match schedule.kind {
             RoutineScheduleKind::Once => schedule.at.map(|value| value.to_string()),
             RoutineScheduleKind::Interval => schedule.every_seconds.map(|value| value.to_string()),
@@ -283,7 +281,7 @@ impl BotForm {
             self.error = Some("Bot name and description are required.".into());
             return FormFlow::Stay;
         }
-        match &self.mode {
+        match &mut self.mode {
             BotFormMode::Create => {
                 FormFlow::Send(request_action("Create Bot", FollowUp::None, |request_id| {
                     ClientMessage::CreateBot {
@@ -298,16 +296,25 @@ impl BotForm {
                     self.error = Some("The selected Bot is no longer available.".into());
                     return FormFlow::Stay;
                 };
-                let mut config = bot.config.config.clone();
-                if let Some(prompt) = &self.prompt {
-                    config.system_prompt.clone_from(&prompt.value);
-                }
+                let current = &bot.config.config;
+                let config = AgentComposition {
+                    provider: current.provider.clone(),
+                    realtime_voice: current.realtime_voice.clone(),
+                    middleware: current.middleware.clone(),
+                    extensions: current.extensions.clone(),
+                    system_prompt: if let Some(prompt) = &mut self.prompt {
+                        std::mem::take(&mut prompt.value)
+                    } else {
+                        current.system_prompt.clone()
+                    },
+                    max_model_steps: current.max_model_steps,
+                };
                 FormFlow::Send(request_action(
                     "Update Bot identity and prompt",
                     FollowUp::None,
                     |request_id| ClientMessage::UpdateBot {
                         request_id,
-                        id: id.clone(),
+                        id: std::mem::take(id),
                         expected_revision: *revision,
                         name,
                         description,
@@ -408,7 +415,7 @@ impl RoutineForm {
         }
     }
 
-    pub(super) fn action(&self) -> std::result::Result<Action, String> {
+    pub(super) fn action(&mut self) -> std::result::Result<Action, String> {
         let workspace = self.workspace.value.trim();
         if workspace.is_empty() {
             return Err("Routine workspace is required.".into());
@@ -416,15 +423,21 @@ impl RoutineForm {
         if self.instructions.value.trim().is_empty() {
             return Err("Routine instructions are required.".into());
         }
-        let mut bindings = self.bindings.clone();
-        if self.schedule_enabled {
+        let timer = if self.schedule_enabled {
             let schedule = self.schedule()?;
             let ends_at = optional_i64(&self.ends_at.value, "end time")?;
             if ends_at.is_some_and(|value| value <= 0) {
                 return Err("Routine end time must be a positive Unix timestamp.".into());
             }
+            Some((schedule, ends_at))
+        } else {
+            None
+        };
+        // Validation above preserves the editable form on failure; a successful submission consumes it.
+        let mut bindings = std::mem::take(&mut self.bindings);
+        if let Some((schedule, ends_at)) = timer {
             let binding = RoutineBinding {
-                id: self.timer_binding_id.clone(),
+                id: std::mem::take(&mut self.timer_binding_id),
                 on: HookSelector::Schedule { schedule, ends_at },
                 action: RoutineAction::Start,
             };
@@ -439,16 +452,16 @@ impl RoutineForm {
         }
         let definition = RoutineDefinition {
             workspace: PathBuf::from(workspace),
-            instructions: self.instructions.value.clone(),
+            instructions: std::mem::take(&mut self.instructions.value),
             bindings,
         };
-        match &self.mode {
+        match &mut self.mode {
             RoutineFormMode::Create(bot_id) => Ok(request_action(
                 "Create routine",
                 FollowUp::Routines,
                 |request_id| ClientMessage::CreateRoutine {
                     request_id,
-                    bot_id: bot_id.clone(),
+                    bot_id: std::mem::take(bot_id),
                     definition,
                 },
             )),
@@ -458,7 +471,7 @@ impl RoutineForm {
                 |request_id| ClientMessage::RoutineCommand {
                     request_id,
                     command: RoutineCommand {
-                        routine_id: id.clone(),
+                        routine_id: std::mem::take(id),
                         action: RoutineAction::Update { definition },
                     },
                 },

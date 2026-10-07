@@ -135,15 +135,17 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     let mut recovery_execution: Option<ExecutionRecord> = None;
     let mut recovery_events = Vec::new();
     let route = if config.model_route_configured || is_new {
-        config.provider.clone()
+        std::borrow::Cow::Owned(std::mem::take(&mut config.provider))
     } else {
-        state
-            .model_route
-            .clone()
-            .ok_or_else(|| Error::Checkpoint("saved session has no model route".into()))?
+        std::borrow::Cow::Borrowed(
+            state
+                .model_route
+                .as_deref()
+                .ok_or_else(|| Error::Checkpoint("saved session has no model route".into()))?,
+        )
     };
     let choice = config.select_model(&route)?;
-    let route = choice.route.clone();
+    let route = choice.route;
     let model = crate::protocol::ModelInfo {
         model: choice.model,
         reasoning_effort: choice.reasoning_effort,
@@ -226,9 +228,9 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         recovery_events.push(crate::agent::turn::turn_event(
             &active.submission_id,
             EventMsg::ModelStepCompleted(ModelStepCompletedEvent {
-                session_id: state.session_id.clone(),
-                turn_id: active.turn_id.clone(),
-                model_step_id: step.model_step_id,
+                session_id: state.session_id.as_str().into(),
+                turn_id: active.turn_id.as_str().into(),
+                model_step_id: step.model_step_id.into(),
                 step_index: step.step_index,
                 started_at_ms: step.started_at_ms,
                 completed_at_ms: unix_timestamp_ms()?.max(step.started_at_ms),
@@ -240,8 +242,11 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     let mut recovered_tool_calls = 0;
     if uncertain_tools {
         if interrupted_model_step {
-            let calls = super::tool_step::tool_call_inputs(&state.pending_tools)?;
-            state.context.extend(calls.iter().cloned());
+            let calls = super::tool_step::tool_call_inputs(&state.pending_tools)?
+                .into_iter()
+                .map(Arc::new)
+                .collect::<Vec<_>>();
+            Arc::make_mut(&mut state.context).extend(calls.iter().map(Arc::clone));
             recovery_delta.extend(calls);
         }
         recovered_tool_calls = u64::try_from(state.pending_tools.len())
@@ -249,18 +254,22 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         let recovered_turn = state
             .active_execution
             .as_ref()
-            .map(|execution| execution.turn_id.clone())
+            .map(|execution| &execution.turn_id)
             .ok_or_else(|| Error::Checkpoint("pending tools have no active execution".into()))?;
         for call in std::mem::take(&mut state.pending_tools) {
             let output = "execution interrupted; result unknown after restart";
-            let item = crate::backend::model::tool_output(&call.call_id, output, true);
-            state.context.push(item.clone());
+            let item = Arc::new(crate::backend::model::tool_output(
+                &call.call_id,
+                &output.into(),
+                true,
+            ));
+            Arc::make_mut(&mut state.context).push(Arc::clone(&item));
             recovery_delta.push(item);
             recovery_events.push(Event {
                 submission_id: state
                     .active_execution
                     .as_ref()
-                    .map(|execution| execution.submission_id.clone()),
+                    .map(|execution| execution.submission_id.as_str().into()),
                 msg: EventMsg::ToolCallEnd(ToolCallEndEvent {
                     turn_id: recovered_turn.clone(),
                     call_id: call.call_id,
@@ -276,11 +285,11 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         let recovered_turn = state
             .active_execution
             .as_ref()
-            .map(|execution| execution.turn_id.clone())
+            .map(|execution| &execution.turn_id)
             .ok_or_else(|| Error::Checkpoint("active model step has no execution".into()))?;
         config.middleware.finish_message_turn(
             &mut state.pending_messages,
-            &recovered_turn,
+            recovered_turn,
             ExecutionOutcome::Aborted,
         )?;
         if uncertain_tools {
@@ -310,7 +319,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
             &runtime,
             &state.pending_messages,
             start_source,
-            &mut state.context,
+            Arc::make_mut(&mut state.context),
             &mut state.delivered_once,
         )
         .await?;
@@ -345,10 +354,11 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
             }),
         ));
     }
+    let mut state = super::LiveCheckpoint(Arc::new(state));
     let finish_start = async {
         if is_new || state_changed {
             if !is_new {
-                state.sequence = state
+                state.make_mut().sequence = state
                     .sequence
                     .checked_add(1)
                     .ok_or_else(|| Error::Checkpoint("checkpoint sequence overflow".into()))?;
@@ -357,7 +367,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
             startup_events.append(&mut recovery_events);
             event_tx
                 .save(
-                    &state,
+                    Arc::clone(&state.0),
                     &recovery_delta,
                     recovery_execution.as_ref(),
                     startup_events,
@@ -412,7 +422,6 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     if let Err(error) = finish_start {
         return Err(failed_start(&config, &runtime, error).await);
     }
-    let model_choices = config.model.choices().cloned().collect();
     let model_router = Arc::clone(&config.model);
     let weak_frontend = Arc::downgrade(&runtime.frontend);
     let frontend_sink: crate::middleware::FrontendEventSink = Arc::new(move |event| {
@@ -462,7 +471,6 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         frontend_sink,
         session,
         model,
-        model_choices,
         tool_count,
         next_before_sequence,
     })

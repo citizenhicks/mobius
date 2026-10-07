@@ -109,12 +109,18 @@ impl Messages {
         }
     }
 
-    fn queued_widget(&self, id: &str, message: &MessageEvent) -> FrontendEvent {
-        let action = matches!(message.author, MessageAuthor::User).then(|| Op::CapabilityCommand {
+    fn queued_widget(
+        &self,
+        id: &str,
+        author: &MessageAuthor,
+        delivery: MessageDelivery,
+        text: &str,
+    ) -> FrontendEvent {
+        let action = matches!(author, MessageAuthor::User).then(|| Op::CapabilityCommand {
             capability: self.name().into(),
             command: EDIT_COMMAND.into(),
             arguments: id.into(),
-            input: Some(message.text.clone()),
+            input: Some(text.into()),
             target: None,
         });
         FrontendEvent::Widget {
@@ -122,9 +128,9 @@ impl Messages {
             item: FrontendWidget {
                 id: id.into(),
                 slot: FrontendSlot::TranscriptTail,
-                text: message.text.clone(),
+                text: text.into(),
                 tone: FrontendTone::Neutral,
-                symbol: Some(match message.delivery {
+                symbol: Some(match delivery {
                     MessageDelivery::Turn => FrontendSymbol::Chat,
                     MessageDelivery::Steer => FrontendSymbol::Custom("steer".into()),
                     MessageDelivery::Queue => FrontendSymbol::Custom("queue".into()),
@@ -252,23 +258,27 @@ impl Middleware for Messages {
             reply: context.message.reply.clone(),
             message_target: None,
         };
-        if !context.queued_messages.enqueue(
-            context.submission_id,
-            boundary.clone(),
-            event.clone(),
-        )? {
+        let widget = (!matches!(boundary, QueuedMessageBoundary::Turn)).then(|| {
+            self.queued_widget(
+                context.submission_id,
+                &event.author,
+                event.delivery,
+                &event.text,
+            )
+        });
+        let input_changed = matches!(boundary, QueuedMessageBoundary::Steer { .. });
+        if !context
+            .queued_messages
+            .enqueue(context.submission_id, boundary, event)?
+        {
             return Ok(SubmissionResult::Rejected(
                 "message could not be queued".into(),
             ));
         }
-        if !matches!(boundary, QueuedMessageBoundary::Turn) {
-            context.events.push(EventMsg::Frontend(
-                self.queued_widget(context.submission_id, &event),
-            ));
+        if let Some(widget) = widget {
+            context.events.push(EventMsg::Frontend(widget));
         }
-        Ok(SubmissionResult::Accepted {
-            input_changed: matches!(boundary, QueuedMessageBoundary::Steer { .. }),
-        })
+        Ok(SubmissionResult::Accepted { input_changed })
     }
 
     fn message_boundary_events(&self, submission_id: &str) -> Vec<EventMsg> {
@@ -326,27 +336,36 @@ impl Middleware for Messages {
             let Some(queued) = context.queued_messages.find(context.arguments) else {
                 return Ok(Some(SubmissionResult::Rejected(STALE_EDIT.into())));
             };
-            let mut event = queued.event();
-            if !matches!(event.author, MessageAuthor::User) {
+            if !matches!(queued.author(), MessageAuthor::User) {
                 return Ok(Some(SubmissionResult::Rejected(
                     "peer messages cannot be edited".into(),
                 )));
             }
-            event.text = input.into();
+            let event = MessageEvent {
+                author: MessageAuthor::User,
+                delivery: queued.delivery(),
+                text: input.into(),
+                attachments: queued.attachments().to_vec(),
+                reply: queued.reply().cloned(),
+                message_target: None,
+            };
             let input_changed = event.delivery == MessageDelivery::Steer;
-            if !context.queued_messages.replace(
-                context.arguments,
+            let widget = self.queued_widget(
                 context.submission_id,
-                event.clone(),
-            )? {
+                &event.author,
+                event.delivery,
+                &event.text,
+            );
+            if !context
+                .queued_messages
+                .replace(context.arguments, context.submission_id, event)?
+            {
                 return Ok(Some(SubmissionResult::Rejected(STALE_EDIT.into())));
             }
             context
                 .events
                 .push(EventMsg::Frontend(self.remove_widget(context.arguments)));
-            context.events.push(EventMsg::Frontend(
-                self.queued_widget(context.submission_id, &event),
-            ));
+            context.events.push(EventMsg::Frontend(widget));
             Ok(Some(SubmissionResult::Accepted { input_changed }))
         })
     }
@@ -360,7 +379,12 @@ impl Middleware for Messages {
                 return Ok(());
             }
             for queued in context.queued_messages().views() {
-                (context.runtime.frontend)(self.queued_widget(queued.id(), &queued.event()))?;
+                (context.runtime.frontend)(self.queued_widget(
+                    queued.id(),
+                    queued.author(),
+                    queued.delivery(),
+                    queued.text(),
+                ))?;
             }
             if let Some(widget) = voice::transcript::restore_widget(
                 context.runtime.checkpoints.as_ref(),
@@ -428,19 +452,17 @@ mod tests {
     fn queued_widgets_name_their_delivery() {
         let messages = Messages::default();
         let symbol = |delivery| {
-            let FrontendEvent::Widget { item, .. } = messages.queued_widget(
-                "message-1",
-                &MessageEvent {
-                    author: MessageAuthor::User,
-                    delivery,
-                    text: "hello".into(),
-                    attachments: Vec::new(),
-                    reply: None,
-                    message_target: None,
-                },
-            ) else {
+            let FrontendEvent::Widget { item, .. } =
+                messages.queued_widget("message-1", &MessageAuthor::User, delivery, "hello")
+            else {
                 panic!("queued message widget");
             };
+            assert_eq!(item.text, "hello");
+            assert!(matches!(
+                item.action,
+                Some(Op::CapabilityCommand { arguments, input: Some(input), .. })
+                    if arguments == "message-1" && input == "hello"
+            ));
             item.symbol
         };
 
@@ -544,10 +566,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn queued_message_edit_preserves_its_reply_snapshot() {
+    async fn queued_message_edit_preserves_retained_content_after_validation_failure() {
         let stack = MiddlewareStack::new(vec![Arc::new(Messages::default())]).expect("stack");
         let mut queued = Vec::new();
         let mut message = user(Some(ActiveMessageDelivery::Queue));
+        message.attachments.push(SessionFileReference {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "notes.txt".into(),
+            size: 8,
+            media_type: "text/plain".into(),
+        });
         message.reply = Some(MessageReply {
             target: MessageTarget {
                 checkpoint_sequence: 5,
@@ -564,31 +592,55 @@ mod tests {
         )
         .expect("checkpoint store");
 
-        stack
-            .active_command(
-                MANIFEST.id,
-                &mut ActiveCommandContext {
-                    checkpoints: &checkpoints,
-                    submission_id: "message-2",
-                    session_id: "session-1",
-                    metadata: &metadata,
-                    active_turn_id: "turn-1",
-                    command: EDIT_COMMAND,
-                    arguments: "message-1",
-                    input: Some("Updated"),
-                    target: None,
-                    queued_messages: MessageQueue::new(&mut queued),
-                    events: &mut events,
-                },
-            )
-            .await
-            .expect("edit queued message")
-            .expect("message command");
+        let original = queued.clone();
+        for submission_id in [" ", "message-2"] {
+            let result = stack
+                .active_command(
+                    MANIFEST.id,
+                    &mut ActiveCommandContext {
+                        checkpoints: &checkpoints,
+                        submission_id,
+                        session_id: "session-1",
+                        metadata: &metadata,
+                        active_turn_id: "turn-1",
+                        command: EDIT_COMMAND,
+                        arguments: "message-1",
+                        input: Some("Updated"),
+                        target: None,
+                        queued_messages: MessageQueue::new(&mut queued),
+                        events: &mut events,
+                    },
+                )
+                .await;
+            if submission_id.trim().is_empty() {
+                assert!(result.is_err());
+                assert_eq!(queued, original);
+                assert!(events.is_empty());
+            } else {
+                assert_eq!(
+                    result.expect("edit queued message"),
+                    Some(SubmissionResult::Accepted {
+                        input_changed: false
+                    })
+                );
+            }
+        }
 
         let edited = queued[0].event();
+        assert_eq!(queued[0].id(), "message-2");
         assert_eq!(
-            (edited.text.as_str(), edited.reply),
-            ("Updated", message.reply)
+            (
+                edited.text.as_str(),
+                edited.delivery,
+                edited.attachments,
+                edited.reply
+            ),
+            (
+                "Updated",
+                MessageDelivery::Queue,
+                message.attachments,
+                message.reply
+            )
         );
     }
 

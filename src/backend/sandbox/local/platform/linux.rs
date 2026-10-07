@@ -91,7 +91,7 @@ pub(crate) fn sandboxed_command(
             .arg(&root.path)
             .arg(&root.path);
     }
-    for denied in &sandbox.denied_reads {
+    for denied in sandbox.denied_reads.iter() {
         if denied.directory {
             command.arg("--tmpfs").arg(&denied.path);
         } else {
@@ -132,7 +132,7 @@ pub(crate) fn protected_full_access_command(
         "/dev",
         "/dev",
     ]);
-    for denied in &sandbox.denied_reads {
+    for denied in sandbox.denied_reads.iter() {
         if denied.directory {
             command.arg("--tmpfs").arg(&denied.path);
         } else {

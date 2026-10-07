@@ -1,5 +1,6 @@
 //! Model provider interface and routing.
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::io;
 use std::io::Write;
@@ -33,6 +34,7 @@ pub mod openai_socket;
 pub mod openrouter;
 pub mod provider;
 pub mod realtime;
+mod responses_wire;
 mod router;
 pub use cancellation::{ModelCancellation, ModelCancellationReason};
 pub use image_generation::{GeneratedImage, ImageGenerationReference, ImageGenerationRequest};
@@ -54,6 +56,8 @@ use crate::protocol::{
 pub(crate) use crate::protocol::{
     PROMPT_CACHE_BREAKPOINT_FIELD, REPLAY_REASONING_FIELD, TOOL_ERROR_FIELD,
 };
+pub use input::ModelInput;
+mod input;
 // Leaves room for typed lifecycle metadata inside the frontend envelope.
 const MAX_MODEL_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_TOOL_CALLS: usize = 128;
@@ -62,14 +66,65 @@ const MAX_TOOL_CALL_ID_BYTES: usize = 4 * 1024;
 /// Stable semantic name of the core deferred-tool discovery function.
 pub const TOOLS_SEARCH_NAME: &str = "tools_search";
 
+pub(crate) fn is_provider_reasoning(item: &Value) -> bool {
+    item.get("type").and_then(Value::as_str) == Some("reasoning")
+}
+
+pub(crate) fn has_provider_reasoning(item: &Value) -> bool {
+    is_provider_reasoning(item)
+        || item.get(REPLAY_REASONING_FIELD).is_some()
+        || anthropic::has_replay_reasoning(item)
+}
+
+fn strip_reasoning_fields(item: &mut Value) -> bool {
+    let neutral = item
+        .as_object_mut()
+        .is_some_and(|fields| fields.remove(REPLAY_REASONING_FIELD).is_some());
+    anthropic::strip_replay_reasoning(item) || neutral
+}
+
+/// Removes provider-private reasoning before another model route replays context.
+/// Returns whether the active input changed; visible messages and tool pairs remain intact.
+pub(crate) fn strip_provider_reasoning(input: &mut Vec<Value>) -> bool {
+    let mut changed = false;
+    input.retain_mut(|item| {
+        if is_provider_reasoning(item) {
+            changed = true;
+            return false;
+        }
+        changed |= strip_reasoning_fields(item);
+        true
+    });
+    changed
+}
+
+/// Removes provider-private reasoning while sharing untouched durable items.
+pub(crate) fn strip_shared_provider_reasoning(input: &mut Vec<Arc<Value>>) -> bool {
+    let mut changed = false;
+    input.retain_mut(|item| {
+        if is_provider_reasoning(item) {
+            changed = true;
+            return false;
+        }
+        if has_provider_reasoning(item) {
+            changed |= strip_reasoning_fields(Arc::make_mut(item));
+        }
+        true
+    });
+    changed
+}
+
 /// A function tool definition sent to a model provider.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolDefinition {
-    /// The name.
+    /// Stable function name used to match model calls to a registered tool.
+    /// Must satisfy the catalog's tool-name validation and be unique within that catalog.
     pub name: String,
-    /// The description.
+    /// Model-facing explanation of when to call the tool and what it does.
     pub description: String,
-    /// The parameters.
+    /// JSON Schema for the tool's argument object.
+    /// Provider adapters serialize this schema into their native function-tool format;
+    /// the registered tool remains responsible for validating arguments before execution.
     pub parameters: Value,
 }
 
@@ -186,7 +241,7 @@ impl StreamingToolCalls {
 }
 
 /// Input for one model turn.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct ModelRequest<'a> {
     /// Local session identity used for transport continuation state.
     pub session_id: &'a str,
@@ -197,13 +252,13 @@ pub struct ModelRequest<'a> {
     /// The instructions.
     pub instructions: &'a str,
     /// The input.
-    pub input: &'a [Value],
+    pub input: ModelInput<'a>,
     /// Revision of the active tool catalog used to validate typed tool-load controls.
     pub catalog_revision: &'a str,
     /// Schemas callable without deferred discovery for this request.
-    pub tools: &'a [ToolDefinition],
+    pub tools: &'a [Arc<ToolDefinition>],
     /// Searchable schemas withheld from the model until provider-native discovery.
-    pub deferred_tools: &'a [ToolDefinition],
+    pub deferred_tools: &'a [Arc<ToolDefinition>],
     /// Whether provider-hosted tools such as web search may be attached.
     pub allow_hosted_tools: bool,
     /// Whether a transport may continue a previous response for this session.
@@ -242,27 +297,6 @@ pub fn prompt_cache_key(session_id: &str) -> String {
     digest.update(b"mobius/prompt-cache/v1/");
     digest.update(session_id.as_bytes());
     format!("{:x}", digest.finalize())
-}
-
-/// Input for a provider's native compaction endpoint.
-#[derive(Debug)]
-pub struct CompactRequest<'a> {
-    /// Stable conversation identity used by providers for request routing.
-    pub session_id: &'a str,
-    /// Optional local cause recorded before an unfinished request is dropped.
-    pub cancellation: Option<&'a ModelCancellation>,
-    /// Optional provider-visible prompt-cache identity.
-    pub prompt_cache: Option<PromptCacheIdentity<'a>>,
-    /// Current system instructions governing the compacted conversation.
-    pub instructions: &'a str,
-    /// Conversation items to replace with the returned [`CompactOutput`].
-    pub input: &'a [Value],
-    /// Revision of the active tool catalog used to validate typed tool-load controls.
-    pub catalog_revision: &'a str,
-    /// Current model-facing tool definitions.
-    pub tools: &'a [ToolDefinition],
-    /// Searchable schemas referenced by typed tool-load controls in the input.
-    pub deferred_tools: &'a [ToolDefinition],
 }
 
 /// Fallible asynchronous callback used to forward streaming provider events.
@@ -335,7 +369,8 @@ impl ModelOutput {
                 ));
             }
             let call = decode_tool_call(item)?;
-            if !call_ids.insert(call.call_id.clone()) {
+            let call_id = required_output_string(item, "call_id", MAX_TOOL_CALL_ID_BYTES)?;
+            if !call_ids.insert(call_id) {
                 return Err(Error::Provider(
                     format!("model returned duplicate tool-call ID `{}`", call.call_id).into(),
                 ));
@@ -394,6 +429,11 @@ impl ModelOutput {
     #[must_use]
     pub fn content(&self) -> &[ModelStepContent] {
         &self.content
+    }
+
+    /// Consumes the response into normalized history, validated calls and usage.
+    pub(crate) fn into_parts(self) -> (Vec<Value>, Vec<ToolCall>, TokenUsage) {
+        (self.output, self.tool_calls, self.usage)
     }
 
     pub(crate) fn sync_tool_calls(&mut self) -> Result<()> {
@@ -623,47 +663,6 @@ impl From<OutputTextAnnotation> for ModelStepAnnotation {
     }
 }
 
-/// Durable replacement history returned by server-side compaction.
-///
-/// This output must contain conversation items only, without copying the active
-/// system instructions or tool catalog into history. The agent reapplies that
-/// runtime configuration separately after compaction.
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-pub struct CompactOutput {
-    pub(crate) output: Vec<Value>,
-    pub(crate) usage: TokenUsage,
-}
-
-impl CompactOutput {
-    /// Validates one provider-native compacted context.
-    /// # Errors
-    ///
-    /// Returns an error if the input cannot be parsed or validated.
-    pub fn from_output(output: Vec<Value>, usage: TokenUsage) -> Result<Self> {
-        validate_provider_output(&output)?;
-        validate_usage(&usage)?;
-        if output.is_empty() {
-            return Err(Error::Provider(
-                "compaction returned an empty context".into(),
-            ));
-        }
-        Ok(Self { output, usage })
-    }
-
-    /// Returns the compacted provider-neutral context.
-    #[must_use]
-    pub fn output(&self) -> &[Value] {
-        &self.output
-    }
-
-    /// Returns the validated token usage.
-    #[must_use]
-    pub fn usage(&self) -> &TokenUsage {
-        &self.usage
-    }
-}
-
 /// A model provider Adapter used by the agent loop.
 pub trait Model: Send + Sync {
     /// Validated operational policy for this route; custom providers inherit owner defaults.
@@ -755,20 +754,32 @@ pub trait Model: Send + Sync {
         media: MediaPreparation<'a>,
     ) -> BoxFuture<'a, Result<ModelOutput>> {
         Box::pin(async move {
-            let mut input = media
+            let Some(mut input) = media
                 .prepare(request.session_id, request.input, self, true)
-                .await?;
+                .await?
+            else {
+                media::check_request_bytes(
+                    self.request_size(request)?,
+                    self.transport_settings().max_request_bytes,
+                )?;
+                return self.respond(request, events).await;
+            };
             media::bound_request(
                 &mut input,
                 request.input,
                 media.limits,
                 self.transport_settings().max_request_bytes,
                 true,
-                |input| self.request_size(ModelRequest { input, ..request }),
+                |input| {
+                    self.request_size(ModelRequest {
+                        input: input.into(),
+                        ..request
+                    })
+                },
             )?;
             self.respond(
                 ModelRequest {
-                    input: &input,
+                    input: (&input).into(),
                     ..request
                 },
                 events,
@@ -781,47 +792,19 @@ pub trait Model: Send + Sync {
     /// # Errors
     /// Returns wire conversion or serialization errors.
     fn request_size(&self, request: ModelRequest<'_>) -> Result<usize> {
-        media::serialized_size(
-            &serde_json::json!({"instructions": request.instructions, "input": request.input, "tools": request.tools, "deferred_tools": request.deferred_tools}),
-        )
-    }
-
-    /// Prepares and restores logical references for native compaction.
-    fn compact_prepared<'a>(
-        &'a self,
-        request: CompactRequest<'a>,
-        media: MediaPreparation<'a>,
-    ) -> BoxFuture<'a, Result<CompactOutput>> {
-        Box::pin(async move {
-            let mut input = media
-                .prepare(request.session_id, request.input, self, true)
-                .await?;
-            media::bound_request(
-                &mut input,
-                request.input,
-                media.limits,
-                self.transport_settings().max_request_bytes,
-                true,
-                |input| self.compact_size(CompactRequest { input, ..request }),
-            )?;
-            let mut output = self
-                .compact(CompactRequest {
-                    input: &input,
-                    ..request
-                })
-                .await?;
-            media::restore_references(&mut output.output, request.input, &input)?;
-            Ok(output)
+        #[derive(Serialize)]
+        struct Envelope<'a> {
+            instructions: &'a str,
+            input: ModelInput<'a>,
+            tools: &'a [Arc<ToolDefinition>],
+            deferred_tools: &'a [Arc<ToolDefinition>],
+        }
+        media::serialized_size(&Envelope {
+            instructions: request.instructions,
+            input: request.input,
+            tools: request.tools,
+            deferred_tools: request.deferred_tools,
         })
-    }
-
-    /// Measures the complete native compaction envelope.
-    /// # Errors
-    /// Returns wire conversion or serialization errors.
-    fn compact_size(&self, request: CompactRequest<'_>) -> Result<usize> {
-        media::serialized_size(
-            &serde_json::json!({"instructions": request.instructions, "input": request.input}),
-        )
     }
 
     /// Switches a session to its fallback transport once, without sending a request.
@@ -830,20 +813,6 @@ pub trait Model: Send + Sync {
     /// Returns whether a new transport was activated; providers without one return false.
     fn fallback_transport<'a>(&'a self, _session_id: &'a str) -> BoxFuture<'a, Result<bool>> {
         Box::pin(async { Ok(false) })
-    }
-
-    /// Reports whether this provider exposes a native compaction endpoint.
-    fn compaction_endpoint(&self) -> bool {
-        false
-    }
-
-    /// Calls the native history-compaction endpoint when advertised.
-    fn compact<'a>(&'a self, _request: CompactRequest<'a>) -> BoxFuture<'a, Result<CompactOutput>> {
-        Box::pin(async {
-            Err(Error::Provider(
-                "model provider has no compaction endpoint".into(),
-            ))
-        })
     }
 }
 
@@ -1065,20 +1034,20 @@ crate::embedded_config! {
 /// Creates provider-neutral model input carrying one typed conversation message.
 pub(crate) fn message_input(event: &MessageEvent) -> Result<Value> {
     let text = event.reply.as_ref().map_or_else(
-        || event.text.clone(),
+        || Cow::Borrowed(event.text.as_str()),
         |reply| {
-            format!(
+            Cow::Owned(format!(
                 "Replying to this earlier message:\n\n> {}\n\n{}",
                 reply.text.replace('\n', "\n> "),
                 event.text
-            )
+            ))
         },
     );
     let mut input = match &event.author {
         MessageAuthor::User => user_message_with_attachments(&text, &event.attachments)?,
         MessageAuthor::Source { source, handle, .. } => {
             let instruction = match source {
-                MessageSource::Session { .. } => format!(
+                MessageSource::Session { .. } => Cow::Owned(format!(
                     "{} {}",
                     MESSAGE_TEXT.session,
                     match event.delivery {
@@ -1086,8 +1055,8 @@ pub(crate) fn message_input(event: &MessageEvent) -> Result<Value> {
                         | crate::protocol::MessageDelivery::Queue => &MESSAGE_TEXT.session_turn,
                         crate::protocol::MessageDelivery::Steer => &MESSAGE_TEXT.session_steer,
                     }
-                ),
-                MessageSource::External { .. } => MESSAGE_TEXT.external.clone(),
+                )),
+                MessageSource::External { .. } => Cow::Borrowed(MESSAGE_TEXT.external.as_str()),
             };
             internal_user_message(
                 "message_advisory",
@@ -1099,7 +1068,7 @@ pub(crate) fn message_input(event: &MessageEvent) -> Result<Value> {
     Ok(input)
 }
 
-pub(crate) fn has_prompt_cache_breakpoint(input: &[Value]) -> bool {
+pub(crate) fn has_prompt_cache_breakpoint(input: ModelInput<'_>) -> bool {
     input.iter().any(|item| {
         crate::protocol::content_parts(item).is_some_and(|content| {
             content.iter().any(|part| {
@@ -1145,6 +1114,50 @@ pub(crate) fn reset_prompt_cache_breakpoint(input: &mut [Value]) {
     }
 }
 
+/// Repositions cache markers without copying untouched shared history.
+pub(crate) fn reset_shared_prompt_cache_breakpoint(input: &mut [Arc<Value>]) {
+    let endpoint = input
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(item_index, item)| {
+            crate::protocol::content_parts(item)?
+                .iter()
+                .rposition(|part| {
+                    matches!(
+                        part.get("type").and_then(Value::as_str),
+                        Some("input_text" | "input_image")
+                    )
+                })
+                .map(|part_index| (item_index, part_index))
+        });
+    for (item_index, item) in input.iter_mut().enumerate() {
+        let Some(content) = crate::protocol::content_parts(item) else {
+            continue;
+        };
+        let changed = content.iter().enumerate().any(|(part_index, part)| {
+            let marker = part.get(PROMPT_CACHE_BREAKPOINT_FIELD);
+            if endpoint == Some((item_index, part_index)) {
+                marker != Some(&Value::Bool(true))
+            } else {
+                marker.is_some()
+            }
+        });
+        if !changed {
+            continue;
+        }
+        if let Some(content) = crate::protocol::content_parts_mut(Arc::make_mut(item)) {
+            for (part_index, part) in content.iter_mut().enumerate() {
+                if endpoint == Some((item_index, part_index)) {
+                    part[PROMPT_CACHE_BREAKPOINT_FIELD] = Value::Bool(true);
+                } else if let Some(fields) = part.as_object_mut() {
+                    fields.remove(PROMPT_CACHE_BREAKPOINT_FIELD);
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn internal_user_message(kind: &str, text: &str) -> Value {
     let mut message = user_message(text);
     message[INTERNAL_MESSAGE_FIELD] = Value::String(kind.into());
@@ -1152,13 +1165,13 @@ pub(crate) fn internal_user_message(kind: &str, text: &str) -> Value {
 }
 
 pub(crate) fn durable_visible_message_index(
-    output: &[Value],
-    context: &[Value],
+    output: ModelInput<'_>,
+    context: ModelInput<'_>,
     context_before: usize,
 ) -> Option<usize> {
     let index = output.iter().rposition(has_visible_output_text)?;
     let boundary = context_before.checked_add(index)?.checked_add(1)?;
-    crate::protocol::tool_complete_boundaries(context)
+    crate::protocol::tool_complete_boundaries(context.iter())
         .binary_search(&boundary)
         .is_ok()
         .then_some(index)
@@ -1195,12 +1208,7 @@ fn has_visible_output_text(item: &Value) -> bool {
 
 /// Creates a Responses API function-call-output item.
 #[must_use]
-pub fn tool_output(
-    call_id: &str,
-    output: impl Into<crate::protocol::ToolContent>,
-    is_error: bool,
-) -> Value {
-    let output = output.into();
+pub fn tool_output(call_id: &str, output: &crate::protocol::ToolContent, is_error: bool) -> Value {
     let mut value = serde_json::json!({
         "type": "function_call_output",
         "call_id": call_id,

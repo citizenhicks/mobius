@@ -93,22 +93,30 @@ impl Attachments {
 }
 
 impl Middleware for Attachments {
-    fn prepare_compacted_input(&self, original: &[Value], compacted: &mut Vec<Value>) {
+    fn prepare_compacted_input(
+        &self,
+        original: crate::backend::model::ModelInput<'_>,
+        compacted: &mut Vec<Arc<Value>>,
+    ) {
         // ponytail: scan the retained context; index message identities if large histories make this costly.
         for index in (0..compacted.len()).rev() {
             let item = &compacted[index];
             if item.get("role").and_then(Value::as_str) != Some("user") {
                 continue;
             }
-            let materialization = original
-                .windows(2)
-                .rfind(|pair| {
-                    pair[0].get("role") == item.get("role")
-                        && pair[0].get("content") == item.get("content")
-                        && pair[0].get(MESSAGE_METADATA_FIELD) == item.get(MESSAGE_METADATA_FIELD)
-                        && is_attachment_materialization(&pair[1])
+            let materialization = (1..original.len()).rev().find_map(|position| {
+                let previous = &original[position - 1];
+                let materialization = &original[position];
+                (previous.get("role") == item.get("role")
+                    && previous.get("content") == item.get("content")
+                    && previous.get(MESSAGE_METADATA_FIELD) == item.get(MESSAGE_METADATA_FIELD)
+                    && is_attachment_materialization(materialization))
+                .then(|| {
+                    original
+                        .shared_item(position)
+                        .map_or_else(|| Arc::new(materialization.to_owned()), Arc::clone)
                 })
-                .map(|pair| &pair[1]);
+            });
             restore_attachment_materialization(compacted, index, materialization);
         }
     }
@@ -178,7 +186,14 @@ impl Middleware for Attachments {
 
 impl Attachments {
     async fn materialize_latest(&self, context: &mut ModelContext<'_>) -> Result<()> {
-        let Some((message_index, references)) = referenced_attachments(context.input())?.pop()
+        let input = context.input();
+        let latest_message = input.iter().rposition(|item| {
+            item.get("role").and_then(Value::as_str) == Some("user")
+                && item.get(INTERNAL_MESSAGE_FIELD).is_none()
+        });
+        let Some((message_index, references)) = referenced_attachments(input)?
+            .into_iter()
+            .find(|(index, _)| Some(*index) == latest_message)
         else {
             return Ok(());
         };
@@ -282,19 +297,19 @@ impl Attachments {
 }
 
 fn restore_attachment_materialization(
-    compacted: &mut Vec<Value>,
+    compacted: &mut Vec<Arc<Value>>,
     user_index: usize,
-    materialization: Option<&Value>,
+    materialization: Option<Arc<Value>>,
 ) {
     let Some(materialization) = materialization else {
         return;
     };
     match compacted.get(user_index + 1) {
-        Some(retained) if retained == materialization => {}
+        Some(retained) if retained == &materialization => {}
         Some(retained) if is_attachment_materialization(retained) => {
-            compacted[user_index + 1] = materialization.clone();
+            compacted[user_index + 1] = materialization;
         }
-        Some(_) | None => compacted.insert(user_index + 1, materialization.clone()),
+        Some(_) | None => compacted.insert(user_index + 1, materialization),
     }
 }
 
@@ -321,9 +336,7 @@ fn materialization_message(attachments: &[MaterializedAttachment]) -> Result<Val
             message["content"]
                 .as_array_mut()
                 .ok_or_else(|| Error::Checkpoint("attachment content is not an array".into()))?
-                .push(serde_json::to_value(crate::protocol::ContentPart::Image {
-                    image: image.clone(),
-                })?);
+                .push(serde_json::json!({"type": "input_image", "image": image}));
         }
     }
     Ok(message)
@@ -343,7 +356,7 @@ fn materialized_attachments(item: &Value) -> Result<Option<Vec<MaterializedAttac
 }
 
 fn materialization_matches(
-    input: &[Value],
+    input: crate::backend::model::ModelInput<'_>,
     user_index: usize,
     references: &[SessionFileReference],
 ) -> Result<bool> {
@@ -531,7 +544,9 @@ impl Tool for ListAttachments {
 #[serde(deny_unknown_fields)]
 struct EmptyArgs {}
 
-fn referenced_attachments(input: &[Value]) -> Result<Vec<(usize, Vec<SessionFileReference>)>> {
+fn referenced_attachments(
+    input: crate::backend::model::ModelInput<'_>,
+) -> Result<Vec<(usize, Vec<SessionFileReference>)>> {
     let mut messages = Vec::new();
     for (index, item) in input.iter().enumerate() {
         if item.get("role").and_then(Value::as_str) != Some("user")
@@ -594,17 +609,24 @@ mod tests {
                 (MESSAGE_METADATA_FIELD): {"id": id}
             })
         };
-        let first = user("first");
-        let second = user("second");
-        let first_media = internal_user_message(ATTACHMENT_CONTEXT_MARKER, "first image");
-        let second_media = internal_user_message(ATTACHMENT_CONTEXT_MARKER, "second image");
+        let first = Arc::new(user("first"));
+        let second = Arc::new(user("second"));
+        let first_media = Arc::new(internal_user_message(
+            ATTACHMENT_CONTEXT_MARKER,
+            "first image",
+        ));
+        let second_media = Arc::new(internal_user_message(
+            ATTACHMENT_CONTEXT_MARKER,
+            "second image",
+        ));
         let original = vec![
             first.clone(),
             first_media.clone(),
             second.clone(),
             second_media.clone(),
         ];
-        let marker = serde_json::json!({"type": "compaction", "encrypted_content": "opaque"});
+        let marker =
+            Arc::new(serde_json::json!({"type": "compaction", "encrypted_content": "opaque"}));
         let mut compacted = vec![
             first.clone(),
             second_media.clone(),
@@ -613,8 +635,8 @@ mod tests {
         ];
         let directory = tempfile::tempdir().expect("files");
         let attachments = Attachments::new(SessionFileStore::new(directory.path(), None));
-        attachments.prepare_compacted_input(&original, &mut compacted);
-        attachments.prepare_compacted_input(&original, &mut compacted);
+        attachments.prepare_compacted_input((&original).into(), &mut compacted);
+        attachments.prepare_compacted_input((&original).into(), &mut compacted);
         assert_eq!(
             compacted,
             vec![first, first_media, marker, second, second_media]
@@ -682,7 +704,7 @@ mod tests {
         ];
 
         assert_eq!(
-            referenced_attachments(&input).expect("markers"),
+            referenced_attachments((&input).into()).expect("markers"),
             vec![(0, vec![attachment])]
         );
     }

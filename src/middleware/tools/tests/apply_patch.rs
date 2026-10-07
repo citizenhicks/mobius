@@ -95,7 +95,7 @@ async fn apply_patch_edits_an_absolute_workspace_path() {
 
     let result = execute_batch(
         &catalog,
-        &calls,
+        calls,
         Arc::clone(&sandbox),
         &permissions,
         "turn",
@@ -138,7 +138,7 @@ async fn apply_patch_edits_an_absolute_workspace_path() {
         .expect("bind no-op call");
     let no_op = execute_batch(
         &catalog,
-        &[no_op_call],
+        [no_op_call],
         sandbox,
         &permissions,
         "turn",

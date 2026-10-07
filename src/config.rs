@@ -33,9 +33,8 @@ pub fn overridable<T: DeserializeOwned>(
             });
         match loaded {
             Ok(value) => return value,
-            Err(error) => eprintln!(
-                "ignoring {}, using the bundled catalog: {error}",
-                path.display()
+            Err(error) => tracing::warn!(
+                path = %path.display(), %error, "ignoring catalog override, using the bundled catalog"
             ),
         }
     }

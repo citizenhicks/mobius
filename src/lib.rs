@@ -336,6 +336,10 @@ pub enum Error {
         /// The rollback.
         rollback: Box<Error>,
     },
+    /// The destination was replaced, but its directory could not be synchronized.
+    /// Callers must retain the applied state and must not blindly retry the mutation.
+    #[error("state was replaced, but its durability could not be confirmed: {0}")]
+    PublicationDurability(#[source] std::io::Error),
     #[error(transparent)]
     /// Selects the I/O case.
     Io(#[from] std::io::Error),
@@ -379,6 +383,29 @@ pub(crate) fn preview_json(value: &serde_json::Value) -> String {
 
 pub(crate) fn truncate_utf8(value: &str, max_bytes: usize) -> &str {
     &value[..value.floor_char_boundary(max_bytes)]
+}
+
+pub(crate) fn serialized_len<T: serde::Serialize + ?Sized>(value: &T) -> Result<usize> {
+    let mut bytes = ByteCounter::default();
+    serde_json::to_writer(&mut bytes, value)?;
+    Ok(bytes.0)
+}
+
+#[derive(Default)]
+struct ByteCounter(usize);
+
+impl std::io::Write for ByteCounter {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.0 = self
+            .0
+            .checked_add(buffer.len())
+            .ok_or_else(|| std::io::Error::other("serialized size overflow"))?;
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -90,7 +90,7 @@ async fn continuation_skips_old_pixels_and_preparation_failure_preserves_connect
     };
     fn request(input: &[Value]) -> ModelRequest<'_> {
         ModelRequest {
-            input,
+            input: input.into(),
             allow_continuation: true,
             ..model_request()
         }
@@ -235,7 +235,7 @@ async fn projected_replay_keeps_logical_prefix_for_continuation_and_rebuild() {
         let output = provider
             .respond_prepared(
                 ModelRequest {
-                    input: &input,
+                    input: (&input).into(),
                     allow_continuation: true,
                     ..model_request()
                 },

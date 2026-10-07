@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -6,7 +7,9 @@ use serde::Deserialize;
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::runtime::{AgentPresentation, MAX_MESSAGE_BYTES, Shared, Wake, monitor_agent};
+use super::runtime::{
+    AgentPresentation, MAX_MESSAGE_BYTES, Shared, Wake, WakeTarget, monitor_agent,
+};
 use super::{
     AgentScope, ForkTurns, MAX_TASK_NAME_BYTES, MAX_WAIT_MS, MIN_WAIT_MS, default_wait_ms, text,
 };
@@ -190,32 +193,25 @@ impl Tool for SendMessage {
             supervise(async move {
                 let lifetime = shared.track_execution(&scope.root_session_id).await?;
                 let wake = shared
-                    .send_message(
-                        &scope.root_session_id,
-                        &scope.agent_path,
-                        &target,
-                        message.clone(),
-                    )
+                    .send_message(&scope.root_session_id, &scope.agent_path, &target, message)
                     .await?;
                 let Some(Wake {
-                    record,
-                    sender,
+                    message,
+                    target: wake_target,
                     previous,
                 }) = wake
                 else {
                     return Ok(String::new());
                 };
-                let (sender, events, model) = match sender {
-                    Some(sender) => (sender, None, None),
-                    None => {
+                let (sender, events, model) = match wake_target {
+                    WakeTarget::Live(sender) => (sender, None, None),
+                    WakeTarget::Resume {
+                        session_id,
+                        depth,
+                        model,
+                    } => {
                         let agent = match scope
-                            .resume(
-                                record.session_id,
-                                target.clone(),
-                                record.depth,
-                                record.model,
-                                turn_id,
-                            )
+                            .resume(session_id, target.clone(), depth, model, turn_id)
                             .await
                         {
                             Ok(agent) => agent,
@@ -223,7 +219,7 @@ impl Tool for SendMessage {
                                 return Err(cleanup_error(
                                     error,
                                     shared
-                                        .rollback(&scope.root_session_id, &target, previous.clone())
+                                        .rollback(&scope.root_session_id, &target, previous)
                                         .await,
                                 ));
                             }
@@ -399,24 +395,36 @@ pub(super) fn wait_timeout(timeout_ms: Option<u64>) -> Result<Duration> {
     Ok(Duration::from_millis(timeout_ms))
 }
 
-pub(super) fn fork_context(context: &[Value], turns: ForkTurns) -> Vec<Value> {
-    let mut fork = match turns {
-        ForkTurns::None => Vec::new(),
-        ForkTurns::All => context.to_vec(),
-        ForkTurns::Last(turns) => {
-            let start = context
-                .iter()
-                .enumerate()
-                .rev()
-                .filter(|(_, item)| {
-                    item.get("role").and_then(Value::as_str) == Some("user")
-                        && !is_internal_message(item)
-                })
-                .nth(turns.saturating_sub(1))
-                .map_or(0, |(index, _)| index);
-            context[start..].to_vec()
-        }
+pub(super) fn fork_context(
+    context: &[Arc<Value>],
+    turns: ForkTurns,
+    pending: &BTreeSet<&str>,
+) -> Vec<Arc<Value>> {
+    let start = match turns {
+        ForkTurns::None => return Vec::new(),
+        ForkTurns::All => 0,
+        ForkTurns::Last(turns) => context
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(|(_, item)| {
+                item.get("role").and_then(Value::as_str) == Some("user")
+                    && !is_internal_message(item)
+            })
+            .nth(turns.saturating_sub(1))
+            .map_or(0, |(index, _)| index),
     };
+    let mut fork = context[start..]
+        .iter()
+        .filter(|item| {
+            item.get("type").and_then(Value::as_str) != Some("function_call")
+                || item
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .is_none_or(|call_id| !pending.contains(call_id))
+        })
+        .map(Arc::clone)
+        .collect::<Vec<_>>();
     strip_attachment_references(&mut fork);
     fork
 }

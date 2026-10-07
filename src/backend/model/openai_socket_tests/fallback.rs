@@ -1,7 +1,5 @@
 use super::super::*;
-use super::support::{
-    completed_events, read_http_json, write_http_compaction_stream, write_http_stream,
-};
+use super::support::{completed_events, read_http_json, write_http_stream};
 use crate::backend::model::PromptCacheIdentity;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -81,9 +79,9 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
         .await
         .expect("HTTP listener");
     let http_address = http_listener.local_addr().expect("HTTP address");
-    let (request_sender, mut requests) = mpsc::channel(4);
+    let (request_sender, mut requests) = mpsc::channel(3);
     let http_server = tokio::spawn(async move {
-        for attempt in 0..4 {
+        for attempt in 0..3 {
             let (mut stream, _) = http_listener.accept().await.expect("HTTP connection");
             let request = read_http_json(&mut stream).await;
             request_sender
@@ -101,8 +99,6 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
                     &format!("response-http-{attempt}"),
                 )
                 .await;
-            } else if attempt == 2 {
-                write_http_compaction_stream(&mut stream).await;
             }
         }
     });
@@ -156,7 +152,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
                     context_epoch: 1,
                 }),
                 instructions: "Test instructions",
-                input: &input,
+                input: (&input).into(),
                 catalog_revision: "catalog-1",
                 tools: &[],
                 deferred_tools: &[],
@@ -185,7 +181,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
                     context_epoch: 1,
                 }),
                 instructions: "Test instructions",
-                input: &continued_input,
+                input: (&continued_input).into(),
                 catalog_revision: "catalog-1",
                 tools: &[],
                 deferred_tools: &[],
@@ -212,7 +208,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
                     context_epoch: 1,
                 }),
                 instructions: "Test instructions",
-                input: &continued_input,
+                input: (&continued_input).into(),
                 catalog_revision: "catalog-1",
                 tools: &[],
                 deferred_tools: &[],
@@ -234,7 +230,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
                     context_epoch: 1,
                 }),
                 instructions: "Test instructions",
-                input: &continued_input,
+                input: (&continued_input).into(),
                 catalog_revision: "catalog-1",
                 tools: &[],
                 deferred_tools: &[],
@@ -246,25 +242,6 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
         )
         .await
         .expect("sticky HTTP fallback");
-    let compacted = provider
-        .compact_prepared(
-            CompactRequest {
-                cancellation: None,
-                session_id: "fallback-session",
-                prompt_cache: Some(PromptCacheIdentity {
-                    key: "hashed-fallback-session",
-                    context_epoch: 1,
-                }),
-                instructions: "Test instructions",
-                input: &continued_input,
-                catalog_revision: "catalog-1",
-                tools: &[],
-                deferred_tools: &[],
-            },
-            media,
-        )
-        .await
-        .expect("HTTP v2 compaction");
     let Error::Provider(http_error) = provider
         .respond_prepared(
             ModelRequest {
@@ -275,7 +252,7 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
                     context_epoch: 1,
                 }),
                 instructions: "Test instructions",
-                input: &continued_input,
+                input: (&continued_input).into(),
                 catalog_revision: "catalog-1",
                 tools: &[],
                 deferred_tools: &[],
@@ -292,20 +269,12 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
     };
     let first_http = requests.recv().await.expect("first HTTP request");
     let second_http = requests.recv().await.expect("second HTTP request");
-    let compact_http = requests.recv().await.expect("compaction HTTP request");
     let failed_http = requests.recv().await.expect("failed HTTP request");
     http_server.await.expect("HTTP server");
     websocket_server.await.expect("WebSocket server");
 
     assert_eq!(fallback.text(), "HTTP fallback.");
     assert_eq!(sticky.text(), "Still HTTP.");
-    assert_eq!(
-        compacted.output(),
-        &[serde_json::json!({
-            "type": "compaction",
-            "encrypted_content": "opaque"
-        })]
-    );
     assert_eq!(http_error.status(), None);
     assert!(http_error.is_stream_interrupted());
     assert_eq!(
@@ -334,16 +303,6 @@ async fn upgrade_required_switches_only_that_session_to_sticky_http() {
             serde_json::json!([{"type": "web_search", "external_web_access": false}])
         );
     }
-    assert!(compact_http.get("previous_response_id").is_none());
-    let compact_input = compact_http["input"]
-        .as_array()
-        .expect("full HTTP compaction input");
-    assert_eq!(compact_input.len(), continued_input.len() + 1);
-    assert!(compact_input[0]["content"][1]["image_url"].is_string());
-    assert_eq!(
-        compact_input.last(),
-        Some(&serde_json::json!({"type": "compaction_trigger"}))
-    );
 }
 
 #[tokio::test]
@@ -398,7 +357,7 @@ async fn explicit_fallback_is_sticky_and_isolated_to_the_session() {
                 ModelRequest {
                     cancellation: None,
                     session_id: "fallback",
-                    input: &input,
+                    input: (&input).into(),
                     allow_continuation: true,
                     ..super::support::model_request()
                 },
