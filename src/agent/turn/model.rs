@@ -905,7 +905,8 @@ impl Runner {
         let mut hook_input = std::mem::take(&mut step.streamed.hook_input);
         let mut prepared_calls = std::mem::take(&mut step.streamed.calls).into_iter();
         for (index, call) in step.output.tool_calls.iter_mut().enumerate() {
-            if let Some(prepared) = prepared_calls.next() {
+            let changed = if let Some(prepared) = prepared_calls.next() {
+                let changed = prepared.is_some();
                 if let Some(prepared) = prepared {
                     calls_changed |= *call != prepared;
                     *call = prepared;
@@ -917,15 +918,18 @@ impl Runner {
                 {
                     continue;
                 }
+                changed
             } else {
-                let (denial, changed) = match self
-                    .prepare_tool_call(
-                        turn_id,
+                if let Err(error) = self.catalog.validate_prepared(call, &step.tools) {
+                    denied_results.push(ToolResult::error(
                         call,
-                        &step.tools,
-                        &mut hook_events,
-                        &mut hook_input,
-                    )
+                        error.to_string(),
+                        self.config.sandbox.output_limit(),
+                    ));
+                    continue;
+                }
+                let (denial, changed) = match self
+                    .prepare_tool_call(turn_id, call, &mut hook_events, &mut hook_input)
                     .await
                 {
                     Ok(prepared) => prepared,
@@ -940,15 +944,17 @@ impl Runner {
                     denied_results.push(denial);
                     continue;
                 }
-            }
-            match self.catalog.validate_prepared(call, &step.tools) {
-                Ok(()) => executable_calls.push(index),
-                Err(error) => denied_results.push(ToolResult::error(
+                changed
+            };
+            if changed && let Err(error) = self.catalog.validate_prepared(call, &step.tools) {
+                denied_results.push(ToolResult::error(
                     call,
                     error.to_string(),
                     self.config.sandbox.output_limit(),
-                )),
+                ));
+                continue;
             }
+            executable_calls.push(index);
         }
         if calls_changed && let Err(error) = step.output.sync_tool_calls() {
             return self

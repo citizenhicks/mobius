@@ -1309,3 +1309,60 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
         .remove_snapshot(&digest)
         .expect("remove snapshot");
 }
+
+#[tokio::test]
+async fn invalid_bot_fails_before_provider_construction() {
+    let root = tempfile::tempdir().expect("state");
+    let (store, gateway) = ConfigStore::initialize(
+        root.path().join("state"),
+        "127.0.0.1:8741".parse().expect("listen"),
+        None,
+    )
+    .expect("config");
+    let mut gateway = gateway
+        .registering_provider(
+            crate::wire::AgentComposition::default().provider,
+            "Test".into(),
+            Default::default(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("provider");
+    let credentials = CredentialStore::open(store.credentials_path()).expect("credentials");
+    credentials
+        .set(
+            "openai_socket",
+            "openai_socket",
+            "test-token",
+            Some("https://api.openai.com/v1"),
+            None,
+        )
+        .expect("credential");
+    let bots = crate::bots::BotStore::open(store.state_dir()).expect("Bots");
+    let mut bot = bots
+        .create_bot(
+            "Fixture",
+            "Fixture",
+            crate::wire::AgentComposition::default(),
+        )
+        .expect("Bot");
+    bot.config.config.max_model_steps = 0;
+    gateway.model_transport.max_request_bytes = 0;
+    let error = prepare_bot(
+        &gateway,
+        bot,
+        &store,
+        &credentials,
+        SessionFileStore::new(store.state_dir(), None),
+        0,
+        Arc::new(crate::computer_runtime::ComputerConfig::default()),
+    )
+    .await
+    .err()
+    .expect("invalid Bot");
+    assert!(
+        error
+            .to_string()
+            .contains("maximum model steps must be positive")
+    );
+}

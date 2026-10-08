@@ -861,3 +861,26 @@ async fn fallback_cancellation_does_not_inherit_source_credential_expiry() {
         ]
     );
 }
+
+#[test]
+fn streamed_calls_validate_at_decode_and_custom_provider_ingress() {
+    for arguments in [
+        "[]".to_owned(),
+        serde_json::json!({"text": "x".repeat(MAX_TOOL_ARGUMENT_BYTES)}).to_string(),
+    ] {
+        let item = serde_json::json!({
+            "type": "function_call", "call_id": "call-1", "name": "read_file", "arguments": arguments
+        });
+        assert!(decode_tool_call(&item).is_err());
+    }
+    let mut streamed = StreamingToolCalls::default();
+    assert!(
+        streamed
+            .accept(&ToolCall {
+                call_id: "call-1".into(),
+                name: "read_file".into(),
+                arguments: serde_json::Value::Null,
+            })
+            .is_err()
+    );
+}

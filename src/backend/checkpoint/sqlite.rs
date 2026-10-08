@@ -1059,7 +1059,7 @@ fn store_checkpoint(
     for message in &checkpoint.pending_messages {
         transaction.prepare_cached(
             "INSERT OR IGNORE INTO message_receipts (session_id, submission_id) VALUES (?1, ?2)")?.execute(
-            params![checkpoint.session_id, message.id],
+            params![checkpoint.session_id, message.id()],
         )?;
     }
     if let Some(transcript_json) = serialized.transcript {
@@ -1239,9 +1239,6 @@ fn validate_checkpoint(checkpoint: &Checkpoint) -> Result<()> {
     }
     let mut pending_ids = BTreeSet::new();
     for message in &checkpoint.pending_messages {
-        message
-            .validate()
-            .map_err(|error| Error::Checkpoint(error.to_string()))?;
         if !pending_ids.insert((message.owner(), message.id())) {
             return Err(Error::Checkpoint(format!(
                 "duplicate queued message `{}/{}`",

@@ -166,15 +166,52 @@ async fn open_computer_pumps_the_same_local_renderer_connection() {
     let workspace = root.path().join("workspace");
     fs::create_dir(&workspace).unwrap();
     let (mut server, grant) = configured_test_server(root.path().join("state")).await;
-    server.host.remote_desktop =
-        Arc::new(crate::computer_runtime::remote_desktop::RemoteDesktop::new(
-            root.path(),
-            true,
-            crate::computer_runtime::ComputerConfig::default(),
-        ));
+    let resources = root.path().join("resources");
+    crate::computer_runtime::export_resources(&resources).unwrap();
+    let playwright = resources.join("node_modules/playwright");
+    fs::create_dir_all(&playwright).unwrap();
+    fs::write(playwright.join("package.json"), "{}").unwrap();
+    let computer = crate::computer_runtime::ComputerConfig {
+        mode: crate::computer_runtime::RuntimeMode::Preinstalled,
+        directory: Some(resources),
+        node_executable: Some("/bin/sh".into()),
+        browser: crate::computer_runtime::BrowserConfig {
+            executable: Some("/bin/sh".into()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    server.host.remote_desktop = Arc::new(
+        crate::computer_runtime::remote_desktop::RemoteDesktop::new(root.path(), true, computer),
+    );
     let bot = server
         .host
         .create_bot("Computer", "Same renderer connection")
+        .await
+        .unwrap();
+    let bot_identity = || crate::bots::BotIdentity {
+        name: &bot.name,
+        description: &bot.description,
+        tint: bot.tint,
+        shape: bot.shape,
+    };
+    let mut composition = bot.config.config.clone();
+    composition.middleware.set_enabled("computer_control", true);
+    composition.middleware.set_setting(
+        "sandbox",
+        "approval_policy",
+        Some(mobius::protocol::FrontendSettingValue::String(
+            "allow".into(),
+        )),
+    );
+    let updated = server
+        .host
+        .update_bot(
+            &bot.id,
+            bot.config.revision,
+            bot_identity(),
+            composition.clone(),
+        )
         .await
         .unwrap();
     let session = server
@@ -306,6 +343,33 @@ async fn open_computer_pumps_the_same_local_renderer_connection() {
     })
     .await
     .expect("computer opened reply");
+    composition
+        .middleware
+        .set_enabled("computer_control", false);
+    composition.middleware.set_setting(
+        "sandbox",
+        "approval_policy",
+        Some(mobius::protocol::FrontendSettingValue::String("ask".into())),
+    );
+    server
+        .host
+        .update_bot(
+            &bot.id,
+            updated.config.revision,
+            bot_identity(),
+            composition,
+        )
+        .await
+        .unwrap();
+    assert!(
+        server
+            .host
+            .open_computer(&session_id)
+            .await
+            .expect_err("disabled middleware must reject the viewer")
+            .message
+            .contains("computer control middleware is disabled")
+    );
     drop(reader);
     drop(writer);
     serving.await.unwrap().unwrap();

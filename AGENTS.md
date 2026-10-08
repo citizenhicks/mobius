@@ -57,6 +57,21 @@ module.
 - Keep Ratatui and terminal concepts out of `mobius`. Keep provider and sandbox
   details out of the agent loop.
 - Validate external data at its boundary and keep sandbox execution fail-closed.
+- Check each input once, as early as possible, and fail there. Downstream code trusts the
+  value and never re-checks it: no repeated validation along a call chain, no whole-config
+  re-validation of unchanged parts, no client copies of gateway rules, and no clients
+  re-validating gateway-sent data. When a library entry point needs protection, make the
+  single check produce a validated type that only valid data can construct. A later check
+  is allowed only for different input: newly arrived data, a hook-rewritten value, state
+  observed after waiting on a lock or an await, or a re-read from disk.
+- Keep hosted-service specifics out of this repository. Behavior that exists only for
+  möbius Cloud lives in the Cloud codebase; this code exposes neutral operator hooks
+  (access expiry, storage limits, telemetry collectors, endpoints) and never names Cloud,
+  plans, subscriptions, billing, or hosted-service domains in code, defaults, tests, or
+  operator docs. User-facing README links and privacy disclosures are the exception.
+- Do not `.clone()` in production code. Borrow, move, use `std::mem::take`/`replace`, or
+  share an `Arc`/`Rc` handle instead; restructure before reaching for a copy, and name any
+  copy that remains unavoidable. Tests may clone.
 - Add the smallest behavior-focused test that would catch the change.
 - Do not add compatibility code. This project has no legacy contract: no old
   names, aliases, dual reads or writes, fallback state discovery, or migrations.

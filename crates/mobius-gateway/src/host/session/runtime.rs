@@ -274,13 +274,13 @@ impl HostState {
                 let result = async {
                     let _mutation = self.begin_session_mutation()?;
                     if matches!(
-                        submission.op,
+                        submission.submission().op,
                         Op::Message { .. } | Op::CapabilityCommand { .. }
                     ) {
                         self.bind_bot().await?;
                     }
                     let resumes_approval = matches!(
-                        &submission.op,
+                        &submission.submission().op,
                         Op::ExecApproval {
                             decision: ReviewDecision::Approved
                                 | ReviewDecision::ApprovedForSession
@@ -288,12 +288,12 @@ impl HostState {
                             ..
                         }
                     );
-                    let result = match &submission.op {
+                    let result = match &submission.submission().op {
                         Op::SetModel { .. } => Err(Rejection::new(
                             "bot_configuration_required",
                             "change the model on this chat's Bot profile",
                         )),
-                        _ => self.submit(submission),
+                        _ => self.submit_validated(submission),
                     };
                     if result.is_ok()
                         && resumes_approval
@@ -457,35 +457,41 @@ impl HostState {
 
     async fn accept_source(
         &mut self,
-        mut submission: Submission,
+        submission: ValidatedSubmission,
         bot_id: String,
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
     ) {
-        if !matches!(submission.op, Op::Message { .. }) {
+        if !matches!(submission.submission().op, Op::Message { .. }) {
             let result = async {
                 let _mutation = self.begin_session_mutation()?;
                 self.bind_bot().await?;
                 if self.spec.bot_id != bot_id {
                     return Err(invalid_config("the chat now belongs to another Bot"));
                 }
-                if !matches!(submission.op, Op::Interrupt { .. }) {
+                if !matches!(submission.submission().op, Op::Interrupt { .. }) {
                     return Err(invalid_config(
                         "source commands support only message and interrupt",
                     ));
                 }
-                self.submit(submission)
+                self.submit_validated(submission)
             }
             .await;
             let _ = reply.send(result);
             return;
         }
-        if self.running.session_id.as_ref()
-            == crate::bots::conversation_session_id(&self.spec.bot_id)
-            && let Op::Message { message } = &mut submission.op
-        {
-            message.requested_delivery = Some(mobius::protocol::ActiveMessageDelivery::Queue);
-        }
         let result = async {
+            let submission = if self.running.session_id.as_ref()
+                == crate::bots::conversation_session_id(&self.spec.bot_id)
+            {
+                let mut rewritten = submission.into_submission();
+                if let Op::Message { message } = &mut rewritten.op {
+                    message.requested_delivery =
+                        Some(mobius::protocol::ActiveMessageDelivery::Queue);
+                }
+                ValidatedSubmission::new(rewritten).map_err(internal)?
+            } else {
+                submission
+            };
             let _mutation = self.begin_session_mutation()?;
             self.bind_bot().await?;
             if self.spec.bot_id != bot_id {
@@ -494,12 +500,12 @@ impl HostState {
                     "the chat now belongs to another Bot",
                 ));
             }
-            let id = submission.id.clone();
+            let id = submission.submission().id.to_owned();
             self.running
                 .sender
                 .as_ref()
                 .ok_or_else(stopped)?
-                .send_with_admission(submission)
+                .send_validated_with_admission(submission)
                 .map(|admission| (id, admission))
                 .map_err(internal)
         }
@@ -666,14 +672,24 @@ impl HostState {
     }
 
     pub(super) fn submit(&mut self, submission: Submission) -> std::result::Result<(), Rejection> {
-        let message_submission_id =
-            matches!(submission.op, Op::Message { .. }).then(|| submission.id.clone());
-        let resolves_approval = matches!(submission.op, Op::ExecApproval { .. });
+        self.submit_validated(
+            ValidatedSubmission::new(submission)
+                .map_err(|error| Rejection::new("invalid_submission", error.to_string()))?,
+        )
+    }
+
+    fn submit_validated(
+        &mut self,
+        submission: ValidatedSubmission,
+    ) -> std::result::Result<(), Rejection> {
+        let message_submission_id = matches!(submission.submission().op, Op::Message { .. })
+            .then(|| submission.submission().id.to_owned());
+        let resolves_approval = matches!(submission.submission().op, Op::ExecApproval { .. });
         self.running
             .sender
             .as_ref()
             .ok_or_else(stopped)?
-            .send(submission)
+            .send_validated(submission)
             .map_err(|error| Rejection {
                 code: match error {
                     mobius::Error::Busy(_) => "agent_busy",

@@ -1,6 +1,5 @@
 use mobius::middleware::artifacts::media_type;
 use std::collections::VecDeque;
-use std::path::Path;
 use std::path::PathBuf;
 
 use image::ColorType;
@@ -14,11 +13,6 @@ use tokio::sync::Semaphore;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
-const MAX_SAFE_ATTACHMENT_REFERENCES: usize = 16;
-const MAX_SAFE_FILE_BYTES: u64 = 250 * 1024 * 1024;
-const MAX_SAFE_SESSION_FILES: usize = 128;
-const MAX_SAFE_SESSION_BYTES: u64 = 250 * 1024 * 1024;
-const MAX_SAFE_UPLOAD_CHUNK_BYTES: usize = 256 * 1024;
 const CLIPBOARD_PREPARATION_BUSY: &str = "clipboard preparation is already in progress";
 
 static CLIPBOARD_PREPARATION_GATE: Semaphore = Semaphore::const_new(1);
@@ -30,12 +24,7 @@ pub(super) fn prepare_clipboard(
     limits: SessionFileLimits,
 ) -> Result<ClipboardPreparation, String> {
     let count = existing.len();
-    let bytes = existing.iter().try_fold(0_u64, |total, file| {
-        total
-            .checked_add(file.size)
-            .ok_or_else(|| "attachment sizes overflowed".to_string())
-    })?;
-    spawn_preparation(move || read_clipboard(count, bytes, &limits))
+    spawn_preparation(move || read_clipboard(count, &limits))
 }
 
 fn spawn_preparation(
@@ -56,26 +45,10 @@ fn spawn_preparation(
     Ok(receiver)
 }
 
-fn client_limits(limits: &SessionFileLimits) -> SessionFileLimits {
-    SessionFileLimits {
-        max_attachment_references: limits
-            .max_attachment_references
-            .min(MAX_SAFE_ATTACHMENT_REFERENCES),
-        max_file_bytes: limits.max_file_bytes.min(MAX_SAFE_FILE_BYTES),
-        max_session_files: limits.max_session_files.min(MAX_SAFE_SESSION_FILES),
-        max_session_bytes: limits.max_session_bytes.min(MAX_SAFE_SESSION_BYTES),
-        max_upload_chunk_bytes: limits
-            .max_upload_chunk_bytes
-            .min(MAX_SAFE_UPLOAD_CHUNK_BYTES),
-    }
-}
-
 fn read_clipboard(
     existing_count: usize,
-    existing_bytes: u64,
     limits: &SessionFileLimits,
 ) -> Result<Vec<UploadCandidate>, String> {
-    let limits = client_limits(limits);
     let remaining = limits
         .max_attachment_references
         .saturating_sub(existing_count);
@@ -90,20 +63,21 @@ fn read_clipboard(
         arboard::Clipboard::new().map_err(|error| format!("clipboard unavailable: {error}"))?;
     let files = clipboard.get().file_list().unwrap_or_default();
     if !files.is_empty() {
-        return file_candidates(files, existing_bytes, remaining, &limits);
+        return file_candidates(files, remaining, limits);
     }
 
     let image = clipboard
         .get_image()
         .map_err(|error| format!("clipboard has no files or image: {error}"))?;
-    let candidate = bitmap_candidate(image.width, image.height, image.bytes.as_ref(), &limits)?;
-    validate_total_size(existing_bytes, std::slice::from_ref(&candidate), &limits)?;
-    Ok(vec![candidate])
+    Ok(vec![bitmap_candidate(
+        image.width,
+        image.height,
+        image.bytes.as_ref(),
+    )?])
 }
 
 fn file_candidates(
     paths: Vec<PathBuf>,
-    existing_bytes: u64,
     remaining: usize,
     limits: &SessionFileLimits,
 ) -> Result<Vec<UploadCandidate>, String> {
@@ -114,20 +88,10 @@ fn file_candidates(
             limits.max_attachment_references
         ));
     }
-    let candidates = paths
-        .into_iter()
-        .map(|path| UploadCandidate::from_file(path, limits))
-        .collect::<Result<Vec<_>, _>>()?;
-    validate_total_size(existing_bytes, &candidates, limits)?;
-    Ok(candidates)
+    paths.into_iter().map(UploadCandidate::from_file).collect()
 }
 
-fn bitmap_candidate(
-    width: usize,
-    height: usize,
-    rgba: &[u8],
-    limits: &SessionFileLimits,
-) -> Result<UploadCandidate, String> {
+fn bitmap_candidate(width: usize, height: usize, rgba: &[u8]) -> Result<UploadCandidate, String> {
     let expected = width
         .checked_mul(height)
         .and_then(|pixels| pixels.checked_mul(4))
@@ -141,28 +105,7 @@ fn bitmap_candidate(
     PngEncoder::new(&mut png)
         .write_image(rgba, width, height, ColorType::Rgba8.into())
         .map_err(|error| format!("could not encode clipboard image: {error}"))?;
-    UploadCandidate::from_bytes("clipboard.png", "image/png", png, limits)
-}
-
-fn validate_total_size(
-    existing_bytes: u64,
-    candidates: &[UploadCandidate],
-    limits: &SessionFileLimits,
-) -> Result<(), String> {
-    let total = candidates
-        .iter()
-        .try_fold(existing_bytes, |total, candidate| {
-            total
-                .checked_add(candidate.size)
-                .ok_or_else(|| "attachment sizes overflowed".to_string())
-        })?;
-    if total > limits.max_session_bytes {
-        return Err(format!(
-            "pasted attachments exceed the {}-byte session limit",
-            limits.max_session_bytes
-        ));
-    }
-    Ok(())
+    UploadCandidate::from_bytes("clipboard.png", "image/png", png)
 }
 
 pub(super) struct UploadCandidate {
@@ -173,19 +116,17 @@ pub(super) struct UploadCandidate {
 }
 
 impl UploadCandidate {
-    fn from_file(path: PathBuf, limits: &SessionFileLimits) -> Result<Self, String> {
+    fn from_file(path: PathBuf) -> Result<Self, String> {
         let metadata = std::fs::symlink_metadata(&path)
             .map_err(|error| format!("cannot inspect `{}`: {error}", path.display()))?;
         if !metadata.file_type().is_file() {
             return Err(format!("`{}` is not a regular file", path.display()));
         }
-        validate_size(metadata.len(), limits)?;
         let name = path
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or_else(|| format!("`{}` has a non-UTF-8 filename", path.display()))?
             .to_string();
-        validate_name(&name)?;
         let file = std::fs::File::open(&path)
             .map_err(|error| format!("cannot open `{}`: {error}", path.display()))?;
         let opened = file
@@ -195,7 +136,6 @@ impl UploadCandidate {
             return Err(format!("`{}` changed while being attached", path.display()));
         }
         let media_type = media_type(&name).to_string();
-        validate_media_type(&media_type)?;
         Ok(Self {
             name,
             size: metadata.len(),
@@ -207,16 +147,8 @@ impl UploadCandidate {
         })
     }
 
-    fn from_bytes(
-        name: &str,
-        media_type: &str,
-        bytes: Vec<u8>,
-        limits: &SessionFileLimits,
-    ) -> Result<Self, String> {
-        validate_name(name)?;
-        validate_media_type(media_type)?;
+    fn from_bytes(name: &str, media_type: &str, bytes: Vec<u8>) -> Result<Self, String> {
         let size = u64::try_from(bytes.len()).map_err(|_| "attachment is too large".to_string())?;
-        validate_size(size, limits)?;
         Ok(Self {
             name: name.into(),
             size,
@@ -224,50 +156,6 @@ impl UploadCandidate {
             source: UploadSource::Bytes { bytes, offset: 0 },
         })
     }
-}
-
-fn validate_size(size: u64, limits: &SessionFileLimits) -> Result<(), String> {
-    if !(1..=limits.max_file_bytes).contains(&size) {
-        return Err(format!(
-            "attachment size must be 1–{} bytes",
-            limits.max_file_bytes
-        ));
-    }
-    Ok(())
-}
-
-fn validate_name(name: &str) -> Result<(), String> {
-    if name.is_empty()
-        || name == "."
-        || name == ".."
-        || name.len() > 255
-        || name.contains(['/', '\\'])
-        || name.chars().any(char::is_control)
-        || Path::new(name).file_name().and_then(|value| value.to_str()) != Some(name)
-    {
-        return Err("attachment name must be one safe 1–255 byte filename".into());
-    }
-    Ok(())
-}
-
-fn validate_media_type(media_type: &str) -> Result<(), String> {
-    let Some((kind, subtype)) = media_type.split_once('/') else {
-        return Err("attachment media type must be type/subtype".into());
-    };
-    let token = |value: &str| {
-        !value.is_empty()
-            && value.bytes().all(|byte| {
-                byte.is_ascii_alphanumeric()
-                    || matches!(
-                        byte,
-                        b'!' | b'#' | b'$' | b'&' | b'^' | b'_' | b'.' | b'+' | b'-'
-                    )
-            })
-    };
-    if media_type.len() > 127 || !token(kind) || !token(subtype) {
-        return Err("attachment media type is invalid".into());
-    }
-    Ok(())
 }
 
 enum UploadSource {
@@ -378,7 +266,6 @@ impl ClipboardUploads {
         &mut self,
         message: &ServerMessage,
         session_id: &str,
-        limits: &SessionFileLimits,
     ) -> Option<Result<UploadAdvance, String>> {
         let expected_request_id = self.current.as_ref()?.phase.request_id();
         if let ServerMessage::Rejected {
@@ -475,7 +362,7 @@ impl ClipboardUploads {
                 upload_id,
                 max_chunk_bytes,
             } => self
-                .next_transfer(session_id, upload_id, max_chunk_bytes, 0, limits)
+                .next_transfer(session_id, upload_id, max_chunk_bytes, 0)
                 .await
                 .map(|message| UploadAdvance {
                     attachment: None,
@@ -486,27 +373,18 @@ impl ClipboardUploads {
                 max_chunk_bytes,
                 next_offset,
             } => self
-                .next_transfer(session_id, upload_id, max_chunk_bytes, next_offset, limits)
+                .next_transfer(session_id, upload_id, max_chunk_bytes, next_offset)
                 .await
                 .map(|message| UploadAdvance {
                     attachment: None,
                     message: Some(message),
                 }),
             Response::Completed(file) => {
-                let candidate = &self.current.as_ref()?.candidate;
-                if Uuid::parse_str(&file.id).is_err()
-                    || file.name != candidate.name
-                    || file.size != candidate.size
-                    || file.media_type != candidate.media_type
-                {
-                    Err("gateway returned mismatched attachment metadata".into())
-                } else {
-                    self.current = None;
-                    Ok(UploadAdvance {
-                        attachment: Some(file),
-                        message: self.begin_next(session_id),
-                    })
-                }
+                self.current = None;
+                Ok(UploadAdvance {
+                    attachment: Some(file),
+                    message: self.begin_next(session_id),
+                })
             }
         };
         if result.is_err() {
@@ -538,15 +416,7 @@ impl ClipboardUploads {
         upload_id: String,
         max_chunk_bytes: usize,
         next_offset: u64,
-        limits: &SessionFileLimits,
     ) -> Result<ClientMessage, String> {
-        let limits = client_limits(limits);
-        if Uuid::parse_str(&upload_id).is_err() {
-            return Err("gateway returned an invalid attachment upload ID".into());
-        }
-        if !(1..=limits.max_upload_chunk_bytes).contains(&max_chunk_bytes) {
-            return Err("gateway returned an invalid attachment upload chunk limit".into());
-        }
         let current = self
             .current
             .as_mut()
@@ -604,8 +474,7 @@ mod tests {
 
     #[test]
     fn bitmap_is_encoded_as_png() {
-        let candidate =
-            bitmap_candidate(1, 1, &[1, 2, 3, 255], &TEST_LIMITS).expect("PNG candidate");
+        let candidate = bitmap_candidate(1, 1, &[1, 2, 3, 255]).expect("PNG candidate");
 
         assert_eq!(candidate.name, "clipboard.png");
         assert_eq!(candidate.media_type, "image/png");
@@ -625,7 +494,6 @@ mod tests {
 
         let candidates = file_candidates(
             vec![first, second],
-            0,
             TEST_LIMITS.max_attachment_references,
             &TEST_LIMITS,
         )
@@ -639,19 +507,11 @@ mod tests {
     }
 
     #[test]
-    fn local_attachment_bounds_reject_unsafe_inputs() {
-        assert!(validate_name("../secret").is_err());
-        assert!(validate_name("bad\nname").is_err());
-        assert!(validate_name(&"a".repeat(256)).is_err());
-        assert!(validate_size(0, &TEST_LIMITS).is_err());
-        assert!(validate_size(TEST_LIMITS.max_file_bytes + 1, &TEST_LIMITS).is_err());
-        assert!(validate_media_type("image/png; charset=binary").is_err());
-
+    fn local_files_must_be_regular_and_fit_the_attachment_count() {
         let directory = tempfile::tempdir().expect("tempdir");
         assert!(
             file_candidates(
                 vec![directory.path().to_path_buf()],
-                0,
                 TEST_LIMITS.max_attachment_references,
                 &TEST_LIMITS,
             )
@@ -664,72 +524,11 @@ mod tests {
         assert!(
             file_candidates(
                 vec![PathBuf::new(), PathBuf::new()],
-                0,
                 one_reference.max_attachment_references,
                 &one_reference,
             )
             .is_err()
         );
-    }
-
-    #[test]
-    fn advertised_file_and_session_sizes_are_applied() {
-        let limits = SessionFileLimits {
-            max_file_bytes: 2,
-            max_session_bytes: 3,
-            ..TEST_LIMITS
-        };
-        assert!(
-            UploadCandidate::from_bytes(
-                "large.bin",
-                "application/octet-stream",
-                vec![0; 3],
-                &limits
-            )
-            .is_err()
-        );
-        let candidate = UploadCandidate::from_bytes(
-            "small.bin",
-            "application/octet-stream",
-            vec![0; 2],
-            &limits,
-        )
-        .expect("candidate");
-        let existing = [SessionFileReference {
-            id: Uuid::new_v4().to_string(),
-            name: "existing.bin".into(),
-            size: 2,
-            media_type: "application/octet-stream".into(),
-        }];
-
-        assert!(validate_total_size(existing[0].size, &[candidate], &limits).is_err());
-    }
-
-    #[test]
-    fn attachment_size_overflow_is_rejected_before_clipboard_access() {
-        let existing = [u64::MAX, 1].map(|size| SessionFileReference {
-            id: String::new(),
-            name: String::new(),
-            size,
-            media_type: String::new(),
-        });
-        assert!(matches!(
-            prepare_clipboard(&existing, TEST_LIMITS),
-            Err(error) if error == "attachment sizes overflowed"
-        ));
-    }
-
-    #[test]
-    fn advertised_limits_cannot_expand_client_safety_bounds() {
-        let limits = client_limits(&SessionFileLimits {
-            max_attachment_references: usize::MAX,
-            max_file_bytes: u64::MAX,
-            max_session_files: usize::MAX,
-            max_session_bytes: u64::MAX,
-            max_upload_chunk_bytes: usize::MAX,
-        });
-
-        assert_eq!(limits, TEST_LIMITS);
     }
 
     #[tokio::test]
@@ -770,12 +569,10 @@ mod tests {
 
     #[tokio::test]
     async fn upload_machine_correlates_chunks_and_starts_the_next_file() {
-        let first =
-            UploadCandidate::from_bytes("one.txt", "text/plain", b"abc".to_vec(), &TEST_LIMITS)
-                .expect("first candidate");
-        let second =
-            UploadCandidate::from_bytes("two.txt", "text/plain", b"d".to_vec(), &TEST_LIMITS)
-                .expect("second candidate");
+        let first = UploadCandidate::from_bytes("one.txt", "text/plain", b"abc".to_vec())
+            .expect("first candidate");
+        let second = UploadCandidate::from_bytes("two.txt", "text/plain", b"d".to_vec())
+            .expect("second candidate");
         let mut uploads = ClipboardUploads::default();
         let begin = uploads
             .start(vec![first, second], "session")
@@ -794,7 +591,6 @@ mod tests {
                         max_chunk_bytes: 2,
                     },
                     "session",
-                    &TEST_LIMITS,
                 )
                 .await
                 .is_none()
@@ -808,7 +604,6 @@ mod tests {
                     max_chunk_bytes: 2,
                 },
                 "session",
-                &TEST_LIMITS,
             )
             .await
             .expect("matched ready")
@@ -833,7 +628,6 @@ mod tests {
                     next_offset: 2,
                 },
                 "session",
-                &TEST_LIMITS,
             )
             .await
             .expect("matched chunk")
@@ -858,7 +652,6 @@ mod tests {
                     next_offset: 3,
                 },
                 "session",
-                &TEST_LIMITS,
             )
             .await
             .expect("matched final chunk")
@@ -882,7 +675,6 @@ mod tests {
                     },
                 },
                 "session",
-                &TEST_LIMITS,
             )
             .await
             .expect("matched completion")
@@ -898,8 +690,7 @@ mod tests {
     #[tokio::test]
     async fn upload_machine_aborts_a_correlated_scope_mismatch() {
         let candidate =
-            UploadCandidate::from_bytes("one.txt", "text/plain", b"a".to_vec(), &TEST_LIMITS)
-                .expect("candidate");
+            UploadCandidate::from_bytes("one.txt", "text/plain", b"a".to_vec()).expect("candidate");
         let mut uploads = ClipboardUploads::default();
         let begin = uploads.start(vec![candidate], "session").expect("begin");
         let ClientMessage::BeginSessionFileUpload { request_id, .. } = begin else {
@@ -915,7 +706,6 @@ mod tests {
                     max_chunk_bytes: 1,
                 },
                 "session",
-                &TEST_LIMITS,
             )
             .await
             .expect("correlated response");
@@ -925,58 +715,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn upload_machine_enforces_advertised_and_client_local_chunk_limits() {
-        let cases = [
-            (
-                SessionFileLimits {
-                    max_upload_chunk_bytes: 1,
-                    ..TEST_LIMITS
-                },
-                2,
-            ),
-            (
-                SessionFileLimits {
-                    max_upload_chunk_bytes: MAX_SAFE_UPLOAD_CHUNK_BYTES + 1,
-                    ..TEST_LIMITS
-                },
-                MAX_SAFE_UPLOAD_CHUNK_BYTES + 1,
-            ),
-        ];
-
-        for (limits, max_chunk_bytes) in cases {
-            let candidate =
-                UploadCandidate::from_bytes("one.txt", "text/plain", b"a".to_vec(), &limits)
-                    .expect("candidate");
-            let mut uploads = ClipboardUploads::default();
-            let begin = uploads.start(vec![candidate], "session").expect("begin");
-            let ClientMessage::BeginSessionFileUpload { request_id, .. } = begin else {
-                panic!("begin message");
-            };
-
-            let result = uploads
-                .handle(
-                    &ServerMessage::SessionFileUploadReady {
-                        request_id,
-                        session_id: "session".into(),
-                        upload_id: UPLOAD_ID.into(),
-                        max_chunk_bytes,
-                    },
-                    "session",
-                    &limits,
-                )
-                .await
-                .expect("correlated response");
-
-            assert!(result.is_err());
-            assert!(!uploads.is_active());
-        }
-    }
-
-    #[tokio::test]
     async fn upload_machine_aborts_on_an_unexpected_acknowledged_offset() {
-        let candidate =
-            UploadCandidate::from_bytes("one.txt", "text/plain", b"abc".to_vec(), &TEST_LIMITS)
-                .expect("candidate");
+        let candidate = UploadCandidate::from_bytes("one.txt", "text/plain", b"abc".to_vec())
+            .expect("candidate");
         let mut uploads = ClipboardUploads::default();
         let begin = uploads.start(vec![candidate], "session").expect("begin");
         let ClientMessage::BeginSessionFileUpload { request_id, .. } = begin else {
@@ -991,7 +732,6 @@ mod tests {
                     max_chunk_bytes: 2,
                 },
                 "session",
-                &TEST_LIMITS,
             )
             .await
             .expect("matched ready")
@@ -1011,7 +751,6 @@ mod tests {
                     next_offset: 1,
                 },
                 "session",
-                &TEST_LIMITS,
             )
             .await
             .expect("matched chunk");

@@ -67,12 +67,7 @@ impl BotStorage {
         after_sequence: u64,
         now: i64,
     ) -> Result<()> {
-        validate_bot_binding(&subscription.binding)?;
-        if let BotAction::Routine { command } = &subscription.binding.action
-            && let crate::wire::RoutineAction::Update { definition } = &command.action
-        {
-            super::validate_input_definition(definition)?;
-        }
+        validate_bot_binding(&subscription.binding, Some(super::MAX_SCHEDULE_TIMESTAMP))?;
         if matches!(subscription.binding.on, HookSelector::Schedule { .. }) {
             return Err(Error::Config(
                 "timer selectors belong to routine bindings".into(),
@@ -105,7 +100,7 @@ impl BotStorage {
             save_catalog_row(tx, state_json)?;
             sync_routine_bindings(tx, routines, now)?;
             for subscription in subscriptions {
-                validate_bot_binding(&subscription.binding)?;
+                validate_bot_binding(&subscription.binding, None)?;
                 save_binding(
                     tx,
                     &subscription.bot_id,
@@ -466,7 +461,7 @@ fn sync_routine_bindings(tx: &Transaction<'_>, routines: &[StoredRoutine], now: 
                     },
                 },
             };
-            validate_bot_binding(&binding)?;
+            validate_bot_binding(&binding, None)?;
             let after_sequence = match &binding.on {
                 HookSelector::Event {
                     source: HookSource::Session { session_id },
@@ -661,7 +656,10 @@ pub(crate) fn validate_selector(selector: &HookSelector) -> Result<()> {
     }
     Ok(())
 }
-pub(crate) fn validate_bot_binding(binding: &HookBinding<BotAction>) -> Result<()> {
+pub(crate) fn validate_bot_binding(
+    binding: &HookBinding<BotAction>,
+    timestamp_limit: Option<i64>,
+) -> Result<()> {
     validate_id(&binding.id)?;
     validate_selector(&binding.on)?;
     match &binding.action {
@@ -677,7 +675,7 @@ pub(crate) fn validate_bot_binding(binding: &HookBinding<BotAction>) -> Result<(
         }
         BotAction::Routine { command } => {
             validate_id(&command.routine_id)?;
-            super::validate_routine_action(&command.action, 0)?;
+            super::validate_routine_action(&command.action, 0, timestamp_limit)?;
         }
         BotAction::Session { session_id, op } => {
             validate_id(session_id)?;

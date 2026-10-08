@@ -7,8 +7,7 @@ use mobius::protocol::{
 };
 use mobius_gateway::wire::{
     AgentComposition, ExtensionHookRecord, ExtensionKind, ExtensionRecord, ProviderAuthKind,
-    ProviderConfig, ProviderEndpointAuth, ProviderInstance, ProviderModel, ProviderStatus,
-    ReasoningChoice,
+    ProviderEndpointAuth, ProviderInstance, ProviderModel, ProviderStatus, ReasoningChoice,
 };
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -19,7 +18,7 @@ use super::SetupMode;
 use super::runtime::credential_saved;
 use super::state::{
     ApplyTarget, AuthField, Authentication, Flow, MiddlewareRow, Page, ProviderEntry, SetupState,
-    validated_providers,
+    provider_rows,
 };
 use super::view::{agent_layout, display_width, masked_credential, render, render_page};
 use crate::frontend::theme::{Role, current};
@@ -155,7 +154,7 @@ fn state(mode: SetupMode, provider: &str, configured: bool) -> SetupState {
         },
         image_model_ids: Vec::new(),
     }];
-    let providers = validated_providers(&statuses, &instances).expect("validated providers");
+    let providers = provider_rows(&statuses, &instances);
     assert!(std::sync::Arc::ptr_eq(
         &providers[0].status,
         &providers[1].status
@@ -424,7 +423,7 @@ fn configured_fixed_provider_can_be_selected_from_another_provider() {
             image_model_ids: Vec::new(),
         },
     ];
-    let providers = validated_providers(&statuses, &instances).expect("validated providers");
+    let providers = provider_rows(&statuses, &instances);
     let mut state = SetupState::from_parts(
         SetupMode::Login,
         providers,
@@ -1140,165 +1139,6 @@ fn required_features_are_visible_but_cannot_be_toggled() {
             .iter()
             .any(|line| line.to_string().contains("[x] Required"))
     );
-}
-
-#[test]
-fn provider_validation_rejects_an_incomplete_manifest() {
-    let mut advertised = status("openai_socket");
-    advertised.web_search[0].description.clear();
-
-    let error = match validated_providers(&[advertised], &[]) {
-        Ok(_) => panic!("incomplete provider manifest must fail"),
-        Err(error) => error,
-    };
-
-    assert!(error.to_string().contains("incomplete manifest"));
-}
-
-#[test]
-fn provider_validation_rejects_duplicate_ids() {
-    let advertised = status("openai_socket");
-
-    let error = match validated_providers(&[advertised.clone(), advertised], &[]) {
-        Ok(_) => panic!("duplicate providers must fail"),
-        Err(error) => error,
-    };
-
-    assert!(error.to_string().contains("duplicate provider"));
-}
-
-#[test]
-fn setup_rejects_active_provider_values_outside_the_manifest() {
-    let reject = |status: ProviderStatus, config: ProviderConfig, catalog: Vec<String>| {
-        let instances = catalog.is_empty().then(Vec::new).unwrap_or_else(|| {
-            vec![ProviderInstance {
-                label: config.instance.clone(),
-                tint: Default::default(),
-                configured: true,
-                credential_hint: None,
-                selection: config.clone(),
-                models: vec![ProviderModel {
-                    reasoning: catalog
-                        .iter()
-                        .map(|id| ReasoningChoice {
-                            id: id.to_owned(),
-                            label: id.to_owned(),
-                            description: String::new(),
-                        })
-                        .collect(),
-                    default_reasoning: catalog.first().cloned(),
-                    ..model(&config.model, &config.model, None)
-                }],
-                image_model_ids: Vec::new(),
-            }]
-        });
-        let original = AgentComposition {
-            provider: config,
-            ..AgentComposition::default()
-        };
-        // An invalid selection is caught either while validating the advertised
-        // instances or while seeding setup state from them.
-        let providers = match validated_providers(&[status], &instances) {
-            Ok(providers) => providers,
-            Err(error) => return error.to_string(),
-        };
-        match SetupState::from_parts(
-            SetupMode::Login,
-            providers,
-            features(),
-            Vec::new(),
-            original,
-            false,
-        ) {
-            Ok(_) => panic!("invalid active provider state must fail"),
-            Err(error) => error.to_string(),
-        }
-    };
-
-    let missing_provider = reject(
-        status("kimi"),
-        ProviderConfig {
-            instance: "missing".into(),
-            provider: "missing".into(),
-            model: "model".into(),
-            base_url: None,
-            endpoint_auth: ProviderEndpointAuth::ProviderDefault,
-            reasoning_effort: None,
-            service_tier: None,
-            tool_discovery: None,
-            web_search: HostedWebSearch::Off,
-        },
-        Vec::new(),
-    );
-    assert!(missing_provider.contains("active provider"));
-
-    let missing_model = reject(
-        status("openai_socket"),
-        ProviderConfig {
-            instance: "openai_socket".into(),
-            provider: "openai_socket".into(),
-            model: "missing".into(),
-            base_url: Some("https://api.openai.com/v1".into()),
-            endpoint_auth: ProviderEndpointAuth::ProviderDefault,
-            reasoning_effort: None,
-            service_tier: None,
-            tool_discovery: None,
-            web_search: HostedWebSearch::Off,
-        },
-        Vec::new(),
-    );
-    assert!(missing_model.contains("unadvertised model"));
-
-    let missing_search = reject(
-        status("kimi"),
-        ProviderConfig {
-            instance: "kimi".into(),
-            provider: "kimi".into(),
-            model: "kimi-k3".into(),
-            base_url: None,
-            endpoint_auth: ProviderEndpointAuth::ProviderDefault,
-            reasoning_effort: Some("max".into()),
-            service_tier: None,
-            tool_discovery: None,
-            web_search: HostedWebSearch::Live,
-        },
-        Vec::new(),
-    );
-    assert!(missing_search.contains("unadvertised web-search"));
-
-    let missing_reasoning = reject(
-        status("openai_socket"),
-        ProviderConfig {
-            instance: "openai_socket".into(),
-            provider: "openai_socket".into(),
-            model: "gpt-6-sol".into(),
-            base_url: Some("https://api.openai.com/v1".into()),
-            endpoint_auth: ProviderEndpointAuth::ProviderDefault,
-            reasoning_effort: Some("missing".into()),
-            service_tier: None,
-            tool_discovery: None,
-            web_search: HostedWebSearch::Off,
-        },
-        Vec::new(),
-    );
-    assert!(missing_reasoning.contains("unadvertised reasoning"));
-
-    let missing_custom_reasoning = reject(
-        status("responses"),
-        ProviderConfig {
-            instance: "responses".into(),
-            provider: "responses".into(),
-            model: AgentComposition::default().provider.model,
-            base_url: Some("https://api.openai.com/v1".into()),
-            endpoint_auth: ProviderEndpointAuth::ProviderDefault,
-            reasoning_effort: Some("missing".into()),
-            service_tier: None,
-            tool_discovery: None,
-            web_search: HostedWebSearch::Off,
-        },
-        vec!["medium".into()],
-    );
-    assert!(missing_custom_reasoning.contains("unconfigured reasoning"));
 }
 
 #[test]

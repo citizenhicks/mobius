@@ -173,7 +173,7 @@ impl ConfigStore {
             return Ok(());
         }
         let previous = std::mem::replace(&mut config.usage, next);
-        if let Err(error) = self.save(config) {
+        if let Err(error) = self.publish_config(config, false) {
             if !matches!(error, Error::PublicationApplied { .. }) {
                 config.usage = previous;
             }
@@ -237,6 +237,10 @@ impl ConfigStore {
 
     fn save_with_mode(&self, config: &GatewayConfig, create_new: bool) -> Result<()> {
         self.validate_config(config)?;
+        self.publish_config(config, create_new)
+    }
+
+    fn publish_config(&self, config: &GatewayConfig, create_new: bool) -> Result<()> {
         let config = toml::to_string_pretty(config).map_err(|error| {
             Error::Config(format!("cannot encode gateway configuration: {error}"))
         })?;
@@ -320,7 +324,7 @@ impl CredentialStore {
         expires_at: Option<u64>,
     ) -> Result<()> {
         let api_key = api_key.trim();
-        validate_new_api_key(api_key)?;
+        validate_credential(instance, provider_id, api_key, base_url, expires_at)?;
         let credential = StoredCredential {
             provider: provider_id.into(),
             api_key: api_key.into(),
@@ -328,7 +332,6 @@ impl CredentialStore {
             expires_at,
             revocation: None,
         };
-        validate_stored_credential(instance, &credential)?;
         let mut values = self
             .values
             .lock()
@@ -557,29 +560,26 @@ fn validate_private_state_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn validate_stored_credential(instance: &str, credential: &StoredCredential) -> Result<()> {
-    if credential
-        .expires_at
-        .is_some_and(|seconds| seconds == 0 || seconds > 253_402_300_799)
-    {
+fn validate_credential(
+    instance: &str,
+    provider_id: &str,
+    api_key: &str,
+    base_url: Option<&str>,
+    expires_at: Option<u64>,
+) -> Result<()> {
+    if expires_at.is_some_and(|seconds| seconds == 0 || seconds > 253_402_300_799) {
         return Err(Error::Config(
             "credential expiry must be a valid Unix timestamp".into(),
         ));
     }
     super::validation::validate_instance_id(instance)?;
-    let definition = provider(&credential.provider)?;
+    let definition = provider(provider_id)?;
     if !matches!(definition.auth(), ProviderAuth::ApiKey(_)) {
         return Err(Error::Config(format!(
             "provider `{}` does not accept an API key",
-            credential.provider
+            provider_id
         )));
     }
-    validate_new_api_key(&credential.api_key)?;
-    definition.validate_base_url(credential.base_url.as_deref())?;
-    Ok(())
-}
-
-fn validate_new_api_key(api_key: &str) -> Result<()> {
     if api_key.is_empty() || api_key.len() > MAX_PROVIDER_API_KEY_BYTES {
         return Err(Error::Config(format!(
             "API key must be 1–{MAX_PROVIDER_API_KEY_BYTES} bytes"
@@ -590,18 +590,24 @@ fn validate_new_api_key(api_key: &str) -> Result<()> {
             "API key must contain only visible ASCII characters without whitespace".into(),
         ));
     }
+    definition.validate_base_url(base_url)?;
     Ok(())
 }
 
 fn validate_credential_state(values: &BTreeMap<String, StoredCredential>) -> Result<()> {
     for (instance, credential) in values {
-        validate_stored_credential(instance, credential)?;
+        validate_credential(
+            instance,
+            &credential.provider,
+            &credential.api_key,
+            credential.base_url.as_deref(),
+            credential.expires_at,
+        )?;
     }
     Ok(())
 }
 
 fn save_private_map(path: &Path, values: &BTreeMap<String, StoredCredential>) -> Result<()> {
-    validate_credential_state(values)?;
     let contents = serde_json::to_vec(values)?;
     if contents.len() > MAX_CREDENTIAL_STATE_BYTES {
         return Err(Error::Config(

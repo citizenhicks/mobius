@@ -794,7 +794,7 @@ impl BotStore {
         definition: &RoutineDefinition,
         cause: Option<&HookEvent>,
     ) -> Result<StoredRoutine> {
-        validate_input_definition(definition)?;
+        validate_definition(definition, 0, Some(MAX_SCHEDULE_TIMESTAMP))?;
         let workspace = validate_workspace(&definition.workspace)?;
         let path = self.new_instruction_path();
         if let Err(error) =
@@ -915,7 +915,7 @@ impl BotStore {
         cause: Option<&HookEvent>,
         accepted_action_id: Option<&str>,
     ) -> Result<StoredRoutine> {
-        validate_input_definition(definition)?;
+        validate_definition(definition, 0, Some(MAX_SCHEDULE_TIMESTAMP))?;
         let workspace = validate_workspace(&definition.workspace)?;
         let state_lock = open_private_lock(self.state_dir.join(STATE_LOCK_FILE))?;
         state_lock.lock()?;
@@ -1800,36 +1800,20 @@ fn validate_instructions(instructions: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn validate_definition(definition: &RoutineDefinition, depth: usize) -> Result<()> {
+pub(crate) fn validate_definition(
+    definition: &RoutineDefinition,
+    depth: usize,
+    timestamp_limit: Option<i64>,
+) -> Result<()> {
     validate_stored_workspace(&definition.workspace)?;
     validate_instructions(&definition.instructions)?;
-    validate_bindings(definition.bindings.iter(), depth)
-}
-
-pub(crate) fn validate_input_definition(definition: &RoutineDefinition) -> Result<()> {
-    validate_definition(definition, 0)?;
-    for binding in &definition.bindings {
-        if let HookSelector::Schedule { schedule, ends_at } = &binding.on
-            && schedule
-                .at
-                .into_iter()
-                .chain(*ends_at)
-                .any(|timestamp| !(1..=MAX_SCHEDULE_TIMESTAMP).contains(&timestamp))
-        {
-            return Err(Error::Config(
-                "schedule timestamps must be Unix epoch seconds through year 9999, not milliseconds".into(),
-            ));
-        }
-        if let RoutineAction::Update { definition } = &binding.action {
-            validate_input_definition(definition)?;
-        }
-    }
-    Ok(())
+    validate_bindings(definition.bindings.iter(), depth, timestamp_limit)
 }
 
 fn validate_bindings<'a>(
     bindings: impl ExactSizeIterator<Item = &'a RoutineBinding>,
     depth: usize,
+    timestamp_limit: Option<i64>,
 ) -> Result<()> {
     if depth > 4 || bindings.len() > events::MAX_ROUTINE_BINDINGS {
         return Err(Error::Config(
@@ -1850,16 +1834,22 @@ fn validate_bindings<'a>(
         }
         events::validate_selector(&binding.on)?;
         if let HookSelector::Schedule { schedule, ends_at } = &binding.on {
-            validate_schedule(schedule, *ends_at)?;
+            validate_schedule(schedule, *ends_at, timestamp_limit)?;
         }
-        validate_routine_action(&binding.action, depth)?;
+        validate_routine_action(&binding.action, depth, timestamp_limit)?;
     }
     Ok(())
 }
 
-pub(crate) fn validate_routine_action(action: &RoutineAction, depth: usize) -> Result<()> {
+pub(crate) fn validate_routine_action(
+    action: &RoutineAction,
+    depth: usize,
+    timestamp_limit: Option<i64>,
+) -> Result<()> {
     match action {
-        RoutineAction::Update { definition } => validate_definition(definition, depth + 1),
+        RoutineAction::Update { definition } => {
+            validate_definition(definition, depth + 1, timestamp_limit)
+        }
         RoutineAction::Stop { run_id }
             if run_id.trim().is_empty()
                 || run_id.len() > 256
@@ -1877,7 +1867,20 @@ pub(crate) fn validate_routine_action(action: &RoutineAction, depth: usize) -> R
     }
 }
 
-fn validate_schedule(schedule: &RoutineSchedule, ends_at: Option<i64>) -> Result<()> {
+fn validate_schedule(
+    schedule: &RoutineSchedule,
+    ends_at: Option<i64>,
+    timestamp_limit: Option<i64>,
+) -> Result<()> {
+    if schedule
+        .at
+        .is_some_and(|at| timestamp_limit.is_some_and(|limit| !(1..=limit).contains(&at)))
+        || ends_at.is_some_and(|end| !(1..=timestamp_limit.unwrap_or(i64::MAX)).contains(&end))
+    {
+        return Err(Error::Config(
+            "schedule timestamps must be Unix epoch seconds within the supported range, not milliseconds".into(),
+        ));
+    }
     let populated = [
         schedule.at.is_some(),
         schedule.every_seconds.is_some(),
@@ -1935,9 +1938,6 @@ fn validate_schedule(schedule: &RoutineSchedule, ends_at: Option<i64>) -> Result
                 "schedule fields do not match the selected schedule kind".into(),
             ));
         }
-    }
-    if ends_at.is_some_and(|ends_at| ends_at <= 0) {
-        return Err(Error::Config("schedule end time must be positive".into()));
     }
     Ok(())
 }
@@ -1998,6 +1998,7 @@ fn validate_state(state: &BotState, routines_dir: &Path) -> Result<()> {
         validate_bindings(
             routine.bindings.iter().map(|binding| &binding.definition),
             0,
+            None,
         )?;
         if routine
             .bindings

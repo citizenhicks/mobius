@@ -27,7 +27,6 @@ use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use super::super::ModelCancellation;
 use super::super::ModelCancellationReason;
 use super::super::ModelEventSink;
-use super::super::StreamingToolCalls;
 use super::super::openai::attach_stream_output;
 use super::super::openai::collect_stream_output;
 use super::super::openai::emit_ready_tool_calls;
@@ -519,7 +518,6 @@ async fn read_exchange_with_timeout(
     let mut reasoning_part = None;
     let mut output = BTreeMap::new();
     let mut next_output_index = 0;
-    let mut streamed_tool_calls = StreamingToolCalls::default();
     let mut stream_bytes = 0;
     let output_delivered = Arc::new(AtomicBool::new(false));
     let tracked_delivery = Arc::clone(&output_delivered);
@@ -565,14 +563,13 @@ async fn read_exchange_with_timeout(
             &output,
             pending.map(|index| (index, &event["item"])),
             &mut next_output_index,
-            &mut streamed_tool_calls,
             &tracked_events,
         )
         .await?;
         let handled = emit_web_event(&event, &mut web_searches, &tracked_events).await?
             || emit_reasoning_event(&event, &mut reasoning_part, &tracked_events).await?
             || emit_text_event(&event, &mut commentary, &tracked_events).await?;
-        collect_stream_output(&mut event, &mut output)?;
+        collect_stream_output(&mut event, &mut output, pending);
         if handled {
             continue;
         }

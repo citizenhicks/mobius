@@ -18,7 +18,6 @@ use super::ModelRequest;
 use super::PROMPT_CACHE_BREAKPOINT_FIELD;
 use super::PromptCacheMode;
 use super::REPLAY_REASONING_FIELD;
-use super::StreamingToolCalls;
 use super::TOOL_ERROR_FIELD;
 use super::TOOLS_SEARCH_NAME;
 use super::ToolDefinition;
@@ -377,7 +376,6 @@ struct StreamState {
     partial_json: BTreeMap<usize, String>,
     completed_blocks: BTreeSet<usize>,
     next_completed_block: usize,
-    streamed_tool_calls: StreamingToolCalls,
     web_queries: BTreeMap<String, Option<String>>,
     usage: Usage,
     stop_reason: Option<String>,
@@ -564,7 +562,6 @@ impl StreamState {
                 "arguments": serde_json::to_string(&input)?
             });
             let call = super::decode_tool_call(&item)?;
-            self.streamed_tool_calls.accept(&call)?;
             events(ModelEvent::ToolCallReady(call)).await?;
         }
         Ok(())

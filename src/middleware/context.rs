@@ -358,7 +358,7 @@ impl<'a> MessageQueue<'a> {
                         if target == turn_id
                 )
         }) {
-            item.promote_to_next_turn()?;
+            item.promote_to_next_turn();
         }
         Ok(())
     }

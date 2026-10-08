@@ -404,8 +404,8 @@ async fn submit_handoff(
     let Some(submission) = conversation.handoff(id, text)? else {
         return Ok((None, Vec::new()));
     };
-    let submission_id = submission.id.clone();
-    Ok(match host.submit(submission).await {
+    let submission_id = submission.submission().id.to_owned();
+    Ok(match host.submit_validated(submission).await {
         Ok(()) => (Some(submission_id), Vec::new()),
         Err(rejection) => (
             None,

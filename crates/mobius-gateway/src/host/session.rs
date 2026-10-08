@@ -157,11 +157,11 @@ pub(super) enum HostCommand {
         reply: oneshot::Sender<std::result::Result<SessionHistoryPage, Rejection>>,
     },
     Submit {
-        submission: Submission,
+        submission: ValidatedSubmission,
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
     },
     DeliverSource {
-        submission: Submission,
+        submission: ValidatedSubmission,
         bot_id: String,
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
     },
@@ -482,6 +482,17 @@ impl HostHandle {
         &self,
         submission: Submission,
     ) -> std::result::Result<(), Rejection> {
+        self.submit_validated(
+            ValidatedSubmission::new(submission)
+                .map_err(|error| Rejection::new("invalid_submission", error.to_string()))?,
+        )
+        .await
+    }
+
+    pub(crate) async fn submit_validated(
+        &self,
+        submission: ValidatedSubmission,
+    ) -> std::result::Result<(), Rejection> {
         let (reply, receiver) = oneshot::channel();
         self.send(HostCommand::Submit { submission, reply }).await?;
         receive(receiver).await
@@ -492,6 +503,19 @@ impl HostHandle {
     pub(super) async fn deliver_source(
         &self,
         submission: Submission,
+        bot_id: String,
+    ) -> std::result::Result<(), Rejection> {
+        self.deliver_validated_source(
+            ValidatedSubmission::new(submission)
+                .map_err(|error| Rejection::new("invalid_submission", error.to_string()))?,
+            bot_id,
+        )
+        .await
+    }
+
+    pub(super) async fn deliver_validated_source(
+        &self,
+        submission: ValidatedSubmission,
         bot_id: String,
     ) -> std::result::Result<(), Rejection> {
         let (reply, receiver) = oneshot::channel();

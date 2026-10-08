@@ -7,13 +7,12 @@ pub(crate) fn validate_bot_compatibility(
     catalogs: mobius::middleware::manifest::ModelCatalogs<'_>,
 ) -> Result<()> {
     validate_agent_composition_with_ceilings(config, gateway.execution.subagent_ceilings()?)?;
-    validate_desktop_bot_policy(gateway, config)?;
-    gateway.validate_provider_selection(&config.provider)?;
     let selection = &config.provider;
     let configured = gateway
         .configured_providers
         .get(&selection.instance)
         .ok_or_else(|| Error::Config("active provider is not in the configured catalog".into()))?;
+    validate_configured_provider_selection(configured, selection)?;
     let definition = provider(&selection.provider)?;
     let effort = effective_reasoning_effort(definition, configured, selection);
     let route = model_route_id(&selection.instance, &selection.model, effort);
@@ -39,20 +38,17 @@ pub(crate) fn configured_approval_policy(
         .map_err(Error::from)
 }
 
-pub(crate) fn validate_desktop_bot_policy(
-    gateway: &GatewayConfig,
-    config: &AgentComposition,
-) -> Result<()> {
+fn validate_computer_control_policy(config: &AgentComposition) -> Result<()> {
     use mobius::backend::sandbox::ApprovalPolicy;
 
-    if gateway.desktop_enabled
+    if config.middleware.enabled("computer_control")
         && matches!(
             configured_approval_policy(&config.middleware)?,
             ApprovalPolicy::Ask | ApprovalPolicy::AllowNetwork
         )
     {
         return Err(Error::Config(
-            "desktop gateways require Full access or no network; restricted execution with network access can reach the shared browser".into(),
+            "computer control middleware requires Full access or Allow · no network".into(),
         ));
     }
     Ok(())
@@ -91,7 +87,8 @@ pub(crate) fn validate_agent_composition_with_ceilings(
     {
         return Err(Error::Config("voice route must be 1–4096 bytes".into()));
     }
-    crate::middleware_manifest::validate_with_ceilings(&config.middleware, ceilings)
+    crate::middleware_manifest::validate_with_ceilings(&config.middleware, ceilings)?;
+    validate_computer_control_policy(config)
 }
 
 pub(super) fn validate_provider_config(config: &ProviderConfig) -> Result<()> {

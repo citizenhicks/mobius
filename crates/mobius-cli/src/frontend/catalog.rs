@@ -617,13 +617,12 @@ fn cli_commands() -> Vec<UiCommand> {
     .collect()
 }
 
+/// The core checks each contribution's own names; this checks only what it cannot know:
+/// clashes with the terminal's built-in commands and the command prefix.
 fn validate(commands: &[UiCommand], references: &[UiReference]) -> Result<()> {
     let mut identifiers = BTreeSet::new();
     for command in commands {
-        if command.name.is_empty()
-            || command.name.starts_with(COMMAND_PREFIX)
-            || command.name.chars().any(char::is_whitespace)
-        {
+        if command.name.starts_with(COMMAND_PREFIX) {
             return Err(Error::Config(format!(
                 "invalid frontend command `{}`",
                 command.name
@@ -639,11 +638,7 @@ fn validate(commands: &[UiCommand], references: &[UiReference]) -> Result<()> {
 
     let mut registered = BTreeSet::new();
     for reference in references {
-        if reference.trigger == COMMAND_PREFIX
-            || reference.trigger.is_control()
-            || reference.trigger.is_whitespace()
-            || reference.value.is_empty()
-        {
+        if reference.trigger == COMMAND_PREFIX {
             return Err(Error::Config(format!(
                 "invalid frontend reference `{}{}`",
                 reference.trigger, reference.value

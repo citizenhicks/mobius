@@ -6,6 +6,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::text;
+use crate::agent::ValidatedSubmission;
 use crate::backend::model::RealtimeVoiceCommand;
 use crate::protocol::{
     Event, EventMsg, FrontendSymbol, MessageAuthor, MessageDelivery, MessageSubmission,
@@ -317,7 +318,7 @@ impl VoiceConversation {
     /// # Errors
     ///
     /// Returns an error if validation or an operation required by this function fails.
-    pub fn handoff(&mut self, id: String, text: String) -> Result<Option<Submission>> {
+    pub fn handoff(&mut self, id: String, text: String) -> Result<Option<ValidatedSubmission>> {
         if self.seen.contains(&id) {
             return Ok(None);
         }
@@ -352,7 +353,7 @@ impl VoiceConversation {
                 },
             },
         };
-        crate::agent::validate_submission(&submission)?;
+        let submission = ValidatedSubmission::new(submission)?;
         self.seen.insert(id.clone());
         self.pending.insert(
             submission_id,
@@ -510,7 +511,8 @@ mod tests {
         let submission = voice
             .handoff("audio".into(), "Do this".into())
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .into_submission();
         let Op::Message { message } = submission.op else {
             panic!("normal message")
         };
@@ -574,7 +576,8 @@ mod tests {
         let submission = voice
             .handoff("audio-1".into(), "Help me".into())
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .into_submission();
         assert!(
             voice
                 .handoff("audio-1".into(), "duplicate".into())
@@ -646,7 +649,8 @@ mod tests {
             let submission = voice
                 .handoff(format!("audio-{index}"), "One more thing".into())
                 .unwrap()
-                .unwrap();
+                .unwrap()
+                .into_submission();
             assert!(
                 voice
                     .observe(&event(
@@ -692,7 +696,8 @@ mod tests {
             let submission = voice
                 .handoff("audio".into(), "Do something".into())
                 .unwrap()
-                .unwrap();
+                .unwrap()
+                .into_submission();
             let msg = if aborted {
                 voice.observe(&event(
                     &submission.id,

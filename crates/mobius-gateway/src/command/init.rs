@@ -82,10 +82,6 @@ pub(super) fn set_desktop(state_dir: PathBuf, enabled: bool) -> Result<()> {
     let _startup = StartupGuard::create(store.state_dir())?;
     ensure_gateway_stopped(&store, &config)?;
     config.desktop_enabled = enabled;
-    config.validate()?;
-    for bot in crate::bots::BotStore::open(store.state_dir())?.bots()? {
-        crate::config::validate_desktop_bot_policy(&config, &bot.config.config)?;
-    }
     store.save(&config)?;
     println!("gateway desktop enabled: {enabled}");
     Ok(())

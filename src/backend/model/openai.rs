@@ -16,7 +16,6 @@ use super::ModelInput;
 use super::ModelOutput;
 use super::ModelRequest;
 use super::PromptCacheMode;
-use super::StreamingToolCalls;
 #[cfg(test)]
 use super::TOOLS_SEARCH_NAME;
 use super::ToolDefinition;
@@ -348,7 +347,6 @@ impl OpenAi {
         let mut web_searches = BTreeSet::new();
         let mut output = BTreeMap::new();
         let mut next_output_index = 0;
-        let mut streamed_tool_calls = StreamingToolCalls::default();
         while let Some(chunk) = response.chunk().await? {
             sse.push(&chunk, "Responses")?;
             while let Some(frame) = sse.next_frame()? {
@@ -364,14 +362,13 @@ impl OpenAi {
                     &output,
                     pending.map(|index| (index, &event["item"])),
                     &mut next_output_index,
-                    &mut streamed_tool_calls,
                     &events,
                 )
                 .await?;
                 let handled = emit_web_event(&event, &mut web_searches, &events).await?
                     || emit_reasoning_event(&event, &mut reasoning_part, &events).await?
                     || emit_text_event(&event, &mut commentary, &events).await?;
-                collect_stream_output(&mut event, &mut output)?;
+                collect_stream_output(&mut event, &mut output, pending);
                 if handled {
                     continue;
                 }
@@ -712,18 +709,17 @@ pub(super) fn validate_stream_output(
 pub(super) fn collect_stream_output(
     event: &mut Value,
     output: &mut BTreeMap<u64, Value>,
-) -> Result<()> {
-    if let Some(index) = validate_stream_output(event, output)? {
+    index: Option<u64>,
+) {
+    if let Some(index) = index {
         output.insert(index, event["item"].take());
     }
-    Ok(())
 }
 
 pub(super) async fn emit_ready_tool_calls(
     output: &BTreeMap<u64, Value>,
     pending: Option<(u64, &Value)>,
     next_output_index: &mut u64,
-    tool_calls: &mut StreamingToolCalls,
     events: &ModelEventSink,
 ) -> Result<()> {
     // A newly completed item can release buffered calls before its borrowed event handlers run.
@@ -734,7 +730,6 @@ pub(super) async fn emit_ready_tool_calls(
     }) {
         if item.get("type").and_then(Value::as_str) == Some("function_call") {
             let call = super::decode_tool_call(item)?;
-            tool_calls.accept(&call)?;
             events(ModelEvent::ToolCallReady(call)).await?;
         }
         *next_output_index = next_output_index

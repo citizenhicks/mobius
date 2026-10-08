@@ -135,7 +135,7 @@ impl Runner {
         // Once hooks run, this response may no longer be retried.
         streamed.originals.push(original);
         let (denial, changed) = self
-            .prepare_tool_call(turn_id, &mut call, tools, &mut hook_events, &mut hook_input)
+            .prepare_tool_call(turn_id, &mut call, &mut hook_events, &mut hook_input)
             .await?;
         if denial.is_some() || !hook_input.is_empty() || !hook_events.is_empty() {
             streamed.calls.push(changed.then_some(call));
@@ -148,7 +148,9 @@ impl Runner {
             streamed.deferred = true;
             return Ok(());
         }
-        let Some((bound, permissions)) = self.authorize_streamed_tool(&call, tools).await? else {
+        let Some((bound, permissions)) =
+            self.authorize_streamed_tool(&call, tools, changed).await?
+        else {
             streamed.calls.push(changed.then_some(call));
             streamed.deferred = true;
             return Ok(());
@@ -212,16 +214,16 @@ impl Runner {
         &self,
         call: &ToolCall,
         tools: &PreparedToolSet<'_>,
+        changed: bool,
     ) -> Result<Option<(BoundToolCall, SandboxPermissions)>> {
         if self.catalog.cancels_on_input(std::slice::from_ref(call)) {
             return Ok(None);
         }
+        if changed && self.catalog.validate_prepared(call, tools).is_err() {
+            return Ok(None);
+        }
         let live = self.live_tools().await?;
-        let Ok(bound) = self
-            .catalog
-            .validate_prepared(call, tools)
-            .and_then(|_| self.catalog.bind_prepared(call.clone(), &live))
-        else {
+        let Ok(bound) = self.catalog.bind_prepared(call.clone(), &live) else {
             return Ok(None);
         };
         let mutations = self

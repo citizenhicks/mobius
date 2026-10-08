@@ -1972,10 +1972,31 @@ fn persisted_state_requires_the_default_mobius_bot() {
 
 #[test]
 fn malformed_or_out_of_range_schedule_is_rejected() {
-    assert!(validate_schedule(&cron("0 9 * *", "UTC"), None).is_err());
-    assert!(validate_schedule(&cron("75 9 * * *", "UTC"), None).is_err());
-    assert!(validate_schedule(&cron("0 9 * * MON", "UTC"), None).is_ok());
-    assert!(validate_schedule(&interval(59), None).is_err());
-    assert!(validate_schedule(&once(1), Some(0)).is_err());
-    assert!(validate_schedule(&once(2), Some(1)).is_err());
+    assert!(validate_schedule(&cron("0 9 * *", "UTC"), None, None).is_err());
+    assert!(validate_schedule(&cron("75 9 * * *", "UTC"), None, None).is_err());
+    assert!(validate_schedule(&cron("0 9 * * MON", "UTC"), None, None).is_ok());
+    assert!(validate_schedule(&interval(59), None, None).is_err());
+    assert!(validate_schedule(&once(1), Some(0), None).is_err());
+    assert!(validate_schedule(&once(2), Some(1), None).is_err());
+}
+
+#[test]
+fn nested_routine_validation_keeps_input_limits_and_depth() {
+    let (_root, _store, workspace) = fixture();
+    for timestamp in [1, MAX_SCHEDULE_TIMESTAMP + 1] {
+        let mut definition = scheduled_definition(&workspace, "work", once(timestamp), None);
+        for depth in 0..=5 {
+            assert_eq!(
+                validate_definition(&definition, 0, None).is_ok(),
+                depth <= 4
+            );
+            assert_eq!(
+                validate_definition(&definition, 0, Some(MAX_SCHEDULE_TIMESTAMP)).is_ok(),
+                depth <= 4 && timestamp <= MAX_SCHEDULE_TIMESTAMP,
+            );
+            let mut parent = scheduled_definition(&workspace, "parent", once(1), None);
+            parent.bindings[0].action = RoutineAction::Update { definition };
+            definition = parent;
+        }
+    }
 }

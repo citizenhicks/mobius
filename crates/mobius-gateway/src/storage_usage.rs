@@ -65,9 +65,9 @@ pub struct StorageUsage {
     /// Aggregate bytes and file counts of gateway categories only.
     /// Completeness also covers project discovery and measurement for upload admission.
     pub gateway_total: StorageSize,
-    /// Maximum content blob and project file bytes; absent for self-hosted gateways.
+    /// Maximum content blob and project file bytes; absent unless the operator sets one.
     pub limit_bytes: Option<u64>,
-    /// Content blob and project file bytes charged against the allowance.
+    /// Content blob and project file bytes counted against the limit.
     /// Nested project paths are charged once; separate file copies count separately.
     pub used_bytes: u64,
 }

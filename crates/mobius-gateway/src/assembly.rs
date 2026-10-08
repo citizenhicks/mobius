@@ -121,6 +121,8 @@ pub(crate) fn prepare_bot<'a>(
             .preparations
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let config = &bot.config.config;
+        let choices = crate::provider_catalog::configured_model_catalog(gateway)?;
+        crate::config::validate_bot_compatibility(gateway, config, choices.catalogs())?;
         let model_providers = configured_model_providers(gateway, store, credentials)?;
         let endpoint = gateway
             .configured_providers
@@ -131,8 +133,6 @@ pub(crate) fn prepare_bot<'a>(
         } else {
             unavailable_models(gateway, &config.provider, session_files)?
         };
-        let choices = crate::provider_catalog::configured_model_catalog(gateway)?;
-        crate::config::validate_bot_compatibility(gateway, config, choices.catalogs())?;
         let approval_policy = configured_approval_policy(&config.middleware)?;
         let active_message_delivery = configured_message_delivery(&config.middleware)?;
         let compaction = config
@@ -226,7 +226,6 @@ pub(crate) async fn assemble(
         let config = gateway
             .lock()
             .map_err(|_| Error::Config("gateway configuration lock is poisoned".into()))?;
-        crate::config::validate_desktop_bot_policy(&config, &prepared.bot.config.config)?;
         (
             chat.execution_root(store.state_dir(), config.tls.as_ref())?,
             config.execution.clone(),

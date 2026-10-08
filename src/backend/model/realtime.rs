@@ -282,7 +282,6 @@ impl RealtimeTransport {
         api_url: &str,
         settings: super::ModelTransportSettings,
     ) -> Result<Self> {
-        settings.validate()?;
         Ok(Self {
             api,
             // Voice credentials must never follow a provider redirect.

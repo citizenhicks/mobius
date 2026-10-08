@@ -820,7 +820,6 @@ async fn responses_emits_complete_tool_calls_in_output_order() {
     });
     let mut output = BTreeMap::new();
     let mut next_output_index = 0;
-    let mut streamed_tool_calls = StreamingToolCalls::default();
 
     output.insert(
         1,
@@ -831,15 +830,9 @@ async fn responses_emits_complete_tool_calls_in_output_order() {
             "arguments": "{\"path\":\"README.md\"}"
         }),
     );
-    emit_ready_tool_calls(
-        &output,
-        None,
-        &mut next_output_index,
-        &mut streamed_tool_calls,
-        &events,
-    )
-    .await
-    .expect("incomplete prefix is held");
+    emit_ready_tool_calls(&output, None, &mut next_output_index, &events)
+        .await
+        .expect("incomplete prefix is held");
     assert!(seen.lock().expect("events lock").is_empty());
 
     output.insert(
@@ -850,15 +843,9 @@ async fn responses_emits_complete_tool_calls_in_output_order() {
             "content": []
         }),
     );
-    emit_ready_tool_calls(
-        &output,
-        None,
-        &mut next_output_index,
-        &mut streamed_tool_calls,
-        &events,
-    )
-    .await
-    .expect("complete prefix emits");
+    emit_ready_tool_calls(&output, None, &mut next_output_index, &events)
+        .await
+        .expect("complete prefix emits");
 
     assert_eq!(
         *seen.lock().expect("events lock"),
@@ -1609,11 +1596,9 @@ fn completed_stream_items_move_payloads_and_validate_before_collection() {
     });
     let payload = event["item"]["text"].as_str().expect("payload").as_ptr();
     let mut output = BTreeMap::new();
-    assert_eq!(
-        validate_stream_output(&event, &output).expect("valid item"),
-        Some(0)
-    );
-    collect_stream_output(&mut event, &mut output).expect("collect item");
+    let index = validate_stream_output(&event, &output).expect("valid item");
+    assert_eq!(index, Some(0));
+    collect_stream_output(&mut event, &mut output, index);
     assert_eq!(
         output[&0]["text"]
             .as_str()

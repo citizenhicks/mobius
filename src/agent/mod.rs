@@ -334,6 +334,32 @@ pub struct WeakAgentSender {
     ingress: Weak<SubmissionIngress>,
 }
 
+/// A submission checked at ingress and kept immutable until it reaches the agent.
+#[derive(Debug)]
+pub struct ValidatedSubmission(Submission);
+
+impl ValidatedSubmission {
+    /// Checks a raw submission before any admission side effects.
+    /// # Errors
+    /// Returns an error when identifiers, message content, or operation fields are invalid.
+    pub fn new(submission: Submission) -> Result<Self> {
+        validate_submission(&submission)?;
+        Ok(Self(submission))
+    }
+
+    /// Borrows the checked operation without allowing it to be changed.
+    #[must_use]
+    pub fn submission(&self) -> &Submission {
+        &self.0
+    }
+
+    /// Recovers raw input for rewriting; the rewritten value must be checked again.
+    #[must_use]
+    pub fn into_submission(self) -> Submission {
+        self.0
+    }
+}
+
 impl AgentSender {
     /// Returns a handle that does not keep the agent submission channel open.
     #[must_use]
@@ -348,6 +374,13 @@ impl AgentSender {
     ///
     /// Returns an error if the transport fails or returns invalid data.
     pub fn send(&self, submission: Submission) -> Result<()> {
+        self.send_validated(ValidatedSubmission::new(submission)?)
+    }
+
+    /// Enqueues a submission already checked at its ingress boundary.
+    /// # Errors
+    /// Returns an error if the queue is closed, full, or unavailable.
+    pub fn send_validated(&self, submission: ValidatedSubmission) -> Result<()> {
         self.enqueue(submission, None)
     }
 
@@ -358,7 +391,17 @@ impl AgentSender {
     ///
     /// Returns an error for non-message operations, invalid input, or a full or closed queue.
     pub fn send_with_admission(&self, submission: Submission) -> Result<MessageAdmission> {
-        if !matches!(submission.op, Op::Message { .. }) {
+        self.send_validated_with_admission(ValidatedSubmission::new(submission)?)
+    }
+
+    /// Enqueues a checked message and returns its durable admission handle.
+    /// # Errors
+    /// Returns an error for a non-message operation or an unavailable queue.
+    pub fn send_validated_with_admission(
+        &self,
+        submission: ValidatedSubmission,
+    ) -> Result<MessageAdmission> {
+        if !matches!(submission.submission().op, Op::Message { .. }) {
             return Err(Error::Config(
                 "admission acknowledgments require a message".into(),
             ));
@@ -368,8 +411,12 @@ impl AgentSender {
         Ok(MessageAdmission { receiver })
     }
 
-    fn enqueue(&self, submission: Submission, admission: Option<AdmissionReply>) -> Result<()> {
-        validate_submission(&submission)?;
+    fn enqueue(
+        &self,
+        submission: ValidatedSubmission,
+        admission: Option<AdmissionReply>,
+    ) -> Result<()> {
+        let submission = submission.0;
         let mut last_sequence = self
             .ingress
             .last_sequence

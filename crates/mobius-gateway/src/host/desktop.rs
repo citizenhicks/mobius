@@ -46,12 +46,9 @@ impl GatewayHost {
         let bot = bots
             .bot(&summary.session_context.owner_id)
             .map_err(invalid_bot)?;
-        if crate::config::configured_approval_policy(&bot.config.config.middleware)
-            .map_err(invalid_config)?
-            != mobius::backend::sandbox::ApprovalPolicy::FullAccess
-        {
+        if !bot.config.config.middleware.enabled("computer_control") {
             return Err(invalid_config(
-                "desktop control requires a Full access chat",
+                "computer control middleware is disabled for this Bot",
             ));
         }
         Ok(())

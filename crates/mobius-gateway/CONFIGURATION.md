@@ -304,8 +304,8 @@ access_grace_seconds = 30
 
 An explicit required lease fails startup without a valid Unix-seconds
 `MOBIUS_GATEWAY_ACCESS_EXPIRES_AT`; expiry plus configured grace closes connections and
-listeners. Without the requirement/variable, a local gateway runs independently of an
-account or subscription. `storage_limit_bytes` is informational and separate from local
+listeners. The operator supplies the expiry; without the requirement or the variable,
+the gateway runs with no access expiry. `storage_limit_bytes` is informational and separate from local
 filesystem capacity. Its existing minimum is 64 MiB when supplied. A local gateway
 may use any available space. Reported quota usage counts content blobs and files in
 registered chat workspaces. Nested workspaces are charged once; separate file copies,

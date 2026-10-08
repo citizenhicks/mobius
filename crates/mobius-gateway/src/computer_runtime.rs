@@ -65,9 +65,9 @@ pub(crate) async fn prepare(
     settings: &MiddlewareConfig,
     config: &ComputerConfig,
 ) -> Result<Option<PathBuf>> {
-    config.validate()?;
-    remote_desktop::prepare_configured_profile(config)?;
     if !settings.enabled("computer_control") {
+        config.validate()?;
+        remote_desktop::prepare_configured_profile(config)?;
         return Ok(None);
     }
     prepare_desktop(state_dir, config).await.map(Some)
@@ -403,7 +403,6 @@ pub(crate) fn worker_command(
     path: &Path,
     config: &ComputerConfig,
 ) -> Result<mobius::backend::sandbox::WorkerCommand> {
-    config.validate()?;
     Ok(mobius::backend::sandbox::WorkerCommand {
         executable: node_executable(path, config)?,
         arguments: vec![

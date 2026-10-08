@@ -2,10 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use mobius::backend::model::provider::HostedWebSearch;
-use mobius::protocol::{
-    FrontendSettingKind, FrontendSettingOption, FrontendSettingValue, MiddlewareFeature,
-    ModelChoice,
-};
+use mobius::protocol::{FrontendSettingKind, FrontendSettingValue, MiddlewareFeature, ModelChoice};
 use mobius::{Error, Result};
 use mobius_gateway::wire::{
     AgentComposition, ConfiguredModel, ExtensionRecord, MiddlewareConfig, ProviderAuthKind,
@@ -112,7 +109,7 @@ impl SetupState {
     ) -> Result<Self> {
         let mut state = Self::from_parts(
             mode,
-            validated_providers(&gateway.providers, &gateway.provider_instances)?,
+            provider_rows(&gateway.providers, &gateway.provider_instances),
             gateway.middleware_features.clone(),
             gateway.extensions.clone(),
             original,
@@ -136,11 +133,6 @@ impl SetupState {
         original: AgentComposition,
         default_only: bool,
     ) -> Result<Self> {
-        if providers.is_empty() {
-            return Err(Error::Config(
-                "the gateway did not advertise any providers".into(),
-            ));
-        }
         let provider = providers
             .iter()
             .position(|entry| {
@@ -153,36 +145,7 @@ impl SetupState {
                     .iter()
                     .position(|entry| entry.status.provider == original.provider.provider)
             })
-            .ok_or_else(|| {
-                Error::Config(format!(
-                    "the gateway did not advertise the active provider `{}`",
-                    original.provider.provider
-                ))
-            })?;
-        validate_active_provider(
-            &providers[provider].status,
-            providers[provider].instance.as_ref(),
-            &original.provider,
-        )?;
-        let extension_ids = available_extensions
-            .iter()
-            .map(|extension| extension.id.as_str())
-            .collect::<BTreeSet<_>>();
-        if extension_ids.len() != available_extensions.len() {
-            return Err(Error::Config(
-                "the gateway advertised duplicate extension IDs".into(),
-            ));
-        }
-        if let Some(extension) = available_extensions.iter().find(|extension| {
-            !features
-                .iter()
-                .any(|feature| feature.id == extension.capability)
-        }) {
-            return Err(Error::Config(format!(
-                "extension `{}` targets an unavailable capability",
-                extension.id
-            )));
-        }
+            .unwrap_or_default();
         let middleware = original.middleware.clone();
         let selected_extensions = original.extensions.clone();
         let mut state = Self {
@@ -367,26 +330,19 @@ impl SetupState {
         choices: &[ModelChoice],
         model_providers: &BTreeMap<String, String>,
     ) -> Result<()> {
-        let routes = choices
+        // Routes of setups without a usable credential are skipped, not treated as errors.
+        let routes: Vec<_> = choices
             .iter()
-            .map(|choice| {
-                let instance = model_providers.get(&choice.route).ok_or_else(|| {
-                    Error::Config(format!("model route `{}` has no provider", choice.route))
-                })?;
-                let provider = self
-                    .providers
-                    .iter()
-                    .position(|entry| {
-                        entry.instance.as_ref().is_some_and(|configured| {
-                            configured.configured && configured.selection.instance == *instance
-                        })
+            .filter_map(|choice| {
+                let instance = model_providers.get(&choice.route)?;
+                let provider = self.providers.iter().position(|entry| {
+                    entry.instance.as_ref().is_some_and(|configured| {
+                        configured.configured && configured.selection.instance == *instance
                     })
-                    .ok_or_else(|| {
-                        Error::Config(format!("model route `{}` has no setup", choice.route))
-                    })?;
-                Ok((choice.clone(), provider))
+                })?;
+                Some((choice.clone(), provider))
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect();
         if routes.is_empty() {
             return Err(Error::Config(
                 "no available models; configure a provider first".into(),
@@ -873,13 +829,9 @@ impl SetupState {
         }
         let value = match &setting.kind {
             FrontendSettingKind::Integer { min, max, step } => {
-                let Some(FrontendSettingValue::Integer(current)) =
-                    self.middleware.setting(&feature.id, &setting.id)
-                else {
-                    return Err(Error::Config(format!(
-                        "{} requires an integer value",
-                        setting.label
-                    )));
+                let current = match self.middleware.setting(&feature.id, &setting.id) {
+                    Some(FrontendSettingValue::Integer(current)) => current,
+                    _ => min,
                 };
                 let step = (*step).max(1);
                 let next = if delta.is_positive() {
@@ -898,29 +850,14 @@ impl SetupState {
                 let offset = usize::from(unset_label.is_some());
                 let count = options.len() + offset;
                 if count == 0 {
-                    return Err(Error::Config(format!(
-                        "{} has no advertised choices",
-                        setting.label
-                    )));
+                    return Ok(());
                 }
                 let current = match self.middleware.setting(&feature.id, &setting.id) {
                     Some(FrontendSettingValue::String(value)) => options
                         .iter()
                         .position(|option| option.value == *value)
-                        .map(|index| index + offset)
-                        .ok_or_else(|| {
-                            Error::Config(format!(
-                                "{} is not in the gateway catalog",
-                                setting.label
-                            ))
-                        })?,
-                    None if unset_label.is_some() => 0,
-                    Some(FrontendSettingValue::Integer(_)) | None => {
-                        return Err(Error::Config(format!(
-                            "{} requires a selected value",
-                            setting.label
-                        )));
-                    }
+                        .map_or(0, |index| index + offset),
+                    _ => 0,
                 };
                 let next = (current as isize + delta).rem_euclid(count as isize) as usize;
                 if next < offset {
@@ -938,10 +875,6 @@ impl SetupState {
     }
 
     pub(super) fn finish(&mut self) -> Flow {
-        if let Err(error) = self.authentication_ready() {
-            self.error = Some(error.to_string());
-            return Flow::Continue;
-        }
         if let Err(error) = self.agent_composition(&self.original) {
             self.error = Some(error.to_string());
             return Flow::Continue;
@@ -1007,7 +940,7 @@ impl SetupState {
                 .models
                 .iter()
                 .position(|model| model.id == current.model)
-                .expect("active provider model was validated")
+                .unwrap_or_default()
         } else {
             0
         };
@@ -1050,7 +983,7 @@ impl SetupState {
                 .web_search
                 .iter()
                 .position(|search| search.value == current.web_search.id())
-                .expect("active provider search mode was validated")
+                .unwrap_or_default()
         } else {
             0
         };
@@ -1076,21 +1009,12 @@ impl SetupState {
         if !self.definition().model_ids_configurable {
             return Ok(Vec::new());
         }
-        let model_ids = self
+        Ok(self
             .custom_model
             .split(',')
             .map(str::trim)
             .map(str::to_string)
-            .collect::<Vec<_>>();
-        if model_ids.iter().any(String::is_empty) {
-            return Err(Error::Config(
-                "Enter one or more model IDs separated by commas".into(),
-            ));
-        }
-        if model_ids.iter().collect::<BTreeSet<_>>().len() != model_ids.len() {
-            return Err(Error::Config("model IDs must be unique".into()));
-        }
-        Ok(model_ids)
+            .collect())
     }
 
     pub(super) fn selected_base_url(&self) -> Option<&str> {
@@ -1169,7 +1093,6 @@ impl SetupState {
     }
 
     pub(super) fn authentication(&mut self) -> Result<Authentication> {
-        self.authentication_ready()?;
         if self.mode != SetupMode::Login {
             return Ok(Authentication::Reuse);
         }
@@ -1277,9 +1200,6 @@ impl SetupState {
         } else {
             ProviderEndpointAuth::ProviderDefault
         };
-        if model.is_empty() {
-            return Err(Error::Config("model is required".into()));
-        }
         let same_endpoint =
             current.instance == self.target_instance() && current.base_url.as_deref() == base_url;
         Ok(ProviderConfig {
@@ -1323,140 +1243,28 @@ pub(super) enum Authentication {
 }
 
 /// Rows are every configured setup first, then one "add setup" row per definition.
-pub(super) fn validated_providers(
+/// The gateway validated both lists; this only joins each setup to its definition.
+pub(super) fn provider_rows(
     statuses: &[ProviderStatus],
     instances: &[ProviderInstance],
-) -> Result<Vec<ProviderEntry>> {
-    let mut seen = BTreeSet::new();
-    let definitions = statuses
+) -> Vec<ProviderEntry> {
+    let definitions: Vec<Arc<ProviderStatus>> = statuses
         .iter()
-        .map(|status| {
-            if status.provider.trim().is_empty() || !seen.insert(status.provider.as_str()) {
-                return Err(Error::Config(format!(
-                    "gateway advertised invalid or duplicate provider `{}`",
-                    status.provider
-                )));
-            }
-            if status.label.trim().is_empty()
-                || status.description.trim().is_empty()
-                || !valid_web_search_options(&status.web_search)
-                || (!status.model_ids_configurable && status.models.is_empty())
-            {
-                return Err(Error::Config(format!(
-                    "gateway advertised an incomplete manifest for `{}`",
-                    status.provider
-                )));
-            }
-            Ok(Arc::new(status.clone()))
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    let mut seen_instances = BTreeSet::new();
-    let mut rows = Vec::with_capacity(instances.len() + definitions.len());
-    for instance in instances {
-        if instance.selection.instance.trim().is_empty()
-            || !seen_instances.insert(instance.selection.instance.as_str())
-        {
-            return Err(Error::Config(format!(
-                "gateway advertised invalid or duplicate provider instance `{}`",
-                instance.selection.instance
-            )));
-        }
-        let status = definitions
+        .map(|status| Arc::new(status.clone()))
+        .collect();
+    let configured = instances.iter().filter_map(|instance| {
+        definitions
             .iter()
             .find(|status| status.provider == instance.selection.provider)
-            .ok_or_else(|| {
-                Error::Config(format!(
-                    "gateway advertised instance `{}` for unknown provider `{}`",
-                    instance.selection.instance, instance.selection.provider
-                ))
-            })?;
-        validate_active_provider(status, Some(instance), &instance.selection)?;
-        rows.push(ProviderEntry {
-            status: Arc::clone(status),
-            instance: Some(instance.clone()),
-        });
-    }
+            .map(|status| ProviderEntry {
+                status: Arc::clone(status),
+                instance: Some(instance.clone()),
+            })
+    });
+    let mut rows: Vec<ProviderEntry> = configured.collect();
     rows.extend(definitions.into_iter().map(|status| ProviderEntry {
         status,
         instance: None,
     }));
-    Ok(rows)
-}
-
-pub(super) fn validate_active_provider(
-    status: &ProviderStatus,
-    instance: Option<&ProviderInstance>,
-    config: &ProviderConfig,
-) -> Result<()> {
-    if !status
-        .web_search
-        .iter()
-        .any(|search| search.value == config.web_search.id())
-    {
-        return Err(Error::Config(format!(
-            "gateway active provider `{}` has an unadvertised web-search mode",
-            status.provider
-        )));
-    }
-    if status.configurable_base_url() != config.base_url.is_some() {
-        return Err(Error::Config(format!(
-            "gateway active provider `{}` has invalid endpoint settings",
-            status.provider
-        )));
-    }
-    if status.model_ids_configurable {
-        let Some(model) = instance
-            .into_iter()
-            .flat_map(|entry| &entry.models)
-            .find(|model| model.id == config.model)
-        else {
-            return Err(Error::Config(format!(
-                "gateway active provider `{}` has unconfigured model `{}`",
-                status.provider, config.model
-            )));
-        };
-        if let Some(effort) = config.reasoning_effort.as_deref()
-            && !model.reasoning.iter().any(|choice| choice.id == effort)
-        {
-            return Err(Error::Config(format!(
-                "gateway active provider `{}` has unconfigured reasoning `{effort}`",
-                status.provider
-            )));
-        }
-        return Ok(());
-    }
-    let model = status
-        .models
-        .iter()
-        .find(|model| model.id == config.model)
-        .ok_or_else(|| {
-            Error::Config(format!(
-                "gateway active provider `{}` has unadvertised model `{}`",
-                status.provider, config.model
-            ))
-        })?;
-    if let Some(effort) = config.reasoning_effort.as_deref()
-        && !model.reasoning.iter().any(|choice| choice.id == effort)
-    {
-        return Err(Error::Config(format!(
-            "gateway active model `{}` has unadvertised reasoning `{effort}`",
-            model.id
-        )));
-    }
-    Ok(())
-}
-
-fn valid_web_search_options(options: &[FrontendSettingOption]) -> bool {
-    let mut values = BTreeSet::new();
-    options
-        .first()
-        .is_some_and(|option| option.value == HostedWebSearch::Off.id())
-        && options.iter().all(|option| {
-            !option.value.trim().is_empty()
-                && !option.label.trim().is_empty()
-                && !option.description.trim().is_empty()
-                && option.value.parse::<HostedWebSearch>().is_ok()
-                && values.insert(option.value.as_str())
-        })
+    rows
 }

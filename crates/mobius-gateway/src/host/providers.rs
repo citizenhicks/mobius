@@ -157,9 +157,6 @@ impl GatewayHost {
             } else {
                 base_url.as_deref()
             };
-            definition
-                .validate_base_url(base_url)
-                .map_err(invalid_config)?;
             let configured = state
                 .config()?
                 .configured_providers

@@ -3,7 +3,7 @@
 use std::sync::{Arc, Weak};
 
 use mobius::BoxFuture;
-use mobius::agent::validate_submission;
+use mobius::agent::ValidatedSubmission;
 use mobius::middleware::sessions::{ChatTarget, LiveChat, LiveChats};
 use mobius::protocol::{ActiveMessageDelivery, MessageAuthor, Op, Submission};
 use tokio::sync::Mutex;
@@ -184,8 +184,7 @@ impl LiveChats for GatewayLiveChats {
                     ));
                 }
             }
-            let submission = Submission { id, op };
-            validate_submission(&submission)?;
+            let submission = ValidatedSubmission::new(Submission { id, op })?;
             let host = match target {
                 ChatTarget::Workspace(workspace) => (self.1)()
                     .map_err(|error| mobius::Error::Tool(error.to_string()))?
@@ -219,7 +218,7 @@ impl LiveChats for GatewayLiveChats {
             };
             let target = host.session_id().to_owned();
             // The recipient re-checks ownership in its own command order.
-            host.deliver_source(submission, bot_id)
+            host.deliver_validated_source(submission, bot_id)
                 .await
                 .map_err(|rejection| mobius::Error::Tool(rejection.message))?;
             Ok(target)

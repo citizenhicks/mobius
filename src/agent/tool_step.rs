@@ -13,7 +13,7 @@ use crate::Error;
 use crate::Result;
 use crate::backend::model::tool_output;
 use crate::backend::sandbox::SandboxPermissions;
-use crate::middleware::tools::{PreparedToolSet, ToolResult, execute_batch};
+use crate::middleware::tools::{ToolResult, execute_batch};
 use crate::middleware::{PostToolUseContext, PreToolUseContext};
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
@@ -42,20 +42,9 @@ impl Runner {
         &self,
         turn_id: &str,
         call: &mut ToolCall,
-        tools: &PreparedToolSet<'_>,
         events: &mut Vec<EventMsg>,
         input: &mut Vec<serde_json::Value>,
     ) -> Result<(Option<ToolResult>, bool)> {
-        if let Err(error) = self.catalog.validate_prepared(call, tools) {
-            return Ok((
-                Some(ToolResult::error(
-                    call,
-                    error.to_string(),
-                    self.config.sandbox.output_limit(),
-                )),
-                false,
-            ));
-        }
         let mut context = PreToolUseContext {
             delivery_once: crate::middleware::delivery_once::DeliveryOnce::new(
                 &self.state.delivered_once,

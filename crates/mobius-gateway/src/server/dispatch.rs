@@ -1057,7 +1057,18 @@ async fn submit(
         Ok(host) => host,
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };
-    let user_message = match &submission.op {
+    let submission = match ValidatedSubmission::new(submission) {
+        Ok(submission) => submission,
+        Err(error) => {
+            return write_rejection(
+                writer,
+                request_id,
+                Rejection::new("invalid_submission", error.to_string()),
+            )
+            .await;
+        }
+    };
+    let user_message = match &submission.submission().op {
         Op::Message { message } => match &message.author {
             MessageAuthor::User => Some(message),
             MessageAuthor::Source { .. } => {
@@ -1071,14 +1082,6 @@ async fn submit(
         },
         _ => None,
     };
-    if let Err(error) = validate_submission(&submission) {
-        return write_rejection(
-            writer,
-            request_id,
-            Rejection::new("invalid_submission", error.to_string()),
-        )
-        .await;
-    }
     if let Some(message) = user_message
         && !message.attachments.is_empty()
     {
@@ -1099,7 +1102,7 @@ async fn submit(
             }
         }
     }
-    write_result(writer, request_id, host.submit(submission).await).await
+    write_result(writer, request_id, host.submit_validated(submission).await).await
 }
 
 async fn contribution_response(

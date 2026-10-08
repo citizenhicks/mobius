@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 use chrono::Utc;
-use mobius::agent::{AgentConfig, AgentSender};
+use mobius::agent::{AgentConfig, AgentSender, ValidatedSubmission};
 use mobius::backend::checkpoint::{
     ActiveExecution, CheckpointStore, EventPageRequest, ExecutionOutcome, ExecutionRecord,
     JournalEvent, SessionPageRequest, SessionSummary, event_turn_page, sqlite::SqliteCheckpoint,

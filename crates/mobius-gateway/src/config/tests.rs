@@ -108,8 +108,7 @@ async fn retired_hosted_search_does_not_prevent_saved_gateway_startup() {
 }
 
 #[test]
-fn desktop_policy_admits_full_access_and_denied_network_only() {
-    let mut gateway = GatewayConfig::new(DEFAULT_LISTEN, None).unwrap();
+fn computer_control_requires_full_access_or_no_network_only_when_enabled() {
     let mut composition = AgentComposition::default();
     for (policy, admitted) in [
         ("ask", false),
@@ -124,14 +123,16 @@ fn desktop_policy_admits_full_access_and_denied_network_only() {
                 policy.into(),
             )),
         );
-        gateway.desktop_enabled = false;
+        composition
+            .middleware
+            .set_enabled("computer_control", false);
         assert!(
-            validate_desktop_bot_policy(&gateway, &composition).is_ok(),
-            "{policy}"
+            validate_agent_composition(&composition).is_ok(),
+            "{policy} without computer control"
         );
-        gateway.desktop_enabled = true;
+        composition.middleware.set_enabled("computer_control", true);
         assert_eq!(
-            validate_desktop_bot_policy(&gateway, &composition).is_ok(),
+            validate_agent_composition(&composition).is_ok(),
             admitted,
             "{policy}"
         );
@@ -2546,6 +2547,32 @@ fn applied_credential_publication_keeps_new_bytes_and_revokes_old_lifetime() {
             .unwrap()
             .is_none()
     );
+}
+
+#[test]
+fn usage_updates_do_not_reopen_unchanged_cloudflare_credentials() {
+    let root = tempfile::tempdir().unwrap();
+    let (store, mut config) = ConfigStore::initialize_named_cloudflare(
+        root.path().join("state"),
+        DEFAULT_LISTEN,
+        "mobius.example.com",
+        "secret-tunnel-token",
+    )
+    .unwrap();
+    fs::remove_file(store.cloudflare_token_path()).unwrap();
+    let usage = TokenUsage {
+        input_tokens: 7,
+        total_tokens: 7,
+        ..TokenUsage::default()
+    };
+    store
+        .record_usage(&mut config, "openai_socket", &usage)
+        .unwrap();
+    let persisted: GatewayConfig =
+        toml::from_str(&fs::read_to_string(store.state_dir().join(CONFIG_FILE)).unwrap()).unwrap();
+    assert_eq!(persisted.usage, config.usage);
+    assert_ne!(config.usage, Default::default());
+    assert!(store.save(&config).is_err());
 }
 
 #[test]

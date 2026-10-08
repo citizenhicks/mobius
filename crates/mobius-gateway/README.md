@@ -298,7 +298,7 @@ context boundaries, scratchpad knowledge, task lists, and subagents.
 
 ### Storage and telemetry
 
-Self-hosted gateways do not enforce a Cloud plan allowance. A configured telemetry
+The gateway enforces no storage limit of its own. An optional telemetry
 collector owns upload admission; `telemetry add --upload-admission` enables this
 check on one POST collector. Before accepting upload bytes, the gateway reports the
 requested size and a fresh storage snapshot, then relays its decision. Collector

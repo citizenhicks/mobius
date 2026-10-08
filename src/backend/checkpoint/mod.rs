@@ -297,8 +297,12 @@ impl QueuedMessageBoundary {
 }
 
 /// One typed conversation message waiting for its delivery boundary.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct QueuedMessage(QueuedMessageData);
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct QueuedMessage {
+struct QueuedMessageData {
     owner: String,
     id: String,
     boundary: QueuedMessageBoundary,
@@ -319,6 +323,16 @@ struct QueuedMessageEvent<'a> {
     message_target: Option<MessageTarget>,
 }
 
+impl<'de> Deserialize<'de> for QueuedMessage {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let queued = Self(QueuedMessageData::deserialize(deserializer)?);
+        validate_queued_message(&queued).map_err(serde::de::Error::custom)?;
+        Ok(queued)
+    }
+}
+
 impl QueuedMessage {
     pub(crate) fn new(
         owner: &str,
@@ -329,7 +343,7 @@ impl QueuedMessage {
         if event.delivery != boundary.delivery() || event.message_target.is_some() {
             return Err(Error::Config("queued message event is inconsistent".into()));
         }
-        let queued = Self {
+        let queued = Self(QueuedMessageData {
             owner: owner.into(),
             id: id.into(),
             boundary,
@@ -337,110 +351,105 @@ impl QueuedMessage {
             message: event.text,
             attachments: event.attachments,
             reply: event.reply,
-        };
-        queued.validate()?;
+        });
+        validate_queued_message(&queued)?;
         Ok(queued)
     }
 
-    pub(crate) fn validate(&self) -> Result<()> {
-        validate_queued_message(self)
-    }
-
     pub(crate) fn owner(&self) -> &str {
-        &self.owner
+        &self.0.owner
     }
 
     /// Returns the submission that owns this queued message.
     #[must_use]
     pub fn id(&self) -> &str {
-        &self.id
+        &self.0.id
     }
 
     pub(crate) fn boundary(&self) -> &QueuedMessageBoundary {
-        &self.boundary
+        &self.0.boundary
     }
 
     pub(crate) fn author(&self) -> &MessageAuthor {
-        &self.author
+        &self.0.author
     }
 
     pub(crate) fn text(&self) -> &str {
-        &self.message
+        &self.0.message
     }
 
     pub(crate) fn attachments(&self) -> &[SessionFileReference] {
-        &self.attachments
+        &self.0.attachments
     }
 
     pub(crate) fn reply(&self) -> Option<&MessageReply> {
-        self.reply.as_ref()
+        self.0.reply.as_ref()
     }
 
     fn borrowed_event(&self) -> QueuedMessageEvent<'_> {
         QueuedMessageEvent {
-            author: &self.author,
-            delivery: self.boundary.delivery(),
-            text: &self.message,
-            attachments: &self.attachments,
-            reply: self.reply.as_ref(),
+            author: &self.0.author,
+            delivery: self.0.boundary.delivery(),
+            text: &self.0.message,
+            attachments: &self.0.attachments,
+            reply: self.0.reply.as_ref(),
             message_target: None,
         }
     }
 
     pub(crate) fn event(&self) -> MessageEvent {
         MessageEvent {
-            author: self.author.clone(),
-            delivery: self.boundary.delivery(),
-            text: self.message.clone(),
-            attachments: self.attachments.clone(),
-            reply: self.reply.clone(),
+            author: self.0.author.clone(),
+            delivery: self.0.boundary.delivery(),
+            text: self.0.message.clone(),
+            attachments: self.0.attachments.clone(),
+            reply: self.0.reply.clone(),
             message_target: None,
         }
     }
 
     pub(crate) fn replace(&mut self, id: &str, event: MessageEvent) -> Result<()> {
         // Validation may fail; keep the original delivery boundary intact until replacement succeeds.
-        let replacement = Self::new(&self.owner, id, self.boundary.clone(), event)?;
+        let replacement = Self::new(&self.0.owner, id, self.0.boundary.clone(), event)?;
         *self = replacement;
         Ok(())
     }
 
-    pub(crate) fn promote_to_next_turn(&mut self) -> Result<()> {
-        self.boundary = QueuedMessageBoundary::Queue;
-        Ok(())
+    pub(crate) fn promote_to_next_turn(&mut self) {
+        self.0.boundary = QueuedMessageBoundary::Queue;
     }
 
     pub(crate) fn into_parts(self) -> (String, MessageEvent) {
         let event = MessageEvent {
-            author: self.author,
-            delivery: self.boundary.delivery(),
-            text: self.message,
-            attachments: self.attachments,
-            reply: self.reply,
+            author: self.0.author,
+            delivery: self.0.boundary.delivery(),
+            text: self.0.message,
+            attachments: self.0.attachments,
+            reply: self.0.reply,
             message_target: None,
         };
-        (self.id, event)
+        (self.0.id, event)
     }
 }
 
 fn validate_queued_message(message: &QueuedMessage) -> Result<()> {
-    if message.owner.trim().is_empty() || message.owner.len() > MAX_QUEUED_OWNER_BYTES {
+    if message.0.owner.trim().is_empty() || message.0.owner.len() > MAX_QUEUED_OWNER_BYTES {
         return Err(Error::Config("queued message owner is invalid".into()));
     }
-    if message.id.trim().is_empty() || message.id.len() > MAX_QUEUED_ID_BYTES {
+    if message.0.id.trim().is_empty() || message.0.id.len() > MAX_QUEUED_ID_BYTES {
         return Err(Error::Config("queued message ID is invalid".into()));
     }
     if matches!(
-        &message.boundary,
+        &message.0.boundary,
         QueuedMessageBoundary::Steer { turn_id }
             if turn_id.trim().is_empty() || turn_id.len() > MAX_QUEUED_TURN_ID_BYTES
     ) {
         return Err(Error::Config("queued message turn ID is invalid".into()));
     }
     crate::protocol::validate_message_content(
-        &message.author,
-        &message.message,
-        &message.attachments,
+        &message.0.author,
+        &message.0.message,
+        &message.0.attachments,
     )?;
     if crate::serialized_len(&message.borrowed_event())
         .ok()
@@ -1098,6 +1107,16 @@ mod ownership_tests {
             };
             let queued = QueuedMessage::new("messages", "id", QueuedMessageBoundary::Queue, event)
                 .expect("queued");
+            let wire = serde_json::to_value(&queued).expect("queued encoding");
+            assert_eq!(wire["owner"], "messages");
+            assert_eq!(wire["message"], queued.text());
+            assert_eq!(
+                serde_json::from_value::<QueuedMessage>(wire.clone()).unwrap(),
+                queued
+            );
+            let mut invalid = wire;
+            invalid["id"] = serde_json::json!("");
+            assert!(serde_json::from_value::<QueuedMessage>(invalid).is_err());
             let owned = serde_json::to_vec(&queued.event()).expect("event");
             assert_eq!(
                 serde_json::to_vec(&queued.borrowed_event()).expect("borrowed"),

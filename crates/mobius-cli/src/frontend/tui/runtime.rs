@@ -518,7 +518,6 @@ async fn handle_incoming_message(
         && !handle_upload_message(
             &message,
             sender,
-            gateway,
             state,
             uploads,
             &session.session.session_id,
@@ -656,15 +655,11 @@ fn draw(terminal: &mut TuiTerminal, state: &mut TuiState, catalog: &UiCatalog) -
 async fn handle_upload_message(
     message: &ServerMessage,
     sender: &GatewaySender,
-    gateway: &ReadyPayload,
     state: &mut TuiState,
     uploads: &mut ClipboardUploads,
     session_id: &str,
 ) -> bool {
-    let Some(result) = uploads
-        .handle(message, session_id, &gateway.session_file_limits)
-        .await
-    else {
+    let Some(result) = uploads.handle(message, session_id).await else {
         return false;
     };
     match result {

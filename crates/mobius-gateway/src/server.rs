@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::Utc;
-use mobius::agent::validate_submission;
+use mobius::agent::ValidatedSubmission;
 use mobius::backend::session_files::{PendingSessionFileWrite, SessionFileStore};
 use mobius::protocol::Op;
 use rustls::ServerConfig;

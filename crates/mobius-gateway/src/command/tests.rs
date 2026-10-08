@@ -859,8 +859,8 @@ async fn register_provider_command_is_idempotent() {
  if_configured: false,
             state_dir: state.clone(),
             provider: "openrouter".into(),
-            instance: Some("mobius-cloud".into()),
-            label: Some("Möbius Cloud".into()),
+            instance: Some("hosted-proxy".into()),
+            label: Some("Hosted proxy".into()),
             model: "openai/gpt-5.6-luna".into(),
             model_ids: None,
             models: Some(serde_json::from_str(r#"[{"id":"openai/gpt-5.6-luna","reasoning_efforts":["medium"],"default_reasoning":"medium"}]"#).unwrap()),
@@ -879,7 +879,7 @@ async fn register_provider_command_is_idempotent() {
     .await
     .expect("register provider with piped credential");
     let (store, config) = ConfigStore::open(state.clone()).expect("direct provider config");
-    let configured = &config.configured_providers["mobius-cloud"];
+    let configured = &config.configured_providers["hosted-proxy"];
     assert_eq!(
         (
             configured.selection.endpoint_auth,
@@ -887,7 +887,7 @@ async fn register_provider_command_is_idempotent() {
             crate::config::CredentialStore::open(store.credentials_path())
                 .expect("direct credential store")
                 .get(
-                    "mobius-cloud",
+                    "hosted-proxy",
                     "openrouter",
                     Some("https://openrouter.ai/api/v1")
                 )
@@ -904,7 +904,7 @@ async fn register_provider_command_is_idempotent() {
     let stored = crate::config::CredentialStore::open(store.credentials_path()).unwrap();
     let resolved = stored
         .get(
-            "mobius-cloud",
+            "hosted-proxy",
             "openrouter",
             Some("https://openrouter.ai/api/v1"),
         )
@@ -920,7 +920,7 @@ async fn register_provider_command_is_idempotent() {
             if_configured: false,
             state_dir: state.clone(),
             provider: "openrouter".into(),
-            instance: Some("mobius-cloud".into()),
+            instance: Some("hosted-proxy".into()),
             label: None,
             model: "anthropic/claude-sonnet-4".into(),
             model_ids: Some(vec![
@@ -943,7 +943,7 @@ async fn register_provider_command_is_idempotent() {
     .expect("switch to a previously unlisted model");
     let (_, config) = ConfigStore::open(state.clone()).expect("changed model");
     assert_eq!(
-        config.configured_providers["mobius-cloud"]
+        config.configured_providers["hosted-proxy"]
             .models
             .iter()
             .map(|model| model.id.as_str())
@@ -969,7 +969,7 @@ async fn register_provider_command_is_idempotent() {
             "--provider".into(),
             "openrouter".into(),
             "--instance".into(),
-            "mobius-cloud".into(),
+            "hosted-proxy".into(),
             "--model".into(),
             "anthropic/claude-sonnet-4".into(),
             "--models-json".into(),
@@ -993,7 +993,7 @@ async fn register_provider_command_is_idempotent() {
         .await
         .expect("register Cloud per-model catalog");
         let (_, persisted) = ConfigStore::open(state.clone()).unwrap();
-        let registered = &persisted.configured_providers["mobius-cloud"];
+        let registered = &persisted.configured_providers["hosted-proxy"];
         assert_eq!(
             registered.selection.tool_discovery,
             Some(mobius::protocol::ToolDiscoveryMode::Rebuild)
@@ -1031,7 +1031,7 @@ async fn register_provider_command_is_idempotent() {
     let (_, config) = ConfigStore::open(state.clone()).unwrap();
     provider::clear_provider_credential(
         state.clone(),
-        "mobius-cloud".into(),
+        "hosted-proxy".into(),
         load_register_provider_test_client,
     )
     .await
@@ -1040,7 +1040,7 @@ async fn register_provider_command_is_idempotent() {
     assert!(
         stored
             .get(
-                "mobius-cloud",
+                "hosted-proxy",
                 "openrouter",
                 Some("https://openrouter.ai/api/v1")
             )
@@ -1096,10 +1096,10 @@ async fn register_provider_command_is_idempotent() {
     }
 
     let (_, before_refresh) = ConfigStore::open(state.clone()).unwrap();
-    let before_selection = before_refresh.configured_providers["mobius-cloud"]
+    let before_selection = before_refresh.configured_providers["hosted-proxy"]
         .selection
         .clone();
-    for instance in ["mobius-cloud", "absent-optional-provider"] {
+    for instance in ["hosted-proxy", "absent-optional-provider"] {
         let Command::RegisterProvider(options) = parse(
             [
                 "register-provider",
@@ -1138,8 +1138,8 @@ async fn register_provider_command_is_idempotent() {
             .unwrap();
     }
     let (_, after_refresh) = ConfigStore::open(state.clone()).unwrap();
-    let before_provider = &before_refresh.configured_providers["mobius-cloud"];
-    let after_provider = &after_refresh.configured_providers["mobius-cloud"];
+    let before_provider = &before_refresh.configured_providers["hosted-proxy"];
+    let after_provider = &after_refresh.configured_providers["hosted-proxy"];
     assert_eq!(after_provider.models, before_provider.models);
     assert_eq!(
         after_provider.image_model_ids,
@@ -1148,25 +1148,25 @@ async fn register_provider_command_is_idempotent() {
     assert_eq!(after_provider.label, before_provider.label);
     assert_eq!(after_provider.tint, before_provider.tint);
     assert_eq!(
-        after_refresh.configured_providers["mobius-cloud"]
+        after_refresh.configured_providers["hosted-proxy"]
             .selection
             .model,
         before_selection.model
     );
     assert_eq!(
-        after_refresh.configured_providers["mobius-cloud"]
+        after_refresh.configured_providers["hosted-proxy"]
             .selection
             .reasoning_effort,
         before_selection.reasoning_effort
     );
     assert_eq!(
-        after_refresh.configured_providers["mobius-cloud"]
+        after_refresh.configured_providers["hosted-proxy"]
             .selection
             .web_search,
         before_selection.web_search
     );
     assert_eq!(
-        after_refresh.configured_providers["mobius-cloud"]
+        after_refresh.configured_providers["hosted-proxy"]
             .selection
             .tool_discovery,
         before_selection.tool_discovery
