@@ -171,10 +171,17 @@ impl Tool for RoutineTool {
                 vec!["name", "data"],
             ),
         };
+        let mut parameters = json!({"type":"object","properties":properties,"required":required,"additionalProperties":false});
+        if matches!(
+            self.action,
+            Action::Create | Action::Command | Action::Subscribe
+        ) {
+            parameters["$defs"] = hook_definitions();
+        }
         ToolDefinition {
             name: self.action.name().into(),
             description: description.clone(),
-            parameters: json!({"type":"object","properties":properties,"required":required,"additionalProperties":false,"$defs":hook_definitions()}),
+            parameters,
         }
     }
     fn execution_mode(&self) -> ExecutionMode {
@@ -340,6 +347,64 @@ fn binding_schema(action: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn routine_tool_schemas_keep_referenced_hook_definitions() {
+        fn check_references(value: &Value, schema: &Value) {
+            match value {
+                Value::Object(fields) => {
+                    if let Some(reference) = fields.get("$ref") {
+                        let reference = reference.as_str().expect("string schema reference");
+                        let pointer = reference.strip_prefix('#').expect("local schema reference");
+                        assert!(schema.pointer(pointer).is_some(), "missing {reference}");
+                    }
+                    for value in fields.values() {
+                        check_references(value, schema);
+                    }
+                }
+                Value::Array(values) => {
+                    for value in values {
+                        check_references(value, schema);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let host: crate::host::HostAccess = Arc::new(|| Err(crate::Error::Config("unused".into())));
+        for action in ACTIONS {
+            let definition = RoutineTool {
+                action,
+                bot_id: "bot".into(),
+                host: Arc::clone(&host),
+            }
+            .definition();
+            let required = match action {
+                Action::List | Action::Reporting => json!([]),
+                Action::Create => json!(["instructions", "bindings"]),
+                Action::Command => json!(["command"]),
+                Action::Subscribe => json!(["binding", "enabled"]),
+                Action::Emit => json!(["name", "data"]),
+            };
+            assert_eq!(definition.parameters["required"], required);
+            assert_eq!(definition.parameters["additionalProperties"], false);
+            check_references(&definition.parameters, &definition.parameters);
+            if matches!(action, Action::Create | Action::Command | Action::Subscribe) {
+                assert_eq!(definition.parameters["$defs"], hook_definitions());
+            } else {
+                assert!(definition.parameters.get("$defs").is_none());
+                let after = serde_json::to_vec(&definition).expect("tool schema").len();
+                let mut before = definition;
+                before.parameters["$defs"] = hook_definitions();
+                let before = serde_json::to_vec(&before).expect("old tool schema").len();
+                println!(
+                    "schema_bytes {} before={before} after={after}",
+                    action.name()
+                );
+                assert!(after < before);
+            }
+        }
+    }
 
     #[test]
     fn hook_tool_schema_preserves_typed_source_identity() {

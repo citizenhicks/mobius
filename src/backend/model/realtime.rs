@@ -125,9 +125,10 @@ impl RealtimeVoiceCall {
         expires_at: std::time::SystemTime,
         io_timeout: Duration,
     ) -> std::time::SystemTime {
-        // Closing the socket and authenticating the hangup must finish before key expiry.
+        // Sending close, draining final events, closing the socket and authenticated hangup
+        // each need one I/O window before key expiry.
         expires_at
-            .checked_sub(3 * io_timeout)
+            .checked_sub(4 * io_timeout)
             .unwrap_or(std::time::UNIX_EPOCH)
     }
 
@@ -385,19 +386,20 @@ impl RealtimeTransport {
                 }
             };
             let result = tokio::select! {
+                biased;
                 _ = &mut cancelled => {
-                    let _ = send(&mut socket, json!({"type":"session.close"}), io_timeout).await;
-                    Ok(())
+                    close_session(&mut socket, api, &mut VoiceTurns::default(), None, io_timeout).await
                 },
                 result = timeout(Duration::from_millis(transport.settings.voice_call_timeout_ms), drive(&mut socket, api, command_rx, pending, &event_tx, io_timeout)) => {
                     result.unwrap_or_else(|_| Err(invalid("voice call reached its time limit")))
                 }
             };
-            if let Err(error) = result {
-                let _ = event_tx.send(Err(error)).await;
-            }
             let _ = timeout(io_timeout, socket.close(None)).await;
             drop(cleanup);
+            if let Err(error) = result {
+                // A retained full event queue must never delay hangup or task cleanup.
+                let _ = timeout(io_timeout, event_tx.send(Err(error))).await;
+            }
         });
         RealtimeVoiceCall::new(answer_sdp, voice, commands, events, cancel)
     }
@@ -711,9 +713,11 @@ async fn drive(
             continue;
         }
         tokio::select! {
-            _ = events.closed() => return Ok(()),
+            _ = events.closed() => return close_session(socket, api, &mut turns, None, io_timeout).await,
             command = commands.recv() => {
-                let Some(command) = command else { return Ok(()); };
+                let Some(command) = command else {
+                    return close_session(socket, api, &mut turns, Some(events), io_timeout).await;
+                };
                 if apply_command(socket, api, &mut turns, events, command, io_timeout).await? {
                     return Ok(());
                 }
@@ -728,10 +732,9 @@ async fn drive(
                     Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => { timeout(io_timeout, socket.flush()).await.map_err(|_| invalid("voice flush timed out"))?.map_err(socket_error)?; continue; }
                 };
                 for event in turns.observe(api, &value)? {
-                    events
-                        .send(Ok(event))
-                        .await
-                        .map_err(|_| invalid("voice event consumer stopped"))?;
+                    if events.send(Ok(event)).await.is_err() {
+                        return close_session(socket, api, &mut turns, None, io_timeout).await;
+                    }
                 }
                 if value["type"] == "session.closed" { return Ok(()); }
             }
@@ -748,12 +751,7 @@ async fn apply_command(
     io_timeout: Duration,
 ) -> Result<bool> {
     if matches!(command, RealtimeVoiceCommand::Close) {
-        send(socket, json!({"type":"session.close"}), io_timeout).await?;
-        if api == VoiceApi::OpenAi {
-            timeout(io_timeout, drain_closed(socket, api, turns, events))
-                .await
-                .map_err(|_| invalid("voice session finalization timed out"))??;
-        }
+        close_session(socket, api, turns, Some(events), io_timeout).await?;
         return Ok(true);
     }
     let (handoff_id, text) = match command {
@@ -784,11 +782,27 @@ async fn apply_command(
     Ok(false)
 }
 
+async fn close_session(
+    socket: &mut Socket,
+    api: VoiceApi,
+    turns: &mut VoiceTurns,
+    events: Option<&mpsc::Sender<Result<RealtimeVoiceEvent>>>,
+    io_timeout: Duration,
+) -> Result<()> {
+    send(socket, json!({"type":"session.close"}), io_timeout).await?;
+    if api == VoiceApi::OpenAi {
+        timeout(io_timeout, drain_closed(socket, api, turns, events))
+            .await
+            .map_err(|_| invalid("voice session finalization timed out"))??;
+    }
+    Ok(())
+}
+
 async fn drain_closed(
     socket: &mut Socket,
     api: VoiceApi,
     turns: &mut VoiceTurns,
-    events: &mpsc::Sender<Result<RealtimeVoiceEvent>>,
+    events: Option<&mpsc::Sender<Result<RealtimeVoiceEvent>>>,
 ) -> Result<()> {
     while let Some(message) = socket.next().await {
         let value: Value = match message.map_err(socket_error)? {
@@ -797,11 +811,11 @@ async fn drain_closed(
             Message::Close(_) => break,
             _ => continue,
         };
-        for event in turns.observe(api, &value)? {
-            events
-                .send(Ok(event))
-                .await
-                .map_err(|_| invalid("voice event consumer stopped"))?;
+        if let Some(events) = events.filter(|events| !events.is_closed()) {
+            for event in turns.observe(api, &value)? {
+                // The sideband must receive final usage even if the UI has stopped listening.
+                let _ = events.send(Ok(event)).await;
+            }
         }
         if value["type"] == "session.closed" {
             return Ok(());

@@ -15,12 +15,21 @@ use tokio::task::JoinHandle;
 
 use super::*;
 
+const TRANSCRIPT_FINALIZATION_TIMEOUT: Duration = Duration::from_secs(2);
+
+fn call_finalization_timeout(model: &crate::host::RealtimeModel) -> Result<Duration> {
+    let settings = model.router.transport_settings_for(&model.voice)?;
+    // Provider shutdown allows one I/O window to send close and one to receive final usage.
+    Ok(Duration::from_millis(settings.voice_io_timeout_ms) * 2)
+}
+
 pub(super) struct ConnectionVoice {
     pub(super) session_id: String,
     pub(super) voice_id: String,
     updates: mpsc::Receiver<ServerMessage>,
     task: JoinHandle<()>,
     stop: Option<oneshot::Sender<()>>,
+    finalization_timeout: oneshot::Receiver<Duration>,
 }
 
 impl ConnectionVoice {
@@ -30,11 +39,14 @@ impl ConnectionVoice {
         let id = request_id.clone();
         let session = session_id.clone();
         let (stop, mut stopped) = oneshot::channel();
+        let (finalization, finalization_timeout) = oneshot::channel();
         let task = tokio::spawn(async move {
             let mut events = host.subscribe();
             let started = async {
                 let lease = host.claim_realtime_voice().map_err(rejected)?;
                 let model = host.realtime_model().await.map_err(rejected)?;
+                let finalization_timeout = call_finalization_timeout(&model)?;
+                let _ = finalization.send(finalization_timeout);
                 let transcript = VoiceTranscript::open(
                     Arc::clone(&model.checkpoints),
                     &session,
@@ -64,13 +76,13 @@ impl ConnectionVoice {
                         },
                     )
                     .await?;
-                Ok::<_, Error>((lease, model, call, transcript))
+                Ok::<_, Error>((lease, model, call, transcript, finalization_timeout))
             };
             let Some(started) = startup(&mut stopped, started).await else {
                 return;
             };
             match started {
-                Ok((_lease, mut model, mut call, mut transcript)) => {
+                Ok((_lease, mut model, mut call, mut transcript, finalization_timeout)) => {
                     if updates
                         .send(ServerMessage::RealtimeVoiceStarted {
                             request_id: id.clone(),
@@ -90,6 +102,7 @@ impl ConnectionVoice {
                         &mut transcript,
                         &mut events,
                         stopped,
+                        finalization_timeout,
                     )
                     .await;
                     let _ = updates
@@ -117,6 +130,7 @@ impl ConnectionVoice {
             updates: receiver,
             task,
             stop: Some(stop),
+            finalization_timeout,
         }
     }
 
@@ -124,7 +138,11 @@ impl ConnectionVoice {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
         }
-        if tokio::time::timeout(Duration::from_secs(5), &mut self.task)
+        // The policy is sent before provider startup; an absent value means startup was cancelled.
+        let deadline = self.finalization_timeout.try_recv().unwrap_or_default()
+            + TRANSCRIPT_FINALIZATION_TIMEOUT
+            + Duration::from_secs(1);
+        if tokio::time::timeout(deadline, &mut self.task)
             .await
             .is_err()
         {
@@ -264,6 +282,7 @@ async fn drive(
     transcript: &mut VoiceTranscript,
     events: &mut broadcast::Receiver<SharedFrame>,
     stopped: oneshot::Receiver<()>,
+    finalization_timeout: Duration,
 ) -> Result<()> {
     transcript.start_call(&call.voice).await?;
     let mut conversation = VoiceConversation::new(
@@ -281,7 +300,7 @@ async fn drive(
         stopped,
     )
     .await;
-    let closed = tokio::time::timeout(Duration::from_secs(2), async {
+    let closed = tokio::time::timeout(finalization_timeout, async {
         if call
             .commands
             .send(RealtimeVoiceCommand::Close)
@@ -304,7 +323,7 @@ async fn drive(
     })
     .await
     .map_err(|_| Error::Protocol("voice session finalization timed out".into()));
-    let finalized = tokio::time::timeout(Duration::from_secs(2), transcript.finish())
+    let finalized = tokio::time::timeout(TRANSCRIPT_FINALIZATION_TIMEOUT, transcript.finish())
         .await
         .map_err(|_| Error::Protocol("voice transcript finalization timed out".into()))?;
     result.and(closed?).and(finalized.map_err(Into::into))

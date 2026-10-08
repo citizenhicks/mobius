@@ -83,6 +83,15 @@ fn voice_constructors_apply_policy_and_keep_custom_codex_data_on_the_proxy() {
     assert_eq!(codex.api_url.as_str(), "https://proxy.example/native/live");
 }
 
+#[test]
+fn credential_cleanup_reserves_close_drain_disconnect_and_hangup_windows() {
+    let expires_at = std::time::UNIX_EPOCH + Duration::from_secs(60);
+    assert_eq!(
+        RealtimeVoiceCall::cleanup_deadline(expires_at, Duration::from_secs(5)),
+        expires_at - Duration::from_secs(20)
+    );
+}
+
 #[derive(Default)]
 struct Auth(AtomicBool);
 
@@ -719,6 +728,167 @@ async fn unauthorized_refresh_is_reused_and_access_rejection_is_preserved() {
         .await
         .unwrap()
         .unwrap();
+}
+
+#[tokio::test]
+async fn cancelled_calls_and_closed_consumers_wait_for_final_usage_before_disconnect() {
+    for (drop_call, send_close) in [(true, false), (false, false), (false, true)] {
+        let (transport, listener) = transport(VoiceApi::OpenAi).await;
+        let (closing, close_started) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut http, _) = listener.accept().await.unwrap();
+            read_request(&mut http).await;
+            respond(
+                &mut http,
+                "201 Created",
+                "Content-Type: application/json\r\n",
+                &live_answer("live_test", SDP),
+            )
+            .await;
+            drop(http);
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket =
+                tokio_tungstenite::accept_hdr_async(socket, InspectUpgrade(VoiceApi::OpenAi))
+                    .await
+                    .unwrap();
+            socket
+                .send(Message::text(
+                    delegation(VoiceApi::OpenAi, "h1").to_string(),
+                ))
+                .await
+                .unwrap();
+            let close: Value =
+                serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
+                    .unwrap();
+            assert_eq!(close, json!({"type":"session.close"}));
+            closing.send(()).unwrap();
+            assert!(
+                timeout(Duration::from_millis(200), socket.next())
+                    .await
+                    .is_err()
+            );
+            for event in [
+                json!({"type":"session.output_transcript.delta","event_id":"last","delta":"Done.","start_ms":1200,"end_ms":1500}),
+                json!({"type":"session.closed","usage":{"seconds":15}}),
+            ] {
+                socket.send(Message::text(event.to_string())).await.unwrap();
+            }
+            assert!(matches!(
+                socket.next().await.unwrap().unwrap(),
+                Message::Close(_)
+            ));
+            let (mut http, _) = listener.accept().await.unwrap();
+            let (headers, _) = read_request(&mut http).await;
+            assert!(headers.starts_with("post /api/native/v1/live/sessions/live_test/hangup "));
+            respond(&mut http, "200 OK", "", "").await;
+        });
+        let mut call = Some(transport.start(request()).await.unwrap());
+        assert!(matches!(
+            timeout(Duration::from_secs(2), call.as_mut().unwrap().events.recv())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            RealtimeVoiceEvent::Handoff { .. }
+        ));
+        if drop_call {
+            drop(call.take());
+        } else if send_close {
+            call.as_ref()
+                .unwrap()
+                .commands
+                .send(RealtimeVoiceCommand::Close)
+                .await
+                .unwrap();
+        } else {
+            call.as_mut().unwrap().events.close();
+        }
+        timeout(Duration::from_secs(2), close_started)
+            .await
+            .unwrap()
+            .unwrap();
+        if send_close {
+            call.as_mut().unwrap().events.close();
+        }
+        timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn revoked_call_hangs_up_when_finalization_fails_with_a_full_event_queue() {
+    let (transport, listener) = transport(VoiceApi::OpenAi).await;
+    let transport = transport
+        .with_settings(crate::backend::model::ModelTransportSettings {
+            voice_io_timeout_ms: 50,
+            ..Default::default()
+        })
+        .unwrap();
+    let server = tokio::spawn(async move {
+        let (mut http, _) = listener.accept().await.unwrap();
+        read_request(&mut http).await;
+        respond(
+            &mut http,
+            "201 Created",
+            "Content-Type: application/json\r\n",
+            &live_answer("live_test", SDP),
+        )
+        .await;
+        drop(http);
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut socket =
+            tokio_tungstenite::accept_hdr_async(socket, InspectUpgrade(VoiceApi::OpenAi))
+                .await
+                .unwrap();
+        for n in 0..17 {
+            socket
+                .send(Message::text(
+                    delegation(VoiceApi::OpenAi, &format!("h{n}")).to_string(),
+                ))
+                .await
+                .unwrap();
+        }
+        let close: Value =
+            serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+        assert_eq!(close, json!({"type":"session.close"}));
+        // Leave final usage absent while the retained event receiver stays full.
+        assert!(matches!(
+            socket.next().await.unwrap().unwrap(),
+            Message::Close(_)
+        ));
+        let (mut http, _) = listener.accept().await.unwrap();
+        let (headers, _) = read_request(&mut http).await;
+        assert!(headers.starts_with("post /api/native/v1/live/sessions/live_test/hangup "));
+        respond(&mut http, "200 OK", "", "").await;
+    });
+    let mut call = transport.start(request()).await.unwrap();
+    let (owner, revoked) = tokio::sync::watch::channel(());
+    call.limit_credential(crate::backend::model::ModelCredentialLifetime {
+        expires_at: None,
+        revoked: Some(revoked),
+    });
+    timeout(Duration::from_secs(2), async {
+        while call.events.capacity() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    drop(owner);
+    timeout(Duration::from_secs(2), server)
+        .await
+        .expect("hangup cannot wait for a full consumer queue")
+        .unwrap();
+    timeout(Duration::from_secs(2), async {
+        while !call.events.is_closed() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("diagnostic delivery cannot retain the transport task");
+    assert_eq!(call.events.capacity(), 0);
 }
 
 #[tokio::test]

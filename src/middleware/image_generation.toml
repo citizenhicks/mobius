@@ -18,7 +18,7 @@ unset_label = "First available"
 
 [tool]
 name = "generate_image"
-description = "Generate one image from a prompt, optionally using images already attached to this chat as references. The finished image is sent to the user."
+description = "Generate one image from a prompt, optionally using images already attached to this chat as references. The image is automatically delivered to the user as a chat artifact; do not resend it with `send_artifact`."
 
 [tool.parameters]
 type = "object"

@@ -118,11 +118,20 @@ impl ModelRouter {
         Ok(self)
     }
 
-    /// Returns operational policy for the selected route.
+    /// Returns operational policy for the selected text, image or voice route.
     /// # Errors
     /// Returns an error if the route is unknown.
     pub fn transport_settings_for(&self, route: &str) -> Result<super::ModelTransportSettings> {
-        Ok(self.provider(route)?.transport_settings())
+        match self.route(route) {
+            Ok(model) => Ok(model.provider.transport_settings()),
+            Err(error) => self
+                .images
+                .iter()
+                .chain(&self.voices)
+                .find(|media| media.choice.route == route)
+                .map(|media| media.provider.transport_settings())
+                .ok_or(error),
+        }
     }
 
     /// Reports whether the route accepts images associated with a tool call.

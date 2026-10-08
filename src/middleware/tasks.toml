@@ -15,7 +15,7 @@ detail = ""
 
 [write_todos.tool]
 name = "write_todos"
-description = "Replace the session todo list; an empty list clears it."
+description = "Replace the session todo list with the complete desired list; omitted items are removed, and an empty list clears it."
 
 [write_todos.tool.parameters]
 type = "object"

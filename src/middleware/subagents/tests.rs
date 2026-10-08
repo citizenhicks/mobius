@@ -56,7 +56,7 @@ fn prompt_section_guides_root_to_delegate_parallel_work() {
 
     assert_eq!(
         section.body,
-        "Delegate independent work to subagents when it can run in parallel. Spawn with fresh context by default; include recent turns only when the task requires them, and full history only when essential. They share your workspace; continue your own work while they run, and wait only when you need their results."
+        "Delegate independent work to subagents when it can run in parallel. Spawn with fresh context by default; include recent turns only when the task requires them, and full history only when essential. They share files; continue your own work while they run, and wait only when you need their results."
     );
 }
 

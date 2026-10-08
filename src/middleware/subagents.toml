@@ -5,7 +5,7 @@ defaults_wait_ms = 30000
 manifest_description = "Delegate independent work to durable child agents"
 manifest_label = "Subagents"
 prompt_default = "Collaborate continuously with your parent: use `send_message` at its canonical path for useful findings, blockers, and questions as they arise. Complete the task and report concisely when done."
-prompt_root = "Delegate independent work to subagents when it can run in parallel. Spawn with fresh context by default; include recent turns only when the task requires them, and full history only when essential. They share your workspace; continue your own work while they run, and wait only when you need their results."
+prompt_root = "Delegate independent work to subagents when it can run in parallel. Spawn with fresh context by default; include recent turns only when the task requires them, and full history only when essential. They share files; continue your own work while they run, and wait only when you need their results."
 render_empty = "no subagents"
 render_open = "Open subagent"
 
@@ -56,7 +56,7 @@ detail = "timeout_ms"
 
 [wait_agent.tool]
 name = "wait_agent"
-description = "Wait for an update from this chat's subagent task tree."
+description = "Wait for an update from this chat's subagent task tree. Progress is not completion; check agent status."
 
 [wait_agent.tool.parameters]
 type = "object"
@@ -135,7 +135,7 @@ detail = "task_name"
 
 [spawn_agent.tool]
 name = "spawn_agent"
-description = "Start an async child for independent work in this chat's subagent task tree; return its canonical task path."
+description = "Start an async child for independent work in this chat's subagent task tree; return its canonical task path before completion. Children share files; give each a clear task and file ownership. Child tool approvals are denied."
 
 [spawn_agent.tool.parameters]
 type = "object"

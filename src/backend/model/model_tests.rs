@@ -6,6 +6,56 @@ use crate::protocol::ModelChoice;
 struct DefaultCapabilities;
 
 #[test]
+fn media_transport_policy_does_not_inherit_an_unavailable_text_routes_defaults() {
+    let mut router = ModelRouter::new("unavailable-text", Arc::new(DefaultCapabilities));
+    let settings = ModelTransportSettings {
+        voice_io_timeout_ms: 15_000,
+        ..Default::default()
+    };
+    let provider = Arc::new(
+        openai::OpenAi::new_with_transport(
+            "test-key",
+            "https://api.openai.com/v1",
+            "gpt-live-1",
+            settings,
+        )
+        .unwrap(),
+    );
+    for voice in [false, true] {
+        let choice = ModelChoice {
+            route: if voice { "live" } else { "image" }.into(),
+            group: "Media".into(),
+            model: "test-model".into(),
+            reasoning_effort: voice.then(|| "echo".into()),
+            variant_label: None,
+            context_window: None,
+            supports_image_input: false,
+            supports_image_generation: !voice,
+            supports_realtime_voice: voice,
+            tool_discovery: ToolDiscoveryMode::Rebuild,
+        };
+        if voice {
+            router.register_voice(provider.clone(), choice, Default::default())
+        } else {
+            router.register_image(provider.clone(), choice, Default::default())
+        }
+        .unwrap();
+    }
+    assert_eq!(router.transport_settings_for("live").unwrap(), settings);
+    assert_eq!(router.transport_settings_for("image").unwrap(), settings);
+    assert_eq!(
+        router.transport_settings_for("unavailable-text").unwrap(),
+        ModelTransportSettings::default()
+    );
+    let error = router.transport_settings_for("missing").unwrap_err();
+    assert!(matches!(error, Error::Unknown(_)));
+    assert_eq!(
+        error.to_string(),
+        "unknown registration: model provider `missing`"
+    );
+}
+
+#[test]
 fn context_identity_uses_registered_owner_and_model_not_display_labels_or_effort() {
     let mut router = ModelRouter::new("high", Arc::new(DefaultCapabilities));
     for route in ["medium", "other-instance", "other-model"] {

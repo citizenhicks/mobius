@@ -30,7 +30,7 @@ async fn startup_cancellation_wins_before_voice_result_is_reported() {
 }
 
 #[tokio::test]
-async fn voice_delegation_consumes_committed_speech_without_echoing_or_replaying_it() {
+async fn voice_delegation_preserves_committed_speech_and_delayed_final_transcripts() {
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
@@ -91,12 +91,14 @@ async fn voice_delegation_consumes_committed_speech_without_echoing_or_replaying
             stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
         }
     });
-    let (store, config) = ConfigStore::initialize(
+    let (store, mut config) = ConfigStore::initialize(
         root.path().join("state"),
         "127.0.0.1:8741".parse().unwrap(),
         None,
     )
     .unwrap();
+    config.model_transport.voice_io_timeout_ms = 15_000;
+    let transport = config.model_transport;
     let provider = crate::wire::ProviderConfig {
         tool_discovery: None,
         instance: "voice-test".into(),
@@ -153,20 +155,43 @@ async fn voice_delegation_consumes_committed_speech_without_echoing_or_replaying
     .await
     .unwrap();
     let voice_id = transcript.session_id().to_owned();
+    let voice = "voice-test::gpt-live-1::sol";
+    let mut router = ModelRouter::new(
+        &route,
+        Arc::new(OpenAi::new("test-key", &base, "local-test").unwrap()),
+    );
+    router
+        .register_voice(
+            Arc::new(
+                OpenAi::new_with_transport("test-key", &base, "gpt-live-1", transport).unwrap(),
+            ),
+            mobius::protocol::ModelChoice {
+                route: voice.into(),
+                group: "Voice".into(),
+                model: "gpt-live-1".into(),
+                reasoning_effort: Some("sol".into()),
+                variant_label: None,
+                context_window: None,
+                supports_image_input: false,
+                supports_image_generation: false,
+                supports_realtime_voice: true,
+                tool_discovery: mobius::protocol::ToolDiscoveryMode::Rebuild,
+            },
+            Default::default(),
+        )
+        .unwrap();
     let mut model = crate::host::RealtimeModel {
         bot_name: "Builder".into(),
         bot_instructions: "You are Builder.".into(),
-        router: Arc::new(ModelRouter::new(
-            &route,
-            Arc::new(OpenAi::new("test-key", &base, "local-test").unwrap()),
-        )),
-        voice: "voice-test::gpt-live-1::sol".into(),
+        router: Arc::new(router),
+        voice: voice.into(),
         route,
         provider_instance: "voice-test".into(),
         active_turn_id: None,
         checkpoints: Arc::clone(&checkpoints),
         frontend,
     };
+    let finalization_timeout = call_finalization_timeout(&model).unwrap();
     let (commands, mut received) = mpsc::channel(32);
     let (send, voice_events) = mpsc::channel(8);
     let (cancel, _cancelled) = oneshot::channel();
@@ -259,9 +284,20 @@ async fn voice_delegation_consumes_committed_speech_without_echoing_or_replaying
             received.recv().await,
             Some(RealtimeVoiceCommand::Close)
         ));
+        tokio::time::pause();
+        tokio::time::sleep(Duration::from_secs(14)).await;
+        tokio::time::resume();
+        send.send(Ok(RealtimeVoiceEvent::Transcript {
+            id: "final-response".into(),
+            role: ConversationRole::Assistant,
+            text: "The final spoken response.".into(),
+            complete: true,
+        }))
+        .await
+        .expect("gateway still accepts the delayed final transcript");
         drop(send);
     };
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(finalization_timeout + Duration::from_secs(10), async {
         let (result, ()) = tokio::join!(
             drive(
                 &host,
@@ -269,7 +305,8 @@ async fn voice_delegation_consumes_committed_speech_without_echoing_or_replaying
                 &mut call,
                 &mut transcript,
                 &mut events,
-                stopped
+                stopped,
+                finalization_timeout,
             ),
             check_reply
         );
@@ -278,7 +315,15 @@ async fn voice_delegation_consumes_committed_speech_without_echoing_or_replaying
     .await
     .unwrap();
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
-    assert!(transcript.handoff_context().await.unwrap().text.is_empty());
+    let context = transcript.handoff_context().await.unwrap().text;
+    assert!(context.contains("The final spoken response."));
+    for consumed in [
+        "Use blue; preserve toolbar.",
+        "Yes, do it.",
+        "Also add keyboard shortcuts.",
+    ] {
+        assert!(!context.contains(consumed), "{context}");
+    }
     let history = checkpoints
         .event_page(
             &voice_id,
@@ -292,4 +337,30 @@ async fn voice_delegation_consumes_committed_speech_without_echoing_or_replaying
     assert!(history.events.iter().any(|record| matches!(&record.event.msg, EventMsg::Message(message) if message.text == "Yes, do it.")));
     gateway.shutdown().await;
     server.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn voice_stop_preserves_the_calls_nondefault_finalization_window() {
+    let (stop, stopped) = oneshot::channel();
+    let (finalization, finalization_timeout) = oneshot::channel();
+    finalization.send(Duration::from_secs(30)).unwrap();
+    let (_updates, updates) = mpsc::channel(2);
+    let (finished, completion) = oneshot::channel();
+    let task = tokio::spawn(async move {
+        stopped.await.unwrap();
+        tokio::time::sleep(Duration::from_secs(14)).await;
+        finished.send(()).unwrap();
+    });
+    let mut voice = ConnectionVoice {
+        session_id: "session".into(),
+        voice_id: "voice".into(),
+        updates,
+        task,
+        stop: Some(stop),
+        finalization_timeout,
+    };
+    voice.stop().await;
+    completion
+        .await
+        .expect("finalization was not aborted at the default deadline");
 }

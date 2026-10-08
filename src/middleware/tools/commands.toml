@@ -7,7 +7,7 @@ detail = "command"
 
 [bash.tool]
 name = "bash"
-description = "Run a sandboxed command under the active network policy. Returns output and exit status if it finishes quickly, otherwise returns running status, initial output, and a command_id for manage_command. Do not relaunch a running command."
+description = "Run a sandboxed command under the active network policy. Returns output and exit status if it finishes quickly, otherwise returns running status, initial output, and a command_id for manage_command. Running does not mean success; poll the same command_id instead of relaunching."
 
 [bash.tool.parameters]
 type = "object"
@@ -25,7 +25,7 @@ detail = "action"
 
 [manage_command.tool]
 name = "manage_command"
-description = "Manage a running command returned by bash. Poll reads new output; stop cancels the command. Completion or stopping consumes the command ID."
+description = "Manage a running command returned by bash. Poll reads new output; stop cancels the command. Keep polling until it finishes. Completion or stopping consumes the command ID."
 
 [manage_command.tool.parameters]
 type = "object"

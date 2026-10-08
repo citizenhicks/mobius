@@ -8,7 +8,7 @@ group = "read"
 
 [read_file.tool]
 name = "read_file"
-description = "Read a UTF-8 text file under the active sandbox policy."
+description = "Read a UTF-8 text file under the active sandbox policy. Returns its contents; read the current text before editing."
 
 [read_file.tool.parameters]
 type = "object"
@@ -27,7 +27,7 @@ detail = ""
 
 [view_image.tool]
 name = "view_image"
-description = "View a local PNG, JPEG, WebP, or GIF image when visual inspection is needed."
+description = "View a local PNG, JPEG, WebP, or GIF image when visual inspection is needed. For each image, supply path or file_id, never both."
 
 [view_image.tool.parameters]
 type = "object"
@@ -67,7 +67,7 @@ link_path = "path"
 
 [write_file.tool]
 name = "write_file"
-description = "Write a UTF-8 file under the active sandbox policy."
+description = "Create or completely replace a UTF-8 file under the active sandbox policy. Read existing contents first; use apply_patch for a targeted edit."
 
 [write_file.tool.parameters]
 type = "object"
@@ -89,7 +89,7 @@ prompt = "Before editing an existing file, read its current contents and enough 
 
 [apply_patch.tool]
 name = "apply_patch"
-description = "Apply a patch to one existing file under the active sandbox policy."
+description = "Apply a patch to one existing file under the active sandbox policy, using exact text from its current contents. Use write_file to create a file."
 
 [apply_patch.tool.parameters]
 type = "object"

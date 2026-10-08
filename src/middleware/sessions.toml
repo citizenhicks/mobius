@@ -44,6 +44,7 @@ description = "Defaults to this chat; an explicit other chat must belong to this
 
 [read_history.tool.parameters.properties.target]
 type = "object"
+description = "Use the exact target from search_history or a retained history reference; do not invent checkpoint coordinates."
 required = ["checkpoint_sequence", "batch_item_count"]
 additionalProperties = false
 
@@ -103,7 +104,7 @@ detail = "target"
 
 [message_chat.tool]
 name = "message_chat"
-description = "Send a coordination message or interrupt to another chat of this Bot within the user's existing task and the recipient's permissions. Supply target for an existing chat, or workspace to create a new project chat and send its first message; never both. Messages use text and optional delivery: steer (default) reaches a running chat at its next model step, queue waits for its current turn to finish. Persistent conversation recipients always queue. To interrupt, supply target and interrupt_turn_id from list_chats instead of text or delivery. Creation and interruption require a user turn. Returns the full target session ID. Acceptance confirms delivery, not a response or task completion; inspect the recipient's history to verify its answer. Ask the recipient to message your sender handle when a reply is needed. Reply to a received chat message with its sender's #id. Message only when it helps the other chat's work; never send acknowledgements."
+description = "Send a coordination message or interrupt to another chat of this Bot within the user's existing task and the recipient's permissions. Use target for an existing chat, or workspace to create a project chat; never both. Messages use text; delivery=steer (default) reaches the next model step, queue waits until the turn finishes. Persistent conversation recipients always queue. To interrupt, supply target and observed interrupt_turn_id from list_chats instead of text or delivery. Creation and interruption require a user turn. Returns the full target session ID. Message acceptance confirms delivery, not completion; inspect history for an answer. After interruption, use list_chats to confirm that turn is no longer active. It may have no final reply; do not search history for one. Ask for a reply to your sender handle when needed. Reply to a received chat message with its sender's #id. Message only when it helps the other chat's work; never send acknowledgements."
 
 [message_chat.tool.parameters]
 type = "object"

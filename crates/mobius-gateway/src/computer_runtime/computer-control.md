@@ -43,9 +43,13 @@ availability. On a Mac the gateway assigns the existing in-app CEF tab; on a
 remote Linux desktop gateway the apps show the browser through noVNC. The gateway
 coordinates its lifetime, so interrupting an agent does not close it or discard logins.
 
-The first evaluation after interpreter startup or takeover is observation-only.
-Submitted code is not executed. Read the returned screenshot and accessibility
-snapshot, then submit the next action. Never replay an uncertain earlier action.
+For a gateway-coordinated headed browser, the first evaluation after interpreter
+startup or takeover is observation-only. Submitted code is not executed. Read the
+returned screenshot and accessibility snapshot, then submit the next action.
+Never replay an uncertain earlier action.
+
+A worker-owned headless browser executes the first submitted code. Call getPage(),
+inspect its URL and accessibility snapshot, then continue the requested task.
 
 Call getPage() at the start of each browser interaction. It returns the assigned
 tab, never an arbitrary first tab. The shared profile may contain the user's saved

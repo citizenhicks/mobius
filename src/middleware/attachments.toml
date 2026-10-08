@@ -13,7 +13,7 @@ detail = ""
 
 [list_attachments.tool]
 name = "list_attachments"
-description = "List files uploaded to this chat and their workspace paths when available."
+description = "List files uploaded to this chat, with authorized file IDs and workspace paths when available. Use returned IDs or paths with image or file tools; do not invent them."
 
 [list_attachments.tool.parameters]
 type = "object"
