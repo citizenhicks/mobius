@@ -162,6 +162,7 @@ impl Endpoint {
     }
 
     async fn secure_tcp(&self, stream: TcpStream) -> Result<BoxedTransport> {
+        stream.set_nodelay(true)?;
         if self.security == Security::Plaintext {
             let peer = stream.peer_addr()?;
             if !peer.ip().is_loopback() {
@@ -271,7 +272,7 @@ impl Endpoint {
             .max_message_size(Some(crate::channel::MAX_RECORD))
             .max_frame_size(Some(crate::channel::MAX_RECORD));
         let (mut websocket, response) =
-            connect_async_with_config(self.websocket_request()?, Some(config), false)
+            connect_async_with_config(self.websocket_request()?, Some(config), true)
                 .await
                 .map_err(|error| match error {
                     tokio_tungstenite::tungstenite::Error::Http(response)

@@ -442,6 +442,69 @@ async fn retained_model_sink_closes_when_response_is_cancelled() {
 }
 
 #[tokio::test]
+async fn interrupted_response_delivers_accepted_text_before_aborting_and_rejects_late_text() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3")).expect("store"),
+    );
+    let retained = Arc::new(Mutex::new(None));
+    let started = Arc::new(Notify::new());
+    let mut agent = create_agent(config_with_model(
+        workspace.path(),
+        checkpoints,
+        "interrupted-stream",
+        "test",
+        Arc::new(BlockingRetainingModel {
+            sink: Arc::clone(&retained),
+            started: Arc::clone(&started),
+            release: Arc::new(Notify::new()),
+        }),
+    ))
+    .await
+    .expect("agent");
+    agent.sender().submit(user_op("hello")).expect("submit");
+    started.notified().await;
+    let turn_id = loop {
+        if let EventMsg::ModelStepStarted(step) = agent.next_event().await.expect("event").msg {
+            break step.turn_id;
+        }
+    };
+    let sink = retained.lock().expect("sink lock").clone().expect("sink");
+    sink(ModelEvent::TextDelta("first".into()))
+        .await
+        .expect("first");
+    sink(ModelEvent::TextDelta("pending".into()))
+        .await
+        .expect("admission");
+    agent
+        .sender()
+        .submit(Op::Interrupt {
+            turn_id: turn_id.to_string(),
+        })
+        .expect("interrupt");
+    let text = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let mut text = String::new();
+        loop {
+            match agent.next_event().await.expect("event").msg {
+                EventMsg::AssistantContentDelta(delta) => text.push_str(&delta.delta),
+                EventMsg::TurnAborted(_) => return text,
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("aborted turn");
+    assert_eq!(text, "firstpending");
+    assert_eq!(
+        sink(ModelEvent::TextDelta("late".into()))
+            .await
+            .expect_err("closed sink")
+            .to_string(),
+        "agent stopped: model event sink closed"
+    );
+}
+
+#[tokio::test]
 async fn recorder_weak_ingress_does_not_keep_the_recorder_alive() {
     let directory = tempfile::tempdir().expect("checkpoint directory");
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
@@ -593,7 +656,7 @@ fn explicit_checkpoint_mutation_copies_only_when_a_snapshot_is_retained() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn fast_model_burst_waits_for_durable_event_delivery() {
+async fn fast_model_burst_coalesces_without_losing_text_before_completion() {
     struct BurstModel;
     const DELTAS: usize = RECORDER_COMMAND_CAPACITY * 4;
     impl Model for BurstModel {
@@ -626,10 +689,14 @@ async fn fast_model_burst_waits_for_durable_event_delivery() {
     .expect("agent");
     agent.sender().submit(user_op("hello")).expect("submit");
     let mut deltas = 0;
+    let mut text = String::new();
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
         loop {
             match agent.next_event().await.expect("agent event").msg {
-                EventMsg::AssistantContentDelta(_) => deltas += 1,
+                EventMsg::AssistantContentDelta(delta) => {
+                    deltas += 1;
+                    text.push_str(&delta.delta);
+                }
                 EventMsg::TurnComplete(_) => break,
                 EventMsg::Error(error) => panic!("burst aborted: {}", error.message),
                 _ => {}
@@ -638,7 +705,163 @@ async fn fast_model_burst_waits_for_durable_event_delivery() {
     })
     .await
     .expect("burst completes");
-    assert_eq!(deltas, DELTAS);
+    assert!(deltas < DELTAS);
+    assert_eq!(text, "x".repeat(DELTAS));
+}
+
+fn stream_delta(step: &str, phase: ModelStepContentPhase, text: &str) -> Event {
+    Event {
+        submission_id: Some("submission".into()),
+        msg: EventMsg::AssistantContentDelta(crate::protocol::AssistantContentDeltaEvent {
+            session_id: "session".into(),
+            turn_id: "turn".into(),
+            model_step_id: step.into(),
+            phase,
+            delta: text.into(),
+        }),
+    }
+}
+
+#[tokio::test]
+async fn recorder_batches_text_and_flushes_before_phase_step_and_event_boundaries() {
+    let directory = tempfile::tempdir().expect("checkpoint directory");
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+        SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3")).expect("store"),
+    );
+    checkpoints
+        .save(&test_checkpoint("session"), &[], None)
+        .await
+        .expect("session");
+    let (recorder, mut receiver) =
+        crate::agent::recorder::RecorderIngress::spawn(checkpoints, "session".into());
+    let final_answer = ModelStepContentPhase::FinalAnswer;
+    recorder
+        .record(stream_delta("one", final_answer, "first"))
+        .await
+        .expect("first");
+    assert_eq!(
+        receiver.recv().await.expect("immediate first").event,
+        stream_delta("one", final_answer, "first")
+    );
+    recorder
+        .record(stream_delta("one", final_answer, "second"))
+        .await
+        .expect("buffer");
+    recorder
+        .record(stream_delta("one", final_answer, "third"))
+        .await
+        .expect("merge");
+    assert!(receiver.try_recv().is_err());
+    recorder
+        .record(stream_delta(
+            "one",
+            ModelStepContentPhase::Reasoning,
+            "reason",
+        ))
+        .await
+        .expect("phase barrier");
+    recorder
+        .record(stream_delta("two", final_answer, "next"))
+        .await
+        .expect("step barrier");
+    recorder
+        .record(stream_delta("two", final_answer, "last"))
+        .await
+        .expect("buffer");
+    recorder
+        .record(Event {
+            submission_id: None,
+            msg: EventMsg::Warning(WarningEvent {
+                message: "barrier".into(),
+            }),
+        })
+        .await
+        .expect("event barrier");
+    let mut texts = Vec::new();
+    for _ in 0..4 {
+        let EventMsg::AssistantContentDelta(delta) =
+            receiver.recv().await.expect("ordered delta").event.msg
+        else {
+            panic!("delta must precede warning")
+        };
+        texts.push(delta.delta);
+    }
+    assert_eq!(texts, ["secondthird", "reason", "next", "last"]);
+    assert!(matches!(
+        receiver.recv().await.expect("warning").event.msg,
+        EventMsg::Warning(_)
+    ));
+}
+
+#[tokio::test]
+async fn recorder_flushes_at_the_stream_byte_boundary_without_splitting_provider_deltas() {
+    let directory = tempfile::tempdir().expect("checkpoint directory");
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+        SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3")).expect("store"),
+    );
+    checkpoints
+        .save(&test_checkpoint("session"), &[], None)
+        .await
+        .expect("session");
+    let (recorder, mut receiver) =
+        crate::agent::recorder::RecorderIngress::spawn(checkpoints, "session".into());
+    let phase = ModelStepContentPhase::FinalAnswer;
+    let capped = "界".repeat(16 * 1024 / 3);
+    let oversized = "x".repeat(16 * 1024 + 1);
+    for text in ["first", capped.as_str(), "next", oversized.as_str()] {
+        recorder
+            .record(stream_delta("one", phase, text))
+            .await
+            .expect("admit delta");
+    }
+    recorder.flush().await.expect("durable barrier");
+    for text in ["first", capped.as_str(), "next", oversized.as_str()] {
+        assert_eq!(
+            receiver.recv().await.expect("ordered delta").event,
+            stream_delta("one", phase, text)
+        );
+    }
+    assert!(receiver.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn recorder_flushes_a_quiet_stream_and_reports_buffered_persistence_failure() {
+    let directory = tempfile::tempdir().expect("checkpoint directory");
+    let checkpoints = Arc::new(
+        SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3")).expect("store"),
+    );
+    checkpoints
+        .save(&test_checkpoint("session"), &[], None)
+        .await
+        .expect("session");
+    let store: Arc<dyn CheckpointStore> = checkpoints.clone();
+    let (recorder, mut receiver) =
+        crate::agent::recorder::RecorderIngress::spawn(store, "session".into());
+    let phase = ModelStepContentPhase::FinalAnswer;
+    recorder
+        .record(stream_delta("one", phase, "first"))
+        .await
+        .expect("first");
+    receiver.recv().await.expect("first delivered");
+    recorder
+        .record(stream_delta("one", phase, "quiet"))
+        .await
+        .expect("buffer");
+    let delivered = tokio::time::timeout(std::time::Duration::from_secs(2), receiver.recv())
+        .await
+        .expect("timer flush")
+        .expect("delta");
+    assert_eq!(delivered.event, stream_delta("one", phase, "quiet"));
+    checkpoints
+        .delete_sessions(&["session".into()])
+        .await
+        .expect("remove session");
+    recorder
+        .record(stream_delta("one", phase, "cannot persist"))
+        .await
+        .expect("bounded admission");
+    assert!(recorder.flush().await.is_err());
+    assert!(receiver.recv().await.is_none());
 }
 
 #[test]

@@ -256,6 +256,10 @@ impl OpenAi {
         Ok(self)
     }
 
+    pub(super) fn reasoning_effort(&self) -> Option<&str> {
+        self.reasoning_effort.as_deref()
+    }
+
     /// Requests automatic reasoning summaries from an endpoint known to support them.
     #[must_use]
     pub fn with_reasoning_summary(mut self) -> Self {
@@ -790,10 +794,11 @@ fn build_generic(config: ProviderBuildConfig) -> Result<std::sync::Arc<dyn Model
         .base_url
         .ok_or_else(|| Error::Config("Responses provider requires a base URL".into()))?;
     let api_key = config.credential.into_optional_api_key("responses")?;
-    let native_voice = generic_provider().supports_at(
-        crate::protocol::ModelCapability::RealtimeVoice,
-        Some(&base_url),
-    );
+    let native_voice = config.capability == Some(crate::protocol::ModelCapability::RealtimeVoice)
+        || generic_provider().supports_at(
+            crate::protocol::ModelCapability::RealtimeVoice,
+            Some(&base_url),
+        );
     let provider = OpenAi::with_client(
         api_key,
         base_url,

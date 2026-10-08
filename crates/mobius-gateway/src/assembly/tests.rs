@@ -617,17 +617,8 @@ fn registered_custom_root_does_not_inherit_stale_bot_native_media() {
             .expect("Bot defaults")
             .config
             .provider;
-        let configured = config
-            .configured_providers
-            .get("responses")
-            .expect("provider");
-        let routes = catalog_routes(
-            provider("responses").expect("provider"),
-            configured,
-            selected,
-        );
         let media =
-            media_routes(&config.configured_providers, &routes).expect("selected media catalog");
+            media_routes(&config.configured_providers, None).expect("selected media catalog");
         assert!(media.voices.is_empty());
         assert_eq!(media.images.len(), image_count);
 
@@ -1365,4 +1356,226 @@ async fn invalid_bot_fails_before_provider_construction() {
             .to_string()
             .contains("maximum model steps must be positive")
     );
+}
+
+#[tokio::test]
+async fn media_only_providers_assemble_without_chat_routes_and_keep_their_lifetimes() {
+    use mobius::backend::model::provider::{MediaModelPreset, ReasoningPreset};
+    let root = tempfile::tempdir().unwrap();
+    let (store, mut config) = ConfigStore::initialize(
+        root.path().join("state"),
+        "127.0.0.1:8741".parse().unwrap(),
+        None,
+    )
+    .unwrap();
+    let credentials = CredentialStore::open(store.credentials_path()).unwrap();
+    for (id, model, key) in [
+        ("responses", "text", None),
+        ("openrouter", "", Some("image-key")),
+        ("openai_socket", "", Some("voice-key")),
+    ] {
+        let mut selection = AgentComposition::default().provider;
+        selection.instance = id.into();
+        selection.provider = id.into();
+        selection.model = model.into();
+        selection.base_url = Some("https://provider.example/v1".into());
+        selection.reasoning_effort = None;
+        selection.web_search = HostedWebSearch::Off;
+        selection.endpoint_auth = if key.is_none() {
+            ProviderEndpointAuth::Credentialless
+        } else {
+            ProviderEndpointAuth::ProviderDefault
+        };
+        config = config
+            .registering_provider(
+                selection,
+                id.into(),
+                Default::default(),
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+        if let Some(key) = key {
+            credentials
+                .set(id, id, key, Some("https://provider.example/v1"), Some(1))
+                .unwrap();
+        }
+    }
+    let voice = config
+        .configured_providers
+        .get_mut("openai_socket")
+        .unwrap();
+    voice.image_models = Some(Vec::new());
+    voice.voice_models = Some(vec![MediaModelPreset {
+        id: "operator-live-model".into(),
+        label: "Live".into(),
+        description: String::new(),
+        variants: vec![ReasoningPreset {
+            id: "operator-voice".into(),
+            label: "Voice".into(),
+            description: String::new(),
+        }],
+    }]);
+    config
+        .configured_providers
+        .get_mut("openrouter")
+        .unwrap()
+        .image_model_ids = vec!["operator-image".into()];
+    config.validate().unwrap();
+    let selected = &config.bot_defaults.as_ref().unwrap().config.provider;
+    let (expired, _) = build_models(
+        &config,
+        selected,
+        &store,
+        &credentials,
+        SessionFileStore::new(root.path(), None),
+    )
+    .unwrap();
+    let image = expired.image_model(None).unwrap();
+    let denied = expired
+        .generate_image(
+            image.route,
+            mobius::backend::model::ImageGenerationRequest {
+                model: image.model,
+                quality: image.quality,
+                prompt: "Test",
+                image_aspect: mobius::protocol::ImageAspect::Square,
+                references: &[],
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(denied, MobiusError::Provider(error) if error.status() == Some(401)));
+    let denied = expired
+        .start_realtime_voice(
+            None,
+            mobius::backend::model::RealtimeVoiceRequest {
+                session_id: "test".into(),
+                model: None,
+                voice: None,
+                offer_sdp: String::new(),
+                instructions: "Test".into(),
+            },
+        )
+        .await
+        .err()
+        .expect("expired voice credential");
+    assert!(matches!(denied, MobiusError::Provider(error) if error.status() == Some(401)));
+    credentials
+        .set(
+            "openai_socket",
+            "openai_socket",
+            "voice-key",
+            Some("https://provider.example/v1"),
+            None,
+        )
+        .unwrap();
+    credentials
+        .set(
+            "openrouter",
+            "openrouter",
+            "image-key",
+            Some("https://provider.example/v1"),
+            None,
+        )
+        .unwrap();
+    let (router, _) = build_models(
+        &config,
+        selected,
+        &store,
+        &credentials,
+        SessionFileStore::new(root.path(), None),
+    )
+    .unwrap();
+    assert_eq!(router.choices().len(), 1);
+    assert_eq!(router.image_choices().len(), 1);
+    assert_eq!(router.voice_choices().len(), 1);
+    assert_eq!(
+        router.voice_choice(None).unwrap().model,
+        "operator-live-model"
+    );
+    let providers = configured_model_providers(&config, &store, &credentials).unwrap();
+    assert_eq!(
+        providers["openai_socket::operator-live-model::operator-voice"],
+        "openai_socket"
+    );
+    assert_eq!(
+        providers["openrouter::operator-image::default"],
+        "openrouter"
+    );
+    config
+        .configured_providers
+        .get_mut("responses")
+        .unwrap()
+        .selection
+        .endpoint_auth = ProviderEndpointAuth::ProviderDefault;
+    config
+        .bot_defaults
+        .as_mut()
+        .unwrap()
+        .config
+        .provider
+        .endpoint_auth = ProviderEndpointAuth::ProviderDefault;
+    let selected = &config.bot_defaults.as_ref().unwrap().config.provider;
+    let (unavailable, _) = unavailable_models(
+        &config,
+        selected,
+        &store,
+        &credentials,
+        SessionFileStore::new(root.path(), None),
+    )
+    .unwrap();
+    assert_eq!(unavailable.image_choices().len(), 1);
+    assert_eq!(unavailable.voice_choices().len(), 1);
+}
+
+#[test]
+fn media_variants_share_adapters_without_sharing_chat_or_other_capabilities() {
+    let root = tempfile::tempdir().unwrap();
+    let (store, config) = ConfigStore::initialize(
+        root.path().join("state"),
+        crate::config::DEFAULT_LISTEN,
+        None,
+    )
+    .unwrap();
+    let definition = provider("openai_socket").unwrap();
+    let mut selection = AgentComposition::default().provider;
+    selection.instance = "native".into();
+    selection.provider = definition.id().into();
+    selection.model = definition.default_model().unwrap().into();
+    selection.base_url = definition.default_base_url().map(Into::into);
+    selection.reasoning_effort = None;
+    let config = config
+        .registering_provider(
+            selection,
+            "Native".into(),
+            Default::default(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+    let configured = &config.configured_providers["native"];
+    let credentials = CredentialStore::open(store.credentials_path()).unwrap();
+    credentials
+        .set(
+            "native",
+            definition.id(),
+            "test-key",
+            definition.default_base_url(),
+            None,
+        )
+        .unwrap();
+    let mut catalog = catalog_routes(definition, configured, &configured.selection);
+    let media = media_routes(&config.configured_providers, None).unwrap();
+    catalog.extend(media.images.into_iter().chain(media.voices));
+    let routes =
+        instantiate_routes(catalog, &store, &credentials, &config.model_transport).unwrap();
+    for (index, route) in routes.iter().enumerate() {
+        for previous in &routes[..index] {
+            assert_eq!(
+                Arc::ptr_eq(&route.model, &previous.model),
+                route.capability.is_some() && route.capability == previous.capability,
+            );
+        }
+    }
 }

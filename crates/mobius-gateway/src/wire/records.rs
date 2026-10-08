@@ -559,6 +559,7 @@ pub struct ProviderConfig {
     /// The provider.
     pub provider: String,
     /// The model.
+    #[serde(default)]
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// The base URL.

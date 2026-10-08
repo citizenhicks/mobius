@@ -276,7 +276,7 @@ mod tests {
         let mut router = ModelRouter::new("image", Arc::new(ImageModel(png.clone(), true)));
         router
             .register_image(
-                "image",
+                Arc::new(ImageModel(png.clone(), true)),
                 crate::protocol::ModelChoice {
                     route: "openai::gpt-image-2.5-sunburst".into(),
                     group: "OpenAI".into(),
@@ -289,11 +289,12 @@ mod tests {
                     supports_realtime_voice: false,
                     tool_discovery: crate::protocol::ToolDiscoveryMode::Rebuild,
                 },
+                Default::default(),
             )
             .expect("image route");
         router
             .register_image(
-                "image",
+                Arc::new(ImageModel(png.clone(), true)),
                 crate::protocol::ModelChoice {
                     route: "openai::gpt-image-2.5-flare::high".into(),
                     group: "OpenAI".into(),
@@ -306,6 +307,7 @@ mod tests {
                     supports_realtime_voice: false,
                     tool_discovery: crate::protocol::ToolDiscoveryMode::Rebuild,
                 },
+                Default::default(),
             )
             .expect("image tier route");
         let flare = router

@@ -520,7 +520,7 @@ async fn reassignment_projects_completed_turns_before_closing_the_old_source() {
         .find(|record| matches!(record.event.msg, EventMsg::TurnComplete(_)))
         .unwrap();
     let bots = Arc::clone(&gateway.state.lock().await.bots);
-    assert!(bots.source_cursor(source.session_id()).unwrap() < finished.sequence);
+    assert!(bots.source_cursor(source.session_id()).unwrap().0 < finished.sequence);
     let target = bots
         .create_bot("New owner", "Own this chat.", bot.config.config.clone())
         .unwrap();

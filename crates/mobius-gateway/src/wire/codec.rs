@@ -16,12 +16,7 @@ impl SharedFrame {
     }
 
     pub(crate) fn encoded(frame: ServerFrame) -> Result<Self> {
-        let payload = serde_json::to_vec(&frame)?;
-        if payload.len() > MAX_FRAME_BYTES {
-            return Err(Error::Protocol(format!(
-                "agent event exceeds the {MAX_FRAME_BYTES}-byte gateway frame limit"
-            )));
-        }
+        let payload = encode_frame(&frame)?;
         Ok(Self {
             frame: std::sync::Arc::new(frame),
             payload: Some(payload.into()),
@@ -33,11 +28,12 @@ impl SharedFrame {
             .as_ref()
             .expect("replay frames are encoded")
             .len()
+            - 4
     }
 
     pub(crate) async fn write(&self, writer: &mut (impl AsyncWrite + Unpin)) -> Result<()> {
         match &self.payload {
-            Some(payload) => write_payload(writer, payload).await,
+            Some(payload) => write_encoded(writer, payload).await,
             None => write_frame(writer, &*self.frame).await,
         }
     }
@@ -149,24 +145,28 @@ pub async fn write_frame<T>(writer: &mut (impl AsyncWrite + Unpin), value: &T) -
 where
     T: Serialize,
 {
-    let payload = serde_json::to_vec(value)?;
-    write_payload(writer, &payload).await
+    let encoded = encode_frame(value)?;
+    write_encoded(writer, &encoded).await
 }
 
-pub(crate) async fn write_payload(
-    writer: &mut (impl AsyncWrite + Unpin),
-    payload: &[u8],
-) -> Result<()> {
-    if payload.is_empty() || payload.len() > MAX_FRAME_BYTES {
+fn encode_frame(value: &impl Serialize) -> Result<Vec<u8>> {
+    let mut encoded = vec![0; 4];
+    serde_json::to_writer(&mut encoded, value)?;
+    let payload_len = encoded.len() - 4;
+    if payload_len == 0 || payload_len > MAX_FRAME_BYTES {
         return Err(Error::Protocol(format!(
             "encoded frame must be 1–{MAX_FRAME_BYTES} bytes"
         )));
     }
-    let length = u32::try_from(payload.len())
+    let length = u32::try_from(payload_len)
         .map_err(|_| Error::Protocol("encoded frame length is unsupported".into()))?;
+    encoded[..4].copy_from_slice(&length.to_be_bytes());
+    Ok(encoded)
+}
+
+async fn write_encoded(writer: &mut (impl AsyncWrite + Unpin), encoded: &[u8]) -> Result<()> {
     tokio::time::timeout(WRITE_TIMEOUT, async {
-        writer.write_all(&length.to_be_bytes()).await?;
-        writer.write_all(payload).await?;
+        writer.write_all(encoded).await?;
         writer.flush().await
     })
     .await
@@ -239,6 +239,41 @@ pub(crate) fn validate_session_id(session_id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct WriteCalls(Vec<Vec<u8>>);
+
+    impl AsyncWrite for WriteCalls {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            bytes: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            self.0.push(bytes.to_vec());
+            std::task::Poll::Ready(Ok(bytes.len()))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn frame_prefix_and_payload_reach_the_writer_together() {
+        let mut writer = WriteCalls::default();
+        write_frame(&mut writer, &"text").await.unwrap();
+        assert_eq!(writer.0, [b"\0\0\0\x06\"text\"".to_vec()]);
+    }
 
     #[tokio::test]
     async fn completed_bulk_frames_do_not_pin_peak_memory_on_idle_connections() {

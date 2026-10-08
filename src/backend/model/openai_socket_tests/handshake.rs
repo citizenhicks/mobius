@@ -51,6 +51,7 @@ async fn native_root_keeps_capabilities_and_websocket_denials_do_not_fallback() 
     });
     let provider = provider()
         .build(ProviderBuildConfig {
+            capability: None,
             tool_discovery: None,
             credential: super::super::super::provider::ProviderCredential::ApiKey(
                 "proxy-token".into(),

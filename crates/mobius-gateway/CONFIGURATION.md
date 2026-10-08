@@ -210,6 +210,47 @@ are made against live gateway state under the mutation lock. Cloud uses this sam
 command for all providers; it does not rebuild catalogs or call a separate wire
 registration script.
 
+### Independent text, image and live catalogs
+
+Text, image generation and live voice are configured independently. An empty or
+omitted `selection.model` with `models = []` disables text for that setup, including
+its text model choices in the apps. Codex and OpenAI socket text catalogs remain
+locked when text is enabled. A Bot still needs a configured text route, but its
+image and live routes may use separate provider setups and credentials.
+
+Optional `image_models` and `voice_models` arrays override the corresponding
+built-in presets. Omission retains those presets; `[]` disables that capability.
+Each preset has `id`, `label`, `description` and `variants`; variants have `id`,
+`label` and `description` and represent image quality or live voices. Live models
+require at least one voice. Nonempty `image_model_ids` replace the built-in image
+presets and cannot be combined with `image_models`. App label/key edits preserve
+the operator's media overrides.
+
+For example, this setup exposes live voice only:
+
+```toml
+[configured_providers.live]
+label = "Live"
+tint = "blue"
+models = []
+image_models = []
+
+[configured_providers.live.selection]
+instance = "live"
+provider = "openai_socket"
+model = ""
+web_search = "off"
+
+[[configured_providers.live.voice_models]]
+id = "gpt-live-1"
+label = "Live"
+description = ""
+variants = [{ id = "cedar", label = "Cedar", description = "" }]
+```
+
+Supply the setup credential through the existing credential registration path.
+Edit these stored presets while stopped and restart the gateway to apply them.
+
 ## Computer resources
 
 `[computer]` separates the resource directory from executable locations:

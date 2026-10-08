@@ -212,6 +212,9 @@ impl GatewayHost {
             .await
             .map_err(internal)?
         {
+            if bots.source_cursor(&summary.session_id).map_err(internal)?.0 >= summary.sequence {
+                continue;
+            }
             project_session_journal(
                 &checkpoints,
                 &bots,
@@ -651,37 +654,6 @@ fn session_causality(author: &MessageAuthor) -> (Option<String>, Vec<String>) {
     author.causal_origin()
 }
 
-async fn session_owner_at(
-    checkpoints: &Arc<dyn CheckpointStore>,
-    session_id: &str,
-    sequence: u64,
-) -> Result<Option<String>> {
-    if sequence == 0 {
-        return Ok(None);
-    }
-    let mut before_sequence = sequence.checked_add(1);
-    loop {
-        let page = checkpoints
-            .event_page(
-                session_id,
-                EventPageRequest {
-                    before_sequence,
-                    limit: 100,
-                },
-            )
-            .await?;
-        for record in page.events {
-            if let EventMsg::SessionConfigured(configured) = record.event.msg {
-                return Ok(Some(configured.context.owner_id));
-            }
-        }
-        match page.next_before_sequence {
-            Some(next) => before_sequence = Some(next),
-            None => return Ok(None),
-        }
-    }
-}
-
 async fn project_session_journal(
     checkpoints: &Arc<dyn CheckpointStore>,
     bots: &BotStore,
@@ -689,28 +661,29 @@ async fn project_session_journal(
     fallback_owner: &str,
     through: Option<u64>,
 ) -> Result<()> {
-    let mut cursor = bots.source_cursor(session_id)?;
-    let mut owner = session_owner_at(checkpoints, session_id, cursor).await?;
+    let (mut cursor, mut owner) = bots.source_cursor(session_id)?;
     loop {
         if through.is_some_and(|sequence| cursor >= sequence) {
             return Ok(());
         }
         let previous_cursor = cursor;
-        for record in checkpoints.events_after(session_id, cursor, 100).await? {
+        let mut persisted_cursor = cursor;
+        for mut record in checkpoints.events_after(session_id, cursor, 100).await? {
             if through.is_some_and(|sequence| record.sequence > sequence) {
                 break;
             }
             cursor = record.sequence;
-            if let EventMsg::SessionConfigured(configured) = &record.event.msg {
-                let next = &configured.context.owner_id;
+            if let EventMsg::SessionConfigured(configured) = &mut record.event.msg {
+                let next = std::mem::take(&mut configured.context.owner_id);
                 if let Some(previous) = &owner
-                    && previous != next
+                    && previous != &next
                 {
-                    close_owner_change(bots, session_id, previous, next, &record)?;
-                    owner = Some(next.clone());
+                    close_owner_change(bots, session_id, previous, &next, &record)?;
+                    owner = Some(next);
+                    persisted_cursor = cursor;
                     continue;
                 }
-                owner = Some(next.clone());
+                owner = Some(next);
             }
             let bot_id = owner.as_deref().unwrap_or(fallback_owner);
             if bots.bot(bot_id).is_ok() {
@@ -719,10 +692,17 @@ async fn project_session_journal(
                     lifecycle_event(checkpoints, bots, bot_id, session_id, &record).await?
                 {
                     bots.project_session(&event, record.sequence)?;
+                    persisted_cursor = cursor;
                     continue;
                 }
             }
-            bots.advance_source_cursor(session_id, bot_id, record.sequence)?;
+        }
+        if cursor > persisted_cursor {
+            bots.advance_source_cursor(
+                session_id,
+                owner.as_deref().unwrap_or(fallback_owner),
+                cursor,
+            )?;
         }
         if through.is_none() {
             return Ok(());

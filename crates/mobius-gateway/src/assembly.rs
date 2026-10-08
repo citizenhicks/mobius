@@ -131,7 +131,7 @@ pub(crate) fn prepare_bot<'a>(
         let (models, context_window) = if credential_is_configured(endpoint, store, credentials)? {
             build_models(gateway, &config.provider, store, credentials, session_files)?
         } else {
-            unavailable_models(gateway, &config.provider, session_files)?
+            unavailable_models(gateway, &config.provider, store, credentials, session_files)?
         };
         let approval_policy = configured_approval_policy(&config.middleware)?;
         let active_message_delivery = configured_message_delivery(&config.middleware)?;
@@ -558,7 +558,11 @@ fn build_models(
             "active model route is not in the configured gateway catalog".into(),
         ));
     }
-    let media = crate::provider_catalog::media_routes(&gateway.configured_providers, &catalog)?;
+    let media = crate::provider_catalog::media_routes(
+        &gateway.configured_providers,
+        Some((store, credentials)),
+    )?;
+    catalog.extend(media.images.into_iter().chain(media.voices));
     let routes = instantiate_routes(catalog, store, credentials, &gateway.model_transport)?;
     let mut routes = routes.into_iter();
     let first = routes
@@ -574,18 +578,27 @@ fn build_models(
     router.set_context_group(&first.choice.route, first.instance)?;
     router.configure_choice(first.choice)?;
     for route in routes {
-        router.register(&route.choice.route, route.model)?;
-        router.set_credential_lifetime(&route.choice.route, route.lifetime)?;
-        router.set_context_group(&route.choice.route, route.instance)?;
-        router.configure_choice(route.choice)?;
-    }
-    for image in media.images {
-        router.register_image(image.transport, image.choice)?;
-    }
-    for voice in media.voices {
-        router.register_voice(voice.transport, voice.choice)?;
+        register_route(&mut router, route)?;
     }
     Ok((Arc::new(router), context_window))
+}
+
+fn register_route(router: &mut ModelRouter, route: RouteValue) -> Result<()> {
+    match route.capability {
+        Some(mobius::protocol::ModelCapability::RealtimeVoice) => {
+            router.register_voice(route.model, route.choice, route.lifetime)?;
+        }
+        Some(mobius::protocol::ModelCapability::ImageGeneration) => {
+            router.register_image(route.model, route.choice, route.lifetime)?;
+        }
+        _ => {
+            router.register(&route.choice.route, route.model)?;
+            router.set_credential_lifetime(&route.choice.route, route.lifetime)?;
+            router.set_context_group(&route.choice.route, route.instance)?;
+            router.configure_choice(route.choice)?;
+        }
+    }
+    Ok(())
 }
 
 fn instantiate_routes(
@@ -597,8 +610,25 @@ fn instantiate_routes(
     let http = transport.streaming_client()?;
     let mut provider_credentials =
         BTreeMap::<String, (ProviderCredential, ModelCredentialLifetime)>::new();
-    let mut routes = Vec::with_capacity(catalog.len());
+    let mut routes: Vec<RouteValue> = Vec::with_capacity(catalog.len());
     for mut route in catalog {
+        // Media requests carry their selected model/variant; share the adapter,
+        // keeping a separate revocation cursor for each route.
+        if route.capability.is_some()
+            && let Some(previous) = routes.iter().find(|previous| {
+                previous.instance == route.provider.instance
+                    && previous.capability == route.capability
+            })
+        {
+            routes.push(RouteValue {
+                instance: route.provider.instance,
+                capability: route.capability,
+                choice: route.choice,
+                model: Arc::clone(&previous.model),
+                lifetime: previous.lifetime.clone(),
+            });
+            continue;
+        }
         let definition = provider(&route.provider.provider)?;
         let base_url = if definition.configurable_base_url() {
             route
@@ -682,7 +712,8 @@ fn build_route(
     http: &HttpClient,
     transport: &mobius::backend::model::ModelTransportSettings,
 ) -> Result<RouteValue> {
-    let model = definition.build(ProviderBuildConfig {
+    let config = ProviderBuildConfig {
+        capability: route.capability,
         credential,
         model: route.provider.model,
         base_url,
@@ -692,12 +723,16 @@ fn build_route(
         tool_discovery: Some(route.choice.tool_discovery),
         http: http.clone(),
         transport: *transport,
-    })?;
+    };
+    let model = definition.build(config)?;
     let mut choice = route.choice;
-    choice.supports_image_input = model.supports_image_input();
-    choice.supports_image_generation = model.supports_image_generation();
+    if route.capability.is_none() {
+        choice.supports_image_input = model.supports_image_input();
+        choice.supports_image_generation = model.supports_image_generation();
+    }
     Ok(RouteValue {
         instance: route.provider.instance,
+        capability: route.capability,
         choice,
         model,
         lifetime,
@@ -706,6 +741,7 @@ fn build_route(
 
 struct RouteValue {
     instance: String,
+    capability: Option<mobius::protocol::ModelCapability>,
     lifetime: ModelCredentialLifetime,
     choice: ModelChoice,
     model: Arc<dyn Model>,
@@ -741,6 +777,8 @@ impl Model for UnavailableModel {
 fn unavailable_models(
     gateway: &GatewayConfig,
     selection: &ProviderConfig,
+    store: &ConfigStore,
+    credentials: &CredentialStore,
     session_files: SessionFileStore,
 ) -> Result<(Arc<ModelRouter>, i64)> {
     let definition = provider(&selection.provider)?;
@@ -798,6 +836,14 @@ fn unavailable_models(
             },
         ),
     })?;
+    let media = crate::provider_catalog::media_routes(
+        &gateway.configured_providers,
+        Some((store, credentials)),
+    )?;
+    let catalog = media.images.into_iter().chain(media.voices).collect();
+    for route in instantiate_routes(catalog, store, credentials, &gateway.model_transport)? {
+        register_route(&mut router, route)?;
+    }
     Ok((Arc::new(router), context_window))
 }
 

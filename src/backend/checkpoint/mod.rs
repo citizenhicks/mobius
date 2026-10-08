@@ -744,15 +744,15 @@ pub struct TimestampedEvent {
 pub struct StreamMetrics {
     /// The phase.
     pub phase: ModelStepContentPhase,
-    /// The first delta at milliseconds.
+    /// Receipt time of the first delivered batch in Unix milliseconds.
     pub first_delta_at_ms: i64,
-    /// The last delta at milliseconds.
+    /// Receipt time of the first source delta in the last delivered batch.
     pub last_delta_at_ms: i64,
-    /// The chunk count.
+    /// Durable batch count; adjacent provider deltas may be coalesced.
     pub chunk_count: u64,
     /// The utf8 bytes.
     pub utf8_bytes: u64,
-    /// The longest gap milliseconds.
+    /// Longest gap between batch receipt times, in milliseconds.
     pub longest_gap_ms: u64,
 }
 

@@ -878,9 +878,16 @@ async fn voice_catalog_default_selection_and_invalid_ids_are_provider_owned() {
                 "cedar"
             }
         );
-        selected.voice = Some("not-a-supported-voice".into());
+        selected.model = Some("operator-live-model".into());
+        selected.voice = Some("operator-voice".into());
+        let configured = transport
+            .session(&selected)
+            .expect("operator catalog selection");
+        assert_eq!(configured["model"], "operator-live-model");
+        assert_eq!(configured["audio"]["output"]["voice"], "operator-voice");
+        selected.voice = Some(String::new());
         assert!(
-            matches!(transport.start(selected).await, Err(error) if error.to_string().contains("not supported"))
+            matches!(transport.start(selected).await, Err(error) if error.to_string().contains("voice event identity"))
         );
         assert!(
             timeout(Duration::from_millis(20), listener.accept())

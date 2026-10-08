@@ -43,10 +43,11 @@ struct ModelRoute {
     credential: ModelCredentialLifetime,
 }
 
-/// An image or voice model served through a registered model route's transport.
+/// An independently registered image or voice provider.
 struct MediaRoute {
     choice: ModelChoice,
-    transport: String,
+    provider: Arc<dyn Model>,
+    credential: ModelCredentialLifetime,
 }
 
 /// One configured image route with the provider model and quality it calls.
@@ -150,49 +151,49 @@ impl ModelRouter {
         Ok(())
     }
 
-    /// Registers an image model served by the transport of model route `transport`.
+    /// Registers an image model independently of the chat catalog.
     /// # Errors
     ///
-    /// Returns an error if the transport is unknown, cannot generate images, or the choice repeats.
+    /// Returns an error if the provider cannot generate images or the choice repeats.
     pub fn register_image(
         &mut self,
-        transport: impl Into<String>,
+        provider: Arc<dyn Model>,
         choice: ModelChoice,
+        credential: ModelCredentialLifetime,
     ) -> Result<()> {
-        let transport = transport.into();
-        if !self.provider(&transport)?.supports_image_generation() {
+        if !provider.supports_image_generation() {
             return Err(Error::Config(format!(
-                "model route `{transport}` cannot generate images"
-            )));
-        }
-        Self::push_media(&mut self.images, transport, choice)
-    }
-
-    /// Registers a voice served by the transport of model route `transport`.
-    /// # Errors
-    ///
-    /// Returns an error if the transport is unknown, lacks realtime voice, or the choice repeats.
-    pub fn register_voice(
-        &mut self,
-        transport: impl Into<String>,
-        choice: ModelChoice,
-    ) -> Result<()> {
-        let transport = transport.into();
-        if !self.provider(&transport)?.supports_realtime_voice()
-            || choice.reasoning_effort.is_none()
-        {
-            return Err(Error::Config(format!(
-                "model route `{transport}` cannot serve voice `{}`",
+                "provider cannot generate images for `{}`",
                 choice.route
             )));
         }
-        Self::push_media(&mut self.voices, transport, choice)
+        Self::push_media(&mut self.images, provider, choice, credential)
+    }
+
+    /// Registers a voice independently of the chat catalog.
+    /// # Errors
+    ///
+    /// Returns an error if the provider lacks realtime voice, the voice is missing, or the choice repeats.
+    pub fn register_voice(
+        &mut self,
+        provider: Arc<dyn Model>,
+        choice: ModelChoice,
+        credential: ModelCredentialLifetime,
+    ) -> Result<()> {
+        if !provider.supports_realtime_voice() || choice.reasoning_effort.is_none() {
+            return Err(Error::Config(format!(
+                "provider cannot serve voice `{}`",
+                choice.route
+            )));
+        }
+        Self::push_media(&mut self.voices, provider, choice, credential)
     }
 
     fn push_media(
         routes: &mut Vec<MediaRoute>,
-        transport: String,
+        provider: Arc<dyn Model>,
         choice: ModelChoice,
+        credential: ModelCredentialLifetime,
     ) -> Result<()> {
         if routes
             .iter()
@@ -200,7 +201,11 @@ impl ModelRouter {
         {
             return Err(Error::Duplicate(format!("media route `{}`", choice.route)));
         }
-        routes.push(MediaRoute { choice, transport });
+        routes.push(MediaRoute {
+            choice,
+            provider,
+            credential,
+        });
         Ok(())
     }
 
@@ -417,13 +422,12 @@ impl ModelRouter {
         })
     }
 
-    /// Resolves the selected voice, or the first configured one, with its transport route.
+    /// Resolves the selected voice, or the first configured one.
     /// # Errors
     ///
     /// Returns an error when no voice matches.
-    pub fn voice_choice(&self, voice_route: Option<&str>) -> Result<(&ModelChoice, &str)> {
-        select_media(&self.voices, voice_route, "voice")
-            .map(|media| (&media.choice, media.transport.as_str()))
+    pub fn voice_choice(&self, voice_route: Option<&str>) -> Result<&ModelChoice> {
+        select_media(&self.voices, voice_route, "voice").map(|media| &media.choice)
     }
 
     /// Generates or edits an image with `request.model` through image route `image_route`.
@@ -446,10 +450,9 @@ impl ModelRouter {
             )));
         }
         request.validate(self.image_limits)?;
-        let route = self.route(&media.transport)?;
         // A rejected image response does not prove generation was uncharged.
-        while_valid(&route.credential, None, || {
-            route.provider.generate_image(request)
+        while_valid(&media.credential, None, || {
+            media.provider.generate_image(request)
         })
         .await
     }
@@ -468,10 +471,9 @@ impl ModelRouter {
         // ponytail: owned copies, the request outlives the router borrow inside the provider.
         request.model = Some(media.choice.model.as_str().into());
         request.voice = media.choice.reasoning_effort.as_deref().map(Into::into);
-        let route = self.route(&media.transport)?;
-        let settings = self.transport_settings_for(&media.transport)?;
+        let settings = media.provider.transport_settings();
         // Voice cleanup uses an earlier deadline without changing the route's shared credential lifetime.
-        let mut credential = route.credential.clone();
+        let mut credential = media.credential.clone();
         credential.expires_at = credential.expires_at.map(|expires_at| {
             super::RealtimeVoiceCall::cleanup_deadline(
                 expires_at,
@@ -479,7 +481,7 @@ impl ModelRouter {
             )
         });
         let mut call = while_valid(&credential, None, || {
-            route.provider.start_realtime_voice(request)
+            media.provider.start_realtime_voice(request)
         })
         .await?;
         call.limit_credential(credential);

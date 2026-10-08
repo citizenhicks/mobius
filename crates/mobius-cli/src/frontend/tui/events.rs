@@ -243,11 +243,11 @@ impl TuiState {
                 if !entry.pending {
                     return;
                 }
-                entry.text.push_str(text);
+                entry.text.push_str(&terminal_text(text));
+                super::view::truncate_display_text(&mut entry.text, MAX_ENTRY_BYTES);
             } else {
-                entry.text = text.into();
+                entry.text = bounded_terminal_text(text, MAX_ENTRY_BYTES);
             }
-            entry.text = bounded_terminal_text(&entry.text, MAX_ENTRY_BYTES);
             entry.pending = partial;
             entry.rendered = None;
         } else if !text.is_empty() {
@@ -297,12 +297,14 @@ impl TuiState {
             .filter(|phase| streamed.contains(*phase));
         if buffered_stream.is_some() {
             self.streaming.clear();
+            self.streaming_markdown.clear();
             self.streaming_phase = None;
         }
         let buffered_reasoning =
             !self.reasoning.is_empty() && streamed.contains(ModelStepContentPhase::Reasoning);
         if buffered_reasoning {
             self.reasoning.clear();
+            self.reasoning_markdown.clear();
         }
         for item in &message.content {
             if item.phase == ModelStepContentPhase::Reasoning
@@ -491,15 +493,18 @@ fn apply_preview(state: &mut TuiState, preview: RenderedPreview, requested: bool
             };
             // Stable message IDs replace live rows while keeping older loaded pages
             // and the reader's scroll position intact.
+            let updated_ids = replay
+                .transcript
+                .iter()
+                .filter_map(|entry| entry.id.as_ref())
+                .map(|id| (id.capability.as_str(), id.value.as_str()))
+                .collect::<std::collections::BTreeSet<_>>();
             let retained = snapshot
                 .transcript
                 .iter()
                 .take_while(|entry| {
                     entry.id.as_ref().is_none_or(|id| {
-                        !replay
-                            .transcript
-                            .iter()
-                            .any(|updated| updated.id.as_ref() == Some(id))
+                        !updated_ids.contains(&(id.capability.as_str(), id.value.as_str()))
                             && !id
                                 .value
                                 .split_once('/')

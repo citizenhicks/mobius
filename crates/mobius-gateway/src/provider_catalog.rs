@@ -64,7 +64,7 @@ pub(crate) fn provider_instances(
         .collect()
 }
 
-/// Chat and media choices derived from one set of chat routes.
+/// Independent chat, image and voice catalogs.
 pub(crate) struct ConfiguredChoices {
     pub(crate) models: Vec<ModelChoice>,
     pub(crate) images: Vec<ModelChoice>,
@@ -72,13 +72,12 @@ pub(crate) struct ConfiguredChoices {
 }
 
 impl ConfiguredChoices {
-    fn from_routes(gateway: &GatewayConfig, routes: Vec<CatalogRoute>) -> Result<Self> {
-        let media = media_routes(&gateway.configured_providers, &routes)?;
-        Ok(Self {
+    fn from_routes(routes: Vec<CatalogRoute>, media: MediaRoutes) -> Self {
+        Self {
             images: media.images.into_iter().map(|media| media.choice).collect(),
             voices: media.voices.into_iter().map(|media| media.choice).collect(),
             models: routes.into_iter().map(|route| route.choice).collect(),
-        })
+        }
     }
 
     pub(crate) fn validate_voice(&self, route: Option<&str>) -> Result<()> {
@@ -106,8 +105,7 @@ pub(crate) fn configured_model_choices(
     store: &ConfigStore,
     credentials: &CredentialStore,
 ) -> Result<ConfiguredChoices> {
-    ConfiguredChoices::from_routes(
-        gateway,
+    Ok(ConfiguredChoices::from_routes(
         configured_model_routes(
             &gateway.configured_providers,
             gateway
@@ -117,7 +115,8 @@ pub(crate) fn configured_model_choices(
             store,
             credentials,
         )?,
-    )
+        media_routes(&gateway.configured_providers, Some((store, credentials)))?,
+    ))
 }
 
 pub(crate) fn configured_model_catalog(gateway: &GatewayConfig) -> Result<ConfiguredChoices> {
@@ -130,7 +129,10 @@ pub(crate) fn configured_model_catalog(gateway: &GatewayConfig) -> Result<Config
             &configured.selection,
         ));
     }
-    ConfiguredChoices::from_routes(gateway, routes)
+    Ok(ConfiguredChoices::from_routes(
+        routes,
+        media_routes(&gateway.configured_providers, None)?,
+    ))
 }
 
 pub(crate) fn configured_model_providers(
@@ -138,7 +140,7 @@ pub(crate) fn configured_model_providers(
     store: &ConfigStore,
     credentials: &CredentialStore,
 ) -> Result<BTreeMap<String, String>> {
-    Ok(configured_model_routes(
+    let mut providers: BTreeMap<_, _> = configured_model_routes(
         &gateway.configured_providers,
         gateway
             .bot_defaults
@@ -149,7 +151,16 @@ pub(crate) fn configured_model_providers(
     )?
     .into_iter()
     .map(|route| (route.choice.route, route.provider.instance))
-    .collect())
+    .collect();
+    let media = media_routes(&gateway.configured_providers, Some((store, credentials)))?;
+    providers.extend(
+        media
+            .images
+            .into_iter()
+            .chain(media.voices)
+            .map(|route| (route.choice.route, route.provider.instance)),
+    );
+    Ok(providers)
 }
 
 pub(crate) fn configured_route_exists(gateway: &GatewayConfig, route: &str) -> Result<bool> {
@@ -281,8 +292,8 @@ pub(crate) fn prepare_configured_models(
         .collect()
 }
 
-fn models<'a>(
-    definition: &'a ProviderDefinition,
+pub(crate) fn models<'a>(
+    definition: &ProviderDefinition,
     configured: &'a ConfiguredProvider,
 ) -> &'a [ModelPreset] {
     if definition.locked_models() {
@@ -297,6 +308,9 @@ pub(crate) fn catalog_routes(
     configured: &ConfiguredProvider,
     selection: &ProviderConfig,
 ) -> Vec<CatalogRoute> {
+    if selection.model.is_empty() {
+        return Vec::new();
+    }
     let models = models(definition, configured);
     let ordered = models
         .iter()
@@ -348,6 +362,7 @@ pub(crate) fn catalog_routes(
                     tool_discovery: effective_tool_discovery(definition, &provider, model),
                 },
                 provider,
+                capability: None,
             });
         }
     }
@@ -357,41 +372,34 @@ pub(crate) fn catalog_routes(
 pub(crate) struct CatalogRoute {
     pub(crate) choice: ModelChoice,
     pub(crate) provider: ProviderConfig,
+    pub(crate) capability: Option<ModelCapability>,
 }
 
-/// An image or voice choice served through the transport of one chat route.
-pub(crate) struct MediaRoute {
-    pub(crate) choice: ModelChoice,
-    pub(crate) instance: String,
-    pub(crate) transport: String,
-}
-
-/// Image and voice choices for every provider instance that has a chat route.
+/// Image and voice choices, independent of the chat catalog.
 #[derive(Default)]
 pub(crate) struct MediaRoutes {
-    pub(crate) images: Vec<MediaRoute>,
-    pub(crate) voices: Vec<MediaRoute>,
+    pub(crate) images: Vec<CatalogRoute>,
+    pub(crate) voices: Vec<CatalogRoute>,
 }
 
-/// Derives image and voice choices from the configured instances behind `routes`.
+/// Derives media choices directly from configured providers, optionally checking credentials.
 pub(crate) fn media_routes(
     configured_providers: &BTreeMap<String, ConfiguredProvider>,
-    routes: &[CatalogRoute],
+    credentials: Option<(&ConfigStore, &CredentialStore)>,
 ) -> Result<MediaRoutes> {
     let mut media = MediaRoutes::default();
     for configured in configured_providers.values() {
         let instance = configured.selection.instance.as_str();
-        let Some(transport) = routes.iter().find(|route| {
-            route.provider.instance == instance
-                && route.provider.endpoint_auth != ProviderEndpointAuth::Credentialless
-        }) else {
+        if let Some((store, credentials)) = credentials
+            && !credential_is_configured(&configured.selection, store, credentials)?
+        {
             continue;
-        };
+        }
         let definition = provider(&configured.selection.provider)?;
         let media_choice = |model: &str,
                             label: &str,
                             variant: Option<&ReasoningPreset>,
-                            voice: bool| MediaRoute {
+                            voice: bool| CatalogRoute {
             choice: ModelChoice {
                 route: model_route_id(instance, model, variant.map(|variant| variant.id.as_str())),
                 group: format!("{} · {label}", configured.label),
@@ -402,16 +410,38 @@ pub(crate) fn media_routes(
                 supports_image_input: false,
                 supports_image_generation: !voice,
                 supports_realtime_voice: voice,
-                tool_discovery: transport.choice.tool_discovery,
+                tool_discovery: definition
+                    .tool_discovery(model, configured.selection.base_url.as_deref()),
             },
-            instance: instance.into(),
-            transport: transport.choice.route.as_str().into(),
+            provider: ProviderConfig {
+                instance: instance.into(),
+                provider: configured.selection.provider.as_str().into(),
+                model: model.into(),
+                base_url: configured.selection.base_url.as_deref().map(Into::into),
+                endpoint_auth: configured.selection.endpoint_auth,
+                reasoning_effort: None,
+                service_tier: None,
+                web_search: Default::default(),
+                tool_discovery: None,
+            },
+            capability: Some(if voice {
+                ModelCapability::RealtimeVoice
+            } else {
+                ModelCapability::ImageGeneration
+            }),
         };
-        if definition.supports_at(
-            ModelCapability::ImageGeneration,
-            transport.provider.base_url.as_deref(),
-        ) {
-            for preset in definition.image_models() {
+        if configured.image_model_ids.is_empty()
+            && (configured.image_models.is_some()
+                || definition.supports_at(
+                    ModelCapability::ImageGeneration,
+                    configured.selection.base_url.as_deref(),
+                ))
+        {
+            for preset in configured
+                .image_models
+                .as_deref()
+                .unwrap_or_else(|| definition.image_models())
+            {
                 for quality in with_default(&preset.variants) {
                     media
                         .images
@@ -423,11 +453,17 @@ pub(crate) fn media_routes(
         for id in &configured.image_model_ids {
             media.images.push(media_choice(id, id, None, false));
         }
-        if definition.supports_at(
-            ModelCapability::RealtimeVoice,
-            transport.provider.base_url.as_deref(),
-        ) {
-            for preset in definition.voice_models() {
+        if configured.voice_models.is_some()
+            || definition.supports_at(
+                ModelCapability::RealtimeVoice,
+                configured.selection.base_url.as_deref(),
+            )
+        {
+            for preset in configured
+                .voice_models
+                .as_deref()
+                .unwrap_or_else(|| definition.voice_models())
+            {
                 for voice in with_default(&preset.variants) {
                     media
                         .voices
@@ -497,6 +533,9 @@ fn configured_models(
     definition: &ProviderDefinition,
     configured: &ConfiguredProvider,
 ) -> Vec<ProviderModel> {
+    if configured.selection.model.is_empty() {
+        return Vec::new();
+    }
     configured
         .models
         .iter()
@@ -614,6 +653,37 @@ mod tests {
     }
 
     #[test]
+    fn native_text_catalogs_stay_locked_and_media_only_instances_hide_them() {
+        for id in ["openai_socket", "openai_codex"] {
+            let definition = provider(id).unwrap();
+            let mut selection = crate::wire::AgentComposition::default().provider;
+            selection.instance = id.into();
+            selection.provider = id.into();
+            selection.model = definition.default_model().unwrap().into();
+            selection.base_url = definition.default_base_url().map(Into::into);
+            let mut configured = ConfiguredProvider {
+                selection,
+                label: definition.label().into(),
+                tint: Default::default(),
+                models: Vec::new(),
+                image_model_ids: Vec::new(),
+                image_models: None,
+                voice_models: None,
+            };
+            assert!(!provider_status(definition).model_ids_configurable);
+            assert!(configured_models(definition, &configured).is_empty());
+            assert!(!catalog_routes(definition, &configured, &configured.selection).is_empty());
+            configured.selection.model.clear();
+            configured.selection.reasoning_effort = None;
+            assert!(configured_models(definition, &configured).is_empty());
+            assert!(catalog_routes(definition, &configured, &configured.selection).is_empty());
+            let media = media_routes(&BTreeMap::from([(id.into(), configured)]), None).unwrap();
+            assert!(!media.images.is_empty());
+            assert!(!media.voices.is_empty());
+        }
+    }
+
+    #[test]
     fn catalog_reasoning_follows_manifest_order_even_when_another_level_is_selected() {
         let status = provider_status(provider("openai_socket").expect("provider"));
         let configured = ConfiguredProvider {
@@ -629,6 +699,8 @@ mod tests {
             tint: Default::default(),
             models: Vec::new(),
             image_model_ids: Vec::new(),
+            image_models: None,
+            voice_models: None,
         };
         let mut selection = configured.selection.clone();
         selection.service_tier = None;
@@ -838,16 +910,7 @@ mod tests {
                 )
                 .expect("register");
         }
-        let mut routes = Vec::new();
-        for configured in config.configured_providers.values() {
-            let definition = provider(&configured.selection.provider).expect("provider");
-            routes.extend(catalog_routes(
-                definition,
-                configured,
-                &configured.selection,
-            ));
-        }
-        let media = media_routes(&config.configured_providers, &routes).expect("media");
+        let media = media_routes(&config.configured_providers, None).expect("media");
         let images = media
             .images
             .iter()
@@ -859,7 +922,7 @@ mod tests {
         assert!(images.iter().all(|route| !route.starts_with("responses::")));
         let voice = |instance: &str, voice: &str| {
             media.voices.iter().any(|choice| {
-                choice.instance == instance
+                choice.provider.instance == instance
                     && choice.choice.reasoning_effort.as_deref() == Some(voice)
             })
         };
@@ -868,7 +931,12 @@ mod tests {
         assert!(!voice("openai_codex", "cedar"));
         assert!(!voice("responses", "cedar"));
         assert_eq!(
-            media.voices.first().expect("native voice").instance,
+            media
+                .voices
+                .first()
+                .expect("native voice")
+                .provider
+                .instance,
             "openai_codex"
         );
         let choices = configured_model_catalog(&config).expect("configured choices");
@@ -889,7 +957,7 @@ mod tests {
             media
                 .voices
                 .iter()
-                .all(|choice| choice.instance != "openrouter")
+                .all(|choice| choice.provider.instance != "openrouter")
         );
     }
 
@@ -952,6 +1020,8 @@ mod tests {
                 Vec::new(),
             ),
             image_model_ids: Vec::new(),
+            image_models: None,
+            voice_models: None,
         };
         let definition = provider("responses").expect("custom provider");
         let models = configured_models(definition, &configured);

@@ -73,6 +73,7 @@ mod tests {
         for web_search in definition.web_search().iter().copied() {
             definition
                 .build(ProviderBuildConfig {
+                    capability: None,
                     tool_discovery: None,
                     credential: ProviderCredential::ApiKey("test-key".into()),
                     model: definition.default_model().expect("default model").into(),
@@ -99,6 +100,7 @@ mod tests {
         for base_url in [MANIFEST.base_url.as_str(), "https://custom.example/v1"] {
             let model = definition
                 .build(ProviderBuildConfig {
+                    capability: None,
                     tool_discovery: None,
                     credential: ProviderCredential::ApiKey("test-key".into()),
                     model: definition.default_model().expect("default model").into(),

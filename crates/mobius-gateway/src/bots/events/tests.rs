@@ -194,7 +194,7 @@ fn projection_atomically_advances_cursor_with_the_fact_and_matching_actions() {
         storage
             .source_cursor("session-a")
             .expect("rolled back cursor"),
-        6
+        (6, Some("bot-a".into()))
     );
     assert!(
         storage
@@ -213,7 +213,10 @@ fn projection_atomically_advances_cursor_with_the_fact_and_matching_actions() {
     storage
         .advance_source_cursor("session-a", "bot-a", 8)
         .expect("monotonic");
-    assert_eq!(storage.source_cursor("session-a").expect("cursor"), 9);
+    assert_eq!(
+        storage.source_cursor("session-a").expect("cursor"),
+        (9, Some("bot-a".into()))
+    );
 }
 
 #[test]
@@ -401,7 +404,7 @@ fn closing_session_retains_final_actions_and_replaying_closure_does_not_cancel_t
     );
     assert_eq!(
         storage.source_cursor("session-a").expect("removed cursor"),
-        0
+        (0, None)
     );
     storage
         .advance_source_cursor("session-a", "bot-b", 2)
@@ -418,7 +421,7 @@ fn closing_session_retains_final_actions_and_replaying_closure_does_not_cancel_t
         storage
             .source_cursor("session-a")
             .expect("new cursor survives replay"),
-        2
+        (2, Some("bot-b".into()))
     );
     assert_eq!(
         storage.load_catalog().expect("catalog").as_deref(),

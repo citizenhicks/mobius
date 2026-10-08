@@ -78,6 +78,7 @@ mod tests {
         for web_search in definition.web_search().iter().copied() {
             let model = definition
                 .build(ProviderBuildConfig {
+                    capability: None,
                     tool_discovery: None,
                     credential: ProviderCredential::ApiKey("test-key".into()),
                     model: "test-model".into(),

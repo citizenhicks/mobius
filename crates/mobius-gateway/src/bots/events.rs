@@ -162,12 +162,24 @@ impl BotStorage {
         })
     }
 
-    pub(super) fn source_cursor(&self, session_id: &str) -> Result<u64> {
+    pub(super) fn source_cursor(&self, session_id: &str) -> Result<(u64, Option<String>)> {
         let connection = self
             .connection
             .lock()
             .map_err(|_| Error::Config("Bot storage lock is poisoned".into()))?;
-        cursor(&connection, session_id)
+        let Some((sequence, owner)) = connection
+            .query_row(
+                "SELECT sequence, bot_id FROM bot_session_cursors WHERE session_id=?1",
+                [session_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?
+        else {
+            return Ok((0, None));
+        };
+        let sequence =
+            u64::try_from(sequence).map_err(|_| Error::Config("negative session cursor".into()))?;
+        Ok((sequence, Some(owner)))
     }
     pub(super) fn advance_source_cursor(
         &self,

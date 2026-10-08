@@ -345,7 +345,6 @@ impl RealtimeTransport {
         }
         let (cleanup, answer_sdp) = self.negotiate(response, request.session_id).await?;
         validate_sdp(&answer_sdp)?;
-        validate_text(&voice, 256, "voice name")?;
         let (commands, command_rx) = mpsc::channel(COMMAND_CAPACITY);
         let (event_tx, events) = mpsc::channel(16);
         let (cancel, cancelled) = oneshot::channel();
@@ -411,21 +410,25 @@ impl RealtimeTransport {
     }
 
     fn session(&self, request: &RealtimeVoiceRequest) -> Result<Value> {
-        let model = match request.model.as_deref() {
-            Some(id) => self
-                .models()
-                .iter()
-                .find(|model| model.id == id)
-                .ok_or_else(|| {
-                    invalid("the selected voice model is not supported by this provider")
-                })?,
-            None => &self.models()[0],
+        let preset = match request.model.as_deref() {
+            Some(id) => self.models().iter().find(|model| model.id == id),
+            None => self.models().first(),
         };
-        let voice = request.voice.as_deref().unwrap_or(&model.variants[0].id);
-        if !model.variants.iter().any(|variant| variant.id == voice) {
-            return Err(invalid("the selected voice is not supported by this model"));
-        }
-        Ok(json!({"model":model.id,"instructions":request.instructions,
+        let model = request
+            .model
+            .as_deref()
+            .or_else(|| preset.map(|model| model.id.as_str()))
+            .ok_or_else(|| invalid("select a voice model"))?;
+        let voice = request
+            .voice
+            .as_deref()
+            .or_else(|| {
+                preset
+                    .and_then(|model| model.variants.first())
+                    .map(|variant| variant.id.as_str())
+            })
+            .ok_or_else(|| invalid("select a voice"))?;
+        Ok(json!({"model":model,"instructions":request.instructions,
             "audio":{"output":{"voice":voice}},"delegation":{"type":"client"}}))
     }
 

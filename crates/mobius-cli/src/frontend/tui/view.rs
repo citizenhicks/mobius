@@ -157,7 +157,22 @@ pub(super) fn live_transcript_lines(
         start > 0,
     );
     let has_transcript = !lines.is_empty();
-    append_live_tail(&mut lines, state, width, has_transcript);
+    for (text, tone) in [
+        (&state.streaming, TranscriptTone::Assistant),
+        (&state.reasoning, TranscriptTone::Reasoning),
+    ] {
+        if !text.is_empty() {
+            push_lines(
+                &mut lines,
+                text,
+                tone,
+                FrontendBlockFormat::PlainText,
+                width,
+            );
+        }
+    }
+    let has_content = has_transcript || !lines.is_empty();
+    append_live_decorations(&mut lines, state, width, has_content);
     if lines.is_empty() {
         let card = responsive_welcome_card(state, width);
         push_lines(
@@ -172,42 +187,101 @@ pub(super) fn live_transcript_lines(
 }
 
 fn live_transcript_window(state: &mut TuiState, width: u16, height: u16) -> (Vec<Line<'_>>, u16) {
-    let (content_height, tail) = prepare_live_transcript(state, width);
+    live_window(state, width, height, false)
+}
+
+fn live_window(
+    state: &mut TuiState,
+    width: u16,
+    height: u16,
+    preview: bool,
+) -> (Vec<Line<'_>>, u16) {
+    let mut content_height = 0_usize;
+    let has_transcript = visit_transcript_lines(&mut state.transcript, width, |_, line_height| {
+        content_height = content_height.saturating_add(line_height)
+    });
+    let mut decorations = Vec::new();
+    let has_content = has_transcript || !state.streaming.is_empty() || !state.reasoning.is_empty();
+    append_live_decorations(&mut decorations, state, width, has_content);
+    if !has_content && decorations.is_empty() {
+        let card = responsive_welcome_card(state, width);
+        push_lines(
+            &mut decorations,
+            &card,
+            TranscriptTone::Welcome,
+            FrontendBlockFormat::PlainText,
+            width,
+        );
+    }
+    let mut tail = Vec::new();
+    append_cached_stream(
+        &mut tail,
+        &state.streaming,
+        &mut state.streaming_markdown,
+        TranscriptTone::Assistant,
+        width,
+    );
+    append_cached_stream(
+        &mut tail,
+        &state.reasoning,
+        &mut state.reasoning_markdown,
+        TranscriptTone::Reasoning,
+        width,
+    );
+    tail.extend(decorations);
+    let viewport = if preview {
+        &mut state.preview.as_mut().expect("preview checked").viewport
+    } else {
+        &mut state.transcript_viewport
+    };
     render_transcript_window(
         &mut state.transcript,
         width,
-        &mut state.transcript_viewport,
+        viewport,
         height,
         tail,
         content_height,
     )
 }
 
-fn append_live_tail(
+fn append_cached_stream<'a>(
+    lines: &mut Vec<Line<'a>>,
+    source: &str,
+    cache: &'a mut markdown::StreamCache,
+    tone: TranscriptTone,
+    width: u16,
+) {
+    if source.is_empty() {
+        return;
+    }
+    let mut style = current().style(transcript_role(tone));
+    if matches!(tone, TranscriptTone::Reasoning) {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+    for (index, line) in cache
+        .render(source, style, usize::from(width.saturating_sub(2)))
+        .iter()
+        .enumerate()
+    {
+        let mut line = borrow_line(line);
+        line.spans.insert(
+            0,
+            Span::styled(
+                if index == 0 { AGENT_MARKER } else { "  " },
+                current().style(Role::Accent),
+            ),
+        );
+        lines.push(line);
+    }
+}
+
+fn append_live_decorations(
     lines: &mut Vec<Line<'static>>,
     state: &TuiState,
     width: u16,
-    has_transcript: bool,
+    has_content: bool,
 ) {
-    if !state.streaming.is_empty() {
-        push_lines(
-            lines,
-            &state.streaming,
-            TranscriptTone::Assistant,
-            FrontendBlockFormat::PlainText,
-            width,
-        );
-    }
-    if !state.reasoning.is_empty() {
-        push_lines(
-            lines,
-            &state.reasoning,
-            TranscriptTone::Reasoning,
-            FrontendBlockFormat::PlainText,
-            width,
-        );
-    }
-    let mut has_content = has_transcript || !lines.is_empty();
+    let mut has_content = has_content;
     for ((capability, _), item) in state
         .widgets
         .iter()
@@ -268,32 +342,12 @@ fn append_live_tail(
     }
 }
 
-fn prepare_live_transcript(state: &mut TuiState, width: u16) -> (usize, Vec<Line<'static>>) {
-    let mut content_height = 0_usize;
-    let has_transcript = visit_transcript_lines(&mut state.transcript, width, |_, line_height| {
-        content_height = content_height.saturating_add(line_height)
-    });
-    let mut tail = Vec::new();
-    append_live_tail(&mut tail, state, width, has_transcript);
-    if !has_transcript && tail.is_empty() {
-        let card = responsive_welcome_card(state, width);
-        push_lines(
-            &mut tail,
-            &card,
-            TranscriptTone::Welcome,
-            FrontendBlockFormat::PlainText,
-            width,
-        );
-    }
-    (content_height, tail)
-}
-
 fn render_transcript_window<'a>(
     transcript: &'a mut VecDeque<TranscriptEntry>,
     width: u16,
     viewport: &mut super::Viewport,
     height: u16,
-    tail: Vec<Line<'static>>,
+    tail: Vec<Line<'a>>,
     entry_height: usize,
 ) -> (Vec<Line<'a>>, u16) {
     let tail_heights = tail
@@ -308,7 +362,7 @@ fn render_transcript_window<'a>(
     let mut cursor = 0_usize;
     let mut first_skip = None;
     let mut lines = Vec::new();
-    let mut collect = |line: Cow<'a, Line<'static>>, line_height: usize| {
+    let mut collect = |line: Line<'a>, line_height: usize| {
         let start = cursor;
         cursor = cursor.saturating_add(line_height);
         if line_height == 0 || start >= end || cursor <= scroll {
@@ -317,14 +371,19 @@ fn render_transcript_window<'a>(
         if first_skip.is_none() {
             first_skip = Some(scroll.saturating_sub(start));
         }
-        lines.push(match line {
-            Cow::Borrowed(line) => borrow_line(line),
-            Cow::Owned(line) => line,
-        });
+        lines.push(line);
     };
-    visit_transcript_lines(transcript, width, &mut collect);
+    visit_transcript_lines(transcript, width, |line, height| {
+        collect(
+            match line {
+                Cow::Borrowed(line) => borrow_line(line),
+                Cow::Owned(line) => line,
+            },
+            height,
+        );
+    });
     for (line, line_height) in tail.into_iter().zip(tail_heights) {
-        collect(Cow::Owned(line), line_height);
+        collect(line, line_height);
     }
 
     (
@@ -403,7 +462,7 @@ fn ensure_rendered(entry: &mut TranscriptEntry, width: u16) {
     ));
 }
 
-fn wrapped_line_height(line: &Line<'static>, width: u16) -> usize {
+fn wrapped_line_height(line: &Line<'_>, width: u16) -> usize {
     Paragraph::new(borrow_line(line))
         .wrap(Wrap { trim: false })
         .line_count(width)
@@ -486,16 +545,7 @@ fn text_preview_window(state: &mut TuiState, width: u16, height: u16) -> (Vec<Li
 }
 
 fn live_preview_window(state: &mut TuiState, width: u16, height: u16) -> (Vec<Line<'_>>, u16) {
-    let (content_height, tail) = prepare_live_transcript(state, width);
-    let preview = state.preview.as_mut().expect("preview checked");
-    render_transcript_window(
-        &mut state.transcript,
-        width,
-        &mut preview.viewport,
-        height,
-        tail,
-        content_height,
-    )
+    live_window(state, width, height, true)
 }
 
 fn snapshot_preview_window(state: &mut TuiState, width: u16, height: u16) -> (Vec<Line<'_>>, u16) {
@@ -1312,12 +1362,15 @@ fn render_menu(frame: &mut Frame<'_>, area: Rect, items: &[MenuItem], selected: 
 
 pub(super) fn bounded_terminal_text(value: &str, limit: usize) -> String {
     let mut value = terminal_text(value);
-    if value.len() <= limit {
-        return value;
-    }
-    value.truncate(value.floor_char_boundary(limit));
-    value.push_str("\n[display truncated]");
+    truncate_display_text(&mut value, limit);
     value
+}
+
+pub(super) fn truncate_display_text(value: &mut String, limit: usize) {
+    if value.len() > limit {
+        value.truncate(value.floor_char_boundary(limit));
+        value.push_str("\n[display truncated]");
+    }
 }
 
 fn display_value(value: &str) -> String {

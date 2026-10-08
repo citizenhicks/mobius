@@ -211,8 +211,8 @@ struct RegisterProviderArgs {
     #[arg(long)]
     if_configured: bool,
 
-    /// Provider model identifier.
-    #[arg(long, value_name = "ID")]
+    /// Default chat model; omit for a media-only provider.
+    #[arg(long, value_name = "ID", default_value = "")]
     model: String,
 
     /// Chat model ID; repeat to replace the list. Omit to preserve existing IDs.

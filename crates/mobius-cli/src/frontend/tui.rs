@@ -369,8 +369,10 @@ struct TuiState {
     transcript: VecDeque<TranscriptEntry>,
     transcript_viewport: Viewport,
     streaming: String,
+    streaming_markdown: markdown::StreamCache,
     streaming_phase: Option<ModelStepContentPhase>,
     reasoning: String,
+    reasoning_markdown: markdown::StreamCache,
     reasoning_title: Option<String>,
     git_diff: [Option<String>; 2],
     git_diff_requests: BTreeMap<String, usize>,
@@ -431,8 +433,10 @@ impl TuiState {
             transcript: VecDeque::new(),
             transcript_viewport: Viewport::default(),
             streaming: String::new(),
+            streaming_markdown: markdown::StreamCache::default(),
             streaming_phase: None,
             reasoning: String::new(),
+            reasoning_markdown: markdown::StreamCache::default(),
             reasoning_title: None,
             git_diff: [None, None],
             git_diff_requests: BTreeMap::new(),
@@ -732,7 +736,7 @@ impl TuiState {
         {
             if block.update == FrontendBlockUpdate::Append {
                 block.update.apply(&mut entry.text, &text);
-                entry.text = bounded_terminal_text(&entry.text, MAX_ENTRY_BYTES);
+                view::truncate_display_text(&mut entry.text, MAX_ENTRY_BYTES);
                 if detail.is_some() {
                     entry.detail = detail;
                 }
@@ -812,6 +816,7 @@ impl TuiState {
     }
 
     fn commit_stream(&mut self) {
+        self.streaming_markdown.clear();
         if self.streaming.is_empty() {
             self.streaming_phase = None;
             return;
@@ -828,6 +833,7 @@ impl TuiState {
     }
 
     fn commit_reasoning(&mut self) {
+        self.reasoning_markdown.clear();
         if self.reasoning.is_empty() {
             return;
         }

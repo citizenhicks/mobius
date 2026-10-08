@@ -16,16 +16,107 @@ use ratatui::text::Span;
 use crate::frontend::theme::Role;
 use crate::frontend::theme::current;
 
-pub(super) fn render(source: &str, base: Style, width: usize) -> Vec<Line<'static>> {
+fn options() -> Options {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_TASKLISTS);
+    options
+}
+
+pub(super) fn render(source: &str, base: Style, width: usize) -> Vec<Line<'static>> {
     let mut writer = Writer::new(base, width);
-    for event in Parser::new_ext(source, options) {
+    for event in Parser::new_ext(source, options()) {
         writer.event(event);
     }
     writer.finish()
+}
+
+/// Caches finished top-level prose while reparsing the unfinished stream tail.
+#[derive(Default)]
+pub(super) struct StreamCache {
+    width: usize,
+    base: Style,
+    source_bytes: usize,
+    dependent_markup: bool,
+    prefix_bytes: usize,
+    prefix_lines: usize,
+    lines: Vec<Line<'static>>,
+}
+
+impl StreamCache {
+    pub(super) fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    pub(super) fn render(&mut self, source: &str, base: Style, width: usize) -> &[Line<'static>] {
+        let changed_layout = self.width != width || self.base != base;
+        if !changed_layout && self.source_bytes == source.len() {
+            return &self.lines;
+        }
+        let reset = changed_layout || source.len() < self.source_bytes;
+        if reset {
+            self.clear();
+            self.width = width;
+            self.base = base;
+        }
+        self.dependent_markup |= source[self.source_bytes..].contains(['[', '<']);
+        if reset || self.dependent_markup {
+            // ponytail: references and HTML can change earlier inline parsing or block spacing.
+            self.prefix_bytes = 0;
+            self.prefix_lines = 0;
+            self.lines = render(source, base, width);
+        } else {
+            self.lines.truncate(self.prefix_lines);
+            let tail = &source[self.prefix_bytes..];
+            let finished = finished_prose_prefix(tail);
+            if finished > 0 {
+                self.append(render(&tail[..finished], base, width));
+                self.prefix_bytes += finished;
+                self.prefix_lines = self.lines.len();
+            }
+            self.append(render(&source[self.prefix_bytes..], base, width));
+        }
+        self.source_bytes = source.len();
+        &self.lines
+    }
+
+    fn append(&mut self, lines: Vec<Line<'static>>) {
+        if !self.lines.is_empty() && !lines.is_empty() {
+            self.lines.push(Line::default());
+        }
+        self.lines.extend(lines);
+    }
+}
+
+fn finished_prose_prefix(source: &str) -> usize {
+    let mut depth = 0_usize;
+    let mut prose = false;
+    let mut finished = 0;
+    for (event, range) in Parser::new_ext(source, options()).into_offset_iter() {
+        match event {
+            Event::Start(tag) => {
+                if depth == 0 {
+                    prose = matches!(tag, Tag::Paragraph | Tag::Heading { .. });
+                }
+                depth += 1;
+            }
+            Event::End(_) => {
+                depth = depth.saturating_sub(1);
+                if depth == 0
+                    && prose
+                    && source
+                        .get(range.end..)
+                        .is_some_and(|rest| rest.starts_with('\n') || rest.starts_with("\r\n"))
+                {
+                    // Container blocks stay in the tail until following top-level prose closes.
+                    finished = range.end;
+                }
+            }
+            _ => {}
+        }
+    }
+    finished
 }
 
 struct Item {
@@ -110,7 +201,7 @@ impl Writer {
 
     fn start(&mut self, tag: Tag<'_>) {
         match tag {
-            Tag::Paragraph => self.start_block(),
+            Tag::Paragraph | Tag::HtmlBlock => self.start_block(),
             Tag::Heading { level, .. } => {
                 self.start_block();
                 self.push_style(heading_style(level));
@@ -180,16 +271,13 @@ impl Writer {
             }
             Tag::TableRow => {}
             Tag::TableCell => {}
-            Tag::HtmlBlock
-            | Tag::FootnoteDefinition(_)
-            | Tag::Image { .. }
-            | Tag::MetadataBlock(_) => {}
+            Tag::FootnoteDefinition(_) | Tag::Image { .. } | Tag::MetadataBlock(_) => {}
         }
     }
 
     fn end(&mut self, tag: TagEnd) {
         match tag {
-            TagEnd::Paragraph => {
+            TagEnd::Paragraph | TagEnd::HtmlBlock => {
                 self.flush();
                 self.needs_blank = true;
             }
@@ -246,10 +334,7 @@ impl Writer {
                     table.row.push(std::mem::take(&mut table.cell));
                 }
             }
-            TagEnd::HtmlBlock
-            | TagEnd::FootnoteDefinition
-            | TagEnd::Image
-            | TagEnd::MetadataBlock(_) => {}
+            TagEnd::FootnoteDefinition | TagEnd::Image | TagEnd::MetadataBlock(_) => {}
         }
     }
 

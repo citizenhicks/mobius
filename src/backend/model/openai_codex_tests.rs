@@ -614,6 +614,7 @@ async fn codex_custom_root_routes_http_fallback_to_proxy() {
     };
     let model = super::super::provider()
         .build(ProviderBuildConfig {
+            capability: None,
             tool_discovery: None,
             credential: auth,
             model: "gpt-6.1-sol".into(),

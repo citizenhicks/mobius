@@ -75,7 +75,6 @@ pub struct OpenAiSocket {
     transport: super::ModelTransportSettings,
     socket_url: String,
     model: String,
-    reasoning_effort: Option<String>,
     hosted_tools: Vec<Value>,
     explicit_prompt_cache: bool,
     sessions: Mutex<BTreeMap<String, Arc<Mutex<SocketState>>>>,
@@ -190,7 +189,6 @@ impl OpenAiSocket {
             transport: settings,
             socket_url: socket_url.into(),
             model,
-            reasoning_effort: None,
             hosted_tools: Vec::new(),
             explicit_prompt_cache: false,
             sessions: Mutex::new(BTreeMap::new()),
@@ -256,9 +254,8 @@ impl OpenAiSocket {
         }
         self.http = self
             .http
-            .with_reasoning_effort(effort.clone())?
+            .with_reasoning_effort(effort)?
             .with_reasoning_summary();
-        self.reasoning_effort = Some(effort);
         Ok(self)
     }
 
@@ -335,7 +332,7 @@ impl OpenAiSocket {
             let envelope_fingerprint = envelope_fingerprint(
                 &self.model,
                 &request,
-                self.reasoning_effort.as_deref(),
+                self.http.reasoning_effort(),
                 &self.hosted_tools,
             )?;
             let (previous_response_id, input) = response_input(
@@ -451,7 +448,7 @@ impl OpenAiSocket {
             request,
             input,
             previous,
-            self.reasoning_effort.as_deref(),
+            self.http.reasoning_effort(),
             &self.hosted_tools,
             self.explicit_prompt_cache,
         )?;
@@ -550,10 +547,7 @@ impl Model for OpenAiSocket {
     }
 
     fn info(&self) -> ModelInfo {
-        ModelInfo {
-            model: self.model.clone(),
-            reasoning_effort: self.reasoning_effort.clone(),
-        }
+        self.http.info()
     }
 
     fn supports_tool_image_input(&self) -> bool {

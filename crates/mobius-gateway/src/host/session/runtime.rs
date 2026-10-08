@@ -200,7 +200,7 @@ impl HostState {
                         .config
                         .realtime_voice
                         .as_deref();
-                    let (voice, route) = router.voice_choice(selected).map_err(|error| {
+                    let voice = router.voice_choice(selected).map_err(|error| {
                         Rejection::new(
                             "realtime_voice",
                             format!("{error}; select an available voice"),
@@ -217,7 +217,7 @@ impl HostState {
                         &self.credentials,
                     )
                     .map_err(internal)?
-                    .remove(route)
+                    .remove(&voice.route)
                     .ok_or_else(|| internal("voice route is no longer configured"))?;
                     let voice = voice.route.as_str().into();
                     Ok(RealtimeModel {
@@ -230,7 +230,7 @@ impl HostState {
                         bot_name: bot.name,
                         router: Arc::clone(router),
                         voice,
-                        route: route.into(),
+                        route: router.default_provider().into(),
                         provider_instance,
                         active_turn_id,
                         checkpoints: Arc::clone(&self.checkpoints),

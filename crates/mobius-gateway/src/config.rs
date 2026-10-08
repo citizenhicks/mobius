@@ -170,9 +170,17 @@ pub(crate) struct ConfiguredProvider {
     pub(crate) selection: ProviderConfig,
     pub(crate) label: String,
     pub(crate) tint: ProviderTint,
+    #[serde(default)]
     pub(crate) models: Vec<ModelPreset>,
+    /// Nonempty explicit IDs replace the provider's built-in image presets.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) image_model_ids: Vec<String>,
+    /// Omission uses the provider catalog; an empty list disables image generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) image_models: Option<Vec<mobius::backend::model::provider::MediaModelPreset>>,
+    /// Omission uses the provider catalog; an empty list disables live voice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) voice_models: Option<Vec<mobius::backend::model::provider::MediaModelPreset>>,
 }
 
 pub(crate) struct ProviderRegistration {
@@ -206,10 +214,7 @@ struct StoredChatSpec {
 impl Default for AgentComposition {
     fn default() -> Self {
         let provider = default_provider();
-        let model = provider
-            .default_model()
-            .and_then(|id| provider.model(id))
-            .expect("default model manifest");
+        let model = provider.default_model().and_then(|id| provider.model(id));
         let mut middleware = crate::middleware_manifest::default_config();
         middleware.set_setting(
             "sandbox",
@@ -222,10 +227,12 @@ impl Default for AgentComposition {
             provider: ProviderConfig {
                 instance: provider.id().into(),
                 provider: provider.id().into(),
-                model: model.id.clone(),
+                model: model.map_or_else(String::new, |model| model.id.as_str().into()),
                 base_url: provider.default_base_url().map(str::to_string),
                 endpoint_auth: ProviderEndpointAuth::ProviderDefault,
-                reasoning_effort: model.default_reasoning.clone(),
+                reasoning_effort: model
+                    .and_then(|model| model.default_reasoning.as_deref())
+                    .map(Into::into),
                 service_tier: None,
                 web_search: *provider
                     .web_search()
@@ -358,21 +365,27 @@ impl GatewayConfig {
                     .map(|previous| std::mem::take(&mut previous.image_model_ids))
             })
             .unwrap_or_default();
+        let image_models = previous
+            .as_mut()
+            .and_then(|previous| previous.image_models.take());
+        let voice_models = previous
+            .as_mut()
+            .and_then(|previous| previous.voice_models.take());
         let selection = &configured.selection;
-        definition.build_config_is_valid(
-            &selection.model,
-            selection.base_url.as_deref(),
-            selection.reasoning_effort.as_deref(),
-            selection.web_search,
-        )?;
-        let default_selection = self
-            .bot_defaults
-            .is_none()
+        if !selection.model.is_empty() {
+            definition.build_config_is_valid(
+                &selection.model,
+                selection.base_url.as_deref(),
+                selection.reasoning_effort.as_deref(),
+                selection.web_search,
+            )?;
+        }
+        let default_selection = (self.bot_defaults.is_none() && !selection.model.is_empty())
             .then(|| configured.selection.clone());
         let models = if configured.models.is_empty() {
             previous.map_or_else(
                 || {
-                    if definition.locked_models() {
+                    if definition.locked_models() || configured.selection.model.is_empty() {
                         Vec::new()
                     } else if !definition.models().is_empty() {
                         definition.models().to_vec()
@@ -404,6 +417,8 @@ impl GatewayConfig {
                 tint,
                 models,
                 image_model_ids,
+                image_models,
+                voice_models,
             },
         );
         if let Some(selection) = default_selection {
@@ -438,17 +453,15 @@ impl GatewayConfig {
         }
         let mut next = self.clone();
         next.configured_providers.remove(instance);
-        let mut default = next
-            .bot_defaults
-            .take()
-            .expect("a removable provider cannot be the only configured provider");
-        if clear_missing_model_routes(&mut default.config, &next)? {
-            default.revision = default
-                .revision
-                .checked_add(1)
-                .ok_or_else(|| Error::Config("configuration revision overflow".into()))?;
+        if let Some(mut default) = next.bot_defaults.take() {
+            if clear_missing_model_routes(&mut default.config, &next)? {
+                default.revision = default
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Config("configuration revision overflow".into()))?;
+            }
+            next.bot_defaults = Some(default);
         }
-        next.bot_defaults = Some(default);
         next.validate()?;
         Ok(next)
     }
@@ -574,9 +587,13 @@ impl GatewayConfig {
         if let Some(cloudflare) = &self.cloudflare {
             cloudflare.validate()?;
         }
-        if self.configured_providers.is_empty() != self.bot_defaults.is_none() {
+        let has_chat = self
+            .configured_providers
+            .values()
+            .any(|configured| !configured.selection.model.is_empty());
+        if self.bot_defaults.is_some() != has_chat {
             return Err(Error::Config(
-                "Bot defaults must exist exactly when a provider is configured".into(),
+                "Bot defaults must exist exactly when a chat provider is configured".into(),
             ));
         }
         for (instance, configured) in &self.configured_providers {

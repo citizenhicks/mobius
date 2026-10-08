@@ -663,6 +663,11 @@ impl Runner {
                                     Error::Stopped("streamed tool validation unavailable".into())
                                 })?
                                 .accept(&call)?;
+                            recorder
+                                .upgrade()
+                                .ok_or_else(|| Error::Stopped("event recorder stopped".into()))?
+                                .flush()
+                                .await?;
                             return ready_calls_tx.send(call).await.map_err(|_| {
                                 Error::Stopped("streamed tool queue unavailable".into())
                             });
@@ -727,6 +732,10 @@ impl Runner {
                     .await;
                 record_cancellation(&cancellation, &result);
                 result
+            };
+            let response = match self.events.flush().await {
+                Ok(()) => response,
+                Err(error) => Err(error),
             };
             if !matches!(&response, Ok(Wait::Ready { value: Ok(_), .. })) {
                 streamed.cancel();

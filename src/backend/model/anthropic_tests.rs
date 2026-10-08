@@ -33,6 +33,7 @@ fn advertised_web_search_modes_build() {
     for web_search in definition.web_search().iter().copied() {
         definition
             .build(ProviderBuildConfig {
+                capability: None,
                 tool_discovery: None,
                 credential: ProviderCredential::ApiKey("test-key".into()),
                 model: definition.default_model().expect("default model").into(),
@@ -55,6 +56,7 @@ fn native_discovery_builds_on_equivalent_and_custom_endpoints() {
     ] {
         let model = provider()
             .build(ProviderBuildConfig {
+                capability: None,
                 tool_discovery: None,
                 credential: ProviderCredential::ApiKey("test-key".into()),
                 model: "claude-haiku-4-5".into(),

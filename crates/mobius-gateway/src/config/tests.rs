@@ -2362,12 +2362,11 @@ fn listed_image_model_ids_are_validated_before_saving() {
     for image_ids in [vec!["flux".into(), "flux".into()], vec![String::new()]] {
         assert!(register("openrouter", image_ids).is_err());
     }
-    assert!(
-        register("openai_socket", vec!["gpt-image-2.5-sunburst".into()])
-            .expect_err("catalog provider")
-            .to_string()
-            .contains("image model IDs")
-    );
+    let native = register("openai_socket", vec!["operator-image".into()])
+        .expect("explicit IDs replace built-in presets");
+    let catalog = crate::provider_catalog::configured_model_catalog(&native).unwrap();
+    assert_eq!(catalog.images.len(), 1);
+    assert_eq!(catalog.images[0].model, "operator-image");
 }
 
 #[test]
@@ -2636,6 +2635,8 @@ fn configured_models_keep_independent_efforts_and_explicit_defaults() {
             Vec::new(),
         ),
         image_model_ids: Vec::new(),
+        image_models: None,
+        voice_models: None,
     };
     validation::validate_configured_provider(&configured).expect("heterogeneous catalog");
     let definition = provider("responses").unwrap();
@@ -2697,6 +2698,8 @@ fn heterogeneous_model_route_budget_counts_each_models_variants() {
             Vec::new(),
         ),
         image_model_ids: Vec::new(),
+        image_models: None,
+        voice_models: None,
     };
     let mut providers = BTreeMap::new();
     providers.insert("responses".into(), configured.clone());
@@ -2746,6 +2749,8 @@ fn custom_routes_reject_plain_and_reasoning_collision_in_either_order() {
             Vec::new(),
         ),
         image_model_ids: Vec::new(),
+        image_models: None,
+        voice_models: None,
     };
     for _ in 0..2 {
         let providers = BTreeMap::from([("responses".into(), configured.clone())]);
@@ -2757,4 +2762,180 @@ fn custom_routes_reject_plain_and_reasoning_collision_in_either_order() {
         );
         configured.models.reverse();
     }
+}
+
+#[test]
+fn independent_media_catalogs_round_trip_without_chat_defaults() {
+    use mobius::backend::model::provider::{MediaModelPreset, ReasoningPreset, providers};
+    use mobius::protocol::ModelCapability;
+    for definition in providers() {
+        let config = GatewayConfig::new(DEFAULT_LISTEN, None).unwrap();
+        let mut selection = AgentComposition::default().provider;
+        selection.instance = definition.id().into();
+        selection.provider = definition.id().into();
+        selection.model.clear();
+        selection.reasoning_effort = None;
+        selection.base_url = definition.default_base_url().map(Into::into);
+        selection.web_search = Default::default();
+        let mut config = config
+            .registering_provider(
+                selection,
+                definition.label().into(),
+                Default::default(),
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+        let configured = config
+            .configured_providers
+            .get_mut(definition.id())
+            .unwrap();
+        configured.image_models = Some(Vec::new());
+        configured.voice_models = Some(if definition.supports(ModelCapability::RealtimeVoice) {
+            vec![MediaModelPreset {
+                id: "operator-live-model".into(),
+                label: "Live only".into(),
+                description: String::new(),
+                variants: vec![ReasoningPreset {
+                    id: "operator-voice".into(),
+                    label: "Voice".into(),
+                    description: String::new(),
+                }],
+            }]
+        } else {
+            Vec::new()
+        });
+        config.validate().unwrap();
+        assert!(config.bot_defaults.is_none());
+        let mut value = serde_json::to_value(&config).unwrap();
+        value["configured_providers"][definition.id()]["selection"]
+            .as_object_mut()
+            .unwrap()
+            .remove("model");
+        value["configured_providers"][definition.id()]
+            .as_object_mut()
+            .unwrap()
+            .remove("models");
+        let decoded: GatewayConfig = serde_json::from_value(value).unwrap();
+        decoded.validate().unwrap();
+        let choices = crate::provider_catalog::configured_model_catalog(&decoded).unwrap();
+        assert!(choices.models.is_empty());
+        assert!(choices.images.is_empty());
+        if definition.supports(ModelCapability::RealtimeVoice) {
+            choices
+                .validate_voice(Some(&model_route_id(
+                    definition.id(),
+                    "operator-live-model",
+                    Some("operator-voice"),
+                )))
+                .unwrap();
+        }
+        let removed = decoded.removing_provider(definition.id()).unwrap();
+        assert!(removed.configured_providers.is_empty());
+        assert!(removed.bot_defaults.is_none());
+    }
+}
+
+#[test]
+fn media_overrides_validate_metadata_voice_variants_and_route_ambiguity() {
+    use mobius::backend::model::provider::{MediaModelPreset, ReasoningPreset};
+    let mut selection = AgentComposition::default().provider;
+    selection.instance = "live".into();
+    selection.model.clear();
+    selection.reasoning_effort = None;
+    let mut config = GatewayConfig::new(DEFAULT_LISTEN, None)
+        .unwrap()
+        .registering_provider(
+            selection,
+            "Live".into(),
+            Default::default(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+    let configured = config.configured_providers.get_mut("live").unwrap();
+    let model = MediaModelPreset {
+        id: "operator-live".into(),
+        label: "Live".into(),
+        description: String::new(),
+        variants: vec![ReasoningPreset {
+            id: "voice".into(),
+            label: "Voice".into(),
+            description: String::new(),
+        }],
+    };
+    configured.voice_models = Some(vec![model.clone()]);
+    validation::validate_configured_provider(configured).unwrap();
+    for invalid in [
+        MediaModelPreset {
+            id: "x".repeat(1025),
+            ..model.clone()
+        },
+        MediaModelPreset {
+            variants: Vec::new(),
+            ..model.clone()
+        },
+        MediaModelPreset {
+            label: String::new(),
+            ..model.clone()
+        },
+        MediaModelPreset {
+            description: "x".repeat(16 * 1024 + 1),
+            ..model.clone()
+        },
+        MediaModelPreset {
+            variants: vec![ReasoningPreset {
+                id: "x".repeat(257),
+                ..model.variants[0].clone()
+            }],
+            ..model.clone()
+        },
+    ] {
+        configured.voice_models = Some(vec![invalid]);
+        assert!(validation::validate_configured_provider(configured).is_err());
+    }
+    configured.image_models = Some(vec![
+        MediaModelPreset {
+            id: "foo".into(),
+            variants: vec![ReasoningPreset {
+                id: "bar::default".into(),
+                ..model.variants[0].clone()
+            }],
+            ..model.clone()
+        },
+        MediaModelPreset {
+            id: "foo::bar".into(),
+            variants: Vec::new(),
+            ..model.clone()
+        },
+    ]);
+    configured.voice_models = Some(vec![model]);
+    assert!(
+        validation::validate_configured_provider(configured)
+            .unwrap_err()
+            .to_string()
+            .contains("ambiguous route")
+    );
+    configured.image_models = Some(Vec::new());
+    validation::validate_configured_provider(configured).unwrap();
+    let native = std::mem::replace(&mut configured.selection.provider, "anthropic".into());
+    assert!(
+        validation::validate_configured_provider(configured)
+            .unwrap_err()
+            .to_string()
+            .contains("does not support RealtimeVoice")
+    );
+    configured.selection.provider = native;
+    config.validate().unwrap();
+    config.bot_defaults = Some(VersionedAgentConfig {
+        revision: 1,
+        config: AgentComposition::default(),
+    });
+    assert!(
+        config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("exactly when a chat provider")
+    );
 }

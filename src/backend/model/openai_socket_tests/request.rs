@@ -4,6 +4,23 @@ use crate::backend::model::{ModelTransportSettings, ToolDefinition};
 use crate::protocol::ToolLoad;
 
 #[test]
+fn native_socket_reasoning_uses_its_locked_text_catalog() {
+    for (model, effort, valid) in [
+        ("gpt-6.1-sol", "medium", true),
+        ("gpt-6.1-sol", "operator-effort", false),
+        ("operator-model", "medium", false),
+    ] {
+        let result = OpenAiSocket::new("test-key", model)
+            .unwrap()
+            .with_reasoning_effort(effort);
+        assert_eq!(result.is_ok(), valid, "{model}/{effort}");
+        if let Ok(provider) = result {
+            assert_eq!(provider.info().reasoning_effort.as_deref(), Some(effort));
+        }
+    }
+}
+
+#[test]
 fn implicit_prompt_cache_omits_options() {
     let authorized = OpenAiSocket::with_authorization(
         Arc::new(ApiKeyAuthorization::new("test-key".into())),

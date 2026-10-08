@@ -123,6 +123,7 @@ pub struct MediaModelPreset {
 #[serde(deny_unknown_fields)]
 pub(super) struct ModelCatalog {
     pub(super) default_model: Option<String>,
+    #[serde(default)]
     pub(super) models: Vec<ModelPreset>,
     #[serde(default)]
     pub(super) image_models: Vec<MediaModelPreset>,
@@ -263,6 +264,8 @@ impl std::str::FromStr for HostedWebSearch {
 
 /// Fully resolved settings passed to one provider constructor.
 pub struct ProviderBuildConfig {
+    /// The operation this transport serves; omission constructs a chat model.
+    pub capability: Option<ModelCapability>,
     /// Optional tool-discovery mode; omission uses the provider/model endpoint default.
     pub tool_discovery: Option<ToolDiscoveryMode>,
     /// The credential.
@@ -744,7 +747,7 @@ impl ProviderDefinition {
         Ok(())
     }
 
-    /// Reports whether model IDs and reasoning efforts must come from the advertised catalog.
+    /// Reports whether chat model IDs and reasoning efforts must come from the advertised catalog.
     #[must_use]
     pub const fn locked_models(&self) -> bool {
         self.locked_models
@@ -780,7 +783,7 @@ impl ProviderDefinition {
         self.models.iter().find(|model| model.id == id)
     }
 
-    /// Builds one runtime model after validating advertised capabilities.
+    /// Builds one runtime model from resolved provider settings.
     /// # Errors
     ///
     /// Returns an error if validation or an operation required by this function fails.
@@ -792,18 +795,22 @@ impl ProviderDefinition {
         if config.base_url.is_none() {
             config.base_url = self.default_base_url.map(str::to_owned);
         }
-        if self.locked_models && config.reasoning_effort.is_none() {
-            config.reasoning_effort = self
-                .model(&config.model)
-                .and_then(|model| model.default_reasoning.as_deref())
-                .map(str::to_string);
+        if config.capability.is_some() {
+            self.validate_base_url(config.base_url.as_deref())?;
+        } else {
+            if self.locked_models && config.reasoning_effort.is_none() {
+                config.reasoning_effort = self
+                    .model(&config.model)
+                    .and_then(|model| model.default_reasoning.as_deref())
+                    .map(str::to_string);
+            }
+            self.build_config_is_valid(
+                &config.model,
+                config.base_url.as_deref(),
+                config.reasoning_effort.as_deref(),
+                config.web_search,
+            )?;
         }
-        self.build_config_is_valid(
-            &config.model,
-            config.base_url.as_deref(),
-            config.reasoning_effort.as_deref(),
-            config.web_search,
-        )?;
         let tool_discovery = *config
             .tool_discovery
             .get_or_insert_with(|| self.tool_discovery(&config.model, config.base_url.as_deref()));
@@ -1031,6 +1038,41 @@ mod tests {
     }
 
     #[test]
+    fn native_chat_defaults_and_validation_do_not_constrain_media_models() {
+        let definition = provider("openai_socket").unwrap();
+        for capability in [
+            None,
+            Some(ModelCapability::ImageGeneration),
+            Some(ModelCapability::RealtimeVoice),
+        ] {
+            let model = if capability.is_none() {
+                definition.default_model().unwrap()
+            } else {
+                "operator-media-model"
+            };
+            let built = definition
+                .build(ProviderBuildConfig {
+                    capability,
+                    tool_discovery: None,
+                    credential: ProviderCredential::ApiKey("test-key".into()),
+                    model: model.into(),
+                    base_url: None,
+                    reasoning_effort: None,
+                    service_tier: None,
+                    web_search: HostedWebSearch::Off,
+                    http: reqwest::Client::new(),
+                    transport: Default::default(),
+                })
+                .unwrap();
+            assert_eq!(built.info().model, model);
+            assert_eq!(
+                built.info().reasoning_effort.as_deref(),
+                capability.is_none().then_some("medium")
+            );
+        }
+    }
+
+    #[test]
     fn editable_providers_build_custom_efforts_without_injecting_defaults() {
         for id in ["anthropic", "kimi", "deepseek"] {
             let definition = provider(id).unwrap();
@@ -1038,6 +1080,7 @@ mod tests {
                 for effort in [None, Some("operator-effort")] {
                     let built = definition
                         .build(ProviderBuildConfig {
+                            capability: None,
                             tool_discovery: None,
                             credential: ProviderCredential::ApiKey("test-key".into()),
                             model: model.into(),
@@ -1099,6 +1142,7 @@ mod tests {
             let definition = provider(id).unwrap();
             for discovery in [ToolDiscoveryMode::Native, ToolDiscoveryMode::Rebuild] {
                 let built = definition.build(ProviderBuildConfig {
+                    capability: None,
                     tool_discovery: Some(discovery),
                     credential: ProviderCredential::ApiKey("test-key".into()),
                     model: definition.default_model().unwrap_or("custom-model").into(),
@@ -1406,6 +1450,7 @@ mod tests {
         ] {
             let model = compatible
                 .build(ProviderBuildConfig {
+                    capability: None,
                     tool_discovery: None,
                     credential: ProviderCredential::ApiKey("test-key".into()),
                     model: "test-model".into(),
@@ -1491,6 +1536,7 @@ mod tests {
             if matches!(definition.auth(), ProviderAuth::ApiKey(_)) {
                 definition
                     .build(ProviderBuildConfig {
+                        capability: None,
                         tool_discovery: None,
                         credential: ProviderCredential::ApiKey("test-secret".into()),
                         model: model.into(),
@@ -1545,6 +1591,7 @@ mod tests {
                 .expect_err("the provider's own endpoint still requires authentication");
             definition
                 .build(ProviderBuildConfig {
+                    capability: None,
                     tool_discovery: None,
                     credential: ProviderCredential::Credentialless,
                     model: definition

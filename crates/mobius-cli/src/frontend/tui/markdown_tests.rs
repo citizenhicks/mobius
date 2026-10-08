@@ -101,3 +101,70 @@ fn highlights_fenced_code_and_renders_incomplete_streams() {
     );
     assert!(plain_text(&complete).contains("│ \n│     println!"));
 }
+
+#[test]
+fn html_blocks_preserve_paragraph_boundaries_while_streaming() {
+    for source in [
+        "Before\n\n<div",
+        "Before\n\n<div>html</div>\n\nAfter",
+        "Before <span>inline</span> after",
+    ] {
+        assert_eq!(plain_text(&render(source, Style::default(), 80)), source);
+        let mut cache = StreamCache::default();
+        cache.render("Before", Style::default(), 80);
+        assert_eq!(
+            plain_text(cache.render(source, Style::default(), 80)),
+            source
+        );
+    }
+}
+
+#[test]
+fn streaming_cache_matches_full_render_through_containers_references_and_resizing() {
+    for source in [
+        "First **paragraph**.\n\nSecond paragraph.\n\n# Heading\n\nTail",
+        "Before\n\n```rust\nfn main() {\n\n}\n```\n\nAfter\n\nTail",
+        "Before\n\n- first\n\n  continuation\n- second\n\nAfter\n\nTail",
+        "Before\n\n> quote\n>\n> continued\n\nAfter\n\nTail",
+        "Before\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\nAfter\n\nTail",
+        "Before\n\nHeading\n---\n\nAfter\n\nTail",
+        "Before\n\n---\n\nAfter\n\nTail",
+        "界 **λ**\r\n\r\n    indented code\r\n\r\nAfter\r\n\r\nTail",
+        "Before\n\n<div>\n\nraw HTML\n</div>\n\nAfter\n\nTail",
+        "[text][id]\n\nLater\n\n[id]: https://example.com\n",
+    ] {
+        let mut cache = StreamCache::default();
+        for end in 1..=source.len() {
+            if source.is_char_boundary(end) {
+                let prefix = &source[..end];
+                assert_eq!(
+                    cache.render(prefix, Style::default(), 32),
+                    render(prefix, Style::default(), 32),
+                    "{prefix:?}"
+                );
+            }
+        }
+        assert_eq!(
+            cache.render(source, Style::default(), 12),
+            render(source, Style::default(), 12)
+        );
+        let style = Style::default().fg(ratatui::style::Color::Blue);
+        assert_eq!(cache.render(source, style, 12), render(source, style, 12));
+    }
+}
+
+#[test]
+fn streaming_cache_reuses_finished_prose_and_clears_between_messages() {
+    let mut cache = StreamCache::default();
+    cache.render("First paragraph.\n\nT", Style::default(), 80);
+    cache.render("First paragraph.\n\nTail", Style::default(), 80);
+    assert!(cache.prefix_bytes > 0);
+    let pointer = cache.lines[0].spans[0].content.as_ptr();
+    cache.render("First paragraph.\n\nTail grows", Style::default(), 80);
+    assert_eq!(cache.lines[0].spans[0].content.as_ptr(), pointer);
+    cache.clear();
+    assert_eq!(
+        cache.render("New message", Style::default(), 80),
+        render("New message", Style::default(), 80)
+    );
+}

@@ -1529,7 +1529,7 @@ impl BotStore {
             _lock: lock,
         })
     }
-    pub(crate) fn source_cursor(&self, session_id: &str) -> Result<u64> {
+    pub(crate) fn source_cursor(&self, session_id: &str) -> Result<(u64, Option<String>)> {
         self.storage.source_cursor(session_id)
     }
     pub(crate) fn project_session(&self, event: &HookEvent, sequence: u64) -> Result<bool> {

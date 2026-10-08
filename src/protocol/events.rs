@@ -668,6 +668,13 @@ pub struct TokenUsage {
 impl TokenUsage {
     /// Adds another response's usage, returning `None` on integer overflow.
     pub fn checked_add(&mut self, other: &Self) -> Option<()> {
+        *self = self.checked_sum(other)?;
+        Some(())
+    }
+
+    /// Returns the combined usage without changing either value, or `None` on overflow.
+    #[must_use]
+    pub fn checked_sum(&self, other: &Self) -> Option<Self> {
         let input_tokens = self.input_tokens.checked_add(other.input_tokens)?;
         let cached_input_tokens = self
             .cached_input_tokens
@@ -680,15 +687,14 @@ impl TokenUsage {
             .reasoning_output_tokens
             .checked_add(other.reasoning_output_tokens)?;
         let total_tokens = self.total_tokens.checked_add(other.total_tokens)?;
-        *self = Self {
+        Some(Self {
             input_tokens,
             cached_input_tokens,
             cache_write_input_tokens,
             output_tokens,
             reasoning_output_tokens,
             total_tokens,
-        };
-        Some(())
+        })
     }
 }
 
@@ -738,4 +744,41 @@ pub struct WebSearchEndEvent {
     pub call_id: String,
     /// The action.
     pub action: WebSearchAction,
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::TokenUsage;
+
+    #[test]
+    fn checked_sum_stages_all_fields_without_mutating_either_operand() {
+        let usage = TokenUsage {
+            input_tokens: 1,
+            cached_input_tokens: 2,
+            cache_write_input_tokens: 3,
+            output_tokens: 4,
+            reasoning_output_tokens: 5,
+            total_tokens: 6,
+        };
+        let original = usage.clone();
+        assert_eq!(
+            usage.checked_sum(&usage),
+            Some(TokenUsage {
+                input_tokens: 2,
+                cached_input_tokens: 4,
+                cache_write_input_tokens: 6,
+                output_tokens: 8,
+                reasoning_output_tokens: 10,
+                total_tokens: 12,
+            })
+        );
+        assert_eq!(usage, original);
+        let overflow = TokenUsage {
+            total_tokens: i64::MAX,
+            ..Default::default()
+        };
+        assert!(usage.checked_sum(&overflow).is_none());
+        assert_eq!(usage, original);
+        assert_eq!(overflow.total_tokens, i64::MAX);
+    }
 }

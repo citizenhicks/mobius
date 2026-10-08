@@ -325,6 +325,28 @@ async fn connect_gateway() -> Result<(GatewaySender, GatewayEvents, ReadyPayload
     // ponytail: TLS gateways skip local `@` scanning; use a gateway-backed inventory if needed.
     let local_gateway = endpoint.is_plaintext();
     let token = configured_token(&endpoint).map_err(gateway_error)?;
+    #[cfg(unix)]
+    if automatically_manage_local_gateway(&endpoint)
+        && let Some(token) = token.as_deref()
+    {
+        match connect_local_once(&endpoint, token).await {
+            Ok(client) => {
+                let (sender, mut events) = client.into_parts();
+                let gateway = wait_gateway_ready(&mut events).await?;
+                if gateway.gateway_version == env!("CARGO_PKG_VERSION") {
+                    return Ok((sender, events, gateway, local_gateway, endpoint));
+                }
+                // The locked launcher already owns semantic version checks and upgrades.
+            }
+            Err(mobius_gateway::Error::Unauthorized) => {
+                return Err(gateway_error(missing_local_token(&endpoint)));
+            }
+            Err(mobius_gateway::Error::Io(error))
+                if error.kind() == std::io::ErrorKind::ConnectionRefused => {}
+            Err(mobius_gateway::Error::Protocol(_)) => {}
+            Err(error) => return Err(gateway_error(error)),
+        }
+    }
     let connected = if automatically_manage_local_gateway(&endpoint) {
         #[cfg(unix)]
         {

@@ -233,7 +233,7 @@ pub(super) fn active_run_summary(session_id: &str, active: &ActiveExecution) -> 
 pub(super) async fn gateway_ready(
     state: GatewayReadySnapshot,
 ) -> std::result::Result<ReadyPayload, Rejection> {
-    let (routes, provider_instances) = {
+    let (routes, provider_instances, media) = {
         let _credentials = state.credential_catalog_gate.lock().await;
         (
             configured_model_routes(
@@ -252,10 +252,13 @@ pub(super) async fn gateway_ready(
                 &state.credentials,
             )
             .map_err(internal)?,
+            crate::provider_catalog::media_routes(
+                &state.configured_providers,
+                Some((&state.store, &state.credentials)),
+            )
+            .map_err(internal)?,
         )
     };
-    let media = crate::provider_catalog::media_routes(&state.configured_providers, &routes)
-        .map_err(internal)?;
     let mut model_providers = BTreeMap::new();
     let models: Vec<_> = routes
         .into_iter()
@@ -264,11 +267,11 @@ pub(super) async fn gateway_ready(
             route.choice
         })
         .collect();
-    let mut media_choices = |routes: Vec<crate::provider_catalog::MediaRoute>| {
+    let mut media_choices = |routes: Vec<crate::provider_catalog::CatalogRoute>| {
         routes
             .into_iter()
             .map(|media| {
-                model_providers.insert(media.choice.route.as_str().into(), media.instance);
+                model_providers.insert(media.choice.route.as_str().into(), media.provider.instance);
                 media.choice
             })
             .collect::<Vec<_>>()

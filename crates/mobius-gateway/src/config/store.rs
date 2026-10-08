@@ -42,6 +42,14 @@ pub(super) struct UsageHistory {
     pub(super) days: BTreeMap<u64, BTreeMap<String, TokenUsage>>,
 }
 
+/// Owns only the values changed by one usage publication.
+struct UsageUpdate {
+    day: u64,
+    created_day: bool,
+    previous: Option<TokenUsage>,
+    expired: BTreeMap<u64, BTreeMap<String, TokenUsage>>,
+}
+
 impl ConfigStore {
     /// Initializes an owner-only state directory and new config file.
     /// # Errors
@@ -168,14 +176,12 @@ impl ConfigStore {
         provider: &str,
         usage: &TokenUsage,
     ) -> Result<()> {
-        let mut next = config.usage.clone();
-        if !next.observe(provider, usage, SystemTime::now())? {
+        let Some(update) = config.usage.stage(provider, usage, SystemTime::now())? else {
             return Ok(());
-        }
-        let previous = std::mem::replace(&mut config.usage, next);
+        };
         if let Err(error) = self.publish_config(config, false) {
             if !matches!(error, Error::PublicationApplied { .. }) {
-                config.usage = previous;
+                update.rollback(&mut config.usage, provider);
             }
             return Err(error);
         }
@@ -624,29 +630,70 @@ impl UsageHistory {
         usage: &TokenUsage,
         now: SystemTime,
     ) -> Result<bool> {
+        Ok(self.stage(provider, usage, now)?.is_some())
+    }
+
+    fn stage(
+        &mut self,
+        provider: &str,
+        usage: &TokenUsage,
+        now: SystemTime,
+    ) -> Result<Option<UsageUpdate>> {
         validate_usage_provider(provider)?;
         validate_usage(usage)?;
         if usage == &TokenUsage::default() {
-            return Ok(false);
+            return Ok(None);
         }
         let day = unix_day(now)?;
         // Overflow validation must leave the committed daily counter unchanged on failure.
-        let mut bucket = self
+        let bucket = self
             .days
             .get(&day)
             .and_then(|providers| providers.get(provider))
-            .cloned()
-            .unwrap_or_default();
-        bucket
-            .checked_add(usage)
+            .unwrap_or(&TokenUsage::default())
+            .checked_sum(usage)
             .ok_or_else(|| Error::Config("daily token usage overflow".into()))?;
-        self.days
+        let created_day = !self.days.contains_key(&day);
+        let previous = self
+            .days
             .entry(day)
             .or_default()
             .insert(provider.into(), bucket);
         let first_day = day.saturating_sub(USAGE_HISTORY_DAYS - 1);
-        self.days.retain(|stored, _| *stored >= first_day);
-        Ok(true)
+        let expired = if self
+            .days
+            .first_key_value()
+            .is_some_and(|(stored, _)| *stored < first_day)
+        {
+            let retained = self.days.split_off(&first_day);
+            std::mem::replace(&mut self.days, retained)
+        } else {
+            BTreeMap::new()
+        };
+        Ok(Some(UsageUpdate {
+            day,
+            created_day,
+            previous,
+            expired,
+        }))
+    }
+}
+
+impl UsageUpdate {
+    fn rollback(mut self, history: &mut UsageHistory, provider: &str) {
+        if self.created_day {
+            history.days.remove(&self.day);
+        } else if let Some(providers) = history.days.get_mut(&self.day) {
+            match self.previous {
+                Some(previous) => {
+                    providers.insert(provider.into(), previous);
+                }
+                None => {
+                    providers.remove(provider);
+                }
+            }
+        }
+        history.days.append(&mut self.expired);
     }
 }
 
@@ -702,5 +749,123 @@ impl RuntimeOperations {
             self.preparations.load(Relaxed),
             self.assemblies.load(Relaxed),
         )
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+
+    fn usage(tokens: i64) -> TokenUsage {
+        TokenUsage {
+            input_tokens: tokens,
+            total_tokens: tokens,
+            ..Default::default()
+        }
+    }
+
+    fn expired_history() -> UsageHistory {
+        UsageHistory {
+            days: BTreeMap::from([(0, BTreeMap::from([("old".into(), usage(9))]))]),
+        }
+    }
+
+    #[test]
+    fn staged_usage_rollback_restores_existing_and_new_buckets_and_pruned_days() {
+        let day = USAGE_HISTORY_DAYS + 7;
+        let now = UNIX_EPOCH + std::time::Duration::from_secs(day * SECONDS_PER_DAY);
+        for providers in [
+            None,
+            Some(BTreeMap::new()),
+            Some(BTreeMap::from([("other".into(), usage(3))])),
+            Some(BTreeMap::from([
+                ("provider".into(), usage(5)),
+                ("other".into(), usage(3)),
+            ])),
+        ] {
+            let mut history = expired_history();
+            history
+                .days
+                .insert(day + 1, BTreeMap::from([("future".into(), usage(4))]));
+            if let Some(providers) = providers {
+                history.days.insert(day, providers);
+            }
+            let before = history.clone();
+            let update = history.stage("provider", &usage(7), now).unwrap().unwrap();
+            assert!(!history.days.contains_key(&0));
+            assert_eq!(history.days[&(day + 1)]["future"], usage(4));
+            update.rollback(&mut history, "provider");
+            assert_eq!(history, before);
+        }
+    }
+
+    #[test]
+    fn overflow_and_zero_usage_do_not_change_buckets_or_prune_days() {
+        let day = USAGE_HISTORY_DAYS + 7;
+        let now = UNIX_EPOCH + std::time::Duration::from_secs(day * SECONDS_PER_DAY);
+        let mut history = expired_history();
+        history.days.insert(
+            day,
+            BTreeMap::from([(
+                "provider".into(),
+                TokenUsage {
+                    input_tokens: 1,
+                    total_tokens: i64::MAX,
+                    ..Default::default()
+                },
+            )]),
+        );
+        let before = history.clone();
+        assert!(
+            matches!(history.stage("provider", &usage(1), now), Err(error) if error.to_string().contains("overflow"))
+        );
+        assert_eq!(history, before);
+        assert!(
+            history
+                .stage("provider", &TokenUsage::default(), now)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(history, before);
+    }
+
+    #[test]
+    fn failed_usage_publication_restores_usage_and_retained_expired_days() {
+        let root = tempfile::tempdir().unwrap();
+        let state = root.path().join("state");
+        let (store, mut config) =
+            ConfigStore::initialize(state.clone(), DEFAULT_LISTEN, None).unwrap();
+        config.usage = expired_history();
+        store.save(&config).unwrap();
+        let before = config.usage.clone();
+        crate::publication::fail_next_replacement(&store.path);
+        assert!(
+            store
+                .record_usage(&mut config, "provider", &usage(7))
+                .is_err()
+        );
+        assert_eq!(config.usage, before);
+        assert_eq!(ConfigStore::open(state).unwrap().1.usage, before);
+    }
+
+    #[test]
+    fn applied_usage_publication_keeps_updated_bucket_and_pruning() {
+        let root = tempfile::tempdir().unwrap();
+        let state = root.path().join("state");
+        let (store, mut config) =
+            ConfigStore::initialize(state.clone(), DEFAULT_LISTEN, None).unwrap();
+        config.usage = expired_history();
+        store.save(&config).unwrap();
+        crate::publication::fail_next_directory_sync(&store.path);
+        assert!(matches!(
+            store.record_usage(&mut config, "provider", &usage(7)),
+            Err(Error::PublicationApplied { .. })
+        ));
+        assert!(!config.usage.days.contains_key(&0));
+        assert_eq!(
+            config.usage.days.values().next().unwrap()["provider"],
+            usage(7)
+        );
+        assert_eq!(ConfigStore::open(state).unwrap().1.usage, config.usage);
     }
 }

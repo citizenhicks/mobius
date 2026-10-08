@@ -344,6 +344,10 @@ impl GatewayServer {
                         }
                     }, if connections.len() < self.config.connections.total() => {
                         let ((stream, peer), admission, ingress_connection) = accepted?;
+                        if let Err(error) = stream.set_nodelay(true) {
+                            tracing::warn!(kind = ?error.kind(), "gateway TCP configuration failed");
+                            continue;
+                        }
                         if self.access_lease.is_some_and(AccessLease::expired) {
                             access_expired = true;
                             break Ok(());

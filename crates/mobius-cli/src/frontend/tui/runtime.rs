@@ -46,6 +46,7 @@ use mobius_gateway::wire::{
 use uuid::Uuid;
 
 const ELAPSED_INTERVAL: Duration = Duration::from_secs(1);
+const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const CLEAR_SCREEN_AND_SCROLLBACK: &str = "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H";
 const FILE_READ_CHUNK_BYTES: usize = 256 * 1024;
 
@@ -133,9 +134,9 @@ pub(in crate::frontend) async fn run(
     let mut pending_session_creation = None;
     let mut clipboard_preparation = None;
     let mut workspace_reference_open = false;
-    if session.workspace.is_some() {
-        request_workspace_inventory(&sender, &session_id, &mut state).await;
-    }
+    // Show the composer immediately while historical events hydrate in order.
+    draw(&mut terminal, &mut state, &catalog)?;
+    let mut next_frame = Instant::now() + FRAME_INTERVAL;
     state.git_diff_refresh = session.git.is_some();
     request_git_summary(&sender, &session_id, &mut state).await;
 
@@ -146,8 +147,10 @@ pub(in crate::frontend) async fn run(
             &catalog,
             &mut dirty,
             &replay_hydration,
+            &mut next_frame,
         )?;
         tokio::select! {
+            _ = tokio::time::sleep_until(next_frame.into()), if dirty && replay_hydration.allows_draw() => {}
             event = events.next(), if events_open => {
                 match event {
                     Ok(Some(frame)) => {
@@ -303,6 +306,7 @@ async fn refresh_workspace(
     }
     if session.workspace.is_some()
         && live
+        && reference_open
         && refresh_workspace_inventory(message, session_id, reference_open)
     {
         request_workspace_inventory(sender, session_id, state).await;
@@ -326,7 +330,7 @@ async fn request_git_summary(sender: &GatewaySender, session_id: &str, state: &m
     {
         let request_id = Uuid::new_v4().to_string();
         if sender
-            .send(ClientMessage::GetGitDiff {
+            .send(ClientMessage::GetGitDiffTotals {
                 request_id: request_id.clone(),
                 session_id: session_id.into(),
                 scope,
@@ -629,10 +633,12 @@ fn draw_if_dirty(
     catalog: &UiCatalog,
     dirty: &mut bool,
     replay_hydration: &ReplayHydration,
+    next_frame: &mut Instant,
 ) -> Result<()> {
-    if *dirty && replay_hydration.allows_draw() {
+    if *dirty && replay_hydration.allows_draw() && Instant::now() >= *next_frame {
         draw(terminal, state, catalog)?;
         *dirty = false;
+        *next_frame = Instant::now() + FRAME_INTERVAL;
     }
     Ok(())
 }
@@ -772,19 +778,25 @@ fn handle_server_message(
             files,
             ..
         } if actual == session_id => state.open_session_files(files),
-        ServerMessage::GitDiff {
+        ServerMessage::GitDiffTotals {
             request_id,
+            session_id: actual,
+            totals,
+            ..
+        } if actual == session_id => {
+            if let Some(index) = state.git_diff_requests.remove(&request_id) {
+                state.git_diff[index] =
+                    Some(format!("+{} -{}", totals.additions, totals.deletions));
+            }
+        }
+        ServerMessage::GitDiff {
             session_id: actual,
             scope,
             diff,
             ..
         } if actual == session_id => {
-            if let Some(index) = state.git_diff_requests.remove(&request_id) {
-                state.git_diff[index] = Some(super::diff::summary(&diff));
-            } else {
-                let title = format!("{scope:?} diff").to_ascii_lowercase();
-                state.open_diff_preview(title, diff);
-            }
+            let title = format!("{scope:?} diff").to_ascii_lowercase();
+            state.open_diff_preview(title, diff);
         }
         ServerMessage::Rejected { request_id, .. }
             if state.git_diff_requests.contains_key(&request_id) =>
@@ -1975,17 +1987,20 @@ mod tests {
     }
 
     #[test]
-    fn background_git_diffs_update_footer_without_opening_a_preview() {
+    fn background_git_totals_update_footer_without_opening_a_preview() {
         let mut state = TuiState::default();
         state.git_diff_requests.insert("footer".into(), 0);
         let mut session = session_payload("session-a");
         let mut gateway = ready_payload();
         handle_server_message(
-            ServerMessage::GitDiff {
+            ServerMessage::GitDiffTotals {
                 request_id: "footer".into(),
                 session_id: "session-a".into(),
                 scope: GitDiffScope::Staged,
-                diff: "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-old\n+new\n".into(),
+                totals: mobius_gateway::wire::DiffTotals {
+                    additions: 1,
+                    deletions: 1,
+                },
             },
             &mut gateway,
             &mut session,
@@ -1994,7 +2009,7 @@ mod tests {
         );
         assert!(state.preview.is_none());
         assert!(state.git_diff_requests.is_empty());
-        assert_eq!(state.git_diff[0].as_deref(), Some("1f +1 -1"));
+        assert_eq!(state.git_diff[0].as_deref(), Some("+1 -1"));
         state.git_diff_requests.insert("failed".into(), 0);
         handle_server_message(
             ServerMessage::Rejected {

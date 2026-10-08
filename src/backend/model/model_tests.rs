@@ -727,7 +727,7 @@ async fn image_generation_does_not_replay_ambiguous_failures() {
         let mut router = ModelRouter::new("transport", Arc::clone(&model) as Arc<dyn Model>);
         router
             .register_image(
-                "transport",
+                Arc::clone(&model) as Arc<dyn Model>,
                 ModelChoice {
                     route: "image".into(),
                     group: "Image".into(),
@@ -740,6 +740,7 @@ async fn image_generation_does_not_replay_ambiguous_failures() {
                     supports_realtime_voice: false,
                     tool_discovery: ToolDiscoveryMode::Rebuild,
                 },
+                Default::default(),
             )
             .expect("image route");
         let result = tokio::time::timeout(

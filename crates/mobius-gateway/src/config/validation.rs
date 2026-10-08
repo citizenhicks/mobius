@@ -92,19 +92,24 @@ pub(crate) fn validate_agent_composition_with_ceilings(
 }
 
 pub(super) fn validate_provider_config(config: &ProviderConfig) -> Result<()> {
-    validate_instance_id(&config.instance)?;
-    if config.provider.trim().is_empty() || config.provider.len() > 256 {
-        return Err(Error::Config("provider ID must be 1–256 bytes".into()));
-    }
+    validate_provider_transport(config)?;
     if config.model.trim().is_empty() || config.model.len() > 1024 {
         return Err(Error::Config("model must be 1–1024 bytes".into()));
     }
-    let definition = provider(&config.provider)?;
-    definition.model_config_is_valid(
+    provider(&config.provider)?.model_config_is_valid(
         &config.model,
         config.base_url.as_deref(),
         config.reasoning_effort.as_deref(),
     )?;
+    Ok(())
+}
+
+fn validate_provider_transport(config: &ProviderConfig) -> Result<()> {
+    validate_instance_id(&config.instance)?;
+    if config.provider.trim().is_empty() || config.provider.len() > 256 {
+        return Err(Error::Config("provider ID must be 1–256 bytes".into()));
+    }
+    let definition = provider(&config.provider)?;
     if let Some(mode) = config.tool_discovery {
         definition.validate_tool_discovery(mode)?;
     }
@@ -125,73 +130,70 @@ fn validate_provider_endpoint_auth(
 }
 
 pub(super) fn validate_configured_provider(configured: &ConfiguredProvider) -> Result<()> {
-    validate_provider_config(&configured.selection)?;
+    if configured.selection.model.is_empty() {
+        validate_provider_transport(&configured.selection)?;
+        provider(&configured.selection.provider)?
+            .validate_base_url(configured.selection.base_url.as_deref())?;
+        if !configured.models.is_empty() || configured.selection.reasoning_effort.is_some() {
+            return Err(Error::Config(
+                "a chat catalog requires a selected chat model".into(),
+            ));
+        }
+    } else {
+        validate_provider_config(&configured.selection)?;
+    }
     validate_provider_label(&configured.label)?;
     let definition = provider(&configured.selection.provider)?;
-    if !definition.locked_models() {
-        validate_catalog_entries(
-            configured.models.iter().map(|model| model.id.as_str()),
-            "model IDs",
-            "model ID",
-        )?;
-        for model in &configured.models {
-            if !model.reasoning.is_empty() {
-                validate_catalog_entries(
-                    model.reasoning.iter().map(|effort| effort.id.as_str()),
-                    "reasoning efforts",
-                    "reasoning effort",
-                )?;
-            }
-            definition.validate_tool_discovery(
-                crate::provider_catalog::effective_tool_discovery(
-                    definition,
-                    &configured.selection,
-                    model,
-                ),
-            )?;
-            if model.context_window <= 0
-                || model.label.trim().is_empty()
-                || model.label.len() > 1024
-                || model.description.len() > 16 * 1024
-            {
-                return Err(Error::Config(format!(
-                    "model `{}` requires a positive context window, a label of 1–1024 bytes, and a description of at most 16 KiB",
-                    model.id
-                )));
-            }
-            for effort in &model.reasoning {
-                if effort.label.trim().is_empty()
-                    || effort.label.len() > 1024
-                    || effort.description.len() > 16 * 1024
-                {
-                    return Err(Error::Config(format!(
-                        "model `{}` has invalid reasoning display metadata",
-                        model.id
-                    )));
-                }
-            }
-            match (&model.default_reasoning, model.reasoning.is_empty()) {
-                (None, true) => {}
-                (Some(default), false)
-                    if model.reasoning.iter().any(|effort| &effort.id == default) => {}
-                _ => {
-                    return Err(Error::Config(format!(
-                        "model `{}` must have an explicit default reasoning effort from its nonempty catalog, and no default when its catalog is empty",
-                        model.id
-                    )));
-                }
-            }
-        }
-    } else if !configured.models.is_empty() {
+    if definition.locked_models() && !configured.models.is_empty() {
         return Err(Error::Config(format!(
             "provider `{}` uses its advertised model and reasoning catalogs",
             configured.selection.provider
         )));
     }
+    if !definition.locked_models() && !configured.selection.model.is_empty() {
+        validate_catalog_entries(
+            configured.models.iter().map(|model| model.id.as_str()),
+            "model IDs",
+            "model ID",
+        )?;
+    }
+    for model in &configured.models {
+        if !model.reasoning.is_empty() {
+            validate_catalog_entries(
+                model.reasoning.iter().map(|effort| effort.id.as_str()),
+                "reasoning efforts",
+                "reasoning effort",
+            )?;
+        }
+        definition.validate_tool_discovery(crate::provider_catalog::effective_tool_discovery(
+            definition,
+            &configured.selection,
+            model,
+        ))?;
+        if model.context_window <= 0 {
+            return Err(Error::Config(format!(
+                "model `{}` requires a positive context window",
+                model.id
+            )));
+        }
+        validate_display(&model.label, &model.description)?;
+        for effort in &model.reasoning {
+            validate_display(&effort.label, &effort.description)?;
+        }
+        match (&model.default_reasoning, model.reasoning.is_empty()) {
+            (None, true) => {}
+            (Some(default), false)
+                if model.reasoning.iter().any(|effort| &effort.id == default) => {}
+            _ => {
+                return Err(Error::Config(format!(
+                    "model `{}` must have an explicit default reasoning effort from its nonempty catalog, and no default when its catalog is empty",
+                    model.id
+                )));
+            }
+        }
+    }
     if !configured.image_model_ids.is_empty() {
-        if !definition.image_models().is_empty()
-            || !definition.supports(mobius::protocol::ModelCapability::ImageGeneration)
-        {
+        if !definition.supports(mobius::protocol::ModelCapability::ImageGeneration) {
             return Err(Error::Config(format!(
                 "provider `{}` does not accept listed image model IDs",
                 configured.selection.provider
@@ -202,8 +204,129 @@ pub(super) fn validate_configured_provider(configured: &ConfiguredProvider) -> R
             "image model IDs",
             "image model ID",
         )?;
+        validate_image_ids(configured.image_model_ids.iter().map(String::as_str))?;
     }
-    validate_configured_provider_selection(configured, &configured.selection)
+    validate_media_catalog(
+        definition,
+        configured.image_models.as_deref(),
+        mobius::protocol::ModelCapability::ImageGeneration,
+    )?;
+    validate_media_catalog(
+        definition,
+        configured.voice_models.as_deref(),
+        mobius::protocol::ModelCapability::RealtimeVoice,
+    )?;
+    if configured.image_models.is_some() && !configured.image_model_ids.is_empty() {
+        return Err(Error::Config(
+            "configure either image_models or image_model_ids, not both".into(),
+        ));
+    }
+    if configured.selection.model.is_empty() {
+        Ok(())
+    } else {
+        validate_configured_provider_selection(configured, &configured.selection)
+    }
+}
+
+fn validate_media_catalog(
+    definition: &ProviderDefinition,
+    models: Option<&[mobius::backend::model::provider::MediaModelPreset]>,
+    capability: mobius::protocol::ModelCapability,
+) -> Result<()> {
+    let Some(models) = models else {
+        return Ok(());
+    };
+    if models.is_empty() {
+        return Ok(());
+    }
+    if !definition.supports(capability) {
+        return Err(Error::Config(format!(
+            "provider `{}` does not support {capability:?}",
+            definition.id()
+        )));
+    }
+    validate_catalog_entries(
+        models.iter().map(|model| model.id.as_str()),
+        "media models",
+        "media model",
+    )?;
+    if models
+        .iter()
+        .map(|model| model.variants.len().max(1))
+        .sum::<usize>()
+        > MAX_CUSTOM_MODEL_ROUTES
+    {
+        return Err(Error::Config(format!(
+            "a configured media catalog may generate at most {MAX_CUSTOM_MODEL_ROUTES} routes"
+        )));
+    }
+    let mut routes = BTreeSet::new();
+    if capability == mobius::protocol::ModelCapability::ImageGeneration {
+        validate_image_ids(models.iter().map(|model| model.id.as_str()))?;
+    }
+    for model in models {
+        for variant in model
+            .variants
+            .iter()
+            .map(|variant| Some(variant.id.as_str()))
+            .chain(model.variants.is_empty().then_some(None))
+        {
+            if !routes.insert(model_route_id(definition.id(), &model.id, variant)) {
+                return Err(Error::Config(
+                    "media catalog generates an ambiguous route".into(),
+                ));
+            }
+        }
+        validate_display(&model.label, &model.description)?;
+        if model.variants.is_empty()
+            && capability == mobius::protocol::ModelCapability::RealtimeVoice
+        {
+            return Err(Error::Config(
+                "a live model requires at least one voice".into(),
+            ));
+        }
+        if !model.variants.is_empty() {
+            validate_catalog_entries(
+                model.variants.iter().map(|variant| variant.id.as_str()),
+                "media variants",
+                "media variant",
+            )?;
+        }
+        for variant in &model.variants {
+            if capability == mobius::protocol::ModelCapability::ImageGeneration
+                && variant.id.len() > 64
+            {
+                return Err(Error::Config(
+                    "image quality IDs must be at most 64 bytes".into(),
+                ));
+            }
+            if capability == mobius::protocol::ModelCapability::RealtimeVoice
+                && variant.id.len() > 256
+            {
+                return Err(Error::Config("voice IDs must be at most 256 bytes".into()));
+            }
+            validate_display(&variant.label, &variant.description)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_image_ids<'a>(ids: impl Iterator<Item = &'a str>) -> Result<()> {
+    if ids.into_iter().any(|id| id.len() > 256) {
+        return Err(Error::Config(
+            "image model IDs must be at most 256 bytes".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_display(label: &str, description: &str) -> Result<()> {
+    if label.trim().is_empty() || label.len() > 1024 || description.len() > 16 * 1024 {
+        return Err(Error::Config(
+            "catalog labels must be 1–1024 bytes and descriptions at most 16 KiB".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn validate_configured_provider_selection(
@@ -229,14 +352,8 @@ pub(super) fn validate_configured_provider_selection(
             "browser-auth provider selection must use its operator-registered endpoint".into(),
         ));
     }
-    if definition.locked_models() {
-        return Ok(());
-    }
-    if !configured
-        .models
-        .iter()
-        .any(|model| model.id == selection.model)
-    {
+    let models = crate::provider_catalog::models(definition, configured);
+    if !models.iter().any(|model| model.id == selection.model) {
         return Err(Error::Config(format!(
             "provider `{}` selection model is not in its configured model catalog",
             selection.provider
@@ -244,8 +361,7 @@ pub(super) fn validate_configured_provider_selection(
     }
     let effort = effective_reasoning_effort(definition, configured, selection);
     if !effort.is_none_or(|effort| {
-        configured
-            .models
+        models
             .iter()
             .find(|model| model.id == selection.model)
             .is_some_and(|model| model.reasoning.iter().any(|item| item.id == effort))
@@ -263,7 +379,8 @@ pub(super) fn validate_custom_model_route_count(
 ) -> Result<()> {
     let mut routes = BTreeSet::new();
     for configured in configured_providers.values() {
-        if provider(&configured.selection.provider)?.locked_models() {
+        let definition = provider(&configured.selection.provider)?;
+        if definition.locked_models() {
             continue;
         }
         for model in &configured.models {
@@ -379,14 +496,9 @@ pub(crate) fn effective_reasoning_effort<'a>(
     selection: &'a ProviderConfig,
 ) -> Option<&'a str> {
     selection.reasoning_effort.as_deref().or_else(|| {
-        let model = if definition.locked_models() {
-            definition.model(&selection.model)
-        } else {
-            configured
-                .models
-                .iter()
-                .find(|model| model.id == selection.model)
-        };
+        let model = crate::provider_catalog::models(definition, configured)
+            .iter()
+            .find(|model| model.id == selection.model);
         model.and_then(|model| model.default_reasoning.as_deref())
     })
 }
