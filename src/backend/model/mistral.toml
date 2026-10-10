@@ -1,0 +1,78 @@
+# Provider-owned model catalog, verified 2026-10-10 against docs.mistral.ai.
+default_model = "mistral-large-4-0"
+
+[[models]]
+id = "mistral-large-4-0"
+label = "Mistral Large 4"
+description = "Mistral's flagship multimodal reasoning model, in public preview"
+default_reasoning = "high"
+context_window = 1000000
+tool_discovery = "rebuild"
+
+[[models.reasoning]]
+id = "none"
+label = "None"
+description = "Think minimally without a visible reasoning trace"
+
+[[models.reasoning]]
+id = "minimal"
+label = "Minimal"
+description = "Use minimal reasoning"
+
+[[models.reasoning]]
+id = "low"
+label = "Low"
+description = "Prefer speed and lower cost"
+
+[[models.reasoning]]
+id = "medium"
+label = "Medium"
+description = "Balance speed and reasoning"
+
+[[models.reasoning]]
+id = "high"
+label = "High"
+description = "Use deeper reasoning for agentic and coding tasks"
+
+[[models.reasoning]]
+id = "xhigh"
+label = "Extra high"
+description = "Use the highest native reasoning effort"
+
+[[models]]
+id = "mistral-small-2603"
+label = "Mistral Small 4"
+description = "Mistral's efficient multimodal reasoning and coding model"
+default_reasoning = "high"
+context_window = 256000
+tool_discovery = "rebuild"
+
+[[models.reasoning]]
+id = "none"
+label = "None"
+description = "Think minimally without a visible reasoning trace"
+
+[[models.reasoning]]
+id = "minimal"
+label = "Minimal"
+description = "Use minimal reasoning"
+
+[[models.reasoning]]
+id = "low"
+label = "Low"
+description = "Prefer speed and lower cost"
+
+[[models.reasoning]]
+id = "medium"
+label = "Medium"
+description = "Balance speed and reasoning"
+
+[[models.reasoning]]
+id = "high"
+label = "High"
+description = "Use deeper reasoning for agentic and coding tasks"
+
+[[models.reasoning]]
+id = "xhigh"
+label = "Extra high"
+description = "Use the highest native reasoning effort"

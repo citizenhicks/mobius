@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::backend::model::provider::{HostedWebSearch, ProviderBuildConfig};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 struct InspectNativeRoot;
@@ -49,7 +50,8 @@ async fn native_root_keeps_capabilities_and_websocket_denials_do_not_fallback() 
                 .is_err()
         );
     });
-    let provider = provider()
+    let provider = crate::backend::model::provider::provider("openai_socket")
+        .expect("OpenAI registration")
         .build(ProviderBuildConfig {
             capability: None,
             tool_discovery: None,

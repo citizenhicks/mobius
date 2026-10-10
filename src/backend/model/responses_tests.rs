@@ -499,7 +499,7 @@ fn native_discovery_ignores_tool_loads_from_an_old_catalog() {
 }
 
 #[test]
-fn openrouter_defers_optional_tools_and_uses_hosted_search() {
+fn inline_search_defers_optional_tools_and_uses_hosted_search() {
     let direct = [
         tool_definition(TOOLS_SEARCH_NAME),
         tool_definition("read_file"),
@@ -510,9 +510,9 @@ fn openrouter_defers_optional_tools_and_uses_hosted_search() {
         tools: vec!["notebook_post".into()],
     }
     .to_input()];
-    let body = OpenAi::new("test-key", "https://openrouter.ai/api/v1", "test-model")
+    let body = OpenAi::new("test-key", "https://vendor.example/v1", "test-model")
         .expect("provider")
-        .with_openrouter_tool_search()
+        .with_inline_tool_search("vendor:tool_search")
         .response_body_value(ModelRequest {
             input: (&input).into(),
             tools: &direct,
@@ -526,7 +526,7 @@ fn openrouter_defers_optional_tools_and_uses_hosted_search() {
     assert_eq!(
         body["tools"],
         serde_json::json!([
-            {"type": "openrouter:tool_search"},
+            {"type": "vendor:tool_search"},
             {
                 "type": "function",
                 "name": "read_file",
@@ -547,10 +547,10 @@ fn openrouter_defers_optional_tools_and_uses_hosted_search() {
 }
 
 #[test]
-fn openrouter_omits_tool_search_without_deferred_tools() {
-    let body = OpenAi::new("test-key", "https://openrouter.ai/api/v1", "test-model")
+fn inline_search_omits_tool_search_without_deferred_tools() {
+    let body = OpenAi::new("test-key", "https://vendor.example/v1", "test-model")
         .expect("provider")
-        .with_openrouter_tool_search()
+        .with_inline_tool_search("vendor:tool_search")
         .response_body_value(ModelRequest {
             tools: &[tool_definition("write_handoff")],
             allow_hosted_tools: false,
@@ -568,19 +568,19 @@ fn openrouter_omits_tool_search_without_deferred_tools() {
 }
 
 #[test]
-fn openrouter_materializes_only_deferred_tools_it_calls() {
+fn inline_search_materializes_only_deferred_tools_it_calls() {
     let deferred = [
         tool_definition("notebook_post"),
         tool_definition("scratchpad_write"),
     ];
-    let output = OpenAi::new("test-key", "https://openrouter.ai/api/v1", "test-model")
+    let output = OpenAi::new("test-key", "https://vendor.example/v1", "test-model")
         .expect("provider")
-        .with_openrouter_tool_search()
+        .with_inline_tool_search("vendor:tool_search")
         .decode_response(
             serde_json::json!({
                 "output": [
                     {
-                        "type": "openrouter:tool_search",
+                        "type": "vendor:tool_search",
                         "status": "completed",
                         "query": "notebook"
                     },
@@ -999,7 +999,7 @@ async fn responses_emits_commentary_text_deltas() {
 }
 
 #[tokio::test]
-async fn openrouter_web_search_uses_native_search_events() {
+async fn inline_search_web_search_uses_native_search_events() {
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_seen = Arc::clone(&seen);
     let events: ModelEventSink = Arc::new(move |event| {
@@ -1014,7 +1014,7 @@ async fn openrouter_web_search_uses_native_search_events() {
                 "type": "response.output_item.done",
                 "item": {
                     "id": "search-1",
-                    "type": "openrouter:web_search",
+                    "type": "vendor:web_search",
                     "status": "completed",
                     "action": {
                         "type": "search",
@@ -1024,9 +1024,10 @@ async fn openrouter_web_search_uses_native_search_events() {
             }),
             &mut searches,
             &events,
+            "vendor:web_search",
         )
         .await
-        .expect("OpenRouter web search event")
+        .expect("configured web search event")
     );
     assert_eq!(
         *seen.lock().expect("events lock"),
@@ -1448,7 +1449,9 @@ async fn credentialless_http_omits_authorization() {
 
 #[tokio::test]
 async fn compatible_images_use_json_for_generation_and_multipart_for_public_edits() {
-    use crate::backend::model::provider::{HostedWebSearch, ProviderCredential};
+    use crate::backend::model::provider::{
+        HostedWebSearch, ProviderBuildConfig, ProviderCredential,
+    };
     use base64::Engine as _;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -1505,7 +1508,8 @@ async fn compatible_images_use_json_for_generation_and_multipart_for_public_edit
         }
         requests
     });
-    let provider = generic_provider()
+    let provider = crate::backend::model::provider::provider("responses")
+        .expect("Responses registration")
         .build(ProviderBuildConfig {
             capability: None,
             tool_discovery: None,

@@ -3,10 +3,10 @@
 use std::sync::Arc;
 
 use super::Model;
-use super::openai::OpenAi;
 use super::provider::HostedWebSearch;
 use super::provider::ProviderBuildConfig;
 use super::provider::ProviderDefinition;
+use super::responses::OpenAi;
 use crate::Error;
 use crate::Result;
 use crate::protocol::ToolDiscoveryMode;
@@ -42,11 +42,21 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
         config.http,
         config.transport,
     )?
-    .without_realtime_voice()
+    .with_web_search_event_type(
+        MANIFEST
+            .web_search_type
+            .as_deref()
+            .expect("web search wire type"),
+    )
     .with_service_tier(config.service_tier)
     .with_image_api(Some(&super::image_generation::IMAGE_APIS["openrouter"]));
     let provider = match tool_discovery {
-        ToolDiscoveryMode::Native => provider.with_openrouter_tool_search(),
+        ToolDiscoveryMode::Native => provider.with_inline_tool_search(
+            MANIFEST
+                .tool_search_type
+                .as_deref()
+                .expect("tool search wire type"),
+        ),
         ToolDiscoveryMode::Rebuild => provider.with_tool_discovery(ToolDiscoveryMode::Rebuild),
     };
     let provider = match config.reasoning_effort {
@@ -61,7 +71,7 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
             ));
         }
         HostedWebSearch::Live => {
-            provider.with_hosted_tool(serde_json::json!({"type": "openrouter:web_search"}))
+            provider.with_hosted_tool(serde_json::json!({"type": MANIFEST.web_search_type}))
         }
     };
     Ok(Arc::new(provider))

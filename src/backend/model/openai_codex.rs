@@ -4,12 +4,12 @@ use std::sync::Arc;
 
 use self::auth::BROWSER_AUTH;
 use self::auth::ChatGptAuth;
-use super::openai::CATALOG;
-use super::openai_socket::OpenAiSocket;
 use super::provider::HostedWebSearch;
 use super::provider::ProviderAuth;
 use super::provider::ProviderBuildConfig;
 use super::provider::ProviderDefinition;
+use super::responses::CATALOG;
+use super::responses_socket::OpenAiSocket;
 use crate::Result;
 
 #[path = "openai_codex_auth.rs"]
@@ -48,17 +48,7 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn super::Model>> 
         .base_url
         .as_deref()
         .unwrap_or(MANIFEST.base_url.as_str());
-    let mut socket_url =
-        reqwest::Url::parse(&format!("{}/responses", base_url.trim_end_matches('/')))
-            .map_err(|_| crate::Error::Config("invalid Codex endpoint".into()))?;
-    let scheme = if socket_url.scheme() == "https" {
-        "wss"
-    } else {
-        "ws"
-    };
-    socket_url
-        .set_scheme(scheme)
-        .map_err(|_| crate::Error::Config("invalid Codex socket scheme".into()))?;
+    let socket_url = super::responses_socket::responses_socket_url(base_url)?;
     let provider = OpenAiSocket::with_authorization(
         auth,
         base_url,
@@ -69,7 +59,7 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn super::Model>> 
     )?
     .with_tool_discovery(tool_discovery)
     .with_service_tier(config.service_tier)
-    .with_codex_realtime_voice(base_url)?
+    .with_codex_realtime_voice(base_url, provider().uses_default_endpoint(Some(base_url)))?
     .with_image_api(Some(&super::image_generation::IMAGE_APIS["codex"]));
     let provider = match config.reasoning_effort {
         Some(effort) => provider.with_reasoning_effort(effort)?,

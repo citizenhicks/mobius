@@ -1,0 +1,8 @@
+supported_tool_discovery = ["rebuild"]
+symbol = "mistral"
+label = "Mistral"
+description = "Mistral Chat Completions API"
+base_url = "https://api.mistral.ai/v1"
+tool_discovery = "rebuild"
+search = ["off"]
+credential_env = "MISTRAL_API_KEY"

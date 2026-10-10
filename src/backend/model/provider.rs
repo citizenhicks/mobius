@@ -35,6 +35,8 @@ pub(super) struct ProviderMetadata {
     #[serde(default)]
     pub(super) headers: std::collections::BTreeMap<String, String>,
     pub(super) max_output_tokens: Option<u64>,
+    pub(super) tool_search_type: Option<String>,
+    pub(super) web_search_type: Option<String>,
 }
 
 fn default_supported_tool_discovery() -> Vec<ToolDiscoveryMode> {
@@ -534,6 +536,8 @@ pub struct ProviderDefinition {
     native_custom_endpoints: bool,
     credentialless_endpoints: bool,
     builder: ProviderBuilder,
+    pub(super) replay_reasoning_field: Option<&'static str>,
+    pub(super) web_search_type: Option<&'static str>,
 }
 
 impl ProviderDefinition {
@@ -545,6 +549,8 @@ impl ProviderDefinition {
         builder: ProviderBuilder,
     ) -> Self {
         Self {
+            replay_reasoning_field: None,
+            web_search_type: metadata.web_search_type.as_deref(),
             id,
             label: &metadata.label,
             symbol: &metadata.symbol,
@@ -590,6 +596,11 @@ impl ProviderDefinition {
     ) -> Self {
         self.realtime_voices = voices;
         self.voice_models = models;
+        self
+    }
+
+    pub(super) const fn with_replay_reasoning_field(mut self, field: &'static str) -> Self {
+        self.replay_reasoning_field = Some(field);
         self
     }
 
@@ -969,12 +980,13 @@ pub(super) fn validate_base_url(base_url: &str) -> Result<()> {
     Ok(())
 }
 
-static PROVIDERS: std::sync::LazyLock<[ProviderDefinition; 7]> = std::sync::LazyLock::new(|| {
+static PROVIDERS: std::sync::LazyLock<[ProviderDefinition; 8]> = std::sync::LazyLock::new(|| {
     [
         super::openai_socket::provider(),
         super::openai_codex::provider(),
         super::deepseek::provider(),
         super::kimi::provider(),
+        super::mistral::provider(),
         super::openrouter::provider(),
         super::anthropic::provider(),
         super::openai::generic_provider(),
@@ -1074,7 +1086,7 @@ mod tests {
 
     #[test]
     fn editable_providers_build_custom_efforts_without_injecting_defaults() {
-        for id in ["anthropic", "kimi", "deepseek"] {
+        for id in ["anthropic", "kimi", "deepseek", "mistral"] {
             let definition = provider(id).unwrap();
             for model in [definition.default_model().unwrap(), "operator-custom-model"] {
                 for effort in [None, Some("operator-effort")] {
@@ -1120,7 +1132,7 @@ mod tests {
             definition
                 .validate_tool_discovery(definition.default_tool_discovery())
                 .unwrap();
-            if definition.id() != "kimi" {
+            if !matches!(definition.id(), "kimi" | "mistral") {
                 assert_eq!(
                     definition.supported_tool_discovery(),
                     &[ToolDiscoveryMode::Native, ToolDiscoveryMode::Rebuild]
@@ -1138,6 +1150,7 @@ mod tests {
             "anthropic",
             "deepseek",
             "kimi",
+            "mistral",
         ] {
             let definition = provider(id).unwrap();
             for discovery in [ToolDiscoveryMode::Native, ToolDiscoveryMode::Rebuild] {
@@ -1153,7 +1166,7 @@ mod tests {
                     http: reqwest::Client::new(),
                     transport: super::super::ModelTransportSettings::default(),
                 });
-                if id == "kimi" && discovery == ToolDiscoveryMode::Native {
+                if !definition.supports_tool_discovery(discovery) {
                     assert!(
                         built
                             .err()
@@ -1252,9 +1265,19 @@ mod tests {
                 &[Off][..],
             ),
             (
+                "mistral",
+                "Mistral",
+                "mistral",
+                "Mistral Chat Completions API",
+                "https://api.mistral.ai/v1",
+                Some("MISTRAL_API_KEY"),
+                Rebuild,
+                &[Off][..],
+            ),
+            (
                 "openrouter",
                 "OpenRouter",
-                "route",
+                "open_router",
                 "Responses API across multiple model vendors",
                 "https://openrouter.ai/api/v1",
                 Some("OPENROUTER_API_KEY"),
@@ -1390,6 +1413,7 @@ mod tests {
             "openai_socket",
             "openai_codex",
             "kimi",
+            "mistral",
             "openrouter",
             "anthropic",
             "responses",
@@ -1407,7 +1431,7 @@ mod tests {
                     .supports(ModelCapability::ImageGeneration)
             );
         }
-        for id in ["deepseek", "kimi", "anthropic"] {
+        for id in ["deepseek", "kimi", "anthropic", "mistral"] {
             assert!(
                 !provider(id)
                     .expect("non-image provider")
@@ -1568,7 +1592,14 @@ mod tests {
                 .iter()
                 .map(|definition| definition.id())
                 .collect::<BTreeSet<_>>(),
-            BTreeSet::from(["anthropic", "deepseek", "kimi", "openrouter", "responses"])
+            BTreeSet::from([
+                "anthropic",
+                "deepseek",
+                "kimi",
+                "mistral",
+                "openrouter",
+                "responses"
+            ])
         );
         let error = provider("openai_socket")
             .expect("fixed-endpoint provider")

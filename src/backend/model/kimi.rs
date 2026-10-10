@@ -1,31 +1,21 @@
 //! Native Kimi Chat Completions provider.
 
-use std::borrow::Cow;
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use super::transport::ApiKeyModel;
 use reqwest::Client;
 use serde::Serialize;
-use serde::ser::SerializeSeq as _;
 use serde_json::Value;
 
-use super::MAX_TOOL_CALLS;
 use super::Model;
 use super::ModelEventSink;
-use super::ModelInput;
 use super::ModelOutput;
 use super::ModelRequest;
 use super::PromptCacheMode;
 use super::REPLAY_REASONING_FIELD;
-use super::ToolDefinition;
-use super::image_data_url;
-use super::image_input;
-use super::provider::{ProviderBuildConfig, ProviderDefinition, validate_base_url};
-use super::transport::SseDecoder;
-use super::transport::frame_data;
-use super::transport::status_error;
-use super::transport::streaming_client;
-use super::usage_i64;
+use super::chat_completions::{MessageSource, RequestBody, StreamOptions, ToolCalls, WireContent};
+use super::provider::{ProviderBuildConfig, ProviderDefinition};
+use super::transport::{SseHandler, streaming_client};
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
@@ -45,21 +35,39 @@ pub(super) static CATALOG: std::sync::LazyLock<super::provider::ModelCatalog> =
     });
 
 /// Kimi's native Chat Completions provider.
+#[derive(Debug)]
 pub struct Kimi {
-    client: Client,
-    transport: super::ModelTransportSettings,
-    api_key: Option<String>,
-    base_url: String,
-    model: String,
-    reasoning_effort: Option<String>,
+    config: ApiKeyModel,
 }
 
-#[derive(Serialize)]
-struct RequestBody<'a> {
-    #[serde(flatten)]
-    metadata: Value,
+#[derive(Default, Serialize)]
+struct KimiMessage<'a> {
+    content: Option<WireContent<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<WireTools<'a>>,
+    reasoning_content: Option<&'a str>,
+}
+
+fn message_content(source: MessageSource<'_>) -> Result<KimiMessage<'_>> {
+    let mut reasoning_content = None;
+    let content = match source {
+        MessageSource::System(text) => WireContent::Text(text.into()),
+        MessageSource::Tool(output) => {
+            WireContent::Text(super::chat_completions::tool_text(output)?)
+        }
+        MessageSource::History { role, item } => {
+            if role == "assistant" {
+                reasoning_content = item
+                    .get(REPLAY_REASONING_FIELD)
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.is_empty());
+            }
+            WireContent::new(item.get("content"), "Kimi")?
+        }
+    };
+    Ok(KimiMessage {
+        content: Some(content),
+        reasoning_content,
+    })
 }
 
 impl Kimi {
@@ -99,23 +107,8 @@ impl Kimi {
         model: impl Into<String>,
         client: Client,
     ) -> Result<Self> {
-        if api_key.as_deref().is_some_and(|key| key.trim().is_empty()) {
-            return Err(Error::Config("provider API key cannot be empty".into()));
-        }
-        let base_url = base_url.into().trim_end_matches('/').to_string();
-        validate_base_url(&base_url)?;
-        let model = model.into();
-        if model.trim().is_empty() {
-            return Err(Error::Config("Kimi model is empty".into()));
-        }
-        Ok(Self {
-            client,
-            transport: super::ModelTransportSettings::default(),
-            api_key,
-            base_url,
-            model,
-            reasoning_effort: None,
-        })
+        let config = ApiKeyModel::new(api_key, base_url, model, client)?;
+        Ok(Self { config })
     }
 
     /// Applies validated operational transport policy.
@@ -126,7 +119,7 @@ impl Kimi {
         settings: super::ModelTransportSettings,
     ) -> Result<Self> {
         settings.validate()?;
-        self.transport = settings;
+        self.config.transport = settings;
         Ok(self)
     }
 
@@ -134,11 +127,7 @@ impl Kimi {
     /// # Errors
     /// Returns an error when the effort is empty.
     pub fn with_reasoning_effort(mut self, effort: impl Into<String>) -> Result<Self> {
-        let effort = effort.into();
-        if effort.trim().is_empty() {
-            return Err(Error::Config("reasoning effort cannot be empty".into()));
-        }
-        self.reasoning_effort = Some(effort);
+        self.config.set_reasoning(effort)?;
         Ok(self)
     }
 
@@ -154,81 +143,49 @@ impl Kimi {
             )?)
         })
         .await?;
-        let mut response = self.post(body).await?;
-        let mut sse = SseDecoder::default();
+        let response = super::chat_completions::post(
+            &self.config.client,
+            &self.config.base_url,
+            self.config.api_key.as_deref(),
+            body,
+            "Kimi",
+        )
+        .await?;
         let mut stream = StreamState::default();
-        while let Some(chunk) = response.chunk().await? {
-            sse.push(&chunk, "Kimi")?;
-            while let Some(frame) = sse.next_frame()? {
-                if let Some(data) = frame_data(frame) {
-                    stream.apply_data(&data, &events).await?;
-                }
-            }
-        }
+        super::transport::read_sse(response, "Kimi", &events, &mut stream).await?;
         stream.finish()
     }
 
-    fn request_body<'a>(&self, request: &ModelRequest<'a>) -> Result<RequestBody<'a>> {
-        let mut body = serde_json::json!({
-            "model": self.model,
-            "stream": true,
-            "stream_options": {"include_usage": true}
+    fn request_body<'a>(
+        &'a self,
+        request: &ModelRequest<'a>,
+    ) -> Result<RequestBody<'a, KimiMessage<'a>>> {
+        let mut body = RequestBody::new(
+            &self.config.model,
+            self.config.reasoning_effort.as_deref(),
+            *request,
+            "Kimi",
+            message_content,
+        )?;
+        body.stream_options = Some(StreamOptions {
+            include_usage: true,
         });
-        body["messages"] = Value::Array(wire_messages(request.instructions, request.input)?);
-        if let Some(prompt_cache) = request.prompt_cache {
-            body["prompt_cache_key"] = Value::String(prompt_cache.key.into());
-        }
-        if !request.tools.is_empty() {
-            body["tool_choice"] = Value::String("auto".into());
-            body["parallel_tool_calls"] = Value::Bool(true);
-        }
-        self.apply_reasoning(&mut body);
-        Ok(RequestBody {
-            metadata: body,
-            tools: (!request.tools.is_empty()).then_some(WireTools(request.tools)),
-        })
+        Ok(body)
     }
 
     #[cfg(test)]
     fn request_body_value(&self, request: &ModelRequest<'_>) -> Result<Value> {
         Ok(serde_json::to_value(self.request_body(request)?)?)
     }
-
-    fn apply_reasoning(&self, body: &mut Value) {
-        if let Some(effort) = &self.reasoning_effort {
-            body["reasoning_effort"] = Value::String(effort.clone());
-        }
-    }
-
-    async fn post(&self, body: Vec<u8>) -> Result<reqwest::Response> {
-        let mut request = self
-            .client
-            .post(format!("{}/chat/completions", self.base_url));
-        if let Some(api_key) = &self.api_key {
-            request = request.bearer_auth(api_key);
-        }
-        let response = request
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .body(body)
-            .send()
-            .await?;
-        if !response.status().is_success() {
-            return Err(status_error(response, "Kimi").await);
-        }
-        Ok(response)
-    }
 }
 
 impl Model for Kimi {
     fn transport_settings(&self) -> super::ModelTransportSettings {
-        self.transport
+        self.config.transport
     }
 
     fn info(&self) -> ModelInfo {
-        ModelInfo {
-            model: self.model.clone(),
-            reasoning_effort: self.reasoning_effort.clone(),
-        }
+        self.config.info()
     }
 
     fn supports_image_input(&self) -> bool {
@@ -265,19 +222,12 @@ impl Model for Kimi {
 struct StreamState {
     text: String,
     reasoning: String,
-    tools: BTreeMap<usize, PendingTool>,
+    tools: ToolCalls,
     usage: TokenUsage,
     done: bool,
 }
 
-#[derive(Default)]
-struct PendingTool {
-    id: String,
-    name: String,
-    arguments: String,
-}
-
-impl StreamState {
+impl SseHandler for StreamState {
     async fn apply_data(&mut self, data: &str, events: &ModelEventSink) -> Result<()> {
         if data == "[DONE]" {
             self.done = true;
@@ -310,65 +260,20 @@ impl StreamState {
                 events(ModelEvent::TextDelta(text.to_string())).await?;
             }
         }
-        for (position, call) in delta
-            .get("tool_calls")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .enumerate()
-        {
-            let index = call
-                .get("index")
-                .and_then(Value::as_u64)
-                .and_then(|index| usize::try_from(index).ok())
-                .unwrap_or(position);
-            if self.tools.len() >= MAX_TOOL_CALLS && !self.tools.contains_key(&index) {
-                return Err(Error::Provider(
-                    format!("Kimi returned more than {MAX_TOOL_CALLS} tool calls").into(),
-                ));
-            }
-            let pending = self.tools.entry(index).or_default();
-            set_fragment(
-                &mut pending.id,
-                call.get("id").and_then(Value::as_str),
-                "ID",
-            )?;
-            set_fragment(
-                &mut pending.name,
-                call.pointer("/function/name").and_then(Value::as_str),
-                "name",
-            )?;
-            if let Some(arguments) = call.pointer("/function/arguments").and_then(Value::as_str) {
-                pending.arguments.push_str(arguments);
-            }
-        }
+        self.tools.append(delta, "Kimi")?;
         Ok(())
     }
+}
 
+impl StreamState {
     fn finish(self) -> Result<ModelOutput> {
         if !self.done {
             return Err(Error::Provider(
                 "Kimi stream ended before the [DONE] event".into(),
             ));
         }
-        let has_tools = !self.tools.is_empty();
-        let calls = self
-            .tools
-            .into_values()
-            .map(|call| {
-                let arguments = if call.arguments.is_empty() {
-                    "{}".to_string()
-                } else {
-                    call.arguments
-                };
-                Ok(serde_json::json!({
-                    "type": "function_call",
-                    "call_id": required(call.id, "tool-call ID")?,
-                    "name": required(call.name, "tool name")?,
-                    "arguments": arguments
-                }))
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let calls = self.tools.finish("Kimi")?;
+        let has_tools = !calls.is_empty();
         if self.text.is_empty() && self.reasoning.is_empty() && calls.is_empty() {
             return Err(Error::Provider("Kimi returned no output".into()));
         }
@@ -389,229 +294,8 @@ impl StreamState {
     }
 }
 
-fn wire_messages(instructions: &str, input: ModelInput<'_>) -> Result<Vec<Value>> {
-    let mut messages = Vec::new();
-    if !instructions.trim().is_empty() {
-        messages.push(serde_json::json!({"role": "system", "content": instructions}));
-    }
-    for item in input.iter() {
-        match item.get("type").and_then(Value::as_str) {
-            Some("function_call") => push_tool_call(&mut messages, item)?,
-            Some("function_call_output") => messages.push(serde_json::json!({
-                "role": "tool",
-                "tool_call_id": required_string(item, "call_id")?,
-                "content": super::media::output_text(item.get("output").ok_or_else(|| Error::Provider("tool result omitted content".into()))?)?
-            })),
-            Some("message") | None if item.get("role").is_some() => {
-                push_history_message(&mut messages, item)?
-            }
-            Some(_) | None => {}
-        }
-    }
-    if !messages.iter().any(|message| {
-        matches!(
-            message.get("role").and_then(Value::as_str),
-            Some("user" | "assistant" | "tool")
-        )
-    }) {
-        return Err(Error::Provider(
-            "Kimi request has no conversation messages".into(),
-        ));
-    }
-    Ok(messages)
-}
-
-fn push_history_message(messages: &mut Vec<Value>, item: &Value) -> Result<()> {
-    let role = match required_string(item, "role")? {
-        "developer" => "system",
-        role @ ("system" | "user" | "assistant" | "tool") => role,
-        role => {
-            return Err(Error::Provider(
-                format!("unsupported Kimi message role `{role}`").into(),
-            ));
-        }
-    };
-    let mut message = serde_json::json!({"role": role});
-    message["content"] = wire_content(item.get("content"))?;
-    if role == "assistant"
-        && let Some(reasoning) = item.get(REPLAY_REASONING_FIELD).and_then(Value::as_str)
-        && !reasoning.is_empty()
-    {
-        message["reasoning_content"] = Value::String(reasoning.to_string());
-    }
-    messages.push(message);
-    Ok(())
-}
-
-fn push_tool_call(messages: &mut Vec<Value>, item: &Value) -> Result<()> {
-    let call = serde_json::json!({
-        "id": required_string(item, "call_id")?,
-        "type": "function",
-        "function": {
-            "name": required_string(item, "name")?,
-            "arguments": argument_text(item.get("arguments"))?
-        }
-    });
-    if messages
-        .last()
-        .and_then(|message| message.get("role"))
-        .and_then(Value::as_str)
-        != Some("assistant")
-    {
-        messages.push(serde_json::json!({
-            "role": "assistant",
-            "content": null
-        }));
-    }
-    let calls = messages
-        .last_mut()
-        .ok_or_else(|| Error::Provider("Kimi assistant message disappeared".into()))?
-        .as_object_mut()
-        .ok_or_else(|| Error::Provider("Kimi assistant message was not an object".into()))?
-        .entry("tool_calls")
-        .or_insert_with(|| Value::Array(Vec::new()))
-        .as_array_mut()
-        .ok_or_else(|| Error::Provider("Kimi tool_calls was not an array".into()))?;
-    calls.push(call);
-    Ok(())
-}
-
-struct WireTools<'a>(&'a [Arc<ToolDefinition>]);
-
-impl Serialize for WireTools<'_> {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        #[derive(Serialize)]
-        struct Function<'a> {
-            description: &'a str,
-            name: &'a str,
-            parameters: &'a Value,
-        }
-        #[derive(Serialize)]
-        struct Tool<'a> {
-            function: Function<'a>,
-            #[serde(rename = "type")]
-            kind: &'static str,
-        }
-        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
-        for tool in self.0 {
-            sequence.serialize_element(&Tool {
-                function: Function {
-                    description: &tool.description,
-                    name: &tool.name,
-                    parameters: &tool.parameters,
-                },
-                kind: "function",
-            })?;
-        }
-        sequence.end()
-    }
-}
-
-fn content_text(content: Option<&Value>) -> String {
-    match content {
-        Some(Value::String(text)) => text.clone(),
-        Some(Value::Array(parts)) => parts
-            .iter()
-            .filter(|part| {
-                matches!(
-                    part.get("type").and_then(Value::as_str),
-                    Some("input_text" | "output_text" | "text")
-                )
-            })
-            .filter_map(|part| part.get("text").and_then(Value::as_str))
-            .collect(),
-        Some(value) => value.to_string(),
-        None => String::new(),
-    }
-}
-
-fn wire_content(content: Option<&Value>) -> Result<Value> {
-    let Some(Value::Array(parts)) = content else {
-        return Ok(Value::String(content_text(content)));
-    };
-    if !parts
-        .iter()
-        .any(|part| part.get("type").and_then(Value::as_str) == Some("input_image"))
-    {
-        return Ok(Value::String(content_text(content)));
-    }
-    let mut output = Vec::new();
-    for part in parts {
-        match part.get("type").and_then(Value::as_str) {
-            Some("input_text" | "output_text" | "text") => output.push(serde_json::json!({
-                "type": "text",
-                "text": part.get("text").and_then(Value::as_str).unwrap_or_default()
-            })),
-            Some("input_image") => {
-                let Some((media_type, data)) = image_input(part, "Kimi")? else {
-                    continue;
-                };
-                output.push(serde_json::json!({
-                    "type": "image_url",
-                    "image_url": {"url": image_data_url(media_type, data)}
-                }));
-            }
-            None | Some(_) => {}
-        }
-    }
-    Ok(Value::Array(output))
-}
-
-fn argument_text(arguments: Option<&Value>) -> Result<Cow<'_, str>> {
-    match arguments {
-        Some(Value::String(arguments)) => {
-            serde_json::from_str::<serde::de::IgnoredAny>(arguments)?;
-            Ok(Cow::Borrowed(arguments))
-        }
-        Some(arguments) => Ok(Cow::Owned(serde_json::to_string(arguments)?)),
-        None => Err(Error::Provider("function call omitted arguments".into())),
-    }
-}
-
-fn required_string<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
-    value
-        .get(field)
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| Error::Provider(format!("Kimi value omitted {field}").into()))
-}
-
-fn required(value: String, field: &str) -> Result<String> {
-    (!value.is_empty())
-        .then_some(value)
-        .ok_or_else(|| Error::Provider(format!("Kimi response omitted {field}").into()))
-}
-
-fn set_fragment(target: &mut String, fragment: Option<&str>, field: &str) -> Result<()> {
-    let Some(fragment) = fragment.filter(|fragment| !fragment.is_empty()) else {
-        return Ok(());
-    };
-    if target.is_empty() {
-        target.push_str(fragment);
-    } else if target != fragment {
-        return Err(Error::Provider(
-            format!("Kimi changed a streamed tool-call {field}").into(),
-        ));
-    }
-    Ok(())
-}
-
 fn decode_usage(usage: Option<&Value>) -> Result<TokenUsage> {
-    let value =
-        |pointer| -> Result<i64> { Ok(usage_i64(usage, pointer, "Kimi")?.unwrap_or_default()) };
-    let cached_input_tokens =
-        value("/cached_tokens")?.max(value("/prompt_tokens_details/cached_tokens")?);
-    Ok(TokenUsage {
-        input_tokens: value("/prompt_tokens")?,
-        cached_input_tokens,
-        cache_write_input_tokens: value("/prompt_tokens_details/cache_write_tokens")?,
-        output_tokens: value("/completion_tokens")?,
-        reasoning_output_tokens: value("/completion_tokens_details/reasoning_tokens")?,
-        total_tokens: value("/total_tokens")?,
-    })
+    super::chat_completions::decode_usage(usage, "Kimi")
 }
 
 pub(super) fn provider() -> ProviderDefinition {

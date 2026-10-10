@@ -14,7 +14,7 @@ use tokio_tungstenite::tungstenite::{
     Message, client::IntoClientRequest, protocol::WebSocketConfig,
 };
 
-use super::openai_auth::OpenAiAuthorization;
+use super::authorization::OpenAiAuthorization;
 use super::transport::{read_limited, status_error};
 use crate::protocol::TokenUsage;
 use crate::{Error, ProviderError, Result};
@@ -253,6 +253,7 @@ impl RealtimeTransport {
 
     pub(super) fn new_codex(
         base_url: &str,
+        default_endpoint: bool,
         auth: Arc<dyn OpenAiAuthorization>,
         settings: super::ModelTransportSettings,
     ) -> Result<Self> {
@@ -262,7 +263,7 @@ impl RealtimeTransport {
             base_url.trim_end_matches('/'),
             MANIFEST.codex.calls_path
         );
-        let api_url = if super::openai_codex::provider().uses_default_endpoint(Some(base_url)) {
+        let api_url = if default_endpoint {
             std::borrow::Cow::Borrowed(
                 MANIFEST
                     .codex
@@ -873,7 +874,7 @@ impl VoiceTurns {
             }
         }
         if matches!(event["type"].as_str(), Some("error")) {
-            return Err(Error::Provider(super::openai::response_provider_error(
+            return Err(Error::Provider(super::responses::response_provider_error(
                 event, None,
             )));
         }

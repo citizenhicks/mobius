@@ -6,7 +6,7 @@ use serde::Serialize;
 use serde::ser::{Error as _, SerializeMap as _, SerializeSeq as _};
 use serde_json::Value;
 
-use super::{ModelInput, ToolDefinition, image_input};
+use super::{ImageDataUrl, ModelInput, ToolDefinition, image_input};
 use crate::protocol::{ToolLoad, content_parts};
 use crate::{Error, Result};
 
@@ -14,9 +14,71 @@ use crate::{Error, Result};
 #[derive(Serialize)]
 pub(super) struct ResponsesBody<'a> {
     #[serde(flatten)]
-    pub(super) metadata: Value,
+    pub(super) metadata: RequestMetadata<'a>,
     pub(super) input: WireInput<'a>,
     pub(super) tools: WireTools<'a>,
+}
+
+#[derive(Serialize)]
+pub(super) struct RequestMetadata<'a> {
+    include: [&'static str; 1],
+    instructions: &'a str,
+    model: &'a str,
+    parallel_tool_calls: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) previous_response_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_key: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_options: Option<CacheBreakpoint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<Reasoning<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) service_tier: Option<&'a str>,
+    store: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) stream: Option<bool>,
+    tool_choice: &'static str,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub(super) kind: Option<&'static str>,
+}
+
+#[derive(Serialize)]
+struct Reasoning<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<&'static str>,
+}
+
+impl<'a> RequestMetadata<'a> {
+    pub(super) fn new(
+        model: &'a str,
+        request: super::ModelRequest<'a>,
+        explicit_prompt_cache: bool,
+        effort: Option<&'a str>,
+        summary: bool,
+    ) -> Self {
+        Self {
+            include: ["reasoning.encrypted_content"],
+            instructions: request.instructions,
+            model,
+            parallel_tool_calls: true,
+            previous_response_id: None,
+            prompt_cache_key: request.prompt_cache.map(|cache| cache.key),
+            prompt_cache_options: explicit_prompt_cache
+                .then_some(CacheBreakpoint { mode: "explicit" }),
+            reasoning: (effort.is_some() || summary).then_some(Reasoning {
+                effort,
+                summary: summary.then_some("auto"),
+            }),
+            service_tier: None,
+            store: false,
+            stream: Some(true),
+            tool_choice: "auto",
+            kind: None,
+        }
+    }
 }
 
 /// Provider function and hosted tools serialized without copying schemas.
@@ -25,7 +87,7 @@ pub(super) struct WireTools<'a> {
     pub(super) functions: &'a [Arc<ToolDefinition>],
     pub(super) deferred: &'a [Arc<ToolDefinition>],
     pub(super) hosted: &'a [Value],
-    pub(super) openrouter: bool,
+    pub(super) native_search: Option<&'a str>,
 }
 
 impl Serialize for WireTools<'_> {
@@ -34,18 +96,18 @@ impl Serialize for WireTools<'_> {
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
         let mut sequence = serializer.serialize_seq(None)?;
-        if self.openrouter && !self.deferred.is_empty() {
+        if let Some(kind) = self.native_search
+            && !self.deferred.is_empty()
+        {
             #[derive(Serialize)]
-            struct Search {
+            struct Search<'a> {
                 #[serde(rename = "type")]
-                kind: &'static str,
+                kind: &'a str,
             }
-            sequence.serialize_element(&Search {
-                kind: "openrouter:tool_search",
-            })?;
+            sequence.serialize_element(&Search { kind })?;
         }
         for tool in self.functions {
-            if !self.openrouter || tool.name != super::TOOLS_SEARCH_NAME {
+            if self.native_search.is_none() || tool.name != super::TOOLS_SEARCH_NAME {
                 sequence.serialize_element(&FunctionTool::new(tool, false))?;
             }
         }
@@ -121,7 +183,7 @@ impl Serialize for WireInput<'_> {
                         #[derive(Serialize)]
                         struct AdditionalTools<'a> {
                             #[serde(rename = "type")]
-                            kind: &'static str,
+                            kind: &'a str,
                             role: &'static str,
                             tools: &'a [FunctionTool<'a>],
                         }
@@ -153,7 +215,7 @@ struct FunctionTool<'a> {
     parameters: &'a Value,
     strict: bool,
     #[serde(rename = "type")]
-    kind: &'static str,
+    kind: &'a str,
 }
 
 impl<'a> FunctionTool<'a> {
@@ -240,7 +302,7 @@ struct CacheBreakpoint {
 #[derive(Serialize)]
 struct TextPart<'a> {
     #[serde(rename = "type")]
-    kind: &'static str,
+    kind: &'a str,
     text: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     prompt_cache_breakpoint: Option<CacheBreakpoint>,
@@ -305,17 +367,8 @@ impl Serialize for WirePart<'_> {
                         "Responses image input changed after validation",
                     ));
                 };
-                struct DataUrl<'a>(&'a str, &'a str);
-                impl Serialize for DataUrl<'_> {
-                    fn serialize<S: serde::Serializer>(
-                        &self,
-                        serializer: S,
-                    ) -> std::result::Result<S::Ok, S::Error> {
-                        serializer.collect_str(&format_args!("data:{};base64,{}", self.0, self.1))
-                    }
-                }
                 map.serialize_entry("type", "input_image")?;
-                map.serialize_entry("image_url", &DataUrl(media_type, data))?;
+                map.serialize_entry("image_url", &ImageDataUrl(media_type, data))?;
                 if let Some(detail) = self.part.get("detail") {
                     map.serialize_entry("detail", detail)?;
                 }

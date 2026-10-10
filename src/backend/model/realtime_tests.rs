@@ -1,7 +1,7 @@
 use super::*;
 use crate::BoxFuture;
 use crate::backend::model::Model;
-use crate::backend::model::openai_auth::ResolvedAuthorization;
+use crate::backend::model::authorization::ResolvedAuthorization;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -73,6 +73,7 @@ fn voice_constructors_apply_policy_and_keep_custom_codex_data_on_the_proxy() {
     .expect("OpenAI voice");
     let codex = RealtimeTransport::new_codex(
         "https://proxy.example/native",
+        false,
         Arc::new(Auth::default()),
         settings,
     )

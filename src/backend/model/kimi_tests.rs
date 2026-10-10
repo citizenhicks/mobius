@@ -1,4 +1,7 @@
+use super::super::chat_completions::argument_text;
+use crate::backend::model::ToolDefinition;
 use serde_json::json;
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use super::*;
@@ -23,10 +26,15 @@ async fn credentialless_post_uses_custom_path_and_omits_authorization() {
     )
     .expect("credentialless provider");
 
-    provider
-        .post(b"{}".to_vec())
-        .await
-        .expect("credentialless request");
+    super::super::chat_completions::post(
+        &provider.config.client,
+        &provider.config.base_url,
+        provider.config.api_key.as_deref(),
+        b"{}".to_vec(),
+        "Kimi",
+    )
+    .await
+    .expect("credentialless request");
 
     let request = server.await.expect("HTTP server").to_ascii_lowercase();
     assert!(request.starts_with("post /proxy/chat/completions http/1.1\r\n"));
@@ -150,11 +158,12 @@ fn responses_history_becomes_kimi_messages_and_tools() {
 
 #[test]
 fn neutral_image_becomes_kimi_image_url() {
-    let content = wire_content(Some(&json!([
+    let input = json!([
         {"type": "input_text", "text": "Describe it."},
         {"type": "input_image", "media_type": "image/jpeg", "data": "aGVsbG8="}
-    ])))
-    .expect("wire image");
+    ]);
+    let content = serde_json::to_value(WireContent::new(Some(&input), "Kimi").expect("wire image"))
+        .expect("serialized image");
 
     assert_eq!(
         content,

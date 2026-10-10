@@ -401,6 +401,95 @@ fn error_detail(body: &[u8]) -> String {
     }
 }
 
+pub(super) struct ApiKeyModel {
+    pub(super) client: Client,
+    pub(super) transport: ModelTransportSettings,
+    pub(super) api_key: Option<String>,
+    pub(super) base_url: String,
+    pub(super) model: String,
+    pub(super) reasoning_effort: Option<String>,
+}
+
+impl std::fmt::Debug for ApiKeyModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiKeyModel")
+            .field("model", &self.model)
+            .field("reasoning_effort", &self.reasoning_effort)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ApiKeyModel {
+    pub(super) fn new(
+        api_key: Option<String>,
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+        client: Client,
+    ) -> Result<Self> {
+        if api_key.as_deref().is_some_and(|key| key.trim().is_empty()) {
+            return Err(Error::Config("provider API key cannot be empty".into()));
+        }
+        let mut base_url = base_url.into();
+        base_url.truncate(base_url.trim_end_matches('/').len());
+        super::provider::validate_base_url(&base_url)?;
+        let model = model.into();
+        if model.trim().is_empty() {
+            return Err(Error::Config("model is empty".into()));
+        }
+        Ok(Self {
+            client,
+            api_key,
+            base_url,
+            model,
+            reasoning_effort: None,
+            transport: ModelTransportSettings::default(),
+        })
+    }
+
+    pub(super) fn set_reasoning(&mut self, effort: impl Into<String>) -> Result<()> {
+        let effort = effort.into();
+        if effort.trim().is_empty() {
+            return Err(Error::Config("reasoning effort cannot be empty".into()));
+        }
+        self.reasoning_effort = Some(effort);
+        Ok(())
+    }
+
+    pub(super) fn info(&self) -> crate::protocol::ModelInfo {
+        // ModelInfo owns its labels while the transport retains its configuration.
+        crate::protocol::ModelInfo {
+            model: self.model.clone(),
+            reasoning_effort: self.reasoning_effort.clone(),
+        }
+    }
+}
+
+pub(super) trait SseHandler: Send {
+    fn apply_data(
+        &mut self,
+        data: &str,
+        events: &super::ModelEventSink,
+    ) -> impl Future<Output = Result<()>> + Send;
+}
+
+pub(super) async fn read_sse(
+    mut response: Response,
+    provider: &str,
+    events: &super::ModelEventSink,
+    handler: &mut impl SseHandler,
+) -> Result<()> {
+    let mut decoder = SseDecoder::default();
+    while let Some(chunk) = response.chunk().await? {
+        decoder.push(&chunk, provider)?;
+        while let Some(event) = decoder.next_frame()? {
+            if let Some(data) = frame_data(event) {
+                handler.apply_data(&data, events).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

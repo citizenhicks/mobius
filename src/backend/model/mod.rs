@@ -22,18 +22,22 @@ use crate::protocol::{
 };
 
 pub mod anthropic;
+mod authorization;
 mod cancellation;
+mod chat_completions;
 pub mod deepseek;
 mod image_generation;
 pub mod kimi;
 pub(crate) mod media;
+pub mod mistral;
 pub mod openai;
-mod openai_auth;
 pub mod openai_codex;
 pub mod openai_socket;
 pub mod openrouter;
 pub mod provider;
 pub mod realtime;
+mod responses;
+mod responses_socket;
 mod responses_wire;
 mod router;
 pub use cancellation::{ModelCancellation, ModelCancellationReason};
@@ -73,14 +77,26 @@ pub(crate) fn is_provider_reasoning(item: &Value) -> bool {
 pub(crate) fn has_provider_reasoning(item: &Value) -> bool {
     is_provider_reasoning(item)
         || item.get(REPLAY_REASONING_FIELD).is_some()
-        || anthropic::has_replay_reasoning(item)
+        || provider::providers()
+            .iter()
+            .filter_map(|provider| provider.replay_reasoning_field)
+            .any(|field| item.get(field).is_some())
 }
 
 fn strip_reasoning_fields(item: &mut Value) -> bool {
     let neutral = item
         .as_object_mut()
         .is_some_and(|fields| fields.remove(REPLAY_REASONING_FIELD).is_some());
-    anthropic::strip_replay_reasoning(item) || neutral
+    let mut changed = neutral;
+    if let Some(fields) = item.as_object_mut() {
+        for field in provider::providers()
+            .iter()
+            .filter_map(|provider| provider.replay_reasoning_field)
+        {
+            changed |= fields.remove(field).is_some();
+        }
+    }
+    changed
 }
 
 /// Removes provider-private reasoning before another model route replays context.
@@ -487,10 +503,14 @@ fn normalized_step_content(output: &[Value]) -> Result<Vec<ModelStepContent>> {
         let precedes_hosted_search = final_message_index.is_some_and(|final_index| {
             output_index < final_index
                 && output[output_index + 1..final_index].iter().any(|item| {
-                    matches!(
-                        item.get("type").and_then(Value::as_str),
-                        Some("web_search_call" | "openrouter:web_search")
-                    )
+                    item.get("type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|kind| {
+                            kind == "web_search_call"
+                                || provider::providers()
+                                    .iter()
+                                    .any(|provider| provider.web_search_type == Some(kind))
+                        })
                 })
         });
         let declared_phase = item.get("phase").and_then(Value::as_str);
@@ -857,6 +877,17 @@ pub(crate) fn image_input<'a>(
 
 pub(crate) fn image_data_url(media_type: &str, data: &str) -> String {
     format!("data:{media_type};base64,{data}")
+}
+
+pub(super) struct ImageDataUrl<'a>(pub(super) &'a str, pub(super) &'a str);
+
+impl Serialize for ImageDataUrl<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_str(&format_args!("data:{};base64,{}", self.0, self.1))
+    }
 }
 
 fn validate_usage(usage: &TokenUsage) -> Result<()> {

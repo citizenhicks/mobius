@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use super::transport::ApiKeyModel;
 use reqwest::Client;
 use serde::ser::SerializeSeq as _;
 use serde::{Deserialize, Serialize};
@@ -25,9 +26,6 @@ use super::image_input;
 use super::provider::HostedWebSearch;
 use super::provider::ProviderBuildConfig;
 use super::provider::ProviderDefinition;
-use super::provider::validate_base_url;
-use super::transport::SseDecoder;
-use super::transport::frame_data;
 use super::transport::status_error;
 use super::transport::streaming_client;
 use super::usage_i64;
@@ -58,25 +56,12 @@ pub(super) static CATALOG: std::sync::LazyLock<super::provider::ModelCatalog> =
 const MAX_CONTENT_BLOCKS: usize = 1_024;
 const RAW_CONTENT: &str = "_anthropic_content";
 
-pub(super) fn has_replay_reasoning(item: &Value) -> bool {
-    item.get(RAW_CONTENT).is_some()
-}
-
-pub(super) fn strip_replay_reasoning(item: &mut Value) -> bool {
-    item.as_object_mut()
-        .is_some_and(|fields| fields.remove(RAW_CONTENT).is_some())
-}
-
 /// Anthropic's native Messages API provider.
+#[derive(Debug)]
 pub struct Anthropic {
-    client: Client,
-    transport: super::ModelTransportSettings,
-    api_key: Option<String>,
-    base_url: String,
-    model: String,
+    config: ApiKeyModel,
     max_output_tokens: u64,
     tool_discovery: ToolDiscoveryMode,
-    reasoning_effort: Option<String>,
     web_search: bool,
 }
 
@@ -125,27 +110,14 @@ impl Anthropic {
         model: impl Into<String>,
         client: Client,
     ) -> Result<Self> {
-        if api_key.as_deref().is_some_and(|key| key.trim().is_empty()) {
-            return Err(Error::Config("provider API key cannot be empty".into()));
-        }
-        let base_url = base_url.into().trim_end_matches('/').to_string();
-        validate_base_url(&base_url)?;
-        let model = model.into();
-        if model.trim().is_empty() {
-            return Err(Error::Config("Anthropic model is empty".into()));
-        }
-        let tool_discovery = provider().tool_discovery(&model, Some(&base_url));
+        let config = ApiKeyModel::new(api_key, base_url, model, client)?;
+        let tool_discovery = provider().tool_discovery(&config.model, Some(&config.base_url));
         Ok(Self {
-            client,
-            transport: super::ModelTransportSettings::default(),
-            api_key,
-            base_url,
-            model,
+            config,
             max_output_tokens: MANIFEST
                 .max_output_tokens
                 .expect("Anthropic output default is required"),
             tool_discovery,
-            reasoning_effort: None,
             web_search: false,
         })
     }
@@ -158,7 +130,7 @@ impl Anthropic {
         settings: super::ModelTransportSettings,
     ) -> Result<Self> {
         settings.validate()?;
-        self.transport = settings;
+        self.config.transport = settings;
         Ok(self)
     }
 
@@ -180,11 +152,7 @@ impl Anthropic {
     ///
     /// Returns an error if validation or an operation required by this function fails.
     pub fn with_reasoning_effort(mut self, effort: impl Into<String>) -> Result<Self> {
-        let effort = effort.into();
-        if effort.trim().is_empty() {
-            return Err(Error::Config("reasoning effort cannot be empty".into()));
-        }
-        self.reasoning_effort = Some(effort);
+        self.config.set_reasoning(effort)?;
         Ok(self)
     }
 
@@ -212,18 +180,9 @@ impl Anthropic {
             )?)?)
         })
         .await?;
-        let mut response = self.post(body).await?;
-        let mut sse = SseDecoder::default();
+        let response = self.post(body).await?;
         let mut stream = StreamState::default();
-        while let Some(chunk) = response.chunk().await? {
-            sse.push(&chunk, "Anthropic")?;
-            while let Some(frame) = sse.next_frame()? {
-                let Some(data) = frame_data(frame) else {
-                    continue;
-                };
-                stream.apply(serde_json::from_str(&data)?, &events).await?;
-            }
-        }
+        super::transport::read_sse(response, "Anthropic", &events, &mut stream).await?;
         if !stream.stopped {
             return Err(Error::Provider(
                 "Anthropic stream ended before message_stop".into(),
@@ -243,7 +202,7 @@ impl Anthropic {
     ) -> Result<RequestBody<'a>> {
         let discovery = self.tool_discovery();
         let mut body = serde_json::json!({
-            "model": self.model,
+            "model": self.config.model,
             "max_tokens": self.max_output_tokens,
             "system": instructions,
             "stream": true
@@ -286,18 +245,21 @@ impl Anthropic {
     }
 
     fn apply_reasoning(&self, body: &mut Value) {
-        if let Some(effort) = &self.reasoning_effort {
+        if let Some(effort) = &self.config.reasoning_effort {
             body["thinking"] = serde_json::json!({"type": "adaptive"});
             body["output_config"] = serde_json::json!({"effort": effort});
         }
     }
 
     async fn post(&self, body: Vec<u8>) -> Result<reqwest::Response> {
-        let mut request = self.client.post(format!("{}/messages", self.base_url));
+        let mut request = self
+            .config
+            .client
+            .post(format!("{}/messages", self.config.base_url));
         for (name, value) in &MANIFEST.headers {
             request = request.header(name, value);
         }
-        if let Some(api_key) = &self.api_key {
+        if let Some(api_key) = &self.config.api_key {
             request = request.header("x-api-key", api_key);
         }
         let response = request
@@ -315,14 +277,11 @@ impl Anthropic {
 
 impl Model for Anthropic {
     fn transport_settings(&self) -> super::ModelTransportSettings {
-        self.transport
+        self.config.transport
     }
 
     fn info(&self) -> ModelInfo {
-        ModelInfo {
-            model: self.model.clone(),
-            reasoning_effort: self.reasoning_effort.clone(),
-        }
+        self.config.info()
     }
 
     fn supports_tool_image_input(&self) -> bool {
@@ -380,6 +339,12 @@ struct StreamState {
     usage: Usage,
     stop_reason: Option<String>,
     stopped: bool,
+}
+
+impl super::transport::SseHandler for StreamState {
+    async fn apply_data(&mut self, data: &str, events: &ModelEventSink) -> Result<()> {
+        self.apply(serde_json::from_str(data)?, events).await
+    }
 }
 
 impl StreamState {
@@ -1140,6 +1105,7 @@ impl Serialize for WireTools<'_> {
             #[serde(skip_serializing_if = "Option::is_none")]
             defer_loading: Option<bool>,
             description: &'a str,
+            #[serde(serialize_with = "serialize_tool_schema")]
             input_schema: &'a Value,
             name: &'a str,
         }
@@ -1170,6 +1136,21 @@ impl Serialize for WireTools<'_> {
             })?;
         }
         sequence.end()
+    }
+}
+
+fn serialize_tool_schema<S: serde::Serializer>(
+    schema: &Value,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    match schema.as_object() {
+        // Anthropic rejects root combinators; tool handlers still validate arguments.
+        Some(fields) => serializer.collect_map(
+            fields
+                .iter()
+                .filter(|(key, _)| !matches!(key.as_str(), "oneOf" | "allOf" | "anyOf")),
+        ),
+        None => schema.serialize(serializer),
     }
 }
 
@@ -1235,6 +1216,7 @@ pub(super) fn provider() -> ProviderDefinition {
     )
     .with_image_input()
     .with_credentialless_endpoints()
+    .with_replay_reasoning_field(RAW_CONTENT)
 }
 
 fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {

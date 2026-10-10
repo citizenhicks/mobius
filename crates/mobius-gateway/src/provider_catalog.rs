@@ -968,6 +968,7 @@ mod tests {
             ("openai_codex", ToolDiscoveryMode::Native),
             ("deepseek", ToolDiscoveryMode::Rebuild),
             ("kimi", ToolDiscoveryMode::Rebuild),
+            ("mistral", ToolDiscoveryMode::Rebuild),
             ("openrouter", ToolDiscoveryMode::Native),
             ("anthropic", ToolDiscoveryMode::Native),
             ("responses", ToolDiscoveryMode::Rebuild),

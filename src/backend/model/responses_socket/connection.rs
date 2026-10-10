@@ -27,16 +27,16 @@ use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use super::super::ModelCancellation;
 use super::super::ModelCancellationReason;
 use super::super::ModelEventSink;
-use super::super::openai::attach_stream_output;
-use super::super::openai::collect_stream_output;
-use super::super::openai::emit_ready_tool_calls;
-use super::super::openai::emit_reasoning_event;
-use super::super::openai::emit_text_event;
-use super::super::openai::emit_web_event;
-use super::super::openai::response_error;
-use super::super::openai::validate_stream_output;
-use super::super::openai_auth::OpenAiAuthorization;
-use super::super::openai_auth::ResolvedAuthorization;
+use super::super::authorization::OpenAiAuthorization;
+use super::super::authorization::ResolvedAuthorization;
+use super::super::responses::attach_stream_output;
+use super::super::responses::collect_stream_output;
+use super::super::responses::emit_ready_tool_calls;
+use super::super::responses::emit_reasoning_event;
+use super::super::responses::emit_text_event;
+use super::super::responses::emit_web_event;
+use super::super::responses::response_error;
+use super::super::responses::validate_stream_output;
 use super::super::transport::account_stream_bytes;
 use super::super::transport::response_error_code;
 use crate::Error;
@@ -566,7 +566,13 @@ async fn read_exchange_with_timeout(
             &tracked_events,
         )
         .await?;
-        let handled = emit_web_event(&event, &mut web_searches, &tracked_events).await?
+        let handled = emit_web_event(
+            &event,
+            &mut web_searches,
+            &tracked_events,
+            "web_search_call",
+        )
+        .await?
             || emit_reasoning_event(&event, &mut reasoning_part, &tracked_events).await?
             || emit_text_event(&event, &mut commentary, &tracked_events).await?;
         collect_stream_output(&mut event, &mut output, pending);
@@ -597,7 +603,7 @@ pub(super) fn failed_exchange(event: &Value, output_delivered: bool) -> Result<E
         || code.is_some_and(ProviderError::is_quota_code)
     {
         return Err(Error::Provider(
-            super::super::openai::response_provider_error(event, retry_after),
+            super::super::responses::response_provider_error(event, retry_after),
         ));
     }
     match code {
@@ -614,7 +620,7 @@ pub(super) fn failed_exchange(event: &Value, output_delivered: bool) -> Result<E
             Ok(Exchange::Retry { retry_after })
         }
         _ => Err(Error::Provider(
-            super::super::openai::response_provider_error(event, retry_after),
+            super::super::responses::response_provider_error(event, retry_after),
         )),
     }
 }

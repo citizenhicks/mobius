@@ -3,9 +3,9 @@
 use std::sync::Arc;
 
 use super::Model;
-use super::openai::OpenAi;
 use super::provider::ProviderBuildConfig;
 use super::provider::ProviderDefinition;
+use super::responses::OpenAi;
 use crate::Error;
 use crate::Result;
 
@@ -49,7 +49,6 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
     .with_tool_discovery(tool_discovery)
     .with_service_tier(config.service_tier)
     .without_image_input()
-    .without_realtime_voice()
     .with_image_api(None);
     let provider = match config.reasoning_effort {
         Some(effort) => provider.with_reasoning_effort(effort)?,

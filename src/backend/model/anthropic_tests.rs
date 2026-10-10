@@ -49,6 +49,29 @@ fn advertised_web_search_modes_build() {
 }
 
 #[test]
+fn catalog_advertises_all_efforts_for_every_model_and_haiku_5_5_defaults() {
+    let definition = provider();
+    let model = definition
+        .model("claude-haiku-5-5")
+        .expect("Haiku 5.5 preset");
+    assert!(definition.model("claude-haiku-4-5").is_none());
+    assert_eq!(model.context_window, 1_000_000);
+    assert_eq!(model.default_reasoning.as_deref(), Some("medium"));
+    for model in definition.models() {
+        assert_eq!(
+            model
+                .reasoning
+                .iter()
+                .map(|effort| effort.id.as_str())
+                .collect::<Vec<_>>(),
+            ["low", "medium", "high", "xhigh", "max"],
+            "{}",
+            model.id
+        );
+    }
+}
+
+#[test]
 fn native_discovery_builds_on_equivalent_and_custom_endpoints() {
     for base_url in [
         "https://api.anthropic.com:443/v1/",
@@ -59,7 +82,7 @@ fn native_discovery_builds_on_equivalent_and_custom_endpoints() {
                 capability: None,
                 tool_discovery: None,
                 credential: ProviderCredential::ApiKey("test-key".into()),
-                model: "claude-haiku-4-5".into(),
+                model: "claude-haiku-5-5".into(),
                 base_url: Some(base_url.into()),
                 reasoning_effort: None,
                 service_tier: None,
@@ -209,6 +232,98 @@ fn hosted_search_can_be_disabled_per_request() {
 }
 
 #[test]
+fn tool_schemas_omit_only_unsupported_root_combinators() {
+    let from_manifest = |text: &str, name: &str| {
+        let mut manifest: Value = toml::from_str(text).expect("tool manifest");
+        Arc::new(
+            serde_json::from_value::<ToolDefinition>(manifest[name]["tool"].take())
+                .expect("tool definition"),
+        )
+    };
+    let direct = [from_manifest(
+        include_str!("../../middleware/sessions.toml"),
+        "message_chat",
+    )];
+    let deferred = [
+        from_manifest(
+            include_str!("../../middleware/artifacts.toml"),
+            "send_artifact",
+        ),
+        from_manifest(
+            include_str!("../../middleware/tools/coding.toml"),
+            "view_image",
+        ),
+    ];
+    let original = serde_json::to_string(&(&direct, &deferred)).expect("original schemas");
+    let provider = Anthropic::new("test-key", MANIFEST.base_url.as_str(), "claude-haiku-5-5")
+        .expect("provider");
+    let input = [user_message("hello there")];
+    let body = provider
+        .request_body_value(
+            "instructions",
+            (&input).into(),
+            "catalog",
+            &direct,
+            &deferred,
+            false,
+        )
+        .expect("request body");
+
+    for (index, tool) in direct.iter().chain(&deferred).enumerate() {
+        let schema = &body["tools"][index]["input_schema"];
+        assert_eq!(body["tools"][index]["name"], tool.name);
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["properties"], tool.parameters["properties"]);
+        assert_eq!(schema["additionalProperties"], false);
+        assert!(schema.get("oneOf").is_none(), "{}", tool.name);
+        assert_eq!(
+            body["tools"][index]["defer_loading"].as_bool(),
+            (index > 0).then_some(true)
+        );
+    }
+    assert!(direct[0].parameters.get("oneOf").is_some());
+    assert!(deferred[0].parameters.get("oneOf").is_some());
+    assert!(
+        body["tools"][2]["input_schema"]["properties"]["images"]["items"]
+            .get("oneOf")
+            .is_some()
+    );
+    assert_eq!(
+        body["tools"][2]["input_schema"]["required"],
+        serde_json::json!(["images"])
+    );
+    assert_eq!(
+        serde_json::to_string(&(&direct, &deferred)).expect("shared schemas"),
+        original
+    );
+}
+
+#[test]
+fn tool_schemas_preserve_nested_combinators_and_other_root_fields() {
+    let tool = Arc::new(ToolDefinition {
+        name: "custom".into(),
+        description: "test tool".into(),
+        parameters: serde_json::json!({
+            "type": "object", "required": ["input"], "additionalProperties": false,
+            "oneOf": [{"required": ["input"]}],
+            "allOf": [{"required": ["input"]}],
+            "anyOf": [{"required": ["input"]}],
+            "properties": {"input": {"anyOf": [{"type": "string"}, {"type": "number"}]}},
+            "$defs": {"choice": {"oneOf": [{"type": "string"}, {"type": "number"}]}}
+        }),
+    });
+    let wire = serde_json::to_value(wire_tools(std::slice::from_ref(&tool), &[], false))
+        .expect("wire tools");
+    assert_eq!(
+        wire[0]["input_schema"],
+        serde_json::json!({
+            "type": "object", "required": ["input"], "additionalProperties": false,
+            "properties": &tool.parameters["properties"], "$defs": &tool.parameters["$defs"]
+        })
+    );
+}
+
+#[test]
 fn native_discovery_defers_schemas_and_replays_tool_references() {
     let direct = [discovery_tool(TOOLS_SEARCH_NAME)];
     let deferred = [discovery_tool("notebook_post")];
@@ -247,7 +362,7 @@ fn native_discovery_defers_schemas_and_replays_tool_references() {
 
 #[test]
 fn native_discovery_replays_a_standalone_compacted_tool_load() {
-    let provider = Anthropic::new("test-key", MANIFEST.base_url.as_str(), "claude-haiku-4-5")
+    let provider = Anthropic::new("test-key", MANIFEST.base_url.as_str(), "claude-haiku-5-5")
         .expect("provider");
     let direct = [discovery_tool(TOOLS_SEARCH_NAME)];
     let deferred = [discovery_tool("notebook_post")];
@@ -285,7 +400,7 @@ fn native_discovery_replays_a_standalone_compacted_tool_load() {
 
 #[test]
 fn native_discovery_ignores_tool_loads_from_an_old_catalog() {
-    let provider = Anthropic::new("test-key", MANIFEST.base_url.as_str(), "claude-haiku-4-5")
+    let provider = Anthropic::new("test-key", MANIFEST.base_url.as_str(), "claude-haiku-5-5")
         .expect("provider");
     let direct = [discovery_tool(TOOLS_SEARCH_NAME)];
     let deferred = [discovery_tool("notebook_post")];
@@ -952,8 +1067,8 @@ fn route_replay_strips_private_reasoning_without_copying_untouched_items() {
     ];
     assert!(super::super::strip_shared_provider_reasoning(&mut input));
     assert_eq!(input[0]["content"], "Visible answer");
-    assert!(!has_replay_reasoning(&input[0]));
-    assert!(has_replay_reasoning(&private));
+    assert!(!super::super::has_provider_reasoning(&input[0]));
+    assert!(super::super::has_provider_reasoning(&private));
     assert!(std::sync::Arc::ptr_eq(&input[1], &call));
     assert!(std::sync::Arc::ptr_eq(&input[2], &result));
     assert!(std::sync::Arc::ptr_eq(&input[3], &visible));

@@ -557,7 +557,7 @@ mod tests {
             .expect("prepare batch");
         let size = |input: &[Arc<Value>]| {
             serialized_size(
-                &serde_json::json!({"input":super::super::openai::wire_input_with_cache((input).into(), true, true, "catalog", &[])?}),
+                &serde_json::json!({"input":super::super::responses::wire_input_with_cache((input).into(), true, true, "catalog", &[])?}),
             )
         };
         bound_request(
@@ -758,7 +758,7 @@ mod tests {
         assert!(super::super::has_prompt_cache_breakpoint(
             (&prepared).into()
         ));
-        let wired = super::super::openai::wire_input_with_cache(
+        let wired = super::super::responses::wire_input_with_cache(
             (&prepared).into(),
             true,
             true,

@@ -35,8 +35,8 @@ use tokio::time::sleep;
 use tokio::time::timeout;
 use uuid::Uuid;
 
-use super::super::openai_auth::OpenAiAuthorization;
-use super::super::openai_auth::ResolvedAuthorization;
+use super::super::authorization::OpenAiAuthorization;
+use super::super::authorization::ResolvedAuthorization;
 use super::super::provider::BrowserAuth;
 use super::super::provider::ProviderCredential;
 use super::super::provider::UsageLimit;

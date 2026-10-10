@@ -603,6 +603,7 @@ mod tests {
             BTreeSet::from([
                 "ANTHROPIC_API_KEY",
                 "DEEPSEEK_API_KEY",
+                "MISTRAL_API_KEY",
                 "MOONSHOT_API_KEY",
                 "OPENAI_API_KEY",
                 "OPENROUTER_API_KEY",
