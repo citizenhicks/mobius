@@ -8,10 +8,10 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{ImageInputLimits, image_data_url, usage_i64, validate_usage};
-use crate::protocol::{ImageAspect, TokenUsage};
+use crate::protocol::TokenUsage;
 use crate::{Error, Result};
 
-const MAX_PROMPT_CHARS: usize = 32_000;
+pub(crate) const MAX_IMAGE_PROMPT_CHARS: usize = 32_000;
 const MAX_REFERENCES: usize = 16;
 const MAX_REFERENCE_URL_BYTES: usize = 20 * 1024 * 1024;
 const MAX_IMAGE_BYTES: usize = 48 * 1024 * 1024;
@@ -40,6 +40,19 @@ pub struct ImageGenerationRequest<'a> {
     pub references: &'a [ImageGenerationReference<'a>],
 }
 
+/// Requested shape of a generated image.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageAspect {
+    /// Equal width and height.
+    #[default]
+    Square,
+    /// Wider than tall.
+    Landscape,
+    /// Taller than wide.
+    Portrait,
+}
+
 impl ImageAspect {
     const fn image_size(self) -> &'static str {
         match self {
@@ -63,7 +76,7 @@ impl ImageGenerationRequest<'_> {
         if self.model.trim().is_empty() || self.model.len() > 256 {
             return Err(Error::Tool("image model must contain 1–256 bytes".into()));
         }
-        if self.prompt.trim().is_empty() || self.prompt.chars().count() > MAX_PROMPT_CHARS {
+        if self.prompt.trim().is_empty() || self.prompt.chars().count() > MAX_IMAGE_PROMPT_CHARS {
             return Err(Error::Tool(
                 "image prompt must contain 1–32000 characters".into(),
             ));

@@ -1,7 +1,15 @@
-use mobius::middleware::sessions::{ChatTarget, LiveChats};
+use mobius::middleware::sessions::{ChatTarget, LiveChats, PeerCommand};
 use mobius::protocol::ActiveMessageDelivery;
 
 use super::*;
+
+fn peer_message<'a>(target: ChatTarget<'a>, text: &str) -> PeerCommand<'a> {
+    PeerCommand::Message {
+        target,
+        text: text.into(),
+        delivery: ActiveMessageDelivery::Steer,
+    }
+}
 
 fn message(text: &str, delivery: Option<ActiveMessageDelivery>) -> Op {
     Op::Message {
@@ -47,7 +55,7 @@ async fn open_chats_of_one_bot_list_and_message_each_other() {
         )
         .await
         .unwrap();
-    let tool_count = async |host: &HostHandle| host.snapshot(None).await.unwrap().ready.tool_count;
+    let tool_count = async |host: &HostHandle| host.tool_count().await.unwrap();
     assert_eq!(
         tool_count(&sender).await,
         tool_count(&hidden).await + ["list_chats", "message_chat"].len()
@@ -75,8 +83,7 @@ async fn open_chats_of_one_bot_list_and_message_each_other() {
         chats
             .send(
                 sender.session_id(),
-                ChatTarget::Existing(foreign.session_id()),
-                message("Hi", None),
+                peer_message(ChatTarget::Existing(foreign.session_id()), "Hi"),
                 &MessageAuthor::User,
                 "foreign"
             )
@@ -88,8 +95,7 @@ async fn open_chats_of_one_bot_list_and_message_each_other() {
     chats
         .send(
             sender.session_id(),
-            ChatTarget::Existing(&target),
-            message("The API now returns ids.", None),
+            peer_message(ChatTarget::Existing(&target), "The API now returns ids."),
             &MessageAuthor::User,
             "peer-message",
         )
@@ -136,8 +142,7 @@ async fn message_chat_creates_an_owned_project_chat_after_validating_the_message
             chats
                 .send(
                     sender.session_id(),
-                    ChatTarget::Workspace(&workspace),
-                    message(text, None),
+                    peer_message(ChatTarget::Workspace(&workspace), text),
                     author,
                     "rejected-create",
                 )
@@ -150,8 +155,7 @@ async fn message_chat_creates_an_owned_project_chat_after_validating_the_message
     let target_id = chats
         .send(
             sender.session_id(),
-            ChatTarget::Workspace(&workspace),
-            message("Inspect this project", None),
+            peer_message(ChatTarget::Workspace(&workspace), "Inspect this project"),
             &MessageAuthor::User,
             "create-chat",
         )
@@ -230,8 +234,11 @@ async fn message_chat_honors_delivery_and_interrupts_the_selected_turn() {
             chats
                 .send(
                     sender.session_id(),
-                    ChatTarget::Existing(target.session_id()),
-                    message(text, Some(delivery)),
+                    PeerCommand::Message {
+                        target: ChatTarget::Existing(target.session_id()),
+                        text: text.into(),
+                        delivery,
+                    },
                     &MessageAuthor::User,
                     delivery.id(),
                 )
@@ -265,8 +272,8 @@ async fn message_chat_honors_delivery_and_interrupts_the_selected_turn() {
     chats
         .send(
             sender.session_id(),
-            ChatTarget::Existing(target.session_id()),
-            Op::Interrupt {
+            PeerCommand::Interrupt {
+                target: target.session_id(),
                 turn_id: turn_id.clone(),
             },
             &MessageAuthor::User,
@@ -335,8 +342,7 @@ async fn session_commands_and_chat_messages_preserve_sender_and_hook_ancestry() 
     chats
         .send(
             sender.session_id(),
-            ChatTarget::Existing(target.session_id()),
-            message("Peer test", None),
+            peer_message(ChatTarget::Existing(target.session_id()), "Peer test"),
             &origin,
             "peer",
         )

@@ -246,3 +246,36 @@ fn custom_tools_keep_their_name_and_object_input_for_hooks() {
         )
     );
 }
+
+#[test]
+fn only_inspection_tools_declare_read_only() {
+    let files = tempfile::tempdir().expect("files");
+    let mut catalog = Catalog::default();
+    for tool in [
+        Arc::new(ReadFile) as Arc<dyn Tool>,
+        Arc::new(ViewImage {
+            store: crate::backend::session_files::SessionFileStore::new(files.path(), None),
+        }),
+        Arc::new(WriteFile),
+        Arc::new(ApplyPatch),
+        Arc::new(Bash),
+        Arc::new(ManageCommand),
+    ] {
+        catalog.register(tool).expect("register tool");
+    }
+    catalog.register_search().expect("register tools_search");
+
+    let read_only = ["read_file", "view_image", TOOLS_SEARCH_NAME];
+    for name in read_only {
+        assert!(catalog.is_read_only(name), "{name}");
+    }
+    for name in [
+        "write_file",
+        "apply_patch",
+        "bash",
+        "manage_command",
+        "unknown",
+    ] {
+        assert!(!catalog.is_read_only(name), "{name}");
+    }
+}

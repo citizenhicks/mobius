@@ -77,7 +77,6 @@ impl Serialize for Header<'_> {
             sequence,
             delivered_once,
             context_epoch,
-            compaction_count,
             last_context_rewrite,
             total_usage,
             last_usage,
@@ -88,7 +87,7 @@ impl Serialize for Header<'_> {
             pending_tools,
             pending_approval,
         } = self.0;
-        let mut header = serializer.serialize_struct("Checkpoint", 21)?;
+        let mut header = serializer.serialize_struct("Checkpoint", 20)?;
         header.serialize_field("version", version)?;
         header.serialize_field("session_id", session_id)?;
         header.serialize_field("session_context", session_context)?;
@@ -100,7 +99,6 @@ impl Serialize for Header<'_> {
         header.serialize_field("sequence", sequence)?;
         header.serialize_field("delivered_once", delivered_once)?;
         header.serialize_field("context_epoch", context_epoch)?;
-        header.serialize_field("compaction_count", compaction_count)?;
         header.serialize_field("last_context_rewrite", last_context_rewrite)?;
         header.serialize_field("total_usage", total_usage)?;
         header.serialize_field("last_usage", last_usage)?;

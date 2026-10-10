@@ -275,7 +275,6 @@ impl Runner {
         let mut delivered_once = Arc::clone(&self.state.delivered_once);
         let mut transcript_delta = Vec::new();
         let mut context_epoch = self.state.context_epoch;
-        let mut compaction_count = self.state.compaction_count;
         let mut available_tools = self.catalog.exposed_names();
         let mut allow_hosted_tools = true;
         // Compact session-start hooks may read this queue after awaiting a provider.
@@ -315,7 +314,6 @@ impl Runner {
                 delivered_once: &mut delivered_once,
                 transcript_delta: &mut transcript_delta,
                 context_epoch: &mut context_epoch,
-                compaction_count: &mut compaction_count,
                 rewrite_reasons: &mut rewrite_reasons,
                 turn_stop: &mut turn_stop,
                 queued_messages,
@@ -411,7 +409,6 @@ impl Runner {
             }
             Err(error) => {
                 context_epoch = self.state.context_epoch;
-                compaction_count = self.state.compaction_count;
                 transcript_delta.clear();
                 rewrite_reasons.clear();
                 middleware_events.clear();
@@ -424,7 +421,6 @@ impl Runner {
             self.state.make_mut().delivered_once = delivered_once;
         }
         self.state.make_mut().context_epoch = context_epoch;
-        self.state.make_mut().compaction_count = compaction_count;
         if !rewrite_reasons.is_empty() {
             self.state.make_mut().last_usage = None;
             self.state.make_mut().last_context_rewrite = Some(ContextRewrite {

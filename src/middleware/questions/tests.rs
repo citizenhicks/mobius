@@ -428,6 +428,7 @@ fn validates_bounds_and_prunes_only_old_closed_items() {
 fn subagents_get_neither_tool_nor_prompt() {
     let temp = tempfile::tempdir().expect("temp");
     let runtime = RuntimeContext {
+        children: crate::agent::ChildAgents::default(),
         sender: crate::agent::test_sender(),
         checkpoints: Arc::new(SqliteCheckpoint::new(temp.path().join("db")).expect("store")),
         session_id: "child".into(),

@@ -474,12 +474,24 @@ impl ModelRouter {
     pub async fn start_realtime_voice(
         &self,
         voice_route: Option<&str>,
-        mut request: super::RealtimeVoiceRequest,
+        session_id: String,
+        offer_sdp: String,
+        instructions: String,
     ) -> Result<super::RealtimeVoiceCall> {
         let media = select_media(&self.voices, voice_route, "voice")?;
         // ponytail: owned copies, the request outlives the router borrow inside the provider.
-        request.model = Some(media.choice.model.as_str().into());
-        request.voice = media.choice.reasoning_effort.as_deref().map(Into::into);
+        let request = super::RealtimeVoiceRequest {
+            session_id,
+            model: media.choice.model.as_str().into(),
+            voice: media
+                .choice
+                .reasoning_effort
+                .as_deref()
+                .unwrap_or_default()
+                .into(),
+            offer_sdp,
+            instructions,
+        };
         let settings = media.provider.transport_settings();
         // Voice cleanup uses an earlier deadline without changing the route's shared credential lifetime.
         let mut credential = media.credential.clone();

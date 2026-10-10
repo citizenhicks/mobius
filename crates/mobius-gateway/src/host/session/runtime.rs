@@ -177,11 +177,15 @@ impl HostState {
             HostCommand::BotId { reply } => {
                 let _ = reply.send(self.spec.bot_id.clone());
             }
+            #[cfg(test)]
+            HostCommand::ToolCount { reply } => {
+                let _ = reply.send(self.running.tool_count);
+            }
             HostCommand::AcceptsFileAttachments { reply } => {
                 let result = async {
                     let _mutation = self.begin_session_mutation()?;
                     self.bind_bot().await?;
-                    Ok(runtime_accepts_attachments(&self.running.frontend))
+                    Ok(self.running.prepared.bot.accepts_file_attachments)
                 }
                 .await;
                 let _ = reply.send(result);
@@ -192,14 +196,19 @@ impl HostState {
                     self.bind_bot().await?;
                     let bot = self.bots.bot(&self.spec.bot_id).map_err(internal)?;
                     let router = &self.running.model_router;
-                    let selected = self
-                        .running
-                        .prepared
-                        .bot
-                        .config
-                        .config
-                        .realtime_voice
-                        .as_deref();
+                    let middleware = &self.running.prepared.bot.config.config.middleware;
+                    if !middleware.enabled(mobius::middleware::voice::MANIFEST.id) {
+                        return Err(Rejection::new(
+                            "realtime_voice",
+                            "voice is turned off for this Bot",
+                        ));
+                    }
+                    let selected = crate::middleware_manifest::string_setting(
+                        middleware,
+                        mobius::middleware::voice::MANIFEST.id,
+                        "model",
+                    )
+                    .map_err(internal)?;
                     let voice = router.voice_choice(selected).map_err(|error| {
                         Rejection::new(
                             "realtime_voice",
@@ -207,52 +216,23 @@ impl HostState {
                         )
                     })?;
                     let active_turn_id = self.activity().await.map_err(internal)?.turn_id;
-                    let config = self
-                        .gateway
-                        .lock()
-                        .map_err(|_| internal("gateway configuration lock is poisoned"))?;
-                    let provider_instance = crate::provider_catalog::configured_model_providers(
-                        &config,
-                        &self.store,
-                        &self.credentials,
-                    )
-                    .map_err(internal)?
-                    .remove(&voice.route)
-                    .ok_or_else(|| internal("voice route is no longer configured"))?;
                     let voice = voice.route.as_str().into();
                     Ok(RealtimeModel {
-                        bot_instructions: format!(
-                            "Your name is {} (@{}).\n\n{}",
-                            bot.name,
-                            bot.handle,
-                            self.running.prepared.instructions()
-                        ),
-                        bot_name: bot.name,
-                        router: Arc::clone(router),
-                        voice,
                         route: router.default_provider().into(),
-                        provider_instance,
-                        active_turn_id,
-                        checkpoints: Arc::clone(&self.checkpoints),
-                        frontend: Arc::clone(&self.running.frontend_sink),
+                        call: mobius::middleware::voice::VoiceCallContext {
+                            session_id: Arc::clone(&self.running.session_id),
+                            router: Arc::clone(router),
+                            voice,
+                            bot_name: bot.name,
+                            bot_handle: bot.handle,
+                            bot_instructions: self.running.prepared.instructions(),
+                            active_turn_id,
+                            checkpoints: Arc::clone(&self.checkpoints),
+                            frontend: Arc::clone(&self.running.frontend_sink),
+                        },
                     })
                 }
                 .await;
-                let _ = reply.send(result);
-            }
-            HostCommand::ObserveVoiceUsage {
-                provider_instance,
-                usage,
-                reply,
-            } => {
-                let result = crate::assembly::publish_usage(
-                    &self.gateway,
-                    &self.store,
-                    &provider_instance,
-                    &usage,
-                )
-                .await
-                .map_err(internal);
                 let _ = reply.send(result);
             }
             HostCommand::Snapshot {
@@ -748,15 +728,12 @@ impl HostState {
         {
             return Ok(false);
         }
-        if let Some(subagents) = &self.running.subagents
-            && subagents
-                .has_active_children(&self.running.session_id)
-                .await
-                .map_err(internal)?
-        {
-            return Ok(false);
-        }
-        Ok(true)
+        Ok(!self
+            .running
+            .frontend
+            .has_background_work()
+            .await
+            .map_err(internal)?)
     }
 
     async fn require_idle_runtime(&self) -> std::result::Result<(), Rejection> {
@@ -808,7 +785,7 @@ impl HostState {
                 Arc::clone(&self.credentials),
                 Arc::clone(&self.bots),
                 Arc::clone(&self.checkpoints),
-                self.scratchpad.clone(),
+                Arc::clone(&self.scratchpad),
                 self.session_files.clone(),
                 Arc::clone(&self.discovery_gate),
                 Arc::clone(&self.desktop),
@@ -831,7 +808,7 @@ impl HostState {
                         Arc::clone(&self.credentials),
                         Arc::clone(&self.bots),
                         Arc::clone(&self.checkpoints),
-                        self.scratchpad.clone(),
+                        Arc::clone(&self.scratchpad),
                         self.session_files.clone(),
                         Arc::clone(&self.discovery_gate),
                         Arc::clone(&self.desktop),
@@ -880,7 +857,6 @@ impl HostState {
         while let Some(record) = self.running.events.recv().await {
             self.apply_event(record).await?;
         }
-        self.running.subagent_template.take();
         Ok(())
     }
 }

@@ -18,13 +18,13 @@ use tokio::time::Instant;
 use tokio::time::timeout_at;
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(in crate::middleware::subagents) struct CompletionUpdate {
     pub(super) id: String,
     pub(super) recipient: String,
     pub(super) agent: String,
     pub(super) status: String,
     pub(super) text: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) reported_message_ids: Vec<String>,
 }
 
@@ -134,7 +134,9 @@ impl Shared {
                 .agents
                 .get(from)
                 .is_some_and(|entry| entry.parent == target);
-            let report = reports_to_parent.then(|| message.clone());
+            let report = reports_to_parent
+                .then(|| super::ParentReport::of(&message))
+                .flatten();
             let admission = sender.send_with_admission(Submission::message(message))?;
             if let Some(report) = report {
                 root.parent_reports
@@ -168,7 +170,9 @@ impl Shared {
                     .senders
                     .get(target)
                     .ok_or_else(|| Error::Stopped("agent runtime is unavailable".into()))?;
-                let report = reports_to_parent.then(|| message.clone());
+                let report = reports_to_parent
+                    .then(|| super::ParentReport::of(&message))
+                    .flatten();
                 let admission = sender.send_with_admission(Submission::message(message))?;
                 if let Some(report) = report {
                     root.parent_reports

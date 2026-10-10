@@ -13,11 +13,13 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use mobius::backend::model::provider::{HttpCertificate, HttpClient};
 #[cfg(unix)]
 use mobius::backend::sandbox::ProcessGroupGuard;
+use mobius::middleware::computer_control::{self, ComputerRuntime};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::process::Command;
@@ -27,6 +29,7 @@ use crate::{Error, Result};
 pub use config::{BrowserConfig, ComputerConfig, DesktopConfig, RuntimeMode};
 
 const WORKER: &str = include_str!("computer_runtime/worker.cjs");
+const DOCUMENTATION_FILE: &str = "computer-control.md";
 const DOCUMENTATION: &str = include_str!("computer_runtime/computer-control.md");
 const PACKAGE: &str = include_str!("computer_runtime/package.json");
 const LOCKFILE: &str = include_str!("computer_runtime/package-lock.json");
@@ -60,22 +63,31 @@ pub(crate) async fn write_app_update(
     }
 }
 
+/// An installed runtime: its directory and the bundle the computer middleware runs.
+pub(crate) struct PreparedComputer {
+    pub(crate) directory: PathBuf,
+    pub(crate) runtime: Arc<ComputerRuntime>,
+}
+
 pub(crate) async fn prepare(
     state_dir: &Path,
     settings: &MiddlewareConfig,
     config: &ComputerConfig,
-) -> Result<Option<PathBuf>> {
-    if !settings.enabled("computer_control") {
-        config.validate()?;
-        remote_desktop::prepare_configured_profile(config)?;
+) -> Result<Option<PreparedComputer>> {
+    config.validate()?;
+    remote_desktop::prepare_configured_profile(config)?;
+    if !settings.enabled(computer_control::MANIFEST.id) {
         return Ok(None);
     }
-    prepare_desktop(state_dir, config).await.map(Some)
+    let directory = prepare_desktop(state_dir, config).await?;
+    let runtime = Arc::new(ComputerRuntime::new(
+        worker_command(&directory, config)?,
+        directory.join(DOCUMENTATION_FILE),
+    )?);
+    Ok(Some(PreparedComputer { directory, runtime }))
 }
 
 pub(crate) async fn prepare_desktop(state_dir: &Path, config: &ComputerConfig) -> Result<PathBuf> {
-    config.validate()?;
-    remote_desktop::prepare_configured_profile(config)?;
     let override_path = config.directory.as_deref().map(Cow::Borrowed).or_else(|| {
         std::env::var_os("MOBIUS_COMPUTER_RUNTIME").map(|path| Cow::Owned(PathBuf::from(path)))
     });
@@ -157,21 +169,20 @@ async fn install_locked(destination: &Path, config: &ComputerConfig) -> Result<(
         .ok_or_else(|| Error::Config("runtime directory has no parent".into()))?;
     fs::create_dir_all(parent)?;
     let lock_path = parent.join("install.lock");
-    let _lock = {
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(lock_path)?;
-        loop {
-            match file.try_lock() {
-                Ok(()) => break file,
-                Err(std::fs::TryLockError::WouldBlock) => {
-                    tokio::time::sleep(Duration::from_millis(50)).await
-                }
-                Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(lock_path)?;
+    // A blocking file lock cannot be cancelled and would delay gateway shutdown.
+    let _lock = loop {
+        match file.try_lock() {
+            Ok(()) => break file,
+            Err(std::fs::TryLockError::WouldBlock) => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
+            Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
         }
     };
     if destination.exists() {
@@ -200,7 +211,7 @@ fn validate(path: &Path, config: &ComputerConfig) -> Result<()> {
         )));
     }
     node_executable(path, config)?;
-    for file in ["worker.cjs", "computer-control.md"] {
+    for file in ["worker.cjs", DOCUMENTATION_FILE] {
         if !path.join(file).is_file() {
             return Err(Error::Config(format!(
                 "computer runtime is missing {file} in {}",
@@ -286,7 +297,7 @@ pub fn export_resources(path: &Path) -> Result<()> {
     fs::create_dir_all(path)?;
     for (name, content) in [
         ("worker.cjs", WORKER),
-        ("computer-control.md", DOCUMENTATION),
+        (DOCUMENTATION_FILE, DOCUMENTATION),
         ("package.json", PACKAGE),
         ("package-lock.json", LOCKFILE),
         ("LICENSE", include_str!("../LICENSE")),

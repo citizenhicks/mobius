@@ -35,7 +35,7 @@ struct HostState {
     credentials: Arc<CredentialStore>,
     bots: Arc<BotStore>,
     checkpoints: Arc<dyn CheckpointStore>,
-    scratchpad: ScratchpadStore,
+    scratchpad: Arc<Scratchpad>,
     session_files: SessionFileStore,
     alive: Arc<AtomicBool>,
     terminated: Arc<AtomicBool>,
@@ -95,8 +95,7 @@ struct RunningAgent {
     frontend_sink: mobius::middleware::FrontendEventSink,
     session: mobius::protocol::SessionConfiguredEvent,
     gateway_sandbox: Arc<GatewaySandbox>,
-    subagents: Option<Arc<mobius::middleware::subagents::Subagents>>,
-    subagent_template: Option<Arc<OnceLock<AgentConfig>>>,
+    #[cfg(test)]
     tool_count: usize,
     prepared: Arc<crate::assembly::PreparedBot>,
 }
@@ -106,17 +105,9 @@ pub(super) struct ProviderCutoverStatus {
 }
 
 pub(crate) struct RealtimeModel {
-    pub(crate) bot_name: String,
-    pub(crate) bot_instructions: String,
-    pub(crate) router: Arc<ModelRouter>,
-    /// The selected voice route.
-    pub(crate) voice: String,
-    /// The chat context used to prepare this call's instructions.
+    /// The chat route used to prepare this call's instructions.
     pub(crate) route: String,
-    pub(crate) provider_instance: String,
-    pub(crate) active_turn_id: Option<String>,
-    pub(crate) checkpoints: Arc<dyn CheckpointStore>,
-    pub(crate) frontend: mobius::middleware::FrontendEventSink,
+    pub(crate) call: mobius::middleware::voice::VoiceCallContext,
 }
 
 pub(super) struct ActiveRoutine {
@@ -134,16 +125,15 @@ pub(super) enum HostCommand {
     BotId {
         reply: oneshot::Sender<String>,
     },
+    #[cfg(test)]
+    ToolCount {
+        reply: oneshot::Sender<usize>,
+    },
     AcceptsFileAttachments {
         reply: oneshot::Sender<std::result::Result<bool, Rejection>>,
     },
     RealtimeModel {
         reply: oneshot::Sender<std::result::Result<RealtimeModel, Rejection>>,
-    },
-    ObserveVoiceUsage {
-        provider_instance: String,
-        usage: mobius::protocol::TokenUsage,
-        reply: oneshot::Sender<std::result::Result<(), Rejection>>,
     },
     Snapshot {
         last_sequence: Option<u64>,
@@ -237,6 +227,13 @@ impl HostHandle {
         receiver.await.map_err(|_| stopped())
     }
 
+    #[cfg(test)]
+    pub(crate) async fn tool_count(&self) -> std::result::Result<usize, Rejection> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(HostCommand::ToolCount { reply }).await?;
+        receiver.await.map_err(|_| stopped())
+    }
+
     pub(super) async fn reassign_bot(&self, bot_id: String) -> std::result::Result<(), Rejection> {
         let _voice = self.claim_realtime_voice()?;
         let (reply, receiver) = oneshot::channel();
@@ -256,7 +253,7 @@ impl HostHandle {
         credentials: Arc<CredentialStore>,
         bots: Arc<BotStore>,
         checkpoints: Arc<dyn CheckpointStore>,
-        scratchpad: ScratchpadStore,
+        scratchpad: Arc<Scratchpad>,
         session_files: SessionFileStore,
         session_mutations: Arc<RwLock<()>>,
         discovery_gate: Arc<Mutex<()>>,
@@ -278,7 +275,7 @@ impl HostHandle {
             Arc::clone(&credentials),
             Arc::clone(&bots),
             Arc::clone(&checkpoints),
-            scratchpad.clone(),
+            Arc::clone(&scratchpad),
             session_files.clone(),
             Arc::clone(&discovery_gate),
             Arc::clone(&desktop),
@@ -405,21 +402,6 @@ impl HostHandle {
     pub(crate) async fn realtime_model(&self) -> std::result::Result<RealtimeModel, Rejection> {
         let (reply, receiver) = oneshot::channel();
         self.send(HostCommand::RealtimeModel { reply }).await?;
-        receive(receiver).await
-    }
-
-    pub(crate) async fn observe_voice_usage(
-        &self,
-        provider_instance: String,
-        usage: mobius::protocol::TokenUsage,
-    ) -> std::result::Result<(), Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::ObserveVoiceUsage {
-            provider_instance,
-            usage,
-            reply,
-        })
-        .await?;
         receive(receiver).await
     }
 
@@ -711,7 +693,6 @@ impl HostHandle {
             HostCommand::Shutdown
                 | HostCommand::WaitIdle { .. }
                 | HostCommand::StopIfIdle { .. }
-                | HostCommand::ObserveVoiceUsage { .. }
                 | HostCommand::ProviderCutoverStatus { .. }
         ) {
             return self
@@ -802,7 +783,7 @@ async fn start_agent(
     credentials: Arc<CredentialStore>,
     bots: Arc<BotStore>,
     checkpoints: Arc<dyn CheckpointStore>,
-    scratchpad: ScratchpadStore,
+    scratchpad: Arc<Scratchpad>,
     session_files: SessionFileStore,
     discovery_gate: Arc<Mutex<()>>,
     desktop: Arc<DesktopControl>,
@@ -885,8 +866,6 @@ async fn start_agent(
         model_router,
         sandbox,
         gateway_sandbox,
-        subagents,
-        subagent_template,
     } = assemble(
         gateway,
         spec,
@@ -905,6 +884,7 @@ async fn start_agent(
     )
     .await?;
     let frontend_sink = agent.frontend_sink();
+    #[cfg(test)]
     let tool_count = agent.tool_count();
     let (sender, events, session, frontend) = agent.into_recorded_parts();
     let session_id = Arc::from(session.session_id.as_str());
@@ -918,28 +898,16 @@ async fn start_agent(
         frontend_sink,
         session,
         gateway_sandbox,
-        subagents,
-        subagent_template,
+        #[cfg(test)]
         tool_count,
         prepared,
     })
 }
 
-pub(super) fn runtime_accepts_attachments(frontend: &FrontendExtensions) -> bool {
-    frontend
-        .contributions()
-        .iter()
-        .any(|contribution| contribution.accepts_file_attachments)
-}
-
 async fn shutdown_agent(agent: RunningAgent) {
     let RunningAgent {
-        sender,
-        mut events,
-        subagent_template,
-        ..
+        sender, mut events, ..
     } = agent;
     drop(sender);
     while events.recv().await.is_some() {}
-    drop(subagent_template);
 }

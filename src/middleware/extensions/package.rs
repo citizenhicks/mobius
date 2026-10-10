@@ -112,7 +112,6 @@ fn load_skill(root: PathBuf) -> Result<LoadedPackage> {
     let skills = BTreeMap::from([(
         name.clone(),
         Skill {
-            name: name.clone(),
             description: description.clone(),
             location: path,
         },

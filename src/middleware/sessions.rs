@@ -1,7 +1,6 @@
 //! Chat catalog, durable forking, and bounded owner-scoped history retrieval.
 
 use std::borrow::Cow;
-use std::fmt::Write as _;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -53,7 +52,15 @@ mod text {
         pub(super) command_resume_description: String,
         pub(super) manifest_description: String,
         pub(super) manifest_label: String,
+        pub(super) message_fork_usage: String,
+        pub(super) message_forked: String,
+        pub(super) message_no_fork_messages: String,
+        pub(super) message_no_saved_chats: String,
+        pub(super) message_resume_usage: String,
         pub(super) picker_assistant_message: String,
+        pub(super) picker_chat_label: String,
+        pub(super) picker_created_at: String,
+        pub(super) picker_fork_label: String,
         pub(super) picker_fork_chat_from_message: String,
         pub(super) picker_resume_chat: String,
         pub(super) picker_user_message: String,
@@ -62,7 +69,6 @@ mod text {
     }
     crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("sessions.toml"); }
 }
-const MAX_PAGE_SIZE: usize = 1_000;
 const MAX_HISTORY_QUERY_BYTES: usize = 512;
 const MAX_HISTORY_CURSOR_BYTES: usize = 8_192;
 const MAX_HISTORY_RESULTS: usize = 6;
@@ -74,18 +80,9 @@ const HISTORY_EXCERPT_CHARS: usize = 600;
 const MAX_HISTORY_READ_CHARS: usize = 4_000;
 const MAX_HANDLE_TITLE_BYTES: usize = 64;
 
-/// Default number of chats loaded per catalog page.
-pub fn default_page_size() -> usize {
-    usize::try_from(super::manifest::integer_default(
-        &text::DEFINITION.settings,
-        "page_size",
-    ))
-    .expect("validated default page size must fit")
-}
-
 super::manifest::middleware_manifest! {
 /// Configuration and presentation metadata for durable sessions.
-    "sessions", text::DEFINITION, required: true, capability: None, settings: &text::DEFINITION.settings
+    "sessions", text::DEFINITION, required: true, settings: &text::DEFINITION.settings
 }
 
 /// One open chat of an owner that can receive peer messages from its sibling chats.
@@ -133,6 +130,26 @@ pub enum ChatTarget<'a> {
     Workspace(&'a std::path::Path),
 }
 
+/// One `message_chat` operation, validated where the tool parses its arguments.
+pub enum PeerCommand<'a> {
+    /// A text message to an existing chat or a new workspace chat.
+    Message {
+        /// The destination chat.
+        target: ChatTarget<'a>,
+        /// The message text.
+        text: String,
+        /// How the message reaches a running recipient.
+        delivery: crate::protocol::ActiveMessageDelivery,
+    },
+    /// Interrupts one active turn of an existing chat.
+    Interrupt {
+        /// The session ID or sender handle of the chat.
+        target: &'a str,
+        /// The observed turn to interrupt.
+        turn_id: String,
+    },
+}
+
 /// Host access to the other chats of a chat's owner.
 pub trait LiveChats: Send + Sync {
     /// Lists the owner's open chats other than `session_id`.
@@ -144,13 +161,12 @@ pub trait LiveChats: Send + Sync {
     /// Delivers a message or interrupt, returning the destination's session ID.
     /// # Errors
     ///
-    /// Returns an error if the target, operation, or workspace is invalid, the
+    /// Returns an error if the target or workspace is unavailable, the
     /// initiating turn cannot authorize it, or the destination rejects it.
     fn send<'a>(
         &'a self,
         session_id: &'a str,
-        target: ChatTarget<'a>,
-        op: Op,
+        command: PeerCommand<'a>,
         initiating_author: &'a crate::protocol::MessageAuthor,
         command_id: &'a str,
     ) -> BoxFuture<'a, Result<String>>;
@@ -164,45 +180,67 @@ pub struct Sessions {
 }
 
 impl Sessions {
-    /// Lets main chats list and message their owner's other open chats.
-    #[must_use]
-    pub fn live_chats(mut self, chats: Arc<dyn LiveChats>) -> Self {
-        self.live_chats = Some(chats);
-        self
-    }
-
-    /// Injects durable media storage used when granting a fork its observations.
-    #[must_use]
-    pub fn session_files(mut self, files: crate::backend::session_files::SessionFileStore) -> Self {
-        self.files = Some(files);
-        self
-    }
-
-    /// Creates session middleware with a bounded catalog page size.
+    /// Creates session middleware with a bounded catalog page size, the durable media
+    /// storage a fork is granted its observations from, and, for hosts that have them,
+    /// the owner's other open chats that main chats may list and message.
     /// # Errors
     ///
-    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
-    pub fn new(page_size: usize) -> Result<Self> {
-        if page_size == 0 || page_size > MAX_PAGE_SIZE {
+    /// Returns an error if the page size is outside its manifest bounds.
+    pub fn new(
+        page_size: usize,
+        files: Option<crate::backend::session_files::SessionFileStore>,
+        live_chats: Option<Arc<dyn LiveChats>>,
+    ) -> Result<Self> {
+        let (min, max) = page_size_bounds();
+        if !(min..=max).contains(&page_size) {
             return Err(Error::Config(format!(
-                "chat catalog page size must be between 1 and {MAX_PAGE_SIZE}"
+                "chat catalog page size must be between {min} and {max}"
             )));
         }
         Ok(Self {
             page_size,
-            files: None,
-            live_chats: None,
+            files,
+            live_chats,
         })
     }
 }
 
-impl Default for Sessions {
-    fn default() -> Self {
-        Self {
-            page_size: default_page_size(),
-            files: None,
-            live_chats: None,
+fn page_size_bounds() -> (usize, usize) {
+    match text::DEFINITION
+        .settings
+        .iter()
+        .find(|setting| setting.id() == "page_size")
+    {
+        Some(super::manifest::MiddlewareSettingManifest::Integer {
+            min,
+            max: Some(max),
+            ..
+        }) => (
+            usize::try_from(*min).expect("embedded page size minimum must fit"),
+            usize::try_from(*max).expect("embedded page size maximum must fit"),
+        ),
+        _ => panic!("missing embedded integer setting page_size"),
+    }
+}
+
+enum Command {
+    Resume,
+    Fork,
+}
+
+impl Command {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Resume => "resume",
+            Self::Fork => "fork",
         }
+    }
+
+    fn parse(value: &str) -> Result<Self> {
+        [Self::Resume, Self::Fork]
+            .into_iter()
+            .find(|command| command.as_str() == value)
+            .ok_or_else(|| Error::Unknown(format!("{} command `{value}`", MANIFEST.id)))
     }
 }
 
@@ -230,27 +268,26 @@ impl Middleware for Sessions {
         catalog.register(Arc::new(MessageChat(chats)))
     }
 
-    fn frontend(&self) -> FrontendContribution {
+    fn frontend(&self, _session_id: &str) -> FrontendContribution {
         FrontendContribution {
-            capability: self.name().into(),
-            accepts_file_attachments: false,
-            count: None,
-            commands: vec![
-                FrontendCommand {
-                    name: "resume".into(),
-                    arguments: String::new(),
-                    description: text::DEFINITION.command_resume_description.clone(),
-                    requires_idle: true,
-                },
-                FrontendCommand {
-                    name: "fork".into(),
-                    arguments: String::new(),
-                    description: text::DEFINITION.command_fork_description.clone(),
-                    requires_idle: true,
-                },
-            ],
+            capability: MANIFEST.id.into(),
+            commands: [
+                (
+                    Command::Resume,
+                    &text::DEFINITION.command_resume_description,
+                ),
+                (Command::Fork, &text::DEFINITION.command_fork_description),
+            ]
+            .into_iter()
+            .map(|(command, description)| FrontendCommand {
+                name: command.as_str().into(),
+                arguments: String::new(),
+                description: description.to_owned(),
+                requires_idle: true,
+            })
+            .collect(),
             widgets: vec![FrontendWidget {
-                id: "fork".into(),
+                id: Command::Fork.as_str().into(),
                 slot: FrontendSlot::MessageActions,
                 text: text::DEFINITION.widget_fork_chat.clone(),
                 tone: FrontendTone::Neutral,
@@ -258,9 +295,13 @@ impl Middleware for Sessions {
                 icon_only: true,
                 progress: None,
                 content: None,
-                action: Some(Op::command(MANIFEST.id, "fork", String::new())),
+                action: Some(Op::command(
+                    MANIFEST.id,
+                    Command::Fork.as_str(),
+                    String::new(),
+                )),
             }],
-            references: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -280,10 +321,9 @@ impl Middleware for Sessions {
         context: MiddlewareCommandContext<'a>,
     ) -> BoxFuture<'a, Result<MiddlewareCommandOutput>> {
         Box::pin(async move {
-            match context.command {
-                "resume" => resume(context, self.page_size).await,
-                "fork" => fork(context, self.files.as_ref()).await,
-                command => Err(Error::Unknown(format!("sessions command `{command}`"))),
+            match Command::parse(context.command)? {
+                Command::Resume => resume(context, self.page_size).await,
+                Command::Fork => fork(context, self.files.as_ref(), self.page_size).await,
             }
         })
     }
@@ -318,7 +358,7 @@ struct ReadHistoryArgs {
 }
 
 const fn default_read_chars() -> usize {
-    4_000
+    MAX_HISTORY_READ_CHARS
 }
 
 #[derive(Deserialize, Serialize)]
@@ -343,7 +383,7 @@ struct HistoryHit<'a> {
 }
 
 struct HistoryDocument {
-    session_id: String,
+    session_id: Arc<str>,
     target: MessageTarget,
     kind: &'static str,
     offset: usize,
@@ -378,7 +418,7 @@ struct MessageChatArgs {
 }
 
 impl MessageChatArgs {
-    fn command(&mut self) -> Result<(ChatTarget<'_>, Op)> {
+    fn command(&mut self) -> Result<PeerCommand<'_>> {
         let target = match (self.target.as_deref(), self.workspace.as_deref()) {
             (Some(target), None) => ChatTarget::Existing(target),
             (None, Some(workspace)) => ChatTarget::Workspace(workspace),
@@ -388,36 +428,35 @@ impl MessageChatArgs {
                 ));
             }
         };
-        let op = match (
+        match (
+            target,
             self.text.take(),
             self.interrupt_turn_id.take(),
             self.delivery,
         ) {
-            (Some(text), None, delivery) => Op::Message {
-                message: crate::protocol::MessageSubmission {
-                    author: crate::protocol::MessageAuthor::User,
-                    text,
-                    attachments: Vec::new(),
-                    reply: None,
-                    requested_delivery: Some(
-                        delivery.unwrap_or(crate::protocol::ActiveMessageDelivery::Steer),
-                    ),
-                    target_turn_id: None,
-                },
-            },
-            (None, Some(turn_id), None) if self.workspace.is_none() => Op::Interrupt { turn_id },
-            _ => return Err(Error::Tool(
+            (target, Some(text), None, delivery) => Ok(PeerCommand::Message {
+                target,
+                text,
+                delivery: delivery.unwrap_or(crate::protocol::ActiveMessageDelivery::Steer),
+            }),
+            (ChatTarget::Existing(target), None, Some(turn_id), None) => {
+                Ok(PeerCommand::Interrupt { target, turn_id })
+            }
+            _ => Err(Error::Tool(
                 "provide text with optional delivery, or interrupt_turn_id with an existing target"
                     .into(),
             )),
-        };
-        Ok((target, op))
+        }
     }
 }
 
 impl Tool for ListChats {
     fn definition(&self) -> ToolDefinition {
         text::DEFINITION.list_chats.tool.clone()
+    }
+
+    fn read_only(&self) -> bool {
+        true
     }
 
     fn exposure(&self) -> ToolExposure {
@@ -468,14 +507,13 @@ impl Tool for MessageChat {
     ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let mut args: MessageChatArgs = serde_json::from_value(arguments)?;
-            let (target, op) = args.command()?;
+            let command = args.command()?;
             let target = self
                 .0
                 .chats
                 .send(
                     &self.0.history.session_id,
-                    target,
-                    op,
+                    command,
                     &context.author,
                     &context.call_id,
                 )
@@ -491,6 +529,10 @@ impl Tool for SearchHistory {
         tool.parameters["properties"]["query"]["maxLength"] = MAX_HISTORY_QUERY_BYTES.into();
         tool.parameters["properties"]["cursor"]["maxLength"] = MAX_HISTORY_CURSOR_BYTES.into();
         tool
+    }
+
+    fn read_only(&self) -> bool {
+        true
     }
 
     fn exposure(&self) -> ToolExposure {
@@ -520,6 +562,10 @@ impl Tool for ReadHistory {
         let mut tool = text::DEFINITION.read_history.tool.clone();
         tool.parameters["properties"]["max_chars"]["maximum"] = MAX_HISTORY_READ_CHARS.into();
         tool
+    }
+
+    fn read_only(&self) -> bool {
+        true
     }
 
     fn exposure(&self) -> ToolExposure {
@@ -642,7 +688,8 @@ impl History {
                 }
                 continue;
             };
-            let page = self.page(session_id, cursor.before_sequence).await?;
+            let session_id = Arc::<str>::from(session_id);
+            let page = self.page(&session_id, cursor.before_sequence).await?;
             let Some(batch) = page.batches.into_iter().next() else {
                 if cursor.scope == HistoryScope::Current {
                     complete = true;
@@ -656,6 +703,7 @@ impl History {
             };
             scan_history_batch(
                 &batch,
+                &session_id,
                 &mut cursor,
                 &mut documents,
                 &mut scanned_items,
@@ -714,7 +762,6 @@ impl History {
             session_id: summary.session_id.clone(),
         });
         if summary.session_id != self.session_id {
-            self.authorize(&summary.session_id).await?;
             cursor.session_id = Some(summary.session_id);
         }
         Ok(true)
@@ -779,6 +826,7 @@ fn validate_history_sequence(sequence: u64) -> Result<()> {
 
 fn scan_history_batch(
     batch: &crate::backend::checkpoint::TranscriptBatch,
+    session_id: &Arc<str>,
     cursor: &mut HistoryCursor,
     documents: &mut Vec<HistoryDocument>,
     scanned_items: &mut usize,
@@ -804,10 +852,7 @@ fn scan_history_batch(
             let (chunk, next) = history_chunk(&text, cursor.offset, limit)?;
             *scanned_chars += chunk.chars().count();
             documents.push(HistoryDocument {
-                session_id: cursor
-                    .session_id
-                    .clone()
-                    .ok_or_else(|| Error::Tool("history cursor has no chat".into()))?,
+                session_id: Arc::clone(session_id),
                 target: MessageTarget {
                     checkpoint_sequence: batch.sequence,
                     batch_item_count: remaining,
@@ -955,11 +1000,12 @@ fn history_excerpt(text: &str, query: &str) -> (usize, String) {
 async fn fork(
     context: MiddlewareCommandContext<'_>,
     files: Option<&crate::backend::session_files::SessionFileStore>,
+    page_size: usize,
 ) -> Result<MiddlewareCommandOutput> {
     if !context.arguments.trim().is_empty() {
         return Ok(MiddlewareCommandOutput::render(
-            "sessions",
-            "! usage: fork",
+            MANIFEST.id,
+            text::DEFINITION.message_fork_usage.as_str(),
             FrontendTone::Warning,
         ));
     }
@@ -969,13 +1015,13 @@ async fn fork(
         .map_or(context.checkpoint.sequence, |target| {
             target.checkpoint_sequence
         });
-    let items = transcript_items_through(&context, through_sequence).await?;
+    let items = transcript_items_through(&context, through_sequence, page_size).await?;
     let Some(target) = target else {
         let options = fork_options(&items, context.session_id);
         if options.is_empty() {
             return Ok(MiddlewareCommandOutput::render(
-                "sessions",
-                "no messages to fork",
+                MANIFEST.id,
+                text::DEFINITION.message_no_fork_messages.as_str(),
                 FrontendTone::Neutral,
             ));
         }
@@ -1006,8 +1052,10 @@ async fn fork(
     // A picker here waits for a choice the reader has already made. The fork is listed with
     // every other chat, so a confirmation that scrolls away is enough.
     Ok(MiddlewareCommandOutput::render(
-        "sessions",
-        format!("◇ forked chat {}", compact_id(&checkpoint.session_id)),
+        MANIFEST.id,
+        text::DEFINITION
+            .message_forked
+            .replace("{id}", compact_id(&checkpoint.session_id)),
         FrontendTone::Success,
     ))
 }
@@ -1015,6 +1063,7 @@ async fn fork(
 async fn transcript_items_through(
     context: &MiddlewareCommandContext<'_>,
     through_sequence: u64,
+    page_size: usize,
 ) -> Result<Vec<(MessageTarget, serde_json::Value)>> {
     let mut before_sequence =
         Some(through_sequence.checked_add(1).ok_or_else(|| {
@@ -1028,7 +1077,7 @@ async fn transcript_items_through(
                 context.session_id,
                 TranscriptPageRequest {
                     before_sequence,
-                    max_batches: default_page_size(),
+                    max_batches: page_size,
                 },
             )
             .await?;
@@ -1070,7 +1119,7 @@ fn fork_options(
                 shows_detail: false,
                 op: Op::CapabilityCommand {
                     capability: MANIFEST.id.into(),
-                    command: "fork".into(),
+                    command: Command::Fork.as_str().into(),
                     arguments: String::new(),
                     input: None,
                     target: Some(target),
@@ -1168,8 +1217,8 @@ async fn resume(
             Ok(cursor) => Some(cursor),
             Err(_) => {
                 return Ok(MiddlewareCommandOutput::render(
-                    "sessions",
-                    "! usage: resume",
+                    MANIFEST.id,
+                    text::DEFINITION.message_resume_usage.as_str(),
                     FrontendTone::Warning,
                 ));
             }
@@ -1178,8 +1227,8 @@ async fn resume(
     let options = resume_options(&context, cursor, page_size).await?;
     if options.is_empty() {
         return Ok(MiddlewareCommandOutput::render(
-            "sessions",
-            "no saved chats",
+            MANIFEST.id,
+            text::DEFINITION.message_no_saved_chats.as_str(),
             FrontendTone::Neutral,
         ));
     }
@@ -1227,7 +1276,11 @@ fn resume_page_options(
             detail: String::new(),
             symbol: None,
             shows_detail: false,
-            op: Op::command(MANIFEST.id, "resume", serde_json::to_string(&cursor)?),
+            op: Op::command(
+                MANIFEST.id,
+                Command::Resume.as_str(),
+                serde_json::to_string(&cursor)?,
+            ),
         });
     }
     Ok(options)
@@ -1243,15 +1296,12 @@ fn resume_option(
     let description = session_description(&session);
     let label = session.first_user_message.map_or_else(
         || {
-            format!(
-                "{} {}",
-                if session.parent_session_id.is_some() {
-                    "Fork"
-                } else {
-                    "Chat"
-                },
-                compact_id(&session.session_id)
-            )
+            if session.parent_session_id.is_some() {
+                &text::DEFINITION.picker_fork_label
+            } else {
+                &text::DEFINITION.picker_chat_label
+            }
+            .replace("{id}", compact_id(&session.session_id))
         },
         |message| compact_message(&message),
     );
@@ -1268,20 +1318,18 @@ fn resume_option(
 }
 
 fn session_description(session: &SessionSummary) -> String {
-    let mut details = String::new();
-    for label in [
+    let created = text::DEFINITION
+        .picker_created_at
+        .replace("{time}", &session.created_at.to_string());
+    [
         session.session_context.workspace_label.as_deref(),
         session.session_context.origin_label.as_deref(),
+        Some(created.as_str()),
     ]
     .into_iter()
     .flatten()
-    {
-        details.push_str(label);
-        details.push_str(" · ");
-    }
-    write!(details, "created at Unix time {}", session.created_at)
-        .expect("writing to a String cannot fail");
-    details
+    .collect::<Vec<_>>()
+    .join(" · ")
 }
 
 #[cfg(test)]
@@ -1290,8 +1338,10 @@ mod tests {
 
     #[test]
     fn owner_local_defaults_preserve_catalog_paging() {
-        assert_eq!(Sessions::default().page_size, 100);
-        assert_eq!(default_page_size(), 100);
+        assert_eq!(
+            super::super::manifest::integer_default(&text::DEFINITION.settings, "page_size"),
+            100
+        );
         assert!(MANIFEST.default_enabled);
     }
 
@@ -1417,6 +1467,7 @@ mod tests {
             .expect("checkpoint store"),
         );
         let runtime = RuntimeContext {
+            children: crate::agent::ChildAgents::default(),
             sender: crate::agent::test_sender(),
             checkpoints,
             session_id: "session".into(),
@@ -1447,7 +1498,10 @@ mod tests {
     #[test]
     fn history_tools_are_directly_available_for_the_required_owner() {
         assert_eq!(
-            direct_tool_names(&Sessions::default(), crate::agent::AgentRole::Main),
+            direct_tool_names(
+                &Sessions::new(100, None, None).expect("sessions"),
+                crate::agent::AgentRole::Main
+            ),
             ["read_history", "search_history"]
         );
     }
@@ -1485,8 +1539,7 @@ mod tests {
         fn send<'a>(
             &'a self,
             _session_id: &'a str,
-            _target: ChatTarget<'a>,
-            _op: Op,
+            _command: PeerCommand<'a>,
             _initiating_author: &'a crate::protocol::MessageAuthor,
             _command_id: &'a str,
         ) -> BoxFuture<'a, Result<String>> {
@@ -1496,7 +1549,7 @@ mod tests {
 
     #[test]
     fn live_chat_tools_are_offered_only_to_main_chats_with_a_host() {
-        let sessions = Sessions::default().live_chats(Arc::new(NoChats));
+        let sessions = Sessions::new(100, None, Some(Arc::new(NoChats))).expect("sessions");
         let subagent = crate::agent::AgentRole::Subagent {
             parent_session_id: "session".into(),
             parent_turn_id: "turn".into(),
@@ -1890,13 +1943,15 @@ mod tests {
 
     #[test]
     fn sessions_rejects_page_sizes_outside_its_manifest_bounds() {
-        assert!(Sessions::new(0).is_err());
-        assert!(Sessions::new(MAX_PAGE_SIZE + 1).is_err());
+        assert!(Sessions::new(0, None, None).is_err());
+        assert!(Sessions::new(page_size_bounds().1 + 1, None, None).is_err());
     }
 
     #[test]
     fn fork_is_exposed_as_a_generic_message_action() {
-        let contribution = Sessions::default().frontend();
+        let contribution = Sessions::new(100, None, None)
+            .expect("sessions")
+            .frontend("session");
         let widget = contribution.widgets.first().expect("fork widget");
 
         assert_eq!(widget.slot, FrontendSlot::MessageActions);
@@ -2271,5 +2326,101 @@ mod tests {
             serde_json::from_str::<SessionCursor>(arguments).expect("decode cursor"),
             cursor
         );
+    }
+
+    struct TranscriptPageProbe(std::sync::Mutex<Vec<usize>>);
+
+    impl crate::backend::checkpoint::CheckpointStore for TranscriptPageProbe {
+        fn load<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<Option<Checkpoint>>> {
+            unreachable!()
+        }
+        fn message_accepted<'a>(&'a self, _: &'a str, _: &'a str) -> BoxFuture<'a, Result<bool>> {
+            unreachable!()
+        }
+        fn delete_sessions<'a>(&'a self, _: &'a [String]) -> BoxFuture<'a, Result<bool>> {
+            unreachable!()
+        }
+        fn save<'a>(
+            &'a self,
+            _: &'a Checkpoint,
+            _: &'a [Arc<Value>],
+            _: Option<&'a crate::backend::checkpoint::ExecutionRecord>,
+        ) -> BoxFuture<'a, Result<()>> {
+            unreachable!()
+        }
+        fn save_with_events<'a>(
+            &'a self,
+            _: Arc<Checkpoint>,
+            _: Vec<Arc<Value>>,
+            _: Option<crate::backend::checkpoint::ExecutionRecord>,
+            _: Vec<crate::backend::checkpoint::TimestampedEvent>,
+        ) -> BoxFuture<'a, Result<Vec<crate::backend::checkpoint::JournalEvent>>> {
+            unreachable!()
+        }
+        fn append_event<'a>(
+            &'a self,
+            _: &'a str,
+            _: i64,
+            _: &'a crate::protocol::Event,
+        ) -> BoxFuture<'a, Result<crate::backend::checkpoint::JournalEvent>> {
+            unreachable!()
+        }
+        fn event_page<'a>(
+            &'a self,
+            _: &'a str,
+            _: crate::backend::checkpoint::EventPageRequest,
+        ) -> BoxFuture<'a, Result<crate::backend::checkpoint::EventPage>> {
+            unreachable!()
+        }
+        fn transcript_page<'a>(
+            &'a self,
+            _: &'a str,
+            request: TranscriptPageRequest,
+        ) -> BoxFuture<'a, Result<crate::backend::checkpoint::TranscriptPage>> {
+            self.0.lock().expect("probe").push(request.max_batches);
+            Box::pin(async {
+                Ok(crate::backend::checkpoint::TranscriptPage {
+                    batches: Vec::new(),
+                    next_before_sequence: None,
+                })
+            })
+        }
+        fn load_state<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a str,
+        ) -> BoxFuture<'a, Result<Option<Value>>> {
+            unreachable!()
+        }
+        fn save_state<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a str,
+            _: &'a Value,
+        ) -> BoxFuture<'a, Result<()>> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn fork_reads_transcript_pages_of_the_configured_size() {
+        let probe = Arc::new(TranscriptPageProbe(std::sync::Mutex::default()));
+        let checkpoint = Checkpoint::empty("session");
+        let context = crate::protocol::SessionContext::default();
+        Sessions::new(7, None, None)
+            .expect("sessions")
+            .command(MiddlewareCommandContext {
+                command: "fork",
+                arguments: "",
+                input: None,
+                target: None,
+                session_id: "session",
+                session_context: &context,
+                checkpoint: &checkpoint,
+                checkpoints: probe.clone(),
+            })
+            .await
+            .expect("fork picker");
+        assert_eq!(*probe.0.lock().expect("probe"), vec![7]);
     }
 }

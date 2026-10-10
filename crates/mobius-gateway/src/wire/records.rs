@@ -285,10 +285,6 @@ pub struct SessionReadyPayload {
     pub contributions: Vec<FrontendContribution>,
     /// The widgets.
     pub widgets: Vec<SessionWidget>,
-    /// The tool count.
-    pub tool_count: usize,
-    /// The compaction count.
-    pub compaction_count: u64,
     /// The context limit tokens.
     pub context_limit_tokens: Option<i64>,
     /// The active message delivery.
@@ -479,8 +475,6 @@ pub struct VersionedAgentConfig {
 pub struct AgentComposition {
     /// The provider.
     pub provider: ProviderConfig,
-    /// The realtime voice.
-    pub realtime_voice: Option<String>,
     /// The middleware.
     pub middleware: MiddlewareConfig,
     /// The extensions.
@@ -499,6 +493,17 @@ pub enum ExtensionKind {
     Skill,
     /// Selects the plugin case.
     Plugin,
+}
+
+impl ExtensionKind {
+    /// Returns the kind's ID prefix and display name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Skill => "skill",
+            Self::Plugin => "plugin",
+        }
+    }
 }
 
 /// One executable plugin hook shown before digest-bound trust is granted.
@@ -629,8 +634,6 @@ pub struct ProviderStatus {
     pub supported_tool_discovery: Vec<ToolDiscoveryMode>,
     /// The custom endpoint tool discovery.
     pub custom_endpoint_tool_discovery: Option<ToolDiscoveryMode>,
-    /// The realtime voices.
-    pub realtime_voices: Vec<String>,
 }
 
 /// User-chosen accent for distinguishing provider instances in model selectors.
@@ -802,23 +805,7 @@ impl MiddlewareConfig {
         &self,
         features: &'a [mobius::protocol::MiddlewareFeature],
         id: &str,
-        selected_model: Option<&mobius::protocol::ModelChoice>,
     ) -> Option<&'a str> {
-        if let Some(capability) = features
-            .iter()
-            .find(|feature| feature.id == id)
-            .and_then(|feature| feature.required_model_capability)
-            && selected_model.is_some_and(|model| !model.supports(capability))
-        {
-            return Some(match capability {
-                mobius::protocol::ModelCapability::ImageGeneration => {
-                    "a model without image generation"
-                }
-                mobius::protocol::ModelCapability::RealtimeVoice => {
-                    "a model without realtime voice"
-                }
-            });
-        }
         features
             .iter()
             .filter(|feature| feature.required || self.enabled(&feature.id))
@@ -846,15 +833,11 @@ impl MiddlewareConfig {
     }
 
     /// Applies exclusions advertised by the currently selected policies.
-    pub fn reconcile(
-        &mut self,
-        features: &[mobius::protocol::MiddlewareFeature],
-        selected_model: Option<&mobius::protocol::ModelChoice>,
-    ) {
+    pub fn reconcile(&mut self, features: &[mobius::protocol::MiddlewareFeature]) {
         let excluded = self
             .enabled
             .iter()
-            .filter(|id| self.disabled_by(features, id, selected_model).is_some())
+            .filter(|id| self.disabled_by(features, id).is_some())
             // Evaluate all exclusions against the unchanged enabled set before removing any selected IDs.
             .cloned()
             .collect::<Vec<_>>();

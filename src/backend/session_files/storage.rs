@@ -441,6 +441,32 @@ pub(super) fn validate_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Infers a download media type from the filename extension.
+/// Unknown extensions use `application/octet-stream`; this does not inspect file contents.
+#[must_use]
+pub fn media_type(name: &str) -> &'static str {
+    match Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("svg") => "image/svg+xml",
+        Some("pdf") => "application/pdf",
+        Some("csv") => "text/csv",
+        Some("xls") => "application/vnd.ms-excel",
+        Some("xlsx") => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        Some("txt") => "text/plain",
+        Some("json") => "application/json",
+        Some("zip") => "application/zip",
+        _ => "application/octet-stream",
+    }
+}
+
 pub(super) fn validate_media_type(media_type: &str) -> Result<()> {
     let Some((kind, subtype)) = media_type.split_once('/') else {
         return Err(Error::Tool(

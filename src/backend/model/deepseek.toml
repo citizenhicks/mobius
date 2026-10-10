@@ -1,5 +1,6 @@
 # Provider-owned model catalog, verified 2026-10-06 against api-docs.deepseek.com.
 default_model = "deepseek-flash"
+image_input_models = ["deepseek-flash"]
 
 [[models]]
 id = "deepseek-flash"

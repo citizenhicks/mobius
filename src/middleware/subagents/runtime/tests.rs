@@ -77,16 +77,17 @@ fn status_widget_owns_its_picker() {
     assert!(!widget.icon_only);
     assert!(matches!(
         widget.content,
-        Some(FrontendWidgetContent::Picker { title, options })
+        Some(FrontendWidgetContent::ActionList { title, items, actions })
             if title == "Subagents"
-                && options.len() == 1
-                && options[0].label == "reviewer"
-                && options[0].description == "running"
-                && options[0].detail == "openai::gpt-5::high"
-                && options[0].symbol == Some(FrontendSymbol::Progress)
-                && !options[0].shows_detail
+                && actions.is_empty()
+                && items.len() == 1
+                && items[0].id == "/root/team/reviewer"
+                && items[0].text == "reviewer"
+                && items[0].state == crate::protocol::FrontendListItemState::InProgress
+                && items[0].actions.len() == 1
+                && items[0].actions[0].symbol == FrontendSymbol::Progress
                 && matches!(
-                    &options[0].op,
+                    &items[0].actions[0].op,
                     Op::CapabilityCommand { arguments, .. }
                         if arguments == "/root/team/reviewer"
                 )
@@ -118,30 +119,26 @@ fn picker_groups_active_done_and_errored_agents() {
         );
     }
 
-    let options = picker_options(&tree);
+    let items = agent_items(&tree);
     assert_eq!(
-        options
+        items
             .iter()
-            .map(|option| option.description.as_str())
+            .map(|item| item.text.as_str())
             .collect::<Vec<_>>(),
-        [
-            "pending_init",
-            "running",
-            "completed",
-            "interrupted",
-            "errored"
-        ]
+        ["pending", "running", "complete", "interrupted", "error"]
     );
     assert!(
-        options[..2]
+        items[..2]
             .iter()
-            .all(|option| option.symbol == Some(FrontendSymbol::Progress))
+            .all(|item| item.actions[0].symbol == FrontendSymbol::Progress)
     );
     assert!(
-        options[2..]
+        items[2..]
             .iter()
-            .all(|option| option.symbol == Some(FrontendSymbol::Agent))
+            .all(|item| item.actions[0].symbol == FrontendSymbol::Agent)
     );
+    assert_eq!(items[4].state, FrontendListItemState::Failed);
+    assert_eq!(items[4].actions[0].tone, FrontendTone::Neutral);
 }
 
 #[test]
@@ -1359,6 +1356,7 @@ fn test_context(
     frontend: crate::middleware::FrontendEventSink,
 ) -> RuntimeContext {
     RuntimeContext {
+        children: crate::agent::ChildAgents::default(),
         sender: crate::agent::test_sender(),
         checkpoints,
         session_id: "root".into(),
@@ -1412,4 +1410,43 @@ async fn root_teardown_waits_for_pending_launch_and_child_cleanup_lifetimes() {
         .unwrap()
         .unwrap()
         .unwrap();
+}
+
+#[tokio::test]
+async fn completion_reports_the_last_recorded_assistant_message() {
+    let shared = test_shared();
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(FailOnceStore {
+        fail_next_save: AtomicBool::new(false),
+        saved_state: StdMutex::new(None),
+    });
+    shared
+        .session_start(&test_context(checkpoints, Arc::new(|_| Ok(()))))
+        .await
+        .expect("initialize runtime");
+    shared
+        .reserve(
+            "root",
+            "/root/child",
+            "/root",
+            "child".into(),
+            1,
+            test_presentation(),
+        )
+        .await
+        .expect("reserve child");
+    shared
+        .message("root", "/root/child", "final answer".into())
+        .await
+        .expect("record message");
+    shared
+        .finished("root", "/root/child", AgentStatus::Completed, None)
+        .await
+        .expect("finish child");
+
+    let updates = shared
+        .receive_updates("root", "/root", &BTreeSet::new())
+        .await
+        .expect("updates");
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0].text.as_deref(), Some("final answer"));
 }

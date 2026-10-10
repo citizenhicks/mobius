@@ -800,7 +800,7 @@ async fn image_generation_does_not_replay_ambiguous_failures() {
                 ImageGenerationRequest {
                     model: "test-image",
                     prompt: "draw",
-                    image_aspect: crate::protocol::ImageAspect::Square,
+                    image_aspect: crate::backend::model::ImageAspect::Square,
                     quality: None,
                     references: &[],
                 },

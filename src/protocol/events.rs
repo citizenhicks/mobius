@@ -217,7 +217,6 @@ pub struct MessageEvent {
     pub text: String,
     /// The attachments.
     pub attachments: Vec<SessionFileReference>,
-    #[serde(default)]
     /// The reply.
     pub reply: Option<MessageReply>,
     #[serde(deserialize_with = "required_option")]

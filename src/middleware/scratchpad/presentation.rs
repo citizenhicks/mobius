@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use super::{Basis, Entry, MANIFEST, Snapshot, text};
+use super::{Basis, Entry, MANIFEST, text};
 use crate::Result;
 use crate::middleware::{FrontendEventSink, MiddlewareCommandOutput};
 use crate::protocol::{
@@ -8,11 +8,11 @@ use crate::protocol::{
     FrontendSlot, FrontendSymbol, FrontendTone, FrontendWidget, FrontendWidgetContent, Op,
 };
 
-pub(super) fn surface_widgets(snapshot: &Snapshot) -> Vec<FrontendWidget> {
-    vec![global_widget(&snapshot.global)]
+pub(super) fn surface_widgets(entries: &[Entry]) -> Vec<FrontendWidget> {
+    vec![global_widget(entries)]
 }
 
-pub(super) fn global_widget(entries: &[Entry]) -> FrontendWidget {
+fn global_widget(entries: &[Entry]) -> FrontendWidget {
     frontend_widget(
         "navigation",
         FrontendSlot::Navigation,
@@ -122,8 +122,8 @@ fn list_action(
     }
 }
 
-pub(super) fn widget_events(snapshot: &Snapshot) -> Vec<FrontendEvent> {
-    surface_widgets(snapshot)
+pub(super) fn widget_events(entries: &[Entry]) -> Vec<FrontendEvent> {
+    surface_widgets(entries)
         .into_iter()
         .map(|item| FrontendEvent::Widget {
             capability: MANIFEST.id.into(),
@@ -132,8 +132,8 @@ pub(super) fn widget_events(snapshot: &Snapshot) -> Vec<FrontendEvent> {
         .collect()
 }
 
-pub(super) fn publish_widgets(frontend: &FrontendEventSink, snapshot: &Snapshot) -> Result<()> {
-    for event in widget_events(snapshot) {
+pub(super) fn publish_widgets(frontend: &FrontendEventSink, entries: &[Entry]) -> Result<()> {
+    for event in widget_events(entries) {
         frontend(event)?;
     }
     Ok(())
@@ -147,14 +147,12 @@ pub(super) fn usage() -> MiddlewareCommandOutput {
     )
 }
 
-pub(super) fn format_snapshot(snapshot: &Snapshot) -> String {
-    let mut sections = Vec::new();
-    sections.push(format!(
+pub(super) fn format_snapshot(entries: &[Entry]) -> String {
+    format!(
         "{}\n{}",
         text::DEFINITION.message_global_heading.as_str(),
-        format_entries(&snapshot.global)
-    ));
-    sections.join("\n\n")
+        format_entries(entries)
+    )
 }
 
 fn format_entries(entries: &[Entry]) -> Cow<'_, str> {

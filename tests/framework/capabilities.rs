@@ -28,10 +28,8 @@ async fn external_skill_resources_use_the_generic_read_tool() {
         tool_response("call-2", "read_file", serde_json::json!({"path": details})),
         text_response("review loaded"),
     ]));
-    let extensions = Extensions::discover([skill_root.path().to_path_buf()])
-        .expect("discover skill")
-        .prompt("Load the relevant skill before following its instructions.")
-        .expect("custom skill prompt");
+    let extensions =
+        Extensions::discover([skill_root.path().to_path_buf()]).expect("discover skill");
     let route: Arc<dyn Model> = model.clone();
     let sandbox = Arc::new(Sandbox::new(
         Arc::new(
@@ -75,7 +73,7 @@ async fn external_skill_resources_use_the_generic_read_tool() {
     assert!(
         requests[0]
             .instructions
-            .contains("Load the relevant skill before following its instructions.")
+            .contains("read its complete `SKILL.md` at the advertised location")
     );
     assert!(
         requests[0]
@@ -113,7 +111,7 @@ async fn external_skill_resources_use_the_generic_read_tool() {
 }
 
 #[tokio::test]
-async fn async_subagent_uses_configured_model_reasoning_and_durable_fork() {
+async fn async_subagent_uses_configured_model_requested_reasoning_and_durable_fork() {
     let workspace = TempDir::new().expect("create workspace");
     let root_model = Arc::new(ScriptedModel::new(vec![
         tool_response(
@@ -127,7 +125,8 @@ async fn async_subagent_uses_configured_model_reasoning_and_durable_fork() {
             serde_json::json!({
                 "task_name": "cheap",
                 "text": "solve child task",
-                "fork_turns": "none"
+                "fork_turns": "none",
+                "reasoning_effort": "high"
             }),
         ),
         tool_response(
@@ -221,23 +220,6 @@ async fn async_subagent_uses_configured_model_reasoning_and_durable_fork() {
             .expect("open checkpoint database"),
     );
     let checkpoints: Arc<dyn CheckpointStore> = checkpoint_store.clone();
-    let template = Arc::new(OnceLock::<AgentConfig>::new());
-    let child_template = Arc::downgrade(&template);
-    let launcher: SubagentLauncher = Arc::new(move |launch: SubagentLaunch| {
-        let child_template = child_template.clone();
-        Box::pin(async move {
-            let config = child_template
-                .upgrade()
-                .expect("subagent template owner")
-                .get()
-                .expect("subagent template")
-                .clone()
-                .session_id(launch.session_id)
-                .metadata(launch.metadata)
-                .model_route(&launch.model, launch.reasoning_effort.as_deref())?;
-            create_agent(config).await
-        })
-    });
     let config = AgentConfig::new(
         Arc::new(routes),
         sandbox,
@@ -246,11 +228,12 @@ async fn async_subagent_uses_configured_model_reasoning_and_durable_fork() {
             Arc::new(Messages::default()),
             Arc::new(Tools::new(Vec::new())),
             Arc::new(
-                Subagents::new(1, 21, 64, launcher)
-                    .expect("subagents")
-                    .default_model("child")
-                    .default_reasoning("high")
-                    .expect("subagent reasoning"),
+                Subagents::new(
+                    SubagentCeilings::default()
+                        .limits(1, 21, 64)
+                        .expect("subagent limits"),
+                )
+                .default_model("child"),
             ),
         ])
         .expect("middleware"),
@@ -258,7 +241,6 @@ async fn async_subagent_uses_configured_model_reasoning_and_durable_fork() {
     )
     .session_context(test_session_context())
     .session_id("root");
-    assert!(template.set(config.clone()).is_ok());
     let mut agent = create_agent(config).await.expect("create agent");
 
     agent

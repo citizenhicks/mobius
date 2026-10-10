@@ -187,12 +187,7 @@ mod tests {
         let mut encoded = serde_json::to_value(checkpoint).unwrap();
         let checkpoint = <Checkpoint as serde::Deserialize>::deserialize(&encoded).unwrap();
         encoded.as_object_mut().unwrap().remove("delivered_once");
-        assert!(
-            serde_json::from_value::<Checkpoint>(encoded)
-                .unwrap()
-                .delivered_once
-                .is_empty()
-        );
+        assert!(serde_json::from_value::<Checkpoint>(encoded).is_err());
         let mut delivery = DeliveryOnce::new(&checkpoint.delivered_once);
         delivery.owner = "first";
         assert!(

@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use super::*;
 use crate::backend::checkpoint::SessionPageRequest;
 use crate::backend::checkpoint::sqlite::SqliteCheckpoint;
-use crate::middleware::messages::Messages;
+use crate::middleware::voice::Voice;
 use crate::middleware::{ActiveCommandContext, MessageQueue, Middleware, SubmissionResult};
 
 #[tokio::test]
@@ -226,6 +226,70 @@ async fn live_previews_coalesce_and_flush_on_deadline_final_and_close() {
 }
 
 #[tokio::test]
+async fn finish_retries_failed_persistence_without_losing_or_duplicating_speech() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("checkpoints.sqlite3");
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(SqliteCheckpoint::new(&path).unwrap());
+    let mut parent = Checkpoint::empty("parent");
+    parent.session_context.owner_id = "bot".into();
+    checkpoints.save(&parent, &[], None).await.unwrap();
+    let mut voice = VoiceTranscript::open(checkpoints, "parent", Arc::new(|_| Ok(())))
+        .await
+        .unwrap();
+    voice
+        .record(
+            "speech",
+            ConversationRole::Assistant,
+            "Keep this draft",
+            false,
+        )
+        .await
+        .unwrap();
+    let database = rusqlite::Connection::open(&path).unwrap();
+    database
+        .execute_batch(
+            "CREATE TRIGGER fail_voice_finish BEFORE INSERT ON event_journal
+             BEGIN SELECT RAISE(ABORT, 'injected voice persistence failure'); END;",
+        )
+        .unwrap();
+    assert!(voice.finish().await.is_err());
+    let recording = voice.recordings.get("speech").unwrap();
+    assert_eq!(recording.text, "Keep this draft");
+    assert!(!recording.complete);
+    database
+        .execute_batch("DROP TRIGGER fail_voice_finish")
+        .unwrap();
+    voice.finish().await.unwrap();
+    voice.finish().await.unwrap();
+    let history = voice
+        .checkpoints
+        .event_page(
+            voice.session_id(),
+            EventPageRequest {
+                before_sequence: None,
+                limit: PAGE_SIZE,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        history
+            .events
+            .iter()
+            .filter(|event| matches!(
+                &event.event.msg,
+                EventMsg::AssistantMessage(message) if message.content[0].text == "Keep this draft"
+            ))
+            .count(),
+        1
+    );
+    assert_eq!(
+        voice.task_context().await.unwrap(),
+        "You (voice): Keep this draft"
+    );
+}
+
+#[tokio::test]
 async fn discarded_speech_stays_cleared_in_history_and_resumed_task_context() {
     let directory = tempfile::tempdir().unwrap();
     let checkpoints: Arc<dyn CheckpointStore> =
@@ -367,7 +431,7 @@ async fn voice_transcript_is_linked_read_only_and_resumes_without_reusing_messag
     let mut events = Vec::new();
     let mut queued = Vec::new();
     let metadata = BTreeMap::new();
-    let result = Messages::default()
+    let result = Voice
         .active_command(&mut ActiveCommandContext {
             checkpoints: checkpoints.as_ref(),
             submission_id: "preview-request",

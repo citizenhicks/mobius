@@ -31,10 +31,15 @@ async fn reading_and_publishing_images_retain_only_their_own_files() {
             .await
             .is_err()
     );
-    store
+    let generated = store
         .publish_image("session", "generated.png".into(), "image/png", bytes)
         .await
         .expect("generated artifact");
+    assert_eq!((generated.width, generated.height), (2, 2));
+    assert_eq!(generated.detail, crate::protocol::ImageDetail::Auto);
+    let rendition = generated.rendition.as_ref().expect("model pixels");
+    assert_eq!((rendition.width, rendition.height), (2, 2));
+    assert_eq!(rendition.file, generated.file);
     assert_eq!(
         list_completed(&store.session_dir("session"), &store.blob_dir())
             .await
@@ -1539,7 +1544,8 @@ async fn generated_images_survive_selective_cleanup_until_the_chat_is_deleted() 
         let generated = store
             .publish_image("session", name.into(), "image/png", bytes.clone())
             .await
-            .unwrap();
+            .unwrap()
+            .file;
         if legacy {
             let path = store
                 .session_dir("session")

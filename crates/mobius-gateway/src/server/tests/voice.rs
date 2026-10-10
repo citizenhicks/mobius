@@ -105,6 +105,24 @@ async fn signaling_requires_the_selected_session_is_ephemeral_and_keeps_chat_usa
             .contains("chat")
     );
 
+    let mut muted = composition.clone();
+    muted.middleware.set_enabled("voice", false);
+    let (muted, _) = create_bot_chat_with_config(&sender, &mut events, &workspace, muted).await;
+    let request = Uuid::new_v4().to_string();
+    sender
+        .send(ClientMessage::StartRealtimeVoice {
+            request_id: request.clone(),
+            session_id: muted.clone(),
+            offer_sdp: OFFER.into(),
+        })
+        .await
+        .expect("start with voice off");
+    assert!(
+        expect_voice_failure(&mut events, &request, &muted)
+            .await
+            .contains("voice is turned off")
+    );
+
     let (other, _) =
         create_bot_chat_with_config(&sender, &mut events, &workspace, composition.clone()).await;
     let (selected, _) =
@@ -134,10 +152,10 @@ async fn signaling_requires_the_selected_session_is_ephemeral_and_keeps_chat_usa
             .contains("open this chat")
     );
 
-    for (request, offer) in [
-        (Uuid::new_v4().to_string(), String::new()),
-        (Uuid::new_v4().to_string(), "x".repeat(64 * 1024 + 1)),
-    ] {
+    // The provider adapter owns the SDP bound; the gateway forwards offers above 64 KiB.
+    let large = format!("{OFFER}a=x-padding:{}\r\n", "x".repeat(64 * 1024));
+    for offer in [OFFER.to_owned(), large] {
+        let request = format!("voice-{}", Uuid::new_v4());
         sender
             .send(ClientMessage::StartRealtimeVoice {
                 request_id: request.clone(),
@@ -145,28 +163,13 @@ async fn signaling_requires_the_selected_session_is_ephemeral_and_keeps_chat_usa
                 offer_sdp: offer,
             })
             .await
-            .expect("invalid signaling");
+            .expect("no voice model");
         assert!(
             expect_voice_failure(&mut events, &request, &selected)
                 .await
-                .contains("invalid voice connection request")
+                .contains("no voice model is configured")
         );
     }
-
-    let request = format!("voice-{}", Uuid::new_v4());
-    sender
-        .send(ClientMessage::StartRealtimeVoice {
-            request_id: request.clone(),
-            session_id: selected.clone(),
-            offer_sdp: OFFER.into(),
-        })
-        .await
-        .expect("no voice model");
-    assert!(
-        expect_voice_failure(&mut events, &request, &selected)
-            .await
-            .contains("no voice model is configured")
-    );
 
     for session_id in [&selected, &other] {
         sender

@@ -1,20 +1,17 @@
 //! Durable conversation-message delivery.
 
-pub mod voice;
-
 use super::{
     ActiveCommandContext, MessageRouteContext, MessageSubmitContext, Middleware,
-    MiddlewareCommandContext, MiddlewareCommandOutput, SessionStartContext, SessionStartSource,
-    SubmissionResult,
+    SessionStartContext, SessionStartSource, SubmissionResult,
 };
-use crate::backend::checkpoint::QueuedMessageBoundary;
+use crate::backend::checkpoint::{CheckpointStore, EventPageRequest, QueuedMessageBoundary};
 use crate::backend::model::internal_user_message;
 use crate::protocol::{
-    ActiveMessageDelivery, EventMsg, FrontendBlock, FrontendCommand, FrontendContribution,
-    FrontendEvent, FrontendSlot, FrontendSymbol, FrontendTone, FrontendWidget,
-    MAX_CAPABILITY_INPUT_BYTES, MessageAuthor, MessageDelivery, MessageEvent, Op,
+    ActiveMessageDelivery, EventMsg, FrontendBlock, FrontendContribution, FrontendEvent,
+    FrontendSettingValue, FrontendSlot, FrontendSymbol, FrontendTone, FrontendWidget,
+    MAX_CAPABILITY_INPUT_BYTES, MessageAuthor, MessageDelivery, MessageEvent, MessageReply, Op,
 };
-use crate::{BoxFuture, Error, Result};
+use crate::{BoxFuture, Result};
 
 mod text {
     #[derive(serde::Deserialize)]
@@ -23,52 +20,36 @@ mod text {
         #[serde(deserialize_with = "crate::middleware::manifest::deserialize_settings")]
         pub(super) settings: Vec<crate::middleware::manifest::MiddlewareSettingManifest>,
         pub(super) permission_notice: String,
-        pub(super) voice_user_label: String,
-        pub(super) voice_speaker_label: String,
-        pub(super) voice_workspace_label: String,
-        pub(super) voice_retained_context: String,
-        pub(super) voice_clarify_request: String,
-        pub(super) voice_delegation_policy: String,
-        pub(super) voice_current_request_heading: String,
-        pub(super) voice_recent_discussion_heading: String,
-        pub(super) voice_latest_request: String,
-        pub(super) voice_tool_started: String,
-        pub(super) voice_tool_result: String,
-        pub(super) voice_tool_failed: String,
-        pub(super) voice_tool_finished: String,
-        pub(super) voice_work_stopped: String,
-        pub(super) voice_request_failed: String,
-        pub(super) voice_request_empty: String,
-        pub(super) voice_instructions: String,
-        pub(super) voice_workspace_heading: String,
-        pub(super) voice_previous_heading: String,
+        pub(super) reply_target_invalid: String,
+        pub(super) reply_text_changed: String,
+        pub(super) stale_turn: String,
+        pub(super) queue_full: String,
+        pub(super) queue_failed: String,
+        pub(super) edit_stale: String,
+        pub(super) edit_empty: String,
+        pub(super) edit_too_large: String,
+        pub(super) edit_peer: String,
+        pub(super) received_title: String,
         pub(super) default_enabled: bool,
         pub(super) manifest_description: String,
         pub(super) manifest_label: String,
     }
     crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("messages.toml"); }
 }
-const MAX_PENDING_MESSAGES: usize = 1_024;
-
-/// Default number of pending messages retained by the delivery queue.
-pub fn default_max_pending() -> usize {
-    super::manifest::integer_default(&text::DEFINITION.settings, "max_pending") as usize
-}
-/// Default delivery for user messages submitted during an active turn.
-pub fn default_delivery() -> ActiveMessageDelivery {
-    super::manifest::string_default(&text::DEFINITION.settings, "delivery")
-        .parse()
-        .expect("valid embedded delivery")
-}
+const REPLY_EVENT_PAGE_SIZE: usize = 256;
+const MAX_PENDING: &str = "max_pending";
+const DELIVERY: &str = "delivery";
 
 super::manifest::middleware_manifest! {
 /// Configuration and presentation metadata for message delivery.
-    "messages", text::DEFINITION, required: true, capability: None, settings: &text::DEFINITION.settings
+    "messages", text::DEFINITION, required: true, settings: &text::DEFINITION.settings
 }
 
 const EDIT_COMMAND: &str = "edit";
-const STALE_EDIT: &str = "message is no longer queued";
-const INVALID_EDIT: &str = "message edit requires non-empty text";
+
+fn rejected(message: &str) -> SubmissionResult {
+    SubmissionResult::Rejected(message.into())
+}
 
 /// Prepares every conversation message and owns its durable delivery lifecycle.
 pub struct Messages {
@@ -78,9 +59,12 @@ pub struct Messages {
 
 impl Default for Messages {
     fn default() -> Self {
+        let settings = &text::DEFINITION.settings;
         Self {
-            max_pending: default_max_pending(),
-            delivery: default_delivery(),
+            max_pending: super::manifest::integer_default(settings, MAX_PENDING) as usize,
+            delivery: super::manifest::string_default(settings, DELIVERY)
+                .parse()
+                .expect("valid embedded delivery"),
         }
     }
 }
@@ -91,11 +75,17 @@ impl Messages {
     ///
     /// Returns an error if configuration is invalid or a required resource cannot be initialized.
     pub fn new(max_pending: usize, delivery: ActiveMessageDelivery) -> Result<Self> {
-        if max_pending == 0 || max_pending > MAX_PENDING_MESSAGES {
-            return Err(Error::Config(format!(
-                "message queue limit must be between 1 and {MAX_PENDING_MESSAGES}"
-            )));
-        }
+        text::DEFINITION
+            .settings
+            .iter()
+            .find(|setting| setting.id() == MAX_PENDING)
+            .expect("embedded max_pending setting")
+            .validate(
+                MANIFEST.id,
+                Some(&FrontendSettingValue::Integer(
+                    i64::try_from(max_pending).unwrap_or(i64::MAX),
+                )),
+            )?;
         Ok(Self {
             max_pending,
             delivery,
@@ -149,7 +139,7 @@ impl Messages {
     ) -> std::result::Result<QueuedMessageBoundary, String> {
         let Some(turn_id) = context.active_turn_id else {
             return if context.message.target_turn_id.is_some() {
-                Err("message targeted a stale turn".into())
+                Err(text::DEFINITION.stale_turn.as_str().into())
             } else {
                 Ok(QueuedMessageBoundary::Turn)
             };
@@ -157,7 +147,7 @@ impl Messages {
         if let Some(target) = &context.message.target_turn_id
             && target != turn_id
         {
-            return Err("message targeted a stale turn".into());
+            return Err(text::DEFINITION.stale_turn.as_str().into());
         }
         match context.message.requested_delivery.unwrap_or(self.delivery) {
             ActiveMessageDelivery::Steer => Ok(QueuedMessageBoundary::Steer {
@@ -166,6 +156,85 @@ impl Messages {
             ActiveMessageDelivery::Queue => Ok(QueuedMessageBoundary::Queue),
         }
     }
+
+    fn enqueue(&self, context: &mut MessageRouteContext<'_>) -> Result<SubmissionResult> {
+        let boundary = match self.prepare(context) {
+            Ok(boundary) => boundary,
+            Err(message) => return Ok(SubmissionResult::Rejected(message)),
+        };
+        if context.queued_messages.count() >= self.max_pending {
+            return Ok(rejected(&text::DEFINITION.queue_full));
+        }
+        let message = &mut *context.message;
+        let event = MessageEvent {
+            author: std::mem::replace(&mut message.author, MessageAuthor::User),
+            delivery: boundary.delivery(),
+            text: std::mem::take(&mut message.text),
+            attachments: std::mem::take(&mut message.attachments),
+            reply: message.reply.take(),
+            message_target: None,
+        };
+        let widget = (!matches!(boundary, QueuedMessageBoundary::Turn)).then(|| {
+            self.queued_widget(
+                context.submission_id,
+                &event.author,
+                event.delivery,
+                &event.text,
+            )
+        });
+        let input_changed = matches!(boundary, QueuedMessageBoundary::Steer { .. });
+        if !context
+            .queued_messages
+            .enqueue(context.submission_id, boundary, event)?
+        {
+            return Ok(rejected(&text::DEFINITION.queue_failed));
+        }
+        if let Some(widget) = widget {
+            context.events.push(EventMsg::Frontend(widget));
+        }
+        Ok(SubmissionResult::Accepted { input_changed })
+    }
+
+    fn edit(&self, context: &mut ActiveCommandContext<'_>) -> Result<SubmissionResult> {
+        let Some(input) = context.input.filter(|input| !input.trim().is_empty()) else {
+            return Ok(rejected(&text::DEFINITION.edit_empty));
+        };
+        if input.len() > MAX_CAPABILITY_INPUT_BYTES {
+            return Ok(rejected(&text::DEFINITION.edit_too_large));
+        }
+        let Some(queued) = context.queued_messages.find(context.arguments) else {
+            return Ok(rejected(&text::DEFINITION.edit_stale));
+        };
+        if !matches!(queued.author(), MessageAuthor::User) {
+            return Ok(rejected(&text::DEFINITION.edit_peer));
+        }
+        let event = MessageEvent {
+            author: MessageAuthor::User,
+            delivery: queued.delivery(),
+            text: input.into(),
+            attachments: queued.attachments().to_vec(),
+            reply: queued.reply().cloned(),
+            message_target: None,
+        };
+        let input_changed = event.delivery == MessageDelivery::Steer;
+        let widget = self.queued_widget(
+            context.submission_id,
+            &event.author,
+            event.delivery,
+            &event.text,
+        );
+        if !context
+            .queued_messages
+            .replace(context.arguments, context.submission_id, event)?
+        {
+            return Ok(rejected(&text::DEFINITION.edit_stale));
+        }
+        context
+            .events
+            .push(EventMsg::Frontend(self.remove_widget(context.arguments)));
+        context.events.push(EventMsg::Frontend(widget));
+        Ok(SubmissionResult::Accepted { input_changed })
+    }
 }
 
 impl Middleware for Messages {
@@ -173,15 +242,9 @@ impl Middleware for Messages {
         MANIFEST.id
     }
 
-    fn frontend(&self) -> FrontendContribution {
+    fn frontend(&self, _session_id: &str) -> FrontendContribution {
         FrontendContribution {
             capability: self.name().into(),
-            commands: vec![FrontendCommand {
-                name: voice::transcript::COMMAND.into(),
-                arguments: String::new(),
-                description: "Open the voice transcript".into(),
-                requires_idle: false,
-            }],
             ..FrontendContribution::default()
         }
     }
@@ -209,32 +272,10 @@ impl Middleware for Messages {
                 source.id().len(),
                 session_id = source.id()
             )),
-            title: format!("Message received from @{handle}"),
+            title: text::DEFINITION.received_title.replace("{handle}", handle),
             text: message.text.clone(),
             symbol: Some(symbol.clone().unwrap_or(FrontendSymbol::Chat)),
             ..Default::default()
-        })
-    }
-
-    fn command<'a>(
-        &'a self,
-        context: MiddlewareCommandContext<'a>,
-    ) -> BoxFuture<'a, Result<MiddlewareCommandOutput>> {
-        Box::pin(async move {
-            if context.command != voice::transcript::COMMAND {
-                return Err(Error::Unknown(format!(
-                    "messages command `{}`",
-                    context.command
-                )));
-            }
-            Ok(MiddlewareCommandOutput::events(vec![
-                voice::transcript::read_preview(
-                    context.checkpoints.as_ref(),
-                    context.session_id,
-                    context.arguments,
-                )
-                .await?,
-            ]))
         })
     }
 
@@ -242,45 +283,20 @@ impl Middleware for Messages {
         true
     }
 
-    fn route_message(&self, context: &mut MessageRouteContext<'_>) -> Result<SubmissionResult> {
-        let boundary = match self.prepare(context) {
-            Ok(boundary) => boundary,
-            Err(message) => return Ok(SubmissionResult::Rejected(message)),
-        };
-        if context.queued_messages.count() >= self.max_pending {
-            return Ok(SubmissionResult::Rejected("message queue is full".into()));
-        }
-        let event = MessageEvent {
-            author: context.message.author.clone(),
-            delivery: boundary.delivery(),
-            text: context.message.text.clone(),
-            attachments: context.message.attachments.clone(),
-            reply: context.message.reply.clone(),
-            message_target: None,
-        };
-        let widget = (!matches!(boundary, QueuedMessageBoundary::Turn)).then(|| {
-            self.queued_widget(
-                context.submission_id,
-                &event.author,
-                event.delivery,
-                &event.text,
-            )
-        });
-        let input_changed = matches!(boundary, QueuedMessageBoundary::Steer { .. });
-        if !context
-            .queued_messages
-            .enqueue(context.submission_id, boundary, event)?
-        {
-            return Ok(SubmissionResult::Rejected(
-                "message could not be queued".into(),
-            ));
-        }
-        if let Some(widget) = widget {
-            context.events.push(EventMsg::Frontend(widget));
-        }
-        Ok(SubmissionResult::Accepted { input_changed })
+    fn route_message<'a>(
+        &'a self,
+        context: &'a mut MessageRouteContext<'_>,
+    ) -> BoxFuture<'a, Result<SubmissionResult>> {
+        Box::pin(async move {
+            if let Some(reply) = &context.message.reply
+                && let Some(rejection) =
+                    validate_reply(context.checkpoints, context.session_id, reply).await?
+            {
+                return Ok(SubmissionResult::Rejected(rejection.into()));
+            }
+            self.enqueue(context)
+        })
     }
-
     fn message_boundary_events(&self, submission_id: &str) -> Vec<EventMsg> {
         vec![EventMsg::Frontend(self.remove_widget(submission_id))]
     }
@@ -307,66 +323,11 @@ impl Middleware for Messages {
         context: &'a mut ActiveCommandContext<'_>,
     ) -> BoxFuture<'a, Result<Option<SubmissionResult>>> {
         Box::pin(async move {
-            if context.command == voice::transcript::COMMAND {
-                let result = voice::transcript::read_preview(
-                    context.checkpoints,
-                    context.session_id,
-                    context.arguments,
-                )
-                .await;
-                return Ok(Some(match result {
-                    Ok(event) => {
-                        context.events.push(EventMsg::Frontend(event));
-                        SubmissionResult::Handled
-                    }
-                    Err(error) => SubmissionResult::Rejected(error.to_string()),
-                }));
+            if context.command == EDIT_COMMAND {
+                self.edit(context).map(Some)
+            } else {
+                Ok(None)
             }
-            if context.command != EDIT_COMMAND {
-                return Ok(None);
-            }
-            let Some(input) = context.input.filter(|input| !input.trim().is_empty()) else {
-                return Ok(Some(SubmissionResult::Rejected(INVALID_EDIT.into())));
-            };
-            if input.len() > MAX_CAPABILITY_INPUT_BYTES {
-                return Ok(Some(SubmissionResult::Rejected(
-                    "message exceeds editable size limit".into(),
-                )));
-            }
-            let Some(queued) = context.queued_messages.find(context.arguments) else {
-                return Ok(Some(SubmissionResult::Rejected(STALE_EDIT.into())));
-            };
-            if !matches!(queued.author(), MessageAuthor::User) {
-                return Ok(Some(SubmissionResult::Rejected(
-                    "peer messages cannot be edited".into(),
-                )));
-            }
-            let event = MessageEvent {
-                author: MessageAuthor::User,
-                delivery: queued.delivery(),
-                text: input.into(),
-                attachments: queued.attachments().to_vec(),
-                reply: queued.reply().cloned(),
-                message_target: None,
-            };
-            let input_changed = event.delivery == MessageDelivery::Steer;
-            let widget = self.queued_widget(
-                context.submission_id,
-                &event.author,
-                event.delivery,
-                &event.text,
-            );
-            if !context
-                .queued_messages
-                .replace(context.arguments, context.submission_id, event)?
-            {
-                return Ok(Some(SubmissionResult::Rejected(STALE_EDIT.into())));
-            }
-            context
-                .events
-                .push(EventMsg::Frontend(self.remove_widget(context.arguments)));
-            context.events.push(EventMsg::Frontend(widget));
-            Ok(Some(SubmissionResult::Accepted { input_changed }))
         })
     }
 
@@ -386,16 +347,54 @@ impl Middleware for Messages {
                     queued.text(),
                 ))?;
             }
-            if let Some(widget) = voice::transcript::restore_widget(
-                context.runtime.checkpoints.as_ref(),
-                &context.runtime.session_id,
-            )
-            .await?
-            {
-                (context.runtime.frontend)(widget)?;
-            }
             Ok(())
         })
+    }
+}
+
+/// Accepts a reply only when it quotes a durable message of this chat exactly.
+async fn validate_reply(
+    checkpoints: &dyn CheckpointStore,
+    session_id: &str,
+    reply: &MessageReply,
+) -> Result<Option<&'static str>> {
+    let mut before_sequence = None;
+    loop {
+        let page = checkpoints
+            .event_page(
+                session_id,
+                EventPageRequest {
+                    before_sequence,
+                    limit: REPLY_EVENT_PAGE_SIZE,
+                },
+            )
+            .await?;
+        for record in page.events {
+            let original = match &record.event.msg {
+                EventMsg::Message(message)
+                    if message.message_target.as_ref() == Some(&reply.target) =>
+                {
+                    Some(message.reply_text())
+                }
+                EventMsg::AssistantMessage(message)
+                    if message.message_target.as_ref() == Some(&reply.target) =>
+                {
+                    Some(message.reply_text())
+                }
+                _ => None,
+            };
+            if let Some(original) = original {
+                return Ok(match original {
+                    Some(original) if original.as_ref() == reply.text => None,
+                    Some(_) => Some(text::DEFINITION.reply_text_changed.as_str()),
+                    None => Some(text::DEFINITION.reply_target_invalid.as_str()),
+                });
+            }
+        }
+        let Some(next) = page.next_before_sequence else {
+            return Ok(Some(text::DEFINITION.reply_target_invalid.as_str()));
+        };
+        before_sequence = Some(next);
     }
 }
 
@@ -424,11 +423,22 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::backend::checkpoint::QueuedMessage;
+    use crate::backend::checkpoint::sqlite::SqliteCheckpoint;
+    use crate::backend::checkpoint::{Checkpoint, QueuedMessage};
     use crate::middleware::{
         ActiveCommandContext, MessageQueue, MessageRouteContext, MiddlewareStack,
     };
     use crate::protocol::{MessageReply, MessageSubmission, MessageTarget, SessionFileReference};
+
+    #[test]
+    fn queue_limit_follows_the_declared_setting_bounds() {
+        for (limit, valid) in [(0, false), (1, true), (1024, true), (1025, false)] {
+            assert_eq!(
+                Messages::new(limit, ActiveMessageDelivery::Steer).is_ok(),
+                valid
+            );
+        }
+    }
 
     #[test]
     fn manifest_advertises_delivery_symbols() {
@@ -489,32 +499,61 @@ mod tests {
         }
     }
 
-    fn route(
+    fn event(id: &str, msg: EventMsg) -> crate::protocol::Event {
+        crate::protocol::Event {
+            submission_id: Some(id.into()),
+            msg,
+        }
+    }
+
+    fn checkpoints() -> (tempfile::TempDir, SqliteCheckpoint) {
+        let directory = tempfile::tempdir().expect("checkpoint directory");
+        let store = SqliteCheckpoint::new(directory.path().join("checkpoints.sqlite3"))
+            .expect("checkpoint store");
+        (directory, store)
+    }
+
+    async fn route(
         stack: &MiddlewareStack,
         queued: &mut Vec<QueuedMessage>,
         message: &MessageSubmission,
         active_turn_id: Option<&str>,
     ) -> SubmissionResult {
+        let (_directory, store) = checkpoints();
+        route_in(&store, stack, queued, message, active_turn_id).await
+    }
+
+    async fn route_in(
+        checkpoints: &dyn CheckpointStore,
+        stack: &MiddlewareStack,
+        queued: &mut Vec<QueuedMessage>,
+        message: &MessageSubmission,
+        active_turn_id: Option<&str>,
+    ) -> SubmissionResult {
+        let mut message = message.clone();
         stack
             .route_message(&mut MessageRouteContext {
+                checkpoints,
+                session_id: "session-1",
                 submission_id: "message-1",
-                message,
+                message: &mut message,
                 active_turn_id,
                 queued_messages: MessageQueue::new(queued),
                 events: &mut Vec::new(),
             })
+            .await
             .expect("route message")
     }
 
-    #[test]
-    fn active_user_uses_the_configured_queue_boundary() {
+    #[tokio::test]
+    async fn active_user_uses_the_configured_queue_boundary() {
         let stack = MiddlewareStack::new(vec![Arc::new(
             Messages::new(4, ActiveMessageDelivery::Queue).expect("messages"),
         )])
         .expect("stack");
         let mut queued = Vec::new();
 
-        let result = route(&stack, &mut queued, &user(None), Some("turn-1"));
+        let result = route(&stack, &mut queued, &user(None), Some("turn-1")).await;
 
         assert_eq!(
             result,
@@ -539,20 +578,24 @@ mod tests {
         );
     }
 
-    #[test]
-    fn immediate_turn_does_not_publish_a_queued_widget() {
+    #[tokio::test]
+    async fn immediate_turn_does_not_publish_a_queued_widget() {
         let stack = MiddlewareStack::new(vec![Arc::new(Messages::default())]).expect("stack");
         let mut queued = Vec::new();
         let mut events = Vec::new();
 
+        let (_directory, store) = checkpoints();
         let result = stack
             .route_message(&mut MessageRouteContext {
+                checkpoints: &store,
+                session_id: "session-1",
                 submission_id: "message-1",
-                message: &user(None),
+                message: &mut user(None),
                 active_turn_id: None,
                 queued_messages: MessageQueue::new(&mut queued),
                 events: &mut events,
             })
+            .await
             .expect("route message");
 
         assert_eq!(
@@ -576,21 +619,42 @@ mod tests {
             size: 8,
             media_type: "text/plain".into(),
         });
+        let target = MessageTarget {
+            checkpoint_sequence: 5,
+            batch_item_count: 2,
+        };
         message.reply = Some(MessageReply {
-            target: MessageTarget {
-                checkpoint_sequence: 5,
-                batch_item_count: 2,
-            },
+            target,
             text: "Earlier".into(),
         });
-        route(&stack, &mut queued, &message, Some("turn-1"));
+        let (_directory, checkpoints) = checkpoints();
+        let mut session = crate::backend::checkpoint::Checkpoint::empty("session-1");
+        session.session_context.owner_id = "test-bot".into();
+        checkpoints
+            .save(&session, &[], None)
+            .await
+            .expect("save session");
+        checkpoints
+            .append_event(
+                "session-1",
+                1,
+                &event(
+                    "earlier",
+                    EventMsg::Message(MessageEvent {
+                        author: MessageAuthor::User,
+                        delivery: MessageDelivery::Turn,
+                        text: "Earlier".into(),
+                        attachments: Vec::new(),
+                        reply: None,
+                        message_target: Some(target),
+                    }),
+                ),
+            )
+            .await
+            .expect("append quoted message");
+        route_in(&checkpoints, &stack, &mut queued, &message, Some("turn-1")).await;
         let mut events = Vec::new();
         let metadata = BTreeMap::new();
-        let directory = tempfile::tempdir().expect("checkpoint directory");
-        let checkpoints = crate::backend::checkpoint::sqlite::SqliteCheckpoint::new(
-            directory.path().join("checkpoints.sqlite3"),
-        )
-        .expect("checkpoint store");
 
         let original = queued.clone();
         for submission_id in [" ", "message-2"] {
@@ -644,8 +708,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn explicitly_steered_source_remains_non_authoritative_input() {
+    #[tokio::test]
+    async fn explicitly_steered_source_remains_non_authoritative_input() {
         let stack = MiddlewareStack::new(vec![Arc::new(
             Messages::new(4, ActiveMessageDelivery::Queue).expect("messages"),
         )])
@@ -669,7 +733,7 @@ mod tests {
         };
         let mut queued = Vec::new();
 
-        let result = route(&stack, &mut queued, &peer, Some("turn-1"));
+        let result = route(&stack, &mut queued, &peer, Some("turn-1")).await;
         let staged = stack
             .stage_model_messages(&mut queued, "turn-1")
             .expect("stage message");
@@ -694,8 +758,8 @@ mod tests {
         assert_eq!(staged[0].event.message().unwrap().text, peer.text);
     }
 
-    #[test]
-    fn queued_external_event_waits_for_its_own_turn() {
+    #[tokio::test]
+    async fn queued_external_event_waits_for_its_own_turn() {
         let stack = MiddlewareStack::new(vec![Arc::new(Messages::default())]).expect("stack");
         let source = MessageSubmission {
             author: MessageAuthor::Source {
@@ -717,7 +781,7 @@ mod tests {
         };
         let mut queued = Vec::new();
         assert_eq!(
-            route(&stack, &mut queued, &source, Some("user-turn")),
+            route(&stack, &mut queued, &source, Some("user-turn")).await,
             SubmissionResult::Accepted {
                 input_changed: false
             }
@@ -739,11 +803,11 @@ mod tests {
         assert!(matches!(report.event, EventMsg::Message(event) if event.author == source.author));
     }
 
-    #[test]
-    fn failed_turn_promotes_unstaged_steering_to_a_queued_turn() {
+    #[tokio::test]
+    async fn failed_turn_promotes_unstaged_steering_to_a_queued_turn() {
         let stack = MiddlewareStack::new(vec![Arc::new(Messages::default())]).expect("stack");
         let mut queued = Vec::new();
-        route(&stack, &mut queued, &user(None), Some("turn-1"));
+        route(&stack, &mut queued, &user(None), Some("turn-1")).await;
 
         stack
             .finish_message_turn(
@@ -761,5 +825,173 @@ mod tests {
             next.event.message().map(|message| message.delivery),
             Some(MessageDelivery::Queue)
         );
+    }
+
+    #[tokio::test]
+    async fn reply_matches_a_durable_message_in_its_own_session() {
+        let (_directory, store) = checkpoints();
+        for session_id in ["current", "other"] {
+            let mut checkpoint = Checkpoint::empty(session_id);
+            checkpoint.session_context.owner_id = "test-bot".into();
+            store
+                .save(&checkpoint, &[], None)
+                .await
+                .expect("save session");
+        }
+        let attachment_target = crate::protocol::MessageTarget {
+            checkpoint_sequence: 1,
+            batch_item_count: 1,
+        };
+        store
+            .append_event(
+                "current",
+                1,
+                &event(
+                    "attachment",
+                    EventMsg::Message(crate::protocol::MessageEvent {
+                        author: crate::protocol::MessageAuthor::User,
+                        delivery: crate::protocol::MessageDelivery::Turn,
+                        text: String::new(),
+                        attachments: vec![crate::protocol::SessionFileReference {
+                            id: "00000000-0000-0000-0000-000000000001".into(),
+                            name: "clip.mov".into(),
+                            size: 1,
+                            media_type: "video/quicktime".into(),
+                        }],
+                        reply: None,
+                        message_target: Some(attachment_target),
+                    }),
+                ),
+            )
+            .await
+            .expect("append attachment message");
+        let assistant_target = crate::protocol::MessageTarget {
+            checkpoint_sequence: 1,
+            batch_item_count: 2,
+        };
+        store
+            .append_event(
+                "current",
+                2,
+                &event(
+                    "assistant",
+                    EventMsg::AssistantMessage(crate::protocol::AssistantMessageEvent {
+                        session_id: "current".into(),
+                        turn_id: "turn".into(),
+                        model_step_id: "step".into(),
+                        content: vec![
+                            crate::protocol::ModelStepContent {
+                                output_index: 0,
+                                part_index: 0,
+                                phase: crate::protocol::ModelStepContentPhase::FinalAnswer,
+                                text: "first part".into(),
+                                annotations: Vec::new(),
+                            },
+                            crate::protocol::ModelStepContent {
+                                output_index: 1,
+                                part_index: 0,
+                                phase: crate::protocol::ModelStepContentPhase::FinalAnswer,
+                                text: "last part".into(),
+                                annotations: Vec::new(),
+                            },
+                        ],
+                        message_target: Some(assistant_target),
+                    }),
+                ),
+            )
+            .await
+            .expect("append assistant message");
+        let other_target = crate::protocol::MessageTarget {
+            checkpoint_sequence: 2,
+            batch_item_count: 1,
+        };
+        store
+            .append_event(
+                "other",
+                1,
+                &event(
+                    "other",
+                    EventMsg::Message(crate::protocol::MessageEvent {
+                        author: crate::protocol::MessageAuthor::User,
+                        delivery: crate::protocol::MessageDelivery::Turn,
+                        text: "other chat".into(),
+                        attachments: Vec::new(),
+                        reply: None,
+                        message_target: Some(other_target),
+                    }),
+                ),
+            )
+            .await
+            .expect("append other message");
+
+        let exact = MessageReply {
+            target: attachment_target,
+            text: "clip.mov".into(),
+        };
+        let changed = MessageReply {
+            text: "forged quote".into(),
+            ..exact.clone()
+        };
+        let other = MessageReply {
+            target: other_target,
+            text: "other chat".into(),
+        };
+        let assistant = MessageReply {
+            target: assistant_target,
+            text: "last part".into(),
+        };
+        let combined_assistant = MessageReply {
+            target: assistant_target,
+            text: "first partlast part".into(),
+        };
+
+        assert_eq!(
+            (
+                validate_reply(&store, "current", &exact)
+                    .await
+                    .expect("validate exact reply"),
+                validate_reply(&store, "current", &changed)
+                    .await
+                    .expect("validate changed reply"),
+                validate_reply(&store, "current", &other)
+                    .await
+                    .expect("validate cross-session reply"),
+                validate_reply(&store, "current", &assistant)
+                    .await
+                    .expect("validate assistant reply"),
+                validate_reply(&store, "current", &combined_assistant)
+                    .await
+                    .expect("validate combined assistant reply"),
+            ),
+            (
+                None,
+                Some(text::DEFINITION.reply_text_changed.as_str()),
+                Some(text::DEFINITION.reply_target_invalid.as_str()),
+                None,
+                Some(text::DEFINITION.reply_text_changed.as_str()),
+            )
+        );
+        let stack = MiddlewareStack::new(vec![Arc::new(Messages::default())]).expect("stack");
+        let mut queued = Vec::new();
+        let mut forged = user(None);
+        forged.reply = Some(changed);
+        let mut events = Vec::new();
+        let result = stack
+            .route_message(&mut MessageRouteContext {
+                checkpoints: &store,
+                session_id: "current",
+                submission_id: "message-1",
+                message: &mut forged,
+                active_turn_id: None,
+                queued_messages: MessageQueue::new(&mut queued),
+                events: &mut events,
+            })
+            .await
+            .expect("route forged reply");
+        assert_eq!(
+            result,
+            SubmissionResult::Rejected(text::DEFINITION.reply_text_changed.clone())
+        );
+        assert!(queued.is_empty() && events.is_empty());
     }
 }

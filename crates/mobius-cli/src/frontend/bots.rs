@@ -419,7 +419,7 @@ mod tests {
         ));
 
         let routine = routine("routine-a");
-        let mut update = RoutineForm::update(&routine);
+        let update = RoutineForm::update(&routine);
         assert!(matches!(
             message(update.action().expect("valid update")),
             ClientMessage::RoutineCommand {command:mobius_gateway::wire::RoutineCommand{routine_id,action:mobius_gateway::wire::RoutineAction::Update{..}},..} if routine_id=="routine-a"
@@ -434,6 +434,51 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn gateway_schedule_rejection_stays_on_the_open_routine_form() {
+        let mut gateway = gateway(vec![bot("bot-a")]);
+        let mut state = BotsState::new(&gateway, None, None);
+        let mut form = RoutineForm::create("bot-a".into());
+        form.workspace.value = "/srv/project".into();
+        form.instructions.value = "build it".into();
+        form.schedule_value.value = "30".into();
+        state.form = Some(Form::Routine(Box::new(form)));
+
+        let Action::Send {
+            request_id,
+            label,
+            follow_up,
+            ..
+        } = state.handle_key(
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+            &gateway,
+        )
+        else {
+            panic!("the gateway owns schedule validation")
+        };
+        state.begin(request_id.clone(), label, follow_up);
+        state.paste(" pasted while submitting");
+        handle_frame(
+            ServerMessage::Rejected {
+                request_id,
+                code: "invalid_request".into(),
+                message: "interval must be at least 60 seconds".into(),
+                fatal: false,
+            },
+            &mut gateway,
+            &mut state,
+        );
+
+        let Some(Form::Routine(form)) = &state.form else {
+            panic!("form stays open")
+        };
+        assert_eq!(form.instructions.value, "build it");
+        assert_eq!(
+            form.error.as_deref(),
+            Some("interval must be at least 60 seconds")
+        );
     }
 
     #[test]

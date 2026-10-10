@@ -5,7 +5,6 @@
 //! hook commands and permission decisions still run every time. Unchanged startup
 //! context is skipped; ordinary message and tool context remains repeatable.
 
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::env;
@@ -61,6 +60,12 @@ mod text {
         pub(super) manifest_description: String,
         pub(super) manifest_label: String,
         pub(super) prompt_default: String,
+        pub(super) workspace_skill_roots: Vec<String>,
+        pub(super) notice_omitted: String,
+        pub(super) hook_stopped: String,
+        pub(super) hook_conflicting_rewrites: String,
+        pub(super) stop_hook_repeated: String,
+        pub(super) widget_count: String,
     }
     crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("extensions.toml"); }
 }
@@ -73,12 +78,9 @@ const MAX_HOOK_NOTICES: usize = 32;
 const SKILL_FILE: &str = "SKILL.md";
 const SESSION_HOOK_CONTEXT_KIND: &str = "extension_session_hook";
 
-/// Fail-closed authorization checked immediately before each plugin hook command starts.
-pub type HookAuthorization = CommandAuthorization;
-
 super::manifest::middleware_manifest! {
 /// Configuration and presentation metadata for installed extensions.
-    "extensions", text::DEFINITION, required: false, capability: None, settings: &[]
+    "extensions", text::DEFINITION, required: false, settings: &[]
 }
 
 /// One validated package format understood by the extensions middleware.
@@ -131,23 +133,23 @@ pub fn inspect_package(root: impl AsRef<Path>) -> Result<ExtensionPackage> {
 
 #[derive(Clone)]
 struct Skill {
-    name: String,
     description: String,
     location: PathBuf,
 }
 
 struct AuthorizedHooks {
     set: hooks::HookSet,
-    authorization: HookAuthorization,
+    authorization: CommandAuthorization,
 }
 
 /// Discovers bounded skill extensions and advertises their resource locations.
 pub struct Extensions {
     skills: BTreeMap<String, Skill>,
     plugins: BTreeSet<String>,
+    plugin_roots: BTreeSet<PathBuf>,
     hooks: Vec<AuthorizedHooks>,
+    hook_workspace: Option<PathBuf>,
     hook_runtime: Option<hooks::HookRuntime>,
-    prompt: Cow<'static, str>,
 }
 
 impl Extensions {
@@ -161,37 +163,59 @@ impl Extensions {
         Ok(Self {
             skills,
             plugins: BTreeSet::new(),
+            plugin_roots: BTreeSet::new(),
             hooks: Vec::new(),
+            hook_workspace: None,
             hook_runtime: None,
-            prompt: Cow::Borrowed(text::DEFINITION.prompt_default.as_str()),
         })
     }
 
-    /// Adds user-installed skills after the explicit roots.
-    /// Installed skill directory symlinks resolve to their canonical resource roots;
-    /// files within each skill remain confined to that directory.
+    /// Composes one chat's extensions: the workspace's skill directories, then the explicit
+    /// roots, then user-installed skills, then the plugin snapshots and their contributions.
+    ///
+    /// Installed skill directory symlinks resolve to their canonical resource roots; files
+    /// within each skill remain confined to that directory. The optional predicate authorizes
+    /// command hooks for that snapshot and is checked immediately before every launch; hooks
+    /// run only after [`Self::start_hooks`]. Callers must pass immutable snapshots rather
+    /// than paths discovered from a workspace.
     /// # Errors
     ///
     /// Returns an error if validation or an operation required by this function fails.
-    pub fn discover_installed(roots: impl IntoIterator<Item = PathBuf>) -> Result<Self> {
-        let mut discovered = Self::discover(roots)?;
+    pub fn installed(
+        workspace: &Path,
+        roots: impl IntoIterator<Item = PathBuf>,
+        plugins: impl IntoIterator<Item = (PathBuf, Option<CommandAuthorization>)>,
+    ) -> Result<Self> {
+        Self::discover_installed(Some(workspace), roots)?.load_plugins(plugins, workspace)
+    }
+
+    /// Returns the gateway catalog entry for user-installed skills, outside any chat.
+    /// # Errors
+    ///
+    /// Returns an error if an installed skill is invalid.
+    pub fn installed_contribution() -> Result<FrontendContribution> {
+        Ok(Self::discover_installed(None, [])?.contribution())
+    }
+
+    fn discover_installed(
+        workspace: Option<&Path>,
+        roots: impl IntoIterator<Item = PathBuf>,
+    ) -> Result<Self> {
+        let workspace_roots = workspace.into_iter().flat_map(|workspace| {
+            text::DEFINITION
+                .workspace_skill_roots
+                .iter()
+                .map(move |root| workspace.join(root))
+        });
+        let mut discovered = Self::discover(workspace_roots.chain(roots))?;
         discover_roots(installed_skill_roots(), &mut discovered.skills, None, true)?;
         Ok(discovered)
     }
 
-    /// Activates plugin snapshots and their declared contributions.
-    ///
-    /// The optional predicate authorizes command hooks for that snapshot and is checked
-    /// immediately before every launch. Bundled skills remain available without it. Callers
-    /// must pass immutable snapshots rather than paths discovered from a workspace.
-    /// # Errors
-    ///
-    /// Returns an error if validation or an operation required by this function fails.
-    pub fn activate_plugins(
+    fn load_plugins(
         mut self,
-        roots: impl IntoIterator<Item = (PathBuf, Option<HookAuthorization>)>,
+        roots: impl IntoIterator<Item = (PathBuf, Option<CommandAuthorization>)>,
         workspace: impl AsRef<Path>,
-        backend: Arc<dyn SandboxBackend>,
     ) -> Result<Self> {
         if !self.plugins.is_empty() {
             return Err(Error::Config("plugins were activated twice".into()));
@@ -240,6 +264,7 @@ impl Extensions {
             if !self.plugins.insert(package.name.clone()) {
                 return Err(Error::Duplicate(format!("plugin `{}`", package.name)));
             }
+            self.plugin_roots.insert(root.clone());
             let data = data_root.join(&package.name);
             data_root_dir.create_dir_all(&package.name)?;
             let data = canonical_directory(&data, "plugin data directory")?;
@@ -271,33 +296,73 @@ impl Extensions {
             }
         }
         if !self.hooks.is_empty() {
+            self.hook_workspace = Some(workspace);
+        }
+        Ok(self)
+    }
+
+    /// Starts authorized plugin hooks in the chat's sandbox, which must already allow
+    /// reading [`Self::resource_roots`].
+    /// # Errors
+    ///
+    /// Returns an error if the hook runtime cannot start.
+    pub fn start_hooks(mut self, backend: Arc<dyn SandboxBackend>) -> Result<Self> {
+        if let Some(workspace) = self.hook_workspace.take() {
             self.hook_runtime = Some(hooks::HookRuntime::new(backend, workspace)?);
         }
         Ok(self)
     }
 
-    /// Overrides the instruction placed before discovered skill metadata.
-    /// # Errors
-    ///
-    /// Returns an error if validation or an operation required by this function fails.
-    pub fn prompt(mut self, prompt: impl Into<String>) -> Result<Self> {
-        let prompt = prompt.into();
-        if prompt.trim().is_empty() {
-            return Err(Error::Config("extensions prompt cannot be empty".into()));
-        }
-        self.prompt = Cow::Owned(prompt);
-        Ok(self)
-    }
-
-    /// Returns the canonical skill directories that generic read tools may access.
+    /// Returns the canonical skill directories and plugin snapshots that generic read tools
+    /// may access.
     #[must_use]
     pub fn resource_roots(&self) -> Vec<PathBuf> {
         self.skills
             .values()
             .filter_map(|skill| skill.location.parent().map(Path::to_path_buf))
+            .chain(self.plugin_roots.iter().cloned())
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect()
+    }
+
+    fn contribution(&self) -> FrontendContribution {
+        let count = self.plugins.len()
+            + self
+                .skills
+                .keys()
+                .filter(|name| {
+                    name.split_once(':')
+                        .is_none_or(|(plugin, _)| !self.plugins.contains(plugin))
+                })
+                .count();
+        FrontendContribution {
+            capability: MANIFEST.id.into(),
+            count: Some(count),
+            commands: Vec::new(),
+            widgets: vec![FrontendWidget {
+                id: "count".into(),
+                slot: FrontendSlot::Header,
+                text: text::DEFINITION
+                    .widget_count
+                    .replace("{count}", &count.to_string()),
+                tone: FrontendTone::Neutral,
+                symbol: None,
+                icon_only: false,
+                progress: None,
+                content: None,
+                action: None,
+            }],
+            references: self
+                .skills
+                .iter()
+                .map(|(name, skill)| FrontendReference {
+                    trigger: '$',
+                    value: name.clone(),
+                    description: skill.description.clone(),
+                })
+                .collect(),
+        }
     }
 
     fn section(&self) -> Option<PromptSection> {
@@ -306,11 +371,11 @@ impl Extensions {
         }
         let skills = self
             .skills
-            .values()
-            .map(|skill| {
+            .iter()
+            .map(|(name, skill)| {
                 format!(
                     "- name: {}\n  description: {}\n  location: {}",
-                    prompt_value(&skill.name),
+                    prompt_value(name),
                     prompt_value(&skill.description),
                     prompt_value(&skill.location.display().to_string())
                 )
@@ -319,7 +384,7 @@ impl Extensions {
             .join("\n");
         Some(PromptSection::new(format!(
             "{}\n\n{skills}",
-            self.prompt.trim()
+            text::DEFINITION.prompt_default.trim()
         )))
     }
 
@@ -389,12 +454,16 @@ pub fn valid_package_name(name: &str) -> bool {
 }
 
 fn canonical_directory(path: &Path, name: &str) -> Result<PathBuf> {
-    let path = std::fs::canonicalize(path)?;
+    let path = std::fs::canonicalize(path)
+        .map_err(|error| Error::Config(format!("invalid {name}: {error}")))?;
     if !path.is_dir() {
         return Err(Error::Config(format!(
             "{name} is not a directory: {}",
             path.display()
         )));
+    }
+    if path.as_os_str().len() > hooks::MAX_PATH_BYTES {
+        return Err(Error::Config(format!("{name} path is too long")));
     }
     Ok(path)
 }
@@ -538,9 +607,8 @@ fn discover_roots(
                 return Err(Error::Config(format!("skill count exceeds {MAX_SKILLS}")));
             }
             skills.insert(
-                name.clone(),
+                name,
                 Skill {
-                    name,
                     description,
                     location: skill_path,
                 },
@@ -606,7 +674,7 @@ fn hook_notices(outcomes: &[hooks::HookOutcome]) -> Vec<String> {
             .flatten()
         {
             if messages.len() == MAX_HOOK_NOTICES {
-                messages.push("additional extension hook notices were omitted".into());
+                messages.push(text::DEFINITION.notice_omitted.as_str().into());
                 return messages;
             }
             messages.push(message.clone());
@@ -665,7 +733,7 @@ fn hook_stop_reason(outcome: &hooks::HookOutcome) -> String {
     .into_iter()
     .flatten()
     .find(|value| !value.trim().is_empty())
-    .unwrap_or("stopped by extension hook")
+    .unwrap_or(&text::DEFINITION.hook_stopped)
     .into()
 }
 
@@ -857,7 +925,7 @@ impl Middleware for Extensions {
                 return Ok(());
             };
             if rewrites.any(|candidate| candidate != rewrite) {
-                return context.deny("conflicting extension hook tool rewrites");
+                return context.deny(text::DEFINITION.hook_conflicting_rewrites.as_str());
             }
             let original_name = context.call().name.clone();
             match context
@@ -1056,7 +1124,7 @@ impl Middleware for Extensions {
             {
                 if context.stop_hook_active() {
                     context.events.push(EventMsg::Warning(WarningEvent {
-                        message: "extension stop hook cannot continue a turn twice".into(),
+                        message: text::DEFINITION.stop_hook_repeated.as_str().into(),
                     }));
                 } else {
                     context.continue_with(hook_stop_reason(outcome))?;
@@ -1087,42 +1155,8 @@ impl Middleware for Extensions {
         })
     }
 
-    fn frontend(&self) -> FrontendContribution {
-        let count = self.plugins.len()
-            + self
-                .skills
-                .keys()
-                .filter(|name| {
-                    name.split_once(':')
-                        .is_none_or(|(plugin, _)| !self.plugins.contains(plugin))
-                })
-                .count();
-        FrontendContribution {
-            capability: self.name().into(),
-            accepts_file_attachments: false,
-            count: Some(count),
-            commands: Vec::new(),
-            widgets: vec![FrontendWidget {
-                id: "count".into(),
-                slot: FrontendSlot::Header,
-                text: format!("extensions {count}"),
-                tone: FrontendTone::Neutral,
-                symbol: None,
-                icon_only: false,
-                progress: None,
-                content: None,
-                action: None,
-            }],
-            references: self
-                .skills
-                .values()
-                .map(|skill| FrontendReference {
-                    trigger: '$',
-                    value: skill.name.clone(),
-                    description: skill.description.clone(),
-                })
-                .collect(),
-        }
+    fn frontend(&self, _session_id: &str) -> FrontendContribution {
+        self.contribution()
     }
 }
 
@@ -1233,7 +1267,7 @@ mod tests {
     use crate::middleware::TurnIdentity;
     use std::sync::Mutex;
 
-    fn trusted_hooks() -> Option<HookAuthorization> {
+    fn trusted_hooks() -> Option<CommandAuthorization> {
         Some(Arc::new(|launch| launch()))
     }
 
@@ -1244,6 +1278,22 @@ mod tests {
             Extensions::discover([temporary.path().to_path_buf()]).expect("empty skills");
 
         assert_eq!(extensions.section(), None);
+    }
+
+    #[test]
+    fn workspace_skill_roots_are_discovered() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        write_skill(
+            &workspace.path().join(".codex/skills"),
+            "workspace-only",
+            "workspace-only-skill",
+            "From the workspace",
+        );
+
+        let extensions =
+            Extensions::discover_installed(Some(workspace.path()), []).expect("skills");
+
+        assert!(extensions.skills.contains_key("workspace-only-skill"));
     }
 
     #[test]
@@ -1470,7 +1520,8 @@ mod tests {
 
         let extensions = Extensions::discover(Vec::<PathBuf>::new())
             .expect("extensions")
-            .activate_plugins([(plugin, trusted_hooks())], &workspace, backend)
+            .load_plugins([(plugin.clone(), trusted_hooks())], &workspace)
+            .and_then(|extensions| extensions.start_hooks(backend))
             .expect("activate plugin");
 
         let skill = extensions
@@ -1482,6 +1533,11 @@ mod tests {
             "Find unnecessary abstractions and remove them."
         );
         assert_eq!(extensions.plugins, BTreeSet::from(["ponytail".into()]));
+        assert!(
+            extensions
+                .resource_roots()
+                .contains(&plugin.canonicalize().expect("canonical plugin"))
+        );
     }
 
     #[test]
@@ -1514,7 +1570,8 @@ mod tests {
 
         let extensions = Extensions::discover(Vec::<PathBuf>::new())
             .expect("extensions")
-            .activate_plugins([(plugin, None)], &workspace, backend)
+            .load_plugins([(plugin, None)], &workspace)
+            .and_then(|extensions| extensions.start_hooks(backend))
             .expect("activate plugin skills");
 
         assert!(extensions.skills.contains_key("ponytail:review"));
@@ -1567,11 +1624,13 @@ fi
         );
         let extensions = Extensions::discover(Vec::<PathBuf>::new())
             .expect("extensions")
-            .activate_plugins([(plugin, trusted_hooks())], &workspace, backend)
+            .load_plugins([(plugin, trusted_hooks())], &workspace)
+            .and_then(|extensions| extensions.start_hooks(backend))
             .expect("activate plugin");
         let notices = Arc::new(Mutex::new(Vec::new()));
         let captured = Arc::clone(&notices);
         let runtime = RuntimeContext {
+            children: crate::agent::ChildAgents::default(),
             sender: crate::agent::test_sender(),
             checkpoints: Arc::new(
                 SqliteCheckpoint::new(temporary.path().join("checkpoints.sqlite3"))
@@ -1733,7 +1792,8 @@ fi
 
         Extensions::discover(Vec::<PathBuf>::new())
             .expect("extensions")
-            .activate_plugins([(plugin, trusted_hooks())], &workspace, backend)
+            .load_plugins([(plugin, trusted_hooks())], &workspace)
+            .and_then(|extensions| extensions.start_hooks(backend))
             .expect("activate plugin")
     }
 
@@ -1743,6 +1803,7 @@ fi
         use crate::protocol::SessionContext;
 
         let runtime = RuntimeContext {
+            children: crate::agent::ChildAgents::default(),
             sender: crate::agent::test_sender(),
             checkpoints: Arc::new(
                 SqliteCheckpoint::new(temporary.path().join("checkpoints.sqlite3"))
@@ -1846,7 +1907,8 @@ fi
 
         let error = Extensions::discover(Vec::<PathBuf>::new())
             .expect("extensions")
-            .activate_plugins([(plugin, trusted_hooks())], workspace.path(), backend)
+            .load_plugins([(plugin, trusted_hooks())], workspace.path())
+            .and_then(|extensions| extensions.start_hooks(backend))
             .err()
             .expect("overlapping plugin must fail");
 
@@ -1872,7 +1934,8 @@ fi
 
         let result = Extensions::discover(Vec::<PathBuf>::new())
             .expect("extensions")
-            .activate_plugins([(plugin, trusted_hooks())], &workspace, backend);
+            .load_plugins([(plugin, trusted_hooks())], &workspace)
+            .and_then(|extensions| extensions.start_hooks(backend));
 
         assert!(result.is_err());
         assert!(!outside.join("extensions").exists());

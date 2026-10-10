@@ -28,6 +28,12 @@ mod text {
         pub(super) list_attachments: crate::middleware::tools::ToolSpec,
         pub(super) prompt_available_header: String,
         pub(super) prompt_unavailable_header: String,
+        pub(super) error_path_not_utf8: String,
+        pub(super) error_not_directory: String,
+        pub(super) error_directory_changed: String,
+        pub(super) error_blob_no_filename: String,
+        pub(super) error_blob_no_parent: String,
+        pub(super) error_copy_failed: String,
         pub(super) default_enabled: bool,
         pub(super) manifest_description: String,
         pub(super) manifest_label: String,
@@ -42,19 +48,17 @@ struct MaterializedAttachment {
     reference: SessionFileReference,
     content_hash: Option<String>,
     image: Option<crate::protocol::ImageReference>,
-    #[serde(default)]
     path: Option<String>,
     unavailable_reason: Option<String>,
 }
 super::manifest::middleware_manifest! {
 /// Configuration metadata for protected user uploads.
-    "attachments", text::DEFINITION, required: false, capability: None, settings: &[]
+    "attachments", text::DEFINITION, required: false, settings: &[]
 }
 
 /// Optional middleware exposing user uploads to the owning workspace.
-#[derive(Clone)]
 pub struct Attachments {
-    store: SessionFileStore,
+    store: Arc<SessionFileStore>,
     workspace: Option<Arc<Dir>>,
     workspace_path: Option<PathBuf>,
 }
@@ -64,7 +68,7 @@ impl Attachments {
     /// Creates a new instance.
     pub fn new(store: SessionFileStore) -> Self {
         Self {
-            store,
+            store: Arc::new(store),
             workspace: None,
             workspace_path: None,
         }
@@ -127,9 +131,9 @@ impl Middleware for Attachments {
 
     fn register(&self, catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
         catalog.register(Arc::new(ListAttachments {
-            store: self.store.clone(),
+            store: Arc::clone(&self.store),
             session_id: runtime.session_id.clone(),
-            workspace: self.workspace.clone(),
+            workspace: self.workspace.as_ref().map(Arc::clone),
         }))
     }
 
@@ -162,10 +166,9 @@ impl Middleware for Attachments {
         )))
     }
 
-    fn frontend(&self) -> FrontendContribution {
+    fn frontend(&self, _session_id: &str) -> FrontendContribution {
         FrontendContribution {
             capability: MANIFEST.id.into(),
-            accepts_file_attachments: true,
             ..FrontendContribution::default()
         }
     }
@@ -208,91 +211,56 @@ impl Attachments {
         let mut materialized = Vec::with_capacity(references.len());
         let mut first_error = None;
         for reference in references {
-            let content_hash = match self
-                .store
-                .upload_content_hash(context.session_id, &reference)
+            let mut attachment = MaterializedAttachment {
+                reference,
+                content_hash: None,
+                image: None,
+                path: None,
+                unavailable_reason: None,
+            };
+            if let Err(error) = self
+                .materialize_one(context.session_id, &mut attachment)
                 .await
             {
-                Ok(content_hash) => content_hash,
-                Err(error) => {
-                    let reason = error.to_string();
-                    if first_error.is_none() {
-                        first_error = Some(error);
-                    }
-                    materialized.push(MaterializedAttachment {
-                        reference,
-                        content_hash: None,
-                        image: None,
-                        path: None,
-                        unavailable_reason: Some(reason),
-                    });
-                    continue;
-                }
-            };
-            let path = match stage_attachment(
-                &self.store,
-                self.workspace.as_deref(),
-                context.session_id,
-                &reference,
-                &content_hash,
-            )
-            .await
-            {
-                Ok(path) => path,
-                Err(error) => {
-                    let reason = error.to_string();
-                    if first_error.is_none() {
-                        first_error = Some(error);
-                    }
-                    materialized.push(MaterializedAttachment {
-                        reference,
-                        content_hash: Some(content_hash),
-                        image: None,
-                        path: None,
-                        unavailable_reason: Some(reason),
-                    });
-                    continue;
-                }
-            };
-            let image = if reference.media_type.starts_with("image/") {
-                match self
-                    .store
-                    .inspect_image(
-                        context.session_id,
-                        &reference,
-                        crate::protocol::ImageDetail::Auto,
-                    )
-                    .await
-                {
-                    Ok(image) => Some(image),
-                    Err(error) => {
-                        let reason = error.to_string();
-                        if first_error.is_none() {
-                            first_error = Some(error);
-                        }
-                        materialized.push(MaterializedAttachment {
-                            reference,
-                            content_hash: Some(content_hash),
-                            image: None,
-                            path,
-                            unavailable_reason: Some(reason),
-                        });
-                        continue;
-                    }
-                }
-            } else {
-                None
-            };
-            materialized.push(MaterializedAttachment {
-                reference,
-                content_hash: Some(content_hash),
-                image,
-                path,
-                unavailable_reason: None,
-            });
+                attachment.unavailable_reason = Some(error.to_string());
+                first_error.get_or_insert(error);
+            }
+            materialized.push(attachment);
         }
         context.append_model_input(materialization_message(&materialized)?);
         first_error.map_or(Ok(()), Err)
+    }
+
+    async fn materialize_one(
+        &self,
+        session_id: &str,
+        attachment: &mut MaterializedAttachment,
+    ) -> Result<()> {
+        let content_hash = attachment.content_hash.insert(
+            self.store
+                .upload_content_hash(session_id, &attachment.reference)
+                .await?,
+        );
+        attachment.path = stage_attachment(
+            &self.store,
+            self.workspace.as_deref(),
+            session_id,
+            &attachment.reference,
+            content_hash,
+        )
+        .await?;
+        if attachment.reference.media_type.starts_with("image/") {
+            attachment.image = Some(
+                self.store
+                    .inspect_image(
+                        session_id,
+                        &attachment.reference,
+                        crate::protocol::ImageDetail::Auto,
+                    )
+                    .await?,
+            );
+        }
+        Ok(())
     }
 }
 
@@ -390,7 +358,7 @@ async fn stage_attachment(
     replace_with_copy(&source, &destination, &reference.name)?;
     let path = relative
         .to_str()
-        .ok_or_else(|| Error::Tool("attachment workspace path is not UTF-8".into()))?;
+        .ok_or_else(|| Error::Tool(text::DEFINITION.error_path_not_utf8.as_str().into()))?;
     Ok(Some(path.into()))
 }
 
@@ -421,14 +389,14 @@ fn open_or_create_dir(parent: &Dir, name: &str) -> Result<Dir> {
     }
     let before = parent.symlink_metadata(name)?;
     if before.is_symlink() || !before.is_dir() {
-        return Err(Error::Tool(format!(
-            "attachment workspace path is not a directory: {name}"
-        )));
+        return Err(Error::Tool(
+            text::DEFINITION.error_not_directory.replace("{name}", name),
+        ));
     }
     let directory = parent.open_dir(name)?;
     if !same_file(&before, &directory.dir_metadata()?) {
         return Err(Error::Tool(
-            "attachment workspace directory changed while opening it".into(),
+            text::DEFINITION.error_directory_changed.as_str().into(),
         ));
     }
     Ok(directory)
@@ -449,11 +417,11 @@ fn same_file(_left: &cap_std::fs::Metadata, _right: &cap_std::fs::Metadata) -> b
 fn replace_with_copy(source: &Path, destination: &Dir, name: &str) -> Result<()> {
     let source_name = source
         .file_name()
-        .ok_or_else(|| Error::Tool("attachment blob path has no filename".into()))?;
+        .ok_or_else(|| Error::Tool(text::DEFINITION.error_blob_no_filename.as_str().into()))?;
     let source_dir = Dir::open_ambient_dir(
         source
             .parent()
-            .ok_or_else(|| Error::Tool("attachment blob path has no parent".into()))?,
+            .ok_or_else(|| Error::Tool(text::DEFINITION.error_blob_no_parent.as_str().into()))?,
         ambient_authority(),
     )?;
     if let Ok(existing) = destination.symlink_metadata(name)
@@ -471,9 +439,11 @@ fn replace_with_copy(source: &Path, destination: &Dir, name: &str) -> Result<()>
     source_dir
         .copy(source_name, destination, &temporary)
         .map_err(|error| {
-            Error::Tool(format!(
-                "attachment cannot be copied into the workspace: {error}"
-            ))
+            Error::Tool(
+                text::DEFINITION
+                    .error_copy_failed
+                    .replace("{error}", &error.to_string()),
+            )
         })?;
     if let Err(error) = destination.rename(&temporary, destination, name) {
         let _ = destination.remove_file(&temporary);
@@ -484,7 +454,7 @@ fn replace_with_copy(source: &Path, destination: &Dir, name: &str) -> Result<()>
 }
 
 struct ListAttachments {
-    store: SessionFileStore,
+    store: Arc<SessionFileStore>,
     session_id: String,
     workspace: Option<Arc<Dir>>,
 }
@@ -526,16 +496,21 @@ impl Tool for ListAttachments {
                     &content_hash,
                 )
                 .await?;
-                let mut value = serde_json::to_value(reference)?;
-                if let Some(path) = path {
-                    value
-                        .as_object_mut()
-                        .expect("session file references serialize as objects")
-                        .insert("path".into(), Value::String(path));
-                }
-                listed.push(value);
+                let SessionFileReference {
+                    id,
+                    name,
+                    size,
+                    media_type,
+                } = reference;
+                listed.push(ListedAttachment {
+                    id,
+                    media_type,
+                    name,
+                    path,
+                    size,
+                });
             }
-            Ok((Value::Array(listed).to_string()).into())
+            Ok(serde_json::to_string(&listed)?.into())
         })
     }
 }
@@ -543,6 +518,17 @@ impl Tool for ListAttachments {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EmptyArgs {}
+
+// Fields stay in alphabetical order, the order the listing has always used.
+#[derive(Serialize)]
+struct ListedAttachment {
+    id: String,
+    media_type: String,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    size: u64,
+}
 
 fn referenced_attachments(
     input: crate::backend::model::ModelInput<'_>,

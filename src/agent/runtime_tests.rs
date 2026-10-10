@@ -242,6 +242,16 @@ fn queued_user_message(id: &str, text: &str, boundary: QueuedMessageBoundary) ->
     QueuedMessage::new("messages", id, boundary, event).expect("queued message")
 }
 
+async fn compaction_count(checkpoints: &dyn CheckpointStore, session_id: &str) -> u64 {
+    checkpoints
+        .load_state(session_id, "compaction.v1")
+        .await
+        .expect("compaction state")
+        .map_or(0, |state| {
+            state["count"].as_u64().expect("compaction count")
+        })
+}
+
 fn test_middleware(mut entries: Vec<Arc<dyn Middleware>>) -> MiddlewareStack {
     entries.insert(0, Arc::new(Messages::default()));
     MiddlewareStack::new(entries).expect("middleware")

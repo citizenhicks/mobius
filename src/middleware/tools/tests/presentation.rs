@@ -61,7 +61,7 @@ fn tools_do_not_claim_footer_space() {
             tempfile::tempdir().expect("files").path(),
             None
         ))
-        .frontend()
+        .frontend("session")
         .widgets
         .is_empty()
     );

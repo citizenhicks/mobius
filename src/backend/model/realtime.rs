@@ -16,7 +16,6 @@ use tokio_tungstenite::tungstenite::{
 
 use super::authorization::OpenAiAuthorization;
 use super::transport::{read_limited, status_error};
-use crate::protocol::TokenUsage;
 use crate::{Error, ProviderError, Result};
 
 const MAX_SDP_BYTES: usize = 128 * 1024;
@@ -49,19 +48,6 @@ static MANIFEST: std::sync::LazyLock<VoiceManifest> = std::sync::LazyLock::new(|
     )
 });
 
-impl VoiceProvider {
-    /// Every voice of every model, the default model's default voice first.
-    fn voices(&'static self) -> Vec<&'static str> {
-        let mut voices = Vec::new();
-        for voice in self.models.iter().flat_map(|model| &model.variants) {
-            if !voices.contains(&voice.id.as_str()) {
-                voices.push(voice.id.as_str());
-            }
-        }
-        voices
-    }
-}
-
 impl VoiceManifest {
     fn validate(&self) -> Result<()> {
         for api in [&self.openai, &self.codex] {
@@ -84,11 +70,6 @@ pub(super) static OPENAI_MODELS: std::sync::LazyLock<&'static [super::provider::
 pub(super) static CODEX_MODELS: std::sync::LazyLock<&'static [super::provider::MediaModelPreset]> =
     std::sync::LazyLock::new(|| MANIFEST.codex.models.as_slice());
 
-pub(super) static VOICES: std::sync::LazyLock<Vec<&'static str>> =
-    std::sync::LazyLock::new(|| MANIFEST.openai.voices());
-pub(super) static CODEX_VOICES: std::sync::LazyLock<Vec<&'static str>> =
-    std::sync::LazyLock::new(|| MANIFEST.codex.voices());
-
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -96,10 +77,10 @@ type Socket =
 pub struct RealtimeVoiceRequest {
     /// The session identifier.
     pub session_id: String,
-    /// A provider-advertised voice model, or `None` for its default.
-    pub model: Option<String>,
-    /// A provider-advertised voice, or `None` for its default.
-    pub voice: Option<String>,
+    /// The provider voice model selected by the router.
+    pub model: String,
+    /// The provider voice selected by the router.
+    pub voice: String,
     /// The offer sdp.
     pub offer_sdp: String,
     /// The instructions.
@@ -147,28 +128,24 @@ impl RealtimeVoiceCall {
         });
     }
 
-    /// Creates a provider call with validated audio SDP and bounded Tokio channels.
-    /// The provider must stop and hang up when the cancellation receiver resolves,
-    /// including when this value drops its sender without sending a message.
-    /// # Errors
-    ///
-    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
+    /// Creates a provider call from an answer SDP and voice the provider already validated,
+    /// with bounded Tokio channels. The provider must stop and hang up when the cancellation
+    /// receiver resolves, including when this value drops its sender without sending a message.
+    #[must_use]
     pub fn new(
         answer_sdp: String,
         voice: String,
         commands: mpsc::Sender<RealtimeVoiceCommand>,
         events: mpsc::Receiver<Result<RealtimeVoiceEvent>>,
         cancellation: oneshot::Sender<()>,
-    ) -> Result<Self> {
-        validate_sdp(&answer_sdp)?;
-        validate_text(&voice, 256, "voice name")?;
-        Ok(Self {
+    ) -> Self {
+        Self {
             voice,
             answer_sdp,
             commands,
             events,
             _cancel: cancellation,
-        })
+        }
     }
 }
 
@@ -190,7 +167,7 @@ pub enum RealtimeVoiceCommand {
     },
 }
 
-/// Provider-normalized handoffs and usage for one voice call.
+/// Provider-normalized transcripts and handoffs for one voice call.
 #[derive(Debug, PartialEq, Eq)]
 pub enum RealtimeVoiceEvent {
     /// Incremental speech text and complete snapshots of provider turns or caption groups.
@@ -211,8 +188,6 @@ pub enum RealtimeVoiceEvent {
         /// An optional provider utterance; use recent voice context to resolve the task.
         text: Option<String>,
     },
-    /// Provider-reported tokens, without a local estimate of audio pricing.
-    Usage(TokenUsage),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -286,11 +261,7 @@ impl RealtimeTransport {
     ) -> Result<Self> {
         Ok(Self {
             api,
-            // Voice credentials must never follow a provider redirect.
-            client: Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .connect_timeout(Duration::from_millis(settings.voice_start_timeout_ms))
-                .build()?,
+            client: client(settings)?,
             auth,
             calls_url: Url::parse(calls_url)
                 .map_err(|_| invalid("invalid voice calls endpoint"))?,
@@ -301,13 +272,27 @@ impl RealtimeTransport {
 
     pub(super) fn with_settings(mut self, settings: super::ModelTransportSettings) -> Result<Self> {
         if settings.voice_start_timeout_ms != self.settings.voice_start_timeout_ms {
-            self.client = Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .connect_timeout(Duration::from_millis(settings.voice_start_timeout_ms))
-                .build()?;
+            self.client = client(settings)?;
         }
         self.settings = settings;
         Ok(self)
+    }
+
+    fn codex_headers<'a>(
+        &self,
+        session_id: &'a str,
+    ) -> impl Iterator<Item = (&'static str, &'a str)> {
+        (self.api == VoiceApi::Codex)
+            .then(|| {
+                MANIFEST
+                    .codex
+                    .headers
+                    .iter()
+                    .map(|(name, value)| (name.as_str(), value.as_str()))
+                    .chain(std::iter::once(("x-session-id", session_id)))
+            })
+            .into_iter()
+            .flatten()
     }
 
     pub(super) async fn start(&self, request: RealtimeVoiceRequest) -> Result<RealtimeVoiceCall> {
@@ -323,7 +308,7 @@ impl RealtimeTransport {
         validate_text(&request.session_id, 256, "session identity")?;
         validate_sdp(&request.offer_sdp)?;
         validate_text(&request.instructions, MAX_TEXT_BYTES, "voice instructions")?;
-        let session = self.session(&request)?;
+        let session = Self::session(&request);
         let voice = field(&session["audio"]["output"], "voice")?.to_owned();
         let body = serde_json::to_vec(&match self.api {
             VoiceApi::Codex => json!({"sdp":request.offer_sdp,"session":session}),
@@ -402,37 +387,14 @@ impl RealtimeTransport {
                 let _ = timeout(io_timeout, event_tx.send(Err(error))).await;
             }
         });
-        RealtimeVoiceCall::new(answer_sdp, voice, commands, events, cancel)
+        Ok(RealtimeVoiceCall::new(
+            answer_sdp, voice, commands, events, cancel,
+        ))
     }
 
-    fn models(&self) -> &'static [super::provider::MediaModelPreset] {
-        match self.api {
-            VoiceApi::OpenAi => &OPENAI_MODELS,
-            VoiceApi::Codex => &CODEX_MODELS,
-        }
-    }
-
-    fn session(&self, request: &RealtimeVoiceRequest) -> Result<Value> {
-        let preset = match request.model.as_deref() {
-            Some(id) => self.models().iter().find(|model| model.id == id),
-            None => self.models().first(),
-        };
-        let model = request
-            .model
-            .as_deref()
-            .or_else(|| preset.map(|model| model.id.as_str()))
-            .ok_or_else(|| invalid("select a voice model"))?;
-        let voice = request
-            .voice
-            .as_deref()
-            .or_else(|| {
-                preset
-                    .and_then(|model| model.variants.first())
-                    .map(|variant| variant.id.as_str())
-            })
-            .ok_or_else(|| invalid("select a voice"))?;
-        Ok(json!({"model":model,"instructions":request.instructions,
-            "audio":{"output":{"voice":voice}},"delegation":{"type":"client"}}))
+    fn session(request: &RealtimeVoiceRequest) -> Value {
+        json!({"model":request.model,"instructions":request.instructions,
+            "audio":{"output":{"voice":request.voice}},"delegation":{"type":"client"}})
     }
 
     async fn negotiate(
@@ -496,11 +458,8 @@ impl RealtimeTransport {
             for (name, value) in auth.headers {
                 request = request.header(name, value.as_ref());
             }
-            if self.api == VoiceApi::Codex {
-                for (name, value) in &MANIFEST.codex.headers {
-                    request = request.header(name, value);
-                }
-                request = request.header("x-session-id", session_id);
+            for (name, value) in self.codex_headers(session_id) {
+                request = request.header(name, value);
             }
             let response = request.send().await?;
             if response.status() != reqwest::StatusCode::UNAUTHORIZED
@@ -565,6 +524,10 @@ impl RealtimeTransport {
             for (name, value) in
                 std::iter::once(("authorization", format!("Bearer {}", auth.token).into()))
                     .chain(auth.headers)
+                    .chain(
+                        self.codex_headers(session_id)
+                            .map(|(name, value)| (name, Cow::Borrowed(value))),
+                    )
             {
                 request.headers_mut().insert(
                     tokio_tungstenite::tungstenite::http::HeaderName::from_bytes(name.as_bytes())
@@ -572,25 +535,6 @@ impl RealtimeTransport {
                     value
                         .parse()
                         .map_err(|_| invalid("invalid voice authorization value"))?,
-                );
-            }
-            if self.api == VoiceApi::Codex {
-                for (name, value) in &MANIFEST.codex.headers {
-                    request.headers_mut().insert(
-                        tokio_tungstenite::tungstenite::http::HeaderName::from_bytes(
-                            name.as_bytes(),
-                        )
-                        .map_err(|_| invalid("invalid realtime manifest header"))?,
-                        value
-                            .parse()
-                            .map_err(|_| invalid("invalid realtime manifest header value"))?,
-                    );
-                }
-                request.headers_mut().insert(
-                    "x-session-id",
-                    session_id
-                        .parse()
-                        .map_err(|_| invalid("invalid voice session header"))?,
                 );
             }
             let config = WebSocketConfig::default()
@@ -653,6 +597,14 @@ impl Drop for CallCleanup {
             });
         }
     }
+}
+
+fn client(settings: super::ModelTransportSettings) -> Result<Client> {
+    // Voice credentials must never follow a provider redirect.
+    Ok(Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_millis(settings.voice_start_timeout_ms))
+        .build()?)
 }
 
 fn validate_call_id(id: &str) -> Result<()> {

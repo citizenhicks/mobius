@@ -875,6 +875,11 @@ async fn stream_normalizes_deltas_tools_usage_and_errors() {
         serde_json::json!({
             "type": "content_block_delta",
             "index": 0,
+            "delta": {"type": "text_delta", "text": ""}
+        }),
+        serde_json::json!({
+            "type": "content_block_delta",
+            "index": 0,
             "delta": {"type": "text_delta", "text": "Reading."}
         }),
         serde_json::json!({
@@ -937,6 +942,177 @@ async fn stream_normalizes_deltas_tools_usage_and_errors() {
         .await
         .expect_err("stream error");
     assert!(error.to_string().contains("quota"));
+}
+
+#[tokio::test]
+async fn empty_refusals_are_non_retryable_errors_and_visible_refusals_are_preserved() {
+    let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
+    for (block, answer) in [
+        (None, None),
+        (
+            Some(serde_json::json!({"type": "thinking", "thinking": "", "signature": "signed"})),
+            None,
+        ),
+        (Some(serde_json::json!({"type": "text", "text": " "})), None),
+        (
+            Some(serde_json::json!({"type": "text", "text": "I cannot help with this request."})),
+            Some("I cannot help with this request."),
+        ),
+    ] {
+        let mut stream = StreamState::default();
+        stream
+            .apply(
+                serde_json::json!({
+                    "type": "message_start",
+                    "message": {"content": [], "usage": {"input_tokens": 1, "output_tokens": 0}}
+                }),
+                &events,
+            )
+            .await
+            .expect("message start");
+        if let Some(block) = block {
+            stream
+                .apply(
+                    serde_json::json!({
+                        "type": "content_block_start", "index": 0, "content_block": block
+                    }),
+                    &events,
+                )
+                .await
+                .expect("content block");
+            stream
+                .apply(
+                    serde_json::json!({"type": "content_block_stop", "index": 0}),
+                    &events,
+                )
+                .await
+                .expect("block stop");
+        }
+        stream
+            .apply(
+                serde_json::json!({
+                    "type": "message_delta", "delta": {"stop_reason": "refusal"},
+                    "usage": {"output_tokens": 0}
+                }),
+                &events,
+            )
+            .await
+            .expect("refusal");
+        stream
+            .apply(serde_json::json!({"type": "message_stop"}), &events)
+            .await
+            .expect("message stop");
+        match answer {
+            Some(answer) => assert_eq!(stream.finish().expect("visible refusal").text(), answer),
+            None => {
+                let Error::Provider(error) = stream.finish().expect_err("empty refusal") else {
+                    panic!("expected provider error");
+                };
+                assert_eq!(
+                    error.to_string(),
+                    "Anthropic refused the request without an answer"
+                );
+                assert!(!error.is_retryable());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn stream_accepts_empty_thinking_and_json_fragments_without_losing_signatures() {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink_seen = Arc::clone(&seen);
+    let events: ModelEventSink = Arc::new(move |event| {
+        sink_seen.lock().expect("events lock").push(event);
+        Box::pin(async { Ok(()) })
+    });
+    let mut stream = StreamState::default();
+    for event in [
+        serde_json::json!({
+            "type": "content_block_start", "index": 0,
+            "content_block": {"type": "thinking", "thinking": ""}
+        }),
+        serde_json::json!({
+            "type": "content_block_delta", "index": 0,
+            "delta": {"type": "thinking_delta", "thinking": ""}
+        }),
+        serde_json::json!({
+            "type": "content_block_delta", "index": 0,
+            "delta": {"type": "signature_delta", "signature": "signed"}
+        }),
+        serde_json::json!({"type": "content_block_stop", "index": 0}),
+        serde_json::json!({
+            "type": "content_block_start", "index": 1,
+            "content_block": {"type": "tool_use", "id": "call-1", "name": "probe_echo", "input": {}}
+        }),
+        serde_json::json!({
+            "type": "content_block_delta", "index": 1,
+            "delta": {"type": "input_json_delta", "partial_json": ""}
+        }),
+        serde_json::json!({
+            "type": "content_block_delta", "index": 1,
+            "delta": {"type": "input_json_delta", "partial_json": "{\"token\":\"QUERY\"}"}
+        }),
+        serde_json::json!({"type": "content_block_stop", "index": 1}),
+        serde_json::json!({
+            "type": "content_block_start", "index": 2,
+            "content_block": {"type": "tool_use", "id": "call-2", "name": "observe_probe", "input": {}}
+        }),
+        serde_json::json!({
+            "type": "content_block_delta", "index": 2,
+            "delta": {"type": "input_json_delta", "partial_json": ""}
+        }),
+        serde_json::json!({"type": "content_block_stop", "index": 2}),
+        serde_json::json!({"type": "message_stop"}),
+    ] {
+        stream.apply(event, &events).await.expect("stream event");
+    }
+
+    let output = stream.finish().expect("normalized output");
+    assert_eq!(output.tool_calls()[0].arguments["token"], "QUERY");
+    assert_eq!(output.tool_calls()[1].arguments, serde_json::json!({}));
+    assert_eq!(output.output()[0][RAW_CONTENT][0]["thinking"], "");
+    assert_eq!(output.output()[0][RAW_CONTENT][0]["signature"], "signed");
+    assert!(matches!(
+        seen.lock().expect("events lock").as_slice(),
+        [ModelEvent::ToolCallReady(_), ModelEvent::ToolCallReady(_)]
+    ));
+}
+
+#[tokio::test]
+async fn stream_rejects_missing_or_non_string_delta_fragments() {
+    let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
+    for (block_type, delta_type, field) in [
+        ("text", "text_delta", "text"),
+        ("thinking", "thinking_delta", "thinking"),
+        ("tool_use", "input_json_delta", "partial_json"),
+    ] {
+        for value in [None, Some(Value::Null), Some(serde_json::json!(7))] {
+            let mut stream = StreamState::default();
+            stream
+                .apply(
+                    serde_json::json!({
+                        "type": "content_block_start", "index": 0,
+                        "content_block": {"type": block_type}
+                    }),
+                    &events,
+                )
+                .await
+                .expect("block start");
+            let mut delta = serde_json::json!({"type": delta_type});
+            if let Some(value) = value {
+                delta[field] = value;
+            }
+            let error = stream
+                .apply(
+                    serde_json::json!({"type": "content_block_delta", "index": 0, "delta": delta}),
+                    &events,
+                )
+                .await
+                .expect_err("malformed fragment must fail");
+            assert!(error.to_string().contains(field));
+        }
+    }
 }
 
 #[tokio::test]

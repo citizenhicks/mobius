@@ -1,9 +1,7 @@
-use std::collections::BTreeMap;
-
 use mobius::backend::model::provider::HostedWebSearch;
 use mobius::protocol::{
     FrontendSetting, FrontendSettingKind, FrontendSettingOption, FrontendSettingValue,
-    FrontendSymbol, MiddlewareFeature, ModelCapability, ModelChoice, ToolDiscoveryMode,
+    FrontendSymbol, MiddlewareFeature, ModelChoice, ToolDiscoveryMode,
 };
 use mobius_gateway::wire::{
     AgentComposition, ExtensionHookRecord, ExtensionKind, ExtensionRecord, ProviderAuthKind,
@@ -64,11 +62,6 @@ fn status(provider: &str) -> ProviderStatus {
         image_models: Default::default(),
         image_model_ids_configurable: false,
         voice_models: Default::default(),
-        realtime_voices: if matches!(provider, "openai_socket" | "responses") {
-            vec!["marin".into(), "cedar".into()]
-        } else {
-            Vec::new()
-        },
         auth,
         default_base_url,
         default_api_key_env,
@@ -191,7 +184,6 @@ fn features() -> Vec<MiddlewareFeature> {
             label: "Plain".into(),
             description: "Plain optional capability".into(),
             required: false,
-            required_model_capability: None,
             settings: Vec::new(),
         },
         MiddlewareFeature {
@@ -199,7 +191,6 @@ fn features() -> Vec<MiddlewareFeature> {
             label: "Configured".into(),
             description: "Capability with advertised settings".into(),
             required: false,
-            required_model_capability: None,
             settings: vec![
                 FrontendSetting {
                     id: "limit".into(),
@@ -236,21 +227,9 @@ fn features() -> Vec<MiddlewareFeature> {
             label: "Required".into(),
             description: "Required capability".into(),
             required: true,
-            required_model_capability: None,
             settings: Vec::new(),
         },
     ]
-}
-
-fn image_feature() -> MiddlewareFeature {
-    MiddlewareFeature {
-        id: "native_image".into(),
-        label: "Native image".into(),
-        description: "Image generation".into(),
-        required: false,
-        required_model_capability: Some(ModelCapability::ImageGeneration),
-        settings: Vec::new(),
-    }
 }
 
 fn feature_row(state: &SetupState, id: &str) -> usize {
@@ -510,140 +489,6 @@ fn hosted_search_is_selected_only_from_the_gateway_manifest() {
 }
 
 #[test]
-fn provider_setup_preserves_independent_voice_selection() {
-    let current = AgentComposition {
-        realtime_voice: Some("voice-instance::voice-model::cove".into()),
-        ..AgentComposition::default()
-    };
-    for provider in ["openai_socket", "kimi", "responses"] {
-        let setup = state(SetupMode::Login, provider, true);
-        assert_eq!(
-            setup
-                .agent_composition(&current)
-                .expect("provider selection")
-                .realtime_voice,
-            current.realtime_voice
-        );
-    }
-}
-
-#[test]
-fn bot_model_preserves_independent_voice_and_reconciles_declared_capabilities() {
-    let mut setup = state(SetupMode::BotModel, "openai_socket", true);
-    setup.features.push(image_feature());
-    let current = setup.original.provider.clone();
-    let unsupported = route(
-        "current-route",
-        "OpenAI",
-        &current.model,
-        current.reasoning_effort.as_deref(),
-    );
-    let mut sibling = route("sibling-route", "OpenAI", "other-model", None);
-    sibling.supports_image_generation = true;
-    sibling.supports_realtime_voice = true;
-    let providers = BTreeMap::from([
-        (unsupported.route.clone(), current.instance.clone()),
-        (sibling.route.clone(), current.instance.clone()),
-    ]);
-    setup
-        .set_bot_model_routes(&[unsupported, sibling], &providers)
-        .expect("advertised routes");
-
-    let mut config = setup.original.clone();
-    config.middleware.set_enabled("native_image", true);
-    config.realtime_voice = Some("cedar".into());
-    let selected = setup.agent_composition(&config).expect("current route");
-    assert!(!selected.middleware.enabled("native_image"));
-    assert_eq!(selected.realtime_voice, config.realtime_voice);
-
-    setup.row = 1;
-    setup.select_model_row();
-    let selected = setup.agent_composition(&config).expect("sibling route");
-    assert!(selected.middleware.enabled("native_image"));
-    assert_eq!(selected.realtime_voice.as_deref(), Some("cedar"));
-}
-
-#[test]
-fn bot_capability_uses_default_effort_route_not_supported_sibling() {
-    let mut setup = state(SetupMode::Bot, "openai_socket", true);
-    setup.original.provider.reasoning_effort = None;
-    setup.features.push(image_feature());
-    let mut sibling = route(
-        "high",
-        "OpenAI",
-        &setup.original.provider.model,
-        Some("high"),
-    );
-    sibling.supports_image_generation = true;
-    let selected = route(
-        "medium",
-        "OpenAI",
-        &setup.original.provider.model,
-        Some("medium"),
-    );
-    let routes = [sibling, selected];
-    let instance = setup.original.provider.instance.clone();
-    let providers = BTreeMap::from([
-        ("high".into(), instance.clone()),
-        ("medium".into(), instance),
-    ]);
-    setup.set_original_model_choice(&routes, &providers);
-
-    assert_eq!(
-        setup
-            .selected_model_choice()
-            .map(|choice| choice.route.as_str()),
-        Some("medium")
-    );
-    assert!(
-        setup
-            .middleware
-            .disabled_by(
-                &setup.features,
-                "native_image",
-                setup.selected_model_choice()
-            )
-            .is_some()
-    );
-
-    let mut model_setup = state(SetupMode::BotModel, "openai_socket", true);
-    model_setup.original.provider.reasoning_effort = None;
-    model_setup.set_original_model_choice(&routes, &providers);
-    model_setup
-        .set_bot_model_routes(&routes, &providers)
-        .expect("advertised routes");
-    assert_eq!(
-        model_setup
-            .selected_model_choice()
-            .map(|choice| choice.route.as_str()),
-        Some("medium")
-    );
-}
-
-#[test]
-fn bot_capability_without_a_live_route_cannot_be_enabled() {
-    let mut setup = state(SetupMode::Bot, "openai_socket", false);
-    setup.features.push(image_feature());
-    assert_eq!(
-        setup.disabled_by("native_image"),
-        Some("no available model")
-    );
-
-    setup.row = feature_row(&setup, "native_image");
-    setup.handle_agent_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
-    assert!(!setup.middleware.enabled("native_image"));
-
-    setup.middleware.set_enabled("native_image", true);
-    assert!(
-        setup
-            .agent_composition(&setup.original)
-            .expect("preserve existing selection")
-            .middleware
-            .enabled("native_image")
-    );
-}
-
-#[test]
 fn agent_is_one_page_and_preserves_unedited_provider_settings() {
     let mut state = state(SetupMode::Bot, "openai_socket", true);
     state.original.provider.web_search = HostedWebSearch::Live;
@@ -868,7 +713,7 @@ fn advertised_choice_exclusions_apply_to_settings_capabilities_and_extensions() 
     assert!(
         state
             .middleware
-            .disabled_by(&state.features, "plain", None)
+            .disabled_by(&state.features, "plain")
             .is_none()
     );
     state.row = feature_row(&state, "plain");

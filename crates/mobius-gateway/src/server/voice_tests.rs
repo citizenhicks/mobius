@@ -1,6 +1,10 @@
 use super::*;
 use mobius::backend::checkpoint::{CheckpointStore, sqlite::SqliteCheckpoint};
-use mobius::backend::model::{ModelRouter, openai::OpenAi};
+use mobius::backend::model::{
+    ModelRouter, RealtimeVoiceCall, RealtimeVoiceCommand, RealtimeVoiceEvent, openai::OpenAi,
+};
+use mobius::middleware::voice::VoiceCallContext;
+use mobius::middleware::voice::transcript::VoiceTranscript;
 use mobius::protocol::ConversationRole;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -147,14 +151,15 @@ async fn voice_delegation_preserves_committed_speech_and_delayed_final_transcrip
     let parent = checkpoints.load(host.session_id()).await.unwrap().unwrap();
     let route = parent.model_route.clone().unwrap();
     let frontend: mobius::middleware::FrontendEventSink = Arc::new(|_| Ok(()));
-    let mut transcript = VoiceTranscript::open(
+    let voice_id = VoiceTranscript::open(
         Arc::clone(&checkpoints),
         host.session_id(),
         Arc::clone(&frontend),
     )
     .await
-    .unwrap();
-    let voice_id = transcript.session_id().to_owned();
+    .unwrap()
+    .session_id()
+    .to_owned();
     let voice = "voice-test::gpt-live-1::sol";
     let mut router = ModelRouter::new(
         &route,
@@ -180,29 +185,28 @@ async fn voice_delegation_preserves_committed_speech_and_delayed_final_transcrip
             Default::default(),
         )
         .unwrap();
-    let mut model = crate::host::RealtimeModel {
-        bot_name: "Builder".into(),
-        bot_instructions: "You are Builder.".into(),
+    let context = VoiceCallContext {
+        session_id: host.session_id().into(),
         router: Arc::new(router),
         voice: voice.into(),
-        route,
-        provider_instance: "voice-test".into(),
+        bot_name: "Builder".into(),
+        bot_handle: "builder".into(),
+        bot_instructions: "You are Builder.".into(),
         active_turn_id: None,
         checkpoints: Arc::clone(&checkpoints),
-        frontend,
+        frontend: Arc::clone(&frontend),
     };
-    let finalization_timeout = call_finalization_timeout(&model).unwrap();
+    let shutdown_timeout = context.shutdown_timeout().unwrap();
     let (commands, mut received) = mpsc::channel(32);
     let (send, voice_events) = mpsc::channel(8);
     let (cancel, _cancelled) = oneshot::channel();
-    let mut call = RealtimeVoiceCall::new(
+    let call = RealtimeVoiceCall::new(
         "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n".into(),
         "sol".into(),
         commands,
         voice_events,
         cancel,
-    )
-    .unwrap();
+    );
     for (id, role, text) in [
         (
             "decision",
@@ -228,8 +232,8 @@ async fn voice_delegation_preserves_committed_speech_and_delayed_final_transcrip
         .await
         .unwrap();
     }
+    let call = VoiceCall::with_call(context, call).await.unwrap();
     let (stop, stopped) = oneshot::channel();
-    let frontend = Arc::clone(&model.frontend);
     let check_reply = async {
         let mut replies = 0;
         loop {
@@ -297,17 +301,9 @@ async fn voice_delegation_preserves_committed_speech_and_delayed_final_transcrip
         .expect("gateway still accepts the delayed final transcript");
         drop(send);
     };
-    tokio::time::timeout(finalization_timeout + Duration::from_secs(10), async {
+    tokio::time::timeout(shutdown_timeout + Duration::from_secs(10), async {
         let (result, ()) = tokio::join!(
-            drive(
-                &host,
-                &mut model,
-                &mut call,
-                &mut transcript,
-                &mut events,
-                stopped,
-                finalization_timeout,
-            ),
+            drive(&host, &route, call, &mut events, stopped),
             check_reply
         );
         result.unwrap();
@@ -315,7 +311,13 @@ async fn voice_delegation_preserves_committed_speech_and_delayed_final_transcrip
     .await
     .unwrap();
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
-    let context = transcript.handoff_context().await.unwrap().text;
+    let context = VoiceTranscript::open(Arc::clone(&checkpoints), host.session_id(), frontend)
+        .await
+        .unwrap()
+        .handoff_context()
+        .await
+        .unwrap()
+        .text;
     assert!(context.contains("The final spoken response."));
     for consumed in [
         "Use blue; preserve toolbar.",
@@ -342,8 +344,8 @@ async fn voice_delegation_preserves_committed_speech_and_delayed_final_transcrip
 #[tokio::test(start_paused = true)]
 async fn voice_stop_preserves_the_calls_nondefault_finalization_window() {
     let (stop, stopped) = oneshot::channel();
-    let (finalization, finalization_timeout) = oneshot::channel();
-    finalization.send(Duration::from_secs(30)).unwrap();
+    let (shutdown, shutdown_timeout) = oneshot::channel();
+    shutdown.send(Duration::from_secs(30)).unwrap();
     let (_updates, updates) = mpsc::channel(2);
     let (finished, completion) = oneshot::channel();
     let task = tokio::spawn(async move {
@@ -357,7 +359,7 @@ async fn voice_stop_preserves_the_calls_nondefault_finalization_window() {
         updates,
         task,
         stop: Some(stop),
-        finalization_timeout,
+        shutdown_timeout,
     };
     voice.stop().await;
     completion

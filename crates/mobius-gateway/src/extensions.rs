@@ -9,9 +9,9 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use mobius::backend::sandbox::CommandAuthorization;
 use mobius::middleware::extensions::{
-    ExtensionHook, ExtensionPackageKind, HookAuthorization, MANIFEST, inspect_package,
-    valid_package_name,
+    ExtensionHook, ExtensionPackageKind, MANIFEST, inspect_package, valid_package_name,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -78,7 +78,7 @@ impl ResolvedPlugin {
     pub(crate) fn activation(
         &self,
         gateway: Arc<Mutex<GatewayConfig>>,
-    ) -> (PathBuf, Option<HookAuthorization>) {
+    ) -> (PathBuf, Option<CommandAuthorization>) {
         let authorization = self.hooks_trusted.then(|| {
             let id = self.id.clone();
             let digest = self.digest.clone();
@@ -97,7 +97,7 @@ impl ResolvedPlugin {
                     launch()?;
                 }
                 Ok(())
-            }) as HookAuthorization
+            }) as CommandAuthorization
         });
         (self.root.clone(), authorization)
     }
@@ -411,7 +411,11 @@ pub(crate) fn validate_ids(ids: &BTreeSet<String>) -> Result<()> {
         let Some((kind, name)) = id.split_once(':') else {
             return Err(Error::Config(format!("invalid extension ID `{id}`")));
         };
-        if !matches!(kind, "skill" | "plugin") || !valid_package_name(name) {
+        if ![ExtensionKind::Skill, ExtensionKind::Plugin]
+            .iter()
+            .any(|known| known.as_str() == kind)
+            || !valid_package_name(name)
+        {
             return Err(Error::Config(format!("invalid extension ID `{id}`")));
         }
     }
@@ -450,28 +454,12 @@ pub(crate) fn validate_installed(installed: &BTreeMap<String, InstalledExtension
                 "extension `{id}` reuses another extension snapshot"
             )));
         }
-        if extension.description.len() > 4_096
-            || extension
-                .version
-                .as_ref()
-                .is_some_and(|value| value.len() > 128)
-            || extension.skills.len() > 64
-            || extension.hooks.len() > 64
-        {
-            return Err(Error::Config(format!(
-                "extension `{id}` metadata is too large"
-            )));
-        }
     }
     Ok(())
 }
 
 fn extension_id(kind: ExtensionKind, name: &str) -> String {
-    let kind = match kind {
-        ExtensionKind::Skill => "skill",
-        ExtensionKind::Plugin => "plugin",
-    };
-    format!("{kind}:{name}")
+    format!("{}:{name}", kind.as_str())
 }
 
 impl From<ExtensionPackageKind> for ExtensionKind {
@@ -495,14 +483,15 @@ impl From<ExtensionHook> for ExtensionHookRecord {
 }
 
 fn valid_digest(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    lowercase_hex(value, &[64])
 }
 
 fn valid_revision(value: &str) -> bool {
-    matches!(value.len(), 40 | 64)
+    lowercase_hex(value, &[40, 64])
+}
+
+fn lowercase_hex(value: &str, lengths: &[usize]) -> bool {
+    lengths.contains(&value.len())
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))

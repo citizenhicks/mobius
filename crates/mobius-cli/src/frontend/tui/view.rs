@@ -31,7 +31,7 @@ use super::shimmer;
 use crate::frontend::catalog::MenuItem;
 use crate::frontend::catalog::UiCatalog;
 use crate::frontend::dashboard::centered_area;
-use crate::frontend::terminal::{borrow_line, terminal_text};
+use crate::frontend::terminal::{borrow_line, terminal_text, truncate_bytes};
 use crate::frontend::theme::Role;
 use crate::frontend::theme::current;
 use mobius::protocol::ActiveMessageDelivery;
@@ -1368,7 +1368,7 @@ pub(super) fn bounded_terminal_text(value: &str, limit: usize) -> String {
 
 pub(super) fn truncate_display_text(value: &mut String, limit: usize) {
     if value.len() > limit {
-        value.truncate(value.floor_char_boundary(limit));
+        truncate_bytes(value, limit);
         value.push_str("\n[display truncated]");
     }
 }

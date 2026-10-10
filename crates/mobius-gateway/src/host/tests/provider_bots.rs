@@ -148,7 +148,7 @@ async fn saved_explicit_custom_image_route_remains_available_after_restart() {
 }
 
 #[tokio::test]
-async fn saved_unknown_voice_keeps_chat_usable_and_never_selects_a_different_voice() {
+async fn voice_setting_selects_the_call_route_and_rejects_unknown_routes() {
     let root = tempfile::tempdir().expect("root");
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).expect("workspace");
@@ -179,13 +179,6 @@ async fn saved_unknown_voice_keeps_chat_usable_and_never_selects_a_different_voi
             Vec::new(),
         )
         .expect("voice provider");
-    let mut config = config;
-    config
-        .bot_defaults
-        .as_mut()
-        .expect("defaults")
-        .config
-        .realtime_voice = Some("cedar".into());
     store.save(&config).expect("save gateway");
     let credentials =
         Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
@@ -202,64 +195,29 @@ async fn saved_unknown_voice_keeps_chat_usable_and_never_selects_a_different_voi
             .expect("credential");
     }
     let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-    let mut composition = config
+    let composition = config
         .bot_defaults
         .as_ref()
         .expect("defaults")
         .config
         .clone();
-    composition.realtime_voice = Some("cedar".into());
-    let bot = bots
+    let mut bot = bots
         .create_bot("Voice", "Test saved voice selection.", composition)
-        .expect("saved bare voice");
+        .expect("Bot");
     let gateway = GatewayHost::start(store, config, credentials, bots)
         .await
-        .expect("gateway remains usable");
+        .expect("gateway");
     let host = gateway
         .create_session(&workspace, &bot.id)
         .await
-        .expect("chat remains usable");
-    let error = host
-        .realtime_model()
-        .await
-        .err()
-        .expect("unknown voice is rejected");
-    assert!(error.message.contains("cedar") && error.message.contains("select an available voice"));
-    assert!(host.is_alive());
-    let mut edited = bot.config.config.clone();
-    edited.system_prompt.push_str("\nUpdated instructions.");
-    gateway
-        .configure_bot_defaults(1, edited.clone())
-        .await
-        .expect("unrelated defaults edit retains saved voice");
-    assert!(
-        gateway
-            .create_bot("Invalid", "Test invalid voice defaults.")
-            .await
-            .is_err()
-    );
-    let mut bot = gateway
-        .update_bot(
-            &bot.id,
-            bot.config.revision,
-            crate::bots::BotIdentity {
-                name: &bot.name,
-                description: &bot.description,
-                tint: bot.tint,
-                shape: bot.shape,
-            },
-            edited,
-        )
-        .await
-        .expect("unrelated Bot edit retains saved voice");
-    assert_eq!(bot.config.config.realtime_voice.as_deref(), Some("cedar"));
+        .expect("chat");
     let mut invalid = bot.config.config.clone();
-    invalid.realtime_voice = Some("invalid-new-voice".into());
-    assert!(
-        gateway
-            .configure_bot_defaults(2, invalid.clone())
-            .await
-            .is_err()
+    invalid.middleware.set_setting(
+        "voice",
+        "model",
+        Some(mobius::protocol::FrontendSettingValue::String(
+            "invalid-new-voice".into(),
+        )),
     );
     assert!(
         gateway
@@ -283,7 +241,11 @@ async fn saved_unknown_voice_keeps_chat_usable_and_never_selects_a_different_voi
         Some("voice-proxy::gpt-live-1::cedar"),
     ] {
         let mut config = bot.config.config.clone();
-        config.realtime_voice = voice.map(str::to_owned);
+        config.middleware.set_setting(
+            "voice",
+            "model",
+            voice.map(|voice| mobius::protocol::FrontendSettingValue::String(voice.into())),
+        );
         bot = gateway
             .update_bot(
                 &bot.id,
@@ -300,7 +262,7 @@ async fn saved_unknown_voice_keeps_chat_usable_and_never_selects_a_different_voi
             .expect("select voice");
         let model = host.realtime_model().await.expect("voice is available");
         assert_eq!(
-            model.voice,
+            model.call.voice,
             voice.unwrap_or("openai_socket::gpt-live-1::marin")
         );
     }
@@ -342,9 +304,9 @@ async fn bot_updates_obey_operator_subagent_ceilings_and_persist_larger_trees() 
     {
         let state = gateway.state.lock().await;
         let mut operator = state.config.lock().expect("gateway configuration");
-        operator.execution.subagent_max_depth = 32;
-        operator.execution.subagent_max_concurrency = 128;
-        operator.execution.subagent_max_agents = 512;
+        operator.execution.subagent_ceilings =
+            mobius::middleware::subagents::SubagentCeilings::new(32, 128, 512)
+                .expect("operator ceilings");
         state
             .store
             .save(&operator)

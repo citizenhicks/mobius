@@ -41,7 +41,10 @@ mod responses_socket;
 mod responses_wire;
 mod router;
 pub use cancellation::{ModelCancellation, ModelCancellationReason};
-pub use image_generation::{GeneratedImage, ImageGenerationReference, ImageGenerationRequest};
+pub(crate) use image_generation::MAX_IMAGE_PROMPT_CHARS;
+pub use image_generation::{
+    GeneratedImage, ImageAspect, ImageGenerationReference, ImageGenerationRequest,
+};
 pub use media::{ImageInputLimits, MediaPreparation};
 mod transport;
 pub use transport::ModelTransportSettings;

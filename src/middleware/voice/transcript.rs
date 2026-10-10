@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
@@ -20,9 +20,9 @@ use crate::protocol::{
 use crate::{Error, Result};
 
 pub(crate) const COMMAND: &str = "voice";
-const STATE_KEY: &str = "messages.voice_session";
-const CALL_KEY: &str = "messages.voice_calls";
-const CURSOR_KEY: &str = "messages.voice_handoff";
+const STATE_KEY: &str = "voice.session";
+const CALL_KEY: &str = "voice.calls";
+const CURSOR_KEY: &str = "voice.handoff";
 const PAGE_SIZE: usize = 128;
 const MAX_RECORDINGS: usize = 4_096;
 const MAX_PREVIEW_BYTES: usize = 8 * 1024 * 1024;
@@ -126,7 +126,7 @@ impl VoiceTranscript {
     pub async fn start_call(&mut self, voice: &str) -> Result<()> {
         let mut summary = call_summary(self.checkpoints.as_ref(), &self.session_id).await?;
         summary.voice = voice.into();
-        summary.started_at_ms = Some(timestamp_ms()?);
+        summary.started_at_ms = Some(chrono::Utc::now().timestamp_millis());
         self.checkpoints
             .save_state(&self.session_id, CALL_KEY, &serde_json::to_value(summary)?)
             .await?;
@@ -172,16 +172,21 @@ impl VoiceTranscript {
                 let text = match previous {
                     Some(previous) => match message.text.strip_prefix(previous) {
                         Some("") => String::new(),
-                        Some(rest) => format!("{} (continued): {rest}", message.speaker),
-                        None => format!(
-                            "Correction to earlier voice speech:\n{}: {}",
-                            message.speaker,
-                            if message.text.is_empty() {
-                                "[speech discarded]"
-                            } else {
-                                &message.text
-                            }
-                        ),
+                        Some(rest) => super::text::DEFINITION
+                            .handoff_continued
+                            .replace("{speaker}", message.speaker)
+                            .replace("{text}", rest),
+                        None => super::text::DEFINITION
+                            .handoff_correction
+                            .replace("{speaker}", message.speaker)
+                            .replace(
+                                "{text}",
+                                if message.text.is_empty() {
+                                    &super::text::DEFINITION.handoff_discarded
+                                } else {
+                                    &message.text
+                                },
+                            ),
                     },
                     None if message.text.is_empty() => String::new(),
                     None => format!("{}: {}", message.speaker, message.text),
@@ -293,9 +298,12 @@ impl VoiceTranscript {
             ));
         }
         let event = speech_event(&self.session_id, &recording.id, role, text, complete);
-        let recorded_at_ms = timestamp_ms()?;
         self.checkpoints
-            .append_event(&self.session_id, recorded_at_ms, &event)
+            .append_event(
+                &self.session_id,
+                chrono::Utc::now().timestamp_millis(),
+                &event,
+            )
             .await?;
         if complete {
             recording.text = String::new();
@@ -332,26 +340,35 @@ impl VoiceTranscript {
             self.call_started = None;
             self.preview_deadline = Some(Instant::now());
         }
-        let pending = self
+        for recording in self
             .recordings
-            .iter()
-            .filter(|(_, recording)| !recording.complete)
-            // Finishing persists each partial recording while the original remains available if persistence fails.
-            .map(|(input_id, recording)| (input_id.clone(), recording.role, recording.text.clone()))
-            .collect::<Vec<_>>();
-        for (input_id, role, text) in pending {
-            self.record(&input_id, role, &text, true).await?;
+            .values_mut()
+            .filter(|recording| !recording.complete)
+        {
+            let event = speech_event(
+                &self.session_id,
+                &recording.id,
+                recording.role,
+                &recording.text,
+                true,
+            );
+            self.checkpoints
+                .append_event(
+                    &self.session_id,
+                    chrono::Utc::now().timestamp_millis(),
+                    &event,
+                )
+                .await?;
+            recording.text.clear();
+            recording.complete = true;
+            self.preview_deadline.get_or_insert_with(Instant::now);
+        }
+        if !self.visible && !self.recordings.is_empty() {
+            (self.frontend)(widget())?;
+            self.visible = true;
         }
         self.flush_preview().await
     }
-}
-
-fn timestamp_ms() -> Result<i64> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
-        .ok_or_else(|| Error::Checkpoint("voice timestamp is outside the supported range".into()))
 }
 
 async fn call_summary(checkpoints: &dyn CheckpointStore, session_id: &str) -> Result<CallSummary> {
@@ -468,7 +485,7 @@ pub(crate) async fn read_preview(
 
 fn command(before: Option<u64>) -> Op {
     Op::command(
-        "messages",
+        super::MANIFEST.id,
         COMMAND,
         before.map_or_else(String::new, |before| before.to_string()),
     )
@@ -476,13 +493,13 @@ fn command(before: Option<u64>) -> Op {
 
 fn widget() -> FrontendEvent {
     FrontendEvent::Widget {
-        capability: "messages".into(),
+        capability: super::MANIFEST.id.into(),
         item: FrontendWidget {
             id: "voice".into(),
             slot: FrontendSlot::ComposerFooter,
-            text: "Voice".into(),
+            text: super::text::DEFINITION.widget_text.as_str().into(),
             tone: FrontendTone::Neutral,
-            symbol: Some(FrontendSymbol::Custom("voice".into())),
+            symbol: Some(FrontendSymbol::Custom(super::SYMBOL.into())),
             icon_only: true,
             progress: None,
             content: None,
@@ -567,11 +584,11 @@ async fn preview(
     }
     let summary = call_summary(checkpoints, session_id).await?;
     Ok(FrontendEvent::Preview {
-        symbol: Some(FrontendSymbol::Custom("voice".into())),
+        symbol: Some(FrontendSymbol::Custom(super::SYMBOL.into())),
         duration_ms: (!summary.voice.is_empty()).then_some(summary.duration_ms),
         started_at_ms: summary.started_at_ms,
         id: session_id.into(),
-        title: "Voice transcript".into(),
+        title: super::text::DEFINITION.transcript_title.as_str().into(),
         subtitle: summary.voice,
         page_id: format!(
             "{session_id}:{}",

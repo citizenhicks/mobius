@@ -118,7 +118,7 @@ fn user_submission(id: &str, text: &str) -> Submission {
 }
 
 #[tokio::test]
-async fn persisted_bot_without_new_scalar_settings_assembles_and_runs_with_owner_defaults() {
+async fn bot_update_without_integer_settings_is_rejected() {
     let (_root, gateway, bot) = gateway_with_bot().await;
     let mut encoded = serde_json::to_value(&bot.config.config).expect("saved Bot configuration");
     let settings = encoded["middleware"]["settings"]
@@ -134,7 +134,7 @@ async fn persisted_bot_without_new_scalar_settings_assembles_and_runs_with_owner
         .retain(|id, _| id == "allow_model_compaction" || id == "at_tokens");
     let composition =
         serde_json::from_value(encoded).expect("deserialize existing Bot configuration");
-    let bot = {
+    let error = {
         let state = gateway.state.lock().await;
         state
             .bots
@@ -149,39 +149,9 @@ async fn persisted_bot_without_new_scalar_settings_assembles_and_runs_with_owner
                 },
                 composition,
             )
-            .expect("persist existing Bot map");
-        crate::bots::BotStore::open(state.store.state_dir())
-            .expect("reopen persisted Bots")
-            .bot(&bot.id)
-            .expect("load saved Bot")
+            .expect_err("missing integer settings are rejected")
     };
-    assert_eq!(
-        bot.config
-            .config
-            .middleware
-            .setting("sandbox", "tool_output_bytes"),
-        Some(&mobius::protocol::FrontendSettingValue::Integer(
-            i64::try_from(mobius::backend::sandbox::default_tool_output_limit())
-                .expect("default fits")
-        ))
-    );
-    let model = Arc::new(CaptureModel::default());
-    model.release.notify_one();
-    install_model(&gateway, &bot, Arc::clone(&model)).await;
-    let chat = gateway
-        .open_session(&bot.conversation_session_id)
-        .await
-        .expect("assemble existing Bot");
-    chat.submit(user_submission(
-        "defaulted-settings",
-        "Use the saved configuration",
-    ))
-    .await
-    .expect("submit");
-    tokio::time::timeout(std::time::Duration::from_secs(5), chat.wait_idle())
-        .await
-        .expect("finished turn");
-    assert_eq!(model.calls.load(Ordering::Relaxed), 1);
+    assert!(error.to_string().contains("sandbox.tool_output_bytes"));
     gateway.shutdown().await;
 }
 

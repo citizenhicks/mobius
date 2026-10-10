@@ -258,6 +258,7 @@ impl UiCatalog {
                 .map(UiReference::menu_item)
                 .collect();
         }
+        // Keep only the visible matches while searching large workspace catalogs.
         let mut matches = Vec::with_capacity(MAX_MATCHES);
         for reference in references() {
             let Some(score) = score(&reference.value, &query) else {
@@ -265,12 +266,9 @@ impl UiCatalog {
             };
             let position = matches
                 .iter()
-                .position(
-                    |(current_score, current): &((u8, usize, usize), &UiReference)| {
-                        score < *current_score
-                            || (score == *current_score && reference.value < current.value)
-                    },
-                )
+                .position(|(current_score, current): &(_, &UiReference)| {
+                    (score, &reference.value) < (*current_score, &current.value)
+                })
                 .unwrap_or(matches.len());
             if position < MAX_MATCHES {
                 matches.insert(position, (score, reference));
@@ -279,7 +277,6 @@ impl UiCatalog {
         }
         matches
             .into_iter()
-            .take(MAX_MATCHES)
             .map(|(_, reference)| reference.menu_item())
             .collect()
     }
@@ -736,7 +733,6 @@ mod tests {
     fn contribution(command: &str) -> FrontendContribution {
         FrontendContribution {
             capability: "test".into(),
-            accepts_file_attachments: false,
             count: None,
             commands: vec![FrontendCommand {
                 name: command.into(),
@@ -950,5 +946,37 @@ mod tests {
         catalog.set_workspace_paths(["new.rs".into()]);
         assert!(catalog.reference_suggestions('@', "source").is_empty());
         assert_eq!(catalog.reference_suggestions('@', "new")[0].value, "new.rs");
+    }
+
+    #[test]
+    fn reference_matches_rank_by_score_then_value_and_keep_source_order_on_ties() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let mut inspect = contribution("inspect");
+        inspect.references.push(FrontendReference {
+            trigger: '@',
+            value: "a.rs".into(),
+            description: "middleware reference".into(),
+        });
+        let mut catalog = UiCatalog::build(&[inspect], Some(workspace.path())).expect("catalog");
+        catalog.set_workspace_paths(
+            [
+                "z/a.rs", "a.rs", "b.rs", "y/a.rs", "x/a.rs", "w/a.rs", "v/a.rs", "u/a.rs",
+                "t/a.rs",
+            ]
+            .map(Into::into),
+        );
+
+        let values = catalog
+            .reference_suggestions('@', "a.rs")
+            .into_iter()
+            .map(|item| item.value)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            values,
+            [
+                "@a.rs", "a.rs", "t/a.rs", "u/a.rs", "v/a.rs", "w/a.rs", "x/a.rs", "y/a.rs"
+            ]
+        );
     }
 }

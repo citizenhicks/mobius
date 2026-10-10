@@ -74,7 +74,7 @@ const MAX_PATCH_MATCH_WORK: usize = 32 * 1024 * 1024;
 
 super::manifest::middleware_manifest! {
 /// Configuration and presentation metadata for workspace tools.
-    "tools", text::DEFINITION, required: true, capability: None, settings: &[]
+    "tools", text::DEFINITION, required: true, settings: &[]
 }
 
 /// Whether a tool can overlap other calls in its model-produced batch.
@@ -270,6 +270,11 @@ pub trait Tool: Send + Sync {
         false
     }
 
+    /// Declares that calls only inspect state and never act on the user's behalf.
+    fn read_only(&self) -> bool {
+        false
+    }
+
     /// Declares an external hook alias and matcher subjects.
     fn hook_identity(&self) -> Option<HookIdentity> {
         None
@@ -310,6 +315,7 @@ struct RegisteredTool {
     execution_mode: ExecutionMode,
     approval: ApprovalRequirement,
     cancel_on_input: bool,
+    read_only: bool,
     handler: RegisteredHandler,
 }
 
@@ -432,6 +438,7 @@ impl Catalog {
             execution_mode: tool.execution_mode(),
             approval: tool.approval(),
             cancel_on_input: tool.cancel_on_input(),
+            read_only: tool.read_only(),
             handler: RegisteredHandler::Tool(tool),
         };
         self.insert(name, entry)
@@ -451,6 +458,7 @@ impl Catalog {
                 execution_mode: ExecutionMode::Exclusive,
                 approval: ApprovalRequirement::Never,
                 cancel_on_input: false,
+                read_only: true,
                 handler: RegisteredHandler::Search,
             },
         )
@@ -732,6 +740,12 @@ impl Catalog {
             .is_some_and(|tool| tool.approval == ApprovalRequirement::Always)
     }
 
+    /// Returns whether the named tool declares itself read-only.
+    #[must_use]
+    pub fn is_read_only(&self, name: &str) -> bool {
+        self.get(name).is_some_and(|tool| tool.read_only)
+    }
+
     pub(crate) fn cancels_on_input<'a>(
         &self,
         calls: impl IntoIterator<Item = &'a ToolCall>,
@@ -960,12 +974,6 @@ impl BoundToolCall {
     #[must_use]
     pub fn as_call(&self) -> &ToolCall {
         &self.call
-    }
-
-    /// Returns the validated provider call.
-    #[must_use]
-    pub fn into_call(self) -> ToolCall {
-        self.call
     }
 }
 
@@ -1430,7 +1438,7 @@ impl Middleware for Tools {
         })
     }
 
-    fn frontend(&self) -> FrontendContribution {
+    fn frontend(&self, _session_id: &str) -> FrontendContribution {
         FrontendContribution {
             capability: self.name().into(),
             ..FrontendContribution::default()
@@ -1537,13 +1545,20 @@ pub(crate) struct ToolSpec {
     pub(crate) tool: ToolDefinition,
     title: String,
     result_title: Option<String>,
+    #[serde(default)]
     detail: String,
+    // Argument whose array length is shown as the detail instead of `detail`.
+    count: Option<String>,
     link_path: Option<String>,
     group: Option<String>,
     prompt: Option<String>,
 }
 
 impl ToolSpec {
+    pub(crate) fn title(&self) -> &str {
+        &self.title
+    }
+
     pub(crate) fn render(&self, event: &EventMsg) -> Option<FrontendBlock> {
         let mut block = render_tool_event(
             event,
@@ -1554,7 +1569,17 @@ impl ToolSpec {
                 } else {
                     &self.title
                 };
-                labeled_tool_heading(title, &self.detail, arguments)
+                match &self.count {
+                    Some(key) => ToolHeading {
+                        title: title.into(),
+                        detail: arguments
+                            .get(key)
+                            .and_then(Value::as_array)
+                            .map_or(0, Vec::len)
+                            .to_string(),
+                    },
+                    None => labeled_tool_heading(title, &self.detail, arguments),
+                }
             },
         )?;
         if let EventMsg::ToolCallBegin(call) = event

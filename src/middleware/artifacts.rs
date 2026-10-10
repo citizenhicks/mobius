@@ -10,7 +10,7 @@ use super::tools::{ApprovalRequirement, Catalog, Tool, ToolContext};
 use super::{Middleware, PromptSection, RuntimeContext};
 use crate::backend::model::ToolDefinition;
 use crate::backend::sandbox::MAX_BINARY_FILE_BYTES;
-use crate::backend::session_files::SessionFileStore;
+use crate::backend::session_files::{SessionFileStore, media_type};
 use crate::protocol::{EventMsg, FrontendBlock, FrontendContribution};
 use crate::{BoxFuture, Error, Result};
 
@@ -24,24 +24,28 @@ mod text {
         pub(super) manifest_label: String,
         pub(super) prompt_main: String,
         pub(super) render_sent_prefix: String,
+        pub(super) error_path_not_file: String,
+        pub(super) error_path_or_file_id: String,
     }
     crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("artifacts.toml"); }
 }
 super::manifest::middleware_manifest! {
 /// Configuration metadata for agent-published files.
-    "artifacts", text::DEFINITION, required: false, capability: None, settings: &[]
+    "artifacts", text::DEFINITION, required: false, settings: &[]
 }
 
 /// Publishes workspace files as session-bound assistant files.
 pub struct Artifacts {
-    store: SessionFileStore,
+    store: Arc<SessionFileStore>,
 }
 
 impl Artifacts {
     #[must_use]
     /// Creates a new instance.
     pub fn new(store: SessionFileStore) -> Self {
-        Self { store }
+        Self {
+            store: Arc::new(store),
+        }
     }
 }
 
@@ -52,7 +56,7 @@ impl Middleware for Artifacts {
 
     fn register(&self, catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
         catalog.register(Arc::new(SendArtifact {
-            store: self.store.clone(),
+            store: Arc::clone(&self.store),
             session_id: runtime.session_id.clone(),
         }))
     }
@@ -63,7 +67,7 @@ impl Middleware for Artifacts {
         )))
     }
 
-    fn frontend(&self) -> FrontendContribution {
+    fn frontend(&self, _session_id: &str) -> FrontendContribution {
         FrontendContribution {
             capability: MANIFEST.id.into(),
             ..FrontendContribution::default()
@@ -71,9 +75,7 @@ impl Middleware for Artifacts {
     }
 
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
-        let mut block = [&text::DEFINITION.send_artifact]
-            .into_iter()
-            .find_map(|spec| spec.render(event))?;
+        let mut block = text::DEFINITION.send_artifact.render(event)?;
         let EventMsg::ToolCallEnd(result) = event else {
             return Some(block);
         };
@@ -106,7 +108,7 @@ struct SendArtifactArgs {
 }
 
 struct SendArtifact {
-    store: SessionFileStore,
+    store: Arc<SessionFileStore>,
     session_id: String,
 }
 
@@ -131,7 +133,9 @@ impl Tool for SendArtifact {
                     let name = Path::new(&path)
                         .file_name()
                         .and_then(|name| name.to_str())
-                        .ok_or_else(|| Error::Tool("artifact path must name one file".into()))?
+                        .ok_or_else(|| {
+                            Error::Tool(text::DEFINITION.error_path_not_file.as_str().into())
+                        })?
                         .to_string();
                     let bytes = context
                         .sandbox
@@ -148,7 +152,11 @@ impl Tool for SendArtifact {
                         .publish_reference(&self.session_id, &file)
                         .await?
                 }
-                _ => return Err(Error::Tool("provide exactly one of path or file_id".into())),
+                _ => {
+                    return Err(Error::Tool(
+                        text::DEFINITION.error_path_or_file_id.as_str().into(),
+                    ));
+                }
             };
             Ok(crate::protocol::ToolResponse {
                 content: crate::protocol::ToolContent(vec![crate::protocol::ContentPart::File {
@@ -157,32 +165,6 @@ impl Tool for SendArtifact {
                 is_error: false,
             })
         })
-    }
-}
-
-/// Infers a download media type from the filename extension.
-/// Unknown extensions use `application/octet-stream`; this does not inspect file contents.
-#[must_use]
-pub fn media_type(name: &str) -> &'static str {
-    match Path::new(name)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
-        Some("png") => "image/png",
-        Some("jpg" | "jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("webp") => "image/webp",
-        Some("svg") => "image/svg+xml",
-        Some("pdf") => "application/pdf",
-        Some("csv") => "text/csv",
-        Some("xls") => "application/vnd.ms-excel",
-        Some("xlsx") => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        Some("txt") => "text/plain",
-        Some("json") => "application/json",
-        Some("zip") => "application/zip",
-        _ => "application/octet-stream",
     }
 }
 
@@ -206,6 +188,7 @@ mod tests {
         );
         let middleware = Artifacts::new(SessionFileStore::new(state.path(), None));
         let runtime = RuntimeContext {
+            children: crate::agent::ChildAgents::default(),
             sender: crate::agent::test_sender(),
             checkpoints,
             session_id: "session-a".into(),
@@ -242,7 +225,7 @@ mod tests {
         let state = tempfile::tempdir().expect("state");
         let store = SessionFileStore::new(state.path(), None);
         let tool = SendArtifact {
-            store: store.clone(),
+            store: Arc::new(store.clone()),
             session_id: "session-a".into(),
         };
         let sandbox = Arc::new(Sandbox::new(

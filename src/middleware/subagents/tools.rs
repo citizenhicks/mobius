@@ -11,7 +11,7 @@ use super::runtime::{
     AgentPresentation, MAX_MESSAGE_BYTES, Shared, Wake, WakeTarget, monitor_agent,
 };
 use super::{
-    AgentScope, ForkTurns, MAX_TASK_NAME_BYTES, MAX_WAIT_MS, MIN_WAIT_MS, default_wait_ms, text,
+    AgentScope, DEFAULT_WAIT_MS, ForkTurns, MAX_TASK_NAME_BYTES, MAX_WAIT_MS, MIN_WAIT_MS, text,
 };
 use crate::backend::model::ToolDefinition;
 use crate::middleware::tools::{HookIdentity, Tool, ToolContext};
@@ -20,8 +20,7 @@ use crate::protocol::{MessageAuthor, MessageSubmission, Submission, is_internal_
 use crate::{BoxFuture, Error, Result};
 
 pub(super) struct SpawnAgent {
-    pub(super) default_model: Option<String>,
-    pub(super) default_reasoning: Option<String>,
+    pub(super) default_model: Option<Arc<str>>,
     pub(super) shared: Arc<Shared>,
     pub(super) scope: Arc<AgentScope>,
 }
@@ -38,7 +37,7 @@ struct SpawnArgs {
 
 impl Tool for SpawnAgent {
     fn definition(&self) -> ToolDefinition {
-        text::DEFINITION.spawn_agent.tool.clone()
+        spawn_definition()
     }
 
     fn hook_identity(&self) -> Option<HookIdentity> {
@@ -60,11 +59,9 @@ impl Tool for SpawnAgent {
             let turns = parse_fork_turns(arguments.fork_turns.as_deref())?;
             let model = arguments
                 .model
-                .or_else(|| self.default_model.clone())
+                .or_else(|| self.default_model.as_deref().map(str::to_owned))
                 .unwrap_or_else(|| self.scope.model.clone());
-            let reasoning_effort = arguments
-                .reasoning_effort
-                .or_else(|| self.default_reasoning.clone());
+            let reasoning_effort = arguments.reasoning_effort;
             let path = format!(
                 "{}/{}",
                 self.scope.agent_path.trim_end_matches('/'),
@@ -133,7 +130,7 @@ impl Tool for SpawnAgent {
                 }
                 tokio::spawn(monitor_agent(
                     Arc::clone(&shared),
-                    scope.root_session_id.clone(),
+                    Arc::clone(&scope.root_session_id),
                     path.clone(),
                     events,
                     lifetime,
@@ -247,7 +244,7 @@ impl Tool for SendMessage {
                 if let Some(events) = events {
                     tokio::spawn(monitor_agent(
                         Arc::clone(&shared),
-                        scope.root_session_id.clone(),
+                        Arc::clone(&scope.root_session_id),
                         target.clone(),
                         events,
                         lifetime,
@@ -378,6 +375,17 @@ impl Tool for WaitAgent {
     }
 }
 
+fn spawn_definition() -> ToolDefinition {
+    let mut tool = text::DEFINITION.spawn_agent.tool.clone();
+    let task_name = &mut tool.parameters["properties"]["task_name"]["description"];
+    if let Some(description) = task_name.as_str() {
+        *task_name = description
+            .replace("{max_bytes}", &MAX_TASK_NAME_BYTES.to_string())
+            .into();
+    }
+    tool
+}
+
 pub(super) fn wait_definition() -> ToolDefinition {
     let mut tool = text::DEFINITION.wait_agent.tool.clone();
     tool.parameters["properties"]["timeout_ms"]["minimum"] = MIN_WAIT_MS.into();
@@ -386,7 +394,7 @@ pub(super) fn wait_definition() -> ToolDefinition {
 }
 
 pub(super) fn wait_timeout(timeout_ms: Option<u64>) -> Result<Duration> {
-    let timeout_ms = timeout_ms.unwrap_or(default_wait_ms());
+    let timeout_ms = timeout_ms.unwrap_or(*DEFAULT_WAIT_MS);
     if !(MIN_WAIT_MS..=MAX_WAIT_MS).contains(&timeout_ms) {
         return Err(Error::Tool(format!(
             "timeout_ms must be between {MIN_WAIT_MS} and {MAX_WAIT_MS}"
@@ -440,15 +448,12 @@ fn parse_fork_turns(value: Option<&str>) -> Result<ForkTurns> {
     if value.eq_ignore_ascii_case("all") {
         return Ok(ForkTurns::All);
     }
-    let turns = value.parse::<usize>().map_err(|_| {
-        Error::Tool("fork_turns must be `none`, `all`, or a positive integer string".into())
-    })?;
-    if turns == 0 {
-        return Err(Error::Tool(
-            "fork_turns must be `none`, `all`, or a positive integer string".into(),
-        ));
+    match value.parse::<usize>() {
+        Ok(turns) if turns > 0 => Ok(ForkTurns::Last(turns)),
+        _ => Err(Error::Tool(
+            text::DEFINITION.error_fork_turns.as_str().into(),
+        )),
     }
-    Ok(ForkTurns::Last(turns))
 }
 
 fn validate_task_name(name: &str) -> Result<()> {
@@ -459,7 +464,9 @@ fn validate_task_name(name: &str) -> Result<()> {
         b"_",
     ) {
         return Err(Error::Tool(
-            "task_name must contain 1-64 lowercase letters, digits, or underscores".into(),
+            text::DEFINITION
+                .error_task_name
+                .replace("{max_bytes}", &MAX_TASK_NAME_BYTES.to_string()),
         ));
     }
     Ok(())
@@ -467,7 +474,9 @@ fn validate_task_name(name: &str) -> Result<()> {
 
 fn validate_text(text: String) -> Result<String> {
     if text.trim().is_empty() {
-        return Err(Error::Tool("text cannot be empty".into()));
+        return Err(Error::Tool(
+            text::DEFINITION.error_empty_text.as_str().into(),
+        ));
     }
     if text.len() > MAX_MESSAGE_BYTES {
         return Err(Error::Tool(format!(
@@ -543,6 +552,34 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spawn_text_states_the_rust_task_name_bound_and_fork_labels() {
+        assert_eq!(
+            spawn_definition().parameters["properties"]["task_name"]["description"],
+            "1-64 lowercase letters, digits, or underscores."
+        );
+        assert_eq!(
+            validate_task_name("Bad")
+                .expect_err("uppercase")
+                .to_string(),
+            Error::Tool(
+                "task_name must contain 1-64 lowercase letters, digits, or underscores".into()
+            )
+            .to_string()
+        );
+        assert!(parse_fork_turns(Some("0")).is_err());
+        assert_eq!(
+            [
+                ForkTurns::None,
+                ForkTurns::All,
+                ForkTurns::Last(1),
+                ForkTurns::Last(3)
+            ]
+            .map(ForkTurns::label),
+            ["No context", "Full context", "Last 1 turn", "Last 3 turns"]
+        );
+    }
 
     #[test]
     fn peer_submission_preserves_agent_provenance() {

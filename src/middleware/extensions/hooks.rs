@@ -25,6 +25,7 @@ use crate::backend::sandbox::SandboxMode;
 use crate::truncate_utf8;
 
 use super::AuthorizedHooks;
+use super::canonical_directory;
 
 const DEFAULT_HOOK_FILE: &str = "hooks/hooks.json";
 const MAX_HOOK_FILES: usize = 16;
@@ -33,7 +34,7 @@ const MAX_MATCHING_HOOKS: usize = 256;
 const MAX_DOCUMENT_BYTES: u64 = 256_000;
 const MAX_COMMAND_BYTES: usize = 8_000;
 const MAX_MATCHER_BYTES: usize = 1_024;
-const MAX_PATH_BYTES: usize = 4_096;
+pub(super) const MAX_PATH_BYTES: usize = 4_096;
 const MAX_DESCRIPTION_BYTES: usize = 256;
 const MAX_STATUS_BYTES: usize = 256;
 const MAX_INPUT_BYTES: usize = 5 * 1024 * 1024;
@@ -156,7 +157,7 @@ impl HookSet {
         data_dir: PathBuf,
         definitions: HookDefinitions,
     ) -> Result<Self> {
-        let data_dir = canonical_directory(data_dir, "plugin data directory")?;
+        let data_dir = canonical_directory(&data_dir, "plugin data directory")?;
         Ok(Self {
             name,
             plugin_root,
@@ -211,7 +212,7 @@ impl HookRuntime {
     pub(crate) fn new(backend: Arc<dyn SandboxBackend>, workspace: PathBuf) -> Result<Self> {
         Ok(Self {
             backend,
-            workspace: canonical_directory(workspace, "hook workspace")?,
+            workspace: canonical_directory(&workspace, "hook workspace")?,
         })
     }
 
@@ -537,19 +538,6 @@ fn plugin_hook_path(plugin_root: &Path, path: &str) -> Result<PathBuf> {
         ));
     }
     super::confined_path(plugin_root, path, true)
-}
-
-fn canonical_directory(path: PathBuf, label: &str) -> Result<PathBuf> {
-    let path = path
-        .canonicalize()
-        .map_err(|error| Error::Config(format!("invalid {label}: {error}")))?;
-    if !path.is_dir() {
-        return Err(Error::Config(format!("{label} is not a directory")));
-    }
-    if path.as_os_str().len() > MAX_PATH_BYTES {
-        return Err(Error::Config(format!("{label} path is too long")));
-    }
-    Ok(path)
 }
 
 fn context_bytes(limit: Option<usize>) -> Result<usize> {
@@ -1203,7 +1191,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_pre_tool_block_is_a_denial() {
+    fn pre_tool_decision_block_is_a_denial() {
         let outcome = parse_output(
             HookEvent::PreToolUse,
             DEFAULT_CONTEXT_BYTES,
@@ -1215,7 +1203,7 @@ mod tests {
                 stderr_truncated: false,
             },
         )
-        .expect("legacy block");
+        .expect("decision block");
 
         assert_eq!(outcome.decision, Some(HookDecision::Block));
         assert_eq!(outcome.reason.as_deref(), Some("unsafe"));

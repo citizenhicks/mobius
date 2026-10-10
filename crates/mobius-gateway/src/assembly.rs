@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 #[cfg(test)]
 use std::time::Duration;
 
@@ -16,14 +16,13 @@ use mobius::backend::sandbox::{ApprovalPolicy, Sandbox, SandboxBackend};
 use mobius::backend::session_files::SessionFileStore;
 use mobius::middleware::artifacts::Artifacts;
 use mobius::middleware::attachments::Attachments;
-use mobius::middleware::compaction::Compaction;
 use mobius::middleware::extensions::{Extensions, MANIFEST as EXTENSIONS_MANIFEST};
 use mobius::middleware::image_generation::ImageGeneration;
 use mobius::middleware::instructions::Instructions;
 use mobius::middleware::messages::Messages;
-use mobius::middleware::scratchpad::{Scratchpad, ScratchpadStore};
+use mobius::middleware::scratchpad::Scratchpad;
 use mobius::middleware::sessions::{LiveChats, Sessions};
-use mobius::middleware::subagents::{SubagentLaunch, SubagentLauncher, Subagents};
+use mobius::middleware::subagents::Subagents;
 use mobius::middleware::tasks::Tasks;
 use mobius::middleware::tools::Tools;
 use mobius::middleware::{Middleware, MiddlewareStack};
@@ -73,9 +72,8 @@ pub(crate) struct PreparedBot {
     model_providers: BTreeMap<String, String>,
     approval_policy: ApprovalPolicy,
     pub(crate) active_message_delivery: ActiveMessageDelivery,
-    pub(crate) compaction: Option<Arc<Compaction>>,
     extensions: ResolvedExtensions,
-    computer_runtime: Option<std::path::PathBuf>,
+    computer_runtime: Option<crate::computer_runtime::PreparedComputer>,
     computer_config: Arc<crate::computer_runtime::ComputerConfig>,
     subagent_ceilings: mobius::middleware::subagents::SubagentCeilings,
 }
@@ -135,11 +133,6 @@ pub(crate) fn prepare_bot<'a>(
         };
         let approval_policy = configured_approval_policy(&config.middleware)?;
         let active_message_delivery = configured_message_delivery(&config.middleware)?;
-        let compaction = config
-            .middleware
-            .enabled(mobius::middleware::compaction::MANIFEST.id)
-            .then(|| configured_compaction(&config.middleware).map(Arc::new))
-            .transpose()?;
         let extensions = ExtensionStore::new(store).resolve(gateway, &config.extensions)?;
         let providers = std::iter::once(config.provider.clone())
             .chain(
@@ -150,7 +143,7 @@ pub(crate) fn prepare_bot<'a>(
                     .map(|provider| provider.selection.clone()),
             )
             .collect();
-        let subagent_ceilings = gateway.execution.subagent_ceilings()?;
+        let subagent_ceilings = gateway.execution.subagent_ceilings;
         Ok::<_, Error>(async move {
             let computer_runtime = crate::computer_runtime::prepare(
                 store.state_dir(),
@@ -168,7 +161,6 @@ pub(crate) fn prepare_bot<'a>(
                 model_providers,
                 approval_policy,
                 active_message_delivery,
-                compaction,
                 extensions,
                 computer_runtime,
                 computer_config,
@@ -184,14 +176,6 @@ pub(crate) struct BuiltAgent {
     pub(crate) model_router: Arc<ModelRouter>,
     pub(crate) sandbox: Arc<Sandbox>,
     pub(crate) gateway_sandbox: Arc<GatewaySandbox>,
-    pub(crate) subagents: Option<Arc<Subagents>>,
-    pub(crate) subagent_template: Option<Arc<OnceLock<AgentConfig>>>,
-}
-
-struct BuiltMiddleware {
-    entries: Vec<Arc<dyn Middleware>>,
-    subagent_template: Option<Arc<OnceLock<AgentConfig>>>,
-    subagents: Option<Arc<Subagents>>,
 }
 
 #[expect(
@@ -203,7 +187,7 @@ pub(crate) async fn assemble(
     chat: &ChatSpec,
     store: &ConfigStore,
     checkpoints: Arc<dyn CheckpointStore>,
-    scratchpad: ScratchpadStore,
+    scratchpad: Arc<Scratchpad>,
     session_files: SessionFileStore,
     discovery_gate: Arc<tokio::sync::Mutex<()>>,
     desktop: Arc<crate::computer_runtime::desktop::DesktopControl>,
@@ -245,15 +229,7 @@ pub(crate) async fn assemble(
     let gateway_for_middleware = Arc::clone(&gateway);
     // Hidden routine and channel chats may carry third-party input.
     let live_chats = live_chats.filter(|_| chat.catalog_visible);
-    let (
-        gateway_sandbox,
-        sandbox,
-        BuiltMiddleware {
-            mut entries,
-            subagent_template: template,
-            subagents,
-        },
-    ) = run_discovery(discovery_gate, move || {
+    let (gateway_sandbox, sandbox, mut entries) = run_discovery(discovery_gate, move || {
         let settings = &resources.bot.config.config.middleware;
         let computer_runtime = &resources.computer_runtime;
         let tls_key = tls.as_ref().map(|tls| tls.private_key.as_path());
@@ -268,30 +244,22 @@ pub(crate) async fn assemble(
         let resolved_extensions = &resources.extensions;
         let extensions = (EXTENSIONS_MANIFEST.required || settings.enabled(EXTENSIONS_MANIFEST.id))
             .then(|| {
-                Extensions::discover_installed(
-                    [
-                        workspace_path.join(".agents/skills"),
-                        workspace_path.join(".codex/skills"),
-                    ]
-                    .into_iter()
-                    .chain(resolved_extensions.skill_roots.iter().cloned()),
+                Extensions::installed(
+                    &workspace_path,
+                    resolved_extensions.skill_roots.iter().cloned(),
+                    resolved_extensions
+                        .plugins
+                        .iter()
+                        .map(|plugin| plugin.activation(Arc::clone(&gateway_for_middleware))),
                 )
             })
             .transpose()?;
         let mut read_roots = extensions
             .as_ref()
             .map_or_else(Vec::new, Extensions::resource_roots);
-        if extensions.is_some() {
-            read_roots.extend(
-                resolved_extensions
-                    .plugins
-                    .iter()
-                    .map(|plugin| plugin.root.clone()),
-            );
-        }
-        if let Some(runtime) = computer_runtime {
+        if let Some(computer) = computer_runtime {
             read_roots.extend(crate::computer_runtime::resource_roots(
-                runtime,
+                &computer.directory,
                 &resources.computer_config,
                 &state_dir,
                 &workspace_path,
@@ -347,23 +315,12 @@ pub(crate) async fn assemble(
         } else {
             sandbox.attached_folders(workspace_path.clone(), attached_folders)
         };
-        let extensions = extensions
-            .map(|extensions| {
-                activate_extensions(
-                    extensions,
-                    resolved_extensions,
-                    gateway_for_middleware,
-                    &workspace_path,
-                    backend,
-                )
-            })
-            .transpose()?;
         let middleware = build_middleware(
             &resources,
             &workspace_path,
-            scratchpad,
+            &scratchpad,
             session_files,
-            extensions,
+            extensions.map(|extensions| (extensions, backend)),
             live_chats,
             project,
         )?;
@@ -390,18 +347,24 @@ pub(crate) async fn assemble(
             Error::Config("maximum model steps exceed this platform's supported range".into())
         })?;
     let persistent = session_id.as_deref() == Some(prepared.bot.conversation_session_id.as_str());
-    let middleware = if persistent {
-        // The child template excludes persistent-chat middleware added to the parent below.
-        entries.clone()
-    } else {
-        std::mem::take(&mut entries)
-    };
+    if persistent {
+        if project || !chat.catalog_visible {
+            return Err(Error::Config(
+                "Persistent Chat must be visible and project-free".into(),
+            ));
+        }
+        entries.push(Arc::new(crate::persistent_chat::PersistentChat::new(
+            prepared.bot.id.clone(),
+            host_access
+                .ok_or_else(|| Error::Config("Persistent Chat requires the gateway".into()))?,
+        )));
+    }
     let system_prompt = prepared.instructions();
     let mut agent_config = AgentConfig::new(
         models,
         Arc::clone(&sandbox),
         checkpoints,
-        MiddlewareStack::new(middleware)?,
+        MiddlewareStack::new(entries)?,
         system_prompt,
     )
     .context_window(context_window)
@@ -432,26 +395,8 @@ pub(crate) async fn assemble(
         origin_label: Some(origin_label.into()),
         ..SessionContext::default()
     });
-    if persistent && (project || !chat.catalog_visible) {
-        return Err(Error::Config(
-            "Persistent Chat must be visible and project-free".into(),
-        ));
-    }
     if let Some(session_id) = session_id {
         agent_config = agent_config.session_id(session_id);
-    }
-    if let Some(template) = &template {
-        template
-            .set(agent_config.clone())
-            .map_err(|_| Error::Config("subagent launcher was initialized twice".into()))?;
-    }
-    if persistent {
-        entries.push(Arc::new(crate::persistent_chat::PersistentChat::new(
-            prepared.bot.id.clone(),
-            host_access
-                .ok_or_else(|| Error::Config("Persistent Chat requires the gateway".into()))?,
-        )));
-        agent_config = agent_config.middleware(MiddlewareStack::new(entries)?);
     }
     let agent = create_agent(agent_config).await?;
     let model_router = agent.model_router();
@@ -460,15 +405,13 @@ pub(crate) async fn assemble(
         model_router,
         sandbox,
         gateway_sandbox,
-        subagents,
-        subagent_template: template,
     })
 }
 
 // Usage publication is serialized before entering the blocking pool, including across chats.
 static USAGE_PUBLICATION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-pub(crate) async fn publish_usage(
+async fn publish_usage(
     gateway: &Arc<Mutex<GatewayConfig>>,
     store: &ConfigStore,
     provider: &str,
@@ -500,27 +443,6 @@ fn persist_usage(
     store
         .record_usage(&mut gateway, provider, usage)
         .map_err(|error| MobiusError::Config(error.to_string()))
-}
-
-fn subagent_launcher(template: &Arc<OnceLock<AgentConfig>>) -> SubagentLauncher {
-    let template = Arc::downgrade(template);
-    Arc::new(move |launch: SubagentLaunch| {
-        let template = template.clone();
-        Box::pin(async move {
-            let config = template
-                .upgrade()
-                .ok_or_else(|| MobiusError::Stopped("subagent launcher stopped".into()))?
-                .get()
-                .ok_or_else(|| MobiusError::Config("subagent launcher is not ready".into()))?
-                .clone()
-                .isolated_execution()?
-                .session_id(launch.session_id)
-                .metadata(launch.metadata)
-                .role(launch.role)
-                .model_route(&launch.model, launch.reasoning_effort.as_deref())?;
-            create_agent(config).await
-        })
-    })
 }
 
 fn build_models(
@@ -847,49 +769,21 @@ fn unavailable_models(
     Ok((Arc::new(router), context_window))
 }
 
-pub(crate) fn configured_compaction(settings: &MiddlewareConfig) -> Result<Compaction> {
-    let compaction = Compaction::new(crate::middleware_manifest::integer_setting(
-        settings,
-        "compaction",
-        "at_tokens",
-    )?)?
-    .reserve_tokens(crate::middleware_manifest::integer_setting(
-        settings,
-        "compaction",
-        "reserve_tokens",
-    )?)?;
-    match crate::middleware_manifest::string_setting(
-        settings,
-        "compaction",
-        "allow_model_compaction",
-    )? {
-        Some("on") => Ok(compaction.allow_model_compaction(true)),
-        Some("off") => Ok(compaction.allow_model_compaction(false)),
-        None => Ok(compaction),
-        Some(_) => Err(Error::Config(
-            "compaction.allow_model_compaction must be on or off".into(),
-        )),
-    }
-}
-
 fn build_middleware(
     prepared: &PreparedBot,
     workspace: &std::path::Path,
-    scratchpad: ScratchpadStore,
+    scratchpad: &Scratchpad,
     session_files: SessionFileStore,
-    mut extensions: Option<Extensions>,
+    mut extensions: Option<(Extensions, Arc<dyn SandboxBackend>)>,
     mut live_chats: Option<Arc<dyn LiveChats>>,
     project: bool,
-) -> Result<BuiltMiddleware> {
+) -> Result<Vec<Arc<dyn Middleware>>> {
     let settings = &prepared.bot.config.config.middleware;
     let mut entries: Vec<Arc<dyn Middleware>> = Vec::new();
-    let mut subagent_template = None;
-    let mut subagents = None;
-    for feature in MIDDLEWARE.iter().filter(|feature| {
-        feature.manifest.required
-            || settings.enabled(feature.manifest.id)
-            || matches!(feature.kind, BuiltinMiddleware::Scratchpad)
-    }) {
+    for feature in MIDDLEWARE
+        .iter()
+        .filter(|feature| feature.manifest.required || settings.enabled(feature.manifest.id))
+    {
         let middleware: Arc<dyn Middleware> = match feature.kind {
             BuiltinMiddleware::Sandbox | BuiltinMiddleware::PersistentChat => continue,
             BuiltinMiddleware::Attachments => {
@@ -901,118 +795,75 @@ fn build_middleware(
                 })
             }
             BuiltinMiddleware::Artifacts => Arc::new(Artifacts::new(session_files.clone())),
-            BuiltinMiddleware::ImageGeneration => Arc::new(ImageGeneration::new(
+            BuiltinMiddleware::ImageGeneration => Arc::new(ImageGeneration::from_settings(
                 Arc::clone(&prepared.models),
                 session_files.clone(),
-                crate::middleware_manifest::string_setting(settings, "image_generation", "model")?
-                    .map(Arc::from),
-            )),
+                |id| settings.setting(mobius::middleware::image_generation::MANIFEST.id, id),
+            )?),
             BuiltinMiddleware::Tools => Arc::new(if project {
                 Tools::coding(session_files.clone())
             } else {
                 Tools::reading(session_files.clone())
             }),
-            BuiltinMiddleware::Instructions if !project => continue,
-            BuiltinMiddleware::Instructions => Arc::new(Instructions::discover(workspace)?),
-            BuiltinMiddleware::Scratchpad => Arc::new(
-                Scratchpad::new(scratchpad.clone()).agent_enabled(settings.enabled("scratchpad")),
-            ),
-            BuiltinMiddleware::Extensions => Arc::new(
-                extensions
+            BuiltinMiddleware::Instructions => {
+                Arc::new(Instructions::discover(project.then_some(workspace))?)
+            }
+            BuiltinMiddleware::Scratchpad => Arc::new(scratchpad.for_chat()),
+            BuiltinMiddleware::Extensions => {
+                let (extensions, backend) = extensions
                     .take()
-                    .ok_or_else(|| Error::Config("extensions were not discovered".into()))?,
-            ),
+                    .ok_or_else(|| Error::Config("extensions were not discovered".into()))?;
+                Arc::new(extensions.start_hooks(backend)?)
+            }
             BuiltinMiddleware::Questions => {
                 Arc::new(mobius::middleware::questions::Questions::default())
             }
             BuiltinMiddleware::Tasks => Arc::new(Tasks),
             BuiltinMiddleware::Subagents => {
-                let template = Arc::new(OnceLock::<AgentConfig>::new());
-                let (max_depth, max_concurrency, max_agents) =
-                    crate::middleware_manifest::subagent_limits(
-                        settings,
-                        prepared.subagent_ceilings,
-                    )?;
-                let middleware = Subagents::new_with_ceilings(
+                let middleware = Subagents::new(crate::middleware_manifest::subagent_limits(
+                    settings,
                     prepared.subagent_ceilings,
-                    max_depth,
-                    max_concurrency,
-                    max_agents,
-                    subagent_launcher(&template),
-                )?
+                )?)
                 .session_files(session_files.clone());
                 let middleware = match crate::middleware_manifest::string_setting(
                     settings,
-                    "subagents",
+                    mobius::middleware::subagents::MANIFEST.id,
                     "model_route",
                 )? {
                     Some(route) => middleware.default_model(route),
                     None => middleware,
                 };
-                let middleware = Arc::new(middleware);
-                subagents = Some(Arc::clone(&middleware));
-                subagent_template = Some(template);
-                middleware
+                Arc::new(middleware)
             }
             BuiltinMiddleware::Messages => Arc::new(Messages::new(
                 crate::middleware_manifest::usize_setting(settings, "messages", "max_pending")?,
                 prepared.active_message_delivery,
             )?),
+            BuiltinMiddleware::Voice => Arc::new(mobius::middleware::voice::Voice),
             BuiltinMiddleware::ComputerControl => {
-                let runtime = prepared
+                let prepared = prepared
                     .computer_runtime
-                    .as_deref()
+                    .as_ref()
                     .ok_or_else(|| Error::Config("computer runtime was not prepared".into()))?;
                 Arc::new(mobius::middleware::computer_control::ComputerControl::new(
                     session_files.clone(),
-                    crate::computer_runtime::worker_command(runtime, &prepared.computer_config)?,
-                    runtime.join("computer-control.md"),
+                    Arc::clone(&prepared.runtime),
+                ))
+            }
+            BuiltinMiddleware::Compaction => {
+                Arc::new(mobius::middleware::compaction::Compaction::from_settings(
+                    |id| settings.setting(feature.manifest.id, id),
                 )?)
             }
-            BuiltinMiddleware::Compaction => prepared
-                .compaction
-                .as_ref()
-                .map(Arc::clone)
-                .ok_or_else(|| Error::Config("compaction policy was not prepared".into()))?,
-            BuiltinMiddleware::Sessions => {
-                let sessions = Sessions::new(crate::middleware_manifest::usize_setting(
-                    settings,
-                    "sessions",
-                    "page_size",
-                )?)?
-                .session_files(session_files.clone());
-                Arc::new(match live_chats.take() {
-                    Some(chats) => sessions.live_chats(chats),
-                    None => sessions,
-                })
-            }
+            BuiltinMiddleware::Sessions => Arc::new(Sessions::new(
+                crate::middleware_manifest::usize_setting(settings, "sessions", "page_size")?,
+                Some(session_files.clone()),
+                live_chats.take(),
+            )?),
         };
         entries.push(middleware);
     }
-    Ok(BuiltMiddleware {
-        entries,
-        subagent_template,
-        subagents,
-    })
-}
-
-fn activate_extensions(
-    extensions: Extensions,
-    resolved: &ResolvedExtensions,
-    gateway: Arc<Mutex<GatewayConfig>>,
-    workspace: &std::path::Path,
-    backend: Arc<dyn SandboxBackend>,
-) -> Result<Extensions> {
-    extensions
-        .activate_plugins(
-            resolved
-                .plugins
-                .iter()
-                .map(|plugin| plugin.activation(Arc::clone(&gateway))),
-            workspace,
-            backend,
-        )
-        .map_err(Error::from)
+    Ok(entries)
 }
 
 fn configured_message_delivery(settings: &MiddlewareConfig) -> Result<ActiveMessageDelivery> {

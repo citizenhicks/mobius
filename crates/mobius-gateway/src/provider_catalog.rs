@@ -80,22 +80,12 @@ impl ConfiguredChoices {
         }
     }
 
-    pub(crate) fn validate_voice(&self, route: Option<&str>) -> Result<()> {
-        if let Some(route) = route
-            && !self.voices.iter().any(|choice| choice.route == route)
-        {
-            return Err(Error::Config(format!(
-                "voice route `{route}` is not configured; select an available voice"
-            )));
-        }
-        Ok(())
-    }
-
     /// Borrows the lists dynamic middleware settings select from.
     pub(crate) fn catalogs(&self) -> ModelCatalogs<'_> {
         ModelCatalogs {
             models: &self.models,
             images: &self.images,
+            voices: &self.voices,
         }
     }
 }
@@ -590,11 +580,6 @@ fn provider_status(definition: &ProviderDefinition) -> ProviderStatus {
         tool_discovery: definition.default_tool_discovery(),
         custom_endpoint_tool_discovery: definition.custom_endpoint_tool_discovery(),
         supported_tool_discovery: definition.supported_tool_discovery().into(),
-        realtime_voices: definition
-            .realtime_voices()
-            .iter()
-            .map(|voice| (*voice).into())
-            .collect(),
     }
 }
 
@@ -637,19 +622,20 @@ mod tests {
 
     #[test]
     fn provider_status_advertises_the_transport_voice_catalog() {
-        let status = provider_status(provider("openai_socket").expect("provider"));
-        assert!(!status.realtime_voices.is_empty());
-        assert_eq!(
-            status.realtime_voices.first().map(String::as_str),
-            Some("marin")
-        );
-        assert!(status.realtime_voices.iter().any(|voice| voice == "cedar"));
-        let codex = provider_status(provider("openai_codex").expect("provider"));
-        assert_eq!(
-            codex.realtime_voices.first().map(String::as_str),
-            Some("cove")
-        );
-        assert!(!codex.realtime_voices.iter().any(|voice| voice == "cedar"));
+        let voices = |id| {
+            provider_status(provider(id).expect("provider"))
+                .voice_models
+                .iter()
+                .flat_map(|model| &model.variants)
+                .map(|voice| voice.id.to_string())
+                .collect::<Vec<_>>()
+        };
+        let openai = voices("openai_socket");
+        assert_eq!(openai.first().map(String::as_str), Some("marin"));
+        assert!(openai.iter().any(|voice| voice == "cedar"));
+        let codex = voices("openai_codex");
+        assert_eq!(codex.first().map(String::as_str), Some("cove"));
+        assert!(!codex.iter().any(|voice| voice == "cedar"));
     }
 
     #[test]
@@ -774,7 +760,7 @@ mod tests {
         assert_eq!(custom.tool_discovery, ToolDiscoveryMode::Rebuild);
 
         let openrouter = provider_status(provider("openrouter").expect("provider"));
-        assert!(openrouter.realtime_voices.is_empty());
+        assert!(openrouter.voice_models.is_empty());
         assert!(openrouter.models.is_empty());
         assert!(openrouter.model_ids_configurable);
         assert_eq!(
@@ -940,19 +926,26 @@ mod tests {
             "openai_codex"
         );
         let choices = configured_model_catalog(&config).expect("configured choices");
-        choices
-            .validate_voice(Some("openai_socket::gpt-live-1::cedar"))
-            .expect("routed voice");
+        let voice_setting = |route: Option<&str>| {
+            let mut config = crate::middleware_manifest::default_config(
+                mobius::middleware::subagents::SubagentCeilings::default(),
+            );
+            config.set_setting(
+                "voice",
+                "model",
+                route.map(|route| mobius::protocol::FrontendSettingValue::String(route.into())),
+            );
+            crate::middleware_manifest::validate_choices(&config, choices.catalogs())
+        };
+        voice_setting(Some("openai_socket::gpt-live-1::cedar")).expect("routed voice");
         for voice in [
             "cedar",
             "openai_socket::gpt-live-1::missing",
             "responses::gpt-live-1::cedar",
         ] {
-            assert!(choices.validate_voice(Some(voice)).is_err(), "{voice}");
+            assert!(voice_setting(Some(voice)).is_err(), "{voice}");
         }
-        choices
-            .validate_voice(None)
-            .expect("first available voice is optional");
+        voice_setting(None).expect("first available voice is optional");
         assert!(
             media
                 .voices

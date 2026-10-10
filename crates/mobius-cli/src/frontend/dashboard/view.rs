@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use mobius::protocol::{
-    FrontendActionListItem, FrontendBlock, FrontendListItemState, FrontendTone, FrontendWidget,
+    FrontendActionListItem, FrontendListItemState, FrontendTone, FrontendWidget,
     FrontendWidgetContent,
 };
 use mobius_gateway::wire::{ClientKind, DailyUsage, ProfileSnapshot, SessionActivityState};
@@ -13,7 +13,6 @@ use ratatui::widgets::{Block, Borders, Clear, HighlightSpacing, List, ListState,
 
 use super::runtime::{ordered_clients, ordered_sessions};
 use super::state::{ActionInput, CapabilityOverlay, DashboardFocus, DashboardState};
-use crate::frontend::block_text;
 use crate::frontend::terminal::terminal_text;
 use crate::frontend::theme::{Role, current};
 
@@ -86,21 +85,6 @@ pub(in crate::frontend) fn render_capability_overlay(
             .open_widget()
             .and_then(|widget| widget.content.as_ref());
         let footer = match content {
-            Some(FrontendWidgetContent::Blocks { title, blocks }) => {
-                render_blocks(frame, body, title, blocks);
-                if overlay
-                    .open_widget()
-                    .is_some_and(|widget| widget.action.is_some())
-                {
-                    " enter/a run · esc back "
-                } else {
-                    " esc back "
-                }
-            }
-            Some(FrontendWidgetContent::Picker { title, options }) => {
-                render_overlay_picker(frame, body, title, options, &mut option_list);
-                " ↑↓ select · enter run · esc back "
-            }
             Some(FrontendWidgetContent::ActionList { title, items, .. }) => {
                 render_action_list(
                     frame,
@@ -192,81 +176,9 @@ pub(super) fn render_navigation_widgets(
 
 fn widget_title(widget: &FrontendWidget) -> &str {
     match widget.content.as_ref() {
-        Some(
-            FrontendWidgetContent::Blocks { title, .. }
-            | FrontendWidgetContent::Picker { title, .. }
-            | FrontendWidgetContent::ActionList { title, .. },
-        ) => title,
+        Some(FrontendWidgetContent::ActionList { title, .. }) => title,
         None => &widget.text,
     }
-}
-
-pub(super) fn render_blocks(
-    frame: &mut ratatui::Frame<'_>,
-    area: Rect,
-    title: &str,
-    blocks: &[FrontendBlock],
-) {
-    let theme = current();
-    let mut lines = vec![Line::styled(
-        format!(" {}", terminal_text(title)),
-        theme.style(Role::AccentStrong).add_modifier(Modifier::BOLD),
-    )];
-    for block in blocks {
-        if lines.len() > 1 {
-            lines.push(Line::default());
-        }
-        lines.extend(
-            terminal_text(&block_text(block))
-                .lines()
-                .map(|line| Line::styled(line.to_owned(), theme.style(tone_role(block.tone)))),
-        );
-    }
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
-}
-
-pub(super) fn render_overlay_picker(
-    frame: &mut ratatui::Frame<'_>,
-    area: Rect,
-    title: &str,
-    options: &[mobius::protocol::FrontendPickerOption],
-    state: &mut ListState,
-) {
-    let theme = current();
-    let [header, list] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
-    frame.render_widget(
-        Paragraph::new(format!(" {}", terminal_text(title)))
-            .style(theme.style(Role::AccentStrong).add_modifier(Modifier::BOLD)),
-        header,
-    );
-    let lines = options
-        .iter()
-        .map(|option| {
-            let detail: Cow<'_, str> = if !option.shows_detail || option.detail.is_empty() {
-                Cow::Borrowed(&option.description)
-            } else {
-                format!("{} · {}", option.description, option.detail).into()
-            };
-            Line::from(vec![
-                Span::styled(
-                    format!(" {}", terminal_text(&option.label)),
-                    theme.style(Role::Text).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!(" · {}", terminal_text(&detail)),
-                    theme.style(Role::Muted),
-                ),
-            ])
-        })
-        .collect::<Vec<_>>();
-    frame.render_stateful_widget(
-        List::new(lines)
-            .highlight_symbol("› ")
-            .highlight_spacing(HighlightSpacing::Always)
-            .highlight_style(Style::default().add_modifier(Modifier::BOLD)),
-        list,
-        state,
-    );
 }
 
 pub(super) fn render_action_list(
@@ -305,6 +217,7 @@ pub(super) fn render_action_list(
                     "✓ ",
                     theme.style(Role::Muted).add_modifier(Modifier::CROSSED_OUT),
                 ),
+                FrontendListItemState::Failed => ("✕ ", theme.style(Role::Error)),
             };
             let actions_width = item
                 .actions

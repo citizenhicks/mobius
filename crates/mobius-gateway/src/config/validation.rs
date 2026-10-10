@@ -6,7 +6,7 @@ pub(crate) fn validate_bot_compatibility(
     config: &AgentComposition,
     catalogs: mobius::middleware::manifest::ModelCatalogs<'_>,
 ) -> Result<()> {
-    validate_agent_composition_with_ceilings(config, gateway.execution.subagent_ceilings()?)?;
+    validate_agent_composition_with_ceilings(config, gateway.execution.subagent_ceilings)?;
     let selection = &config.provider;
     let configured = gateway
         .configured_providers
@@ -17,14 +17,15 @@ pub(crate) fn validate_bot_compatibility(
     let effort = effective_reasoning_effort(definition, configured, selection);
     let route = model_route_id(&selection.instance, &selection.model, effort);
     let catalog = crate::provider_catalog::catalog_routes(definition, configured, selection);
-    let selected = catalog
+    if !catalog
         .iter()
-        .find(|candidate| candidate.choice.route == route)
-        .ok_or_else(|| {
-            Error::Config("active model route is not in the configured catalog".into())
-        })?;
-    crate::middleware_manifest::validate_choices(&config.middleware, catalogs, &selected.choice)?;
-    Ok(())
+        .any(|candidate| candidate.choice.route == route)
+    {
+        return Err(Error::Config(
+            "active model route is not in the configured catalog".into(),
+        ));
+    }
+    crate::middleware_manifest::validate_choices(&config.middleware, catalogs)
 }
 
 pub(crate) fn configured_approval_policy(
@@ -39,13 +40,12 @@ pub(crate) fn configured_approval_policy(
 }
 
 fn validate_computer_control_policy(config: &AgentComposition) -> Result<()> {
-    use mobius::backend::sandbox::ApprovalPolicy;
+    use mobius::middleware::computer_control;
 
-    if config.middleware.enabled("computer_control")
-        && matches!(
-            configured_approval_policy(&config.middleware)?,
-            ApprovalPolicy::Ask | ApprovalPolicy::AllowNetwork
-        )
+    if config.middleware.enabled(computer_control::MANIFEST.id)
+        && !computer_control::supports_approval_policy(configured_approval_policy(
+            &config.middleware,
+        )?)
     {
         return Err(Error::Config(
             "computer control middleware requires Full access or Allow · no network".into(),
@@ -80,14 +80,7 @@ pub(crate) fn validate_agent_composition_with_ceilings(
     }
     crate::extensions::validate_ids(&config.extensions)?;
     validate_provider_config(&config.provider)?;
-    if config
-        .realtime_voice
-        .as_deref()
-        .is_some_and(|voice| voice.trim().is_empty() || voice.len() > 4096)
-    {
-        return Err(Error::Config("voice route must be 1–4096 bytes".into()));
-    }
-    crate::middleware_manifest::validate_with_ceilings(&config.middleware, ceilings)?;
+    crate::middleware_manifest::validate(&config.middleware, ceilings)?;
     validate_computer_control_policy(config)
 }
 

@@ -183,11 +183,13 @@ fn bootstrap_cleans_state_when_the_control_token_cannot_be_saved() {
 
 #[cfg(unix)]
 #[test]
-fn reset_bot_defaults_reapplies_defaults_without_changing_other_gateway_state() {
+fn reset_bot_defaults_reapplies_operator_bounded_defaults_without_changing_other_gateway_state() {
     let directory = tempfile::tempdir().expect("gateway state parent");
     let state = directory.path().join("gateway");
-    let (store, config) = ConfigStore::initialize(state.clone(), DEFAULT_LISTEN, None)
+    let (store, mut config) = ConfigStore::initialize(state.clone(), DEFAULT_LISTEN, None)
         .expect("initialize gateway config");
+    config.execution.subagent_ceilings =
+        mobius::middleware::subagents::SubagentCeilings::new(1, 2, 3).expect("operator ceilings");
     let provider = crate::wire::AgentComposition::default().provider;
     let config = config
         .registering_provider(
@@ -213,7 +215,9 @@ fn reset_bot_defaults_reapplies_defaults_without_changing_other_gateway_state() 
             current.revision,
             crate::wire::AgentComposition {
                 provider,
-                ..crate::wire::AgentComposition::default()
+                ..crate::wire::AgentComposition::defaults_with_ceilings(
+                    config.execution.subagent_ceilings,
+                )
             },
         )
         .expect("expected reset");

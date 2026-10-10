@@ -63,7 +63,9 @@ pub(super) fn reset_bot_defaults(state_dir: PathBuf) -> Result<()> {
         })?;
         let composition = crate::wire::AgentComposition {
             provider: current.config.provider.clone(),
-            ..crate::wire::AgentComposition::default()
+            ..crate::wire::AgentComposition::defaults_with_ceilings(
+                config.execution.subagent_ceilings,
+            )
         };
         let config = config.replacing_bot_defaults(current.revision, composition)?;
         store.save(&config)?;

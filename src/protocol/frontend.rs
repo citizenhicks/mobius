@@ -29,8 +29,6 @@ pub struct FrontendCommand {
 pub struct FrontendContribution {
     /// The capability.
     pub capability: String,
-    /// Whether the composed runtime installs session-bound file attachment endpoints.
-    pub accepts_file_attachments: bool,
     /// Optional capability-owned item count for generic summaries.
     pub count: Option<usize>,
     /// The commands.
@@ -52,8 +50,6 @@ pub struct MiddlewareFeature {
     pub description: String,
     /// The required.
     pub required: bool,
-    /// Neutral model capability required by this middleware, if any.
-    pub required_model_capability: Option<super::ModelCapability>,
     /// The settings.
     pub settings: Vec<FrontendSetting>,
 }
@@ -187,20 +183,6 @@ pub struct FrontendProgress {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FrontendWidgetContent {
-    /// Selects the blocks case.
-    Blocks {
-        /// The title.
-        title: String,
-        /// The blocks.
-        blocks: Vec<FrontendBlock>,
-    },
-    /// Selects the picker case.
-    Picker {
-        /// The title.
-        title: String,
-        /// The options.
-        options: Vec<FrontendPickerOption>,
-    },
     /// Selects the action list case.
     ActionList {
         /// The title.
@@ -263,9 +245,6 @@ pub struct FrontendBlock {
     pub content: super::ToolContent,
     /// The format.
     pub format: FrontendBlockFormat,
-    /// Requested aspect of a pending image, when known.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image_aspect: Option<ImageAspect>,
     /// The tone.
     pub tone: FrontendTone,
 }
@@ -358,19 +337,6 @@ pub enum FrontendBlockFormat {
     Image,
 }
 
-/// Requested shape of a generated image.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ImageAspect {
-    /// Equal width and height.
-    #[default]
-    Square,
-    /// Wider than tall.
-    Landscape,
-    /// Taller than wide.
-    Portrait,
-}
-
 /// One selectable action supplied by a capability.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrontendPickerOption {
@@ -413,6 +379,8 @@ pub enum FrontendListItemState {
     InProgress,
     /// Selects the completed case.
     Completed,
+    /// Selects the failed case.
+    Failed,
 }
 
 /// One labeled, icon-forward action attached to a list item.
@@ -643,7 +611,6 @@ impl EventMsg {
                     files: Vec::new(),
                     content: Default::default(),
                     format: FrontendBlockFormat::PlainText,
-                    image_aspect: None,
                     tone,
                 }
             }
@@ -711,8 +678,6 @@ pub enum FrontendSymbol {
     Storage,
     /// Selects the task case.
     Task,
-    /// A question requiring user input.
-    Question,
     /// A frontend-provided glyph name.
     Custom(String),
 }
@@ -738,7 +703,6 @@ impl FrontendSymbol {
             Self::Sparkle => "sparkle",
             Self::Storage => "storage",
             Self::Task => "task",
-            Self::Question => "question",
             Self::Custom(name) => name,
         }
     }
@@ -747,7 +711,6 @@ impl FrontendSymbol {
     /// placeholder is a better outcome than a gateway refusing to decode a whole frame.
     pub(crate) fn from_wire(name: &str) -> Self {
         match name {
-            "question" => Self::Question,
             "agent" => Self::Agent,
             "brain" => Self::Brain,
             "branch" => Self::Branch,

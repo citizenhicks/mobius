@@ -73,7 +73,9 @@ impl Tool for HandoffTool {
     ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             if !self.allow {
-                return Err(Error::Tool("model-requested compaction is disabled".into()));
+                return Err(Error::Tool(
+                    text::DEFINITION.message_disabled.as_str().into(),
+                ));
             }
             if self.write {
                 let args = WriteNotes::deserialize(&arguments)?;
@@ -90,15 +92,17 @@ impl Tool for HandoffTool {
 fn validate_notes(notes: &str) -> Result<()> {
     if notes.trim().is_empty() {
         return Err(Error::Tool(
-            "handoff notes must contain non-whitespace text. Checkpoint unchanged.".into(),
+            text::DEFINITION.message_empty_notes.as_str().into(),
         ));
     }
     if notes.len() > MAX_NOTE_BYTES {
-        return Err(Error::Tool(format!(
-            "handoff notes contain {} UTF-8 bytes; maximum {MAX_NOTE_BYTES}. Remove at least {} bytes. Checkpoint unchanged.",
-            notes.len(),
-            notes.len() - MAX_NOTE_BYTES
-        )));
+        return Err(Error::Tool(
+            text::DEFINITION
+                .message_notes_too_long
+                .replace("{bytes}", &notes.len().to_string())
+                .replace("{max}", &MAX_NOTE_BYTES.to_string())
+                .replace("{excess}", &(notes.len() - MAX_NOTE_BYTES).to_string()),
+        ));
     }
     Ok(())
 }
@@ -172,7 +176,7 @@ pub(super) async fn prepare(context: &mut ModelContext<'_>, policy: &Compaction)
     let mut previous = context.estimated_input_tokens();
     for _ in 0..attempts {
         let (input, partial) = prepare_checkpoint(context, policy, switching).await?;
-        apply_compaction(context, input).await?;
+        apply_compaction(context, policy, input).await?;
         if context.turn_stopped() {
             return Ok(());
         }
@@ -185,7 +189,12 @@ pub(super) async fn prepare(context: &mut ModelContext<'_>, policy: &Compaction)
         }
         previous = remaining;
     }
-    Err(Error::Stopped("prepared checkpoint does not fit the selected model; a preserved input or complete tool batch exceeds its budget; the chat and pending input are preserved".into()))
+    Err(Error::Stopped(
+        text::DEFINITION
+            .message_checkpoint_too_large
+            .as_str()
+            .into(),
+    ))
 }
 
 async fn prepare_checkpoint(
@@ -266,8 +275,7 @@ async fn prepare_checkpoint(
     context.record_usage(route, usage);
     if calls.len() != 1 || calls[0].name != "write_handoff" {
         return Err(Error::Provider(
-            "checkpoint preparation must return one write_handoff call; the chat is preserved"
-                .into(),
+            text::DEFINITION.message_one_handoff_call.as_str().into(),
         ));
     }
     let call = calls.pop().expect("one validated checkpoint call");
@@ -345,7 +353,9 @@ async fn prepare_response(
         }
     }
     if fitted == 0 {
-        return Err(Error::Provider("checkpoint preparation cannot fit one complete input or tool batch; the chat and pending input are preserved".into()));
+        return Err(Error::Provider(
+            text::DEFINITION.message_input_too_large.as_str().into(),
+        ));
     }
     let input = history
         .prefix(fitted)

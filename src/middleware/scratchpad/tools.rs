@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -14,7 +16,7 @@ struct WriteArgs {
 }
 
 pub(super) struct WriteScratchpad {
-    pub(super) store: ScratchpadStore,
+    pub(super) store: Arc<ScratchpadStore>,
     pub(super) frontend: FrontendEventSink,
 }
 
@@ -36,7 +38,7 @@ impl Tool for WriteScratchpad {
     ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
         Box::pin(async move {
             let arguments: WriteArgs = serde_json::from_value(arguments)?;
-            let access = self.store.lock_access().await;
+            let access = self.store.access.lock().await;
             let outcome = self
                 .store
                 .write_locked(&arguments.note, Basis::AgentObservation, &access)

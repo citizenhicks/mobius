@@ -1587,7 +1587,7 @@ fn agent_summary(gateway: &ReadyPayload, session: &SessionReadyPayload, bot: &Bo
         .as_deref()
         .unwrap_or("default");
     format!(
-        "MÖBIUS v{} · {bot_label}\nmodel: {} · {reasoning}\nproviders: {}\ncapabilities: {}\n{}tools: {}\nworkspace: {}",
+        "MÖBIUS v{} · {bot_label}\nmodel: {} · {reasoning}\nproviders: {}\ncapabilities: {}\n{}workspace: {}",
         env!("CARGO_PKG_VERSION"),
         super::terminal_text(&session.session.model.model),
         if providers.is_empty() {
@@ -1603,9 +1603,8 @@ fn agent_summary(gateway: &ReadyPayload, session: &SessionReadyPayload, bot: &Bo
         if counts.is_empty() {
             String::new()
         } else {
-            format!("{counts} · ")
+            format!("{counts}\n")
         },
-        session.tool_count,
         session.workspace.as_ref().map_or_else(
             || "Bot conversation".into(),
             |workspace| super::terminal_text(&workspace.path.display().to_string())
@@ -2217,8 +2216,6 @@ mod tests {
             },
             contributions: Vec::new(),
             widgets: Vec::new(),
-            tool_count: 0,
-            compaction_count: 0,
             context_limit_tokens: None,
             active_message_delivery: ActiveMessageDelivery::Steer,
             run_stats: RunStats::default(),

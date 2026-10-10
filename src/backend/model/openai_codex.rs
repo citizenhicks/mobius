@@ -33,10 +33,7 @@ pub(super) fn provider() -> ProviderDefinition {
     )
     .with_image_input()
     .with_image_generation()
-    .with_realtime_voices(
-        &super::realtime::CODEX_VOICES,
-        &super::realtime::CODEX_MODELS,
-    )
+    .with_voice_models(&super::realtime::CODEX_MODELS)
 }
 
 fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn super::Model>> {

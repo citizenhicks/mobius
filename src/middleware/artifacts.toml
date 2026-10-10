@@ -2,8 +2,10 @@ default_enabled = true
 # Editable text and defaults owned by this middleware.
 manifest_description = "Let the agent publish workspace files to the current chat"
 manifest_label = "Artifacts"
-prompt_main = "Use `send_artifact` to deliver an existing workspace file or an authorized stored file_id without rewriting it. Create a file only when the user asks for new content. `generate_image` already delivers its output."
+prompt_main = "Use `send_artifact` to deliver an existing workspace file or an authorized stored file_id without rewriting it. Create a file only when the user asks for new content."
 render_sent_prefix = "Sent "
+error_path_not_file = "artifact path must name one file"
+error_path_or_file_id = "provide exactly one of path or file_id"
 
 [send_artifact]
 result_title = "send_artifact"

@@ -1,15 +1,15 @@
 //! Core-owned middleware configuration manifests.
 
+use crate::protocol::ModelChoice;
 use crate::protocol::{
     FrontendSetting, FrontendSettingKind, FrontendSettingOption, FrontendSettingValue,
     FrontendSymbol, FrontendTone, MiddlewareFeature,
 };
-use crate::protocol::{ModelCapability, ModelChoice};
 use crate::{Error, Result};
 
 macro_rules! middleware_manifest {
     ($(#[$attr:meta])* $id:literal, $definition:expr, required: $required:expr,
-     capability: $capability:expr, settings: $settings:expr) => {
+     settings: $settings:expr) => {
         $(#[$attr])*
         pub static MANIFEST: std::sync::LazyLock<$crate::middleware::manifest::MiddlewareManifest> =
             std::sync::LazyLock::new(|| $crate::middleware::manifest::MiddlewareManifest {
@@ -18,7 +18,6 @@ macro_rules! middleware_manifest {
                 description: &$definition.manifest_description,
                 required: $required,
                 default_enabled: $definition.default_enabled,
-                required_model_capability: $capability,
                 settings: $settings,
             });
     };
@@ -32,6 +31,8 @@ pub struct ModelCatalogs<'a> {
     pub models: &'a [ModelChoice],
     /// Selectable image model routes.
     pub images: &'a [ModelChoice],
+    /// Selectable realtime voice routes.
+    pub voices: &'a [ModelChoice],
 }
 
 /// Static metadata and configurable policy exported by one middleware module.
@@ -47,8 +48,6 @@ pub struct MiddlewareManifest {
     pub required: bool,
     /// The default enabled.
     pub default_enabled: bool,
-    /// Neutral model capability required by this middleware, if any.
-    pub required_model_capability: Option<ModelCapability>,
     /// The settings.
     pub settings: &'static [MiddlewareSettingManifest],
 }
@@ -62,7 +61,6 @@ impl MiddlewareManifest {
             label: self.label.into(),
             description: self.description.into(),
             required: self.required,
-            required_model_capability: self.required_model_capability,
             settings: self
                 .settings
                 .iter()
@@ -130,18 +128,6 @@ impl MiddlewareSettingManifest {
             &self,
             Self::Select {
                 choices: MiddlewareSettingChoices::ModelRoutes,
-                ..
-            }
-        )
-    }
-
-    /// Returns whether this setting selects from the gateway's live image models.
-    #[must_use]
-    pub fn uses_image_models(&self) -> bool {
-        matches!(
-            &self,
-            Self::Select {
-                choices: MiddlewareSettingChoices::ImageModels,
                 ..
             }
         )
@@ -236,7 +222,8 @@ impl MiddlewareSettingManifest {
                         choices.contains(ModelCatalogs::default(), value)
                     }
                     MiddlewareSettingChoices::ModelRoutes
-                    | MiddlewareSettingChoices::ImageModels => true,
+                    | MiddlewareSettingChoices::ImageModels
+                    | MiddlewareSettingChoices::VoiceModels => true,
                 } =>
             {
                 Ok(())
@@ -306,6 +293,8 @@ pub enum MiddlewareSettingChoices {
     ModelRoutes,
     /// Selects the image models case.
     ImageModels,
+    /// Selects the realtime voice routes case.
+    VoiceModels,
 }
 
 impl MiddlewareSettingChoices {
@@ -324,6 +313,7 @@ impl MiddlewareSettingChoices {
                 .collect(),
             Self::ModelRoutes => route_options(catalogs.models),
             Self::ImageModels => route_options(catalogs.images),
+            Self::VoiceModels => route_options(catalogs.voices),
         }
     }
 
@@ -332,6 +322,7 @@ impl MiddlewareSettingChoices {
             Self::Static(choices) => return choices.iter().any(|choice| choice.value == value),
             Self::ModelRoutes => catalogs.models,
             Self::ImageModels => catalogs.images,
+            Self::VoiceModels => catalogs.voices,
         };
         routes.iter().any(|choice| choice.route == value)
     }

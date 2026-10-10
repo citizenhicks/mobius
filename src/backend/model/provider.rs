@@ -126,6 +126,8 @@ pub struct MediaModelPreset {
 pub(super) struct ModelCatalog {
     pub(super) default_model: Option<String>,
     #[serde(default)]
+    pub(super) image_input_models: Vec<String>,
+    #[serde(default)]
     pub(super) models: Vec<ModelPreset>,
     #[serde(default)]
     pub(super) image_models: Vec<MediaModelPreset>,
@@ -133,6 +135,14 @@ pub(super) struct ModelCatalog {
 
 impl ModelCatalog {
     pub(super) fn validate(&self) -> Result<()> {
+        unique_ids(self.image_input_models.iter().map(String::as_str))?;
+        for id in &self.image_input_models {
+            if !self.models.iter().any(|model| &model.id == id) {
+                return Err(Error::Config(format!(
+                    "image input model `{id}` is not in the catalog"
+                )));
+            }
+        }
         unique_ids(self.image_models.iter().map(|model| model.id.as_str()))?;
         for model in &self.image_models {
             unique_ids(model.variants.iter().map(|variant| variant.id.as_str()))?;
@@ -526,7 +536,6 @@ pub struct ProviderDefinition {
     web_search: &'static [HostedWebSearch],
     supports_image_input: bool,
     supports_image_generation: bool,
-    realtime_voices: &'static [&'static str],
     image_models: &'static [MediaModelPreset],
     voice_models: &'static [MediaModelPreset],
     tool_discovery: ToolDiscoveryMode,
@@ -560,9 +569,9 @@ impl ProviderDefinition {
             locked_models: metadata.locked_models,
             default_model: catalog.and_then(|catalog| catalog.default_model.as_deref()),
             web_search: &metadata.search,
-            supports_image_input: false,
+            supports_image_input: catalog
+                .is_some_and(|catalog| !catalog.image_input_models.is_empty()),
             supports_image_generation: false,
-            realtime_voices: &[],
             image_models: catalog.map_or(&[], |catalog| catalog.image_models.as_slice()),
             voice_models: &[],
             tool_discovery: metadata.tool_discovery,
@@ -589,12 +598,7 @@ impl ProviderDefinition {
         self
     }
 
-    pub(crate) const fn with_realtime_voices(
-        mut self,
-        voices: &'static [&'static str],
-        models: &'static [MediaModelPreset],
-    ) -> Self {
-        self.realtime_voices = voices;
+    pub(crate) const fn with_voice_models(mut self, models: &'static [MediaModelPreset]) -> Self {
         self.voice_models = models;
         self
     }
@@ -682,7 +686,7 @@ impl ProviderDefinition {
     pub const fn supports(&self, capability: ModelCapability) -> bool {
         match capability {
             ModelCapability::ImageGeneration => self.supports_image_generation,
-            ModelCapability::RealtimeVoice => !self.realtime_voices.is_empty(),
+            ModelCapability::RealtimeVoice => !self.voice_models.is_empty(),
         }
     }
 
@@ -697,12 +701,6 @@ impl ProviderDefinition {
     #[must_use]
     pub const fn native_custom_endpoints(&self) -> bool {
         self.native_custom_endpoints
-    }
-
-    /// Returns supported voices, with the default first.
-    #[must_use]
-    pub const fn realtime_voices(&self) -> &'static [&'static str] {
-        self.realtime_voices
     }
 
     /// Resolves cache behavior for one model and endpoint selection.
@@ -1404,12 +1402,8 @@ mod tests {
 
     #[test]
     fn provider_manifests_advertise_image_input_explicitly() {
-        assert!(
-            !provider("deepseek")
-                .expect("deepseek")
-                .supports_image_input()
-        );
         for id in [
+            "deepseek",
             "openai_socket",
             "openai_codex",
             "kimi",

@@ -30,7 +30,7 @@ use crate::wire::{
 };
 use crate::{Error, Result};
 
-const STATE_VERSION: u32 = 8;
+const STATE_VERSION: u32 = 9;
 const STATE_FILE: &str = storage::STATE_FILE;
 const STATE_LOCK_FILE: &str = "bots-state.lock";
 const ROUTINES_DIR: &str = "routines";
@@ -348,11 +348,6 @@ impl StoredBot {
     fn record(&self) -> Result<BotRecord> {
         let (accepts_file_attachments, routine_interaction_policy) =
             crate::assembly::bot_semantics(&self.config.config)?;
-        let mut config = self.config.clone();
-        crate::middleware_manifest::materialize_integer_defaults(
-            &mut config.config.middleware,
-            None,
-        );
         Ok(BotRecord {
             conversation_session_id: conversation_session_id(&self.id),
             id: self.id.clone(),
@@ -361,7 +356,7 @@ impl StoredBot {
             description: self.description.clone(),
             tint: self.tint,
             shape: self.shape,
-            config,
+            config: self.config.clone(),
             accepts_file_attachments,
             routine_interaction_policy,
         })

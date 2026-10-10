@@ -172,7 +172,7 @@ test("browser action failure captures fresh state without replay, exceeding capt
 }));
 
 
-test("native actions share the evaluation pipe, preserve state, and emit screenshots once", { timeout: 5000 }, t => {
+test("native actions share the evaluation pipe, preserve state, and answer acting with one screenshot", { timeout: 5000 }, t => {
   const actions: string[] = [];
   return withWorker(t.signal, async evaluate => {
     assert.equal((await evaluate("var apps = await desktop.apps(); console.log(apps)")).is_error, false);
@@ -182,8 +182,12 @@ test("native actions share the evaluation pipe, preserve state, and emit screens
     assert.equal(images(result).length, 1);
     assert.equal(await readFile(images(result)[0].path, "utf8"), "native-image");
     assert.ok(!text(result).includes("bmF0aXZlLWltYWdl"));
-    assert.equal((await evaluate("desktop.click(shot.screenshotId, 10, 20)")).is_error, false);
-    assert.deepEqual(actions, ["apps", "screenshot", "click"]);
+    // Desktop-only code never opens the gateway browser, even when one is assigned.
+    const scoped = { endpoint: "ws+unix:///tmp/browser.sock:/0123456789abcdef0123456789abcdef", target_id: null };
+    const clicked = await evaluate("desktop.click(shot.screenshotId, 10, 20)", scoped);
+    assert.equal(clicked.is_error, false);
+    assert.equal(images(clicked).length, 1, "an action ends with a fresh screenshot");
+    assert.deepEqual(actions, ["apps", "screenshot", "click", "screenshot"]);
   }, request => {
     actions.push(request.action);
     if (request.action === "apps") return { result: [{ pid: 123 }] };
@@ -245,14 +249,15 @@ test("gateway pages are assigned, observed before acting, and retained after wor
   };
   try {
     await withWorker(t.signal, async evaluate => {
-      const first = await evaluate("throw new Error('must not run')", desktop);
+      const first = await evaluate("await getPage(); throw new Error('must not run')", desktop);
       assert.equal(first.is_error, false, text(first));
-      assert.match(text(first), /Submitted code was not executed/);
+      assert.match(text(first), /was not executed/);
       assert.match(text(first), /Saved login/);
       assert.equal(images(first).length, 1);
       const driven = await evaluate("var page = await getPage(); await page.setContent('<title>Assigned</title>'); console.log(await page.title())", { ...desktop });
       assert.equal(driven.is_error, false, text(driven));
-      assert.equal(text(driven), 'Assigned');
+      assert.match(text(driven), /^Assigned\nViewport screenshot/);
+      assert.equal(images(driven).length, 1, "page use ends with a fresh screenshot");
       assert.equal(await assigned.title(), 'Assigned');
       assert.equal(await other.title(), 'Other chat', 'never select the first page');
       assert.equal(leaseRequests, 2, 'every desktop evaluation acquires the host lease');
@@ -260,20 +265,20 @@ test("gateway pages are assigned, observed before acting, and retained after wor
     assert.equal(await assigned.title(), 'Assigned', 'worker exit does not close the owned page');
     await withWorker(t.signal, async evaluate => {
       binding = { ...desktop, target_id: 'missing-target' };
-      const unavailable = await evaluate("throw new Error('must not run')", binding);
+      const unavailable = await evaluate("await getPage(); throw new Error('must not run')", binding);
       assert.equal(unavailable.is_error, true);
       assert.match(text(unavailable), /gateway-assigned browser page is unavailable/);
       assert.match(text(unavailable), /Browser state: not started/);
       binding = desktop;
-      const recovered = await evaluate("throw new Error('must not replay')", desktop);
+      const recovered = await evaluate("await getPage(); throw new Error('must not replay')", desktop);
       assert.equal(recovered.is_error, false, text(recovered));
-      assert.match(text(recovered), /Submitted code was not executed/);
+      assert.match(text(recovered), /was not executed/);
       assert.equal(await assigned.title(), 'Assigned');
     }, host);
     await withWorker(t.signal, async evaluate => {
-      const resumed = await evaluate("throw new Error('must not replay after takeover')", desktop);
+      const resumed = await evaluate("await getPage(); throw new Error('must not replay after takeover')", desktop);
       assert.equal(resumed.is_error, false, text(resumed));
-      assert.match(text(resumed), /Submitted code was not executed/);
+      assert.match(text(resumed), /was not executed/);
       const own = await evaluate("var page = await getPage(); await page.setContent('<title>Own</title>');");
       assert.equal(own.is_error, false, text(own));
       assert.match(own.devtools!, /^http:\/\/127\.0\.0\.1:/);
@@ -305,14 +310,14 @@ test("a scoped local browser exposes one page without stealing focus", { timeout
           return { contexts: () => [{ pages: () => Array(${count}).fill(page) }], isConnected: () => connected, close: async () => { connected = false; } };
         } };
       `);
-      const first = await evaluate("globalThis.changed = true", desktop);
+      const first = await evaluate("await getPage(); globalThis.changed = true", desktop);
       if (count === 2) {
         assert.equal(first.is_error, true);
         assert.match(text(first), /exactly one page/);
         return;
       }
       assert.equal(first.is_error, false);
-      assert.match(text(first), /Submitted code was not executed/);
+      assert.match(text(first), /was not executed/);
       const second = await evaluate("globalThis.changed ?? 'untouched'", desktop);
       assert.equal(second.is_error, false);
       assert.match(text(second), /untouched/);
@@ -321,6 +326,40 @@ test("a scoped local browser exposes one page without stealing focus", { timeout
       return { result: desktop };
     });
   }
+});
+
+test("saved gateway page handles cannot bypass the next evaluation's host lease", { timeout: 10000 }, async ({ signal }) => {
+  const desktop = { endpoint: "ws+unix:///tmp/browser.sock:/0123456789abcdef0123456789abcdef", target_id: null };
+  let requests = 0, denied = false;
+  await withWorker(signal, async (evaluate, directory) => {
+    const module = join(directory, "playwright.cjs");
+    await writeFile(module, `
+      const page = {
+        actions: 0, click() { this.actions++; },
+        isClosed: () => false, setDefaultTimeout() {}, url: () => 'https://assigned.local/',
+        locator: () => ({ ariaSnapshot: async () => '- document: assigned page' }),
+        screenshot: async () => Buffer.from('89504e470d0a1a0a0000000d494844520000000100000001', 'hex'),
+      };
+      exports.chromium = { connectOverCDP: async () => ({
+        contexts: () => [{ pages: () => [page] }], isConnected: () => true, close: async () => {},
+      }) };
+    `);
+    assert.equal((await evaluate("await getPage()", desktop)).is_error, false);
+    assert.equal((await evaluate("var savedPage = await getPage()", desktop)).is_error, false);
+    denied = true;
+    const blocked = await evaluate("savedPage.click()", desktop);
+    assert.equal(blocked.is_error, true);
+    assert.match(text(blocked), /browser control is held/);
+    denied = false;
+    const untouched = await evaluate("console.log(savedPage.actions)", desktop);
+    assert.equal(untouched.is_error, false);
+    assert.match(text(untouched), /^0\n/);
+    assert.equal(requests, 4, "every use of a retained browser requires its current host lease");
+  }, request => {
+    assert.deepEqual(request, { op: "begin_browser" });
+    requests++;
+    return denied ? { error: "browser control is held" } : { result: desktop };
+  }, directory => ({ playwright_module: join(directory, "playwright.cjs") }));
 });
 
 test("browser capture validates actual pixels and keeps CSS click coordinates", { skip: !runtime, timeout: 15000 }, t => withWorker(t.signal, async evaluate => {

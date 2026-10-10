@@ -152,12 +152,6 @@ pub(super) fn recent_run_groups(
         let Some(root) = visible_session(&record.session_id, &sessions_by_id) else {
             continue;
         };
-        if metadata
-            .get(&root.session_id)
-            .is_some_and(|item| item.hidden)
-        {
-            continue;
-        }
         let run = run_summary(record);
         if let Some(group) = groups
             .iter_mut()
@@ -279,20 +273,15 @@ pub(super) async fn gateway_ready(
     let image_models = media_choices(media.images);
     let voice_models = media_choices(media.voices);
     let subagent_ceilings = state.subagent_ceilings;
-    let middleware_features = crate::middleware_manifest::features_with_ceilings(
+    let middleware_features = crate::middleware_manifest::features(
         mobius::middleware::manifest::ModelCatalogs {
             models: &models,
             images: &image_models,
+            voices: &voice_models,
         },
         subagent_ceilings,
     );
-    let mut bots = state.bots.bots().map_err(internal)?;
-    for bot in &mut bots {
-        crate::middleware_manifest::materialize_integer_defaults(
-            &mut bot.config.config.middleware,
-            Some(subagent_ceilings),
-        );
-    }
+    let bots = state.bots.bots().map_err(internal)?;
     let extensions = state.extensions;
     let mut contributions = state.contributions;
     contributions.push(
@@ -318,13 +307,7 @@ pub(super) async fn gateway_ready(
         model_providers,
         image_models,
         voice_models,
-        bot_defaults: state.bot_defaults.map(|mut defaults| {
-            crate::middleware_manifest::materialize_integer_defaults(
-                &mut defaults.config.middleware,
-                Some(subagent_ceilings),
-            );
-            defaults
-        }),
+        bot_defaults: state.bot_defaults,
         middleware_features,
         extensions,
         contributions,

@@ -1,7 +1,7 @@
 pub(super) use crate::frontend::terminal::masked_credential;
 use mobius::Result;
 use mobius::protocol::{FrontendSetting, FrontendSettingKind, FrontendSettingValue};
-use mobius_gateway::wire::{ExtensionKind, MiddlewareConfig, ProviderAuthKind};
+use mobius_gateway::wire::{MiddlewareConfig, ProviderAuthKind};
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
@@ -457,7 +457,7 @@ fn render_agent_page(lines: &mut Vec<Line<'static>>, state: &SetupState, width: 
                     &extension.name,
                     &format!(
                         "{}{}{} · {}",
-                        extension_kind(extension.kind),
+                        extension.kind.as_str(),
                         version,
                         hooks,
                         extension.description
@@ -638,13 +638,6 @@ pub(super) fn extension_choice(
         focused,
         layout,
     );
-}
-
-const fn extension_kind(kind: ExtensionKind) -> &'static str {
-    match kind {
-        ExtensionKind::Skill => "skill",
-        ExtensionKind::Plugin => "plugin",
-    }
 }
 
 pub(super) fn push_described_row(

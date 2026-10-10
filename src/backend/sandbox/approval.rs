@@ -104,7 +104,6 @@ impl Approval {
     pub(super) fn frontend(&self) -> FrontendContribution {
         FrontendContribution {
             capability: CAPABILITY.into(),
-            accepts_file_attachments: false,
             count: None,
             commands: Vec::new(),
             widgets: vec![widget(self.default_policy)],

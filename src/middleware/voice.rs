@@ -1,24 +1,158 @@
-//! Voice handoffs use the ordinary message queue and committed conversation events.
+//! Live voice calls: a read-only transcript beside the chat, with handoffs that use the
+//! ordinary message queue and committed conversation events.
 
+mod call;
 pub mod transcript;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::text;
+use super::{
+    ActiveCommandContext, Middleware, MiddlewareCommandContext, MiddlewareCommandOutput,
+    SessionStartContext, SessionStartSource, SubmissionResult,
+};
 use crate::agent::ValidatedSubmission;
 use crate::backend::model::RealtimeVoiceCommand;
 use crate::protocol::{
-    Event, EventMsg, FrontendSymbol, MessageAuthor, MessageDelivery, MessageSubmission,
-    ModelStepContentPhase, Op, Submission,
+    Event, EventMsg, FrontendCommand, FrontendContribution, FrontendSymbol, MessageAuthor,
+    MessageDelivery, MessageSubmission, ModelStepContentPhase, Op, Submission,
 };
-use crate::{Error, Result};
+use crate::{BoxFuture, Error, Result};
+
+pub use call::{VoiceCall, VoiceCallContext, VoiceWake};
+use transcript::{COMMAND, read_preview};
+
+const SYMBOL: &str = "voice";
+
+mod text {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(super) struct Definition {
+        pub(super) default_enabled: bool,
+        pub(super) manifest_description: String,
+        pub(super) manifest_label: String,
+        pub(super) voice_user_label: String,
+        pub(super) voice_speaker_label: String,
+        pub(super) voice_workspace_label: String,
+        pub(super) voice_retained_context: String,
+        pub(super) voice_clarify_request: String,
+        pub(super) voice_delegation_policy: String,
+        pub(super) voice_current_request_heading: String,
+        pub(super) voice_recent_discussion_heading: String,
+        pub(super) voice_latest_request: String,
+        pub(super) voice_tool_started: String,
+        pub(super) voice_tool_result: String,
+        pub(super) voice_tool_failed: String,
+        pub(super) voice_tool_finished: String,
+        pub(super) voice_work_stopped: String,
+        pub(super) voice_request_failed: String,
+        pub(super) voice_request_empty: String,
+        pub(super) identity: String,
+        pub(super) voice_instructions: String,
+        pub(super) voice_workspace_heading: String,
+        pub(super) voice_previous_heading: String,
+        pub(super) command_description: String,
+        pub(super) widget_text: String,
+        pub(super) transcript_title: String,
+        pub(super) handoff_handle: String,
+        pub(super) handoff_continued: String,
+        pub(super) handoff_correction: String,
+        pub(super) handoff_discarded: String,
+        #[serde(deserialize_with = "crate::middleware::manifest::deserialize_settings")]
+        pub(super) settings: Vec<crate::middleware::manifest::MiddlewareSettingManifest>,
+    }
+    crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("voice.toml"); }
+}
+
+super::manifest::middleware_manifest! {
+    /// Configuration and presentation metadata for live voice calls.
+    "voice", text::DEFINITION, required: false, settings: &text::DEFINITION.settings
+}
+
+/// Restores the voice transcript entry point beside a chat that has one.
+pub struct Voice;
+
+impl Middleware for Voice {
+    fn name(&self) -> &'static str {
+        MANIFEST.id
+    }
+
+    fn frontend(&self, _session_id: &str) -> FrontendContribution {
+        FrontendContribution {
+            capability: MANIFEST.id.into(),
+            commands: vec![transcript_command()],
+            ..FrontendContribution::default()
+        }
+    }
+
+    fn command<'a>(
+        &'a self,
+        context: MiddlewareCommandContext<'a>,
+    ) -> BoxFuture<'a, Result<MiddlewareCommandOutput>> {
+        Box::pin(async move {
+            Ok(MiddlewareCommandOutput::events(vec![
+                read_preview(
+                    context.checkpoints.as_ref(),
+                    context.session_id,
+                    context.arguments,
+                )
+                .await?,
+            ]))
+        })
+    }
+
+    fn active_command<'a>(
+        &'a self,
+        context: &'a mut ActiveCommandContext<'_>,
+    ) -> BoxFuture<'a, Result<Option<SubmissionResult>>> {
+        Box::pin(async move {
+            if context.command != COMMAND {
+                return Ok(None);
+            }
+            let result =
+                read_preview(context.checkpoints, context.session_id, context.arguments).await;
+            Ok(Some(match result {
+                Ok(event) => {
+                    context.events.push(EventMsg::Frontend(event));
+                    SubmissionResult::Handled
+                }
+                Err(error) => SubmissionResult::Rejected(error.to_string()),
+            }))
+        })
+    }
+
+    fn session_start<'a>(
+        &'a self,
+        context: &'a mut SessionStartContext<'_>,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            if context.source() == SessionStartSource::Compact {
+                return Ok(());
+            }
+            if let Some(widget) = transcript::restore_widget(
+                context.runtime.checkpoints.as_ref(),
+                &context.runtime.session_id,
+            )
+            .await?
+            {
+                (context.runtime.frontend)(widget)?;
+            }
+            Ok(())
+        })
+    }
+}
+
+fn transcript_command() -> FrontendCommand {
+    FrontendCommand {
+        name: COMMAND.into(),
+        arguments: String::new(),
+        description: text::DEFINITION.command_description.as_str().into(),
+        requires_idle: false,
+    }
+}
 
 /// Seeds a new voice call with the Bot's current durable conversation, never the reverse.
-/// # Errors
-///
-/// Returns an error if validation or an operation required by this function fails.
-pub fn instructions(
+fn instructions(
     bot_instructions: &str,
     checkpoint: &crate::backend::checkpoint::Checkpoint,
     voice_session_id: &str,
@@ -26,7 +160,7 @@ pub fn instructions(
 ) -> Result<String> {
     let identity = format!(
         "{bot_instructions}\n\n{}",
-        super::text::DEFINITION.voice_instructions
+        text::DEFINITION.voice_instructions
     );
     // Preserve the complete persona and call policy; only historical context may be trimmed.
     let available = (64 * 1024_usize)
@@ -36,9 +170,9 @@ pub fn instructions(
     let context = parent_context(checkpoint, voice_session_id);
     Ok(format!(
         "{identity}\n\n{}\n{}\n\n{}\n{}",
-        super::text::DEFINITION.voice_workspace_heading,
+        text::DEFINITION.voice_workspace_heading,
         tail(&context, (32 * 1024).min(available - voice_context.len())),
-        super::text::DEFINITION.voice_previous_heading,
+        text::DEFINITION.voice_previous_heading,
         voice_context
     ))
 }
@@ -127,20 +261,8 @@ fn task_messages(
     messages
 }
 
-fn joined_text<'a>(mut parts: impl Iterator<Item = &'a str>) -> Cow<'a, str> {
-    let Some(first) = parts.next() else {
-        return Cow::Borrowed("");
-    };
-    let Some(second) = parts.next() else {
-        return Cow::Borrowed(first);
-    };
-    Cow::Owned(
-        std::iter::once(first)
-            .chain(std::iter::once(second))
-            .chain(parts)
-            .collect::<Vec<_>>()
-            .join("\n"),
-    )
+fn joined_text<'a>(parts: impl Iterator<Item = &'a str>) -> Cow<'a, str> {
+    Cow::Owned(parts.collect::<Vec<_>>().join("\n"))
 }
 
 fn parent_context(
@@ -186,10 +308,7 @@ fn parent_context(
 }
 
 /// Gives the Bot the delegated request and recent voice context without another model call.
-/// # Errors
-///
-/// Returns an error if validation or an operation required by this function fails.
-pub fn delegated_task(utterance: Option<&str>, voice_context: &str) -> Result<String> {
+fn delegated_task(utterance: Option<&str>, voice_context: &str) -> Result<String> {
     if utterance
         .is_some_and(|text| text.trim().is_empty() || text.len() > 16 * 1024 || text.contains('\0'))
         || voice_context.contains('\0')
@@ -265,8 +384,7 @@ fn tail(text: &str, max_bytes: usize) -> &str {
 }
 
 /// Reports an unresolved handoff without submitting an ambiguous request to the Bot.
-#[must_use]
-pub fn reject_handoff(id: String, message: &str) -> RealtimeVoiceCommand {
+fn reject_handoff(id: String, message: &str) -> RealtimeVoiceCommand {
     RealtimeVoiceCommand::Reply {
         handoff_id: id,
         text: format!("{} {message}", text::DEFINITION.voice_request_failed),
@@ -286,7 +404,7 @@ struct PendingHandoff {
 
 /// Correlates one live voice call with the agent's existing durable message lifecycle.
 #[derive(Default)]
-pub struct VoiceConversation {
+struct VoiceConversation {
     pending: BTreeMap<String, PendingHandoff>,
     seen: BTreeSet<String>,
     active_turn_id: Option<String>,
@@ -342,8 +460,10 @@ impl VoiceConversation {
                         },
                         cause_id: None,
                         ancestry: Vec::new(),
-                        handle: format!("{} (voice)", self.bot_name),
-                        symbol: Some(FrontendSymbol::Custom("voice".into())),
+                        handle: text::DEFINITION
+                            .handoff_handle
+                            .replace("{bot}", &self.bot_name),
+                        symbol: Some(FrontendSymbol::Custom(SYMBOL.into())),
                     },
                     text,
                     attachments: Vec::new(),
@@ -503,6 +623,11 @@ mod tests {
                 panic!("expected handoff reply")
             }
         }
+    }
+
+    #[test]
+    fn voice_is_optional_and_on_by_default() {
+        assert!(!MANIFEST.required && MANIFEST.default_enabled);
     }
 
     #[test]

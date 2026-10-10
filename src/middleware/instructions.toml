@@ -3,3 +3,4 @@ default_enabled = false
 manifest_description = "Load optional root AGENTS.md guidance"
 manifest_label = "Workspace instructions"
 prompt_title = "workspace instructions"
+prompt_body = "Source: `{name}`\n\n{content}"

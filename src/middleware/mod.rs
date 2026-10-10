@@ -44,6 +44,7 @@ pub mod sessions;
 pub mod subagents;
 pub mod tasks;
 pub mod tools;
+pub mod voice;
 
 pub use context::{
     ActiveCommandContext, CompactContext, FrontendEventSink, MessageQueue, MessageRouteContext,
@@ -124,23 +125,32 @@ pub struct MiddlewareCommandOutput {
 pub struct FrontendExtensions {
     stack: MiddlewareStack,
     session_id: Arc<str>,
-    contributions: Arc<[FrontendContribution]>,
 }
 
 impl FrontendExtensions {
     pub(crate) fn new(stack: MiddlewareStack, session_id: impl Into<Arc<str>>) -> Result<Self> {
-        let contributions = stack.frontend()?;
-        Ok(Self {
-            stack,
-            session_id: session_id.into(),
-            contributions: contributions.into(),
-        })
+        let session_id = session_id.into();
+        stack.frontend(&session_id)?;
+        Ok(Self { stack, session_id })
     }
 
-    /// Returns command and widget manifests in capability order.
+    /// Returns command and widget manifests in capability order, with current session counts.
+    /// # Errors
+    ///
+    /// Returns an error if a middleware exports metadata for another capability.
+    pub fn contributions(&self) -> Result<Vec<FrontendContribution>> {
+        self.stack.declared_frontend(&self.session_id)
+    }
+
+    /// Returns the smallest input-token limit installed middleware enforce for a context window.
     #[must_use]
-    pub fn contributions(&self) -> &[FrontendContribution] {
-        &self.contributions
+    pub fn context_limit(&self, context_window: i64) -> i64 {
+        self.stack
+            .entries
+            .iter()
+            .filter_map(|entry| entry.context_limit(context_window))
+            .min()
+            .unwrap_or(context_window)
     }
 
     /// Lets installed middleware render capability-specific events.
@@ -158,6 +168,19 @@ impl FrontendExtensions {
                     })
             }))
             .collect()
+    }
+
+    /// Reports whether any installed middleware still runs work for this session.
+    /// # Errors
+    ///
+    /// Returns an error if a middleware cannot read its background state.
+    pub async fn has_background_work(&self) -> Result<bool> {
+        for entry in &self.stack.entries {
+            if entry.has_background_work(&self.session_id).await? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }
 
@@ -199,6 +222,11 @@ pub trait Middleware: Send + Sync {
         &[]
     }
 
+    /// Returns the input-token limit this capability enforces for a model context window.
+    fn context_limit(&self, _context_window: i64) -> Option<i64> {
+        None
+    }
+
     /// Adds tools to the catalog while the agent is created.
     /// # Errors
     ///
@@ -215,8 +243,8 @@ pub trait Middleware: Send + Sync {
         Ok(None)
     }
 
-    /// Declares commands and status data that any frontend may render.
-    fn frontend(&self) -> FrontendContribution {
+    /// Declares commands and status data that any frontend may render for one session.
+    fn frontend(&self, _session_id: &str) -> FrontendContribution {
         FrontendContribution::default()
     }
 
@@ -258,11 +286,16 @@ pub trait Middleware: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if validation or an operation required by this function fails.
-    fn route_message(&self, _context: &mut MessageRouteContext<'_>) -> Result<SubmissionResult> {
-        Err(Error::Config(format!(
-            "middleware `{}` claimed messages but did not prepare them",
-            self.name()
-        )))
+    fn route_message<'a>(
+        &'a self,
+        _context: &'a mut MessageRouteContext<'_>,
+    ) -> BoxFuture<'a, Result<SubmissionResult>> {
+        Box::pin(async move {
+            Err(Error::Config(format!(
+                "middleware `{}` claimed messages but did not prepare them",
+                self.name()
+            )))
+        })
     }
 
     /// Produces capability UI cleanup when one queued message reaches its boundary.
@@ -374,6 +407,16 @@ pub trait Middleware: Send + Sync {
     fn session_end<'a>(&'a self, _runtime: &'a RuntimeContext) -> BoxFuture<'a, Result<()>> {
         Box::pin(async { Ok(()) })
     }
+
+    /// Keeps this capability out of child agents created from the root's configuration.
+    fn main_agent_only(&self) -> bool {
+        false
+    }
+
+    /// Reports work this capability still runs for the session outside an active turn.
+    fn has_background_work<'a>(&'a self, _session_id: &'a str) -> BoxFuture<'a, Result<bool>> {
+        Box::pin(async { Ok(false) })
+    }
 }
 
 /// One middleware-owned section of the assembled system prompt.
@@ -457,6 +500,18 @@ impl MiddlewareStack {
         Ok(Self { entries })
     }
 
+    pub(crate) fn for_child_agents(&self) -> Self {
+        // Removing entries from a validated stack cannot introduce a conflict.
+        Self {
+            entries: self
+                .entries
+                .iter()
+                .filter(|entry| !entry.main_agent_only())
+                .map(Arc::clone)
+                .collect(),
+        }
+    }
+
     pub(crate) fn with_sandbox(mut self, sandbox: Arc<Sandbox>) -> Result<Self> {
         self.entries.insert(0, sandbox);
         Self::new(self.entries)
@@ -519,16 +574,16 @@ impl MiddlewareStack {
     /// # Errors
     ///
     /// Returns an error if validation or an operation required by this function fails.
-    pub fn frontend(&self) -> Result<Vec<FrontendContribution>> {
-        let contributions = self.declared_frontend()?;
+    pub fn frontend(&self, session_id: &str) -> Result<Vec<FrontendContribution>> {
+        let contributions = self.declared_frontend(session_id)?;
         validate_frontend(&contributions)?;
         Ok(contributions)
     }
 
-    fn declared_frontend(&self) -> Result<Vec<FrontendContribution>> {
+    fn declared_frontend(&self, session_id: &str) -> Result<Vec<FrontendContribution>> {
         let mut contributions = Vec::new();
         for entry in &self.entries {
-            let contribution = entry.frontend();
+            let contribution = entry.frontend(session_id);
             if contribution.capability.is_empty()
                 && contribution.commands.is_empty()
                 && contribution.widgets.is_empty()
@@ -572,13 +627,13 @@ impl MiddlewareStack {
         }
     }
 
-    pub(crate) fn route_message(
+    pub(crate) async fn route_message(
         &self,
         context: &mut MessageRouteContext<'_>,
     ) -> Result<SubmissionResult> {
         let entry = self.message_handler_required()?;
         context.queued_messages.scope(entry.name());
-        entry.route_message(context)
+        entry.route_message(context).await
     }
 
     pub(crate) async fn active_command(
@@ -900,7 +955,7 @@ impl MiddlewareStack {
             .find(|entry| entry.name() == middleware)
             .ok_or_else(|| Error::Unknown(format!("middleware `{middleware}`")))?;
         let declared = entry
-            .frontend()
+            .frontend(context.session_id)
             .commands
             .into_iter()
             .any(|command| command.name == context.command);

@@ -514,7 +514,6 @@ async fn route_change_omits_private_reasoning_but_keeps_visible_history_and_tool
         .unwrap()
         .unwrap();
     assert_eq!(saved.context_epoch, 1);
-    assert_eq!(saved.compaction_count, 0);
     assert_eq!(saved.context_model_route.as_deref(), Some("destination"));
     let journal = checkpoints
         .transcript_page(

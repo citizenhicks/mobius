@@ -2,7 +2,9 @@ pub(super) use crate::frontend::response::wait_ready;
 use std::io;
 use std::path::PathBuf;
 
-use mobius::protocol::{EventMsg, FrontendWidgetContent, MAX_MESSAGE_BYTES, Op, Submission};
+use mobius::protocol::{
+    EventMsg, FrontendWidgetContent, MAX_CAPABILITY_INPUT_BYTES, MAX_MESSAGE_BYTES, Op, Submission,
+};
 use mobius::{Error, Result};
 use mobius_gateway::client::{GatewayClient, GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
@@ -24,7 +26,9 @@ use super::state::{ActionInput, CapabilityOverlay, DashboardFocus, DashboardStat
 use super::view::{dashboard_areas, render};
 use crate::frontend::bots;
 use crate::frontend::setup::{self, SetupMode};
-use crate::frontend::terminal::{INPUT_POLL, MAX_INPUT_BATCH, poll_event, terminal_text};
+use crate::frontend::terminal::{
+    INPUT_POLL, MAX_INPUT_BATCH, poll_event, terminal_text, truncate_bytes,
+};
 use crate::gateway_error;
 use mobius_gateway::gateway_accounts::{configured_token, dashboard_gateway_endpoint};
 
@@ -289,11 +293,7 @@ pub(in crate::frontend) fn move_overlay_selection(overlay: &mut CapabilityOverla
     let option_count = overlay
         .open_widget()
         .and_then(|widget| widget.content.as_ref())
-        .and_then(|content| match content {
-            FrontendWidgetContent::Picker { options, .. } => Some(options.len()),
-            FrontendWidgetContent::ActionList { items, .. } => Some(items.len()),
-            FrontendWidgetContent::Blocks { .. } => None,
-        });
+        .map(|FrontendWidgetContent::ActionList { items, .. }| items.len());
     if let Some(option_count) = option_count {
         overlay.option_list.select(moved_index(
             overlay.option_list.selected(),
@@ -314,11 +314,7 @@ pub(in crate::frontend) fn select_overlay_edge(overlay: &mut CapabilityOverlay, 
     let option_count = overlay
         .open_widget()
         .and_then(|widget| widget.content.as_ref())
-        .and_then(|content| match content {
-            FrontendWidgetContent::Picker { options, .. } => Some(options.len()),
-            FrontendWidgetContent::ActionList { items, .. } => Some(items.len()),
-            FrontendWidgetContent::Blocks { .. } => None,
-        });
+        .map(|FrontendWidgetContent::ActionList { items, .. }| items.len());
     let (list, length) = if let Some(option_count) = option_count {
         (&mut overlay.option_list, option_count)
     } else if overlay.open.is_none() {
@@ -337,9 +333,6 @@ pub(in crate::frontend) fn select_overlay_edge(overlay: &mut CapabilityOverlay, 
 pub(in crate::frontend) fn activate_overlay(overlay: &mut CapabilityOverlay) -> Option<Op> {
     if let Some(widget) = overlay.open_widget() {
         return match widget.content.as_ref() {
-            Some(FrontendWidgetContent::Picker { options, .. }) => options
-                .get(overlay.option_list.selected().unwrap_or_default())
-                .map(|option| option.op.clone()),
             Some(FrontendWidgetContent::ActionList { items, .. }) => items
                 .get(overlay.option_list.selected().unwrap_or_default())
                 .and_then(|item| item.actions.get(overlay.action_index))
@@ -391,7 +384,8 @@ pub(in crate::frontend) fn prepare_overlay_operation(
         } => rejection.as_str(),
         _ => return Some(op),
     };
-    let text = truncate_input(terminal_text(seed));
+    let mut text = terminal_text(seed);
+    truncate_bytes(&mut text, input_limit(&op));
     overlay.input = Some(ActionInput {
         cursor: text.len(),
         text,
@@ -479,20 +473,22 @@ pub(in crate::frontend) fn insert_overlay_input(
 }
 
 pub(super) fn insert_action_input(input: &mut ActionInput, value: &str) {
-    let value = terminal_text(value);
-    let available = MAX_MESSAGE_BYTES.saturating_sub(input.text.len());
-    let value = truncate_to_bytes(&value, available);
-    input.text.insert_str(input.cursor, value);
+    let mut value = terminal_text(value);
+    truncate_bytes(
+        &mut value,
+        input_limit(&input.op).saturating_sub(input.text.len()),
+    );
+    input.text.insert_str(input.cursor, &value);
     input.cursor += value.len();
 }
 
-pub(super) fn truncate_input(mut value: String) -> String {
-    value.truncate(truncate_to_bytes(&value, MAX_MESSAGE_BYTES).len());
-    value
-}
-
-pub(super) fn truncate_to_bytes(value: &str, limit: usize) -> &str {
-    &value[..value.floor_char_boundary(limit)]
+/// Terminal-local memory cap for the overlay editor; the gateway enforces the protocol limit.
+fn input_limit(op: &Op) -> usize {
+    if matches!(op, Op::CapabilityCommand { .. }) {
+        MAX_CAPABILITY_INPUT_BYTES
+    } else {
+        MAX_MESSAGE_BYTES
+    }
 }
 
 pub(super) fn previous_boundary(value: &str, cursor: usize) -> usize {

@@ -416,6 +416,8 @@ pub struct RuntimeContext {
     pub metadata: BTreeMap<String, Value>,
     /// The role.
     pub role: AgentRole,
+    /// Creates child agents from the root agent's configuration.
+    pub children: crate::agent::ChildAgents,
     /// The frontend.
     pub frontend: FrontendEventSink,
 }
@@ -658,7 +660,6 @@ pub struct ModelContext<'a> {
     pub(crate) delivered_once: &'a mut Receipts,
     pub(crate) transcript_delta: &'a mut Vec<Arc<Value>>,
     pub(crate) context_epoch: &'a mut u64,
-    pub(crate) compaction_count: &'a mut u64,
     pub(crate) rewrite_reasons: &'a mut Vec<ContextRewriteReason>,
     pub(crate) turn_stop: &'a mut Option<String>,
     pub(crate) queued_messages: Vec<DurableQueuedMessage>,
@@ -943,6 +944,12 @@ impl PreToolUseContext<'_> {
         self.call
     }
 
+    /// Returns whether the current call targets a tool that declares itself read-only.
+    #[must_use]
+    pub fn call_is_read_only(&self) -> bool {
+        self.tools.is_read_only(&self.call.name)
+    }
+
     /// Replaces the tool name and arguments while preserving the provider call ID.
     /// # Errors
     ///
@@ -1188,10 +1195,14 @@ pub(super) fn provisional_message_target(
 
 /// Mutable state exposed to the middleware preparing conversation messages.
 pub struct MessageRouteContext<'a> {
+    /// The checkpoints.
+    pub checkpoints: &'a dyn CheckpointStore,
+    /// The session identifier.
+    pub session_id: &'a str,
     /// The submission identifier.
     pub submission_id: &'a str,
-    /// The message.
-    pub message: &'a MessageSubmission,
+    /// The message; the preparer may move its contents into the queue.
+    pub message: &'a mut MessageSubmission,
     /// The active turn identifier.
     pub active_turn_id: Option<&'a str>,
     /// The queued messages.

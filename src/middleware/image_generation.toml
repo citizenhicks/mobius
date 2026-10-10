@@ -1,7 +1,6 @@
 default_enabled = false
 manifest_label = "Image generation"
 manifest_description = "Create images with any configured image model"
-render_pending = "Generating image"
 render_ready = "Image ready"
 render_failed = "Image generation failed"
 # Image-generation policy and the tool contract belong to this middleware.
@@ -16,28 +15,29 @@ max_bytes = 4096
 type = "select"
 unset_label = "First available"
 
-[tool]
+[generate_image]
+title = "Generating image"
+
+[generate_image.tool]
 name = "generate_image"
 description = "Generate one image from a prompt, optionally using images already attached to this chat as references. The image is automatically delivered to the user as a chat artifact; do not resend it with `send_artifact`."
 
-[tool.parameters]
+[generate_image.tool.parameters]
 type = "object"
 required = ["prompt"]
 additionalProperties = false
 
-[tool.parameters.properties.prompt]
+[generate_image.tool.parameters.properties.prompt]
 type = "string"
 minLength = 1
-maxLength = 32000
 description = "Describe the image to create or how to edit the reference images."
 
-[tool.parameters.properties.image_aspect]
+[generate_image.tool.parameters.properties.image_aspect]
 type = "string"
 enum = ["square", "landscape", "portrait"]
 description = "Choose the canvas shape for the image. Omit for square (1:1)."
 
-[tool.parameters.properties.reference_file_ids]
+[generate_image.tool.parameters.properties.reference_file_ids]
 type = "array"
-maxItems = 4
 items = { type = "string" }
 description = "Optional authorized image file IDs from this chat."

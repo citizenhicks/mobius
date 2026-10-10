@@ -16,10 +16,10 @@ const MAX_SESSION_TITLE_BYTES: usize = 256;
 const MAX_SESSION_PREVIEW_BYTES: usize = 512;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct SessionMetadata {
     pub(super) title: Option<String>,
     pub(super) pinned: bool,
-    pub(super) hidden: bool,
 }
 
 pub(super) type SessionCatalogMetadata = BTreeMap<String, SessionMetadata>;
@@ -189,7 +189,7 @@ impl SessionCatalog {
                 .sessions
                 .retain(|record| record.session_id != summary.session_id);
             let metadata = snapshot.metadata.get(&summary.session_id);
-            if summary.catalog_visible && !metadata.is_some_and(|item| item.hidden) {
+            if summary.catalog_visible {
                 snapshot
                     .sessions
                     .push(session_record(summary, metadata, activity));
@@ -245,11 +245,7 @@ async fn filtered_session_catalog(
             CatalogFilter::Visible => {
                 let persistent = session.session_id
                     == crate::bots::conversation_session_id(&session.session_context.owner_id);
-                let listed = session.catalog_visible
-                    && !metadata
-                        .get(&session.session_id)
-                        .is_some_and(|item| item.hidden);
-                if listed && (persistent || available > 0) {
+                if session.catalog_visible && (persistent || available > 0) {
                     if !persistent {
                         available -= 1;
                     }

@@ -27,7 +27,7 @@ use self::view::bounded_terminal_text;
 use self::view::initial_widgets;
 use super::catalog::{GatewayAction, MenuItem, UiCatalog};
 use super::dashboard::CapabilityOverlay;
-use super::terminal::terminal_text;
+use super::terminal::{terminal_text, truncate_bytes};
 use mobius::protocol::ActiveMessageDelivery;
 #[cfg(test)]
 use mobius::protocol::EventMsg;
@@ -956,10 +956,6 @@ fn bounded_title(value: &str) -> String {
     let mut value = terminal_text(value).replace(['\n', '\t'], " ");
     truncate_bytes(&mut value, MAX_TITLE_BYTES);
     value
-}
-
-fn truncate_bytes(value: &mut String, limit: usize) {
-    value.truncate(value.floor_char_boundary(limit));
 }
 
 #[cfg(test)]

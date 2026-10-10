@@ -121,7 +121,7 @@ pub(super) async fn require_uploads_enabled<'a>(
 pub(super) fn uploads_disabled_rejection() -> Rejection {
     Rejection::new(
         "uploads_disabled",
-        "enable the optional attachments middleware for this chat first",
+        "turn on file attachments for this chat first",
     )
 }
 

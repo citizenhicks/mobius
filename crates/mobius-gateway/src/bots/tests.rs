@@ -27,7 +27,7 @@ fn fixture() -> (tempfile::TempDir, BotStore, PathBuf) {
 }
 
 #[test]
-fn sparse_saved_bot_projects_integer_defaults_without_rewriting_storage() {
+fn sparse_saved_bot_is_rejected_on_open() {
     let (_root, store, _workspace) = fixture();
     let mut state = store.fresh_state().expect("saved catalog");
     let middleware = &mut state.bots[0].config.config.middleware;
@@ -44,35 +44,12 @@ fn sparse_saved_bot_projects_integer_defaults_without_rewriting_storage() {
     store
         .save(&state)
         .expect("persist sparse existing configuration");
-    let before = store.storage.load_catalog().expect("raw stored catalog");
-    let reopened = BotStore::open(&store.state_dir).expect("reopen sparse catalog");
-    let bot = reopened.bots().expect("frontend records").remove(0);
-    for id in ["max_depth", "max_concurrency", "max_agents"] {
-        assert!(
-            bot.config
-                .config
-                .middleware
-                .setting("subagents", id)
-                .is_none()
-        );
-    }
-    let defaults = crate::middleware_manifest::default_config();
-    for (owner, id) in [
-        ("sandbox", "tool_output_bytes"),
-        ("sandbox", "background_commands"),
-        ("compaction", "reserve_tokens"),
-    ] {
-        assert_eq!(
-            bot.config.config.middleware.setting(owner, id),
-            defaults.setting(owner, id)
-        );
-    }
-    assert_eq!(
-        reopened
-            .storage
-            .load_catalog()
-            .expect("unchanged stored catalog"),
-        before
+    assert!(
+        BotStore::open(&store.state_dir)
+            .err()
+            .expect("sparse catalog must fail")
+            .to_string()
+            .contains("missing")
     );
 }
 

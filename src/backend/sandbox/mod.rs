@@ -177,7 +177,6 @@ pub static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
         description: text::DEFINITION.manifest_description.as_str(),
         required: true,
         default_enabled: true,
-        required_model_capability: None,
         settings: &SETTINGS,
     });
 
@@ -766,7 +765,7 @@ impl Middleware for Sandbox {
         MANIFEST.id
     }
 
-    fn frontend(&self) -> FrontendContribution {
+    fn frontend(&self, _session_id: &str) -> FrontendContribution {
         Sandbox::frontend(self)
     }
 

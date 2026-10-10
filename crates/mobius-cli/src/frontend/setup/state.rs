@@ -227,38 +227,12 @@ impl SetupState {
             .cloned();
     }
 
-    pub(super) fn selected_model_choice(&self) -> Option<&ModelChoice> {
-        if self.mode == SetupMode::BotModel {
-            self.bot_model_routes
-                .get(self.model)
-                .map(|(choice, _)| choice)
-        } else {
-            self.original_model_choice.as_ref()
-        }
-    }
-
     pub(super) fn disabled_by(&self, id: &str) -> Option<&str> {
-        if self.selected_model_choice().is_none()
-            && self
-                .features
-                .iter()
-                .any(|feature| feature.id == id && feature.required_model_capability.is_some())
-        {
-            return Some("no available model");
-        }
-        self.middleware
-            .disabled_by(&self.features, id, self.selected_model_choice())
+        self.middleware.disabled_by(&self.features, id)
     }
 
     fn reconcile_middleware(&mut self) {
-        let selected_model = if self.mode == SetupMode::BotModel {
-            self.bot_model_routes
-                .get(self.model)
-                .map(|(choice, _)| choice)
-        } else {
-            self.original_model_choice.as_ref()
-        };
-        self.middleware.reconcile(&self.features, selected_model);
+        self.middleware.reconcile(&self.features);
     }
 
     /// Fields the active provider actually offers, in tab order.
@@ -1121,14 +1095,12 @@ impl SetupState {
         };
         let provider = self.selected_provider(&current.provider)?;
         if self.mode == SetupMode::BotModel {
-            let (choice, _) = &self.bot_model_routes[self.model];
-            middleware.reconcile(&self.features, Some(choice));
+            middleware.reconcile(&self.features);
         }
         Ok(AgentComposition {
             provider,
             middleware,
             extensions,
-            realtime_voice: current.realtime_voice.clone(),
             system_prompt: current.system_prompt.clone(),
             max_model_steps: current.max_model_steps,
         })

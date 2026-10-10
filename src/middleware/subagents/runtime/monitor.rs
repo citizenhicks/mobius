@@ -14,7 +14,6 @@ use crate::Error;
 use crate::Result;
 use crate::agent::AgentEvents;
 use crate::protocol::EventMsg;
-use crate::protocol::MessageAuthor;
 use crate::protocol::Op;
 use crate::protocol::ReviewDecision;
 use crate::truncate_utf8;
@@ -50,7 +49,7 @@ impl Shared {
         .await
     }
 
-    async fn message(&self, root_id: &str, path: &str, message: String) -> Result<()> {
+    pub(super) async fn message(&self, root_id: &str, path: &str, message: String) -> Result<()> {
         self.mutate_root(root_id, |root| {
             let entry = root
                 .tree
@@ -63,6 +62,7 @@ impl Shared {
         .await
     }
 
+    /// Records a terminal status; `None` reports the agent's last recorded message.
     pub(super) async fn finished(
         &self,
         root_id: &str,
@@ -82,6 +82,7 @@ impl Shared {
                     if !entry.status.is_active() {
                         return Ok(Stage::Unchanged(()));
                     }
+                    let message = message.or_else(|| entry.last_message.take());
                     entry.status = status;
                     entry.active_turn_id = None;
                     entry.last_message.clone_from(&message);
@@ -92,10 +93,7 @@ impl Shared {
                         reports
                             .into_iter()
                             .filter(|report| message.as_deref() == Some(report.text.as_str()))
-                            .filter_map(|report| match report.author {
-                                MessageAuthor::Source { message_id, .. } => Some(message_id),
-                                MessageAuthor::User => None,
-                            })
+                            .map(|report| report.message_id)
                             .collect()
                     } else {
                         Vec::new()
@@ -131,21 +129,6 @@ impl Shared {
             self.changed.notify_waiters();
         }
         Ok(())
-    }
-
-    async fn fail_monitor(
-        &self,
-        root_id: &str,
-        path: &str,
-        error: impl std::fmt::Display,
-    ) -> Result<()> {
-        self.finished(
-            root_id,
-            path,
-            AgentStatus::Errored,
-            Some(format!("subagent monitor failed: {error}")),
-        )
-        .await
     }
 
     async fn active(&self, root_id: &str, path: &str) -> bool {
@@ -185,7 +168,7 @@ fn push_finished(
 
 pub(in crate::middleware::subagents) async fn monitor_agent(
     shared: Arc<Shared>,
-    root_id: String,
+    root_id: Arc<str>,
     path: String,
     mut events: AgentEvents,
     lifetime: super::ExecutionGuard,
@@ -204,13 +187,9 @@ async fn monitor_events(
     path: &str,
     events: &mut AgentEvents,
 ) -> Result<()> {
-    let mut last_message = None;
     while let Some(event) = events.recv().await {
         let update = match event.msg {
-            EventMsg::TurnStarted(turn) => {
-                last_message = None;
-                shared.turn_started(root_id, path, turn.turn_id).await
-            }
+            EventMsg::TurnStarted(turn) => shared.turn_started(root_id, path, turn.turn_id).await,
             EventMsg::AssistantMessage(message) => {
                 let message = message
                     .content
@@ -223,7 +202,6 @@ async fn monitor_events(
                 if message.is_empty() {
                     Ok(())
                 } else {
-                    last_message = Some(message.clone());
                     shared.message(root_id, path, message).await
                 }
             }
@@ -237,7 +215,10 @@ async fn monitor_events(
                         .submit(Op::ExecApproval {
                             id: request.id,
                             decision: ReviewDecision::Denied {
-                                rejection: "headless subagents cannot approve mutations".into(),
+                                rejection: super::super::text::DEFINITION
+                                    .approval_denied
+                                    .as_str()
+                                    .into(),
                             },
                         })
                         .map(|_| ())
@@ -246,7 +227,7 @@ async fn monitor_events(
             }
             EventMsg::TurnComplete(_) => {
                 return shared
-                    .finished(root_id, path, AgentStatus::Completed, last_message)
+                    .finished(root_id, path, AgentStatus::Completed, None)
                     .await;
             }
             EventMsg::TurnAborted(turn) => {
@@ -262,7 +243,14 @@ async fn monitor_events(
             _ => Ok(()),
         };
         if let Err(error) = update {
-            return shared.fail_monitor(root_id, path, error).await;
+            return shared
+                .finished(
+                    root_id,
+                    path,
+                    AgentStatus::Errored,
+                    Some(format!("subagent monitor failed: {error}")),
+                )
+                .await;
         }
     }
     if shared.active(root_id, path).await {

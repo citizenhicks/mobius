@@ -185,7 +185,6 @@ async fn checkpoint_preparation_retries_are_bounded_and_interruptible() {
                 .await
                 .expect("load")
                 .expect("saved checkpoint");
-            assert_eq!(saved.compaction_count, 0);
             assert_eq!(saved.context_epoch, 0);
             let input = serde_json::to_string(&saved.context).expect("context");
             assert!(input.contains("original task"));
@@ -362,7 +361,6 @@ async fn invalid_checkpoint_preserves_original_and_pending_input() {
     assert!(input.contains("pending request"));
     assert!(input.contains("first result"));
     assert_eq!(saved.context_epoch, 0);
-    assert_eq!(saved.compaction_count, 0);
 }
 
 #[tokio::test]
@@ -458,7 +456,6 @@ async fn smaller_model_uses_old_model_for_notes_without_answering_new_input() {
                 .expect("load")
                 .expect("saved");
             assert_eq!(saved.context_epoch, 0);
-            assert_eq!(saved.compaction_count, 0);
             assert_eq!(saved.context_model_route.as_deref(), Some("large"));
             let original = serde_json::to_string(&saved.context).expect("preserved context");
             assert!(original.contains("large historical request"));

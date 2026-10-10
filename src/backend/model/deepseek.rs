@@ -32,6 +32,7 @@ pub(super) fn provider() -> ProviderDefinition {
 }
 
 fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
+    let image_input = CATALOG.image_input_models.contains(&config.model);
     let tool_discovery = config
         .tool_discovery
         .unwrap_or_else(|| provider().tool_discovery(&config.model, config.base_url.as_deref()));
@@ -48,7 +49,7 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
     )?
     .with_tool_discovery(tool_discovery)
     .with_service_tier(config.service_tier)
-    .without_image_input()
+    .with_image_input(image_input)
     .with_image_api(None);
     let provider = match config.reasoning_effort {
         Some(effort) => provider.with_reasoning_effort(effort)?,
@@ -85,6 +86,47 @@ mod tests {
                 })
                 .expect("advertised web search mode builds");
         }
+    }
+
+    #[test]
+    fn image_input_is_enabled_only_for_catalogued_vision_models() {
+        let definition = provider();
+        for base_url in [MANIFEST.base_url.as_str(), "https://custom.example/v1"] {
+            for (id, supports_images) in [
+                ("deepseek-flash", true),
+                ("deepseek-v4-pro", false),
+                ("custom-model", false),
+            ] {
+                let model = definition
+                    .build(ProviderBuildConfig {
+                        capability: None,
+                        tool_discovery: None,
+                        credential: ProviderCredential::ApiKey("test-key".into()),
+                        model: id.into(),
+                        base_url: Some(base_url.into()),
+                        reasoning_effort: None,
+                        service_tier: None,
+                        web_search: HostedWebSearch::Off,
+                        http: reqwest::Client::new(),
+                        transport: crate::backend::model::ModelTransportSettings::default(),
+                    })
+                    .expect("build provider");
+                assert_eq!(model.supports_image_input(), supports_images, "{id}");
+                assert_eq!(model.supports_tool_image_input(), supports_images, "{id}");
+            }
+        }
+    }
+
+    #[test]
+    fn vision_catalog_rejects_unknown_and_duplicate_model_ids() {
+        let mut catalog: super::super::provider::ModelCatalog =
+            toml::from_str(include_str!("deepseek.toml")).expect("catalog");
+        catalog.validate().expect("valid catalog");
+        catalog.image_input_models.push("unknown-model".into());
+        assert!(catalog.validate().is_err());
+        catalog.image_input_models.pop();
+        catalog.image_input_models.push("deepseek-flash".into());
+        assert!(catalog.validate().is_err());
     }
 
     #[test]

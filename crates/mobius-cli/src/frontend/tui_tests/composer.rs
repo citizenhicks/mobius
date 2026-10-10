@@ -488,7 +488,6 @@ fn navigation_only_capability_has_a_popup_surface() {
     let catalog = UiCatalog::build(
         &[FrontendContribution {
             capability: "scratchpad".into(),
-            accepts_file_attachments: false,
             count: None,
             commands: vec![FrontendCommand {
                 name: "scratchpad".into(),
@@ -564,7 +563,6 @@ fn bare_capability_command_opens_all_of_its_popup_surfaces() {
     let catalog = UiCatalog::build(
         &[FrontendContribution {
             capability: "scratchpad".into(),
-            accepts_file_attachments: false,
             count: None,
             commands: vec![FrontendCommand {
                 name: "scratchpad".into(),

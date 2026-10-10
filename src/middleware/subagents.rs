@@ -1,6 +1,5 @@
 //! Durable asynchronous child-agent middleware.
 
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -24,7 +23,7 @@ use super::tools::Catalog;
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
-use crate::agent::{Agent, AgentRole};
+use crate::agent::{Agent, AgentRole, ChildAgents};
 use crate::backend::checkpoint::Checkpoint;
 use crate::backend::checkpoint::CheckpointStore;
 use crate::backend::model::internal_user_message;
@@ -64,51 +63,52 @@ mod text {
         #[serde(deserialize_with = "crate::middleware::manifest::deserialize_settings")]
         pub(super) settings: Vec<crate::middleware::manifest::MiddlewareSettingManifest>,
         pub(super) default_enabled: bool,
+        pub(super) approval_denied: String,
         pub(super) command_description: String,
-        pub(super) defaults_wait_ms: i64,
+        pub(super) defaults_wait_ms: u64,
+        pub(super) error_empty_text: String,
+        pub(super) error_fork_turns: String,
+        pub(super) error_task_name: String,
+        pub(super) error_title: String,
+        pub(super) fork_all: String,
+        pub(super) fork_last: String,
+        pub(super) fork_last_one: String,
+        pub(super) fork_none: String,
         pub(super) manifest_description: String,
         pub(super) manifest_label: String,
-        pub(super) prompt_default: String,
+        pub(super) prompt_child: String,
         pub(super) prompt_root: String,
-        pub(super) render_empty: String,
         pub(super) render_open: String,
+        pub(super) render_open_empty: String,
+        pub(super) status_title: String,
     }
     crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("subagents.toml"); }
 }
 const MIN_WAIT_MS: u64 = 10_000;
 const MAX_WAIT_MS: u64 = 120_000;
 
-fn default_wait_ms() -> u64 {
-    let wait = u64::try_from(text::DEFINITION.defaults_wait_ms)
-        .expect("bundled default wait must be positive");
+static DEFAULT_WAIT_MS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
+    let wait = text::DEFINITION.defaults_wait_ms;
     assert!((MIN_WAIT_MS..=MAX_WAIT_MS).contains(&wait));
     wait
-}
-/// Default maximum child-agent nesting depth.
-pub fn default_max_depth() -> u8 {
-    u8::try_from(super::manifest::integer_default(
-        &text::DEFINITION.settings,
-        "max_depth",
-    ))
-    .expect("validated default depth must fit")
-}
-/// Default number of concurrently active agents, including the root.
-pub fn default_max_concurrency() -> usize {
-    usize::try_from(super::manifest::integer_default(
-        &text::DEFINITION.settings,
-        "max_concurrency",
-    ))
-    .expect("validated default concurrency must fit")
-}
-/// Default number of retained agents, including the root.
-pub fn default_max_agents() -> usize {
-    usize::try_from(super::manifest::integer_default(
-        &text::DEFINITION.settings,
-        "max_agents",
-    ))
-    .expect("validated default agent count must fit")
+});
+
+#[derive(Clone, Copy)]
+enum Command {
+    Open,
 }
 
+impl Command {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "subagents",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        (value == Self::Open.as_str()).then_some(Self::Open)
+    }
+}
 /// Trusted operator ceilings for the per-Bot subagent settings.
 /// These govern resource policy, while Rust's integer representation remains a safety bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,7 +211,12 @@ impl SubagentCeilings {
     /// Validates a Bot's configured limits against trusted operator ceilings.
     /// # Errors
     /// Returns an error for a limit above the ceilings or an invalid tree relationship.
-    pub fn validate(self, max_depth: u8, max_concurrency: usize, max_agents: usize) -> Result<()> {
+    pub fn limits(
+        self,
+        max_depth: u8,
+        max_concurrency: usize,
+        max_agents: usize,
+    ) -> Result<SubagentLimits> {
         if max_depth == 0 || max_depth > self.max_depth {
             return Err(Error::Config(format!(
                 "subagent max depth must be between 1 and {}",
@@ -230,40 +235,26 @@ impl SubagentCeilings {
                 self.max_agents
             )));
         }
-        Ok(())
+        Ok(SubagentLimits {
+            max_depth,
+            max_concurrency,
+            max_agents,
+        })
     }
 }
 
-/// Validates subagent limits against the owner-local default ceilings.
-/// # Errors
-/// Returns an error if limits exceed the default operator policy.
-pub fn validate_limits(max_depth: u8, max_concurrency: usize, max_agents: usize) -> Result<()> {
-    SubagentCeilings::default().validate(max_depth, max_concurrency, max_agents)
+/// A Bot's subagent limits, validated against operator ceilings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubagentLimits {
+    max_depth: u8,
+    max_concurrency: usize,
+    max_agents: usize,
 }
 
 super::manifest::middleware_manifest! {
 /// Configuration and presentation metadata for child-agent collaboration.
-    "subagents", text::DEFINITION, required: false, capability: None, settings: &text::DEFINITION.settings
+    "subagents", text::DEFINITION, required: false, settings: &text::DEFINITION.settings
 }
-
-/// Child-agent parameters owned by the subagent capability.
-#[derive(Clone)]
-pub struct SubagentLaunch {
-    /// The session identifier.
-    pub session_id: String,
-    /// The model.
-    pub model: String,
-    /// The reasoning effort.
-    pub reasoning_effort: Option<String>,
-    /// The metadata.
-    pub metadata: BTreeMap<String, Value>,
-    /// The role.
-    pub role: AgentRole,
-}
-
-/// Creates one child agent for this capability.
-pub type SubagentLauncher =
-    Arc<dyn Fn(SubagentLaunch) -> BoxFuture<'static, Result<Agent>> + Send + Sync>;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum ForkTurns {
@@ -276,15 +267,17 @@ enum ForkTurns {
 impl ForkTurns {
     fn label(self) -> String {
         match self {
-            Self::None => "No context".into(),
-            Self::All => "Full context".into(),
-            Self::Last(1) => "Last 1 turn".into(),
-            Self::Last(turns) => format!("Last {turns} turns"),
+            Self::None => text::DEFINITION.fork_none.as_str().into(),
+            Self::All => text::DEFINITION.fork_all.as_str().into(),
+            Self::Last(1) => text::DEFINITION.fork_last_one.as_str().into(),
+            Self::Last(turns) => text::DEFINITION
+                .fork_last
+                .replace("{turns}", &turns.to_string()),
         }
     }
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AgentIdentity {
     root_session_id: String,
@@ -311,51 +304,51 @@ impl AgentIdentity {
         Ok(serde::Deserialize::deserialize(value)?)
     }
 
-    fn metadata(&self, mut metadata: BTreeMap<String, Value>) -> BTreeMap<String, Value> {
-        metadata.insert(
-            IDENTITY_KEY.into(),
-            serde_json::json!({
-                "root_session_id": self.root_session_id,
-                "agent_path": self.agent_path,
-                "depth": self.depth,
-            }),
-        );
-        metadata
+    fn metadata(&self, mut metadata: BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>> {
+        metadata.insert(IDENTITY_KEY.into(), serde_json::to_value(self)?);
+        Ok(metadata)
     }
 }
 
-#[derive(Clone)]
 struct AgentScope {
-    files: Option<crate::backend::session_files::SessionFileStore>,
+    files: Option<Arc<crate::backend::session_files::SessionFileStore>>,
     checkpoints: Arc<dyn CheckpointStore>,
-    launch_agent: SubagentLauncher,
+    children: ChildAgents,
     session_id: String,
-    root_session_id: String,
+    root_session_id: Arc<str>,
     agent_path: String,
     depth: u8,
     model: String,
-    metadata: BTreeMap<String, Value>,
 }
 
 impl AgentScope {
+    fn child_role(&self, parent_turn_id: String) -> AgentRole {
+        AgentRole::Subagent {
+            parent_session_id: self.session_id.clone(),
+            parent_turn_id,
+        }
+    }
+
     fn next_depth(&self) -> Result<u8> {
         self.depth.checked_add(1).ok_or_else(|| {
             Error::Config("subagent depth exceeds its integer representation".into())
         })
     }
 
-    fn new(runtime: &RuntimeContext, launch_agent: SubagentLauncher) -> Result<Self> {
+    fn new(
+        runtime: &RuntimeContext,
+        files: Option<Arc<crate::backend::session_files::SessionFileStore>>,
+    ) -> Result<Self> {
         let identity = AgentIdentity::read(&runtime.session_id, &runtime.metadata)?;
         Ok(Self {
-            files: None,
+            files,
             checkpoints: Arc::clone(&runtime.checkpoints),
-            launch_agent,
+            children: ChildAgents::clone(&runtime.children),
             session_id: runtime.session_id.clone(),
-            root_session_id: identity.root_session_id,
+            root_session_id: identity.root_session_id.into(),
             agent_path: identity.agent_path,
             depth: identity.depth,
             model: runtime.model_route.clone(),
-            metadata: runtime.metadata.clone(),
         })
     }
 
@@ -385,15 +378,15 @@ impl AgentScope {
         checkpoint.context_model_route = parent.context_model_route.or(parent.model_route);
         checkpoint.session_context = parent.session_context;
         let mut metadata = AgentIdentity {
-            root_session_id: self.root_session_id.clone(),
+            root_session_id: self.root_session_id.to_string(),
             agent_path,
             depth: self.next_depth()?,
         }
-        .metadata(self.metadata.clone());
+        .metadata(parent.metadata)?;
         metadata.insert(SPAWN_CONTEXT_KEY.into(), Value::String(turns.label()));
         checkpoint.metadata = metadata;
         crate::backend::session_files::grant_context(
-            self.files.as_ref(),
+            self.files.as_deref(),
             &self.session_id,
             &session_id,
             &checkpoint.context,
@@ -402,17 +395,15 @@ impl AgentScope {
         self.checkpoints
             .fork(&self.session_id, parent_sequence, &checkpoint)
             .await?;
-        (self.launch_agent)(SubagentLaunch {
-            role: AgentRole::Subagent {
-                parent_session_id: self.session_id.clone(),
-                parent_turn_id,
-            },
-            session_id,
-            model,
-            reasoning_effort,
-            metadata: checkpoint.metadata,
-        })
-        .await
+        self.children
+            .create(
+                session_id,
+                checkpoint.metadata,
+                self.child_role(parent_turn_id),
+                &model,
+                reasoning_effort.as_deref(),
+            )
+            .await
     }
 
     async fn resume(
@@ -426,33 +417,29 @@ impl AgentScope {
         let checkpoint = self.checkpoints.load(&session_id).await?.ok_or_else(|| {
             Error::Checkpoint(format!("checkpoint for `{agent_path}` is missing"))
         })?;
-        (self.launch_agent)(SubagentLaunch {
-            role: AgentRole::Subagent {
-                parent_session_id: self.session_id.clone(),
-                parent_turn_id,
-            },
-            session_id,
-            model,
-            reasoning_effort: None,
-            metadata: AgentIdentity {
-                root_session_id: self.root_session_id.clone(),
-                agent_path,
-                depth,
-            }
-            .metadata(checkpoint.metadata),
-        })
-        .await
+        let metadata = AgentIdentity {
+            root_session_id: self.root_session_id.to_string(),
+            agent_path,
+            depth,
+        }
+        .metadata(checkpoint.metadata)?;
+        self.children
+            .create(
+                session_id,
+                metadata,
+                self.child_role(parent_turn_id),
+                &model,
+                None,
+            )
+            .await
     }
 }
 
 /// Contributes asynchronous collaboration tools.
 pub struct Subagents {
-    files: Option<crate::backend::session_files::SessionFileStore>,
+    files: Option<Arc<crate::backend::session_files::SessionFileStore>>,
     max_depth: u8,
-    launch_agent: SubagentLauncher,
-    default_model: Option<String>,
-    default_reasoning: Option<String>,
-    prompt: Cow<'static, str>,
+    default_model: Option<Arc<str>>,
     shared: Arc<Shared>,
 }
 
@@ -460,106 +447,40 @@ impl Subagents {
     /// Injects durable media storage used for child observation grants.
     #[must_use]
     pub fn session_files(mut self, files: crate::backend::session_files::SessionFileStore) -> Self {
-        self.files = Some(files);
+        self.files = Some(Arc::new(files));
         self
     }
 
-    /// Creates a child-agent capability with hard depth, concurrency, and agent limits.
+    /// Creates a child-agent capability with validated depth, concurrency, and agent limits.
     ///
-    /// `max_concurrency` counts active agents and `max_agents` counts retained agents;
+    /// Concurrency counts active agents and the agent limit counts retained agents;
     /// both include the root.
-    /// # Errors
-    ///
-    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
-    pub fn new(
-        max_depth: u8,
-        max_concurrency: usize,
-        max_agents: usize,
-        launch_agent: SubagentLauncher,
-    ) -> Result<Self> {
-        Self::new_with_ceilings(
-            SubagentCeilings::default(),
-            max_depth,
-            max_concurrency,
-            max_agents,
-            launch_agent,
-        )
-    }
-
-    /// Creates a subagent capability under trusted operator ceilings.
-    /// # Errors
-    /// Returns an error if the requested Bot limits exceed the operator policy.
-    pub fn new_with_ceilings(
-        ceilings: SubagentCeilings,
-        max_depth: u8,
-        max_concurrency: usize,
-        max_agents: usize,
-        launch_agent: SubagentLauncher,
-    ) -> Result<Self> {
-        ceilings.validate(max_depth, max_concurrency, max_agents)?;
-        Ok(Self {
-            max_depth,
+    #[must_use]
+    pub fn new(limits: SubagentLimits) -> Self {
+        Self {
+            max_depth: limits.max_depth,
             files: None,
-            launch_agent,
             default_model: None,
-            default_reasoning: None,
-            prompt: Cow::Borrowed(text::DEFINITION.prompt_default.as_str()),
-            shared: Arc::new(Shared::new(max_concurrency, max_agents)),
-        })
-    }
-
-    /// Reports whether this root session has a pending or running child agent.
-    /// # Errors
-    ///
-    /// Returns an error if validation or an operation required by this function fails.
-    pub async fn has_active_children(&self, root_session_id: &str) -> Result<bool> {
-        self.shared.has_active_children(root_session_id).await
+            shared: Arc::new(Shared::new(limits.max_concurrency, limits.max_agents)),
+        }
     }
 
     /// Selects a registered provider/model route for children by default.
     #[must_use]
     pub fn default_model(mut self, model: impl Into<String>) -> Self {
-        self.default_model = Some(model.into());
+        self.default_model = Some(Arc::from(model.into()));
         self
-    }
-
-    /// Selects a reasoning effort for children by default.
-    /// # Errors
-    ///
-    /// Returns an error if validation or an operation required by this function fails.
-    pub fn default_reasoning(mut self, reasoning: impl Into<String>) -> Result<Self> {
-        let reasoning = reasoning.into();
-        if reasoning.trim().is_empty() {
-            return Err(Error::Config(
-                "subagent reasoning effort cannot be empty".into(),
-            ));
-        }
-        self.default_reasoning = Some(reasoning);
-        Ok(self)
-    }
-
-    /// Overrides the instruction given to child agents.
-    /// # Errors
-    ///
-    /// Returns an error if validation or an operation required by this function fails.
-    pub fn prompt(mut self, prompt: impl Into<String>) -> Result<Self> {
-        let prompt = prompt.into();
-        if prompt.trim().is_empty() {
-            return Err(Error::Config("subagent prompt cannot be empty".into()));
-        }
-        self.prompt = Cow::Owned(prompt);
-        Ok(self)
     }
 
     fn section(&self, identity: &AgentIdentity) -> PromptSection {
         if identity.depth == 0 {
             PromptSection::new(text::DEFINITION.prompt_root.as_str())
         } else {
-            PromptSection::new(format!(
-                "You are `{}`, a child agent.\n{}",
-                identity.agent_path,
-                self.prompt.trim()
-            ))
+            PromptSection::new(
+                text::DEFINITION
+                    .prompt_child
+                    .replace("{path}", &identity.agent_path),
+            )
         }
     }
 
@@ -583,21 +504,14 @@ impl Subagents {
             .shared
             .resume_options(&identity.root_session_id)
             .await?;
-        if options.is_empty() {
-            return Ok(MiddlewareCommandOutput::events(vec![
-                FrontendEvent::Picker {
-                    title: format!(
-                        "{} · {}",
-                        text::DEFINITION.render_open.as_str(),
-                        text::DEFINITION.render_empty.as_str()
-                    ),
-                    options,
-                },
-            ]));
-        }
+        let title = if options.is_empty() {
+            &text::DEFINITION.render_open_empty
+        } else {
+            &text::DEFINITION.render_open
+        };
         Ok(MiddlewareCommandOutput::events(vec![
             FrontendEvent::Picker {
-                title: text::DEFINITION.render_open.clone(),
+                title: title.as_str().into(),
                 options,
             },
         ]))
@@ -641,7 +555,7 @@ impl Subagents {
             .map(|before_sequence| -> Result<Op> {
                 Ok(Op::command(
                     MANIFEST.id,
-                    "subagents",
+                    Command::Open.as_str(),
                     serde_json::to_string(&PreviewCursor {
                         path: path.into(),
                         before_sequence,
@@ -686,13 +600,13 @@ impl Middleware for Subagents {
     }
 
     fn register(&self, catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
-        let mut scope = AgentScope::new(runtime, Arc::clone(&self.launch_agent))?;
-        scope.files = self.files.clone();
-        let scope = Arc::new(scope);
+        let scope = Arc::new(AgentScope::new(
+            runtime,
+            self.files.as_ref().map(Arc::clone),
+        )?);
         if scope.depth < self.max_depth {
             catalog.register(Arc::new(SpawnAgent {
-                default_model: self.default_model.clone(),
-                default_reasoning: self.default_reasoning.clone(),
+                default_model: self.default_model.as_ref().map(Arc::clone),
                 shared: Arc::clone(&self.shared),
                 scope: Arc::clone(&scope),
             }))?;
@@ -720,13 +634,12 @@ impl Middleware for Subagents {
         Ok(Some(self.section(&identity)))
     }
 
-    fn frontend(&self) -> FrontendContribution {
+    fn frontend(&self, _session_id: &str) -> FrontendContribution {
         FrontendContribution {
             capability: self.name().into(),
-            accepts_file_attachments: false,
             count: None,
             commands: vec![FrontendCommand {
-                name: "subagents".into(),
+                name: Command::Open.as_str().into(),
                 arguments: String::new(),
                 description: text::DEFINITION.command_description.clone(),
                 requires_idle: false,
@@ -760,8 +673,8 @@ impl Middleware for Subagents {
         context: MiddlewareCommandContext<'a>,
     ) -> BoxFuture<'a, Result<MiddlewareCommandOutput>> {
         Box::pin(async move {
-            match context.command {
-                "subagents" => {
+            match Command::parse(context.command) {
+                Some(Command::Open) => {
                     self.read_command(
                         context.session_id,
                         &context.checkpoint.metadata,
@@ -769,7 +682,10 @@ impl Middleware for Subagents {
                     )
                     .await
                 }
-                command => Err(Error::Unknown(format!("subagents command `{command}`"))),
+                None => Err(Error::Unknown(format!(
+                    "subagents command `{}`",
+                    context.command
+                ))),
             }
         })
     }
@@ -779,12 +695,12 @@ impl Middleware for Subagents {
         context: &'a mut ActiveCommandContext<'_>,
     ) -> BoxFuture<'a, Result<Option<SubmissionResult>>> {
         Box::pin(async move {
-            let output = match context.command {
-                "subagents" => {
+            let output = match Command::parse(context.command) {
+                Some(Command::Open) => {
                     self.read_command(context.session_id, context.metadata, context.arguments)
                         .await
                 }
-                _ => return Ok(None),
+                None => return Ok(None),
             };
             match output {
                 Ok(output) => {
@@ -832,6 +748,10 @@ impl Middleware for Subagents {
             }
             Ok(())
         })
+    }
+
+    fn has_background_work<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<bool>> {
+        Box::pin(self.shared.has_active_children(session_id))
     }
 
     fn session_end<'a>(&'a self, runtime: &'a RuntimeContext) -> BoxFuture<'a, Result<()>> {

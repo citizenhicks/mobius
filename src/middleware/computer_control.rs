@@ -7,9 +7,10 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::tools::{ApprovalRequirement, Catalog, Tool, ToolContext, render_tool_event};
+use super::tools::{ApprovalRequirement, Catalog, Tool, ToolContext, ToolSpec};
 use super::{Middleware, PromptSection, RuntimeContext, ToolExposureContext};
 use crate::backend::model::ToolDefinition;
+use crate::backend::sandbox::ApprovalPolicy;
 use crate::backend::sandbox::{MAX_BINARY_FILE_BYTES, NetworkAccess, SandboxMode, WorkerCommand};
 use crate::backend::session_files::SessionFileStore;
 use crate::protocol::{
@@ -25,42 +26,56 @@ struct Definition {
     manifest_label: String,
     manifest_description: String,
     prompt: String,
-    tool: ToolDefinition,
+    default_timeout_ms: u64,
+    computer_control: ToolSpec,
 }
 crate::embedded_config! { static DEFINITION: Definition = include_str!("computer_control.toml"); }
 
 super::manifest::middleware_manifest! {
 /// Optional computer control; deployment supplies the runtime and its documentation.
-    "computer_control", DEFINITION, required: false, capability: None, settings: &[]
+    "computer_control", DEFINITION, required: false, settings: &[]
 }
 
-/// Owns computer tools and observations; execution and approval remain in the sandbox.
-pub struct ComputerControl {
-    files: SessionFileStore,
+const MAX_CODE_BYTES: usize = 40_000;
+const MAX_TIMEOUT_MS: u64 = 120_000;
+
+/// Reports whether a sandbox approval policy lets computer control act without per-call prompts.
+#[must_use]
+pub fn supports_approval_policy(policy: ApprovalPolicy) -> bool {
+    !matches!(policy, ApprovalPolicy::Ask | ApprovalPolicy::AllowNetwork)
+}
+
+/// A trusted installed runtime: its worker launch command and the documentation it serves.
+pub struct ComputerRuntime {
     worker: WorkerCommand,
     documentation: PathBuf,
 }
 
-impl ComputerControl {
-    /// Configures a trusted installed runtime. It is started lazily by an authorized tool call.
+impl ComputerRuntime {
+    /// Bundles an installed worker with its documentation, independent of chat workspaces.
     /// # Errors
-    ///
-    /// Returns an error if configuration is invalid or a required resource cannot be initialized.
-    pub fn new(
-        files: SessionFileStore,
-        worker: WorkerCommand,
-        documentation: PathBuf,
-    ) -> Result<Self> {
+    /// Rejects relative executable or documentation paths.
+    pub fn new(worker: WorkerCommand, documentation: PathBuf) -> Result<Self> {
         if !worker.executable.is_absolute() || !documentation.is_absolute() {
             return Err(Error::Config(
                 "computer runtime and documentation paths must be absolute".into(),
             ));
         }
         Ok(Self {
-            files,
             worker,
             documentation,
         })
+    }
+}
+
+/// Owns computer tools and observations; execution and approval remain in the sandbox.
+pub struct ComputerControl(Arc<Evaluate>);
+
+impl ComputerControl {
+    /// Configures a trusted installed runtime. It is started lazily by an authorized tool call.
+    #[must_use]
+    pub fn new(files: SessionFileStore, runtime: Arc<ComputerRuntime>) -> Self {
+        Self(Arc::new(Evaluate { files, runtime }))
     }
 }
 
@@ -69,18 +84,14 @@ impl Middleware for ComputerControl {
         MANIFEST.id
     }
 
-    fn register(&self, catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
-        catalog.register(Arc::new(Evaluate {
-            files: self.files.clone(),
-            worker: self.worker.clone(),
-            session_id: runtime.session_id.clone(),
-        }))
+    fn register(&self, catalog: &mut Catalog, _: &RuntimeContext) -> Result<()> {
+        catalog.register(Arc::clone(&self.0) as Arc<dyn Tool>)
     }
 
     fn prompt_section(&self, _: &RuntimeContext) -> Result<Option<PromptSection>> {
         Ok(Some(PromptSection::new(DEFINITION.prompt.replace(
             "{documentation}",
-            &self.documentation.display().to_string(),
+            &self.0.runtime.documentation.display().to_string(),
         ))))
     }
 
@@ -90,13 +101,13 @@ impl Middleware for ComputerControl {
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             if !context.supports_tool_image_input() {
-                context.hide(&[DEFINITION.tool.name.as_str()]);
+                context.hide(&[DEFINITION.computer_control.tool.name.as_str()]);
             }
             Ok(())
         })
     }
 
-    fn frontend(&self) -> FrontendContribution {
+    fn frontend(&self, _session_id: &str) -> FrontendContribution {
         FrontendContribution {
             capability: MANIFEST.id.into(),
             ..Default::default()
@@ -104,18 +115,13 @@ impl Middleware for ComputerControl {
     }
 
     fn render(&self, event: &EventMsg, _: &str) -> Option<FrontendBlock> {
-        render_tool_event(
-            event,
-            |name| name == "computer_control",
-            |_, _| "Computer".into(),
-        )
+        DEFINITION.computer_control.render(event)
     }
 }
 
 struct Evaluate {
     files: SessionFileStore,
-    worker: WorkerCommand,
-    session_id: String,
+    runtime: Arc<ComputerRuntime>,
 }
 
 #[derive(Deserialize)]
@@ -128,8 +134,8 @@ struct EvaluateArgs {
     timeout_ms: u64,
 }
 
-const fn default_timeout() -> u64 {
-    30_000
+fn default_timeout() -> u64 {
+    DEFINITION.default_timeout_ms
 }
 
 #[derive(Deserialize)]
@@ -150,7 +156,13 @@ enum WorkerPart {
 
 impl Tool for Evaluate {
     fn definition(&self) -> ToolDefinition {
-        DEFINITION.tool.clone()
+        // Tool::definition requires an owned schema to decorate with execution bounds.
+        let mut tool = DEFINITION.computer_control.tool.clone();
+        let properties = &mut tool.parameters["properties"];
+        properties["code"]["maxLength"] = MAX_CODE_BYTES.into();
+        properties["timeout_ms"]["minimum"] = 1.into();
+        properties["timeout_ms"]["maximum"] = MAX_TIMEOUT_MS.into();
+        tool
     }
 
     fn approval(&self) -> ApprovalRequirement {
@@ -164,7 +176,8 @@ impl Tool for Evaluate {
     ) -> BoxFuture<'a, Result<ToolResponse>> {
         Box::pin(async move {
             let args: EvaluateArgs = serde_json::from_value(arguments)?;
-            if args.code.len() > 40_000 || args.timeout_ms == 0 || args.timeout_ms > 120_000 {
+            if args.code.len() > MAX_CODE_BYTES || !(1..=MAX_TIMEOUT_MS).contains(&args.timeout_ms)
+            {
                 return Err(Error::Tool(
                     "computer code or timeout exceeds its limit".into(),
                 ));
@@ -184,7 +197,7 @@ impl Tool for Evaluate {
             let output = context
                 .sandbox
                 .evaluate_worker(
-                    &self.worker,
+                    &self.runtime.worker,
                     &context.permissions,
                     &request,
                     Duration::from_millis(args.timeout_ms),
@@ -217,7 +230,7 @@ impl Tool for Evaluate {
                                 .await?;
                             self.files
                                 .ingest_screenshot(
-                                    &self.session_id,
+                                    context.permissions.session_id(),
                                     "screenshot.png".into(),
                                     bytes,
                                     detail,
@@ -253,17 +266,73 @@ mod tests {
         local::LocalSandbox,
     };
 
+    fn runtime(worker: WorkerCommand) -> Arc<ComputerRuntime> {
+        Arc::new(
+            ComputerRuntime::new(worker, "/unused/computer-control.md".into())
+                .expect("absolute runtime paths"),
+        )
+    }
+
+    #[test]
+    fn installed_runtime_cannot_resolve_from_the_chat_workspace() {
+        for (executable, documentation) in [
+            ("node", "/installed/computer-control.md"),
+            ("/installed/node", "computer-control.md"),
+        ] {
+            assert!(
+                ComputerRuntime::new(
+                    WorkerCommand {
+                        executable: executable.into(),
+                        arguments: Vec::new()
+                    },
+                    documentation.into(),
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn schema_bounds_and_heading_come_from_the_owner() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let control = ComputerControl::new(
+            SessionFileStore::new(workspace.path(), None),
+            runtime(WorkerCommand {
+                executable: "/unused".into(),
+                arguments: Vec::new(),
+            }),
+        );
+        let schema = control.0.definition().parameters;
+        assert_eq!(schema["properties"]["code"]["maxLength"], 40_000);
+        assert_eq!(schema["properties"]["timeout_ms"]["minimum"], 1);
+        assert_eq!(schema["properties"]["timeout_ms"]["maximum"], 120_000);
+        let block = control
+            .render(
+                &EventMsg::ToolCallBegin(crate::protocol::ToolCallBeginEvent {
+                    turn_id: "turn".into(),
+                    call_id: "call".into(),
+                    name: "computer_control".into(),
+                    arguments: serde_json::json!({"code": "await page()"}),
+                }),
+                "session",
+            )
+            .expect("computer block");
+        assert_eq!(
+            (block.title.as_str(), block.text.as_str()),
+            ("Computer", "")
+        );
+    }
+
     #[tokio::test]
     async fn failed_or_cancelled_evaluation_still_fails() {
         for timeout_ms in [1, 10_000] {
             let workspace = tempfile::tempdir().expect("workspace");
             let tool = Evaluate {
                 files: SessionFileStore::new(workspace.path(), None),
-                worker: WorkerCommand {
+                runtime: runtime(WorkerCommand {
                     executable: "/usr/bin/python3".into(),
                     arguments: vec!["-c".into(), "import time; time.sleep(30)".into()],
-                },
-                session_id: "session".into(),
+                }),
             };
             let sandbox = Arc::new(Sandbox::new(
                 Arc::new(LocalSandbox::new(workspace.path()).expect("sandbox")),
@@ -299,11 +368,10 @@ mod tests {
         let echo = "import sys,struct,json; n=struct.unpack('>I',sys.stdin.buffer.read(4))[0]; request=sys.stdin.buffer.read(n).decode(); data=json.dumps({'content':[{'type':'text','text':request}],'is_error':False,'devtools':'http://127.0.0.1:9222'}).encode(); sys.stdout.buffer.write(struct.pack('>I',len(data))+data); sys.stdout.buffer.flush()";
         let tool = Evaluate {
             files: SessionFileStore::new(state.path(), None),
-            worker: WorkerCommand {
+            runtime: runtime(WorkerCommand {
                 executable: "/usr/bin/python3".into(),
                 arguments: vec!["-c".into(), echo.into()],
-            },
-            session_id: "session".into(),
+            }),
         };
         use crate::backend::sandbox::{
             CommandMode, CommandOutput, CommandOutputSink, DesktopBrowserPage, SandboxBackend,
@@ -424,13 +492,12 @@ mod tests {
         });
         let tool = Evaluate {
             files: SessionFileStore::new(state.path(), None),
-            worker: WorkerCommand {
+            runtime: runtime(WorkerCommand {
                 executable: "/usr/bin/python3".into(),
                 arguments: vec!["-c".into(),
                     "import sys,struct; n=struct.unpack('>I',sys.stdin.buffer.read(4))[0]; sys.stdin.buffer.read(n); data=sys.argv[1].encode(); sys.stdout.buffer.write(struct.pack('>I',len(data))+data); sys.stdout.buffer.flush()".into(),
                     output.to_string()],
-            },
-            session_id: "session".into(),
+            }),
         };
         let sandbox = Arc::new(Sandbox::new(
             Arc::new(LocalSandbox::new(workspace.path()).expect("sandbox")),

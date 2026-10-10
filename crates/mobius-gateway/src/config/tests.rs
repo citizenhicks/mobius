@@ -30,6 +30,29 @@ fn gateway_config_is_machine_scoped() {
     assert!(serialized["usage"].get("sessions").is_none());
 }
 
+#[test]
+fn first_provider_materializes_operator_bounded_bot_defaults() {
+    let mut config = GatewayConfig::new(DEFAULT_LISTEN, None).expect("gateway config");
+    let ceilings = mobius::middleware::subagents::SubagentCeilings::new(1, 2, 3)
+        .expect("lower operator ceilings");
+    config.execution.subagent_ceilings = ceilings;
+    let config = config
+        .registering_provider(
+            AgentComposition::default().provider,
+            "Primary".into(),
+            Default::default(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("register first provider with lower ceilings");
+    let settings = &config.bot_defaults.expect("Bot defaults").config.middleware;
+
+    assert_eq!(
+        crate::middleware_manifest::subagent_limits(settings, ceilings).expect("bounded defaults"),
+        ceilings.limits(1, 2, 3).expect("operator limits")
+    );
+}
+
 #[tokio::test]
 async fn retired_hosted_search_does_not_prevent_saved_gateway_startup() {
     use mobius::backend::model::provider::HostedWebSearch;
@@ -1719,18 +1742,22 @@ fn config_rejects_an_empty_system_prompt() {
 }
 
 #[test]
-fn realtime_voice_route_persists_and_is_optional() {
-    let mut config = AgentComposition {
-        realtime_voice: Some("openai_codex::gpt-live-1-codex::cove".into()),
-        ..AgentComposition::default()
-    };
+fn voice_setting_persists_and_is_optional() {
+    let mut config = AgentComposition::default();
+    config.middleware.set_setting(
+        "voice",
+        "model",
+        Some(mobius::protocol::FrontendSettingValue::String(
+            "openai_codex::gpt-live-1-codex::cove".into(),
+        )),
+    );
     validate_agent_composition(&config).expect("voice route");
     let stored = toml::to_string(&config).expect("encode Bot configuration");
     assert_eq!(
         toml::from_str::<AgentComposition>(&stored).expect("decode"),
         config
     );
-    config.realtime_voice = None;
+    config.middleware.set_setting("voice", "model", None);
     validate_agent_composition(&config).expect("voice selection is optional");
 }
 
@@ -1769,9 +1796,8 @@ fn bot_compatibility_checks_policies_route_and_voice_without_credentials() {
         .config
         .clone();
     bot.middleware.set_enabled("image_generation", true);
-    bot.realtime_voice = Some("openai_socket::gpt-live-1::cedar".into());
     validate_bot_compatibility(&gateway, &bot, Default::default())
-        .expect("image generation and voice routes validate without credentials");
+        .expect("image generation validates without credentials");
 
     bot.middleware.set_setting(
         "compaction",
@@ -1782,12 +1808,18 @@ fn bot_compatibility_checks_policies_route_and_voice_without_credentials() {
     validate_bot_compatibility(&gateway, &bot, Default::default())
         .expect("model-requested compaction and tasks are independent");
 
-    bot.realtime_voice = Some(String::new());
+    bot.middleware.set_setting(
+        "voice",
+        "model",
+        Some(mobius::protocol::FrontendSettingValue::String(
+            "openai_socket::gpt-live-1::cedar".into(),
+        )),
+    );
     assert!(
         validate_bot_compatibility(&gateway, &bot, Default::default())
-            .expect_err("empty voice route")
+            .expect_err("unconfigured voice route")
             .to_string()
-            .contains("voice")
+            .contains("voice.model")
     );
 }
 
@@ -2822,13 +2854,18 @@ fn independent_media_catalogs_round_trip_without_chat_defaults() {
         assert!(choices.models.is_empty());
         assert!(choices.images.is_empty());
         if definition.supports(ModelCapability::RealtimeVoice) {
-            choices
-                .validate_voice(Some(&model_route_id(
-                    definition.id(),
-                    "operator-live-model",
-                    Some("operator-voice"),
-                )))
-                .unwrap();
+            let route = model_route_id(
+                definition.id(),
+                "operator-live-model",
+                Some("operator-voice"),
+            );
+            assert!(
+                choices
+                    .catalogs()
+                    .voices
+                    .iter()
+                    .any(|choice| choice.route == route)
+            );
         }
         let removed = decoded.removing_provider(definition.id()).unwrap();
         assert!(removed.configured_providers.is_empty());

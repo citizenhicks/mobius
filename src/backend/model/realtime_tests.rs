@@ -8,11 +8,15 @@ use tokio::net::{TcpListener, TcpStream};
 
 const SDP: &str = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n";
 
-fn request() -> RealtimeVoiceRequest {
+fn request(api: VoiceApi) -> RealtimeVoiceRequest {
+    let model = match api {
+        VoiceApi::OpenAi => &OPENAI_MODELS[0],
+        VoiceApi::Codex => &CODEX_MODELS[0],
+    };
     RealtimeVoiceRequest {
         session_id: "session-1".into(),
-        model: None,
-        voice: None,
+        model: model.id.clone(),
+        voice: model.variants[0].id.clone(),
         offer_sdp: SDP.into(),
         instructions: "Delegate requested work to the workspace.".into(),
     }
@@ -42,8 +46,15 @@ fn embedded_voice_metadata_preserves_models_voices_and_native_routes() {
             Some("quicksilver=v2"),
         )
     );
+    let voices = |models: &'static [super::super::provider::MediaModelPreset]| {
+        models
+            .iter()
+            .flat_map(|model| &model.variants)
+            .map(|voice| voice.id.as_str())
+            .collect::<Vec<_>>()
+    };
     assert_eq!(
-        VOICES.as_slice(),
+        voices(*OPENAI_MODELS),
         [
             "marin", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse",
             "cedar", "quartz", "ripple", "vesper", "willow", "stone", "gleam", "meridian", "bossa",
@@ -51,9 +62,9 @@ fn embedded_voice_metadata_preserves_models_voices_and_native_routes() {
         ]
     );
     assert_eq!(
-        CODEX_VOICES.as_slice(),
+        voices(*CODEX_MODELS),
         [
-            "cove", "juniper", "maple", "spruce", "ember", "vale", "breeze", "arbor", "sol",
+            "cove", "juniper", "maple", "spruce", "ember", "vale", "breeze", "arbor", "sol"
         ]
     );
 }
@@ -278,10 +289,13 @@ async fn start_returns_before_sideband_handshake_and_close_cancels_buffered_setu
         drop(sideband);
     });
 
-    let mut call = timeout(Duration::from_secs(2), transport.start(request()))
-        .await
-        .expect("SDP answer must not wait for the sideband handshake")
-        .unwrap();
+    let mut call = timeout(
+        Duration::from_secs(2),
+        transport.start(request(transport.api)),
+    )
+    .await
+    .expect("SDP answer must not wait for the sideband handshake")
+    .unwrap();
     ready.await.unwrap();
     call.commands
         .send(RealtimeVoiceCommand::Context {
@@ -325,7 +339,7 @@ async fn stalled_sideband_handshake_times_out_and_hangs_up() {
         drop(sideband);
     });
 
-    let mut call = transport.start(request()).await.unwrap();
+    let mut call = transport.start(request(transport.api)).await.unwrap();
     assert_eq!(call.voice, "marin");
     ready.await.unwrap();
     tokio::time::pause();
@@ -458,15 +472,13 @@ async fn live_and_codex_wire_contracts_delegate_once_reply_and_close() {
             assert!(headers.contains("authorization: bearer secret\r\n"));
             respond(&mut http, "200 OK", "", "").await;
         });
-        let mut selected = request();
-        selected.voice = Some(
-            if api == VoiceApi::Codex {
-                "maple"
-            } else {
-                "quartz"
-            }
-            .into(),
-        );
+        let mut selected = request(api);
+        selected.voice = if api == VoiceApi::Codex {
+            "maple"
+        } else {
+            "quartz"
+        }
+        .into();
         let mut call = transport.start(selected).await.unwrap();
         assert_eq!(call.answer_sdp, SDP);
         for id in ["h1", "h2"] {
@@ -695,7 +707,7 @@ async fn public_session_identity_is_validated_and_invalid_sdp_hangs_up() {
                 );
             }
         });
-        assert!(transport.start(request()).await.is_err());
+        assert!(transport.start(request(transport.api)).await.is_err());
         timeout(Duration::from_secs(2), server)
             .await
             .unwrap()
@@ -720,7 +732,7 @@ async fn unauthorized_refresh_is_reused_and_access_rejection_is_preserved() {
             .await;
         }
     });
-    let Err(Error::Provider(error)) = transport.start(request()).await else {
+    let Err(Error::Provider(error)) = transport.start(request(transport.api)).await else {
         panic!("expected provider denial")
     };
     assert_eq!(error.status(), Some(403));
@@ -783,7 +795,7 @@ async fn cancelled_calls_and_closed_consumers_wait_for_final_usage_before_discon
             assert!(headers.starts_with("post /api/native/v1/live/sessions/live_test/hangup "));
             respond(&mut http, "200 OK", "", "").await;
         });
-        let mut call = Some(transport.start(request()).await.unwrap());
+        let mut call = Some(transport.start(request(transport.api)).await.unwrap());
         assert!(matches!(
             timeout(Duration::from_secs(2), call.as_mut().unwrap().events.recv())
                 .await
@@ -864,7 +876,7 @@ async fn revoked_call_hangs_up_when_finalization_fails_with_a_full_event_queue()
         assert!(headers.starts_with("post /api/native/v1/live/sessions/live_test/hangup "));
         respond(&mut http, "200 OK", "", "").await;
     });
-    let mut call = transport.start(request()).await.unwrap();
+    let mut call = transport.start(request(transport.api)).await.unwrap();
     let (owner, revoked) = tokio::sync::watch::channel(());
     call.limit_credential(crate::backend::model::ModelCredentialLifetime {
         expires_at: None,
@@ -915,7 +927,7 @@ async fn dropping_call_during_sideband_setup_hangs_up_allocated_call() {
         respond(&mut hangup, "200 OK", "", "").await;
         drop(socket);
     });
-    let call = transport.start(request()).await.unwrap();
+    let call = transport.start(request(transport.api)).await.unwrap();
     timeout(Duration::from_secs(2), connected)
         .await
         .unwrap()
@@ -941,7 +953,7 @@ async fn foreign_call_locations_cannot_redirect_credentials() {
         )
         .await;
     });
-    let result = transport.start(request()).await;
+    let result = transport.start(request(transport.api)).await;
     assert!(matches!(result, Err(error) if error.to_string().contains("Location")));
     server.await.unwrap();
 }
@@ -975,7 +987,7 @@ async fn sideband_access_rejection_hangs_up_the_allocated_call() {
         assert!(headers.starts_with("post /api/native/v1/live/sessions/live_denied/hangup "));
         respond(&mut socket, "200 OK", "", "").await;
     });
-    let mut call = transport.start(request()).await.unwrap();
+    let mut call = transport.start(request(transport.api)).await.unwrap();
     let Some(Err(Error::Provider(error))) = timeout(Duration::from_secs(2), call.events.recv())
         .await
         .unwrap()
@@ -1021,42 +1033,34 @@ async fn voice_catalog_default_selection_and_invalid_ids_are_provider_owned() {
     for api in [VoiceApi::OpenAi, VoiceApi::Codex] {
         let (transport, listener) = transport(api).await;
         assert_eq!(
-            transport
-                .session(&request())
-                .expect("default voice session")["audio"]["output"]["voice"],
+            RealtimeTransport::session(&request(api))["audio"]["output"]["voice"],
             if api == VoiceApi::Codex {
                 "cove"
             } else {
                 "marin"
             }
         );
-        let mut selected = request();
-        selected.voice = Some(
-            if api == VoiceApi::Codex {
-                "maple"
-            } else {
-                "cedar"
-            }
-            .into(),
-        );
+        let mut selected = request(api);
+        selected.voice = if api == VoiceApi::Codex {
+            "maple"
+        } else {
+            "cedar"
+        }
+        .into();
         assert_eq!(
-            transport
-                .session(&selected)
-                .expect("selected voice session")["audio"]["output"]["voice"],
+            RealtimeTransport::session(&selected)["audio"]["output"]["voice"],
             if api == VoiceApi::Codex {
                 "maple"
             } else {
                 "cedar"
             }
         );
-        selected.model = Some("operator-live-model".into());
-        selected.voice = Some("operator-voice".into());
-        let configured = transport
-            .session(&selected)
-            .expect("operator catalog selection");
+        selected.model = "operator-live-model".into();
+        selected.voice = "operator-voice".into();
+        let configured = RealtimeTransport::session(&selected);
         assert_eq!(configured["model"], "operator-live-model");
         assert_eq!(configured["audio"]["output"]["voice"], "operator-voice");
-        selected.voice = Some(String::new());
+        selected.voice = String::new();
         assert!(
             matches!(transport.start(selected).await, Err(error) if error.to_string().contains("voice event identity"))
         );
@@ -1073,8 +1077,7 @@ async fn credential_deadline_hangs_up_a_retained_voice_call() {
     let (commands, _commands) = tokio::sync::mpsc::channel(1);
     let (_events, events) = tokio::sync::mpsc::channel(1);
     let (cancel, cancelled) = tokio::sync::oneshot::channel();
-    let mut call =
-        RealtimeVoiceCall::new(SDP.into(), "sol".into(), commands, events, cancel).unwrap();
+    let mut call = RealtimeVoiceCall::new(SDP.into(), "sol".into(), commands, events, cancel);
     call.limit_credential(crate::backend::model::ModelCredentialLifetime {
         expires_at: Some(std::time::SystemTime::now() + Duration::from_secs(60)),
         ..Default::default()
@@ -1089,8 +1092,7 @@ async fn credential_revocation_hangs_up_a_retained_voice_call() {
     let (_events, events) = tokio::sync::mpsc::channel(1);
     let (cancel, cancelled) = tokio::sync::oneshot::channel();
     let (owner, revoked) = tokio::sync::watch::channel(());
-    let mut call =
-        RealtimeVoiceCall::new(SDP.into(), "sol".into(), commands, events, cancel).unwrap();
+    let mut call = RealtimeVoiceCall::new(SDP.into(), "sol".into(), commands, events, cancel);
     call.limit_credential(crate::backend::model::ModelCredentialLifetime {
         expires_at: None,
         revoked: Some(revoked),
@@ -1132,7 +1134,7 @@ async fn sideband_event_backpressure_preserves_order_and_terminal_errors() {
         respond(&mut http, "200 OK", "", "").await;
     });
 
-    let mut call = transport.start(request()).await.unwrap();
+    let mut call = transport.start(request(transport.api)).await.unwrap();
     sent_signal.await.unwrap();
     timeout(Duration::from_secs(2), async {
         while call.events.capacity() != 0 {

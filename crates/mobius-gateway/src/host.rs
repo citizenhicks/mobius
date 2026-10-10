@@ -22,19 +22,19 @@ use routines::accept_routine_while_state_locked;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::sync::{Arc, Mutex as StdMutex};
 
 use chrono::Utc;
-use mobius::agent::{AgentConfig, AgentSender, ValidatedSubmission};
+use mobius::agent::{AgentSender, ValidatedSubmission};
 use mobius::backend::checkpoint::{
     ActiveExecution, CheckpointStore, EventPageRequest, ExecutionOutcome, ExecutionRecord,
     JournalEvent, SessionPageRequest, SessionSummary, event_turn_page, sqlite::SqliteCheckpoint,
 };
 use mobius::backend::model::ModelRouter;
 use mobius::backend::session_files::SessionFileStore;
-use mobius::middleware::scratchpad::ScratchpadStore;
+use mobius::middleware::FrontendExtensions;
+use mobius::middleware::scratchpad::Scratchpad;
 use mobius::middleware::sessions::LiveChats;
-use mobius::middleware::{FrontendExtensions, Middleware as _};
 use mobius::protocol::{
     Event, EventMsg, FrontendContribution, FrontendEvent, FrontendPreviewEvent, MessageAuthor,
     MessageSubmission, ModelStepContentPhase, Op, RenderedBlock, ReviewDecision, Submission,
@@ -81,8 +81,8 @@ use self::git::{
 };
 use self::profile::*;
 use self::replay::*;
+pub(crate) use self::session::HostHandle;
 use self::session::*;
-pub(crate) use self::session::{HostHandle, RealtimeModel};
 use self::ssh::{generate as generate_ssh_identity_on_host, identities as ssh_identities_on_host};
 
 const COMMAND_CAPACITY: usize = 128;
@@ -147,7 +147,7 @@ struct GatewayState {
     credentials: Arc<CredentialStore>,
     bots: Arc<BotStore>,
     checkpoints: Arc<dyn CheckpointStore>,
-    scratchpad: ScratchpadStore,
+    scratchpad: Arc<Scratchpad>,
     session_files: SessionFileStore,
     contributions: Vec<FrontendContribution>,
     // ponytail: one lock is enough for at most 32 tiny catalog writes.
@@ -176,7 +176,7 @@ struct GatewayReadySnapshot {
     credential_catalog_gate: Arc<Mutex<()>>,
     bots: Arc<BotStore>,
     checkpoints: Arc<dyn CheckpointStore>,
-    scratchpad: ScratchpadStore,
+    scratchpad: Arc<Scratchpad>,
     contributions: Vec<FrontendContribution>,
     activities: SessionActivities,
 }
@@ -288,13 +288,13 @@ impl GatewayHost {
         let discovery_gate = Arc::new(Mutex::new(()));
         let contributions = crate::assembly::run_discovery(Arc::clone(&discovery_gate), || {
             Ok(vec![
-                mobius::middleware::extensions::Extensions::discover_installed([])?.frontend(),
+                mobius::middleware::extensions::Extensions::installed_contribution()?,
             ])
         })
         .await?;
         let checkpoints: Arc<dyn CheckpointStore> =
             Arc::new(SqliteCheckpoint::new(store.checkpoints_path())?);
-        let scratchpad = ScratchpadStore::new(Arc::clone(&checkpoints));
+        let scratchpad = Arc::new(Scratchpad::new(Arc::clone(&checkpoints)));
         let session_files = SessionFileStore::new(store.state_dir(), None);
         let remote_desktop = Arc::new(RemoteDesktop::new(
             store.state_dir(),
@@ -517,16 +517,16 @@ impl GatewayHost {
         let (scratchpad, mut contributions) = self.contribution_state().await;
         contributions.push(
             scratchpad
-                .management_command(&operation)
+                .manage(&operation)
                 .await
                 .map_err(scratchpad_error)?,
         );
         Ok(contributions)
     }
 
-    async fn contribution_state(&self) -> (ScratchpadStore, Vec<FrontendContribution>) {
+    async fn contribution_state(&self) -> (Arc<Scratchpad>, Vec<FrontendContribution>) {
         let state = self.state.lock().await;
-        (state.scratchpad.clone(), state.contributions.clone())
+        (Arc::clone(&state.scratchpad), state.contributions.clone())
     }
 
     pub(crate) async fn sessions(&self) -> std::result::Result<Vec<SessionRecord>, Rejection> {
@@ -579,7 +579,7 @@ impl GatewayHost {
             )
         })?;
         let config = defaults.config;
-        validate_bot_config(&state, &config, None)?;
+        validate_bot_config(&state, &config)?;
         let bot = state
             .bots
             .create_bot(name, description, config)
@@ -601,7 +601,7 @@ impl GatewayHost {
             let _access = self.begin_mutation().await?;
             let state = self.state.lock().await;
             let previous = state.bots.bot(id).map_err(invalid_bot)?;
-            validate_bot_config(&state, &config, Some(&previous.config.config))?;
+            validate_bot_config(&state, &config)?;
             if previous.config.revision != expected_revision {
                 return Err(Rejection::new(
                     "revision_conflict",
@@ -626,7 +626,7 @@ impl GatewayHost {
         let _mutation = self.begin_mutation().await?;
         let state = self.state.lock().await;
         let previous = state.bots.bot(id).map_err(invalid_bot)?;
-        validate_bot_config(&state, &config, Some(&previous.config.config))?;
+        validate_bot_config(&state, &config)?;
         let prepared = if runtime_changed {
             let mut candidate = previous;
             candidate.description = identity.description.into();
@@ -779,7 +779,7 @@ impl GatewayHost {
             Arc::clone(&state.credentials),
             Arc::clone(&state.bots),
             Arc::clone(&state.checkpoints),
-            state.scratchpad.clone(),
+            Arc::clone(&state.scratchpad),
             state.session_files.clone(),
             Arc::clone(&state.session_mutations),
             Arc::clone(&state.discovery_gate),
@@ -1069,20 +1069,22 @@ impl GatewayHost {
 fn validate_bot_config(
     state: &GatewayState,
     config: &AgentComposition,
-    previous: Option<&AgentComposition>,
 ) -> std::result::Result<(), Rejection> {
-    let gateway = state.config()?;
+    validate_composition(state, &*state.config()?, config)
+}
+
+/// Checks a Bot or Bot-defaults composition against the gateway.
+fn validate_composition(
+    state: &GatewayState,
+    gateway: &GatewayConfig,
+    config: &AgentComposition,
+) -> std::result::Result<(), Rejection> {
     let models =
-        configured_model_choices(&gateway, &state.store, &state.credentials).map_err(internal)?;
-    crate::config::validate_bot_compatibility(&gateway, config, models.catalogs())
+        configured_model_choices(gateway, &state.store, &state.credentials).map_err(internal)?;
+    crate::config::validate_bot_compatibility(gateway, config, models.catalogs())
         .map_err(invalid_config)?;
-    if previous.is_none_or(|previous| previous.realtime_voice != config.realtime_voice) {
-        models
-            .validate_voice(config.realtime_voice.as_deref())
-            .map_err(invalid_config)?;
-    }
     ExtensionStore::new(&state.store)
-        .resolve(&gateway, &config.extensions)
+        .resolve(gateway, &config.extensions)
         .map(|_| ())
         .map_err(invalid_config)
 }
@@ -1128,7 +1130,7 @@ impl GatewayState {
             store: self.store.clone(),
             configured_providers: config.configured_providers.clone(),
             bot_defaults: config.bot_defaults.clone(),
-            subagent_ceilings: config.execution.subagent_ceilings().map_err(internal)?,
+            subagent_ceilings: config.execution.subagent_ceilings,
             extensions: crate::extensions::records(&config),
             computer_view: if !config.desktop_enabled {
                 crate::wire::ComputerView::Unavailable
@@ -1142,7 +1144,7 @@ impl GatewayState {
             credential_catalog_gate: Arc::clone(&self.credential_catalog_gate),
             bots: Arc::clone(&self.bots),
             checkpoints: Arc::clone(&self.checkpoints),
-            scratchpad: self.scratchpad.clone(),
+            scratchpad: Arc::clone(&self.scratchpad),
             contributions: self.contributions.clone(),
             activities: Arc::clone(&self.activities),
         })

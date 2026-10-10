@@ -25,6 +25,9 @@ function clipped(value, limit) {
 }
 let content = [], textBytes = 0, imageCount = 0, active = false, connection, page;
 let nativePending, nativeTask, desktopUsed = false;
+// Actions that can change what is on screen; reading the screen does not.
+const ACTING = new Set(['open_app','activate','press','set_value','click','move','drag','scroll','type_text','press_key']);
+let desktopActed = false, pageUsed = false, gated = false;
 function writeFrame(payload, flags = 0) {
   const header = Buffer.alloc(4);
   header.writeUInt32BE((payload.length | flags) >>> 0);
@@ -35,15 +38,16 @@ function nativeCall(action, args = {}) {
   if (!active) throw new Error('Desktop actions require an active evaluation');
   if (nativePending) throw new Error('Await each desktop action before starting another');
   desktopUsed = true;
+  if (ACTING.has(action)) desktopActed = true;
   nativeTask = hostCall({...args, action}).then(result => {
-    if (action === 'screenshot') {
+    if (action === 'screenshot' || action === 'zoom') {
       if (typeof result?.png !== 'string') throw new Error('Desktop screenshot is missing');
       const bytes = Buffer.from(result.png, 'base64');
       if (bytes.length === 0 || bytes.length > 50 * 1024 * 1024) throw new Error('Desktop screenshot exceeds its limit');
       const target = path.join(os.tmpdir(), 'desktop-' + crypto.randomUUID() + '.png');
       fs.writeFileSync(target, bytes, {flag:'wx'});
       delete result.png;
-      try { text('Mac screenshot: ' + JSON.stringify(result)); emitImage(target); }
+      try { text((action === 'zoom' ? 'Mac zoom: ' : 'Mac screenshot: ') + JSON.stringify(result)); emitImage(target); }
       finally { fs.unlinkSync(target); }
     }
     return result;
@@ -69,10 +73,11 @@ const desktop = Object.freeze({
   displays: () => nativeCall('displays'),
   openApp: bundleId => nativeCall('open_app', {bundleId}),
   activate: pid => nativeCall('activate', {pid}),
-  inspect: pid => nativeCall('inspect', {pid}),
+  inspect: (pid, options = {}) => nativeCall('inspect', {pid, ...options}),
   press: elementId => nativeCall('press', {elementId}),
   setValue: (elementId, text) => nativeCall('set_value', {elementId, text}),
   screenshot: displayId => nativeCall('screenshot', displayId === undefined ? {} : {displayId}),
+  zoom: (screenshotId, x, y, width, height) => nativeCall('zoom', {screenshotId, x, y, width, height}),
   click: (screenshotId, x, y, button = 'left', clicks = 1) => nativeCall('click', {screenshotId, x, y, button, clicks}),
   move: (screenshotId, x, y) => nativeCall('move', {screenshotId, x, y}),
   drag: (screenshotId, x, y, toX, toY) => nativeCall('drag', {screenshotId, x, y, toX, toY}),
@@ -103,7 +108,9 @@ function emitImage(source, detail = 'auto') {
 }
 // A loopback DevTools port so a möbius app on this machine can watch and share the page.
 let devtools;
-let requested, attached, observed = false;
+// The gateway's browser for this evaluation, bound on first page use so desktop-only code
+// never opens it; `requested` is that binding once made.
+let browserSpec, requested, attached, observed = false, frontPending = false;
 function browserKey(value) { return value && value.endpoint + '/' + value.target_id; }
 function validateDesktop(value) {
   if (!value || typeof value.endpoint !== 'string' || Object.keys(value).some(key => key !== 'endpoint' && key !== 'target_id')) throw new Error('invalid gateway browser page');
@@ -131,6 +138,12 @@ async function release() {
   await previous?.close().catch(() => {});
 }
 async function getPage() {
+  pageUsed = true;
+  if (browserSpec && !requested) {
+    requested = await hostCall({op:'begin_browser'});
+    validateDesktop(requested);
+    frontPending = requested.target_id != null;
+  }
   if (page && (browserKey(attached) !== browserKey(requested) || page.isClosed() || !connection?.isConnected())) await release();
   if (!page) {
     try {
@@ -173,7 +186,35 @@ async function getPage() {
       throw error;
     }
   }
+  if (frontPending) {
+    frontPending = false;
+    await page.bringToFront();
+  }
+  if (requested && !observed) await firstContact(page);
   return page;
+}
+// The gateway browser may hold the user's logins or changes: its first use only observes.
+async function firstContact(current) {
+  observed = gated = true;
+  text('Code after the first getPage() or screenshot() was not executed. The gateway browser may contain saved logins or changes made by the user. Inspect this fresh observation before acting.');
+  text('URL: ' + current.url());
+  text(await current.locator('body').ariaSnapshot());
+  emitScreenshot(await capturePage(current));
+  throw new Error('first browser observation');
+}
+// Acting is answered with its result: without an image already, end with a fresh one.
+async function observeResult() {
+  if (gated || imageCount > 0 || !(desktopActed || pageUsed)) return;
+  try {
+    if (desktopActed) {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      await nativeCall('screenshot');
+    } else if (page && !page.isClosed()) {
+      emitScreenshot(await capturePage(page, FAILURE_CAPTURE_MS));
+    }
+  } catch {
+    // ponytail: a missing closing screenshot only costs the model one explicit capture.
+  }
 }
 function capturePage(current, timeout) {
   return current.screenshot({fullPage:false, scale:'css', timeout});
@@ -258,29 +299,23 @@ async function main() {
     const browser = request.desktop ?? undefined;
     if (typeof request.code !== 'string' || Buffer.byteLength(request.code) > 40000 || Object.keys(request).some(key=>key !== 'code' && key !== 'desktop')) throw new Error('invalid evaluation');
     if (browser !== undefined) validateDesktop(browser);
-    content = []; textBytes = 0; imageCount = 0; active = true; desktopUsed = false; nativeTask = undefined; requested = browser;
+    content = []; textBytes = 0; imageCount = 0; active = true; desktopUsed = false; nativeTask = undefined;
+    browserSpec = browser; requested = undefined; frontPending = false;
+    desktopActed = pageUsed = gated = false;
     let is_error = false;
     try {
-      if (requested) {
-        requested = await hostCall({op:'begin_browser'});
-        validateDesktop(requested);
-        const current = await getPage();
-        if (requested.target_id != null) await current.bringToFront();
-        if (!observed) {
-          text('Submitted code was not executed. The gateway browser may contain saved logins or changes made by the user. Inspect this fresh observation before acting.');
-          text('URL: ' + current.url());
-          text(await current.locator('body').ariaSnapshot());
-          await screenshot();
-          observed = true;
-        } else {
-          await runCode(request.code);
-        }
-      } else {
-        await runCode(request.code);
+      // Saved page handles can bypass getPage(); renew their host lease before running code.
+      if (attached) {
+        if (browser) await getPage();
+        else await release();
       }
+      await runCode(request.code);
+      await observeResult();
     } catch (error) {
-      is_error = true;
-      await reportFailure(error, scope);
+      if (!gated) {
+        is_error = true;
+        await reportFailure(error, scope);
+      }
     } finally {
       await inspector.post('Runtime.releaseObjectGroup', {objectGroup:'evaluation'}).catch(()=>{});
     }
@@ -296,7 +331,8 @@ async function main() {
         if (value.exceptionDetails) await nativeTask.catch(()=>{});
         else await nativeTask;
       }
-      is_error = Boolean(value.exceptionDetails);
+      is_error = Boolean(value.exceptionDetails) && !gated;
+      if (gated) return;
       if (is_error) await reportFailure(value.exceptionDetails.exception ?? value.result, scope);
       else if (value.result.type !== 'undefined') text(value.result.description ?? String(value.result.value));
     }

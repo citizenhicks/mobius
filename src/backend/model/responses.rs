@@ -293,10 +293,10 @@ impl OpenAi {
         self
     }
 
-    /// Disables image input for a Responses-compatible endpoint that rejects it.
+    /// Sets image input support for a Responses-compatible model.
     #[must_use]
-    pub(super) fn without_image_input(mut self) -> Self {
-        self.image_input = false;
+    pub(super) fn with_image_input(mut self, enabled: bool) -> Self {
+        self.image_input = enabled;
         self
     }
 

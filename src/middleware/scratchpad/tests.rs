@@ -4,8 +4,33 @@ use crate::middleware::tools::{ApprovalRequirement, Tool, ToolContext};
 use crate::middleware::{ActiveCommandContext, FrontendEventSink, MessageQueue, SubmissionResult};
 use crate::protocol::{FrontendSlot, FrontendWidgetContent, Op};
 
-fn scratchpad(store: &ScratchpadStore) -> Scratchpad {
-    Scratchpad::new(store.clone())
+fn scratchpad(store: &Scratchpad) -> Scratchpad {
+    store.for_chat()
+}
+
+fn management(arguments: impl Into<String>, input: Option<&str>) -> Op {
+    Op::CapabilityCommand {
+        capability: MANIFEST.id.into(),
+        command: "scratchpad".into(),
+        arguments: arguments.into(),
+        input: input.map(str::to_owned),
+        target: None,
+    }
+}
+
+impl Scratchpad {
+    async fn add_global(&self, note: &str) -> Result<FrontendContribution> {
+        self.manage(&management("add", Some(note))).await
+    }
+
+    async fn edit_global(&self, id: &str, note: &str) -> Result<FrontendContribution> {
+        self.manage(&management(format!("edit {id}"), Some(note)))
+            .await
+    }
+
+    async fn forget_global(&self, id: &str) -> Result<FrontendContribution> {
+        self.manage(&management(format!("forget {id}"), None)).await
+    }
 }
 
 fn session_context() -> crate::protocol::SessionContext {
@@ -24,12 +49,12 @@ fn entry(note: impl Into<String>) -> Entry {
     }
 }
 
-async fn store() -> (tempfile::TempDir, ScratchpadStore) {
+async fn store() -> (tempfile::TempDir, Scratchpad) {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
         SqliteCheckpoint::new(temporary.path().join("checkpoints.sqlite3")).expect("checkpoints"),
     );
-    (temporary, ScratchpadStore::new(checkpoints))
+    (temporary, Scratchpad::new(checkpoints))
 }
 
 fn frontend_sink() -> FrontendEventSink {
@@ -65,10 +90,11 @@ async fn active_command(
     (result, events)
 }
 
-fn runtime(store: &ScratchpadStore, session_id: &str) -> RuntimeContext {
+fn runtime(store: &Scratchpad, session_id: &str) -> RuntimeContext {
     RuntimeContext {
+        children: crate::agent::ChildAgents::default(),
         sender: crate::agent::test_sender(),
-        checkpoints: Arc::clone(&store.checkpoints),
+        checkpoints: Arc::clone(&store.store.checkpoints),
         session_id: session_id.into(),
         model_route: "model".into(),
         model: "model".into(),
@@ -160,7 +186,7 @@ async fn compaction_discards_projections_before_a_post_hook_stops_or_fails() {
                     Arc::new(LocalSandbox::new(temporary.path()).expect("sandbox")),
                     ApprovalPolicy::Ask,
                 )),
-                Arc::clone(&store.checkpoints),
+                Arc::clone(&store.store.checkpoints),
                 middleware,
                 "test",
             )
@@ -195,12 +221,13 @@ async fn compaction_discards_projections_before_a_post_hook_stops_or_fails() {
         .await
         .expect("terminal event");
         let checkpoint = store
+            .store
             .checkpoints
             .load("session")
             .await
             .expect("load")
             .expect("checkpoint");
-        assert_eq!(checkpoint.compaction_count, u64::from(!fail));
+        assert_eq!(checkpoint.context_epoch, u64::from(!fail));
         assert_eq!(
             checkpoint
                 .context
@@ -231,9 +258,9 @@ fn tool_context() -> ToolContext {
     )
 }
 
-fn write_tool(store: &ScratchpadStore) -> WriteScratchpad {
+fn write_tool(store: &Scratchpad) -> WriteScratchpad {
     WriteScratchpad {
-        store: store.clone(),
+        store: Arc::clone(&store.store),
         frontend: frontend_sink(),
     }
 }
@@ -255,12 +282,9 @@ async fn shared_management_adds_edits_and_forgets_global_notes() {
         panic!("add command")
     };
     *input = Some("shared fact".into());
-    store
-        .management_command(&add)
-        .await
-        .expect("add shared fact");
+    store.manage(&add).await.expect("add shared fact");
     let snapshot = store.snapshot().await.expect("snapshot");
-    let entry = &snapshot.global[0];
+    let entry = &snapshot[0];
     assert_eq!(entry.basis, Basis::UserConfirmed);
     let item = action_list_item(entry);
     assert_eq!(item.actions.len(), 2);
@@ -269,16 +293,13 @@ async fn shared_management_adds_edits_and_forgets_global_notes() {
         panic!("edit command")
     };
     *input = Some("revised fact".into());
-    store.management_command(&edit).await.expect("edit");
+    store.manage(&edit).await.expect("edit");
     assert_eq!(
-        store.snapshot().await.expect("edited").global[0].note,
+        store.snapshot().await.expect("edited")[0].note,
         "revised fact"
     );
-    store
-        .management_command(&item.actions[1].op)
-        .await
-        .expect("forget");
-    assert!(store.snapshot().await.expect("snapshot").global.is_empty());
+    store.manage(&item.actions[1].op).await.expect("forget");
+    assert!(store.snapshot().await.expect("snapshot").is_empty());
 }
 
 #[tokio::test]
@@ -308,19 +329,19 @@ async fn agent_writes_shared_notes_with_approval_without_session_staging() {
         .await
         .expect("deduplicated write");
     let snapshot = store.snapshot().await.expect("snapshot");
-    assert_eq!(snapshot.global.len(), 1);
-    assert_eq!(snapshot.global[0].basis, Basis::AgentObservation);
-    let id = snapshot.global[0].id.clone();
+    assert_eq!(snapshot.len(), 1);
+    assert_eq!(snapshot[0].basis, Basis::AgentObservation);
+    let id = snapshot[0].id.clone();
     store
         .add_global("shared fact")
         .await
         .expect("human confirmation");
-    let reopened = ScratchpadStore::new(Arc::new(
+    let reopened = Scratchpad::new(Arc::new(
         SqliteCheckpoint::new(temporary.path().join("checkpoints.sqlite3")).expect("reopen"),
     ));
     let saved = reopened.snapshot().await.expect("durable state");
-    assert_eq!(saved.global[0].id, id);
-    assert_eq!(saved.global[0].basis, Basis::UserConfirmed);
+    assert_eq!(saved[0].id, id);
+    assert_eq!(saved[0].basis, Basis::UserConfirmed);
 }
 
 #[tokio::test]
@@ -337,7 +358,7 @@ async fn shared_scope_budget_rejects_oversized_writes_and_edits_without_changing
     assert!(store.add_global(&"y".repeat(500)).await.is_err());
     assert!(
         store
-            .edit_global(&before.global[3].id, &"z".repeat(500))
+            .edit_global(&before[3].id, &"z".repeat(500))
             .await
             .is_err()
     );
@@ -354,9 +375,10 @@ async fn shared_scope_budget_rejects_oversized_writes_and_edits_without_changing
 #[tokio::test]
 async fn concurrent_shared_writes_preserve_every_accepted_note_and_the_count_limit() {
     let (_temporary, store) = store().await;
+    let store = Arc::new(store);
     let writes = (0..MAX_NOTES + 5)
         .map(|i| {
-            let store = store.clone();
+            let store = Arc::clone(&store);
             tokio::spawn(async move { store.add_global(&format!("note {i}")).await })
         })
         .collect::<Vec<_>>();
@@ -367,10 +389,7 @@ async fn concurrent_shared_writes_preserve_every_accepted_note_and_the_count_lim
         }
     }
     assert_eq!(accepted, MAX_NOTES);
-    assert_eq!(
-        store.snapshot().await.expect("snapshot").global.len(),
-        MAX_NOTES
-    );
+    assert_eq!(store.snapshot().await.expect("snapshot").len(), MAX_NOTES);
 }
 
 #[test]
@@ -379,14 +398,14 @@ fn projections_include_all_notes_and_append_complete_changes_without_hidden_meta
     let notes = (0..MAX_NOTES)
         .map(|i| entry(format!("note {i} {}", "x".repeat(65))))
         .collect::<Vec<_>>();
-    let previous = Snapshot { global: notes };
+    let previous = notes;
     let mut baseline = next_projection((&[]).into(), &previous)
         .expect("projection")
         .expect("baseline");
     let text = baseline["content"][0]["text"].as_str().expect("text");
     assert!(text.len() <= MAX_INJECTION_BYTES);
-    assert!(text.contains(&previous.global[0].note));
-    assert!(text.contains(&previous.global[MAX_NOTES - 1].note));
+    assert!(text.contains(&previous[0].note));
+    assert!(text.contains(&previous[MAX_NOTES - 1].note));
     assert!(baseline.get("_mobius_scratchpad_projection").is_none());
     crate::backend::model::mark_prompt_cache_breakpoint(&mut baseline);
     let user = crate::backend::model::user_message("hello");
@@ -397,8 +416,8 @@ fn projections_include_all_notes_and_append_complete_changes_without_hidden_meta
             .is_none()
     );
     let mut current = previous.clone();
-    current.global[0].note = "edited first note".into();
-    current.global.pop();
+    current[0].note = "edited first note".into();
+    current.pop();
     let update = next_projection((&input).into(), &current)
         .expect("update")
         .expect("changed");
@@ -406,7 +425,7 @@ fn projections_include_all_notes_and_append_complete_changes_without_hidden_meta
     assert!(text.contains("edited first note"));
     assert!(text.contains("replace all prior scratchpad context"));
     assert_eq!(input, [baseline, user.clone()]);
-    let cleared = next_projection((&[update]).into(), &Snapshot::default())
+    let cleared = next_projection((&[update]).into(), &[])
         .expect("clear")
         .expect("clear projection");
     assert_eq!(
@@ -419,12 +438,8 @@ fn projections_include_all_notes_and_append_complete_changes_without_hidden_meta
             .expect("clear text")
             .contains("edited first note")
     );
-    assert_eq!(
-        without_projection_items((&[cleared, user.clone()]).into()).expect("remove projection"),
-        [Arc::new(user)]
-    );
     assert!(
-        next_projection((&[]).into(), &Snapshot::default())
+        next_projection((&[]).into(), &[])
             .expect("empty start")
             .is_none()
     );
@@ -454,9 +469,9 @@ async fn startup_and_compaction_restore_shared_notes_without_chat_menu_or_duplic
         middleware.session_start(&mut start).await.expect("start");
         assert_eq!(input.len(), 1);
     }
-    assert_eq!(middleware.frontend().widgets.len(), 1);
+    assert_eq!(middleware.frontend("session").widgets.len(), 1);
     assert_eq!(
-        middleware.frontend().widgets[0].slot,
+        middleware.frontend("session").widgets[0].slot,
         FrontendSlot::Navigation
     );
     middleware.prepare_compacted_input((&[]).into(), &mut input);
@@ -464,58 +479,10 @@ async fn startup_and_compaction_restore_shared_notes_without_chat_menu_or_duplic
 }
 
 #[tokio::test]
-async fn disabled_agent_keeps_shared_management_without_prompt_or_tools() {
-    let (_temporary, store) = store().await;
-    store.add_global("historical note").await.expect("seed");
-    let before = store.snapshot().await.expect("snapshot");
-    let middleware = scratchpad(&store).agent_enabled(false);
-    let runtime = runtime(&store, "session");
-    let mut catalog = Catalog::default();
-    middleware
-        .register(&mut catalog, &runtime)
-        .expect("register");
-    assert!(catalog.registered_definitions().is_empty());
-    assert_eq!(middleware.prompt_section(&runtime).expect("prompt"), None);
-    assert_eq!(middleware.frontend().widgets.len(), 1);
-    let mut input = Vec::new();
-    let mut start = SessionStartContext {
-        delivery_once: crate::middleware::delivery_once::DeliveryOnce::testing(),
-        runtime: &runtime,
-        source: SessionStartSource::Startup,
-        queued_messages: Default::default(),
-        input: &mut input,
-        input_changed: false,
-        stop_reason: None,
-    };
-    middleware.session_start(&mut start).await.expect("start");
-    assert!(input.is_empty());
-    let (handled, events) = active_command(&middleware, "scratchpad", "refresh", None).await;
-    assert_eq!(handled, Some(SubmissionResult::Handled));
-    assert_eq!(events.len(), 1);
-    let access = store.lock_access().await;
-    assert!(
-        middleware
-            .execute_command_locked(
-                "scratchpad",
-                &format!("edit {}", before.global[0].id),
-                Some("no"),
-                access,
-            )
-            .await
-            .is_err()
-    );
-    assert_eq!(store.snapshot().await.expect("unchanged"), before);
-    assert!(parse_command("edit session unused", Some("no")).is_none());
-    assert!(parse_command("promote global unused", None).is_none());
-}
-
-#[tokio::test]
 async fn active_shared_edit_updates_state_and_defers_when_lock_is_busy() {
     let (_temporary, store) = store().await;
     store.add_global("before").await.expect("seed");
-    let id = store.snapshot().await.expect("snapshot").global[0]
-        .id
-        .clone();
+    let id = store.snapshot().await.expect("snapshot")[0].id.clone();
     let middleware = scratchpad(&store);
     let (handled, events) = active_command(
         &middleware,
@@ -526,11 +493,8 @@ async fn active_shared_edit_updates_state_and_defers_when_lock_is_busy() {
     .await;
     assert_eq!(handled, Some(SubmissionResult::Handled));
     assert!(!events.is_empty());
-    assert_eq!(
-        store.snapshot().await.expect("after").global[0].note,
-        "after"
-    );
-    let _access = store.lock_access().await;
+    assert_eq!(store.snapshot().await.expect("after")[0].note, "after");
+    let _access = store.store.access.lock().await;
     let (result, events) = tokio::time::timeout(
         std::time::Duration::from_millis(100),
         active_command(&middleware, "scratchpad", "refresh", None),
@@ -548,6 +512,7 @@ async fn oversized_saved_shared_scope_stays_manageable_and_is_never_silently_cli
         .map(|i| entry(format!("{i}{}", "x".repeat(499))))
         .collect::<Vec<_>>();
     store
+        .store
         .checkpoints
         .save_state(
             GLOBAL_SCOPE,
@@ -577,4 +542,73 @@ async fn oversized_saved_shared_scope_stays_manageable_and_is_never_silently_cli
             .expect("all remaining notes fit")
             .is_some()
     );
+}
+
+#[tokio::test]
+async fn session_and_gateway_commands_share_one_grammar_and_effect() {
+    async fn session_command(pad: &Scratchpad, operation: &Op) -> MiddlewareCommandOutput {
+        let Op::CapabilityCommand {
+            command,
+            arguments,
+            input,
+            ..
+        } = operation
+        else {
+            panic!("capability command");
+        };
+        let checkpoint = crate::backend::checkpoint::Checkpoint::empty("session");
+        pad.command(MiddlewareCommandContext {
+            command,
+            arguments,
+            input: input.as_deref(),
+            target: None,
+            session_id: "session",
+            session_context: &session_context(),
+            checkpoint: &checkpoint,
+            checkpoints: Arc::clone(&pad.store.checkpoints),
+        })
+        .await
+        .expect("session command")
+    }
+    async fn notes(pad: &Scratchpad) -> Vec<(String, Basis)> {
+        pad.snapshot()
+            .await
+            .expect("snapshot")
+            .into_iter()
+            .map(|entry| (entry.note, entry.basis))
+            .collect()
+    }
+    let (_session_dir, session) = store().await;
+    let (_gateway_dir, gateway) = store().await;
+    let session = session.for_chat();
+    let steps: [fn(&str) -> Op; 5] = [
+        |_| management("add", Some("first")),
+        |_| management("read", None),
+        |_| management("refresh", None),
+        |id| management(format!("edit {id}"), Some("revised")),
+        |id| management(format!("forget {id}"), None),
+    ];
+    for step in steps {
+        let session_id = session
+            .snapshot()
+            .await
+            .expect("session snapshot")
+            .first()
+            .map_or_else(String::new, |entry| entry.id.clone());
+        let gateway_id = gateway
+            .snapshot()
+            .await
+            .expect("gateway snapshot")
+            .first()
+            .map_or_else(String::new, |entry| entry.id.clone());
+        let output = session_command(&session, &step(&session_id)).await;
+        assert!(!output.events.is_empty());
+        let contribution = gateway
+            .manage(&step(&gateway_id))
+            .await
+            .expect("gateway command");
+        assert_eq!(contribution.widgets.len(), 1);
+        assert_eq!(notes(&session).await, notes(&gateway).await);
+    }
+    assert!(notes(&gateway).await.is_empty());
 }

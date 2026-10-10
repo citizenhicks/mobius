@@ -2,7 +2,6 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -14,7 +13,7 @@ use super::{
     ModelContext, PromptSection, RuntimeContext, SessionStartContext, SessionStartSource,
     SubmissionResult,
 };
-use crate::backend::checkpoint::{CheckpointStore, ContextRewriteReason};
+use crate::backend::checkpoint::CheckpointStore;
 use crate::protocol::{
     EventMsg, FrontendBlock, FrontendCommand, FrontendContribution, FrontendTone,
 };
@@ -40,6 +39,12 @@ mod text {
         pub(super) editor_global_title: String,
         pub(super) editor_label: String,
         pub(super) editor_submit: String,
+        pub(super) error_duplicate: String,
+        pub(super) error_management: String,
+        pub(super) error_missing: String,
+        pub(super) error_note_count: String,
+        pub(super) error_note_length: String,
+        pub(super) error_scope_budget: String,
         pub(super) manifest_description: String,
         pub(super) manifest_label: String,
         pub(super) message_added: String,
@@ -62,11 +67,9 @@ mod tools;
 
 #[cfg(test)]
 use presentation::action_list_item;
-use presentation::{
-    format_snapshot, global_widget, publish_widgets, surface_widgets, usage, widget_events,
-};
+use presentation::{format_snapshot, publish_widgets, surface_widgets, usage, widget_events};
 use projection::is_projection_item;
-use projection::{next_projection, without_projection_items};
+use projection::next_projection;
 use tools::WriteScratchpad;
 
 const GLOBAL_SCOPE: &str = "scratchpad.global";
@@ -79,7 +82,7 @@ const PROJECTION_KIND: &str = "shared_scratchpad";
 
 super::manifest::middleware_manifest! {
 /// Configuration and presentation metadata for durable agent notes.
-    "scratchpad", text::DEFINITION, required: false, capability: None, settings: &[]
+    "scratchpad", text::DEFINITION, required: false, settings: &[]
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,25 +94,12 @@ struct Entry {
     created_at: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// Declaration order is strength order: a stronger basis replaces a weaker one.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum Basis {
     AgentObservation,
     UserConfirmed,
-}
-
-impl Basis {
-    const fn strength(&self) -> u8 {
-        match self {
-            Self::AgentObservation => 0,
-            Self::UserConfirmed => 1,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct Snapshot {
-    global: Vec<Entry>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,153 +117,48 @@ enum ScratchpadCommand<'a> {
     Forget(&'a str),
 }
 
-fn parse_command<'a>(arguments: &'a str, input: Option<&'a str>) -> Option<ScratchpadCommand<'a>> {
+fn parse_command<'a>(
+    command: &str,
+    arguments: &'a str,
+    input: Option<&'a str>,
+) -> Result<Option<ScratchpadCommand<'a>>> {
+    if command != "scratchpad" {
+        return Err(Error::Unknown(format!("scratchpad command `{command}`")));
+    }
     let mut arguments = arguments.split_whitespace();
     let operation = arguments.next().unwrap_or("read");
     let id = arguments.next();
     if arguments.next().is_some() {
-        return None;
+        return Ok(None);
     }
-    match (operation, id, input) {
+    Ok(match (operation, id, input) {
         ("read", None, None) => Some(ScratchpadCommand::Read),
         ("refresh", None, None) => Some(ScratchpadCommand::Refresh),
         ("add", None, Some(note)) => Some(ScratchpadCommand::Add(note)),
         ("edit", Some(id), Some(note)) => Some(ScratchpadCommand::Edit(id, note)),
         ("forget", Some(id), None) => Some(ScratchpadCommand::Forget(id)),
         _ => None,
-    }
+    })
 }
 
-/// Cloneable scratchpad persistence shared by agent runtimes and management commands.
-#[derive(Clone)]
-pub struct ScratchpadStore {
+type Access<'a> = tokio::sync::MutexGuard<'a, ()>;
+
+struct ScratchpadStore {
     checkpoints: Arc<dyn CheckpointStore>,
     // Serializes whole-value updates to the one global notebook.
-    access: Arc<Mutex<()>>,
+    access: Mutex<()>,
 }
 
 impl ScratchpadStore {
-    /// Wraps one tenant-scoped checkpoint store with serialized note mutations.
-    #[must_use]
-    pub fn new(checkpoints: Arc<dyn CheckpointStore>) -> Self {
-        Self {
-            checkpoints,
-            access: Arc::new(Mutex::new(())),
-        }
-    }
-
-    async fn lock_access(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.access.lock().await
-    }
-
-    fn try_lock_access(&self) -> Option<tokio::sync::MutexGuard<'_, ()>> {
-        self.access.try_lock().ok()
-    }
-
-    #[cfg(test)]
-    async fn snapshot(&self) -> Result<Snapshot> {
-        let access = self.lock_access().await;
-        self.snapshot_locked(&access).await
-    }
-
-    async fn snapshot_locked(&self, _access: &tokio::sync::MutexGuard<'_, ()>) -> Result<Snapshot> {
-        Ok(Snapshot {
-            global: self.load().await?,
-        })
-    }
-
-    /// Executes a human management action using the capability's command grammar.
-    /// # Errors
-    ///
-    /// Returns an error if validation or an operation required by this function fails.
-    pub async fn management_command(
-        &self,
-        operation: &crate::protocol::Op,
-    ) -> Result<FrontendContribution> {
-        let invalid = || {
-            Error::Tool("scratchpad operation does not match its selected management scope".into())
-        };
-        let crate::protocol::Op::CapabilityCommand {
-            capability,
-            command,
-            arguments,
-            input,
-            target: None,
-        } = operation
-        else {
-            return Err(invalid());
-        };
-        if capability != MANIFEST.id || command != "scratchpad" {
-            return Err(invalid());
-        }
-        match parse_command(arguments, input.as_deref()) {
-            Some(ScratchpadCommand::Refresh) => self.global_contribution().await,
-            Some(ScratchpadCommand::Add(note)) => self.add_global(note).await,
-            Some(ScratchpadCommand::Edit(id, note)) => self.edit_global(id, note).await,
-            Some(ScratchpadCommand::Forget(id)) => self.forget_global(id).await,
-            _ => Err(invalid()),
-        }
-    }
-
-    /// Returns the persisted gateway-wide scratchpad management surface.
-    /// # Errors
-    ///
-    /// Returns an error if validation or an operation required by this function fails.
-    pub async fn global_contribution(&self) -> Result<FrontendContribution> {
-        let access = self.lock_access().await;
-        self.global_contribution_locked(&access).await
-    }
-
-    /// Adds one user-confirmed gateway-wide note and returns its refreshed surface.
-    /// # Errors
-    ///
-    /// Returns an error if validation or an operation required by this function fails.
-    pub async fn add_global(&self, note: &str) -> Result<FrontendContribution> {
-        let access = self.lock_access().await;
-        self.write_locked(note, Basis::UserConfirmed, &access)
-            .await?;
-        self.global_contribution_locked(&access).await
-    }
-
-    /// Edits one gateway-wide note and returns the refreshed management surface.
-    /// # Errors
-    ///
-    /// Returns an error if validation or an operation required by this function fails.
-    pub async fn edit_global(&self, id: &str, note: &str) -> Result<FrontendContribution> {
-        validate_id(id).map_err(Error::Tool)?;
-        let access = self.lock_access().await;
-        self.edit_locked(id, note, &access).await?;
-        self.global_contribution_locked(&access).await
-    }
-
-    /// Forgets one gateway-wide note and returns the refreshed management surface.
-    /// # Errors
-    ///
-    /// Returns an error if validation or an operation required by this function fails.
-    pub async fn forget_global(&self, id: &str) -> Result<FrontendContribution> {
-        validate_id(id).map_err(Error::Tool)?;
-        let access = self.lock_access().await;
-        self.forget_locked(id, &access).await?;
-        self.global_contribution_locked(&access).await
-    }
-
-    async fn global_contribution_locked(
-        &self,
-        _access: &tokio::sync::MutexGuard<'_, ()>,
-    ) -> Result<FrontendContribution> {
-        let entries = self.load().await?;
-        Ok(FrontendContribution {
-            capability: MANIFEST.id.into(),
-            widgets: vec![global_widget(&entries)],
-            ..FrontendContribution::default()
-        })
+    async fn snapshot_locked(&self, _access: &Access<'_>) -> Result<Vec<Entry>> {
+        self.load().await
     }
 
     async fn write_locked(
         &self,
         note: &str,
         basis: Basis,
-        _access: &tokio::sync::MutexGuard<'_, ()>,
+        _access: &Access<'_>,
     ) -> Result<WriteOutcome> {
         let note = canonical_note(note).map_err(Error::Tool)?;
         let mut entries = self.load().await?;
@@ -285,26 +170,19 @@ impl ScratchpadStore {
         Ok(outcome)
     }
 
-    async fn forget_locked(
-        &self,
-        id: &str,
-        _access: &tokio::sync::MutexGuard<'_, ()>,
-    ) -> Result<()> {
+    async fn forget_locked(&self, id: &str, _access: &Access<'_>) -> Result<()> {
+        validate_id(id).map_err(Error::Tool)?;
         let mut entries = self.load().await?;
         let previous_len = entries.len();
         entries.retain(|entry| entry.id != id);
         if entries.len() == previous_len {
-            return Err(Error::Tool("the scratchpad note no longer exists".into()));
+            return Err(missing());
         }
         self.save(&entries).await
     }
 
-    async fn edit_locked(
-        &self,
-        id: &str,
-        note: &str,
-        _access: &tokio::sync::MutexGuard<'_, ()>,
-    ) -> Result<()> {
+    async fn edit_locked(&self, id: &str, note: &str, _access: &Access<'_>) -> Result<()> {
+        validate_id(id).map_err(Error::Tool)?;
         let note = canonical_note(note).map_err(Error::Tool)?;
         let mut entries = self.load().await?;
         if entries
@@ -312,14 +190,14 @@ impl ScratchpadStore {
             .any(|entry| entry.id != id && entry.note == note)
         {
             return Err(Error::Tool(
-                "the scratchpad already contains that note".into(),
+                text::DEFINITION.error_duplicate.as_str().into(),
             ));
         }
         let previous_bytes = scope_bytes(&entries).map_err(Error::Tool)?;
         let entry = entries
             .iter_mut()
             .find(|entry| entry.id == id)
-            .ok_or_else(|| Error::Tool("the scratchpad note no longer exists".into()))?;
+            .ok_or_else(missing)?;
         entry.note = note;
         entry.basis = Basis::UserConfirmed;
         if scope_bytes(&entries).map_err(Error::Tool)? > previous_bytes {
@@ -354,62 +232,104 @@ impl ScratchpadStore {
 }
 
 /// Adds bounded durable notes without exposing persistence details to the agent loop.
-#[derive(Clone)]
 pub struct Scratchpad {
-    store: ScratchpadStore,
-    agent_enabled: bool,
+    store: Arc<ScratchpadStore>,
 }
 
 impl Scratchpad {
-    /// Creates scratchpad middleware for one session owner backed by shared durable stores.
+    /// Creates the gateway-wide scratchpad backed by one tenant-scoped checkpoint store.
     #[must_use]
-    pub fn new(store: ScratchpadStore) -> Self {
+    pub fn new(checkpoints: Arc<dyn CheckpointStore>) -> Self {
         Self {
-            store,
-            agent_enabled: true,
+            store: Arc::new(ScratchpadStore {
+                checkpoints,
+                access: Mutex::new(()),
+            }),
         }
     }
 
-    /// Controls agent access while retaining the read-only management surface.
+    /// Returns a chat scratchpad sharing this notebook.
     #[must_use]
-    pub fn agent_enabled(mut self, enabled: bool) -> Self {
-        self.agent_enabled = enabled;
-        self
+    pub fn for_chat(&self) -> Self {
+        Self {
+            store: Arc::clone(&self.store),
+        }
     }
 
-    async fn snapshot(&self) -> Result<Snapshot> {
-        let access = self.store.lock_access().await;
+    /// Returns the persisted gateway-wide scratchpad management surface.
+    /// # Errors
+    ///
+    /// Returns an error if the saved notes cannot be loaded.
+    pub async fn global_contribution(&self) -> Result<FrontendContribution> {
+        let access = self.store.access.lock().await;
+        self.global_contribution_locked(&access).await
+    }
+
+    /// Runs a gateway management operation through the command dispatcher and
+    /// returns the refreshed management surface.
+    /// # Errors
+    ///
+    /// Returns [`Error::Tool`] when the operation is not a valid scratchpad command
+    /// or the note change is rejected.
+    pub async fn manage(&self, operation: &crate::protocol::Op) -> Result<FrontendContribution> {
+        let invalid = || Error::Tool(text::DEFINITION.error_management.as_str().into());
+        let crate::protocol::Op::CapabilityCommand {
+            capability,
+            command,
+            arguments,
+            input,
+            target: None,
+        } = operation
+        else {
+            return Err(invalid());
+        };
+        if capability != MANIFEST.id {
+            return Err(invalid());
+        }
+        let parsed = parse_command(command, arguments, input.as_deref())?.ok_or_else(invalid)?;
+        let access = self.store.access.lock().await;
+        self.execute_locked(parsed, &access).await?;
+        self.global_contribution_locked(&access).await
+    }
+
+    async fn global_contribution_locked(
+        &self,
+        access: &Access<'_>,
+    ) -> Result<FrontendContribution> {
+        let snapshot = self.store.snapshot_locked(access).await?;
+        Ok(FrontendContribution {
+            capability: MANIFEST.id.into(),
+            widgets: surface_widgets(&snapshot),
+            ..FrontendContribution::default()
+        })
+    }
+
+    async fn snapshot(&self) -> Result<Vec<Entry>> {
+        let access = self.store.access.lock().await;
         self.store.snapshot_locked(&access).await
     }
-}
 
-impl Scratchpad {
-    async fn execute_command_locked(
+    async fn command_locked(
         &self,
         command: &str,
         arguments: &str,
         input: Option<&str>,
-        access: tokio::sync::MutexGuard<'_, ()>,
+        access: &Access<'_>,
     ) -> Result<MiddlewareCommandOutput> {
-        let _access = access;
-        if command != "scratchpad" {
-            return Err(Error::Unknown(format!("scratchpad command `{command}`")));
+        match parse_command(command, arguments, input)? {
+            Some(parsed) => self.execute_locked(parsed, access).await,
+            None => Ok(usage()),
         }
-        let parsed = parse_command(arguments, input);
-        if !self.agent_enabled
-            && !matches!(
-                arguments.split_whitespace().next().unwrap_or("read"),
-                "read" | "refresh"
-            )
-        {
-            return Err(Error::Tool("scratchpad is disabled for this chat".into()));
-        }
-        let Some(parsed) = parsed else {
-            return Ok(usage());
-        };
-        match parsed {
+    }
+
+    async fn execute_locked(
+        &self,
+        command: ScratchpadCommand<'_>,
+        access: &Access<'_>,
+    ) -> Result<MiddlewareCommandOutput> {
+        match command {
             ScratchpadCommand::Read => {
-                let snapshot = self.store.snapshot_locked(&_access).await?;
+                let snapshot = self.store.snapshot_locked(access).await?;
                 Ok(MiddlewareCommandOutput::render(
                     self.name(),
                     format_snapshot(&snapshot),
@@ -417,27 +337,38 @@ impl Scratchpad {
                 ))
             }
             ScratchpadCommand::Refresh => {
-                let snapshot = self.store.snapshot_locked(&_access).await?;
+                let snapshot = self.store.snapshot_locked(access).await?;
                 Ok(MiddlewareCommandOutput::events(widget_events(&snapshot)))
             }
+            ScratchpadCommand::Add(note) => {
+                let message = match self
+                    .store
+                    .write_locked(note, Basis::UserConfirmed, access)
+                    .await?
+                {
+                    WriteOutcome::Added => &text::DEFINITION.message_added,
+                    WriteOutcome::Updated => &text::DEFINITION.message_updated,
+                    WriteOutcome::Existing => &text::DEFINITION.message_existing,
+                };
+                self.command_updated(message, access).await
+            }
             ScratchpadCommand::Edit(id, note) => {
-                self.store.edit_locked(id, note, &_access).await?;
-                self.command_updated(text::DEFINITION.message_updated.as_str(), &_access)
+                self.store.edit_locked(id, note, access).await?;
+                self.command_updated(&text::DEFINITION.message_updated, access)
                     .await
             }
             ScratchpadCommand::Forget(id) => {
-                self.store.forget_locked(id, &_access).await?;
-                self.command_updated(text::DEFINITION.message_forgot.as_str(), &_access)
+                self.store.forget_locked(id, access).await?;
+                self.command_updated(&text::DEFINITION.message_forgot, access)
                     .await
             }
-            ScratchpadCommand::Add(_) => Ok(usage()),
         }
     }
 
     async fn command_updated(
         &self,
         message: &str,
-        access: &tokio::sync::MutexGuard<'_, ()>,
+        access: &Access<'_>,
     ) -> Result<MiddlewareCommandOutput> {
         let snapshot = self.store.snapshot_locked(access).await?;
         let mut events = widget_events(&snapshot);
@@ -454,25 +385,21 @@ impl Middleware for Scratchpad {
     }
 
     fn register(&self, catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
-        if !self.agent_enabled {
-            return Ok(());
-        }
         catalog.register(Arc::new(WriteScratchpad {
-            store: self.store.clone(),
+            store: Arc::clone(&self.store),
             frontend: Arc::clone(&runtime.frontend),
         }))
     }
 
     fn prompt_section(&self, _runtime: &RuntimeContext) -> Result<Option<PromptSection>> {
-        Ok(self
-            .agent_enabled
-            .then(|| PromptSection::new(text::DEFINITION.prompt_main.as_str())))
+        Ok(Some(PromptSection::new(
+            text::DEFINITION.prompt_main.as_str(),
+        )))
     }
 
-    fn frontend(&self) -> FrontendContribution {
+    fn frontend(&self, _session_id: &str) -> FrontendContribution {
         FrontendContribution {
             capability: self.name().into(),
-            accepts_file_attachments: false,
             count: None,
             commands: vec![FrontendCommand {
                 name: "scratchpad".into(),
@@ -480,7 +407,7 @@ impl Middleware for Scratchpad {
                 description: text::DEFINITION.command_description.clone(),
                 requires_idle: false,
             }],
-            widgets: surface_widgets(&Snapshot::default()),
+            widgets: surface_widgets(&[]),
             references: Vec::new(),
         }
     }
@@ -505,12 +432,10 @@ impl Middleware for Scratchpad {
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             let snapshot = self.snapshot().await?;
-            if self.agent_enabled
-                && matches!(
-                    context.source(),
-                    SessionStartSource::Startup | SessionStartSource::Compact
-                )
-                && let Some(item) = next_projection(context.input.as_slice().into(), &snapshot)?
+            if matches!(
+                context.source(),
+                SessionStartSource::Startup | SessionStartSource::Compact
+            ) && let Some(item) = next_projection(context.input.as_slice().into(), &snapshot)?
             {
                 context.push_input(item);
             }
@@ -526,8 +451,8 @@ impl Middleware for Scratchpad {
         context: MiddlewareCommandContext<'a>,
     ) -> BoxFuture<'a, Result<MiddlewareCommandOutput>> {
         Box::pin(async move {
-            let access = self.store.lock_access().await;
-            self.execute_command_locked(context.command, context.arguments, context.input, access)
+            let access = self.store.access.lock().await;
+            self.command_locked(context.command, context.arguments, context.input, &access)
                 .await
         })
     }
@@ -537,11 +462,11 @@ impl Middleware for Scratchpad {
         context: &'a mut ActiveCommandContext<'_>,
     ) -> BoxFuture<'a, Result<Option<SubmissionResult>>> {
         Box::pin(async move {
-            let Some(access) = self.store.try_lock_access() else {
+            let Ok(access) = self.store.access.try_lock() else {
                 return Ok(None);
             };
             let output = self
-                .execute_command_locked(context.command, context.arguments, context.input, access)
+                .command_locked(context.command, context.arguments, context.input, &access)
                 .await?;
             context
                 .events
@@ -552,12 +477,6 @@ impl Middleware for Scratchpad {
 
     fn pre_model<'a>(&'a self, context: &'a mut ModelContext<'_>) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            if !self.agent_enabled {
-                if let Some(input) = without_projection_items(context.input()) {
-                    context.rewrite_input(ContextRewriteReason::Scratchpad, input)?;
-                }
-                return Ok(());
-            }
             let snapshot = self.snapshot().await?;
             if let Some(item) = next_projection(context.input(), &snapshot)? {
                 context.append_model_input(item);
@@ -569,22 +488,24 @@ impl Middleware for Scratchpad {
 
 fn insert(entries: &mut Vec<Entry>, note: String, basis: Basis) -> Result<WriteOutcome> {
     if let Some(entry) = entries.iter_mut().find(|entry| entry.note == note) {
-        if basis.strength() > entry.basis.strength() {
+        if basis > entry.basis {
             entry.basis = basis;
             return Ok(WriteOutcome::Updated);
         }
         return Ok(WriteOutcome::Existing);
     }
     if entries.len() >= MAX_NOTES {
-        return Err(Error::Tool(format!(
-            "scratchpad already contains the maximum {MAX_NOTES} notes"
-        )));
+        return Err(Error::Tool(
+            text::DEFINITION
+                .error_note_count
+                .replace("{max}", &MAX_NOTES.to_string()),
+        ));
     }
     entries.push(Entry {
         id: Uuid::new_v4().to_string(),
         note,
         basis,
-        created_at: created_at()?,
+        created_at: chrono::Utc::now().timestamp().to_string(),
     });
     Ok(WriteOutcome::Added)
 }
@@ -621,9 +542,9 @@ fn validate_entries(entries: &[Entry]) -> std::result::Result<(), String> {
 fn validate_scope_budget(entries: &[Entry]) -> std::result::Result<(), String> {
     let bytes = scope_bytes(entries)?;
     if bytes > MAX_SCOPE_BYTES {
-        return Err(format!(
-            "shared scratchpad scope exceeds {MAX_SCOPE_BYTES} rendered bytes; shorten or remove a note"
-        ));
+        return Err(text::DEFINITION
+            .error_scope_budget
+            .replace("{max}", &MAX_SCOPE_BYTES.to_string()));
     }
     Ok(())
 }
@@ -637,11 +558,8 @@ fn scope_bytes(entries: &[Entry]) -> std::result::Result<usize, String> {
         .map_err(|error| error.to_string())
 }
 
-fn created_at() -> Result<String> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs().to_string())
-        .map_err(|error| Error::Tool(format!("system clock is before the Unix epoch: {error}")))
+fn missing() -> Error {
+    Error::Tool(text::DEFINITION.error_missing.as_str().into())
 }
 
 fn validate_id(id: &str) -> std::result::Result<(), String> {
@@ -654,9 +572,9 @@ fn canonical_note(note: &str) -> std::result::Result<String, String> {
     let note = note.replace("\r\n", "\n").replace('\r', "\n");
     let note = note.trim();
     if note.is_empty() || note.len() > MAX_NOTE_BYTES {
-        return Err(format!(
-            "scratchpad note must be 1–{MAX_NOTE_BYTES} UTF-8 bytes"
-        ));
+        return Err(text::DEFINITION
+            .error_note_length
+            .replace("{max}", &MAX_NOTE_BYTES.to_string()));
     }
     Ok(note.into())
 }

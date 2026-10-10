@@ -1527,7 +1527,7 @@ async fn compatible_images_use_json_for_generation_and_multipart_for_public_edit
         .generate_image(ImageGenerationRequest {
             model: "gpt-image-2.5-sunburst",
             prompt: "a red fox",
-            image_aspect: crate::protocol::ImageAspect::Square,
+            image_aspect: crate::backend::model::ImageAspect::Square,
             quality: None,
             references: &[],
         })
@@ -1546,7 +1546,7 @@ async fn compatible_images_use_json_for_generation_and_multipart_for_public_edit
         .generate_image(ImageGenerationRequest {
             model: "gpt-image-2.5-flare",
             prompt: "make the fox blue",
-            image_aspect: crate::protocol::ImageAspect::Landscape,
+            image_aspect: crate::backend::model::ImageAspect::Landscape,
             quality: None,
             references: &references,
         })

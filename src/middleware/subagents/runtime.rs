@@ -16,8 +16,11 @@ use crate::backend::checkpoint::CheckpointStore;
 use crate::backend::checkpoint::event_turn_page;
 use crate::middleware::RuntimeContext;
 use crate::protocol::EventMsg;
+use crate::protocol::FrontendAction;
+use crate::protocol::FrontendActionListItem;
 use crate::protocol::FrontendBlock;
 use crate::protocol::FrontendEvent;
+use crate::protocol::FrontendListItemState;
 use crate::protocol::FrontendPickerOption;
 use crate::protocol::FrontendPreviewEvent;
 use crate::protocol::FrontendSlot;
@@ -25,6 +28,7 @@ use crate::protocol::FrontendSymbol;
 use crate::protocol::FrontendTone;
 use crate::protocol::FrontendWidget;
 use crate::protocol::FrontendWidgetContent;
+use crate::protocol::MessageAuthor;
 use crate::protocol::MessageSubmission;
 use crate::protocol::Op;
 
@@ -75,16 +79,38 @@ struct Root {
     tree: Tree,
     root_sender: Option<WeakAgentSender>,
     senders: BTreeMap<String, AgentSender>,
-    parent_reports: BTreeMap<String, Vec<MessageSubmission>>,
+    parent_reports: BTreeMap<String, Vec<ParentReport>>,
+}
+
+/// A child's message to its parent, kept to deduplicate its completion report.
+#[derive(Clone)]
+struct ParentReport {
+    message_id: String,
+    text: String,
+}
+
+impl ParentReport {
+    fn of(message: &MessageSubmission) -> Option<Self> {
+        match &message.author {
+            // The submission is sent on; keep only the two fields deduplication reads.
+            MessageAuthor::Source { message_id, .. } => Some(Self {
+                message_id: message_id.clone(),
+                text: message.text.clone(),
+            }),
+            MessageAuthor::User => None,
+        }
+    }
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Tree {
     agents: BTreeMap<String, AgentRecord>,
     updates: VecDeque<CompletionUpdate>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct AgentRecord {
     pub(super) parent: String,
     pub(super) session_id: String,
@@ -637,12 +663,12 @@ fn unknown_target(target: &str) -> Error {
 
 fn subagent_error_notice(message: String) -> FrontendEvent {
     FrontendEvent::Render {
-        capability: "subagents".into(),
+        capability: super::MANIFEST.id.into(),
         block: FrontendBlock {
             update: crate::protocol::FrontendBlockUpdate::Replace,
             state: crate::protocol::FrontendBlockState::Complete,
             role: crate::protocol::FrontendBlockRole::Notice,
-            title: "Subagent error".into(),
+            title: super::text::DEFINITION.error_title.as_str().into(),
             text: message,
             symbol: Some(FrontendSymbol::Agent),
             format: crate::protocol::FrontendBlockFormat::PlainText,
@@ -735,12 +761,53 @@ fn status_widget(tree: &Tree) -> FrontendWidget {
         symbol: Some(FrontendSymbol::Agent),
         icon_only: false,
         progress: None,
-        content: Some(FrontendWidgetContent::Picker {
-            title: "Subagents".into(),
-            options: picker_options(tree),
+        content: Some(FrontendWidgetContent::ActionList {
+            title: super::text::DEFINITION.status_title.as_str().into(),
+            items: agent_items(tree),
+            actions: Vec::new(),
         }),
         action: None,
     }
+}
+
+fn agent_items(tree: &Tree) -> Vec<FrontendActionListItem> {
+    let mut agents = tree.agents.iter().collect::<Vec<_>>();
+    agents.sort_by_key(|(_, entry)| entry.status.presentation_order());
+    agents
+        .into_iter()
+        .map(|(path, entry)| FrontendActionListItem {
+            id: path.as_str().into(),
+            text: path.rsplit('/').next().unwrap_or(path).into(),
+            state: match entry.status {
+                AgentStatus::PendingInit => FrontendListItemState::Pending,
+                AgentStatus::Running => FrontendListItemState::InProgress,
+                AgentStatus::Completed => FrontendListItemState::Completed,
+                AgentStatus::Interrupted => FrontendListItemState::Plain,
+                AgentStatus::Errored => FrontendListItemState::Failed,
+            },
+            actions: vec![FrontendAction {
+                id: super::Command::Open.as_str().into(),
+                label: super::text::DEFINITION.render_open.as_str().into(),
+                symbol: if entry.status.is_active() {
+                    FrontendSymbol::Progress
+                } else {
+                    FrontendSymbol::Agent
+                },
+                // Action tone marks destructive intent; failure is the item's state.
+                tone: match entry.status {
+                    AgentStatus::Interrupted => FrontendTone::Warning,
+                    _ => FrontendTone::Neutral,
+                },
+                op: Op::command(
+                    super::MANIFEST.id,
+                    super::Command::Open.as_str(),
+                    path.clone(),
+                ),
+                input_from_label: false,
+                editor: None,
+            }],
+        })
+        .collect()
 }
 
 fn picker_options(tree: &Tree) -> Vec<FrontendPickerOption> {
@@ -758,7 +825,11 @@ fn picker_options(tree: &Tree) -> Vec<FrontendPickerOption> {
                 FrontendSymbol::Agent
             }),
             shows_detail: false,
-            op: Op::command("subagents", "subagents", path.clone()),
+            op: Op::command(
+                super::MANIFEST.id,
+                super::Command::Open.as_str(),
+                path.clone(),
+            ),
         })
         .collect()
 }
@@ -766,12 +837,12 @@ fn picker_options(tree: &Tree) -> Vec<FrontendPickerOption> {
 fn status_event(tree: &Tree) -> FrontendEvent {
     if tree.agents.is_empty() {
         FrontendEvent::RemoveWidget {
-            capability: "subagents".into(),
+            capability: super::MANIFEST.id.into(),
             id: "status".into(),
         }
     } else {
         FrontendEvent::Widget {
-            capability: "subagents".into(),
+            capability: super::MANIFEST.id.into(),
             item: status_widget(tree),
         }
     }

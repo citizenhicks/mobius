@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use super::Agent;
 use super::AgentConfig;
+use super::ChildAgents;
 use super::Runner;
 use super::SUBMISSION_QUEUE_CAPACITY;
 use super::TURN_RESTARTED_REASON;
@@ -27,6 +28,7 @@ use crate::protocol::ModelChangedEvent;
 use crate::protocol::ModelStepCompletedEvent;
 use crate::protocol::ModelStepOutcome;
 use crate::protocol::SessionConfiguredEvent;
+use crate::protocol::SessionContext;
 use crate::protocol::SessionHistoryEvent;
 use crate::protocol::TokenCountEvent;
 use crate::protocol::TokenUsageInfo;
@@ -66,6 +68,14 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     if config.max_model_steps == 0 {
         return Err(Error::Config("maximum model steps must be positive".into()));
     }
+    let (children, root_config) = match config.children.take() {
+        Some(children) => (children, None),
+        None => {
+            // Children start from the root's unstarted composition, which startup consumes below.
+            let root = Arc::new(config.child_configuration());
+            (ChildAgents(Arc::downgrade(&root)), Some(root))
+        }
+    };
     config.middleware = config
         .middleware
         .with_sandbox(Arc::clone(&config.sandbox))?;
@@ -88,7 +98,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         state.metadata.clone_from(&config.metadata);
         state.catalog_visible = config.catalog_visible;
     } else {
-        config.session_context.clone_from(&state.session_context);
+        config.session_context = Arc::new(state.session_context.clone());
         if config.metadata_configured {
             metadata_changed = config.metadata != state.metadata;
             state.metadata.clone_from(&config.metadata);
@@ -157,7 +167,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     );
     let session = SessionConfiguredEvent {
         session_id: config.session_id.clone(),
-        context: config.session_context.clone(),
+        context: SessionContext::clone(&config.session_context),
         model: ModelChangedEvent {
             route: route.clone(),
             model: model.model.clone(),
@@ -179,9 +189,10 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         model_route: route.clone(),
         model: model.model.clone(),
         approval_policy: config.sandbox.approval_policy(),
-        session_context: config.session_context.clone(),
+        session_context: SessionContext::clone(&config.session_context),
         metadata: config.metadata.clone(),
         role: config.role.clone(),
+        children,
         frontend: Arc::new(move |update| {
             let mut queued = queued_frontend
                 .lock()
@@ -444,6 +455,7 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
     tokio::spawn(async move {
         let run = runner.run(inbox).await;
         let session_end = runner.config.middleware.session_end(&runner.runtime).await;
+        drop(root_config);
         let error = match (run, session_end) {
             (Err(primary), Err(rollback)) => Some(Error::Rollback {
                 primary: Box::new(primary),

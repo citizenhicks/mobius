@@ -9,7 +9,7 @@ use mobius_gateway::wire::{
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::{Action, FollowUp, moved, request_action};
-use crate::frontend::terminal_text;
+use crate::frontend::terminal::append_bounded;
 
 pub(super) enum Form {
     Bot(Box<BotForm>),
@@ -49,7 +49,7 @@ impl TextForm {
     }
 
     fn push(&mut self, value: &str) {
-        self.error = (!push_bounded(&mut self.value, value, self.limit, self.multiline))
+        self.error = append_bounded(&mut self.value, value, self.limit, self.multiline)
             .then(|| format!("input is limited to {} bytes", self.limit));
     }
 
@@ -198,6 +198,13 @@ impl RoutineForm {
     }
 }
 impl Form {
+    pub(super) fn set_error(&mut self, message: String) {
+        match self {
+            Self::Bot(form) => form.error = Some(message),
+            Self::Routine(form) => form.error = Some(message),
+        }
+    }
+
     pub(super) fn handle_key(&mut self, key: KeyEvent, gateway: &ReadyPayload) -> FormFlow {
         if key.code == KeyCode::Esc {
             return FormFlow::Cancel;
@@ -281,7 +288,7 @@ impl BotForm {
             self.error = Some("Bot name and description are required.".into());
             return FormFlow::Stay;
         }
-        match &mut self.mode {
+        match &self.mode {
             BotFormMode::Create => {
                 FormFlow::Send(request_action("Create Bot", FollowUp::None, |request_id| {
                     ClientMessage::CreateBot {
@@ -299,14 +306,13 @@ impl BotForm {
                 let current = &bot.config.config;
                 let config = AgentComposition {
                     provider: current.provider.clone(),
-                    realtime_voice: current.realtime_voice.clone(),
                     middleware: current.middleware.clone(),
                     extensions: current.extensions.clone(),
-                    system_prompt: if let Some(prompt) = &mut self.prompt {
-                        std::mem::take(&mut prompt.value)
-                    } else {
-                        current.system_prompt.clone()
-                    },
+                    system_prompt: self
+                        .prompt
+                        .as_ref()
+                        .map_or(&current.system_prompt, |prompt| &prompt.value)
+                        .clone(),
                     max_model_steps: current.max_model_steps,
                 };
                 FormFlow::Send(request_action(
@@ -314,7 +320,7 @@ impl BotForm {
                     FollowUp::None,
                     |request_id| ClientMessage::UpdateBot {
                         request_id,
-                        id: std::mem::take(id),
+                        id: id.clone(),
                         expected_revision: *revision,
                         name,
                         description,
@@ -415,7 +421,7 @@ impl RoutineForm {
         }
     }
 
-    pub(super) fn action(&mut self) -> std::result::Result<Action, String> {
+    pub(super) fn action(&self) -> std::result::Result<Action, String> {
         let workspace = self.workspace.value.trim();
         if workspace.is_empty() {
             return Err("Routine workspace is required.".into());
@@ -425,19 +431,15 @@ impl RoutineForm {
         }
         let timer = if self.schedule_enabled {
             let schedule = self.schedule()?;
-            let ends_at = optional_i64(&self.ends_at.value, "end time")?;
-            if ends_at.is_some_and(|value| value <= 0) {
-                return Err("Routine end time must be a positive Unix timestamp.".into());
-            }
-            Some((schedule, ends_at))
+            Some((schedule, optional_i64(&self.ends_at.value, "end time")?))
         } else {
             None
         };
-        // Validation above preserves the editable form on failure; a successful submission consumes it.
-        let mut bindings = std::mem::take(&mut self.bindings);
+        // The form stays open until the gateway answers, so a rejection keeps every edit.
+        let mut bindings = self.bindings.clone();
         if let Some((schedule, ends_at)) = timer {
             let binding = RoutineBinding {
-                id: std::mem::take(&mut self.timer_binding_id),
+                id: self.timer_binding_id.clone(),
                 on: HookSelector::Schedule { schedule, ends_at },
                 action: RoutineAction::Start,
             };
@@ -452,16 +454,16 @@ impl RoutineForm {
         }
         let definition = RoutineDefinition {
             workspace: PathBuf::from(workspace),
-            instructions: std::mem::take(&mut self.instructions.value),
+            instructions: self.instructions.value.clone(),
             bindings,
         };
-        match &mut self.mode {
+        match &self.mode {
             RoutineFormMode::Create(bot_id) => Ok(request_action(
                 "Create routine",
                 FollowUp::Routines,
                 |request_id| ClientMessage::CreateRoutine {
                     request_id,
-                    bot_id: std::mem::take(bot_id),
+                    bot_id: bot_id.clone(),
                     definition,
                 },
             )),
@@ -471,7 +473,7 @@ impl RoutineForm {
                 |request_id| ClientMessage::RoutineCommand {
                     request_id,
                     command: RoutineCommand {
-                        routine_id: std::mem::take(id),
+                        routine_id: id.clone(),
                         action: RoutineAction::Update { definition },
                     },
                 },
@@ -493,9 +495,6 @@ impl RoutineForm {
                 let seconds = value
                     .parse::<u64>()
                     .map_err(|_| "Interval must be a whole number of seconds.".to_owned())?;
-                if seconds < 60 {
-                    return Err("Interval must be at least 60 seconds.".into());
-                }
                 Ok(RoutineSchedule {
                     kind: self.schedule_kind,
                     at: None,
@@ -541,17 +540,4 @@ fn parse_i64(value: &str, label: &str) -> std::result::Result<i64, String> {
     value
         .parse()
         .map_err(|_| format!("Routine {label} must be a Unix timestamp."))
-}
-fn push_bounded(target: &mut String, value: &str, limit: usize, multiline: bool) -> bool {
-    let value = terminal_text(value);
-    for character in value
-        .chars()
-        .filter(|character| multiline || !matches!(character, '\n' | '\t'))
-    {
-        if target.len() + character.len_utf8() > limit {
-            return false;
-        }
-        target.push(character);
-    }
-    true
 }

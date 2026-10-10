@@ -36,7 +36,6 @@ pub(crate) static MANIFEST: std::sync::LazyLock<MiddlewareManifest> =
         description: &TEXT.description,
         required: true,
         default_enabled: false,
-        required_model_capability: None,
         settings: &[],
     });
 
@@ -52,6 +51,9 @@ impl PersistentChat {
 impl Middleware for PersistentChat {
     fn name(&self) -> &'static str {
         MANIFEST.id
+    }
+    fn main_agent_only(&self) -> bool {
+        true
     }
     fn register(&self, catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
         if runtime.session_id != crate::bots::conversation_session_id(&self.bot_id)
@@ -90,19 +92,7 @@ impl Middleware for PersistentChat {
         context: &'a mut PreToolUseContext<'_>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            if !matches!(context.turn.author, MessageAuthor::User)
-                && !matches!(
-                    context.call().name.as_str(),
-                    "tools_search"
-                        | "read_file"
-                        | "view_image"
-                        | "list_subscriptions"
-                        | "list_routines"
-                        | "list_chats"
-                        | "search_history"
-                        | "read_history"
-                )
-            {
+            if !matches!(context.turn.author, MessageAuthor::User) && !context.call_is_read_only() {
                 context.deny("Source reports can be inspected and summarized; only a user turn can authorize new actions")?;
             }
             Ok(())
@@ -187,15 +177,16 @@ impl Tool for RoutineTool {
     fn execution_mode(&self) -> ExecutionMode {
         ExecutionMode::Exclusive
     }
+    fn read_only(&self) -> bool {
+        matches!(self.action, Action::List | Action::Reporting)
+    }
     fn call<'a>(
         &'a self,
         context: ToolContext,
         arguments: Value,
     ) -> BoxFuture<'a, Result<mobius::protocol::ToolResponse>> {
         Box::pin(async move {
-            if !matches!(self.action, Action::List | Action::Reporting)
-                && !matches!(context.author, MessageAuthor::User)
-            {
+            if !self.read_only() && !matches!(context.author, MessageAuthor::User) {
                 return Err(mobius::Error::Tool(
                     "Bot management requires a user turn or an exact saved hook action".into(),
                 ));
@@ -347,6 +338,24 @@ fn binding_schema(action: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_snapshot_actions_are_read_only() {
+        let host: crate::host::HostAccess = Arc::new(|| Err(crate::Error::Config("unused".into())));
+        let read_only = ACTIONS
+            .into_iter()
+            .filter(|&action| {
+                RoutineTool {
+                    action,
+                    bot_id: "bot".into(),
+                    host: Arc::clone(&host),
+                }
+                .read_only()
+            })
+            .map(Action::name)
+            .collect::<Vec<_>>();
+        assert_eq!(read_only, ["list_routines", "list_subscriptions"]);
+    }
 
     #[test]
     fn routine_tool_schemas_keep_referenced_hook_definitions() {

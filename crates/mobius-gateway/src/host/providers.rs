@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::Error;
 use crate::config::GatewayConfig;
 use crate::provider_catalog::{
-    configured_model_catalog, configured_model_choices, credential_is_configured, selected_base_url,
+    configured_model_choices, credential_is_configured, selected_base_url,
 };
 use crate::wire::{
     AgentComposition, BotRecord, ProviderConfig, ProviderEndpointAuth, ReadyPayload, ServerFrame,
@@ -67,22 +67,7 @@ impl GatewayHost {
         let state = self.state.lock().await;
         let publication = {
             let mut current = state.config()?;
-            let models = configured_model_choices(&current, &state.store, &state.credentials)
-                .map_err(internal)?;
-            crate::config::validate_bot_compatibility(&current, &config, models.catalogs())
-                .map_err(invalid_config)?;
-            if current
-                .bot_defaults
-                .as_ref()
-                .is_none_or(|previous| previous.config.realtime_voice != config.realtime_voice)
-            {
-                models
-                    .validate_voice(config.realtime_voice.as_deref())
-                    .map_err(invalid_config)?;
-            }
-            crate::extensions::ExtensionStore::new(&state.store)
-                .resolve(&current, &config.extensions)
-                .map_err(invalid_config)?;
+            super::validate_composition(&state, &current, &config)?;
             let next = current
                 .replacing_bot_defaults(expected_revision, config)
                 .map_err(invalid_config)?;
@@ -448,7 +433,7 @@ impl GatewayHost {
             let next = current
                 .registering_configured(registration, preserve_selection)
                 .map_err(invalid_config)?;
-            validate_bot_catalog(&state, &current, &next, &bots)?;
+            validate_bot_catalog(&state, &next, &bots)?;
             let catalog_changed = current.configured_providers.len()
                 != next.configured_providers.len()
                 || current.configured_providers.iter().any(|(id, previous)| {
@@ -538,7 +523,7 @@ impl GatewayHost {
                     ));
                 }
             }
-            validate_bot_catalog(&state, &current, &next, &bots)?;
+            validate_bot_catalog(&state, &next, &bots)?;
             next
         };
         let target_epoch = state
@@ -642,24 +627,11 @@ fn commit_provider_removal(
 
 fn validate_bot_catalog(
     state: &super::GatewayState,
-    previous: &GatewayConfig,
     gateway: &GatewayConfig,
     bots: &[BotRecord],
 ) -> std::result::Result<(), Rejection> {
     let models = configured_model_choices(gateway, &state.store, &state.credentials)
         .map_err(invalid_config)?;
-    let previous_models = configured_model_catalog(previous).map_err(invalid_config)?;
-    let next_models = configured_model_catalog(gateway).map_err(invalid_config)?;
-    let validate_voice = |config: &AgentComposition| {
-        let route = config.realtime_voice.as_deref();
-        if previous_models.validate_voice(route).is_ok() {
-            next_models.validate_voice(route)?;
-        }
-        Ok::<_, Error>(())
-    };
-    if let Some(defaults) = &gateway.bot_defaults {
-        validate_voice(&defaults.config).map_err(invalid_config)?;
-    }
     for bot in bots {
         if let Err(error) = crate::config::validate_bot_compatibility(
             gateway,
@@ -668,7 +640,6 @@ fn validate_bot_catalog(
         ) {
             return Err(bot_catalog_rejection(bot, error));
         }
-        validate_voice(&bot.config.config).map_err(|error| bot_catalog_rejection(bot, error))?;
     }
     Ok(())
 }

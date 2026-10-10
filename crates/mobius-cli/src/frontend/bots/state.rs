@@ -554,6 +554,7 @@ impl BotsState {
 
     pub(super) fn complete(&mut self) -> Option<FollowUp> {
         let pending = self.pending.take()?;
+        self.form = None;
         self.notice = Some(Notice {
             text: format!("{} complete.", pending.label),
             role: Role::Success,
@@ -563,10 +564,15 @@ impl BotsState {
 
     pub(super) fn fail(&mut self, message: impl Into<String>) {
         self.pending = None;
-        self.notice = Some(Notice {
-            text: message.into(),
-            role: Role::Error,
-        });
+        let message = message.into();
+        if let Some(form) = self.form.as_mut() {
+            form.set_error(message);
+        } else {
+            self.notice = Some(Notice {
+                text: message,
+                role: Role::Error,
+            });
+        }
     }
 
     fn handle_form_key(&mut self, key: KeyEvent, gateway: &ReadyPayload) -> Action {
@@ -579,11 +585,17 @@ impl BotsState {
                 Action::None
             }
             FormFlow::Cancel => Action::None,
-            FormFlow::Send(action) => action,
+            FormFlow::Send(action) => {
+                self.form = Some(form);
+                action
+            }
         }
     }
 
     pub(super) fn paste(&mut self, value: &str) {
+        if self.pending.is_some() {
+            return;
+        }
         if let Some(form) = self.form.as_mut() {
             form.paste(value);
         }

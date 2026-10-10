@@ -50,7 +50,7 @@ pub(crate) use self::workspace::{
 };
 pub use crate::server::ConnectionPolicy;
 
-const CONFIG_VERSION: u32 = 28;
+const CONFIG_VERSION: u32 = 29;
 pub(crate) const MAX_CAPACITY: usize = 4_096;
 
 pub(crate) fn bounded<T>(name: &str, value: T, range: std::ops::RangeInclusive<T>) -> Result<()>
@@ -83,6 +83,8 @@ const MAX_CUSTOM_MODEL_ROUTES: usize = 64;
 pub const MAX_CLOUDFLARE_TOKEN_BYTES: usize = 16 * 1024;
 /// Maximum UTF-8 byte length accepted for a provider label.
 pub const MAX_PROVIDER_LABEL_BYTES: usize = 128;
+/// Maximum byte length accepted for a named Cloudflare tunnel hostname.
+pub const MAX_HOSTNAME_BYTES: usize = 253;
 const MAX_WORKSPACE_DIRECTORY_NAME_BYTES: usize = 255;
 const MAX_ATTACHED_FOLDERS: usize = 8;
 const SECONDS_PER_DAY: u64 = 86_400;
@@ -213,9 +215,17 @@ struct StoredChatSpec {
 
 impl Default for AgentComposition {
     fn default() -> Self {
+        Self::defaults_with_ceilings(mobius::middleware::subagents::SubagentCeilings::default())
+    }
+}
+
+impl AgentComposition {
+    pub(crate) fn defaults_with_ceilings(
+        ceilings: mobius::middleware::subagents::SubagentCeilings,
+    ) -> Self {
         let provider = default_provider();
         let model = provider.default_model().and_then(|id| provider.model(id));
-        let mut middleware = crate::middleware_manifest::default_config();
+        let mut middleware = crate::middleware_manifest::default_config(ceilings);
         middleware.set_setting(
             "sandbox",
             "approval_policy",
@@ -240,7 +250,6 @@ impl Default for AgentComposition {
                     .expect("default provider web-search manifest"),
                 tool_discovery: None,
             },
-            realtime_voice: None,
             middleware,
             extensions: BTreeSet::new(),
             system_prompt: DEFAULT_SYSTEM_PROMPT.into(),
@@ -424,7 +433,7 @@ impl GatewayConfig {
         if let Some(selection) = default_selection {
             let config = AgentComposition {
                 provider: selection,
-                ..AgentComposition::default()
+                ..AgentComposition::defaults_with_ceilings(next.execution.subagent_ceilings)
             };
             next.bot_defaults = Some(VersionedAgentConfig {
                 revision: 1,
@@ -615,7 +624,7 @@ impl GatewayConfig {
             }
             validate_agent_composition_with_ceilings(
                 &default.config,
-                self.execution.subagent_ceilings()?,
+                self.execution.subagent_ceilings,
             )?;
             self.validate_provider_selection(&default.config.provider)?;
             for (middleware, setting, route) in
@@ -877,7 +886,7 @@ impl CloudflareConfig {
 
     fn validate(&self) -> Result<()> {
         if let Self::Named { hostname } = self
-            && (hostname.len() > 253
+            && (hostname.len() > MAX_HOSTNAME_BYTES
                 || !hostname.is_ascii()
                 || hostname != &hostname.to_ascii_lowercase()
                 || !hostname.contains('.')

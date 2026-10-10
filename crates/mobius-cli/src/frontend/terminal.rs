@@ -15,6 +15,8 @@ use ratatui::text::{Line, Span};
 
 pub(super) const INPUT_POLL: Duration = Duration::from_millis(16);
 pub(super) const MAX_INPUT_BATCH: usize = 64;
+/// Terminal input cap for gateway and provider endpoint fields.
+pub(super) const MAX_ENDPOINT_BYTES: usize = 4 * 1024;
 
 /// Returns the terminal text.
 pub fn terminal_text(value: &str) -> String {
@@ -109,15 +111,32 @@ pub(super) fn content_area(area: ratatui::layout::Rect, max_width: u16) -> ratat
     )
 }
 
-/// Appends printable text up to a UTF-8 byte bound; returns whether text was rejected.
+/// Appends printable single-line text up to a UTF-8 byte bound; returns whether text was rejected.
 pub(super) fn append_text(target: &mut String, text: &str, limit: usize) -> bool {
-    for character in text.chars().filter(|character| !character.is_control()) {
+    append_bounded(target, text, limit, false)
+}
+
+/// Appends printable text, plus newlines and tabs when `multiline`, up to a UTF-8 byte bound;
+/// returns whether text was rejected.
+pub(super) fn append_bounded(
+    target: &mut String,
+    text: &str,
+    limit: usize,
+    multiline: bool,
+) -> bool {
+    for character in text.chars().filter(|character| {
+        (multiline && matches!(character, '\n' | '\t')) || !character.is_control()
+    }) {
         if target.len() + character.len_utf8() > limit {
             return true;
         }
         target.push(character);
     }
     false
+}
+
+pub(super) fn truncate_bytes(value: &mut String, limit: usize) {
+    value.truncate(value.floor_char_boundary(limit));
 }
 
 #[cfg(test)]
@@ -149,6 +168,9 @@ mod tests {
         assert!(!append_text(&mut text, "a\n\t", 4));
         assert!(append_text(&mut text, "€z", 4));
         assert_eq!(text, "a€");
+        let mut text = String::new();
+        assert!(!append_bounded(&mut text, "a\n\t\u{7}", 8, true));
+        assert_eq!(text, "a\n\t");
         assert_eq!(masked_credential(&text, 1), "•…");
     }
 }

@@ -467,11 +467,55 @@ impl SessionFileStore {
         detail: ImageDetail,
         coordinates: bool,
     ) -> Result<ImageReference> {
-        let (bytes, media_type, width, height, orientation) =
-            validated_image(bytes, &self.image_work).await?;
+        let image @ (_, _, width, height, _) = validated_image(bytes, &self.image_work).await?;
         if coordinates && !self.image_policy.fits(width, height) {
             return Err(Error::Tool("computer capture exceeds presentation dimensions; reduce the viewport or capture size to preserve click coordinates".into()));
         }
+        self.store_image(
+            session_id,
+            name,
+            image,
+            detail,
+            SessionFileOrigin::Observation,
+        )
+        .await
+    }
+
+    /// Validates and publishes one image directly as an agent artifact with its dimensions.
+    /// # Errors
+    ///
+    /// Returns an error if the image is malformed, mislabeled, or cannot be stored.
+    pub async fn publish_image(
+        &self,
+        session_id: &str,
+        name: String,
+        declared_media_type: &str,
+        bytes: Vec<u8>,
+    ) -> Result<ImageReference> {
+        let image @ (_, media_type, _, _, _) = validated_image(bytes, &self.image_work).await?;
+        if declared_media_type != media_type {
+            return Err(Error::Tool(
+                "generated image media type does not match its bytes".into(),
+            ));
+        }
+        self.store_image(
+            session_id,
+            name,
+            image,
+            ImageDetail::Auto,
+            SessionFileOrigin::Artifact,
+        )
+        .await
+    }
+
+    async fn store_image(
+        &self,
+        session_id: &str,
+        name: String,
+        (bytes, media_type, width, height, orientation): (Vec<u8>, &'static str, u32, u32, u8),
+        detail: ImageDetail,
+        origin: SessionFileOrigin,
+    ) -> Result<ImageReference> {
         let size = u64::try_from(bytes.len())
             .map_err(|_| Error::Tool("image file size overflow".into()))?;
         let mut pending = self
@@ -480,8 +524,8 @@ impl SessionFileStore {
                 name,
                 size,
                 media_type.into(),
-                SessionFileOrigin::Observation,
-                false,
+                origin,
+                origin == SessionFileOrigin::Artifact,
             )
             .await?;
         pending.record.image_dimensions = Some([width, height]);
@@ -495,34 +539,6 @@ impl SessionFileStore {
         };
         image.rendition = self.prepare_image(session_id, &image).await?;
         Ok(image)
-    }
-
-    /// Validates and publishes one image directly as an agent artifact.
-    /// # Errors
-    ///
-    /// Returns an error if the image is malformed, mislabeled, or cannot be stored.
-    pub async fn publish_image(
-        &self,
-        session_id: &str,
-        name: String,
-        declared_media_type: &str,
-        bytes: Vec<u8>,
-    ) -> Result<SessionFileReference> {
-        let (bytes, media_type, _, _, _) = validated_image(bytes, &self.image_work).await?;
-        if declared_media_type != media_type {
-            return Err(Error::Tool(
-                "generated image media type does not match its bytes".into(),
-            ));
-        }
-        self.publish_bytes(
-            session_id,
-            name,
-            media_type.into(),
-            &bytes,
-            SessionFileOrigin::Artifact,
-            true,
-        )
-        .await
     }
 
     /// Reads an exact file reference authorized by the owning session.

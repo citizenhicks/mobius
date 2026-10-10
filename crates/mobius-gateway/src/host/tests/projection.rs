@@ -222,9 +222,9 @@ fn recent_runs_group_under_the_nearest_visible_session_in_source_order() {
 }
 
 #[test]
-fn recent_runs_omit_metadata_hidden_roots() {
+fn recent_runs_omit_catalog_hidden_roots() {
     let sessions = vec![
-        session_summary("hidden", None, true, None),
+        session_summary("hidden", None, false, None),
         session_summary("hidden-agent", Some("hidden"), false, None),
         session_summary("shown", None, true, Some("  Shown thread  ")),
     ];
@@ -232,16 +232,7 @@ fn recent_runs_omit_metadata_hidden_roots() {
         execution_record("hidden-agent", "hidden", 2),
         execution_record("shown", "shown", 1),
     ];
-    let mut metadata = SessionCatalogMetadata::new();
-    metadata.insert(
-        "hidden".into(),
-        catalog::SessionMetadata {
-            hidden: true,
-            ..catalog::SessionMetadata::default()
-        },
-    );
-
-    let groups = recent_run_groups(records, &sessions, &metadata);
+    let groups = recent_run_groups(records, &sessions, &SessionCatalogMetadata::new());
 
     assert!(matches!(
         groups.as_slice(),

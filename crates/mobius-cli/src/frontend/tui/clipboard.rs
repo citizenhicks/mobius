@@ -1,4 +1,4 @@
-use mobius::middleware::artifacts::media_type;
+use mobius::backend::session_files::media_type;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 

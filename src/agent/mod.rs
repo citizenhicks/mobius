@@ -92,11 +92,11 @@ pub struct AgentConfig {
     sandbox: Arc<Sandbox>,
     checkpoints: Arc<dyn CheckpointStore>,
     middleware: MiddlewareStack,
-    system_prompt: String,
+    system_prompt: Arc<str>,
     session_id: String,
     context_window: i64,
     default_context_window: i64,
-    session_context: SessionContext,
+    session_context: Arc<SessionContext>,
     metadata: BTreeMap<String, Value>,
     catalog_visible: bool,
     usage_observer: Option<UsageObserver>,
@@ -106,6 +106,7 @@ pub struct AgentConfig {
     max_model_steps: usize,
     token_estimate: crate::middleware::TokenEstimate,
     role: AgentRole,
+    children: Option<ChildAgents>,
 }
 
 impl AgentConfig {
@@ -125,11 +126,11 @@ impl AgentConfig {
             sandbox,
             checkpoints,
             middleware,
-            system_prompt: system_prompt.into(),
+            system_prompt: system_prompt.into().into(),
             session_id,
             context_window: 272_000,
             default_context_window: 272_000,
-            session_context: SessionContext::default(),
+            session_context: Arc::default(),
             metadata: BTreeMap::new(),
             catalog_visible: true,
             usage_observer: None,
@@ -139,6 +140,7 @@ impl AgentConfig {
             max_model_steps: DEFAULT_MAX_MODEL_STEPS,
             token_estimate: crate::middleware::TokenEstimate::default(),
             role: AgentRole::Main,
+            children: None,
         }
     }
 
@@ -161,7 +163,7 @@ impl AgentConfig {
     /// Attaches trusted, frontend-visible labels to this session.
     #[must_use]
     pub fn session_context(mut self, context: SessionContext) -> Self {
-        self.session_context = context;
+        self.session_context = Arc::new(context);
         self
     }
 
@@ -281,6 +283,31 @@ impl AgentConfig {
         self.provider.clone_from(&choice.route);
         self.context_window = choice.context_window.unwrap_or(self.default_context_window);
         Ok(choice)
+    }
+
+    fn child_configuration(&self) -> Self {
+        Self {
+            model: Arc::clone(&self.model),
+            provider: String::new(),
+            sandbox: Arc::clone(&self.sandbox),
+            checkpoints: Arc::clone(&self.checkpoints),
+            middleware: self.middleware.for_child_agents(),
+            system_prompt: Arc::clone(&self.system_prompt),
+            session_id: String::new(),
+            context_window: self.context_window,
+            default_context_window: self.default_context_window,
+            session_context: Arc::clone(&self.session_context),
+            metadata: BTreeMap::new(),
+            catalog_visible: self.catalog_visible,
+            usage_observer: self.usage_observer.as_ref().map(Arc::clone),
+            metadata_configured: false,
+            model_route_configured: false,
+            initial_replay_batches: self.initial_replay_batches,
+            max_model_steps: self.max_model_steps,
+            token_estimate: self.token_estimate,
+            role: AgentRole::Main,
+            children: None,
+        }
     }
 }
 
@@ -502,6 +529,43 @@ impl SubmissionInbox {
             .lock()
             .map(|sequence| *sequence)
             .map_err(|_| Error::Stopped("agent submission queue poisoned".into()))
+    }
+}
+
+/// Creates child agents from the root agent's configuration while that root runs.
+///
+/// Children and their descendants share the root's configuration; once the root
+/// runtime stops, every handle refuses to create more agents.
+#[derive(Clone, Default)]
+pub struct ChildAgents(Weak<AgentConfig>);
+
+impl ChildAgents {
+    /// Creates and starts one child agent with isolated execution.
+    /// # Errors
+    ///
+    /// Returns an error if the root agent stopped or the child cannot start.
+    pub async fn create(
+        &self,
+        session_id: String,
+        metadata: BTreeMap<String, Value>,
+        role: AgentRole,
+        model: &str,
+        reasoning_effort: Option<&str>,
+    ) -> Result<Agent> {
+        let root = self
+            .0
+            .upgrade()
+            .ok_or_else(|| Error::Stopped("parent agent stopped".into()))?;
+        let mut config = root
+            .child_configuration()
+            .isolated_execution()?
+            .session_id(session_id)
+            .metadata(metadata)
+            .role(role)
+            .model_route(model, reasoning_effort)?;
+        drop(root);
+        config.children = Some(Self(Weak::clone(&self.0)));
+        create_agent(config).await
     }
 }
 

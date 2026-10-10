@@ -11,22 +11,23 @@ use crate::protocol::{
 
 fn test_middleware() -> Subagents {
     Subagents::new(
-        1,
-        2,
-        2,
-        Arc::new(|_| Box::pin(async { Err(Error::Stopped("unused".into())) })),
+        SubagentCeilings::default()
+            .limits(1, 2, 2)
+            .expect("subagent limits"),
     )
-    .expect("subagents middleware")
 }
 
 #[test]
 fn limits_are_validated_at_one_public_boundary() {
+    let ceilings = SubagentCeilings::default();
     for (depth, concurrency, agents) in [(0, 2, 2), (17, 2, 2), (1, 1, 2), (1, 65, 65)] {
-        assert!(validate_limits(depth, concurrency, agents).is_err());
+        assert!(ceilings.limits(depth, concurrency, agents).is_err());
     }
-    assert!(validate_limits(1, 3, 2).is_err());
-    assert!(validate_limits(1, 2, 257).is_err());
-    validate_limits(16, 64, 256).expect("maximum supported limits");
+    assert!(ceilings.limits(1, 3, 2).is_err());
+    assert!(ceilings.limits(1, 2, 257).is_err());
+    ceilings
+        .limits(16, 64, 256)
+        .expect("maximum supported limits");
 }
 
 fn preview_messages(events: &[crate::protocol::FrontendPreviewEvent]) -> Vec<EventMsg> {
@@ -62,7 +63,7 @@ fn prompt_section_guides_root_to_delegate_parallel_work() {
 
 #[test]
 fn frontend_command_is_available_during_an_active_turn() {
-    let contribution = test_middleware().frontend();
+    let contribution = test_middleware().frontend("session");
 
     assert!(!contribution.commands[0].requires_idle);
 }
@@ -79,25 +80,6 @@ fn prompt_section_identifies_child_with_default_instruction() {
     assert_eq!(
         section.body,
         "You are `/root/reviewer`, a child agent.\nCollaborate continuously with your parent: use `send_message` at its canonical path for useful findings, blockers, and questions as they arise. Complete the task and report concisely when done."
-    );
-}
-
-#[test]
-fn prompt_section_uses_configured_child_instruction() {
-    let identity = AgentIdentity {
-        root_session_id: "root".into(),
-        agent_path: "/root/reviewer".into(),
-        depth: 1,
-    };
-    let middleware = test_middleware()
-        .prompt("Review the parser and report findings.")
-        .expect("custom child prompt");
-
-    let section = middleware.section(&identity);
-
-    assert_eq!(
-        section.body,
-        "You are `/root/reviewer`, a child agent.\nReview the parser and report findings."
     );
 }
 
@@ -204,16 +186,11 @@ async fn active_command_emits_a_subagent_transcript_preview() {
         ],
     )
     .await;
-    let middleware = Subagents::new(
-        1,
-        2,
-        2,
-        Arc::new(|_| Box::pin(async { Err(Error::Stopped("unused".into())) })),
-    )
-    .expect("subagents middleware");
+    let middleware = test_middleware();
     middleware
         .shared
         .session_start(&RuntimeContext {
+            children: crate::agent::ChildAgents::default(),
             sender: crate::agent::test_sender(),
             checkpoints: Arc::clone(&checkpoints),
             session_id: root.session_id.clone(),
@@ -382,6 +359,7 @@ async fn preview_continuation_loads_one_older_turn_through_registered_command() 
     middleware
         .shared
         .session_start(&RuntimeContext {
+            children: crate::agent::ChildAgents::default(),
             sender: crate::agent::test_sender(),
             checkpoints: Arc::clone(&checkpoints),
             session_id: root.session_id.clone(),
@@ -513,7 +491,7 @@ async fn preview_cursor_rejects_unknown_fields_and_zero_offsets() {
 }
 
 #[tokio::test]
-async fn fork_persists_the_metadata_passed_to_the_child() {
+async fn fork_uses_durable_parent_metadata_even_when_the_parent_stopped() {
     let workspace = tempfile::tempdir().expect("workspace");
     let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
         crate::backend::checkpoint::sqlite::SqliteCheckpoint::new(
@@ -531,15 +509,8 @@ async fn fork_persists_the_metadata_passed_to_the_child() {
         .save(&parent, &[], None)
         .await
         .expect("save parent");
-    let launched = Arc::new(std::sync::Mutex::new(None));
-    let launcher: SubagentLauncher = Arc::new({
-        let launched = Arc::clone(&launched);
-        move |launch| {
-            *launched.lock().expect("launch metadata lock") = Some(launch);
-            Box::pin(async { Err(Error::Stopped("test launch stopped".into())) })
-        }
-    });
     let runtime = RuntimeContext {
+        children: crate::agent::ChildAgents::default(),
         sender: crate::agent::test_sender(),
         checkpoints: Arc::clone(&checkpoints),
         session_id: parent.session_id.clone(),
@@ -551,7 +522,15 @@ async fn fork_persists_the_metadata_passed_to_the_child() {
         role: crate::agent::AgentRole::Main,
         frontend: Arc::new(|_| Ok(())),
     };
-    let scope = AgentScope::new(&runtime, launcher).expect("agent scope");
+    let scope = AgentScope::new(&runtime, None).expect("agent scope");
+    parent
+        .metadata
+        .insert("latest".into(), serde_json::json!("updated after startup"));
+    parent.sequence += 1;
+    checkpoints
+        .save(&parent, &[], None)
+        .await
+        .expect("update parent");
 
     let result = scope
         .fork(
@@ -569,26 +548,14 @@ async fn fork_persists_the_metadata_passed_to_the_child() {
         .await
         .expect("load child")
         .expect("child checkpoint");
-    let launched = launched
-        .lock()
-        .expect("launch metadata lock")
-        .clone()
-        .expect("launched metadata");
     let identity = AgentIdentity::read("child", &child.metadata).expect("child identity");
 
-    assert_eq!(child.metadata, launched.metadata);
-    assert_eq!(
-        launched.role,
-        crate::agent::AgentRole::Subagent {
-            parent_session_id: "parent".into(),
-            parent_turn_id: "turn".into(),
-        }
-    );
     assert_eq!(
         child.metadata.get("gateway.chat"),
         parent.metadata.get("gateway.chat")
     );
     assert_eq!(identity.root_session_id, "parent");
+    assert_eq!(child.metadata.get("latest"), parent.metadata.get("latest"));
     assert_eq!(identity.agent_path, "/root/child");
     assert_eq!(identity.depth, 1);
     assert_eq!(
@@ -675,6 +642,7 @@ async fn detached_child_cannot_initialize_a_root_runtime() {
     let result = middleware
         .shared
         .session_start(&RuntimeContext {
+            children: crate::agent::ChildAgents::default(),
             sender: crate::agent::test_sender(),
             checkpoints,
             session_id: "child".into(),
@@ -687,7 +655,8 @@ async fn detached_child_cannot_initialize_a_root_runtime() {
                 agent_path: "/root/reviewer".into(),
                 depth: 1,
             }
-            .metadata(BTreeMap::new()),
+            .metadata(BTreeMap::new())
+            .expect("identity metadata"),
             role: crate::agent::AgentRole::Main,
             frontend,
         })
@@ -705,21 +674,13 @@ async fn detached_child_cannot_initialize_a_root_runtime() {
 #[test]
 fn trusted_operator_ceilings_are_independent_of_per_bot_limits() {
     let ceilings = SubagentCeilings::new(32, 128, 512).expect("operator ceilings");
-    ceilings
-        .validate(24, 96, 300)
+    let limits = ceilings
+        .limits(24, 96, 300)
         .expect("within operator ceilings");
-    assert!(validate_limits(24, 96, 300).is_err());
-    assert!(ceilings.validate(33, 96, 300).is_err());
+    assert!(SubagentCeilings::default().limits(24, 96, 300).is_err());
+    assert!(ceilings.limits(33, 96, 300).is_err());
     assert!(SubagentCeilings::new(1, 4, 3).is_err());
-    let capability = Subagents::new_with_ceilings(
-        ceilings,
-        24,
-        96,
-        300,
-        Arc::new(|_| Box::pin(async { Err(Error::Stopped("unused".into())) })),
-    )
-    .expect("configured capability");
-    assert_eq!(capability.max_depth, 24);
+    assert_eq!(Subagents::new(limits).max_depth, 24);
 }
 
 #[test]

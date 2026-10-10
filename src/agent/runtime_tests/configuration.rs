@@ -370,7 +370,7 @@ async fn completed_pre_model_usage_is_settled_when_a_later_hook_rejects_preparat
             .iter()
             .any(|item| internal_message_kind(item) == Some("settled"))
     );
-    assert_eq!((saved.context_epoch, saved.compaction_count), (0, 0));
+    assert_eq!(saved.context_epoch, 0);
     assert!(saved.context.iter().any(|item| {
         crate::protocol::message_metadata(item).is_some_and(|message| message.text == "hello")
     }));
@@ -414,11 +414,11 @@ async fn retained_agent_closes_its_event_stream_after_a_fatal_routing_error() {
         fn handles_messages(&self) -> bool {
             true
         }
-        fn route_message(
-            &self,
-            _context: &mut crate::middleware::MessageRouteContext<'_>,
-        ) -> Result<crate::middleware::SubmissionResult> {
-            Err(Error::Stopped("message routing failed".into()))
+        fn route_message<'a>(
+            &'a self,
+            _context: &'a mut crate::middleware::MessageRouteContext<'_>,
+        ) -> crate::BoxFuture<'a, Result<crate::middleware::SubmissionResult>> {
+            Box::pin(async { Err(Error::Stopped("message routing failed".into())) })
         }
     }
     let workspace = tempfile::tempdir().expect("workspace");
@@ -456,4 +456,108 @@ async fn retained_agent_closes_its_event_stream_after_a_fatal_routing_error() {
         })
         .is_err()
     );
+}
+
+struct ChildProbe {
+    main_only: bool,
+    registered: Arc<Mutex<Vec<(String, super::super::ChildAgents)>>>,
+}
+
+impl Middleware for ChildProbe {
+    fn name(&self) -> &'static str {
+        if self.main_only {
+            "main_only_probe"
+        } else {
+            "child_probe"
+        }
+    }
+
+    fn main_agent_only(&self) -> bool {
+        self.main_only
+    }
+
+    fn register(&self, _catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
+        self.registered.lock().expect("registration lock").push((
+            format!("{}:{}", self.name(), runtime.session_id),
+            runtime.children.clone(),
+        ));
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn child_agents_skip_main_only_middleware_and_stop_with_the_root() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
+        SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
+            .expect("checkpoint store"),
+    );
+    let registered = Arc::new(Mutex::new(Vec::new()));
+    let config = config(workspace.path(), checkpoints, "root").middleware(test_middleware(vec![
+        Arc::new(ChildProbe {
+            main_only: false,
+            registered: Arc::clone(&registered),
+        }),
+        Arc::new(ChildProbe {
+            main_only: true,
+            registered: Arc::clone(&registered),
+        }),
+    ]));
+    let child_config = config.child_configuration();
+    assert!(Arc::ptr_eq(
+        &config.system_prompt,
+        &child_config.system_prompt
+    ));
+    assert!(Arc::ptr_eq(
+        &config.session_context,
+        &child_config.session_context
+    ));
+    assert!(Arc::ptr_eq(&config.model, &child_config.model));
+    assert!(child_config.metadata.is_empty());
+    drop(child_config);
+    let root = create_agent(config).await.expect("root agent");
+    let children = registered.lock().expect("registration lock")[0].1.clone();
+    let child_role = || super::super::AgentRole::Subagent {
+        parent_session_id: "root".into(),
+        parent_turn_id: "turn".into(),
+    };
+    let child = children
+        .create(
+            "child".into(),
+            std::collections::BTreeMap::new(),
+            child_role(),
+            "test",
+            None,
+        )
+        .await
+        .expect("child agent");
+    let names = registered
+        .lock()
+        .expect("registration lock")
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        [
+            "child_probe:root",
+            "main_only_probe:root",
+            "child_probe:child"
+        ]
+    );
+    drop(child);
+
+    let (sender, mut events) = root.into_parts();
+    drop(sender);
+    while events.recv().await.is_some() {}
+    let stopped = children
+        .create(
+            "late".into(),
+            std::collections::BTreeMap::new(),
+            child_role(),
+            "test",
+            None,
+        )
+        .await;
+    assert!(matches!(stopped, Err(Error::Stopped(_))));
 }

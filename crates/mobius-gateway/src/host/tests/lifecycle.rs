@@ -352,7 +352,7 @@ async fn ready_holds_one_gateway_generation_while_loading_catalogs() {
     let blocking = {
         let mut state = gateway.state.lock().await;
         let blocking = Arc::new(BlockingStateStore::new(Arc::clone(&state.checkpoints)));
-        state.scratchpad = ScratchpadStore::new(blocking.clone());
+        state.scratchpad = Arc::new(Scratchpad::new(blocking.clone()));
         blocking
     };
     blocking.block_next_load.store(true, Ordering::SeqCst);
@@ -419,7 +419,7 @@ async fn idle_stop_waits_for_an_accepted_capability_command_to_finish() {
     let blocking = {
         let mut state = gateway.state.lock().await;
         let blocking = Arc::new(BlockingStateStore::new(Arc::clone(&state.checkpoints)));
-        state.scratchpad = ScratchpadStore::new(blocking.clone());
+        state.scratchpad = Arc::new(Scratchpad::new(blocking.clone()));
         blocking
     };
     let host = create_test_session(&gateway, &workspace)

@@ -17,9 +17,8 @@ use ratatui::backend::CrosstermBackend;
 
 use self::runtime::{apply, apply_gateway, edit};
 use self::state::SetupState;
-use super::terminal::TerminalGuard;
+use super::terminal::{MAX_ENDPOINT_BYTES, TerminalGuard};
 
-const MAX_ENDPOINT_BYTES: usize = 4 * 1024;
 const MAX_MODEL_IDS_BYTES: usize = 16 * 1024;
 const MIN_INLINE_DESCRIPTION_WIDTH: usize = 20;
 

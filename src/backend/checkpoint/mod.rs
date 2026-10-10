@@ -28,7 +28,7 @@ use crate::protocol::ToolCall;
 
 pub mod sqlite;
 
-pub(crate) const CHECKPOINT_VERSION: u32 = 19;
+pub(crate) const CHECKPOINT_VERSION: u32 = 20;
 pub(crate) const MAX_QUEUED_MESSAGES: usize = 1_024;
 const TURN_PAGE_BATCH_SIZE: usize = 100;
 const MAX_QUEUED_OWNER_BYTES: usize = 256;
@@ -309,7 +309,6 @@ struct QueuedMessageData {
     author: MessageAuthor,
     message: String,
     attachments: Vec<SessionFileReference>,
-    #[serde(default)]
     reply: Option<MessageReply>,
 }
 
@@ -487,14 +486,11 @@ pub struct Checkpoint {
     /// The complete active model context, reconstructed by storage when loaded.
     pub context: Arc<Vec<Arc<Value>>>,
     /// Session-scoped receipts for middleware guidance durably added to context.
-    #[serde(default)]
     pub delivered_once: std::sync::Arc<BTreeMap<String, BTreeSet<String>>>,
     /// Monotonically increasing revision of the active context prefix.
     /// Advance it before changing or truncating already persisted context items;
     /// an unchanged epoch permits only an identical prefix with optional appends.
     pub context_epoch: u64,
-    /// The compaction count.
-    pub compaction_count: u64,
     /// The last context rewrite.
     pub last_context_rewrite: Option<ContextRewrite>,
     /// The total usage.
@@ -555,7 +551,6 @@ impl Checkpoint {
             context: Arc::default(),
             delivered_once: Default::default(),
             context_epoch: 0,
-            compaction_count: 0,
             last_context_rewrite: None,
             total_usage: TokenUsage::default(),
             last_usage: None,

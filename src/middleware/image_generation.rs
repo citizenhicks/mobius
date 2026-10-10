@@ -5,15 +5,15 @@ use std::sync::{Arc, LazyLock};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::tools::{ApprovalRequirement, Catalog, Tool, ToolContext, render_tool_event};
+use super::tools::{ApprovalRequirement, Catalog, Tool, ToolContext, ToolSpec};
 use super::{Middleware, RuntimeContext};
 use crate::backend::model::{
-    ImageGenerationReference, ImageGenerationRequest, ModelRouter, ToolDefinition,
+    ImageAspect, ImageGenerationReference, ImageGenerationRequest, ModelRouter, ToolDefinition,
 };
 use crate::backend::session_files::SessionFileStore;
 use crate::protocol::{
     ContentPart, EventMsg, FrontendBlock, FrontendBlockFormat, FrontendBlockRole,
-    FrontendBlockUpdate, FrontendContribution, ImageAspect, ToolContent, ToolResponse,
+    FrontendBlockUpdate, FrontendContribution, FrontendSettingValue, ToolContent, ToolResponse,
 };
 use crate::{BoxFuture, Error, Result};
 
@@ -23,20 +23,21 @@ struct Definition {
     default_enabled: bool,
     manifest_label: String,
     manifest_description: String,
-    render_pending: String,
     render_ready: String,
     render_failed: String,
     #[serde(deserialize_with = "super::manifest::deserialize_settings")]
     settings: Vec<super::manifest::MiddlewareSettingManifest>,
-    tool: ToolDefinition,
+    generate_image: ToolSpec,
 }
+
+const MAX_REFERENCE_IMAGES: usize = 4;
 
 static DEFINITION: LazyLock<Definition> =
     LazyLock::new(|| crate::config::embedded(include_str!("image_generation.toml")));
 
 super::manifest::middleware_manifest! {
 /// Configuration metadata for native image generation.
-    "image_generation", DEFINITION, required: false, capability: None, settings: &DEFINITION.settings
+    "image_generation", DEFINITION, required: false, settings: &DEFINITION.settings
 }
 
 /// Generates a session image and publishes it as a chat artifact.
@@ -57,6 +58,28 @@ impl ImageGeneration {
             route,
         }
     }
+
+    /// Creates the image capability from its manifest settings, read through `setting`.
+    /// # Errors
+    ///
+    /// Returns an error if the `model` setting is not a string.
+    pub fn from_settings<'a>(
+        models: Arc<ModelRouter>,
+        store: SessionFileStore,
+        setting: impl FnOnce(&str) -> Option<&'a FrontendSettingValue>,
+    ) -> Result<Self> {
+        let route = match setting("model") {
+            Some(FrontendSettingValue::String(route)) => Some(Arc::from(route.as_str())),
+            Some(FrontendSettingValue::Integer(_)) => {
+                return Err(Error::Config(format!(
+                    "middleware setting `{}.model` must be string",
+                    MANIFEST.id
+                )));
+            }
+            None => None,
+        };
+        Ok(Self::new(models, store, route))
+    }
 }
 
 impl Middleware for ImageGeneration {
@@ -76,7 +99,7 @@ impl Middleware for ImageGeneration {
         }))
     }
 
-    fn frontend(&self) -> FrontendContribution {
+    fn frontend(&self, _session_id: &str) -> FrontendContribution {
         FrontendContribution {
             capability: MANIFEST.id.into(),
             ..FrontendContribution::default()
@@ -84,31 +107,25 @@ impl Middleware for ImageGeneration {
     }
 
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
-        let mut block = render_tool_event(
-            event,
-            |name| name == DEFINITION.tool.name,
-            |_, _| DEFINITION.render_pending.as_str().into(),
-        )?;
+        let mut block = DEFINITION.generate_image.render(event)?;
         block.role = FrontendBlockRole::Artifact;
         block.format = FrontendBlockFormat::Image;
         block.update = FrontendBlockUpdate::Replace;
         match event {
-            EventMsg::ToolCallBegin(call) => {
-                block.text.clear();
-                block.image_aspect = Some(
-                    call.arguments
-                        .get("image_aspect")
-                        .and_then(|value| serde::Deserialize::deserialize(value).ok())
-                        .unwrap_or_default(),
-                );
-            }
+            EventMsg::ToolCallBegin(_) => block.text.clear(),
             EventMsg::ToolCallEnd(result) if !result.is_error => {
-                if let Some(file) = result.output.files().next().cloned() {
-                    block.title = DEFINITION.render_ready.clone();
-                    block.text.clear();
-                    block.content = ToolContent::default();
-                    block.files = vec![file];
-                }
+                block.title = DEFINITION.render_ready.clone();
+                block.text.clear();
+                block.files = result.output.files().cloned().collect();
+                block.content = ToolContent(
+                    result
+                        .output
+                        .0
+                        .iter()
+                        .filter(|part| matches!(part, ContentPart::Image { .. }))
+                        .cloned()
+                        .collect(),
+                );
             }
             EventMsg::ToolCallEnd(_) => block.title = DEFINITION.render_failed.clone(),
             _ => {}
@@ -136,7 +153,11 @@ struct GenerateImage {
 
 impl Tool for GenerateImage {
     fn definition(&self) -> ToolDefinition {
-        DEFINITION.tool.clone()
+        let mut tool = DEFINITION.generate_image.tool.clone();
+        let properties = &mut tool.parameters["properties"];
+        properties["prompt"]["maxLength"] = crate::backend::model::MAX_IMAGE_PROMPT_CHARS.into();
+        properties["reference_file_ids"]["maxItems"] = MAX_REFERENCE_IMAGES.into();
+        tool
     }
 
     fn approval(&self) -> ApprovalRequirement {
@@ -150,12 +171,7 @@ impl Tool for GenerateImage {
     ) -> BoxFuture<'a, Result<ToolResponse>> {
         Box::pin(async move {
             let arguments: GenerateImageArgs = serde_json::from_value(arguments)?;
-            if arguments.prompt.trim().is_empty() || arguments.prompt.chars().count() > 32_000 {
-                return Err(Error::Tool(
-                    "image prompt must contain 1–32000 characters".into(),
-                ));
-            }
-            if arguments.reference_file_ids.len() > 4 {
+            if arguments.reference_file_ids.len() > MAX_REFERENCE_IMAGES {
                 return Err(Error::Tool("too many reference images".into()));
             }
             let mut owned_references = Vec::with_capacity(arguments.reference_file_ids.len());
@@ -185,18 +201,13 @@ impl Tool for GenerateImage {
             if let Some(usage) = generated.usage {
                 context.report_usage(usage)?;
             }
-            let extension = match generated.media_type.as_str() {
-                "image/png" => "png",
-                "image/jpeg" => "jpg",
-                "image/webp" => "webp",
-                "image/gif" => "gif",
-                _ => {
-                    return Err(Error::Tool(
-                        "provider returned an unsupported image format".into(),
-                    ));
-                }
-            };
-            let file = self
+            let extension = image::ImageFormat::from_mime_type(&generated.media_type)
+                .filter(image::ImageFormat::reading_enabled)
+                .and_then(|format| format.extensions_str().first())
+                .ok_or_else(|| {
+                    Error::Tool("provider returned an unsupported image format".into())
+                })?;
+            let image = self
                 .store
                 .publish_image(
                     &self.session_id,
@@ -205,8 +216,18 @@ impl Tool for GenerateImage {
                     generated.bytes,
                 )
                 .await?;
+            // Models without image tool results receive the file; frontends still get its pixels.
+            let part = if self
+                .models
+                .supports_tool_image_input(context.model_route())
+                .unwrap_or(false)
+            {
+                ContentPart::Image { image }
+            } else {
+                ContentPart::File { file: image.file }
+            };
             Ok(ToolResponse {
-                content: ToolContent(vec![ContentPart::File { file }]),
+                content: ToolContent(vec![part]),
                 is_error: false,
             })
         })
@@ -232,6 +253,14 @@ mod tests {
 
     impl Model for ImageModel {
         fn supports_image_generation(&self) -> bool {
+            self.1
+        }
+
+        fn supports_image_input(&self) -> bool {
+            self.1
+        }
+
+        fn supports_tool_image_input(&self) -> bool {
             self.1
         }
 
@@ -319,6 +348,7 @@ mod tests {
         );
         let middleware = ImageGeneration::new(Arc::new(router), store.clone(), None);
         let runtime = RuntimeContext {
+            children: crate::agent::ChildAgents::default(),
             sender: crate::agent::test_sender(),
             checkpoints: Arc::new(
                 SqliteCheckpoint::new(state.path().join("checkpoints.sqlite3"))
@@ -385,10 +415,10 @@ mod tests {
             )
             .await
             .expect("generate image");
-        assert!(matches!(
-            response.content.0.first(),
-            Some(ContentPart::File { .. })
-        ));
+        let Some(ContentPart::Image { image }) = response.content.0.first() else {
+            panic!("generated image part");
+        };
+        assert!(image.width > 0 && image.height > 0);
         let file = response
             .content
             .files()
@@ -445,14 +475,18 @@ mod tests {
             .expect("completed block");
         assert_eq!(begin.id, end.id);
         assert_eq!(begin.state, FrontendBlockState::Pending);
-        assert_eq!(begin.format, FrontendBlockFormat::Image);
-        assert_eq!(begin.image_aspect, Some(ImageAspect::Landscape));
         assert_eq!(
-            serde_json::to_value(&begin).expect("pending wire")["image_aspect"],
-            "landscape"
+            (begin.title.as_str(), begin.text.as_str()),
+            ("Generating image", "")
         );
+        assert_eq!(end.title, "Image ready");
+        assert_eq!(begin.format, FrontendBlockFormat::Image);
         assert_eq!(end.state, FrontendBlockState::Complete);
-        assert_eq!(end.files, vec![file]);
+        assert_eq!(end.files, vec![file.clone()]);
+        assert!(matches!(
+            end.content.0.as_slice(),
+            [ContentPart::Image { image }] if image.file == file && image.width > 0
+        ));
 
         let default: GenerateImageArgs =
             serde_json::from_value(serde_json::json!({"prompt": "x"})).expect("default shape");
@@ -470,6 +504,9 @@ mod tests {
             session_id: "session".into(),
             route: None,
         };
+        let schema = unsupported_tool.definition().parameters;
+        assert_eq!(schema["properties"]["prompt"]["maxLength"], 32_000);
+        assert_eq!(schema["properties"]["reference_file_ids"]["maxItems"], 4);
         let unsupported_context =
             ToolContext::new(sandbox, permissions.for_call("image-call"), "turn")
                 .with_model_route("unsupported");

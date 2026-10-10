@@ -45,9 +45,6 @@ fn owner_local_execution_and_token_defaults_preserve_shipped_behavior() {
     assert_eq!(ceilings.max_depth(), 16);
     assert_eq!(ceilings.max_concurrency(), 64);
     assert_eq!(ceilings.max_agents(), 256);
-    assert_eq!(subagents::default_max_depth(), 4);
-    assert_eq!(subagents::default_max_concurrency(), 8);
-    assert_eq!(subagents::default_max_agents(), 101);
 }
 
 #[test]
@@ -155,6 +152,7 @@ fn lifecycle_probe(
 
 fn lifecycle_runtime(path: &std::path::Path) -> RuntimeContext {
     RuntimeContext {
+        children: crate::agent::ChildAgents::default(),
         sender: crate::agent::test_sender(),
         checkpoints: Arc::new(
             SqliteCheckpoint::new(path.join("checkpoints.sqlite3")).expect("checkpoint store"),
@@ -174,17 +172,19 @@ fn lifecycle_runtime(path: &std::path::Path) -> RuntimeContext {
 async fn computer_control_resumes_preserve_context_without_adding_notices() {
     let workspace = tempfile::tempdir().expect("workspace");
     let runtime = lifecycle_runtime(workspace.path());
-    let stack = MiddlewareStack::new(vec![Arc::new(
-        computer_control::ComputerControl::new(
-            crate::backend::session_files::SessionFileStore::new(workspace.path(), None),
-            crate::backend::sandbox::WorkerCommand {
-                executable: workspace.path().join("unused-worker"),
-                arguments: Vec::new(),
-            },
-            workspace.path().join("computer-control.md"),
-        )
-        .expect("computer control"),
-    )])
+    let stack = MiddlewareStack::new(vec![Arc::new(computer_control::ComputerControl::new(
+        crate::backend::session_files::SessionFileStore::new(workspace.path(), None),
+        Arc::new(
+            computer_control::ComputerRuntime::new(
+                crate::backend::sandbox::WorkerCommand {
+                    executable: workspace.path().join("unused-worker"),
+                    arguments: Vec::new(),
+                },
+                workspace.path().join("computer-control.md"),
+            )
+            .expect("absolute runtime"),
+        ),
+    ))])
     .expect("middleware stack");
     for input in [
         Vec::new(),
@@ -683,6 +683,7 @@ impl Middleware for CatchAllRenderer {
 fn catalog_requires_the_registering_middleware_to_render_its_tools() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let runtime = RuntimeContext {
+        children: crate::agent::ChildAgents::default(),
         sender: crate::agent::test_sender(),
         checkpoints: Arc::new(
             SqliteCheckpoint::new(temporary.path().join("checkpoints.sqlite3"))
@@ -717,10 +718,9 @@ impl Middleware for Extension {
         "extension"
     }
 
-    fn frontend(&self) -> FrontendContribution {
+    fn frontend(&self, _session_id: &str) -> FrontendContribution {
         FrontendContribution {
             capability: self.name().into(),
-            accepts_file_attachments: false,
             count: None,
             commands: Vec::new(),
             widgets: Vec::new(),
@@ -738,7 +738,7 @@ fn frontend_rejects_malformed_reference_triggers() {
     assert_eq!(
         MiddlewareStack::new(vec![Arc::new(Extension)])
             .expect("middleware stack")
-            .frontend()
+            .frontend("session")
             .expect_err("invalid frontend extension")
             .to_string(),
         "configuration error: invalid frontend reference ` item`"
@@ -749,7 +749,6 @@ fn frontend_rejects_malformed_reference_triggers() {
 fn frontend_surfaces_require_generic_content() {
     let contribution = FrontendContribution {
         capability: "example".into(),
-        accepts_file_attachments: false,
         count: None,
         commands: Vec::new(),
         widgets: vec![crate::protocol::FrontendWidget {
@@ -801,9 +800,10 @@ fn action_lists_reject_invalid_and_duplicate_rows() {
 
 #[test]
 fn widget_ids_are_unique_per_capability_across_slots() {
-    let content = crate::protocol::FrontendWidgetContent::Blocks {
+    let content = crate::protocol::FrontendWidgetContent::ActionList {
         title: "Example".into(),
-        blocks: Vec::new(),
+        items: Vec::new(),
+        actions: Vec::new(),
     };
     let navigation = crate::protocol::FrontendWidget {
         id: "shared".into(),
@@ -820,7 +820,6 @@ fn widget_ids_are_unique_per_capability_across_slots() {
     chat_menu.slot = FrontendSlot::ChatMenu;
     let contribution = FrontendContribution {
         capability: "example".into(),
-        accepts_file_attachments: false,
         count: None,
         commands: Vec::new(),
         widgets: vec![navigation, chat_menu],
@@ -855,4 +854,26 @@ fn token_estimate_is_workload_tunable_and_rejects_invalid_ratios() {
         TokenEstimate::new(2.0).unwrap().item_tokens(&item)
             > TokenEstimate::default().item_tokens(&item)
     );
+}
+
+struct BackgroundProbe(&'static str);
+
+impl Middleware for BackgroundProbe {
+    fn name(&self) -> &'static str {
+        "background"
+    }
+
+    fn has_background_work<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<bool>> {
+        Box::pin(async move { Ok(session_id == self.0) })
+    }
+}
+
+#[tokio::test]
+async fn background_work_is_reported_for_the_frontend_session_only() {
+    let stack = MiddlewareStack::new(vec![Arc::new(BackgroundProbe("busy"))]).expect("stack");
+    let busy = FrontendExtensions::new(stack.clone(), "busy").expect("busy frontend");
+    let idle = FrontendExtensions::new(stack, "idle").expect("idle frontend");
+
+    assert!(busy.has_background_work().await.expect("busy state"));
+    assert!(!idle.has_background_work().await.expect("idle state"));
 }

@@ -74,49 +74,6 @@ async fn canceled_discovery_waiter_keeps_the_gate_until_the_batch_finishes() {
 }
 
 #[test]
-fn configured_compaction_respects_the_threshold_and_response_reserve() {
-    let mut settings = crate::middleware_manifest::default_config();
-    assert_eq!(
-        configured_compaction(&settings)
-            .expect("default policy")
-            .trigger_tokens(272_000),
-        239_232
-    );
-    settings.set_setting(
-        "compaction",
-        "allow_model_compaction",
-        Some(mobius::protocol::FrontendSettingValue::String("on".into())),
-    );
-    assert_eq!(
-        configured_compaction(&settings)
-            .expect("model-requested compaction")
-            .trigger_tokens(272_000),
-        239_232
-    );
-    settings.set_setting(
-        "compaction",
-        "reserve_tokens",
-        Some(mobius::protocol::FrontendSettingValue::Integer(32_000)),
-    );
-    assert_eq!(
-        configured_compaction(&settings)
-            .expect("response reserve")
-            .trigger_tokens(272_000),
-        208_000
-    );
-    settings.set_setting("compaction", "allow_model_compaction", None);
-    configured_compaction(&settings).expect("absent model reset option defaults to disabled");
-    settings.set_setting(
-        "compaction",
-        "allow_model_compaction",
-        Some(mobius::protocol::FrontendSettingValue::String(
-            "invalid".into(),
-        )),
-    );
-    assert!(configured_compaction(&settings).is_err());
-}
-
-#[test]
 fn configured_provider_status_requires_the_selected_credential_endpoint() {
     let root = tempfile::tempdir().expect("root");
     let (store, config) = ConfigStore::initialize(
@@ -962,7 +919,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
             &original,
             &store,
             Arc::clone(&checkpoints),
-            ScratchpadStore::new(Arc::clone(&checkpoints)),
+            Arc::new(Scratchpad::new(Arc::clone(&checkpoints))),
             SessionFileStore::new(store.state_dir(), None),
             Arc::new(tokio::sync::Mutex::new(())),
             Arc::new(crate::computer_runtime::desktop::DesktopControl::default()),
@@ -984,7 +941,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
             &original,
             &store,
             Arc::clone(&checkpoints),
-            ScratchpadStore::new(Arc::clone(&checkpoints)),
+            Arc::new(Scratchpad::new(Arc::clone(&checkpoints))),
             SessionFileStore::new(store.state_dir(), None),
             Arc::new(tokio::sync::Mutex::new(())),
             Arc::new(crate::computer_runtime::desktop::DesktopControl::default()),
@@ -1068,7 +1025,7 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
         &updated,
         &store,
         Arc::clone(&checkpoints),
-        ScratchpadStore::new(Arc::clone(&checkpoints)),
+        Arc::new(Scratchpad::new(Arc::clone(&checkpoints))),
         SessionFileStore::new(store.state_dir(), None),
         Arc::new(tokio::sync::Mutex::new(())),
         Arc::new(crate::computer_runtime::desktop::DesktopControl::default()),
@@ -1143,16 +1100,16 @@ async fn updating_the_bot_recipe_preserves_capability_metadata() {
                     && prompt.contains("Own updated fixture work.")
             })
     );
-    let scratchpad = built
-        .agent
-        .frontend()
-        .contributions()
-        .iter()
-        .find(|contribution| contribution.capability == "scratchpad")
-        .expect("disabled scratchpad management surface");
-    assert_eq!(scratchpad.commands.len(), 1);
-    assert_eq!(scratchpad.commands[0].name, "scratchpad");
-    assert_eq!(scratchpad.widgets.len(), 1);
+    assert!(
+        !built
+            .agent
+            .frontend()
+            .contributions()
+            .expect("contributions")
+            .iter()
+            .any(|contribution| contribution.capability == "scratchpad"),
+        "a disabled scratchpad is not composed"
+    );
     let (sender, mut events) = built.agent.into_parts();
     drop(sender);
     while events.recv().await.is_some() {}
@@ -1251,32 +1208,22 @@ fn selected_trusted_plugin_snapshot_reaches_extensions_assembly_only_when_active
     let gateway = Arc::new(Mutex::new(gateway));
     let backend: Arc<dyn SandboxBackend> =
         Arc::new(LocalSandbox::new(&workspace).expect("sandbox"));
-    let discover = |resolved: &ResolvedExtensions| {
-        Extensions::discover_installed(
-            [
-                workspace.join(".agents/skills"),
-                workspace.join(".codex/skills"),
-            ]
-            .into_iter()
-            .chain(resolved.skill_roots.iter().cloned()),
+    let build = |resolved: &ResolvedExtensions| {
+        Extensions::installed(
+            &workspace,
+            resolved.skill_roots.iter().cloned(),
+            resolved
+                .plugins
+                .iter()
+                .map(|plugin| plugin.activation(Arc::clone(&gateway))),
         )
-        .expect("extensions")
+        .and_then(|extensions| extensions.start_hooks(Arc::clone(&backend)))
+        .expect("middleware")
     };
-    let active_extensions = discover(&active);
-    let inactive_extensions = discover(&inactive);
-    let active = activate_extensions(
-        active_extensions,
-        &active,
-        Arc::clone(&gateway),
-        &workspace,
-        Arc::clone(&backend),
-    )
-    .expect("active middleware");
-    let inactive =
-        activate_extensions(inactive_extensions, &inactive, gateway, &workspace, backend)
-            .expect("inactive middleware");
-    let active = active.frontend();
-    let inactive = inactive.frontend();
+    let active = build(&active);
+    let inactive = build(&inactive);
+    let active = active.frontend("session");
+    let inactive = inactive.frontend("session");
 
     assert_eq!(
         active.count,
@@ -1439,7 +1386,7 @@ async fn media_only_providers_assemble_without_chat_routes_and_keep_their_lifeti
                 model: image.model,
                 quality: image.quality,
                 prompt: "Test",
-                image_aspect: mobius::protocol::ImageAspect::Square,
+                image_aspect: mobius::backend::model::ImageAspect::Square,
                 references: &[],
             },
         )
@@ -1447,16 +1394,7 @@ async fn media_only_providers_assemble_without_chat_routes_and_keep_their_lifeti
         .unwrap_err();
     assert!(matches!(denied, MobiusError::Provider(error) if error.status() == Some(401)));
     let denied = expired
-        .start_realtime_voice(
-            None,
-            mobius::backend::model::RealtimeVoiceRequest {
-                session_id: "test".into(),
-                model: None,
-                voice: None,
-                offer_sdp: String::new(),
-                instructions: "Test".into(),
-            },
-        )
+        .start_realtime_voice(None, "test".into(), String::new(), "Test".into())
         .await
         .err()
         .expect("expired voice credential");

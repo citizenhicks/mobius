@@ -53,7 +53,7 @@ struct Definition {
 crate::embedded_config! { static DEFINITION: Definition = include_str!("questions.toml"); }
 super::manifest::middleware_manifest! {
     /// Configuration and presentation metadata for durable user questions.
-    "questions", DEFINITION, required: false, capability: None, settings: &[]
+    "questions", DEFINITION, required: false, settings: &[]
 }
 const STATE_KEY: &str = "questions.v1";
 const MAX_TITLE_BYTES: usize = 1024;
@@ -165,7 +165,7 @@ impl Middleware for Questions {
             .then(|| PromptSection::new(&DEFINITION.prompt_root)))
     }
 
-    fn frontend(&self) -> FrontendContribution {
+    fn frontend(&self, _session_id: &str) -> FrontendContribution {
         FrontendContribution {
             capability: MANIFEST.id.into(),
             commands: [
@@ -480,7 +480,7 @@ fn widget(mut questions: Vec<Question>) -> FrontendWidget {
         } else {
             FrontendTone::Neutral
         },
-        symbol: Some(FrontendSymbol::Question),
+        symbol: Some(FrontendSymbol::Custom("question".into())),
         icon_only: false,
         progress: None,
         action: None,
@@ -565,7 +565,7 @@ fn action(
     FrontendAction {
         id,
         label,
-        symbol: FrontendSymbol::Question,
+        symbol: FrontendSymbol::Custom("question".into()),
         tone: FrontendTone::Neutral,
         op: Op::CapabilityCommand {
             capability: MANIFEST.id.into(),

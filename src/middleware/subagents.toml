@@ -1,13 +1,23 @@
 default_enabled = true
 # Editable text and defaults owned by this middleware.
+approval_denied = "headless subagents cannot approve mutations"
 command_description = "open a subagent thread"
 defaults_wait_ms = 30000
+error_empty_text = "text cannot be empty"
+error_fork_turns = "fork_turns must be `none`, `all`, or a positive integer string"
+error_task_name = "task_name must contain 1-{max_bytes} lowercase letters, digits, or underscores"
+error_title = "Subagent error"
+fork_all = "Full context"
+fork_last = "Last {turns} turns"
+fork_last_one = "Last 1 turn"
+fork_none = "No context"
 manifest_description = "Delegate independent work to durable child agents"
 manifest_label = "Subagents"
-prompt_default = "Collaborate continuously with your parent: use `send_message` at its canonical path for useful findings, blockers, and questions as they arise. Complete the task and report concisely when done."
+prompt_child = "You are `{path}`, a child agent.\nCollaborate continuously with your parent: use `send_message` at its canonical path for useful findings, blockers, and questions as they arise. Complete the task and report concisely when done."
 prompt_root = "Delegate independent work to subagents when it can run in parallel. Spawn with fresh context by default; include recent turns only when the task requires them, and full history only when essential. They share files; continue your own work while they run, and wait only when you need their results."
-render_empty = "no subagents"
 render_open = "Open subagent"
+render_open_empty = "Open subagent · no subagents"
+status_title = "Subagents"
 
 [[settings]]
 choices = { "source" = "model_routes" }
@@ -146,7 +156,7 @@ additionalProperties = false
 
 [spawn_agent.tool.parameters.properties.task_name]
 type = "string"
-description = "1-64 lowercase letters, digits, or underscores."
+description = "1-{max_bytes} lowercase letters, digits, or underscores."
 
 [spawn_agent.tool.parameters.properties.text]
 type = "string"

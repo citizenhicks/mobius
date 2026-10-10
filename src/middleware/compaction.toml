@@ -12,6 +12,12 @@ render_compaction_cancelled = "Context compaction cancelled"
 handoff_saved_result = "Saved this chat's handoff checkpoint."
 handoff_requested_result = "Requested checkpoint preparation and a fresh context after this tool batch is durably saved."
 handoff_requested_context = "Context transition requested."
+message_disabled = "model-requested compaction is disabled"
+message_empty_notes = "handoff notes must contain non-whitespace text. Checkpoint unchanged."
+message_notes_too_long = "handoff notes contain {bytes} UTF-8 bytes; maximum {max}. Remove at least {excess} bytes. Checkpoint unchanged."
+message_checkpoint_too_large = "prepared checkpoint does not fit the selected model; a preserved input or complete tool batch exceeds its budget; the chat and pending input are preserved"
+message_one_handoff_call = "checkpoint preparation must return one write_handoff call; the chat is preserved"
+message_input_too_large = "checkpoint preparation cannot fit one complete input or tool batch; the chat and pending input are preserved"
 
 [[settings]]
 choices = { options = [{ description = "Automatic compaction only", disables = [], label = "Off", tone = "neutral", value = "off" }, { description = "Also allow the model to request an early context reset", disables = [], label = "On", tone = "neutral", value = "on" }], source = "static" }

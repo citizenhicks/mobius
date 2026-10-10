@@ -321,7 +321,7 @@ async fn assert_compaction_stop(
         (
             model.responses.load(Ordering::SeqCst),
             model.compactions.load(Ordering::SeqCst),
-            checkpoint.compaction_count,
+            compaction_count(checkpoints.as_ref(), session_id).await,
             reason.as_deref(),
         ),
         (
@@ -495,7 +495,13 @@ async fn compaction_notice_is_live_and_closes_on_success_failure_and_interrupt()
                     queued.context, before.context,
                     "the source writer cannot persist provisional history while accepting a steer"
                 );
-                assert_eq!((queued.context_epoch, queued.compaction_count), (0, 0));
+                assert_eq!(
+                    (
+                        queued.context_epoch,
+                        compaction_count(checkpoints.as_ref(), outcome).await
+                    ),
+                    (0, 0)
+                );
                 assert!(
                     queued
                         .pending_messages
@@ -538,7 +544,10 @@ async fn compaction_notice_is_live_and_closes_on_success_failure_and_interrupt()
             }
             assert_eq!(completions, 1);
             let saved = checkpoints.load(outcome).await.unwrap().unwrap();
-            assert_eq!(saved.compaction_count, u64::from(outcome == "success"));
+            assert_eq!(
+                compaction_count(checkpoints.as_ref(), outcome).await,
+                u64::from(outcome == "success")
+            );
             if outcome == "success" {
                 assert!(saved.pending_messages.is_empty());
                 assert!(saved.context.iter().any(|item| {
@@ -653,12 +662,7 @@ async fn compaction_notice_waits_for_later_preparation_hooks_to_settle() {
                 assert_eq!(model.compactions.load(Ordering::SeqCst), 1);
                 if outcome != "failure" {
                     assert_eq!(
-                        checkpoints
-                            .load(outcome)
-                            .await
-                            .unwrap()
-                            .unwrap()
-                            .compaction_count,
+                        compaction_count(checkpoints.as_ref(), outcome).await,
                         0,
                         "compaction remains provisional while a later hook is blocked"
                     );
@@ -699,7 +703,7 @@ async fn compaction_notice_waits_for_later_preparation_hooks_to_settle() {
                                 }
                             );
                             let saved = checkpoints.load(outcome).await.unwrap().unwrap();
-                            assert_eq!(saved.compaction_count, u64::from(outcome == "success"));
+                            assert_eq!(saved.context_epoch, u64::from(outcome == "success"));
                             completions += 1;
                         }
                         EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_) => break,
@@ -711,7 +715,10 @@ async fn compaction_notice_waits_for_later_preparation_hooks_to_settle() {
                     "the row closes before the terminal turn event"
                 );
                 let saved = checkpoints.load(outcome).await.unwrap().unwrap();
-                assert_eq!(saved.compaction_count, u64::from(outcome == "success"));
+                assert_eq!(
+                    compaction_count(checkpoints.as_ref(), outcome).await,
+                    u64::from(outcome == "success")
+                );
                 assert_eq!(saved.context_epoch, u64::from(outcome == "success"));
                 assert_eq!(
                     saved.total_usage.total_tokens,
@@ -824,7 +831,10 @@ async fn rejected_preparation_discards_appended_history_but_keeps_completed_usag
     assert_eq!(checkpoint.total_usage.total_tokens, 1);
     assert_eq!(checkpoint.execution_stats.model_calls, 1);
     assert_eq!(
-        (checkpoint.context_epoch, checkpoint.compaction_count),
+        (
+            checkpoint.context_epoch,
+            compaction_count(checkpoints.as_ref(), "rejected-preparation").await
+        ),
         (0, 0)
     );
     assert_eq!(model.responses.load(Ordering::SeqCst), 0);
@@ -914,7 +924,20 @@ async fn compaction_marker_survives_transcript_replay() {
 
     assert_eq!(live_markers, 1);
     assert_eq!(checkpoint.context_epoch, 1);
-    assert_eq!(checkpoint.compaction_count, 1);
+    assert_eq!(
+        compaction_count(checkpoints.as_ref(), "durable-compaction").await,
+        1
+    );
+    assert_eq!(
+        agent
+            .frontend()
+            .contributions()
+            .expect("contributions")
+            .iter()
+            .find(|contribution| contribution.capability == "compaction")
+            .and_then(|contribution| contribution.count),
+        Some(1)
+    );
     assert_eq!(
         checkpoint
             .last_context_rewrite

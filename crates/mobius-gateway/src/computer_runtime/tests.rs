@@ -11,6 +11,44 @@ fn automatic_managed_layout_changes_when_system_dependencies_are_selected() {
     assert_ne!(default, managed_directory_for(state, &config));
 }
 
+#[test]
+fn cancelled_install_lock_wait_does_not_delay_runtime_shutdown() {
+    let root = tempfile::tempdir().expect("runtime");
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(root.path().join("install.lock"))
+        .expect("lock file");
+    lock.lock().expect("hold installer lock");
+    let destination = root.path().join("resources");
+    let (stopped, shutdown) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async move {
+            let install =
+                tokio::spawn(
+                    async move { install(&destination, &ComputerConfig::default()).await },
+                );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            install.abort();
+            assert!(install.await.expect_err("cancelled install").is_cancelled());
+        });
+        drop(runtime);
+        stopped.send(()).expect("shutdown observed");
+    });
+    let stopped = shutdown.recv_timeout(Duration::from_secs(2)).is_ok();
+    drop(lock);
+    thread.join().expect("installer thread");
+    assert!(
+        stopped,
+        "a cancelled install must not leave a blocking lock waiter"
+    );
+}
+
 #[tokio::test]
 async fn invalid_or_oversized_ca_bundle_is_rejected_before_any_download() {
     let root = tempfile::tempdir().unwrap();

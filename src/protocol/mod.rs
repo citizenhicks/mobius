@@ -1038,7 +1038,6 @@ mod tests {
             label: "Example".into(),
             description: "Example capability".into(),
             required: false,
-            required_model_capability: None,
             settings: vec![FrontendSetting {
                 id: "limit".into(),
                 label: "Limit".into(),
@@ -1059,7 +1058,6 @@ mod tests {
                 "label": "Example",
                 "description": "Example capability",
                 "required": false,
-                "required_model_capability": null,
                 "settings": [{
                     "id": "limit",
                     "label": "Limit",

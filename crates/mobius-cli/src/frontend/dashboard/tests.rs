@@ -1,7 +1,7 @@
 use mobius::protocol::{
-    FrontendAction, FrontendActionListItem, FrontendBlock, FrontendBlockRole, FrontendEvent,
-    FrontendListItemState, FrontendPickerOption, FrontendSlot, FrontendSymbol, FrontendTone,
-    FrontendWidget, FrontendWidgetContent, Op, SessionContext, TokenUsage,
+    FrontendAction, FrontendActionListItem, FrontendEvent, FrontendListItemState, FrontendSlot,
+    FrontendSymbol, FrontendTone, FrontendWidget, FrontendWidgetContent, Op, SessionContext,
+    TokenUsage,
 };
 use std::collections::BTreeMap;
 
@@ -15,8 +15,8 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::ListState;
 
 use super::runtime::{
-    activate_overlay, handle_action_input_key, handle_frame, moved_index, ordered_sessions,
-    prepare_overlay_operation,
+    activate_overlay, handle_action_input_key, handle_frame, insert_overlay_input, moved_index,
+    ordered_sessions, prepare_overlay_operation,
 };
 use super::state::{CapabilityOverlay, DashboardFocus};
 use super::view::{render_action_list, token_total_for_day};
@@ -142,22 +142,29 @@ fn open_widget_tracks_updates_and_submits_the_advertised_operation() {
     };
     overlay.apply(FrontendEvent::Widget {
         capability: key.0.clone(),
-        item: widget(FrontendWidgetContent::Picker {
+        item: widget(FrontendWidgetContent::ActionList {
             title: "Updated".into(),
-            options: vec![FrontendPickerOption {
-                label: "Apply".into(),
-                description: "Apply the advertised operation".into(),
-                detail: String::new(),
-                symbol: None,
-                shows_detail: false,
-                op: op.clone(),
+            items: vec![FrontendActionListItem {
+                id: "apply".into(),
+                text: "Apply the advertised operation".into(),
+                state: FrontendListItemState::Plain,
+                actions: vec![FrontendAction {
+                    id: "apply".into(),
+                    label: "Apply".into(),
+                    symbol: FrontendSymbol::Edit,
+                    tone: FrontendTone::Neutral,
+                    op: op.clone(),
+                    input_from_label: false,
+                    editor: None,
+                }],
             }],
+            actions: Vec::new(),
         }),
     });
 
     assert!(matches!(
         overlay.open_widget().and_then(|widget| widget.content.as_ref()),
-        Some(FrontendWidgetContent::Picker { title, .. }) if title == "Updated"
+        Some(FrontendWidgetContent::ActionList { title, .. }) if title == "Updated"
     ));
     assert_eq!(activate_overlay(&mut overlay), Some(op));
 
@@ -207,9 +214,7 @@ fn action_list_renders_one_row_with_declared_actions_and_runs_the_selected_one()
         action_index: 1,
         input: None,
     };
-    let FrontendWidgetContent::ActionList { title, items, .. } = content else {
-        unreachable!();
-    };
+    let FrontendWidgetContent::ActionList { title, items, .. } = content;
     let mut terminal = Terminal::new(TestBackend::new(72, 5)).expect("terminal");
 
     terminal
@@ -270,6 +275,33 @@ fn editable_action_replaces_its_advertised_input_before_submission() {
         submitted,
         Op::CapabilityCommand { input: Some(value), .. } if value == "Before!"
     ));
+}
+
+#[test]
+fn capability_input_paste_stops_at_the_protocol_capability_limit() {
+    let key: (String, String) = ("capability-a".into(), "view".into());
+    let mut overlay = CapabilityOverlay {
+        title: "Chat capabilities · session-1".into(),
+        session_id: "session-1".into(),
+        slots: vec![FrontendSlot::Navigation],
+        widgets: vec![(key.clone(), widget(blocks("Initial")))],
+        widget_list: ListState::default(),
+        open: Some(key),
+        option_list: ListState::default(),
+        action_index: 0,
+        input: None,
+    };
+    assert!(prepare_overlay_operation(&mut overlay, capability_op("edit", Some(""))).is_none());
+
+    insert_overlay_input(
+        &mut overlay,
+        &"x".repeat(mobius::protocol::MAX_CAPABILITY_INPUT_BYTES + 1),
+    );
+
+    assert_eq!(
+        overlay.input.expect("action input").text.len(),
+        mobius::protocol::MAX_CAPABILITY_INPUT_BYTES
+    );
 }
 
 fn session(id: &str, state: SessionActivityState) -> SessionRecord {
@@ -335,13 +367,15 @@ fn dashboard_state() -> super::state::DashboardState {
 }
 
 fn blocks(text: &str) -> FrontendWidgetContent {
-    FrontendWidgetContent::Blocks {
+    FrontendWidgetContent::ActionList {
         title: "View".into(),
-        blocks: vec![FrontendBlock {
-            role: FrontendBlockRole::Notice,
+        items: vec![FrontendActionListItem {
+            id: "view".into(),
             text: text.into(),
-            ..Default::default()
+            state: FrontendListItemState::Plain,
+            actions: Vec::new(),
         }],
+        actions: Vec::new(),
     }
 }
 

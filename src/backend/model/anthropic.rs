@@ -432,26 +432,35 @@ impl StreamState {
             .blocks
             .get_mut(&index)
             .ok_or_else(|| Error::Provider("Anthropic delta referenced unknown block".into()))?;
+        // Omitted thinking and initial tool-input fragments legitimately carry empty strings.
         match delta.get("type").and_then(Value::as_str) {
             Some("text_delta") => {
-                let text = required_string(delta, "text")?;
-                append_string(block, "text", text);
-                events(ModelEvent::TextDelta(text.to_string())).await?;
+                let text = string_field(delta, "text")?;
+                if !text.is_empty() {
+                    append_string(block, "text", text);
+                    events(ModelEvent::TextDelta(text.to_string())).await?;
+                }
             }
             Some("thinking_delta") => {
-                let thinking = required_string(delta, "thinking")?;
-                append_string(block, "thinking", thinking);
-                events(ModelEvent::ReasoningDelta(thinking.to_string())).await?;
+                let thinking = string_field(delta, "thinking")?;
+                if !thinking.is_empty() {
+                    append_string(block, "thinking", thinking);
+                    events(ModelEvent::ReasoningDelta(thinking.to_string())).await?;
+                }
             }
             Some("signature_delta") => {
                 block["signature"] =
                     Value::String(required_string(delta, "signature")?.to_string());
             }
-            Some("input_json_delta") => self
-                .partial_json
-                .entry(index)
-                .or_default()
-                .push_str(required_string(delta, "partial_json")?),
+            Some("input_json_delta") => {
+                let partial = string_field(delta, "partial_json")?;
+                if !partial.is_empty() {
+                    self.partial_json
+                        .entry(index)
+                        .or_default()
+                        .push_str(partial);
+                }
+            }
             Some("citations_delta") => {
                 if let Some(citation) = delta.get_mut("citation") {
                     let citations = block
@@ -534,6 +543,15 @@ impl StreamState {
 
     fn finish(self) -> Result<ModelOutput> {
         let step_content = normalized_step_content(&self.blocks)?;
+        if self.stop_reason.as_deref() == Some("refusal")
+            && !step_content.iter().any(|part| {
+                part.phase == ModelStepContentPhase::FinalAnswer && !part.text.trim().is_empty()
+            })
+        {
+            return Err(Error::Provider(
+                "Anthropic refused the request without an answer".into(),
+            ));
+        }
         let content = self.blocks.into_values().collect::<Vec<_>>();
         let calls = content
             .iter()

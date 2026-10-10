@@ -42,6 +42,10 @@ impl Tool for ReadFile {
         DEFINITION.read_file.render(event)
     }
 
+    fn read_only(&self) -> bool {
+        true
+    }
+
     fn exposure(&self) -> ToolExposure {
         ToolExposure::Direct
     }
@@ -120,6 +124,10 @@ impl Tool for ViewImage {
                 }
             },
         )
+    }
+
+    fn read_only(&self) -> bool {
+        true
     }
 
     fn exposure(&self) -> ToolExposure {

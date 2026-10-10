@@ -5,7 +5,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::tools::{Catalog, Tool, ToolContext, render_tool_event};
+use super::tools::{Catalog, Tool, ToolContext};
 use super::{
     Middleware, MiddlewareCommandContext, MiddlewareCommandOutput, PromptSection, RuntimeContext,
     SessionStartContext, SessionStartSource,
@@ -31,7 +31,12 @@ mod text {
         pub(super) manifest_label: String,
         pub(super) prompt_main: String,
         pub(super) render_empty: String,
-        pub(super) render_heading: String,
+        pub(super) render_pending: String,
+        pub(super) render_in_progress: String,
+        pub(super) render_completed: String,
+        pub(super) result_updated: String,
+        pub(super) error_count: String,
+        pub(super) error_content: String,
     }
     crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("tasks.toml"); }
 }
@@ -41,7 +46,25 @@ const MAX_TODOS: usize = 50;
 const MAX_TODO_BYTES: usize = 500;
 super::manifest::middleware_manifest! {
 /// Configuration and presentation metadata for durable tasks.
-    "tasks", text::DEFINITION, required: false, capability: None, settings: &[]
+    "tasks", text::DEFINITION, required: false, settings: &[]
+}
+
+enum Command {
+    Tasks,
+}
+
+impl Command {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Tasks => "tasks",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        [Self::Tasks]
+            .into_iter()
+            .find(|command| command.as_str() == value)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,11 +111,11 @@ impl Middleware for Tasks {
         )))
     }
 
-    fn frontend(&self) -> FrontendContribution {
+    fn frontend(&self, _session_id: &str) -> FrontendContribution {
         FrontendContribution {
             capability: self.name().into(),
             commands: vec![FrontendCommand {
-                name: "tasks".into(),
+                name: Command::Tasks.as_str().into(),
                 arguments: String::new(),
                 description: text::DEFINITION.command_tasks_description.clone(),
                 requires_idle: true,
@@ -102,23 +125,7 @@ impl Middleware for Tasks {
     }
 
     fn render(&self, event: &EventMsg, _session_id: &str) -> Option<FrontendBlock> {
-        render_tool_event(
-            event,
-            |name| name == "write_todos",
-            |name, arguments| {
-                if matches!(event, EventMsg::ToolCallEnd(_)) {
-                    return name.into();
-                }
-                let count = arguments
-                    .get("todos")
-                    .and_then(Value::as_array)
-                    .map_or(0, Vec::len);
-                super::tools::ToolHeading {
-                    title: text::DEFINITION.render_heading.clone(),
-                    detail: count.to_string(),
-                }
-            },
-        )
+        text::DEFINITION.write_todos.render(event)
     }
 
     fn prepare_compacted_input(
@@ -160,7 +167,7 @@ impl Middleware for Tasks {
         context: MiddlewareCommandContext<'a>,
     ) -> BoxFuture<'a, Result<MiddlewareCommandOutput>> {
         Box::pin(async move {
-            if context.command != "tasks" || !context.arguments.trim().is_empty() {
+            if Command::parse(context.command).is_none() || !context.arguments.trim().is_empty() {
                 return Err(Error::Unknown(format!(
                     "tasks command `{}`",
                     context.command
@@ -168,7 +175,7 @@ impl Middleware for Tasks {
             }
             let todos = load_todos(&context.checkpoints, context.session_id).await?;
             Ok(MiddlewareCommandOutput::render(
-                "tasks",
+                MANIFEST.id,
                 format_todos(&todos),
                 FrontendTone::Neutral,
             ))
@@ -208,19 +215,26 @@ impl Tool for WriteTodos {
                 .await?;
             let count = arguments.todos.len();
             (self.frontend)(widget_event(arguments.todos))?;
-            Ok(format!("updated {count} todos").into())
+            Ok(text::DEFINITION
+                .result_updated
+                .replace("{count}", &count.to_string())
+                .into())
         })
     }
 }
 
 fn validate_todos(todos: &mut [Todo]) -> std::result::Result<(), String> {
     if todos.len() > MAX_TODOS {
-        return Err(format!("todo count exceeds {MAX_TODOS}"));
+        return Err(text::DEFINITION
+            .error_count
+            .replace("{max}", &MAX_TODOS.to_string()));
     }
     for todo in todos {
         let content = todo.content.trim();
         if content.is_empty() || content.len() > MAX_TODO_BYTES {
-            return Err(format!("todo content must be 1–{MAX_TODO_BYTES} bytes"));
+            return Err(text::DEFINITION
+                .error_content
+                .replace("{max}", &MAX_TODO_BYTES.to_string()));
         }
         todo.content = content.into();
     }
@@ -269,7 +283,7 @@ fn widget_event(todos: Vec<Todo>) -> FrontendEvent {
             }),
             content: Some(FrontendWidgetContent::ActionList {
                 actions: Vec::new(),
-                title: text::DEFINITION.render_heading.clone(),
+                title: text::DEFINITION.write_todos.title().into(),
                 items: todos
                     .into_iter()
                     .enumerate()
@@ -298,9 +312,9 @@ fn format_todos(todos: &[Todo]) -> String {
         .iter()
         .map(|todo| {
             let marker = match todo.status {
-                TodoStatus::Pending => "[ ]",
-                TodoStatus::InProgress => "[~]",
-                TodoStatus::Completed => "[x]",
+                TodoStatus::Pending => &text::DEFINITION.render_pending,
+                TodoStatus::InProgress => &text::DEFINITION.render_in_progress,
+                TodoStatus::Completed => &text::DEFINITION.render_completed,
             };
             format!("{marker} {}", todo.content)
         })
@@ -339,9 +353,21 @@ mod tests {
         });
         assert_eq!(
             Tasks.render(&begin, "session").unwrap().title,
-            text::DEFINITION.render_heading.as_str()
+            text::DEFINITION.write_todos.title()
         );
         assert_eq!(Tasks.render(&end, "session").unwrap().title, "write_todos");
+        assert!(Tasks.render(&begin, "session").unwrap().text.contains('0'));
+        let EventMsg::ToolCallBegin(mut call) = begin else {
+            unreachable!()
+        };
+        call.arguments = serde_json::json!({"todos": [{}, {}, {}]});
+        assert!(
+            Tasks
+                .render(&EventMsg::ToolCallBegin(call), "session")
+                .unwrap()
+                .text
+                .contains('3')
+        );
     }
 
     #[tokio::test]
@@ -354,6 +380,7 @@ mod tests {
         let frontend_events = Arc::new(Mutex::new(Vec::new()));
         let events = Arc::clone(&frontend_events);
         let runtime = RuntimeContext {
+            children: crate::agent::ChildAgents::default(),
             sender: crate::agent::test_sender(),
             checkpoints: Arc::clone(&checkpoints),
             session_id: "session-a".into(),

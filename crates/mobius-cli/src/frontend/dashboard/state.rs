@@ -170,7 +170,6 @@ impl CapabilityOverlay {
         let options = self
             .open_widget()
             .and_then(|widget| match widget.content.as_ref() {
-                Some(FrontendWidgetContent::Picker { options, .. }) => Some(options.len()),
                 Some(FrontendWidgetContent::ActionList { items, .. }) => Some(items.len()),
                 _ => None,
             })
@@ -205,10 +204,7 @@ impl CapabilityOverlay {
 
     pub(super) fn selected_action_list_item(&self) -> Option<&FrontendActionListItem> {
         let FrontendWidgetContent::ActionList { items, .. } =
-            self.open_widget()?.content.as_ref()?
-        else {
-            return None;
-        };
+            self.open_widget()?.content.as_ref()?;
         items.get(self.option_list.selected()?)
     }
 }

@@ -3,11 +3,10 @@
 use std::io;
 
 use mobius::{Error, Result};
-use mobius_gateway::MAX_EXTENSION_SOURCE_BYTES as MAX_SOURCE_BYTES;
 use mobius_gateway::client::{GatewayEvents, GatewaySender};
 use mobius_gateway::wire::{
-    ClientMessage, ExtensionHookRecord, ExtensionKind, ExtensionRecord, ReadyPayload, ServerFrame,
-    ServerMessage, apply_session_changes,
+    ClientMessage, ExtensionHookRecord, ExtensionRecord, ReadyPayload, ServerFrame, ServerMessage,
+    apply_session_changes,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -19,7 +18,9 @@ use ratatui::widgets::{Block, HighlightSpacing, List, ListState, Paragraph, Wrap
 use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
-use super::terminal::{INPUT_POLL, MAX_INPUT_BATCH, TerminalGuard, poll_event};
+use super::terminal::{
+    INPUT_POLL, MAX_ENDPOINT_BYTES, MAX_INPUT_BATCH, TerminalGuard, append_text, poll_event,
+};
 use super::terminal_text;
 use super::theme::{Role, current};
 use crate::gateway_error;
@@ -146,10 +147,6 @@ impl ExtensionsState {
                 ScreenAction::None
             }
             KeyCode::Enter => {
-                if source.trim().is_empty() {
-                    self.fail("Enter an HTTPS Git or GitHub tree URL.");
-                    return ScreenAction::None;
-                }
                 let start = source.len() - source.trim_start().len();
                 source.truncate(source.trim_end().len());
                 source.drain(..start);
@@ -167,15 +164,11 @@ impl ExtensionsState {
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
-                let rejected = crate::frontend::terminal::append_text(
-                    &mut source,
-                    &character.to_string(),
-                    MAX_SOURCE_BYTES,
-                );
+                let rejected = append_text(&mut source, &character.to_string(), MAX_ENDPOINT_BYTES);
                 self.mode = Mode::Install(source);
                 if rejected {
                     self.fail(format!(
-                        "Source URL is limited to {MAX_SOURCE_BYTES} bytes."
+                        "Source input is limited to {MAX_ENDPOINT_BYTES} bytes."
                     ));
                 } else {
                     self.notice = None;
@@ -314,9 +307,9 @@ impl ExtensionsState {
         let Mode::Install(source) = &mut self.mode else {
             return;
         };
-        if crate::frontend::terminal::append_text(source, text.trim(), MAX_SOURCE_BYTES) {
+        if append_text(source, text.trim(), MAX_ENDPOINT_BYTES) {
             self.fail(format!(
-                "Source URL is limited to {MAX_SOURCE_BYTES} bytes."
+                "Source input is limited to {MAX_ENDPOINT_BYTES} bytes."
             ));
         } else {
             self.notice = None;
@@ -605,7 +598,7 @@ fn render_catalog(
             Span::styled(
                 format!(
                     " · {}{} · {hook_status}",
-                    extension_kind(extension.kind),
+                    extension.kind.as_str(),
                     terminal_text(&version)
                 ),
                 theme.style(Role::Muted),
@@ -767,7 +760,7 @@ fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, state: &ExtensionsS
         match &state.mode {
             Mode::Install(source) => (
                 format!(
-                    "Install from an HTTPS Git URL or GitHub tree URL\nsource: {}▏ · Enter install · Esc cancel",
+                    "Install from an HTTPS or SSH Git URL or GitHub tree URL\nsource: {}▏ · Enter install · Esc cancel",
                     terminal_text(source)
                 ),
                 Role::Text,
@@ -795,16 +788,10 @@ fn render_prompt(frame: &mut ratatui::Frame<'_>, area: Rect, state: &ExtensionsS
     frame.render_widget(Paragraph::new(text).style(theme.style(role)), area);
 }
 
-const fn extension_kind(kind: ExtensionKind) -> &'static str {
-    match kind {
-        ExtensionKind::Skill => "skill",
-        ExtensionKind::Plugin => "plugin",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mobius_gateway::wire::ExtensionKind;
 
     fn extension() -> ExtensionRecord {
         ExtensionRecord {
@@ -896,22 +883,25 @@ mod tests {
     }
 
     #[test]
-    fn source_input_filters_controls_and_stops_at_the_wire_limit() {
-        let mut source = String::new();
+    fn pasted_source_filters_controls_and_bounds_editor_memory() {
+        let mut state = ExtensionsState {
+            selected: 0,
+            mode: Mode::Install(String::new()),
+            pending: None,
+            notice: None,
+        };
+        let long = "a".repeat(8_192);
 
-        assert!(!crate::frontend::terminal::append_text(
-            &mut source,
-            "https://example.com/repo\n",
-            MAX_SOURCE_BYTES
-        ));
-        assert!(crate::frontend::terminal::append_text(
-            &mut source,
-            &"a".repeat(MAX_SOURCE_BYTES),
-            MAX_SOURCE_BYTES
-        ));
+        state.paste("https://example.com/repo\n");
+        state.paste(&long);
 
+        let Mode::Install(source) = &state.mode else {
+            panic!("install mode")
+        };
+        assert!(source.starts_with("https://example.com/repo"));
         assert!(!source.contains('\n'));
-        assert_eq!(source.len(), MAX_SOURCE_BYTES);
+        assert_eq!(source.len(), MAX_ENDPOINT_BYTES);
+        assert!(state.notice.is_some());
     }
 
     #[test]

@@ -11,6 +11,19 @@ explicit request to use the browser. This runtime selects a gateway-coordinated 
 network access are available, otherwise a worker-owned headless browser. Native
 Mac desktop control remains available when enabled in the local Mac app.
 
+## Mac and Linux gateways
+
+- On a Mac gateway, the browser is the möbius app's in-app tab, and `desktop` drives
+  native Mac apps when the person has enabled it.
+- On a Linux gateway, the browser runs headed on the gateway's own virtual display,
+  which people watch and take over through the remote desktop view. There is no
+  `desktop`: its calls fail with "only the local Mac app can host desktop control",
+  so use the browser only and do not retry them. Pages see a Linux Chromium, where
+  shortcuts use Control, not Command; Playwright's `ControlOrMeta` works on both,
+  for example `page.keyboard.press("ControlOrMeta+A")`.
+- On either, a gateway without a display or remote desktop uses a worker-owned
+  headless browser that nobody watches.
+
 ## Entry point and state
 
 Call computer_control with JavaScript in code. Optional timeout_ms applies to the
@@ -43,10 +56,12 @@ availability. On a Mac the gateway assigns the existing in-app CEF tab; on a
 remote Linux desktop gateway the apps show the browser through noVNC. The gateway
 coordinates its lifetime, so interrupting an agent does not close it or discard logins.
 
-For a gateway-coordinated headed browser, the first evaluation after interpreter
-startup or takeover is observation-only. Submitted code is not executed. Read the
-returned screenshot and accessibility snapshot, then submit the next action.
-Never replay an uncertain earlier action.
+The gateway browser is attached only when code first calls getPage() or
+screenshot(); code that uses only `desktop` never opens it. For a
+gateway-coordinated headed browser, that first attachment after interpreter startup
+or takeover is observation-only: code after it is not executed. Read the returned
+screenshot and accessibility snapshot, then submit the next action. Never replay an
+uncertain earlier action.
 
 A worker-owned headless browser executes the first submitted code. Call getPage(),
 inspect its URL and accessibility snapshot, then continue the requested task.
@@ -125,6 +140,13 @@ or resulting record. A successful click alone does not prove completion. Stop on
 the requested result is verified; if blocked, report the specific missing access
 or unsupported capability.
 
+## Results
+
+Every evaluation that acts on the Mac or uses the browser page, and emits no image
+of its own, ends with a fresh screenshot: the Mac display after desktop actions,
+otherwise the page (the only kind on Linux). Act and read the outcome in one evaluation; do not spend a
+separate evaluation only to capture what just happened.
+
 ## Tabs and image observations
 
 The gateway browser's context includes other chats' tabs. Use only the assigned
@@ -153,8 +175,8 @@ recorded session files survive interpreter loss.
 
 Native control requires möbius-app's Allow Mac control switch,
 Accessibility and Screen Recording permissions, and the Bot's Full access sandbox
-policy. It controls the real, unlocked Mac desktop. The browser above is gateway-owned when available. Linux gateways in this pilot
-provide browser control only.
+policy. It controls the real, unlocked Mac desktop. The browser above is gateway-owned when available. This section
+applies only to Mac gateways; Linux gateways provide browser control only.
 
 Start by observing installed running apps and inspecting the relevant process:
 
@@ -162,16 +184,24 @@ Start by observing installed running apps and inspecting the relevant process:
     // Use a pid from that result in the next evaluation:
     console.log(await desktop.inspect(pid));
 
-Await each action. `inspect(pid)` returns roles, labels, text, supported actions,
-and opaque elementId values. Prefer `desktop.press(elementId)` or
-`desktop.setValue(elementId, text)` with a currently observed element. After an
-action, inspect again: element IDs are invalidated when an action changes the UI.
+Await each action. `inspect(pid)` returns a compact outline of the app's usable
+elements, one per line, such as `[s3:12] button "Send" (press)`, indented by depth;
+the bracketed text is the elementId. `inspect(pid, {query: "send"})` keeps only
+rows containing that text, and `inspect(pid, {changes: true})` returns only rows
+added (`+`, with new IDs) or removed (`-`) since the previous inspect of that app.
+Web content in Chrome and Electron apps is included. Prefer `desktop.press(elementId)` or
+`desktop.setValue(elementId, text)` with a currently observed element. Element IDs
+are invalidated when an action changes the UI; the closing screenshot shows the
+result, so inspect again only when you need new element IDs.
 Use `desktop.activate(pid)` to bring an observed app forward. `desktop.openApp(bundleId)`
 opens an installed app by its known bundle identifier and returns its process ID.
 
 If accessibility is insufficient, use `desktop.displays()` then
 `var shot = await desktop.screenshot(displayId)` (omit displayId for the main display).
 The screenshot already emits its image and metadata; do not emit or log it again.
+`desktop.zoom(shot.screenshotId, x, y, width, height)` shows that region of the
+screenshot at full display detail, for small text; keep clicking with the original
+screenshot's pixels.
 After viewing the image, use its screenshotId and image pixels with:
 
 - `desktop.click(shot.screenshotId, x, y, button, clicks)`; button defaults to
@@ -185,13 +215,21 @@ Coordinates are mapped to the observed display, including its scale and origin.
 Screenshots expire after 60 seconds and are invalidated by UI actions. Capture
 again after a change. Never guess coordinates or re-use them on another display.
 
-For the frontmost app use `desktop.typeText(pid, text)` or
+Bots use their own pointer and keyboard: clicks reach the window under the point and
+keys reach the given app without moving the person's pointer or needing the app in
+front. The first time a Bot uses an app, the person chooses Always, Once (for this
+chat) or Don't Allow; respect a refusal. System Settings, password apps and möbius
+itself are never available, nor are shortcuts that log out, lock, force-quit or empty
+the Trash.
+
+Use `desktop.typeText(pid, text)` or
 `desktop.pressKey(pid, key, modifiers)`. typeText accepts plain text without control
 characters; use setValue for multiline text or pressKey for Return and Tab. Keys include lowercase letters, digits,
 return, tab, space, escape, delete, forwarddelete, arrows (left/right/up/down),
 home, end, pageup, pagedown, and f1–f12. Modifiers are an array containing command,
 shift, option, or control, for example `await desktop.pressKey(pid, "a", ["command"])`.
-Observe again to verify the result.
+Chain the keys and text of one step in a single evaluation; its closing screenshot
+verifies the result, and its screenshotId can be used for the next click.
 
 One evaluation controls this Mac at a time. Stop in the desktop app, lock, revoked
 permissions, disconnect, cancellation, or timeout ends control. Desktop changes

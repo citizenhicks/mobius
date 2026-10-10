@@ -174,13 +174,7 @@ impl HostState {
             .session
             .model
             .model_context_window
-            .map(|window| {
-                self.running
-                    .prepared
-                    .compaction
-                    .as_ref()
-                    .map_or(window, |compaction| compaction.trigger_tokens(window))
-            });
+            .map(|window| self.running.frontend.context_limit(window));
         Ok(SessionReadyPayload {
             active_turn_ids: checkpoint
                 .active_execution
@@ -204,7 +198,7 @@ impl HostState {
                 None
             },
             session: self.running.session.clone(),
-            contributions: self.running.frontend.contributions().to_vec(),
+            contributions: self.running.frontend.contributions()?,
             widgets: self
                 .widgets
                 .iter()
@@ -213,8 +207,6 @@ impl HostState {
                     item: item.clone(),
                 })
                 .collect(),
-            tool_count: self.running.tool_count,
-            compaction_count: checkpoint.compaction_count,
             context_limit_tokens,
             active_message_delivery: self.running.prepared.active_message_delivery,
             run_stats,

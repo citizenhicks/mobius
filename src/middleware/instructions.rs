@@ -20,6 +20,7 @@ mod text {
         pub(super) manifest_description: String,
         pub(super) manifest_label: String,
         pub(super) prompt_title: String,
+        pub(super) prompt_body: String,
     }
     crate::embedded_config! { pub(super) static DEFINITION: Definition = include_str!("instructions.toml"); }
 }
@@ -29,7 +30,7 @@ const MAX_INSTRUCTIONS_BYTES: u64 = 40_000;
 
 super::manifest::middleware_manifest! {
 /// Configuration and presentation metadata for workspace instructions.
-    "instructions", text::DEFINITION, required: false, capability: None, settings: &[]
+    "instructions", text::DEFINITION, required: false, settings: &[]
 }
 
 /// Optional root workspace instructions composed into the system prompt once.
@@ -39,10 +40,14 @@ pub struct Instructions {
 
 impl Instructions {
     /// Loads `AGENTS.override.md`, falling back to `AGENTS.md` when absent.
+    /// Without a workspace the middleware contributes nothing.
     /// # Errors
     ///
     /// Returns an error if validation or an operation required by this function fails.
-    pub fn discover(workspace: impl AsRef<Path>) -> Result<Self> {
+    pub fn discover(workspace: Option<&Path>) -> Result<Self> {
+        let Some(workspace) = workspace else {
+            return Ok(Self { body: None });
+        };
         let workspace = Dir::open_ambient_dir(workspace, ambient_authority())?;
         for name in [OVERRIDE_FILE, INSTRUCTIONS_FILE] {
             let Some(content) = read_optional(&workspace, name)? else {
@@ -50,7 +55,12 @@ impl Instructions {
             };
             let content = content.trim();
             return Ok(Self {
-                body: (!content.is_empty()).then(|| format!("Source: `{name}`\n\n{content}")),
+                body: (!content.is_empty()).then(|| {
+                    text::DEFINITION
+                        .prompt_body
+                        .replace("{name}", name)
+                        .replace("{content}", content)
+                }),
             });
         }
         Ok(Self { body: None })
@@ -124,10 +134,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn no_workspace_contributes_nothing() {
+        assert!(
+            Instructions::discover(None)
+                .expect("no workspace")
+                .body
+                .is_none()
+        );
+    }
+
+    #[test]
     fn override_wins_and_missing_files_are_optional() {
         let workspace = tempfile::tempdir().expect("workspace");
         assert!(
-            Instructions::discover(workspace.path())
+            Instructions::discover(Some(workspace.path()))
                 .expect("empty workspace")
                 .body
                 .is_none()
@@ -135,7 +155,7 @@ mod tests {
         std::fs::write(workspace.path().join(INSTRUCTIONS_FILE), "base").expect("base");
         std::fs::write(workspace.path().join(OVERRIDE_FILE), "override").expect("override");
 
-        let instructions = Instructions::discover(workspace.path()).expect("instructions");
+        let instructions = Instructions::discover(Some(workspace.path())).expect("instructions");
 
         assert_eq!(
             instructions.section(),
@@ -155,6 +175,6 @@ mod tests {
         let outside = tempfile::NamedTempFile::new().expect("outside");
         symlink(outside.path(), workspace.path().join(INSTRUCTIONS_FILE)).expect("symlink");
 
-        assert!(Instructions::discover(workspace.path()).is_err());
+        assert!(Instructions::discover(Some(workspace.path())).is_err());
     }
 }

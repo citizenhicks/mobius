@@ -4,8 +4,8 @@ use std::sync::{Arc, Weak};
 
 use mobius::BoxFuture;
 use mobius::agent::ValidatedSubmission;
-use mobius::middleware::sessions::{ChatTarget, LiveChat, LiveChats};
-use mobius::protocol::{ActiveMessageDelivery, MessageAuthor, Op, Submission};
+use mobius::middleware::sessions::{ChatTarget, LiveChat, LiveChats, PeerCommand};
+use mobius::protocol::{MessageAuthor, MessageSubmission, Op, Submission};
 use tokio::sync::Mutex;
 
 use super::catalog::load_session_metadata;
@@ -80,7 +80,6 @@ impl GatewayLiveChats {
                 && summary.catalog_visible
                 && summary.parent_session_id.is_none()
                 && summary.session_context.owner_id == sender.session_context.owner_id
-                && !entry.as_ref().is_some_and(|entry| entry.hidden)
             {
                 let host = hosts.remove(&summary.session_id);
                 siblings.push((summary, entry.and_then(|entry| entry.title), host));
@@ -134,8 +133,7 @@ impl LiveChats for GatewayLiveChats {
     fn send<'a>(
         &'a self,
         session_id: &'a str,
-        target: ChatTarget<'a>,
-        mut op: Op,
+        command: PeerCommand<'a>,
         initiating_author: &'a MessageAuthor,
         command_id: &'a str,
     ) -> BoxFuture<'a, mobius::Result<String>> {
@@ -146,44 +144,50 @@ impl LiveChats for GatewayLiveChats {
                 chats,
             } = self.open(session_id).await?;
             let id = format!("peer-{session_id}-{command_id}");
-            if (matches!(target, ChatTarget::Workspace(_)) || matches!(op, Op::Interrupt { .. }))
-                && !matches!(initiating_author, MessageAuthor::User)
+            if matches!(
+                command,
+                PeerCommand::Interrupt { .. }
+                    | PeerCommand::Message {
+                        target: ChatTarget::Workspace(_),
+                        ..
+                    }
+            ) && !matches!(initiating_author, MessageAuthor::User)
             {
                 return Err(mobius::Error::Tool(
                     "creating or interrupting a chat requires a user turn".into(),
                 ));
             }
-            match &mut op {
-                Op::Message { message } => {
-                    if !message.attachments.is_empty() || message.reply.is_some() {
-                        return Err(mobius::Error::Tool(
-                            "chat messages cannot attach files or target transcript replies".into(),
-                        ));
-                    }
+            let (target, op) = match command {
+                PeerCommand::Message {
+                    target,
+                    text,
+                    delivery,
+                } => {
                     let (cause_id, ancestry) = initiating_author.causal_origin();
                     let handle = sender.handle();
-                    message.author = MessageAuthor::Source {
-                        cause_id,
-                        ancestry,
-                        message_id: id.clone(),
-                        source: mobius::protocol::MessageSource::Session {
-                            session_id: sender.session_id,
+                    let message = MessageSubmission {
+                        author: MessageAuthor::Source {
+                            cause_id,
+                            ancestry,
+                            message_id: id.clone(),
+                            source: mobius::protocol::MessageSource::Session {
+                                session_id: sender.session_id,
+                            },
+                            handle,
+                            symbol: None,
                         },
-                        handle,
-                        symbol: None,
+                        text,
+                        attachments: Vec::new(),
+                        reply: None,
+                        requested_delivery: Some(delivery),
+                        target_turn_id: None,
                     };
-                    message
-                        .requested_delivery
-                        .get_or_insert(ActiveMessageDelivery::Steer);
+                    (target, Op::Message { message })
                 }
-                Op::Interrupt { .. } if matches!(target, ChatTarget::Existing(_)) => {}
-                _ => {
-                    return Err(mobius::Error::Tool(
-                        "chat commands support messages, or interrupts to an existing target"
-                            .into(),
-                    ));
+                PeerCommand::Interrupt { target, turn_id } => {
+                    (ChatTarget::Existing(target), Op::Interrupt { turn_id })
                 }
-            }
+            };
             let submission = ValidatedSubmission::new(Submission { id, op })?;
             let host = match target {
                 ChatTarget::Workspace(workspace) => (self.1)()

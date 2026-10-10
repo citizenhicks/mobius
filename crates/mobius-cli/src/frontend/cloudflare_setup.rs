@@ -4,7 +4,9 @@ use crate::frontend::terminal::masked_credential as masked_token;
 use std::io;
 
 use mobius::{Error, Result};
-use mobius_gateway::config::{CloudflareConfig, MAX_CLOUDFLARE_TOKEN_BYTES as MAX_TOKEN_BYTES};
+use mobius_gateway::config::{
+    CloudflareConfig, MAX_CLOUDFLARE_TOKEN_BYTES as MAX_TOKEN_BYTES, MAX_HOSTNAME_BYTES,
+};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -15,8 +17,6 @@ use tokio::time::MissedTickBehavior;
 use super::terminal::{INPUT_POLL, MAX_INPUT_BATCH, TerminalGuard, poll_event};
 use super::terminal_text;
 use super::theme::{Role, current};
-
-const MAX_HOSTNAME_BYTES: usize = 253;
 
 pub use mobius_gateway::command::CloudflareInit;
 
