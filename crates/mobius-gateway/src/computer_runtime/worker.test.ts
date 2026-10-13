@@ -192,11 +192,132 @@ test("native actions share the evaluation pipe, preserve state, and answer actin
     actions.push(request.action);
     if (request.action === "apps") return { result: [{ pid: 123 }] };
     if (request.action === "screenshot") {
-      assert.deepEqual(request, {action:"screenshot"});
+      assert.deepEqual(request, actions.length === 2 ? {action:"screenshot"} : {action:"screenshot", afterAction:true});
       return { result: { screenshotId: "observed", png: Buffer.from("native-image").toString("base64") } };
     }
     assert.deepEqual(request, { screenshotId: "observed", x: 10, y: 20, button: "left", clicks: 1, action: "click" });
     return { result: true };
+  });
+});
+
+test("app screenshots preserve targets and never turn a missing pid into display capture", { timeout: 5000 }, t => {
+  const requests: unknown[] = [];
+  return withWorker(t.signal, async evaluate => {
+    const main = await evaluate("var appShot = await desktop.screenshotApp(123); console.log(appShot.pid)");
+    assert.equal(main.is_error, false, text(main));
+    assert.equal(images(main).length, 1);
+    assert.match(text(main), /123/);
+    const selected = await evaluate("await desktop.screenshotApp(123, 2)");
+    assert.equal(selected.is_error, false, text(selected));
+    assert.equal(images(selected).length, 1);
+    for (const pid of ["undefined", "null", "() => 123", "Symbol('app')", "({toJSON:() => undefined})"]) {
+      const invalid = await evaluate(`await desktop.screenshotApp(${pid})`);
+      assert.equal(invalid.is_error, true);
+      assert.equal(images(invalid).length, 0);
+      assert.match(text(invalid), /Choose a running app/);
+    }
+    assert.deepEqual(requests, [
+      {action:"screenshot", pid:123},
+      {action:"screenshot", pid:123, displayId:2},
+      ...Array.from({length:5}, () => ({action:"screenshot", pid:null})),
+    ]);
+  }, request => {
+    requests.push(request);
+    if (request.pid === null) return {error:"Choose a running app"};
+    return {result:{screenshotId:"app", pid:request.pid, png:Buffer.from("app-image").toString("base64")}};
+  });
+});
+
+test("automatic app capture failure reports the missing observation after full logs without a display fallback", { timeout: 5000 }, t => {
+  const requests: unknown[] = [];
+  return withWorker(t.signal, async evaluate => {
+    const result = await evaluate("await desktop.typeText(123, 'hello'); console.log('x'.repeat(40000))");
+    assert.equal(result.is_error, false, text(result));
+    assert.equal(images(result).length, 0);
+    assert.match(text(result), /Post-action screenshot unavailable: Error: The app is no longer available/);
+    assert.ok(Buffer.byteLength(text(result)) <= 40000);
+    assert.deepEqual(requests, [
+      {action:"type_text", pid:123, text:"hello"},
+      {action:"screenshot", afterAction:true},
+    ]);
+  }, request => {
+    requests.push(request);
+    return request.action === "screenshot" ? {error:"The app is no longer available"} : {result:true};
+  });
+});
+
+test("desktop actions get a fresh scoped observation even after an earlier image", { timeout: 5000 }, t => {
+  const requests: unknown[] = [];
+  return withWorker(t.signal, async evaluate => {
+    const result = await evaluate("await desktop.screenshotApp(123); await desktop.typeText(123, 'hello')");
+    assert.equal(result.is_error, false, text(result));
+    assert.equal(images(result).length, 2);
+    assert.deepEqual(requests, [
+      {action:"screenshot", pid:123},
+      {action:"type_text", pid:123, text:"hello"},
+      {action:"screenshot", afterAction:true},
+    ]);
+    requests.length = 0;
+    const explicit = await evaluate("await desktop.typeText(123, 'hello'); await desktop.screenshotApp(123)");
+    assert.equal(explicit.is_error, false, text(explicit));
+    assert.equal(images(explicit).length, 1, "an explicit post-action capture needs no duplicate");
+    assert.deepEqual(requests, [
+      {action:"type_text", pid:123, text:"hello"},
+      {action:"screenshot", pid:123},
+    ]);
+  }, request => {
+    requests.push(request);
+    return request.action === "screenshot"
+      ? {result:{screenshotId:"app", pid:123, png:Buffer.from("app-image").toString("base64")}}
+      : {result:true};
+  });
+});
+
+test("Linux window capture and keyboard actions use explicit targets and emit image observations", { timeout: 5000 }, t => {
+  const requests: unknown[] = [];
+  return withWorker(t.signal, async evaluate => {
+    assert.match(text(await evaluate("console.log(await desktop.windows())")), /Terminal/);
+    const captured = await evaluate("var windowShot = await desktop.screenshotWindow(42)");
+    assert.equal(captured.is_error, false, text(captured));
+    assert.equal(images(captured).length, 1);
+    assert.equal(await readFile(images(captured)[0].path, "utf8"), "window-image");
+    const typed = await evaluate("await desktop.typeWindowText(42, 'hello'); await desktop.pressWindowKey(42, 'return')");
+    assert.equal(typed.is_error, false, text(typed));
+    assert.equal(images(typed).length, 1);
+    assert.deepEqual(requests, [
+      {action:"windows"},
+      {action:"screenshot_window", windowId:42},
+      {action:"type_window_text", windowId:42, text:"hello"},
+      {action:"press_window_key", windowId:42, key:"return", modifiers:[]},
+      {action:"screenshot", afterAction:true},
+    ]);
+  }, request => {
+    requests.push(request);
+    if (request.action === "windows") return {result:[{windowId:42, title:"Terminal"}]};
+    if (["screenshot_window", "screenshot"].includes(request.action)) {
+      return {result:{screenshotId:"window", windowId:42, png:Buffer.from("window-image").toString("base64")}};
+    }
+    return {result:true};
+  });
+});
+
+test("zooming an earlier screenshot does not replace a fresh post-action observation", { timeout: 5000 }, t => {
+  const requests: unknown[] = [];
+  return withWorker(t.signal, async evaluate => {
+    const result = await evaluate("var earlier = await desktop.screenshotApp(123); await desktop.typeText(123, 'hello'); await desktop.zoom(earlier.screenshotId, 0, 0, 10, 10)");
+    assert.equal(result.is_error, false, text(result));
+    assert.deepEqual(requests, [
+      {action:"screenshot", pid:123},
+      {action:"type_text", pid:123, text:"hello"},
+      {action:"zoom", screenshotId:"earlier", x:0, y:0, width:10, height:10},
+      {action:"screenshot", afterAction:true},
+    ]);
+    assert.equal(await readFile(images(result).at(-1)!.path, "utf8"), "fresh-image");
+  }, request => {
+    requests.push(request);
+    if (request.action === "type_text") return {result:true};
+    return {result:{screenshotId:"earlier", pid:123,
+      png:Buffer.from(request.afterAction ? "fresh-image" : "earlier-image").toString("base64")}};
   });
 });
 
@@ -294,6 +415,7 @@ test("gateway pages are assigned, observed before acting, and retained after wor
 test("a scoped local browser exposes one page without stealing focus", { timeout: 10000 }, async ({ signal }) => {
   const desktop = { endpoint: "ws+unix:///tmp/browser.sock:/0123456789abcdef0123456789abcdef", target_id: null };
   for (const count of [1, 2]) {
+    const requests: unknown[] = [];
     await withWorker(signal, async (evaluate, directory) => {
       const module = join(directory, "node_modules", "playwright");
       await mkdir(module, { recursive: true });
@@ -310,7 +432,7 @@ test("a scoped local browser exposes one page without stealing focus", { timeout
           return { contexts: () => [{ pages: () => Array(${count}).fill(page) }], isConnected: () => connected, close: async () => { connected = false; } };
         } };
       `);
-      const first = await evaluate("await getPage(); globalThis.changed = true", desktop);
+      const first = await evaluate((count === 1 ? "await desktop.typeText(123, 'hello'); " : "") + "await getPage(); globalThis.changed = true", desktop);
       if (count === 2) {
         assert.equal(first.is_error, true);
         assert.match(text(first), /exactly one page/);
@@ -318,10 +440,19 @@ test("a scoped local browser exposes one page without stealing focus", { timeout
       }
       assert.equal(first.is_error, false);
       assert.match(text(first), /was not executed/);
+      assert.equal(images(first).length, 2, "first browser contact also observes the preceding native action");
+      assert.deepEqual(requests, [
+        {action:"type_text", pid:123, text:"hello"},
+        {op:"begin_browser"},
+        {action:"screenshot", afterAction:true},
+      ]);
       const second = await evaluate("globalThis.changed ?? 'untouched'", desktop);
       assert.equal(second.is_error, false);
       assert.match(text(second), /untouched/);
     }, request => {
+      requests.push(request);
+      if (request.action === "type_text") return {result:true};
+      if (request.action === "screenshot") return {result:{screenshotId:"app", pid:123, png:Buffer.from("app-image").toString("base64")}};
       assert.deepEqual(request, { op: "begin_browser" });
       return { result: desktop };
     });

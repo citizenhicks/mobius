@@ -1,5 +1,7 @@
 //! One gateway-owned browser/profile; Linux adds a private virtual desktop.
 
+#[cfg(any(target_os = "linux", test))]
+mod linux;
 mod processes;
 #[cfg(any(target_os = "linux", test))]
 mod shell;
@@ -40,7 +42,7 @@ pub(crate) struct RemoteDesktop {
     consumers: Mutex<usize>,
     control: Arc<tokio::sync::Mutex<()>>,
     executions: Arc<tokio::sync::RwLock<()>>,
-    held: AtomicBool,
+    held: Arc<AtomicBool>,
     user: Mutex<Option<UserControl>>,
     last_session: Mutex<Option<String>>,
     changed: broadcast::Sender<()>,
@@ -65,6 +67,8 @@ struct Runtime {
     display: Option<String>,
     authority: PathBuf,
     socket: PathBuf,
+    #[cfg(target_os = "linux")]
+    native: Option<Arc<Mutex<linux::Desktop>>>,
 }
 
 pub(crate) struct DesktopStream {
@@ -101,7 +105,7 @@ impl RemoteDesktop {
             consumers: Mutex::new(0),
             control: Arc::default(),
             executions: Arc::default(),
-            held: AtomicBool::new(false),
+            held: Arc::new(AtomicBool::new(false)),
             user: Mutex::new(None),
             last_session: Mutex::new(None),
             changed,
@@ -296,9 +300,13 @@ impl RemoteDesktop {
         &self,
         mut channel: DuplexStream,
         session_id: &str,
-        native: Arc<DesktopControl>,
+        // Linux gateways act on their own display; only a local Mac app hosts native control.
+        #[cfg_attr(target_os = "linux", expect(unused_variables))] native: Arc<DesktopControl>,
     ) -> Result<()> {
+        #[cfg(not(target_os = "linux"))]
         let mut native_channel = None;
+        #[cfg(target_os = "linux")]
+        let mut first_native = true;
         loop {
             let size = channel.read_u32().await? as usize;
             if size == 0 || size > MAX_HOST_REQUEST {
@@ -313,17 +321,46 @@ impl RemoteDesktop {
                     Err(error) => serde_json::to_vec(&json!({"error":error.to_string()}))?,
                 }
             } else {
-                match native_channel
-                    .take()
-                    .map_or_else(|| native.connect(session_id), Ok)
+                #[cfg(target_os = "linux")]
                 {
-                    Ok(mut channel) => {
-                        // A failed reply after dispatch can hide a completed action; fail closed.
-                        let reply = forward_native(&mut channel, &bytes).await?;
-                        native_channel = Some(channel);
-                        reply
+                    let cancelled = Arc::new(AtomicBool::new(false));
+                    let action = self.linux_request(
+                        request,
+                        session_id,
+                        first_native,
+                        Arc::clone(&cancelled),
+                    );
+                    tokio::pin!(action);
+                    let result = tokio::select! {
+                        result = &mut action => result,
+                        _ = channel.read_u8() => {
+                            cancelled.store(true, Ordering::Release);
+                            let _ = action.await;
+                            return Ok(());
+                        }
+                    };
+                    match result {
+                        Ok(result) => {
+                            first_native = false;
+                            serde_json::to_vec(&json!({"result":result}))?
+                        }
+                        Err(error) => serde_json::to_vec(&json!({"error":error.to_string()}))?,
                     }
-                    Err(error) => serde_json::to_vec(&json!({"error":error.to_string()}))?,
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    match native_channel
+                        .take()
+                        .map_or_else(|| native.connect(session_id), Ok)
+                    {
+                        Ok(mut channel) => {
+                            // A failed reply after dispatch can hide a completed action; fail closed.
+                            let reply = forward_native(&mut channel, &bytes).await?;
+                            native_channel = Some(channel);
+                            reply
+                        }
+                        Err(error) => serde_json::to_vec(&json!({"error":error.to_string()}))?,
+                    }
                 }
             };
             channel
@@ -332,6 +369,87 @@ impl RemoteDesktop {
             channel.write_all(&reply).await?;
             channel.flush().await?;
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn linux_request(
+        &self,
+        request: Value,
+        session: &str,
+        begin: bool,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<Value> {
+        self.check_execution()?;
+        let native = {
+            let mut runtime = self.runtime.lock().await;
+            if runtime.is_none() {
+                *runtime = Some(Runtime::start(&self.state_dir, &self.config).await?);
+            }
+            let runtime = runtime.as_mut().ok_or_else(unavailable)?;
+            if runtime.native.is_none() {
+                let display = runtime
+                    .display
+                    .as_deref()
+                    .ok_or_else(unavailable)?
+                    .to_owned();
+                let xauth = config::resolve_executable(Path::new(
+                    self.config.desktop.tools.xauth.as_ref(),
+                ))?;
+                let authentication = short_output(
+                    Command::new(xauth)
+                        .arg("-f")
+                        .arg(&runtime.authority)
+                        .args(["list", &display]),
+                )
+                .await?;
+                let desktop = tokio::task::spawn_blocking(move || {
+                    linux::Desktop::connect(&display, &authentication.stdout)
+                })
+                .await
+                .map_err(|error| Error::Config(error.to_string()))??;
+                runtime.native = Some(Arc::new(Mutex::new(desktop)));
+            }
+            Arc::clone(runtime.native.as_ref().ok_or_else(unavailable)?)
+        };
+        let session = session.to_owned();
+        let held = Arc::clone(&self.held);
+        let task_native = Arc::clone(&native);
+        let (result, timed_out, input_submitted) =
+            tokio::task::spawn_blocking(move || -> Result<_> {
+                let mut desktop = task_native.lock().map_err(|_| unavailable())?;
+                let result = desktop.request(
+                    &session,
+                    begin,
+                    request,
+                    &linux::Control {
+                        held: &held,
+                        cancelled: &cancelled,
+                    },
+                );
+                Ok((result, desktop.timed_out(), desktop.input_submitted()))
+            })
+            .await
+            .map_err(|error| Error::Config(error.to_string()))??;
+        if timed_out {
+            let mut runtime = self.runtime.lock().await;
+            if !runtime
+                .as_ref()
+                .and_then(|runtime| runtime.native.as_ref())
+                .is_some_and(|current| Arc::ptr_eq(current, &native))
+            {
+                return result;
+            }
+            if input_submitted {
+                // Timed-out input may still be queued, so retire its private display before reuse.
+                if let Some(runtime) = runtime.take() {
+                    tracing::warn!("gateway desktop stopping: X11 input timed out");
+                    runtime.stop().await;
+                }
+            } else if let Some(runtime) = runtime.as_mut() {
+                runtime.native = None;
+            }
+        }
+        result
     }
 
     pub(crate) async fn stream(self: &Arc<Self>, connection: Uuid) -> Result<DesktopStream> {
@@ -398,11 +516,12 @@ impl RemoteDesktop {
         let lease = Arc::clone(&self.control).lock_owned().await;
         {
             let mut runtime = self.runtime.lock().await;
-            runtime
-                .as_mut()
-                .ok_or_else(unavailable)?
-                .show(&session_id)
-                .await?;
+            let runtime = runtime.as_mut().ok_or_else(unavailable)?;
+            #[cfg(target_os = "linux")]
+            if let Some(native) = &runtime.native {
+                native.lock().map_err(|_| unavailable())?.invalidate();
+            }
+            runtime.show(&session_id).await?;
         }
         *mobius::sync::recover_lock(&self.last_session) = Some(session_id.clone());
         if let Err(error) = self.set_input(true).await {
@@ -583,6 +702,8 @@ impl Runtime {
             display,
             authority,
             socket,
+            #[cfg(target_os = "linux")]
+            native: None,
         })
     }
 
@@ -741,6 +862,7 @@ fn input_enabled(output: &[u8]) -> Option<bool> {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 async fn forward_native(channel: &mut DuplexStream, bytes: &[u8]) -> Result<Vec<u8>> {
     channel
         .write_u32(u32::try_from(bytes.len()).map_err(|_| unavailable())?)

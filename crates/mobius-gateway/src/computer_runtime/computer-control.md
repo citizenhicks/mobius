@@ -1,11 +1,11 @@
 ---
 name: computer-control
-description: Operate and verify browser UI or native Mac apps through computer_control. Use when UI interaction is needed and no more specific available tool covers it.
+description: Operate and verify browser UI, native Mac apps or Linux desktop windows through computer_control. Use when UI interaction is needed and no more specific available tool covers it.
 ---
 
 # Computer control
 
-Use computer_control for browser and native Mac UI actions. Prefer an available connector, API,
+Use computer_control for browser, native Mac and Linux desktop UI actions. Prefer an available connector, API,
 CLI, or dedicated skill when it directly serves the user's request. Follow an
 explicit request to use the browser. This runtime selects a gateway-coordinated headed browser when Full access and
 network access are available, otherwise a worker-owned headless browser. Native
@@ -15,10 +15,10 @@ Mac desktop control remains available when enabled in the local Mac app.
 
 - On a Mac gateway, the browser is the möbius app's in-app tab, and `desktop` drives
   native Mac apps when the person has enabled it.
-- On a Linux gateway, the browser runs headed on the gateway's own virtual display,
-  which people watch and take over through the remote desktop view. There is no
-  `desktop`: its calls fail with "only the local Mac app can host desktop control",
-  so use the browser only and do not retry them. Pages see a Linux Chromium, where
+- On a Linux desktop gateway, the browser and apps run on the gateway's own virtual
+  display, which people watch and take over through the remote desktop view.
+  Use the Linux window APIs below for window captures and coordinate input;
+  Mac accessibility APIs are unavailable. Pages see a Linux Chromium, where
   shortcuts use Control, not Command; Playwright's `ControlOrMeta` works on both,
   for example `page.keyboard.press("ControlOrMeta+A")`.
 - On either, a gateway without a display or remote desktop uses a worker-owned
@@ -142,9 +142,13 @@ or unsupported capability.
 
 ## Results
 
-Every evaluation that acts on the Mac or uses the browser page, and emits no image
-of its own, ends with a fresh screenshot: the Mac display after desktop actions,
-otherwise the page (the only kind on Linux). Act and read the outcome in one evaluation; do not spend a
+Desktop actions end with a fresh screenshot of the last Mac app or Linux window
+acted on, unless the evaluation explicitly captures another desktop image after
+its last action. An image taken before an action does not replace its result capture.
+If the target cannot be captured, the runtime reports the missing observation
+without falling back to a full-display capture. Browser evaluations that emit no
+image end with a fresh page screenshot.
+Act and read the outcome in one evaluation; do not spend a
 separate evaluation only to capture what just happened.
 
 ## Tabs and image observations
@@ -176,7 +180,7 @@ recorded session files survive interpreter loss.
 Native control requires möbius-app's Allow Mac control switch,
 Accessibility and Screen Recording permissions, and the Bot's Full access sandbox
 policy. It controls the real, unlocked Mac desktop. The browser above is gateway-owned when available. This section
-applies only to Mac gateways; Linux gateways provide browser control only.
+applies only to Mac gateways; Linux desktop windows use the APIs below.
 
 Start by observing installed running apps and inspecting the relevant process:
 
@@ -196,12 +200,29 @@ result, so inspect again only when you need new element IDs.
 Use `desktop.activate(pid)` to bring an observed app forward. `desktop.openApp(bundleId)`
 opens an installed app by its known bundle identifier and returns its process ID.
 
-If accessibility is insufficient, use `desktop.displays()` then
+If accessibility is insufficient, capture the observed app:
+
+    var shot = await desktop.screenshotApp(pid);
+
+This requires the same app permission as inspection and captures only that app's
+windows on the main display. Other apps, the desktop and the menu bar are excluded
+by the native capture filter. The image keeps the display's coordinate space;
+excluded areas are not other clickable apps. Use `desktop.displays()` and pass a
+display ID as the second argument for another display: `desktop.screenshotApp(pid, displayId)`.
+An unavailable or denied app fails without falling back to the whole display.
+
+When the task explicitly requires the whole display, use
 `var shot = await desktop.screenshot(displayId)` (omit displayId for the main display).
+This broader capture can include other apps; per-app permissions do not filter it.
 The screenshot already emits its image and metadata; do not emit or log it again.
 `desktop.zoom(shot.screenshotId, x, y, width, height)` shows that region of the
 screenshot at full display detail, for small text; keep clicking with the original
-screenshot's pixels.
+screenshot's pixels. Zoom preserves app scope. Pointer actions from an app-scoped
+screenshot refuse targets belonging to another app; inspect or capture again if a
+different window covers the target.
+Automatic screenshots after pointer actions retain the observed display. Other Mac
+actions default to the main display; explicitly capture the app on its display when
+working on another monitor.
 After viewing the image, use its screenshotId and image pixels with:
 
 - `desktop.click(shot.screenshotId, x, y, button, clicks)`; button defaults to
@@ -236,6 +257,45 @@ permissions, disconnect, cancellation, or timeout ends control. Desktop changes
 survive interpreter reset. After any failed or interrupted action, inspect the
 actual app state before continuing; never automatically replay an uncertain action.
 Do not automate the permission prompt or the control app itself.
+
+## Linux desktop windows
+
+These APIs require a Full-access Bot with network access and operate on the Linux
+gateway's enabled virtual desktop. They do not
+capture the user's local computer or an arbitrary host desktop. Prefer command-line
+tools for Linux work when they directly serve the task.
+
+Start by listing windows, then use an ID from that result in the next evaluation:
+
+    console.log(await desktop.windows());
+    // Use an observed windowId:
+    var shot = await desktop.screenshotWindow(windowId);
+
+The screenshot already emits its image and metadata. It captures the selected
+window's pixels, excluding other windows even when they overlap it. Use the returned
+`screenshotId` and image pixels with `desktop.click`, `move`, `drag` and `scroll`,
+using the same argument order as above. Coordinates are relative to the window image;
+the runtime maps them to the virtual display. Capture again after acting or when a
+window moves, resizes or closes. Never reuse a window ID for another app.
+
+Keyboard input also names the target window:
+
+    await desktop.typeWindowText(windowId, "hello");
+    await desktop.pressWindowKey(windowId, "return");
+
+`pressWindowKey` accepts `shift`, `control`, `alt` and `super` in a modifier array as
+its third argument, for example `["control"]`. Text must be representable by the
+desktop's current keyboard map; unsupported characters are rejected. Use Linux
+shortcuts, such as Control+A. Input focuses the selected
+window on the shared virtual desktop and is paused while the user has control.
+An active pointer or keyboard grab blocks input until released. Desktop-wide keyboard
+shortcuts retain their normal Linux behavior even when a window is selected.
+Automatic result screenshots stay scoped to the last window acted on; missing or
+stale targets fail without falling back to the full desktop.
+
+Linux does not provide Mac `apps`, `inspect`, `press`, `setValue`, `screenshotApp`,
+or display-wide `screenshot` capture. Window capture and coordinate input do not
+provide an accessibility tree or an operating-system app sandbox.
 
 ## Authorization and recovery
 

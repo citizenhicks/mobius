@@ -213,6 +213,11 @@ activation, mouse input, and keyboard input. Enable **Allow Mac control** in the
 desktop app, grant macOS Accessibility and Screen Recording permissions, and select
 the Bot's **Full access** sandbox policy. Stop, disconnect, or an inactive desktop
 session revokes control. The gateway remains the sole agent and approval owner.
+Use `desktop.screenshotApp(pid)` for an authorized app's windows, or pass a display
+ID as its second argument. App capture and zoom exclude other apps; automatic
+screenshots after native actions capture the last app acted on. Explicit
+`desktop.screenshot(displayId)` still captures the whole display.
+
 Linux desktop gateways use a gateway-owned headed Chromium with noVNC, a native
 status bar, wallpaper, and Chrome, Terminal, and Files launchers. Enable it while stopped with
 `mobius-gateway set-desktop --enabled true`. Such gateways accept Full-access Bots
@@ -222,6 +227,12 @@ in-app CEF tab through its scoped browser broker. Otherwise computer control use
 headless Chromium. The computer-control middleware makes this selection; the
 gateway owns remote browser processes and coordinates page allocation, foreground
 use and takeover. The apps expose one **Bot's computer** action for the selected view.
+For Full-access Bots with network access on the enabled Linux desktop,
+`desktop.windows()` lists targets and
+`desktop.screenshotWindow(windowId)` captures only the selected window. The existing
+coordinate input helpers act on its screenshot; `typeWindowText` and `pressWindowKey`
+target its keyboard input. Automatic screenshots remain scoped to that window.
+Linux accessibility inspection and whole-display capture are not exposed.
 
 The Mac and iOS apps watch Linux desktops over a second authenticated encrypted
 connection. Taking control pauses and drains all sandbox execution on the gateway.

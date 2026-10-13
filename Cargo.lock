@@ -1803,7 +1803,7 @@ dependencies = [
 
 [[package]]
 name = "mobius"
-version = "0.16.33"
+version = "0.16.34"
 dependencies = [
  "base64 0.22.1",
  "bm25",
@@ -1831,7 +1831,7 @@ dependencies = [
 
 [[package]]
 name = "mobius-cli"
-version = "0.16.33"
+version = "0.16.34"
 dependencies = [
  "arboard",
  "chrono",
@@ -1854,7 +1854,7 @@ dependencies = [
 
 [[package]]
 name = "mobius-gateway"
-version = "0.16.33"
+version = "0.16.34"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -1862,6 +1862,7 @@ dependencies = [
  "clap",
  "croner",
  "futures-util",
+ "image",
  "mobius",
  "nix",
  "plist",
@@ -1884,6 +1885,7 @@ dependencies = [
  "url",
  "uuid",
  "webpki-roots 1.0.9",
+ "x11rb",
 ]
 
 [[package]]

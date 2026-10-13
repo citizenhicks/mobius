@@ -1,6 +1,6 @@
 [package]
 name = "mobius-gateway"
-version = "0.16.33"
+version = "0.16.34"
 edition.workspace = true
 rust-version.workspace = true
 description = "Headless authenticated gateway for möbius frontends"
@@ -46,12 +46,18 @@ sysinfo = { version = "0.39.6", default-features = false, features = ["system", 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 plist = { version = "1", default-features = false }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+x11rb = { version = "0.13.2", features = ["composite", "xtest", "image"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+x11rb = { version = "0.13.2", features = ["composite", "xtest", "image"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 plist = { version = "1", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.29", features = ["hostname", "signal", "user"] }
+nix = { version = "0.29", features = ["hostname", "poll", "signal", "user"] }
 
 [lints]
 workspace = true

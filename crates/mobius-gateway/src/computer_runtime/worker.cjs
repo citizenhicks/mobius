@@ -26,8 +26,8 @@ function clipped(value, limit) {
 let content = [], textBytes = 0, imageCount = 0, active = false, connection, page;
 let nativePending, nativeTask, desktopUsed = false;
 // Actions that can change what is on screen; reading the screen does not.
-const ACTING = new Set(['open_app','activate','press','set_value','click','move','drag','scroll','type_text','press_key']);
-let desktopActed = false, pageUsed = false, gated = false;
+const ACTING = new Set(['open_app','activate','press','set_value','click','move','drag','scroll','type_text','press_key','type_window_text','press_window_key']);
+let desktopNeedsObservation = false, pageUsed = false, gated = false;
 function writeFrame(payload, flags = 0) {
   const header = Buffer.alloc(4);
   header.writeUInt32BE((payload.length | flags) >>> 0);
@@ -38,17 +38,18 @@ function nativeCall(action, args = {}) {
   if (!active) throw new Error('Desktop actions require an active evaluation');
   if (nativePending) throw new Error('Await each desktop action before starting another');
   desktopUsed = true;
-  if (ACTING.has(action)) desktopActed = true;
+  if (ACTING.has(action)) desktopNeedsObservation = true;
   nativeTask = hostCall({...args, action}).then(result => {
-    if (action === 'screenshot' || action === 'zoom') {
+    if (action === 'screenshot' || action === 'screenshot_window' || action === 'zoom') {
       if (typeof result?.png !== 'string') throw new Error('Desktop screenshot is missing');
       const bytes = Buffer.from(result.png, 'base64');
       if (bytes.length === 0 || bytes.length > 50 * 1024 * 1024) throw new Error('Desktop screenshot exceeds its limit');
       const target = path.join(os.tmpdir(), 'desktop-' + crypto.randomUUID() + '.png');
       fs.writeFileSync(target, bytes, {flag:'wx'});
       delete result.png;
-      try { text((action === 'zoom' ? 'Mac zoom: ' : 'Mac screenshot: ') + JSON.stringify(result)); emitImage(target); }
+      try { text((action === 'zoom' ? 'Desktop zoom: ' : 'Desktop screenshot: ') + JSON.stringify(result)); emitImage(target); }
       finally { fs.unlinkSync(target); }
+      if (action !== 'zoom') desktopNeedsObservation = false;
     }
     return result;
   });
@@ -71,12 +72,16 @@ function hostCall(request) {
 const desktop = Object.freeze({
   apps: () => nativeCall('apps'),
   displays: () => nativeCall('displays'),
+  windows: () => nativeCall('windows'),
   openApp: bundleId => nativeCall('open_app', {bundleId}),
   activate: pid => nativeCall('activate', {pid}),
   inspect: (pid, options = {}) => nativeCall('inspect', {pid, ...options}),
   press: elementId => nativeCall('press', {elementId}),
   setValue: (elementId, text) => nativeCall('set_value', {elementId, text}),
   screenshot: displayId => nativeCall('screenshot', displayId === undefined ? {} : {displayId}),
+  // Invalid JavaScript values must not serialize away and become a display capture.
+  screenshotApp: (pid, displayId) => nativeCall('screenshot', {pid:Number.isSafeInteger(pid) ? pid : null, ...(displayId === undefined ? {} : {displayId})}),
+  screenshotWindow: windowId => nativeCall('screenshot_window', {windowId}),
   zoom: (screenshotId, x, y, width, height) => nativeCall('zoom', {screenshotId, x, y, width, height}),
   click: (screenshotId, x, y, button = 'left', clicks = 1) => nativeCall('click', {screenshotId, x, y, button, clicks}),
   move: (screenshotId, x, y) => nativeCall('move', {screenshotId, x, y}),
@@ -84,6 +89,8 @@ const desktop = Object.freeze({
   scroll: (screenshotId, x, y, deltaX, deltaY) => nativeCall('scroll', {screenshotId, x, y, deltaX, deltaY}),
   typeText: (pid, text) => nativeCall('type_text', {pid, text}),
   pressKey: (pid, key, modifiers = []) => nativeCall('press_key', {pid, key, modifiers}),
+  typeWindowText: (windowId, text) => nativeCall('type_window_text', {windowId, text}),
+  pressWindowKey: (windowId, key, modifiers = []) => nativeCall('press_window_key', {windowId, key, modifiers}),
 });
 function text(value, limit = MAX_TEXT_BYTES - FAILURE_TEXT_BYTES) {
   if (!active) return;
@@ -202,18 +209,19 @@ async function firstContact(current) {
   emitScreenshot(await capturePage(current));
   throw new Error('first browser observation');
 }
-// Acting is answered with its result: without an image already, end with a fresh one.
+// An image taken before a desktop action cannot verify its result.
 async function observeResult() {
-  if (gated || imageCount > 0 || !(desktopActed || pageUsed)) return;
+  if (gated && !desktopNeedsObservation) return;
+  if (!desktopNeedsObservation && (imageCount > 0 || !pageUsed)) return;
   try {
-    if (desktopActed) {
+    if (desktopNeedsObservation) {
       await new Promise(resolve => setTimeout(resolve, 300));
-      await nativeCall('screenshot');
+      await nativeCall('screenshot', {afterAction:true});
     } else if (page && !page.isClosed()) {
       emitScreenshot(await capturePage(page, FAILURE_CAPTURE_MS));
     }
-  } catch {
-    // ponytail: a missing closing screenshot only costs the model one explicit capture.
+  } catch (error) {
+    if (desktopNeedsObservation) text('Post-action screenshot unavailable: ' + clipped(error, 300), MAX_TEXT_BYTES);
   }
 }
 function capturePage(current, timeout) {
@@ -237,7 +245,7 @@ async function screenshot() {
   emitScreenshot(await capturePage(current));
 }
 async function reportFailure(error, scope, interpreterState = 'retained') {
-  if (desktopUsed) text('Mac desktop state is external to this interpreter. Inspect it before continuing; do not automatically repeat an action.', MAX_TEXT_BYTES);
+  if (desktopUsed) text('Desktop state is external to this interpreter. Inspect it before continuing; do not automatically repeat an action.', MAX_TEXT_BYTES);
   const browserLost = connection && !connection.isConnected();
   let kind = 'evaluation_error';
   if ((error?.className ?? error?.name) === 'TimeoutError' || error?.description?.startsWith('TimeoutError:')) kind = 'action_timeout';
@@ -301,7 +309,7 @@ async function main() {
     if (browser !== undefined) validateDesktop(browser);
     content = []; textBytes = 0; imageCount = 0; active = true; desktopUsed = false; nativeTask = undefined;
     browserSpec = browser; requested = undefined; frontPending = false;
-    desktopActed = pageUsed = gated = false;
+    desktopNeedsObservation = pageUsed = gated = false;
     let is_error = false;
     try {
       // Saved page handles can bypass getPage(); renew their host lease before running code.

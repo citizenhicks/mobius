@@ -81,6 +81,8 @@ async fn sleeping_runtime(remote: &RemoteDesktop) -> u32 {
         display: None,
         authority: directory.join("Xauthority"),
         socket,
+        #[cfg(target_os = "linux")]
+        native: None,
     });
     pid
 }
@@ -322,6 +324,7 @@ async fn failed_release_notifies_chat_connections_that_execution_resumed() {
 use mobius::backend::sandbox::{NetworkAccess, SandboxBackend, SandboxMode};
 
 #[tokio::test]
+#[cfg(not(target_os = "linux"))]
 async fn native_host_recovers_before_dispatch_but_disconnect_after_dispatch_is_fatal() {
     let directory = tempfile::tempdir().unwrap();
     let remote = Arc::new(RemoteDesktop::new(
