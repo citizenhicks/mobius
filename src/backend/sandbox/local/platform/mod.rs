@@ -9,8 +9,6 @@ mod macos;
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 mod unsupported;
 
-#[cfg(all(test, target_os = "linux"))]
-pub(super) use linux::validated_ssh_agent_socket;
 #[cfg(target_os = "linux")]
 pub(super) use linux::{check_procfs_output, protected_full_access_command, sandboxed_command};
 #[cfg(target_os = "macos")]
