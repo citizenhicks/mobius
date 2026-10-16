@@ -1131,20 +1131,24 @@ async fn read_output(
 ) -> Result<BoundedOutput> {
     let mut output = Vec::new();
     let mut buffer = [0; 8192];
-    let mut truncated = false;
+    let mut total = 0_usize;
     loop {
         let read = reader.read(&mut buffer).await?;
         if read == 0 {
             break;
         }
         sink.write(stream, &buffer[..read]);
+        total = total.saturating_add(read);
         let remaining = limit.saturating_sub(output.len());
         output.extend_from_slice(&buffer[..read.min(remaining)]);
-        truncated |= read > remaining;
     }
+    let kept = output.len();
+    let truncated = total > kept;
     let mut output = String::from_utf8_lossy_owned(output);
     if truncated {
-        output.push_str("\n[output truncated]");
+        output.push_str(&format!(
+            "\n[output truncated: kept the first {kept} of {total} bytes]"
+        ));
     }
     Ok(BoundedOutput {
         text: output,

@@ -226,16 +226,18 @@ pub(super) async fn hydrate<M: super::Model + ?Sized>(
             if part.get("type").and_then(Value::as_str) != Some("input_image") {
                 continue;
             }
-            if !model.supports_image_input() || (tool_result && !model.supports_tool_image_input())
-            {
-                return Err(Error::Provider(
-                    "selected model does not support this image observation".into(),
-                ));
-            }
             let image: ImageReference =
                 serde::Deserialize::deserialize(part.get("image").ok_or_else(|| {
                     Error::Provider("image observations require a durable reference".into())
                 })?)?;
+            if !model.supports_image_input() || (tool_result && !model.supports_tool_image_input())
+            {
+                replace_image(
+                    part,
+                    serde_json::json!({"type":"input_text", "text":format!("[Image omitted because the selected model cannot read images here. Session file: {}]", image.file.id)}),
+                );
+                continue;
+            }
             let files = files.ok_or_else(|| {
                 Error::Config(
                     "model router requires session file storage for image observations".into(),
@@ -391,13 +393,17 @@ mod tests {
         assert_eq!(suffix[0]["content"][1]["type"], "input_image");
     }
 
-    struct Vision;
+    enum Vision {
+        All,
+        User,
+        None,
+    }
     impl Model for Vision {
         fn supports_image_input(&self) -> bool {
-            true
+            !matches!(self, Self::None)
         }
         fn supports_tool_image_input(&self) -> bool {
-            true
+            matches!(self, Self::All)
         }
         fn respond<'a>(
             &'a self,
@@ -445,8 +451,18 @@ mod tests {
             files: Some(&store),
             limits: ImageInputLimits::default(),
         };
+        for model in [Vision::None, Vision::User] {
+            let prepared = hydrate(None, "history", (&input[2..3]).into(), &model, 0)
+                .await
+                .expect("unsupported tool images do not require stored pixels");
+            assert!(
+                prepared[0]["output"][1]["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains(&old.file.id))
+            );
+        }
         let prepared = media
-            .prepare("history", (&input).into(), &Vision, true)
+            .prepare("history", (&input).into(), &Vision::All, true)
             .await
             .expect("cold replay after purge")
             .expect("image materialization");
@@ -468,13 +484,13 @@ mod tests {
         assert_eq!(input[2]["output"][1]["type"], "input_image");
         assert!(
             media
-                .prepare("history", (&input).into(), &Vision, false)
+                .prepare("history", (&input).into(), &Vision::All, false)
                 .await
                 .is_err()
         );
         assert!(
             media
-                .prepare("other", (&input).into(), &Vision, true)
+                .prepare("other", (&input).into(), &Vision::All, true)
                 .await
                 .is_err()
         );
@@ -482,7 +498,7 @@ mod tests {
         let mut continued = input[..4].to_vec();
         continued.push(serde_json::json!({"role":"user","content":"continue without images"}));
         media
-            .prepare("history", (&continued).into(), &Vision, true)
+            .prepare("history", (&continued).into(), &Vision::All, true)
             .await
             .expect("purged prior batch does not poison later text turns");
         continued.push(
@@ -490,7 +506,7 @@ mod tests {
         );
         assert!(
             media
-                .prepare("history", (&continued).into(), &Vision, true)
+                .prepare("history", (&continued).into(), &Vision::All, true)
                 .await
                 .is_err()
         );
@@ -500,7 +516,7 @@ mod tests {
         invalid[0]["content"][0]["image"]["file"]["size"] = serde_json::json!(1);
         assert!(matches!(
             media
-                .prepare("history", (&invalid).into(), &Vision, true)
+                .prepare("history", (&invalid).into(), &Vision::All, true)
                 .await,
             Err(Error::Tool(_))
         ));
@@ -547,7 +563,7 @@ mod tests {
         super::super::reset_prompt_cache_breakpoint(&mut input);
         input.push(super::super::user_message("retained text beside the image"));
         let mut input = input.into_iter().map(Arc::new).collect::<Vec<_>>();
-        let prepared = hydrate(Some(&store), "parent", (&input).into(), &Vision, 0)
+        let prepared = hydrate(Some(&store), "parent", (&input).into(), &Vision::All, 0)
             .await
             .expect("large images admitted");
         assert!(Arc::ptr_eq(&prepared[1], &input[1]));
@@ -585,12 +601,12 @@ mod tests {
             }]),
             false,
         )));
-        let appended = hydrate(Some(&store), "parent", (&input).into(), &Vision, 0)
+        let appended = hydrate(Some(&store), "parent", (&input).into(), &Vision::All, 0)
             .await
             .expect("append");
         assert_eq!(prepared, appended[..2]);
         assert!(
-            hydrate(Some(&store), "other", (&input).into(), &Vision, 0)
+            hydrate(Some(&store), "other", (&input).into(), &Vision::All, 0)
                 .await
                 .is_err()
         );
@@ -613,7 +629,7 @@ mod tests {
         );
         store.delete_session("parent").await.expect("delete parent");
         assert_eq!(
-            hydrate(Some(&store), "child", (&input).into(), &Vision, 0)
+            hydrate(Some(&store), "child", (&input).into(), &Vision::All, 0)
                 .await
                 .expect("fork retains blobs"),
             appended

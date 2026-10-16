@@ -15,18 +15,34 @@ fn command_context(sandbox: &Arc<Sandbox>, owner: &str, authorized: bool) -> Too
 }
 
 #[tokio::test]
-async fn bash_yields_a_command_that_only_its_owner_can_poll_and_stop() {
-    let sandbox = test_sandbox();
+async fn bash_caps_output_and_restricts_poll_and_stop_to_its_owner() {
+    let sandbox = Arc::new(
+        Sandbox::new(
+            Arc::new(crate::backend::sandbox::local::LocalSandbox::new(".").expect("sandbox")),
+            crate::backend::sandbox::ApprovalPolicy::Ask,
+        )
+        .tool_output_limit(512)
+        .expect("output limit"),
+    );
     let response = Bash
         .call(
             command_context(&sandbox, "owner", true),
-            serde_json::json!({"command": "printf first; sleep 60"}),
+            serde_json::json!({"command": "printf head; printf error-head >&2; i=0; while [ $i -lt 500 ]; do printf '\\001'; printf '\\001' >&2; i=$((i+1)); done; printf tail; printf error-tail >&2; sleep 60"}),
         )
         .await
         .expect("bash");
-    let output: Value = serde_json::from_str(&response.content.text()).expect("running command");
+    let text = response.content.text();
+    assert!(text.len() <= 512, "{} bytes", text.len());
+    let output: Value = serde_json::from_str(&text).expect("complete JSON after escaping");
     assert_eq!(output["status"], "running");
-    assert_eq!(output["stdout"], "first");
+    assert_eq!(output["truncated"], true);
+    for (stream, head, tail) in [
+        ("stdout", "head", "tail"),
+        ("stderr", "error-head", "error-tail"),
+    ] {
+        let text = output[stream].as_str().expect("stream text");
+        assert!(text.starts_with(head) && text.ends_with(tail), "{text:?}");
+    }
     let id = output["command_id"].as_str().expect("running command ID");
 
     for action in ["poll", "stop"] {

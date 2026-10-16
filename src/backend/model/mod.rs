@@ -69,6 +69,8 @@ mod input;
 const MAX_MODEL_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_TOOL_CALLS: usize = 128;
 const MAX_TOOL_ARGUMENT_BYTES: usize = 4 * 1024 * 1024;
+/// Marks a tool call whose provider arguments were not a JSON object; dispatch rejects it.
+pub(crate) const INVALID_TOOL_ARGUMENTS: &str = "mobius_invalid_arguments";
 const MAX_TOOL_CALL_ID_BYTES: usize = 4 * 1024;
 /// Stable semantic name of the core deferred-tool discovery function.
 pub const TOOLS_SEARCH_NAME: &str = "tools_search";
@@ -397,7 +399,10 @@ impl ModelOutput {
             tool_calls.push(call);
         }
 
-        Ok(Self {
+        let repaired = tool_calls
+            .iter()
+            .any(|call| call.arguments.get(INVALID_TOOL_ARGUMENTS).is_some());
+        let mut output = Self {
             output,
             text,
             content,
@@ -405,7 +410,12 @@ impl ModelOutput {
             materialized_tools: BTreeSet::new(),
             end_turn,
             usage,
-        })
+        };
+        if repaired {
+            // Replay must carry parseable arguments, so the durable item takes the marker too.
+            output.sync_tool_calls()?;
+        }
+        Ok(output)
     }
 
     /// Returns the provider-neutral output items.
@@ -936,20 +946,31 @@ pub(super) fn usage_i64(
 pub(super) fn decode_tool_call(item: &Value) -> Result<ToolCall> {
     let call_id = required_output_string(item, "call_id", MAX_TOOL_CALL_ID_BYTES)?;
     let name = required_output_string(item, "name", MAX_TOOL_NAME_BYTES)?;
-    let encoded = required_output_string(item, "arguments", MAX_TOOL_ARGUMENT_BYTES)?;
-    let arguments: Value = serde_json::from_str(encoded)?;
-    if !arguments.is_object() {
-        return Err(Error::Provider(
-            format!("tool call `{call_id}` arguments must be a JSON object").into(),
-        ));
-    }
+    let encoded = item
+        .get("arguments")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::Provider("function call omitted arguments".into()))?;
     let call = ToolCall {
         call_id: call_id.to_string(),
         name: name.to_string(),
-        arguments,
+        arguments: decode_tool_arguments(encoded)?,
     };
     call.validate()?;
     Ok(call)
+}
+
+pub(super) fn decode_tool_arguments(encoded: &str) -> Result<Value> {
+    if encoded.len() > MAX_TOOL_ARGUMENT_BYTES {
+        return Err(Error::Provider(
+            "function call arguments exceeded size limit".into(),
+        ));
+    }
+    // Malformed arguments become a rejected call the model can correct, not a failed step.
+    Ok(match serde_json::from_str::<Value>(encoded) {
+        Ok(arguments) if arguments.is_object() => arguments,
+        Ok(_) => serde_json::json!({INVALID_TOOL_ARGUMENTS: "arguments must be a JSON object"}),
+        Err(error) => serde_json::json!({INVALID_TOOL_ARGUMENTS: error.to_string()}),
+    })
 }
 
 fn required_output_string<'a>(item: &'a Value, field: &str, limit: usize) -> Result<&'a str> {

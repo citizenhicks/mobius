@@ -490,13 +490,17 @@ impl StreamState {
                 format!("Anthropic repeated content block stop index {index}").into(),
             ));
         }
+        let block = self
+            .blocks
+            .get_mut(&index)
+            .ok_or_else(|| Error::Provider("Anthropic stop referenced unknown block".into()))?;
+        let tool_use = block.get("type").and_then(Value::as_str) == Some("tool_use");
         if let Some(partial) = self.partial_json.remove(&index) {
-            let input: Value = serde_json::from_str(&partial)?;
-            let block = self
-                .blocks
-                .get_mut(&index)
-                .ok_or_else(|| Error::Provider("Anthropic stop referenced unknown block".into()))?;
-            block["input"] = input;
+            block["input"] = if tool_use {
+                super::decode_tool_arguments(&partial)?
+            } else {
+                serde_json::from_str(&partial)?
+            };
             if block.get("type").and_then(Value::as_str) == Some("server_tool_use")
                 && block.get("name").and_then(Value::as_str) == Some("web_search")
             {
@@ -507,6 +511,11 @@ impl StreamState {
                     .map(ToString::to_string);
                 self.web_queries.insert(id, query);
             }
+        }
+        if tool_use && block.get("input").is_some_and(|input| !input.is_object()) {
+            // Native replay uses this block instead of the normalized function-call item.
+            block["input"] =
+                super::decode_tool_arguments(&serde_json::to_string(&block["input"])?)?;
         }
         self.completed_blocks.insert(index);
         self.emit_ready_tool_calls(events).await

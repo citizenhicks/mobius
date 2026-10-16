@@ -103,6 +103,30 @@ fn normalized_output_derives_text_and_validates_tool_calls() {
     assert_eq!(output.tool_calls()[0].name, "search");
     assert_eq!(output.output()[1]["name"], "search");
     assert_eq!(output.output()[1]["arguments"], r#"{"query":"hooks"}"#);
+
+    let with_arguments = |arguments: Value| {
+        let mut items = output.output().to_vec();
+        items[1]["arguments"] = arguments;
+        ModelOutput::from_output(items, false, TokenUsage::default())
+    };
+    let mut catalog = crate::middleware::tools::Catalog::default();
+    catalog.finalize().expect("finalized catalog");
+    let tools = BTreeSet::new();
+    for arguments in [r#"{"command":"ls"#, "", "[]"] {
+        let repaired = with_arguments(serde_json::json!(arguments)).expect("repaired output");
+        let call = &repaired.tool_calls()[0];
+        assert_eq!(
+            serde_json::from_str::<Value>(repaired.output()[1]["arguments"].as_str().unwrap())
+                .unwrap(),
+            call.arguments
+        );
+        assert!(matches!(
+            catalog.bind_call(call.clone(), &tools, &tools),
+            Err(Error::Tool(message)) if message.contains("not a valid JSON object")
+        ));
+    }
+    assert!(with_arguments(serde_json::json!({})).is_err());
+    assert!(with_arguments(serde_json::json!(" ".repeat(MAX_TOOL_ARGUMENT_BYTES + 1))).is_err());
 }
 
 #[test]

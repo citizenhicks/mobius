@@ -172,6 +172,24 @@ pub(super) fn background_output(output: BackgroundCommandPoll, output_limit: usi
     if rendered.len() <= output_limit {
         return rendered;
     }
+    // Keep each stream's head and tail; JSON escaping can still inflate, so shrink until it fits.
+    let mut budget = output_limit / 4;
+    while budget > 0 {
+        let rendered = serde_json::json!({
+            "command_id": output.command_id,
+            "status": status,
+            "exit_code": exit_code,
+            "stdout": super::capped(&output.stdout, budget),
+            "stderr": super::capped(&output.stderr, budget),
+            "truncated": true,
+            "error": output.error
+        })
+        .to_string();
+        if rendered.len() <= output_limit {
+            return rendered;
+        }
+        budget /= 2;
+    }
     serde_json::json!({
         "command_id": output.command_id,
         "status": status,

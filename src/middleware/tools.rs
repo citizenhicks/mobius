@@ -698,6 +698,15 @@ impl Catalog {
                 "tool catalog must be finalized before binding calls".into(),
             ));
         }
+        if let Some(error) = call
+            .arguments
+            .get(crate::backend::model::INVALID_TOOL_ARGUMENTS)
+        {
+            return Err(Error::Tool(format!(
+                "tool `{}` arguments were not a valid JSON object ({error}); resend the call with a JSON object",
+                call.name
+            )));
+        }
         let Some(tool) = self.get(&call.name) else {
             return Err(Error::Tool(format!("unknown tool `{}`", call.name)));
         };
@@ -1301,15 +1310,17 @@ fn capped(output: &str, limit: usize) -> String {
         return output.to_string();
     }
 
-    const MARKER: &str = "…truncated…";
-    let Some(budget) = limit.checked_sub(MARKER.len()) else {
+    // The widest possible count sizes the budget, so the final marker never overflows it.
+    let marker = |omitted: usize| format!("…[{omitted} of {} bytes truncated]…", output.len());
+    let Some(budget) = limit.checked_sub(marker(output.len()).len()) else {
         return crate::truncate_utf8(output, limit).to_owned();
     };
     let left_budget = budget / 2;
     let right_budget = budget - left_budget;
     let left = crate::truncate_utf8(output, left_budget);
     let right_start = output.ceil_char_boundary(output.len() - right_budget);
-    format!("{left}{MARKER}{}", &output[right_start..])
+    let omitted = right_start - left.len();
+    format!("{left}{}{}", marker(omitted), &output[right_start..])
 }
 
 fn formatted_tool_text(text: &str) -> String {

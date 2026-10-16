@@ -1,14 +1,7 @@
 use super::*;
 
 #[test]
-fn output_capping_keeps_complete_characters_at_both_ends() {
-    assert_eq!(capped(&"é🗣".repeat(20), 27), "é🗣…truncated…é🗣");
-    assert_eq!(capped("🗣é", 1), "");
-    assert_eq!(capped("é", 2), "é");
-}
-
-#[test]
-fn observation_capping_bounds_all_text_without_dropping_files() {
+fn observation_capping_preserves_utf8_and_files_within_the_text_budget() {
     use crate::protocol::{ContentPart, SessionFileReference, ToolContent};
 
     let file = ContentPart::File {
@@ -19,15 +12,15 @@ fn observation_capping_bounds_all_text_without_dropping_files() {
             size: 100,
         },
     };
-    let output_limit = crate::backend::sandbox::default_tool_output_limit();
+    let output_limit = 60;
     let output = cap_content(
         ToolContent(vec![
             ContentPart::Text {
-                text: "é🗣".repeat(output_limit),
+                text: "é🗣".repeat(20),
             },
             file.clone(),
             ContentPart::Text {
-                text: "tail".repeat(output_limit),
+                text: "tail".repeat(20),
             },
             ContentPart::Text {
                 text: "no remaining budget".into(),
@@ -44,6 +37,13 @@ fn observation_capping_bounds_all_text_without_dropping_files() {
         })
         .sum();
     assert!(bytes <= output_limit);
+    let ContentPart::Text { text } = &output.0[0] else {
+        panic!("expected text");
+    };
+    assert!(text.starts_with("é🗣") && text.ends_with("é🗣"), "{text}");
+    assert!(text.contains(" of 120 bytes truncated]"), "{text}");
+    assert_eq!(capped("🗣é", 1), "");
+    assert_eq!(capped("é", 2), "é");
     assert_eq!(output.0[1], file);
     assert_eq!(
         output.0[3],

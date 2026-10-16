@@ -284,6 +284,15 @@ async fn stream_normalizes_deltas_tools_usage_and_errors() {
         }),
         serde_json::json!({"type": "content_block_stop", "index": 2}),
         serde_json::json!({
+            "type": "content_block_start", "index": 3,
+            "content_block": {"type": "tool_use", "id": "call-2", "name": "read", "input": {}}
+        }),
+        serde_json::json!({
+            "type": "content_block_delta", "index": 3,
+            "delta": {"type": "input_json_delta", "partial_json": "{\"path\":"}
+        }),
+        serde_json::json!({"type": "content_block_stop", "index": 3}),
+        serde_json::json!({
             "type": "message_delta",
             "delta": {"stop_reason": "tool_use"},
             "usage": {"output_tokens": 3}
@@ -303,9 +312,21 @@ async fn stream_normalizes_deltas_tools_usage_and_errors() {
         [
             ModelEvent::TextDelta(_),
             ModelEvent::ReasoningDelta(_),
-            ModelEvent::ToolCallReady(crate::protocol::ToolCall { .. })
-        ]
+            ModelEvent::ToolCallReady(_),
+            ModelEvent::ToolCallReady(call)
+        ] if call == &output.tool_calls()[1]
     ));
+
+    let repaired = &output.tool_calls()[1].arguments;
+    assert!(repaired.get(super::super::INVALID_TOOL_ARGUMENTS).is_some());
+    let replay = translate_messages(
+        output.output().into(),
+        ToolDiscoveryMode::Rebuild,
+        "catalog-1",
+        &[],
+    )
+    .expect("native replay");
+    assert_eq!(&replay[0].content[3]["input"], repaired);
 
     let error = StreamState::default()
         .apply(
