@@ -291,6 +291,8 @@ pub struct SessionReadyPayload {
     pub active_message_delivery: mobius::protocol::ActiveMessageDelivery,
     /// The run stats.
     pub run_stats: RunStats,
+    /// Assistant messages the user pinned, in transcript order.
+    pub pinned_messages: BTreeSet<MessageTarget>,
 }
 
 /// One currently mounted capability widget and its owning namespace.

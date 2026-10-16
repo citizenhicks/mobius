@@ -388,3 +388,96 @@ async fn opening_a_chat_rejects_tampered_bot_identity() {
     };
     assert_eq!(rejection.code, "invalid_session_bot");
 }
+
+#[tokio::test]
+async fn message_pins_accept_only_assistant_messages_and_survive_reopen() {
+    let root = tempfile::tempdir().expect("root");
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).expect("workspace");
+    let listen = "127.0.0.1:8741".parse().expect("listen address");
+    let (store, config) =
+        ConfigStore::initialize(root.path().join("state"), listen, None).expect("config");
+    let credentials =
+        Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
+    let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
+    let gateway = GatewayHost::start(store, config, credentials, Arc::clone(&bots))
+        .await
+        .expect("gateway");
+    let host = create_test_session(&gateway, &workspace)
+        .await
+        .expect("create session");
+    let checkpoints = Arc::clone(&gateway.state.lock().await.checkpoints);
+    let session_id = host.session_id().to_owned();
+    assert!(host.stop_if_idle().await);
+    gateway.state.lock().await.sessions.remove(&session_id);
+    drop(host);
+    let mut checkpoint = checkpoints
+        .load(&session_id)
+        .await
+        .expect("load")
+        .expect("checkpoint");
+    checkpoint.sequence += 1;
+    checkpoints
+        .save(
+            &checkpoint,
+            &[
+                Arc::new(serde_json::json!({"type": "message", "role": "user", "content": []})),
+                Arc::new(
+                    serde_json::json!({"type": "message", "role": "assistant", "content": []}),
+                ),
+            ],
+            None,
+        )
+        .await
+        .expect("save transcript");
+    let user = mobius::protocol::MessageTarget {
+        checkpoint_sequence: checkpoint.sequence,
+        batch_item_count: 1,
+    };
+    let assistant = mobius::protocol::MessageTarget {
+        batch_item_count: 2,
+        ..user
+    };
+
+    let opened = gateway.open_session(&session_id).await.expect("open");
+    let mut events = opened.subscribe();
+    assert_eq!(
+        opened
+            .set_message_pinned(user, true)
+            .await
+            .expect_err("user message")
+            .code,
+        "invalid_message_target"
+    );
+    opened
+        .set_message_pinned(assistant, true)
+        .await
+        .expect("pin");
+    assert!(matches!(
+        &events.try_recv().expect("pin update").message,
+        ServerMessage::MessagePinsChanged { session_id: changed, pinned_messages }
+            if changed.as_ref() == session_id && pinned_messages.iter().eq([&assistant])
+    ));
+    assert!(opened.stop_if_idle().await);
+    gateway.state.lock().await.sessions.remove(&session_id);
+    drop(opened);
+
+    let reopened = gateway.open_session(&session_id).await.expect("reopen");
+    let ready = reopened.ready().await.expect("ready");
+    assert_eq!(
+        ready.pinned_messages.into_iter().collect::<Vec<_>>(),
+        [assistant]
+    );
+    reopened
+        .set_message_pinned(assistant, false)
+        .await
+        .expect("unpin");
+    assert!(
+        reopened
+            .ready()
+            .await
+            .expect("ready")
+            .pinned_messages
+            .is_empty()
+    );
+}

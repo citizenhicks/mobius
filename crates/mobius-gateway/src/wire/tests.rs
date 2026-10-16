@@ -304,6 +304,7 @@ fn server_frame_decodes_session_opened_with_a_widget_action_tag() {
             "widgets": [],
             "context_limit_tokens": 250000,
             "active_message_delivery": "steer",
+            "pinned_messages": [{"checkpoint_sequence": 4, "batch_item_count": 2}],
             "run_stats": {
                 "run_count": 0,
                 "failed_run_count": 0,

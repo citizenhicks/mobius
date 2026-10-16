@@ -155,7 +155,7 @@ pub struct TurnAbortedEvent {
 }
 
 /// Exact durable transcript prefix selected by a message action.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct MessageTarget {
     /// Durable checkpoint sequence containing the selected message.
     pub checkpoint_sequence: u64,

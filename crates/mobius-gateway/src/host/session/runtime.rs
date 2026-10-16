@@ -317,6 +317,14 @@ impl HostState {
                 let result = self.attach_folder(folder).await;
                 let _ = reply.send(result);
             }
+            HostCommand::SetMessagePinned {
+                target,
+                pinned,
+                reply,
+            } => {
+                let result = self.set_message_pinned(target, pinned).await;
+                let _ = reply.send(result);
+            }
             HostCommand::GitWorkspace { reply } => {
                 let result = self.project().map(|workspace| {
                     (

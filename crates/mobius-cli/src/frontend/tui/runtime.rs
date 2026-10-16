@@ -1837,6 +1837,7 @@ mod tests {
             context_limit_tokens: None,
             active_message_delivery: ActiveMessageDelivery::Steer,
             run_stats: RunStats::default(),
+            pinned_messages: Default::default(),
         }
     }
 

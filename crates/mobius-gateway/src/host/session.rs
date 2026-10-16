@@ -3,6 +3,7 @@ mod runtime;
 
 use super::*;
 use mobius::backend::model::provider::provider;
+use mobius::protocol::MessageTarget;
 
 pub(super) type SessionWidgets = Vec<((String, String), mobius::protocol::FrontendWidget)>;
 
@@ -151,6 +152,11 @@ pub(super) enum HostCommand {
     },
     AttachFolder {
         folder: PathBuf,
+        reply: oneshot::Sender<std::result::Result<(), Rejection>>,
+    },
+    SetMessagePinned {
+        target: MessageTarget,
+        pinned: bool,
         reply: oneshot::Sender<std::result::Result<(), Rejection>>,
     },
     GitWorkspace {
@@ -496,6 +502,21 @@ impl HostHandle {
         let (reply, receiver) = oneshot::channel();
         self.send(HostCommand::AttachFolder { folder, reply })
             .await?;
+        receive(receiver).await
+    }
+
+    pub(crate) async fn set_message_pinned(
+        &self,
+        target: MessageTarget,
+        pinned: bool,
+    ) -> std::result::Result<(), Rejection> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(HostCommand::SetMessagePinned {
+            target,
+            pinned,
+            reply,
+        })
+        .await?;
         receive(receiver).await
     }
 

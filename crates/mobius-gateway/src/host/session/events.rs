@@ -1,5 +1,8 @@
 use super::super::telemetry::cancellation_reason;
 use super::*;
+use mobius::backend::checkpoint::TranscriptPageRequest;
+use serde_json::Value;
+use std::collections::BTreeSet;
 
 impl HostState {
     pub(super) async fn apply_event(&mut self, record: JournalEvent) -> Result<()> {
@@ -210,7 +213,79 @@ impl HostState {
             context_limit_tokens,
             active_message_delivery: self.running.prepared.active_message_delivery,
             run_stats,
+            pinned_messages: self.message_pins().await?,
         })
+    }
+
+    async fn message_pins(&self) -> Result<BTreeSet<MessageTarget>> {
+        Ok(self
+            .checkpoints
+            .load_state(&self.running.session_id, MESSAGE_PINS_KEY)
+            .await?
+            .map(serde_json::from_value)
+            .transpose()?
+            .unwrap_or_default())
+    }
+
+    pub(super) async fn set_message_pinned(
+        &self,
+        target: MessageTarget,
+        pinned: bool,
+    ) -> std::result::Result<(), Rejection> {
+        let mut pins = self.message_pins().await.map_err(internal)?;
+        let changed = if pinned {
+            self.require_assistant_message(target).await?;
+            pins.insert(target)
+        } else {
+            pins.remove(&target)
+        };
+        if !changed {
+            return Ok(());
+        }
+        self.checkpoints
+            .save_state(
+                &self.running.session_id,
+                MESSAGE_PINS_KEY,
+                &serde_json::to_value(&pins).map_err(internal)?,
+            )
+            .await
+            .map_err(internal)?;
+        self.broadcast(ServerMessage::MessagePinsChanged {
+            session_id: Arc::clone(&self.running.session_id),
+            pinned_messages: pins,
+        });
+        Ok(())
+    }
+
+    async fn require_assistant_message(
+        &self,
+        target: MessageTarget,
+    ) -> std::result::Result<(), Rejection> {
+        let page = self
+            .checkpoints
+            .transcript_page(
+                &self.running.session_id,
+                TranscriptPageRequest {
+                    before_sequence: target.checkpoint_sequence.checked_add(1),
+                    max_batches: 1,
+                },
+            )
+            .await
+            .map_err(internal)?;
+        let is_assistant = page
+            .batches
+            .first()
+            .filter(|batch| batch.sequence == target.checkpoint_sequence)
+            .and_then(|batch| batch.items.get(target.batch_item_count - 1))
+            .is_some_and(|item| item.get("role").and_then(Value::as_str) == Some("assistant"));
+        if is_assistant {
+            Ok(())
+        } else {
+            Err(Rejection::new(
+                "invalid_message_target",
+                "only assistant messages in this chat can be pinned",
+            ))
+        }
     }
 
     pub(super) async fn switch_git_branch(
@@ -395,6 +470,7 @@ impl HostState {
 }
 
 const MAX_ACTIVITY_MESSAGE_BYTES: usize = 512;
+const MESSAGE_PINS_KEY: &str = "message_pins.v1";
 
 fn completed_activity(error: Option<String>, final_answer: Option<&str>) -> SessionActivity {
     let failed = error.is_some();

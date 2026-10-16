@@ -1,7 +1,7 @@
 use super::*;
 use mobius::backend::session_files::session_file_limits;
 use mobius::backend::session_files::{SessionFileOrigin as StoredFileOrigin, SessionFileSelection};
-use mobius::protocol::{MessageAuthor, Submission};
+use mobius::protocol::{MessageAuthor, MessageTarget, Submission};
 
 use crate::wire::{GitDiffScope, WorkspaceFileScope};
 
@@ -241,6 +241,22 @@ pub(super) async fn handle_message(
             pinned,
         } => {
             return set_session_pinned(writer, gateway, request_id, session_id, pinned).await;
+        }
+        ClientMessage::SetMessagePinned {
+            request_id,
+            session_id,
+            target,
+            pinned,
+        } => {
+            return set_message_pinned(
+                writer,
+                &*connection.selected,
+                request_id,
+                session_id,
+                target,
+                pinned,
+            )
+            .await;
         }
         ClientMessage::DeleteSessions {
             request_id,
@@ -949,6 +965,26 @@ async fn set_session_pinned(
         writer,
         request_id,
         gateway.set_session_pinned(&session_id, pinned).await,
+    )
+    .await
+}
+
+async fn set_message_pinned(
+    writer: &mut (impl AsyncWrite + Unpin),
+    selected: &Option<SelectedChat>,
+    request_id: String,
+    session_id: String,
+    target: MessageTarget,
+    pinned: bool,
+) -> Result<()> {
+    let host = match require_selected(selected, &session_id) {
+        Ok(host) => host,
+        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
+    };
+    write_result(
+        writer,
+        request_id,
+        host.set_message_pinned(target, pinned).await,
     )
     .await
 }

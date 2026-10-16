@@ -1,0 +1,3 @@
+Assistant messages can be pinned for quick navigation in compatible clients. Pins are saved per chat, restored on reconnect and synchronized between connected clients. Pin updates preserve active run statistics and validate that the target is an assistant message in the selected chat.
+
+Gateway protocol advances to 94. Upgrade clients together with the gateway; protocol 93 clients cannot connect. Config 29, Bot state 9 and checkpoint 20 are unchanged, so state already converted for 0.16.33 needs no further conversion. Binary archives include the pinned cloudflared runtime, manuals and licenses.

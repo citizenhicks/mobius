@@ -283,6 +283,17 @@ pub enum ClientMessage {
         /// The pinned.
         pinned: bool,
     },
+    /// Pins or unpins one assistant message in the opened chat.
+    SetMessagePinned {
+        /// The request identifier.
+        request_id: String,
+        /// The session identifier.
+        session_id: String,
+        /// The assistant message.
+        target: MessageTarget,
+        /// The pinned.
+        pinned: bool,
+    },
     /// Selects the delete sessions case.
     DeleteSessions {
         /// The request identifier.
@@ -865,6 +876,13 @@ pub enum ServerMessage {
     SessionChanged {
         /// The payload.
         payload: SessionReadyPayload,
+    },
+    /// Replaces the opened chat's message pins without refreshing its runtime state.
+    MessagePinsChanged {
+        /// The session identifier.
+        session_id: std::sync::Arc<str>,
+        /// Pinned assistant messages, in transcript order.
+        pinned_messages: BTreeSet<MessageTarget>,
     },
     /// Selects the realtime voice started case.
     RealtimeVoiceStarted {

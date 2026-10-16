@@ -12,8 +12,8 @@ use mobius::backend::checkpoint::StreamMetrics;
 use mobius::backend::model::provider::{HostedWebSearch, UsageLimit};
 use mobius::protocol::{
     Event, EventMsg, FrontendContribution, FrontendPreviewUpdate, FrontendSettingOption,
-    FrontendSettingValue, FrontendSymbol, FrontendWidget, MiddlewareFeature, ModelChoice, Op,
-    RenderedBlock, SessionConfiguredEvent, SessionFileLimits, SessionFileRecord,
+    FrontendSettingValue, FrontendSymbol, FrontendWidget, MessageTarget, MiddlewareFeature,
+    ModelChoice, Op, RenderedBlock, SessionConfiguredEvent, SessionFileLimits, SessionFileRecord,
     SessionFileReference, Submission, TokenUsage, ToolDiscoveryMode,
 };
 use serde::de::{DeserializeOwned, Error as _};
@@ -90,7 +90,7 @@ mod desktop_bytes {
 }
 
 /// Current gateway protocol version.
-pub const PROTOCOL_VERSION: u16 = 93;
+pub const PROTOCOL_VERSION: u16 = 94;
 /// Maximum raw RFB payload in one desktop data frame.
 pub const MAX_DESKTOP_CHUNK_BYTES: usize = 16 * 1024;
 /// Maximum encoded JSON payload accepted in one frame.
