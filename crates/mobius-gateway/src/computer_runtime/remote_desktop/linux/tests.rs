@@ -1,8 +1,6 @@
 use super::*;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-#[cfg(target_os = "linux")]
-use std::sync::Arc;
 use x11rb::wrapper::ConnectionExt as _;
 
 fn fixture_desktop(display: &str, authority: &Path) -> Desktop {
@@ -45,8 +43,6 @@ static FIXTURE_DISPLAY: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 struct Fixture {
     server: Child,
-    #[cfg(target_os = "linux")]
-    display: String,
     _directory: tempfile::TempDir,
     desktop: Desktop,
     client: RustConnection<BoundedStream>,
@@ -128,8 +124,6 @@ impl Fixture {
             .unwrap();
         Self {
             server,
-            #[cfg(target_os = "linux")]
-            display,
             _directory: directory,
             desktop,
             client,
@@ -165,40 +159,6 @@ impl Fixture {
             std::thread::sleep(Duration::from_millis(5));
         }
     }
-}
-
-#[cfg(target_os = "linux")]
-async fn fixture_remote(
-    fixture: &mut Fixture,
-) -> (Arc<super::super::RemoteDesktop>, Arc<Mutex<Desktop>>) {
-    use super::super::{RemoteDesktop, Runtime};
-
-    let replacement = fixture_desktop(
-        &fixture.display,
-        &fixture._directory.path().join("Xauthority"),
-    );
-    let desktop = std::mem::replace(&mut fixture.desktop, replacement);
-    let native = Arc::new(Mutex::new(desktop));
-    let remote = Arc::new(RemoteDesktop::new(
-        fixture._directory.path(),
-        true,
-        crate::computer_runtime::ComputerConfig::default(),
-    ));
-    *remote.runtime.lock().await = Some(Runtime {
-        config: Arc::clone(remote.configuration()),
-        children: vec![],
-        browser: None,
-        chromium: Default::default(),
-        profile: Default::default(),
-        endpoint: String::new(),
-        websocket: String::new(),
-        tabs: Default::default(),
-        display: Some(fixture.display.clone()),
-        authority: fixture._directory.path().join("Xauthority"),
-        socket: fixture._directory.path().join("rfb.sock"),
-        native: Some(Arc::clone(&native)),
-    });
-    (remote, native)
 }
 
 fn fixture_window(
