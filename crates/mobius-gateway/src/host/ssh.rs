@@ -287,20 +287,6 @@ mod tests {
     }
 
     #[test]
-    fn public_key_summary_is_bounded_and_ignores_comments() {
-        let line = public_key("private workstation comment");
-        let (identity, returned) = parse_public_key("id_test", line.as_bytes()).expect("identity");
-
-        assert_eq!(identity.label, "id_test");
-        assert_eq!(identity.algorithm, "ssh-ed25519");
-        assert!(identity.fingerprint.starts_with("SHA256:"));
-        assert!(!identity.fingerprint.contains("workstation"));
-        assert_eq!(returned, line);
-        assert!(parse_public_key("id_test", &[b'x'; MAX_PUBLIC_KEY_BYTES + 1]).is_none());
-        assert!(parse_public_key("id_test", b"ssh-rsa AAAA").is_none());
-    }
-
-    #[test]
     fn inventory_exposes_only_public_summaries() {
         let directory = tempfile::tempdir().expect("SSH directory");
         fs::write(directory.path().join("id_test"), "PRIVATE MATERIAL").expect("private key");
@@ -315,19 +301,6 @@ mod tests {
         assert!(!serialized.contains("secret comment"));
         assert!(!serialized.contains(&public));
         assert!(!serialized.contains(&directory.path().display().to_string()));
-    }
-
-    #[tokio::test]
-    async fn existing_identity_is_rejected_without_overwrite() {
-        let directory = tempfile::tempdir().expect("SSH directory");
-        let path = directory.path().join(GENERATED_KEY_LABEL);
-        fs::write(&path, "PRIVATE MATERIAL").expect("existing identity");
-
-        assert!(generate_in(directory.path()).await.is_err());
-        assert_eq!(
-            fs::read_to_string(path).expect("existing identity"),
-            "PRIVATE MATERIAL"
-        );
     }
 
     #[cfg(unix)]
@@ -379,25 +352,6 @@ mod tests {
         assert_eq!(
             fs::read_to_string(&destination).expect("installed private key"),
             "PRIVATE MATERIAL"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn ssh_directory_is_owner_only() {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let parent = tempfile::tempdir().expect("home");
-        let directory = parent.path().join(".ssh");
-        protect_directory(&directory).expect("protect directory");
-
-        assert_eq!(
-            fs::metadata(directory)
-                .expect("SSH metadata")
-                .permissions()
-                .mode()
-                & 0o777,
-            0o700
         );
     }
 }

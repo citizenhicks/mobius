@@ -20,8 +20,6 @@ use crate::Error;
 use crate::Result;
 use crate::backend::model::TOOLS_SEARCH_NAME;
 use crate::backend::model::{ModelInput, ToolDefinition};
-#[cfg(test)]
-use crate::backend::sandbox::BackgroundCommandPoll;
 use crate::backend::sandbox::Sandbox;
 use crate::backend::sandbox::SandboxPermissions;
 use crate::backend::sandbox::ToolPermissions;
@@ -55,11 +53,7 @@ mod coding;
 mod commands;
 mod patch;
 
-#[cfg(test)]
-use coding::ApplyPatchArgs;
 use coding::{ApplyPatch, ReadFile, ViewImage, WriteFile};
-#[cfg(test)]
-use commands::background_output;
 use commands::{Bash, ManageCommand};
 #[cfg(test)]
 use patch::{apply_patch_document, parse_patch_document, validate_patch_complexity};

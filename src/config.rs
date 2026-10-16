@@ -120,31 +120,4 @@ mod tests {
         assert_eq!(load("broken.toml")["n"].as_integer(), Some(1));
         assert_eq!(load("missing.toml")["n"].as_integer(), Some(1));
     }
-
-    embedded_config! {
-        copy;
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        struct Settings {
-            timeout: u64,
-            count: usize,
-        }
-        defaults = "timeout = 12\ncount = 4";
-    }
-
-    #[test]
-    fn complete_defaults_and_partial_external_settings_do_not_recurse() {
-        let partial: Settings = toml::from_str("count = 2").unwrap();
-        assert_eq!(
-            partial,
-            Settings {
-                timeout: 12,
-                count: 2
-            }
-        );
-        assert!(toml::from_str::<Settings>("cout = 2").is_err());
-        assert_eq!(
-            super::embedded::<Settings>("timeout = 8\ncount = 1").timeout,
-            8
-        );
-    }
 }

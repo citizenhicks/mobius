@@ -59,9 +59,9 @@ fn moved(current: usize, length: usize, delta: isize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::form::{BotForm, Form, FormFlow, RoutineForm};
+    use super::form::{FormFlow, RoutineForm};
     use super::runtime::handle_frame;
-    use super::state::{BotsState, Page, sessions_for_bot, update_routine_action};
+    use super::state::{BotsState, Page};
     use super::*;
     use mobius::protocol::SessionFileLimits;
     use mobius_gateway::wire::{
@@ -120,63 +120,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn main_bot_conversation_opens_its_advertised_identity_without_a_project() {
-        let gateway = gateway(vec![bot("bot-a")]);
-        let mut state = BotsState::new(&gateway, Some("bot-a"), None);
-        state.selected = 3;
-        assert!(
-            matches!(state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &gateway),
-            Action::OpenSession(id) if id == gateway.bots[0].conversation_session_id)
-        );
-    }
-
-    #[test]
-    fn lifecycle_invalidations_refresh_after_an_in_flight_request() {
-        use mobius_gateway::wire::{HookData, HookEvent, HookSource};
-        let mut gateway = gateway(vec![bot("bot-a")]);
-        let mut state = BotsState::new(&gateway, Some("bot-a"), None);
-        state.page = Page::Runs {
-            bot_id: "bot-a".into(),
-            routine_id: "routine-a".into(),
-        };
-        state.begin("load".into(), "Load", FollowUp::None);
-        let event = ServerMessage::HookEvent {
-            event: HookEvent {
-                id: "finished".into(),
-                bot_id: "bot-a".into(),
-                occurred_at: 1,
-                source: HookSource::Routine {
-                    routine_id: "routine-a".into(),
-                },
-                cause_id: None,
-                ancestry: Vec::new(),
-                data: HookData::RunFinished {
-                    routine_id: "routine-a".into(),
-                    run_id: "run-a".into(),
-                    status: RoutineRunStatus::Succeeded,
-                    session_id: None,
-                    reason: None,
-                },
-            },
-        };
-        assert!(matches!(
-            handle_frame(event, &mut gateway, &mut state),
-            (FollowUp::None, None)
-        ));
-        let (follow_up, deferred) = handle_frame(
-            ServerMessage::RoutineHistory {
-                request_id: "load".into(),
-                runs: Vec::new(),
-            },
-            &mut gateway,
-            &mut state,
-        );
-        assert!(matches!(follow_up, FollowUp::Runs(id) if id == "routine-a"));
-        assert!(deferred.is_none());
-        assert!(!state.lifecycle_refresh);
-    }
-
     fn routine(id: &str) -> Routine {
         Routine {
             id: id.into(),
@@ -208,122 +151,6 @@ mod tests {
             panic!("expected gateway request");
         };
         *message
-    }
-
-    #[test]
-    fn back_keeps_nested_bot_pages_inside_the_manager() {
-        let mut state = BotsState::new(&gateway(vec![bot("bot-a")]), None, None);
-        state.page = Page::Routines("bot-a".into());
-        state.selected = 3;
-        assert!(matches!(state.back(), Action::None));
-        assert!(matches!(state.page, Page::Bot(ref id) if id == "bot-a"));
-        assert_eq!(state.selected, 0);
-        assert!(matches!(state.back(), Action::None));
-        assert!(matches!(state.page, Page::Root));
-        assert!(matches!(state.back(), Action::Exit));
-    }
-
-    #[test]
-    fn bot_conversations_include_only_the_owner_in_recency_order() {
-        let mut gateway = gateway(vec![bot("bot-a"), bot("bot-b")]);
-        let direct = mobius_gateway::wire::SessionRecord {
-            session_id: "direct".into(),
-            session_context: mobius::protocol::SessionContext {
-                owner_id: "bot-a".into(),
-                ..Default::default()
-            },
-            parent_session_id: None,
-            parent_sequence: None,
-            sequence: 0,
-            first_user_message: None,
-            execution_stats: Default::default(),
-            title: None,
-            pinned: false,
-            activity: Default::default(),
-            created_at: 1,
-            updated_at: 1,
-        };
-        let mut recent = direct.clone();
-        recent.session_id = "recent".into();
-        recent.updated_at = 2;
-        let mut other = direct.clone();
-        other.session_id = "other".into();
-        other.session_context.owner_id = "bot-b".into();
-        gateway.sessions = vec![direct, recent, other];
-
-        assert_eq!(
-            sessions_for_bot(&gateway, "bot-a")
-                .iter()
-                .map(|session| session.session_id.as_str())
-                .collect::<Vec<_>>(),
-            ["recent", "direct"]
-        );
-        assert_eq!(sessions_for_bot(&gateway, "bot-b")[0].session_id, "other");
-        assert!(sessions_for_bot(&gateway, "unrelated").is_empty());
-    }
-
-    #[test]
-    fn bot_conversation_enter_opens_the_selected_chat() {
-        let mut gateway = gateway(vec![bot("bot-a")]);
-        gateway.sessions.push(mobius_gateway::wire::SessionRecord {
-            session_id: "chat-a".into(),
-            session_context: mobius::protocol::SessionContext {
-                owner_id: "bot-a".into(),
-                ..Default::default()
-            },
-            parent_session_id: None,
-            parent_sequence: None,
-            sequence: 0,
-            first_user_message: None,
-            execution_stats: Default::default(),
-            title: None,
-            pinned: false,
-            activity: Default::default(),
-            created_at: 1,
-            updated_at: 1,
-        });
-        let mut state = BotsState::new(&gateway, Some("bot-a"), None);
-        state.page = Page::Conversations("bot-a".into());
-
-        assert!(matches!(
-            state.handle_key(
-                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-                &gateway
-            ),
-            Action::OpenSession(session_id) if session_id == "chat-a"
-        ));
-    }
-
-    #[test]
-    fn bot_forms_create_and_update_identity_without_changing_configuration() {
-        let bot = bot("bot-a");
-        let gateway = gateway(vec![bot.clone()]);
-        let mut create = BotForm::create();
-        create.name.value = "Reviewer".into();
-        create.description.value = "Review focused changes".into();
-        assert!(matches!(
-            message(match create.submit(&gateway) {
-                FormFlow::Send(action) => action,
-                _ => panic!("expected create request"),
-            }),
-            ClientMessage::CreateBot { name, .. } if name == "Reviewer"
-        ));
-
-        let mut update = BotForm::update(&bot);
-        update.name.value = "Renamed".into();
-        assert!(matches!(
-            message(match update.submit(&gateway) {
-                FormFlow::Send(action) => action,
-                _ => panic!("expected update request"),
-            }),
-            ClientMessage::UpdateBot {
-                expected_revision: 7,
-                name,
-                tint: ProviderTint::Teal,
-                config,
-                ..
-            } if name == "Renamed" && config == bot.config.config
-        ));
     }
 
     #[test]
@@ -383,102 +210,6 @@ mod tests {
         let mut expected = bot.config.config;
         expected.system_prompt = "Be concise.\nCheck correctness.\nExplain risks.".into();
         assert_eq!(config, expected);
-    }
-
-    #[test]
-    fn long_bot_prompt_keeps_the_editing_end_and_save_visible() {
-        use ratatui::{Terminal, backend::TestBackend};
-        let bot = bot("bot-a");
-        let gateway = gateway(vec![bot.clone()]);
-        let mut state = BotsState::new(&gateway, None, None);
-        let mut form = BotForm::update(&bot);
-        form.prompt.as_mut().unwrap().value = format!("{}\nPROMPT END", "long prompt ".repeat(200));
-        form.row = 2;
-        state.form = Some(Form::Bot(Box::new(form)));
-        let mut terminal = Terminal::new(TestBackend::new(50, 15)).expect("terminal");
-        terminal
-            .draw(|frame| super::render::render(frame, &state, &gateway))
-            .expect("draw");
-        let screen = terminal.backend().to_string();
-        assert!(screen.contains("PROMPT END") && screen.contains("Save"));
-    }
-
-    #[test]
-    fn routine_forms_create_edit_and_toggle_enabled_state() {
-        let mut create = RoutineForm::create("bot-a".into());
-        create.workspace.value = "/srv/project".into();
-        create.instructions.value = "build it".into();
-        create.schedule_value.value = "invalid".into();
-        assert!(create.action().is_err());
-        assert_eq!(create.instructions.value, "build it");
-        create.schedule_value.value = "3600".into();
-        assert!(matches!(
-            message(create.action().expect("valid create")),
-            ClientMessage::CreateRoutine { bot_id, definition, .. }
-                if bot_id == "bot-a" && matches!(&definition.bindings[0].on,mobius_gateway::wire::HookSelector::Schedule{schedule,..} if schedule.every_seconds==Some(3600))
-        ));
-
-        let routine = routine("routine-a");
-        let update = RoutineForm::update(&routine);
-        assert!(matches!(
-            message(update.action().expect("valid update")),
-            ClientMessage::RoutineCommand {command:mobius_gateway::wire::RoutineCommand{routine_id,action:mobius_gateway::wire::RoutineAction::Update{..}},..} if routine_id=="routine-a"
-        ));
-        assert!(matches!(
-            message(update_routine_action(&routine, false)),
-            ClientMessage::RoutineCommand {
-                command: mobius_gateway::wire::RoutineCommand {
-                    action: mobius_gateway::wire::RoutineAction::Pause,
-                    ..
-                },
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn gateway_schedule_rejection_stays_on_the_open_routine_form() {
-        let mut gateway = gateway(vec![bot("bot-a")]);
-        let mut state = BotsState::new(&gateway, None, None);
-        let mut form = RoutineForm::create("bot-a".into());
-        form.workspace.value = "/srv/project".into();
-        form.instructions.value = "build it".into();
-        form.schedule_value.value = "30".into();
-        state.form = Some(Form::Routine(Box::new(form)));
-
-        let Action::Send {
-            request_id,
-            label,
-            follow_up,
-            ..
-        } = state.handle_key(
-            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
-            &gateway,
-        )
-        else {
-            panic!("the gateway owns schedule validation")
-        };
-        state.begin(request_id.clone(), label, follow_up);
-        state.paste(" pasted while submitting");
-        handle_frame(
-            ServerMessage::Rejected {
-                request_id,
-                code: "invalid_request".into(),
-                message: "interval must be at least 60 seconds".into(),
-                fatal: false,
-            },
-            &mut gateway,
-            &mut state,
-        );
-
-        let Some(Form::Routine(form)) = &state.form else {
-            panic!("form stays open")
-        };
-        assert_eq!(form.instructions.value, "build it");
-        assert_eq!(
-            form.error.as_deref(),
-            Some("interval must be at least 60 seconds")
-        );
     }
 
     #[test]

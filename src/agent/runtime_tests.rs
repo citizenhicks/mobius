@@ -10,11 +10,8 @@ use std::sync::atomic::Ordering;
 
 use super::Agent;
 use super::AgentConfig;
-use super::EVENT_QUEUE_CAPACITY;
 use super::create_agent;
 use super::send_event;
-use super::submission_channel;
-use super::try_send_event;
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
@@ -38,25 +35,19 @@ fn stream_retry_limit() -> usize {
     usize::try_from(ModelTransportSettings::default().stream_retry_limit)
         .expect("retry limit fits usize")
 }
-use crate::backend::model::TOOL_ERROR_FIELD;
 use crate::backend::model::ToolDefinition;
 use crate::backend::sandbox::ApprovalPolicy;
 use crate::backend::sandbox::Sandbox;
 use crate::backend::sandbox::local::LocalSandbox;
-use crate::middleware::CompactContext;
 use crate::middleware::MessageSubmitContext;
 use crate::middleware::Middleware;
 use crate::middleware::MiddlewareStack;
 use crate::middleware::ModelContext;
-use crate::middleware::ModelRequestContext;
 use crate::middleware::PostToolUseContext;
 use crate::middleware::PreToolUseContext;
-use crate::middleware::RuntimeContext;
-use crate::middleware::SessionStartContext;
 use crate::middleware::compaction::Compaction;
 use crate::middleware::messages::Messages;
 use crate::middleware::tools::ApprovalRequirement;
-use crate::middleware::tools::Catalog;
 use crate::middleware::tools::ToolContext;
 use crate::middleware::tools::Tools;
 use crate::middleware::tools::{Tool, ToolExposure};
@@ -65,14 +56,11 @@ use crate::protocol::ErrorKind;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
 use crate::protocol::FrontendEvent;
-use crate::protocol::MAX_MESSAGE_BYTES;
 use crate::protocol::MessageAuthor;
 use crate::protocol::MessageDelivery;
 use crate::protocol::MessageEvent;
 use crate::protocol::MessageSubmission;
 use crate::protocol::ModelEvent;
-use crate::protocol::ModelStepContent;
-use crate::protocol::ModelStepContentPhase;
 use crate::protocol::ModelStepOutcome;
 use crate::protocol::Op;
 use crate::protocol::PromptCacheMode;
@@ -80,7 +68,6 @@ use crate::protocol::SessionContext;
 use crate::protocol::SessionFileReference;
 use crate::protocol::TokenUsage;
 use crate::protocol::ToolCall;
-use crate::protocol::ToolCallEndEvent;
 use crate::protocol::WarningEvent;
 use crate::protocol::WebSearchAction;
 
@@ -107,8 +94,6 @@ fn test_session_context() -> SessionContext {
 
 struct TestModel;
 
-struct RetryableModel;
-
 struct RecoveringStreamModel {
     calls: AtomicUsize,
     inputs: Mutex<Vec<Vec<Value>>>,
@@ -126,17 +111,6 @@ struct HandoffModel {
     compactions: AtomicUsize,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum CompactStop {
-    Before,
-    After,
-    SessionStart,
-}
-
-struct StoppingCompaction(CompactStop);
-
-struct StoppingSessionStart;
-
 struct RejectFirstPrompt(AtomicBool);
 
 struct ScriptedModel {
@@ -145,23 +119,11 @@ struct ScriptedModel {
     inputs: Mutex<Vec<Vec<Value>>>,
 }
 
-struct RequestOnlyMiddleware;
-
 struct DurableBeforeModel;
 
 struct FailingBeforeModel;
 
 struct ApprovalRequiredTestTool;
-
-struct ToolHookContext;
-
-struct SaturatingMiddleware;
-
-struct BlockingTailMiddleware {
-    started: Arc<Notify>,
-    release: Arc<Notify>,
-    blocked: AtomicBool,
-}
 
 struct BlockingModel {
     started: Arc<Notify>,
@@ -257,79 +219,6 @@ fn test_middleware(mut entries: Vec<Arc<dyn Middleware>>) -> MiddlewareStack {
     MiddlewareStack::new(entries).expect("middleware")
 }
 
-impl Middleware for BlockingTailMiddleware {
-    fn name(&self) -> &'static str {
-        "blocking_tail"
-    }
-
-    fn pre_model<'a>(&'a self, _context: &'a mut ModelContext<'_>) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            if !self.blocked.swap(true, Ordering::SeqCst) {
-                self.started.notify_one();
-                self.release.notified().await;
-            }
-            Ok(())
-        })
-    }
-}
-
-impl Middleware for SaturatingMiddleware {
-    fn name(&self) -> &'static str {
-        "saturating"
-    }
-
-    fn session_start<'a>(
-        &'a self,
-        context: &'a mut SessionStartContext<'_>,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            for index in 0..=EVENT_QUEUE_CAPACITY {
-                (context.runtime.frontend)(FrontendEvent::RemoveWidget {
-                    capability: "saturating".into(),
-                    id: index.to_string(),
-                })?;
-            }
-            Ok(())
-        })
-    }
-}
-
-struct MetadataProbe {
-    observed: Arc<Mutex<Option<std::collections::BTreeMap<String, serde_json::Value>>>>,
-}
-
-impl Middleware for MetadataProbe {
-    fn name(&self) -> &'static str {
-        "metadata_probe"
-    }
-
-    fn register(&self, _catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
-        *self.observed.lock().expect("metadata probe lock") = Some(runtime.metadata.clone());
-        Ok(())
-    }
-}
-
-impl Middleware for RequestOnlyMiddleware {
-    fn name(&self) -> &'static str {
-        "request_only"
-    }
-
-    fn model_request<'a>(
-        &'a self,
-        context: &'a mut ModelRequestContext<'_>,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            let mut input = context.input().iter().cloned().collect::<Vec<_>>();
-            input.push(crate::backend::model::internal_user_message(
-                "request_only",
-                "temporary",
-            ));
-            context.replace_input(input);
-            Ok(())
-        })
-    }
-}
-
 impl Middleware for DurableBeforeModel {
     fn name(&self) -> &'static str {
         "durable_before_model"
@@ -344,60 +233,6 @@ impl Middleware for DurableBeforeModel {
             context.events.push(EventMsg::ContextCompacted);
             Ok(())
         })
-    }
-}
-
-impl Middleware for StoppingCompaction {
-    fn name(&self) -> &'static str {
-        "stopping_compaction"
-    }
-
-    fn session_start<'a>(
-        &'a self,
-        context: &'a mut SessionStartContext<'_>,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            if self.0 == CompactStop::SessionStart
-                && context.source() == crate::middleware::SessionStartSource::Compact
-            {
-                context.stop("session-start hook stopped the turn")?;
-            }
-            Ok(())
-        })
-    }
-
-    fn pre_compact<'a>(&'a self, context: &'a mut CompactContext<'_>) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            if self.0 == CompactStop::Before {
-                context.stop("pre-compact hook stopped the turn")?;
-            }
-            Ok(())
-        })
-    }
-
-    fn post_compact<'a>(
-        &'a self,
-        context: &'a mut CompactContext<'_>,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            if self.0 == CompactStop::After {
-                context.stop("post-compact hook stopped the turn")?;
-            }
-            Ok(())
-        })
-    }
-}
-
-impl Middleware for StoppingSessionStart {
-    fn name(&self) -> &'static str {
-        "stopping_session_start"
-    }
-
-    fn session_start<'a>(
-        &'a self,
-        context: &'a mut SessionStartContext<'_>,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { context.stop("session-start hook stopped the turn") })
     }
 }
 
@@ -429,38 +264,6 @@ impl Middleware for FailingBeforeModel {
     }
 }
 
-impl Middleware for ToolHookContext {
-    fn name(&self) -> &'static str {
-        "tool_hook_context"
-    }
-
-    fn pre_tool_use<'a>(
-        &'a self,
-        context: &'a mut PreToolUseContext<'_>,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            context.push_input(crate::backend::model::internal_user_message(
-                "pre_tool_hook",
-                "before",
-            ));
-            Ok(())
-        })
-    }
-
-    fn post_tool_use<'a>(
-        &'a self,
-        context: &'a mut PostToolUseContext<'_>,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            context.push_input(crate::backend::model::internal_user_message(
-                "post_tool_hook",
-                "after",
-            ));
-            Ok(())
-        })
-    }
-}
-
 impl Model for TestModel {
     fn respond<'a>(
         &'a self,
@@ -468,22 +271,6 @@ impl Model for TestModel {
         _events: ModelEventSink,
     ) -> BoxFuture<'a, Result<ModelOutput>> {
         Box::pin(async { Err(Error::Provider("response was not expected".into())) })
-    }
-}
-
-impl Model for RetryableModel {
-    fn respond<'a>(
-        &'a self,
-        _request: ModelRequest,
-        _events: ModelEventSink,
-    ) -> BoxFuture<'a, Result<ModelOutput>> {
-        Box::pin(async {
-            Err(Error::Provider(crate::ProviderError::http(
-                "quota exceeded",
-                429,
-                Some("5".into()),
-            )))
-        })
     }
 }
 
@@ -671,19 +458,6 @@ fn scripted_message(text: &str) -> ModelOutput {
     .expect("message output")
 }
 
-fn scripted_continuation(text: &str) -> ModelOutput {
-    ModelOutput::from_output(
-        vec![serde_json::json!({
-            "type": "message",
-            "role": "assistant",
-            "content": [{"type": "output_text", "text": text}]
-        })],
-        false,
-        scripted_usage(),
-    )
-    .expect("continuation output")
-}
-
 fn config(
     workspace: &Path,
     checkpoints: Arc<dyn CheckpointStore>,
@@ -726,56 +500,6 @@ fn config_with_model(
     )
     .session_context(test_session_context())
     .session_id(session_id)
-}
-
-fn config_with_two_routes(
-    workspace: &Path,
-    checkpoints: Arc<dyn CheckpointStore>,
-    session_id: &str,
-    default: &str,
-    alternate: &str,
-) -> AgentConfig {
-    let mut models = ModelRouter::new(default, Arc::new(TestModel));
-    models
-        .register(alternate, Arc::new(TestModel))
-        .expect("alternate route");
-    AgentConfig::new(
-        Arc::new(models),
-        Arc::new(Sandbox::new(
-            Arc::new(LocalSandbox::new(workspace).expect("local sandbox")),
-            ApprovalPolicy::Ask,
-        )),
-        checkpoints,
-        test_middleware(Vec::new()),
-        "test prompt",
-    )
-    .session_context(test_session_context())
-    .session_id(session_id)
-}
-
-fn config_with_metadata_probe(
-    workspace: &Path,
-    checkpoints: Arc<dyn CheckpointStore>,
-    session_id: &str,
-    metadata: Option<std::collections::BTreeMap<String, serde_json::Value>>,
-    observed: Arc<Mutex<Option<std::collections::BTreeMap<String, serde_json::Value>>>>,
-) -> AgentConfig {
-    let config = AgentConfig::new(
-        Arc::new(ModelRouter::new("test", Arc::new(TestModel))),
-        Arc::new(Sandbox::new(
-            Arc::new(LocalSandbox::new(workspace).expect("local sandbox")),
-            ApprovalPolicy::Ask,
-        )),
-        checkpoints,
-        test_middleware(vec![Arc::new(MetadataProbe { observed })]),
-        "test prompt",
-    )
-    .session_context(test_session_context())
-    .session_id(session_id);
-    match metadata {
-        Some(metadata) => config.metadata(metadata),
-        None => config,
-    }
 }
 
 #[path = "runtime_tests/admission.rs"]

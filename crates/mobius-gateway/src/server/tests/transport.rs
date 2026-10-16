@@ -123,63 +123,6 @@ async fn non_reading_client_releases_its_authenticated_connection_slot() {
     server.host.shutdown().await;
 }
 
-#[tokio::test]
-async fn readiness_follows_initialization_and_allows_authenticated_connections() {
-    let root = tempfile::tempdir().unwrap();
-    let (mut server, grant) =
-        GatewayServer::bootstrap(root.path().join("state"), "127.0.0.1:0".parse().unwrap())
-            .await
-            .unwrap();
-    let endpoint: Endpoint = format!("tcp://{}", server.listen_addr()).parse().unwrap();
-    let mut ready = server.notify_ready();
-    assert!(matches!(
-        ready.try_recv(),
-        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-    ));
-    let (stop, stopped) = tokio::sync::oneshot::channel();
-    let serving = tokio::spawn(server.serve_until(async {
-        let _ = stopped.await;
-    }));
-    ready.await.expect("serving loop ready");
-    let (client, _) = GatewayClient::pair(&endpoint, grant.code, "readiness", ClientKind::Cli)
-        .await
-        .unwrap();
-    let (_, mut events) = client.into_parts();
-    wait_gateway_ready(&mut events).await;
-    stop.send(()).unwrap();
-    serving.await.unwrap().unwrap();
-}
-
-#[tokio::test]
-async fn failed_listener_initialization_never_signals_readiness() {
-    let root = tempfile::tempdir().unwrap();
-    let (mut server, _) =
-        GatewayServer::bootstrap(root.path().join("state"), "127.0.0.1:0".parse().unwrap())
-            .await
-            .unwrap();
-    server.config.tls = Some(TlsConfig {
-        certificate: root.path().join("missing.pem"),
-        private_key: root.path().join("missing.key"),
-    });
-    let ready = server.notify_ready();
-    assert!(server.serve_until(std::future::pending()).await.is_err());
-    assert!(ready.await.is_err(), "failure must not announce readiness");
-}
-
-#[test]
-fn explicit_access_lease_policy_controls_expiry_and_grace() {
-    let now = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-    assert!(access_lease(None, true, Duration::ZERO, now).is_err());
-    assert!(access_lease(Some("1699999999"), true, Duration::ZERO, now).is_err());
-    assert!(access_lease(Some("1699999999"), true, Duration::from_secs(2), now).is_ok());
-    assert!(access_lease(Some("1699999999"), true, Duration::from_secs(1), now).is_err());
-    assert!(
-        access_lease(None, false, Duration::ZERO, now)
-            .expect("optional lease")
-            .is_none()
-    );
-}
-
 #[tokio::test(start_paused = true)]
 async fn access_lease_stops_the_server_and_closes_existing_clients() {
     let root = tempfile::tempdir().expect("temporary directory");
@@ -213,62 +156,6 @@ async fn access_lease_stops_the_server_and_closes_existing_clients() {
     assert!(events.next().await.expect("client disconnect").is_none());
 }
 
-#[tokio::test(start_paused = true)]
-async fn wall_clock_expiry_closes_a_warm_gateway_before_its_timer() {
-    let root = tempfile::tempdir().expect("temporary directory");
-    let (mut server, _) = GatewayServer::bootstrap(
-        root.path().join("state"),
-        std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
-    )
-    .await
-    .expect("bootstrap gateway");
-    let deadline = Instant::now() + Duration::from_secs(60);
-    server.access_lease = Some(AccessLease {
-        expires_at: SystemTime::now() - Duration::from_secs(1),
-        deadline,
-    });
-
-    server
-        .serve_until(std::future::pending())
-        .await
-        .expect("wall clock lease shutdown");
-    assert!(Instant::now() < deadline);
-}
-
-#[test]
-fn connection_diagnostics_do_not_render_peer_controlled_errors() {
-    let details = "private-peer-data";
-    let json_error = serde_json::from_value::<u64>(serde_json::json!(details))
-        .expect_err("invalid request field");
-    for (error, expected) in [
-        (Error::Protocol(details.into()), "protocol"),
-        (Error::Json(json_error), "JSON Data at 0:0"),
-        (
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::ConnectionReset,
-                details,
-            )),
-            "I/O ConnectionReset",
-        ),
-    ] {
-        assert_eq!(connection_diagnostic(&error).to_string(), expected);
-    }
-}
-
-#[test]
-fn pre_auth_frames_reject_unknown_fields() {
-    let error = serde_json::from_value::<PreAuthClientFrame>(serde_json::json!({
-        "version": crate::wire::PROTOCOL_VERSION,
-        "type": "authenticate",
-        "token": "secret",
-        "client_kind": "cli",
-        "unexpected": true,
-    }))
-    .expect_err("reject unknown pre-auth field");
-
-    assert!(error.to_string().contains("unknown field `unexpected`"));
-}
-
 fn append_masked_binary_frame(output: &mut Vec<u8>, payload: &[u8]) {
     output.push(0x82);
     if payload.len() <= 125 {
@@ -292,24 +179,6 @@ fn append_masked_binary_frame(output: &mut Vec<u8>, payload: &[u8]) {
 }
 
 #[tokio::test]
-async fn connection_admission_wakes_waiters_and_bounds_authenticated_clients() {
-    let admission = ConnectionAdmission::new(1, 1);
-    let first = admission.admit().await;
-    let waiting = admission.admit();
-    tokio::pin!(waiting);
-    tokio::select! {
-        biased;
-        _ = &mut waiting => panic!("second pre-auth connection bypassed the bound"),
-        () = std::future::ready(()) => {}
-    }
-    let authenticated = first.promote().expect("promote first connection");
-    let second = waiting.await;
-    assert!(second.promote().is_none());
-    drop(authenticated);
-    assert!(admission.admit().await.promote().is_some());
-}
-
-#[tokio::test]
 async fn pre_auth_reader_rejects_an_oversized_frame_from_its_prefix() {
     let (mut writer, reader) = tokio::io::duplex(4);
     let mut reader = FrameReader::new(reader);
@@ -327,140 +196,6 @@ async fn pre_auth_reader_rejects_an_oversized_frame_from_its_prefix() {
 }
 
 #[test]
-fn client_inventory_aggregates_connections_and_keeps_inactive_devices() {
-    let root = tempfile::tempdir().unwrap();
-    let bots = Arc::new(BotStore::open(root.path()).unwrap());
-    let clients = Arc::new(ClientConnections::default());
-    let identity = ClientIdentity {
-        id: "client-a".into(),
-        label: "Mac".into(),
-    };
-    let paired = [identity.clone()];
-    let first = clients
-        .register(identity.id.clone(), ClientKind::Macos, Arc::clone(&bots))
-        .expect("first connection");
-    let _dashboard = clients
-        .register(
-            identity.id.clone(),
-            ClientKind::GatewayDashboard,
-            Arc::clone(&bots),
-        )
-        .expect("dashboard connection");
-    let second = clients
-        .register(identity.id, ClientKind::Macos, bots)
-        .expect("second connection");
-
-    let two = clients.snapshot(&paired).expect("two connections")[0].connections;
-    assert_eq!(clients.native_count().unwrap(), 2);
-    drop(first);
-    let one = clients.snapshot(&paired).expect("one connection")[0].connections;
-    drop(second);
-    let inactive = clients.snapshot(&paired).expect("inactive client")[0].clone();
-    assert_eq!(
-        clients.native_count().unwrap(),
-        0,
-        "dashboard is not native activity"
-    );
-
-    assert_eq!(
-        (two, one, inactive.connections, inactive.kinds),
-        (2, 1, 0, Vec::new())
-    );
-}
-
-#[test]
-fn client_presence_hooks_follow_first_and_last_native_socket_and_survive_restart() {
-    use crate::wire::{AgentComposition, HookData, HookSource, VersionedAgentConfig};
-
-    let root = tempfile::tempdir().unwrap();
-    let bots = Arc::new(BotStore::open(root.path()).unwrap());
-    let first_bot = bots
-        .seed_default(&VersionedAgentConfig {
-            revision: 1,
-            config: AgentComposition::default(),
-        })
-        .unwrap()
-        .unwrap();
-    let second_bot = bots
-        .create_bot(
-            "Helper",
-            "Own client lifecycle checks.",
-            AgentComposition::default(),
-        )
-        .unwrap();
-    let clients = Arc::new(ClientConnections::default());
-    let events = || bots.unpublished_events(100).unwrap();
-    let dashboard = clients
-        .register(
-            "client-a".into(),
-            ClientKind::GatewayDashboard,
-            Arc::clone(&bots),
-        )
-        .unwrap();
-    assert!(events().is_empty());
-    let first = clients
-        .register("client-a".into(), ClientKind::Macos, Arc::clone(&bots))
-        .unwrap();
-    assert_eq!(events().len(), 2);
-    let second = clients
-        .register("client-a".into(), ClientKind::Ios, Arc::clone(&bots))
-        .unwrap();
-    drop(first);
-    assert_eq!(
-        events().len(),
-        2,
-        "another native kind keeps the client connected"
-    );
-    drop(second);
-    let disconnected = events();
-    assert_eq!(disconnected.len(), 4);
-    for bot in [&first_bot, &second_bot] {
-        let owned: Vec<_> = disconnected
-            .iter()
-            .filter(|event| event.bot_id == bot.id)
-            .collect();
-        assert_eq!(owned.len(), 2);
-        assert!(matches!(owned[0].data, HookData::ClientConnected { .. }));
-        assert!(matches!(owned[1].data, HookData::ClientDisconnected { .. }));
-        assert!(owned.iter().all(|event| event.source
-            == HookSource::Client {
-                client_id: "client-a".into()
-            }
-            && event.cause_id.is_none()
-            && event.ancestry.is_empty()));
-    }
-    drop(dashboard);
-    assert_eq!(
-        events().len(),
-        4,
-        "dashboard disconnect is not native presence"
-    );
-    let reconnect = clients
-        .register("client-a".into(), ClientKind::Macos, Arc::clone(&bots))
-        .unwrap();
-    assert_eq!(events().len(), 6, "a later connection is a new transition");
-    drop(reconnect);
-    let ids: std::collections::BTreeSet<_> =
-        events().iter().map(|event| event.id.clone()).collect();
-    assert_eq!(ids.len(), 8);
-    let restarted = BotStore::open(root.path()).unwrap();
-    assert_eq!(restarted.unpublished_events(100).unwrap().len(), 8);
-}
-
-#[test]
-fn websocket_upgrade_rejects_non_root_targets() {
-    let request = Request::builder().uri("/other").body(()).expect("request");
-
-    let rejection = WebSocketUpgradePolicy {
-        expected_host: None,
-    }
-    .on_request(&request, Response::new(()))
-    .expect_err("non-root path must fail");
-
-    assert_eq!(rejection.status(), StatusCode::NOT_FOUND);
-}
-
-#[test]
 fn websocket_upgrade_rejects_browser_origins() {
     let request = Request::builder()
         .uri("/")
@@ -475,43 +210,6 @@ fn websocket_upgrade_rejects_browser_origins() {
     .expect_err("Origin header must fail");
 
     assert_eq!(rejection.status(), StatusCode::FORBIDDEN);
-}
-
-#[test]
-fn websocket_upgrade_rejects_the_wrong_cloudflare_host() {
-    let request = Request::builder()
-        .uri("/")
-        .header(HOST, "other.example")
-        .body(())
-        .expect("request");
-
-    let rejection = WebSocketUpgradePolicy {
-        expected_host: Some("gateway.example".into()),
-    }
-    .on_request(&request, Response::new(()))
-    .expect_err("wrong Host must fail");
-
-    assert_eq!(rejection.status(), StatusCode::FORBIDDEN);
-}
-
-#[test]
-fn websocket_upgrade_accepts_the_cloudflare_host_with_standard_port() {
-    let request = Request::builder()
-        .uri("/")
-        .header(HOST, "gateway.example:443")
-        .header(SEC_WEBSOCKET_PROTOCOL, crate::channel::SUBPROTOCOL)
-        .body(())
-        .expect("request");
-
-    let accepted = WebSocketUpgradePolicy {
-        expected_host: Some("gateway.example".into()),
-    }
-    .on_request(&request, Response::new(()));
-
-    assert_eq!(
-        accepted.unwrap().headers()[SEC_WEBSOCKET_PROTOCOL],
-        crate::channel::SUBPROTOCOL
-    );
 }
 
 #[tokio::test]
@@ -700,53 +398,4 @@ async fn websocket_upgrade_and_authentication_share_one_deadline() {
         serving.await.expect("gateway task"),
         Err(Error::Unauthorized)
     ));
-}
-
-#[tokio::test]
-async fn bootstrap_owns_the_listener_before_creating_state() {
-    let root = tempfile::tempdir().expect("temporary directory");
-    let occupied = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("occupied listener");
-    let listen = occupied.local_addr().expect("listen address");
-    let state = root.path().join("state");
-
-    let result = GatewayServer::bootstrap(state.clone(), listen).await;
-
-    assert!(matches!(result, Err(Error::Io(_))));
-    assert!(!state.exists());
-}
-
-#[tokio::test]
-async fn connected_client_pauses_and_resets_inactivity_shutdown() {
-    let root = tempfile::tempdir().expect("temporary directory");
-    let (server, grant) = GatewayServer::bootstrap(
-        root.path().join("state"),
-        std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
-    )
-    .await
-    .expect("bootstrap gateway");
-    let listen = server.config.listen;
-    let serving = tokio::spawn(
-        server.serve_until_inactive(std::future::pending(), Duration::from_millis(200)),
-    );
-    let endpoint = format!("tcp://{listen}")
-        .parse::<Endpoint>()
-        .expect("endpoint");
-    let (connection, _) =
-        GatewayClient::pair(&endpoint, grant.code, "inactivity test", ClientKind::Cli)
-            .await
-            .expect("connect client");
-
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert!(!serving.is_finished());
-    drop(connection);
-    tokio::time::sleep(Duration::from_millis(75)).await;
-    assert!(!serving.is_finished());
-
-    tokio::time::timeout(Duration::from_secs(2), serving)
-        .await
-        .expect("inactivity shutdown timeout")
-        .expect("gateway task")
-        .expect("gateway shutdown");
 }

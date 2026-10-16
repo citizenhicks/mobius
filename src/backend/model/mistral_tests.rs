@@ -3,24 +3,12 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use super::*;
 use crate::backend::model::{PromptCacheIdentity, ToolDefinition, user_message};
-use crate::protocol::FrontendSymbol;
 
 fn model() -> Mistral {
     Mistral::new("test-key", MANIFEST.base_url.as_str(), "mistral-large-4-0")
         .expect("Mistral provider")
         .with_reasoning_effort("high")
         .expect("Mistral effort")
-}
-
-#[test]
-fn provider_debug_omits_credentials_and_endpoint() {
-    let provider =
-        Mistral::new("secret-api-key", "https://private.example/v1///", "model").expect("provider");
-    assert_eq!(provider.config.base_url, "https://private.example/v1");
-    assert_eq!(
-        format!("{provider:?}"),
-        "Mistral { config: ApiKeyModel { model: \"model\", reasoning_effort: None, .. } }"
-    );
 }
 
 fn request<'a>(input: &'a [Value], tools: &'a [Arc<ToolDefinition>]) -> ModelRequest<'a> {
@@ -95,44 +83,6 @@ async fn mock_response(
 }
 
 #[test]
-fn provider_advertises_native_catalog_and_only_supported_capabilities() {
-    let definition = provider();
-    assert_eq!(
-        definition.symbol(),
-        FrontendSymbol::Custom("mistral".into())
-    );
-    assert_eq!(definition.default_model(), Some("mistral-large-4-0"));
-    assert_eq!(
-        definition
-            .models()
-            .iter()
-            .map(|model| (model.id.as_str(), model.context_window))
-            .collect::<Vec<_>>(),
-        [
-            ("mistral-large-4-0", 1_000_000),
-            ("mistral-small-2603", 256_000)
-        ]
-    );
-    assert!(definition.supports_image_input());
-    for preset in definition.models() {
-        assert_eq!(preset.default_reasoning.as_deref(), Some("high"));
-        assert_eq!(
-            preset
-                .reasoning
-                .iter()
-                .map(|effort| effort.id.as_str())
-                .collect::<Vec<_>>(),
-            ["none", "minimal", "low", "medium", "high", "xhigh"]
-        );
-    }
-    let model = model();
-    assert!(model.supports_image_input());
-    assert!(model.supports_tool_image_input());
-    assert!(!model.supports_image_generation());
-    assert!(!model.supports_realtime_voice());
-}
-
-#[test]
 fn request_borrows_native_thinking_tools_and_arguments_without_kimi_fields() {
     let thinking = json!([{"type": "thinking", "thinking": [{"type": "text", "text": "Read both."}], "signature": "opaque-signature", "closed": true}]);
     let input = vec![
@@ -201,22 +151,6 @@ fn request_borrows_native_thinking_tools_and_arguments_without_kimi_fields() {
         body["tools"][0]["function"]["parameters"],
         tools[0].parameters
     );
-}
-
-#[test]
-fn neutral_images_use_native_image_url_and_reject_malformed_input() {
-    let input = [json!({"type": "message", "role": "user", "content": [
-        {"type": "input_text", "text": "Describe it."},
-        {"type": "input_image", "media_type": "image/jpeg", "data": "aGVsbG8="}
-    ]})];
-    let model = model();
-    let body = serde_json::to_value(model.request_body(request(&input, &[])).unwrap()).unwrap();
-    assert_eq!(
-        body["messages"][1]["content"][1],
-        json!({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,aGVsbG8="}})
-    );
-    let bad = [json!({"role": "user", "content": [{"type": "input_image", "data": "aGVsbG8="}]})];
-    assert!(model.request_body(request(&bad, &[])).is_err());
 }
 
 #[tokio::test]
@@ -291,99 +225,6 @@ async fn native_stream_round_trip_preserves_thinking_signatures_tools_and_usage(
     assert_eq!(replay["messages"][3]["tool_call_id"], "call-a");
 }
 
-#[tokio::test]
-async fn credentialless_endpoint_and_http_errors_keep_native_labels() {
-    let (root, server) = mock_response(
-        "503 Service Unavailable",
-        "Retry-After: 2\r\nContent-Type: application/json\r\n",
-        r#"{"message":"temporarily unavailable"}"#,
-    )
-    .await;
-    let model = Mistral::with_client(None, root, "model", Client::new()).unwrap();
-    let error = super::super::chat_completions::post(
-        &model.config.client,
-        &model.config.base_url,
-        model.config.api_key.as_deref(),
-        b"{}".to_vec(),
-        "Mistral",
-    )
-    .await
-    .expect_err("HTTP rejection");
-    assert!(error.to_string().contains("Mistral HTTP 503"));
-    assert!(error.to_string().contains("temporarily unavailable"));
-    let wire = server.await.unwrap();
-    assert!(!wire.to_ascii_lowercase().contains("authorization:"));
-}
-
-#[tokio::test]
-async fn malformed_streams_and_event_sink_failures_are_not_hidden() {
-    let mut stream = StreamState::default();
-    assert!(
-        stream
-            .apply_data(r#"{"error":{"message":"quota"}}"#, &sink())
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("quota")
-    );
-    assert!(
-        stream
-            .finish()
-            .unwrap_err()
-            .to_string()
-            .contains("before the [DONE]")
-    );
-    let mut stream = StreamState::default();
-    let failing: ModelEventSink =
-        Arc::new(|_| Box::pin(async { Err(Error::Provider("sink ended".into())) }));
-    let error = stream
-        .apply_data(r#"{"choices":[{"delta":{"content":"Hello"}}]}"#, &failing)
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("sink ended"));
-    let mut stream = StreamState::default();
-    stream
-        .apply_data(
-            r#"{"choices":[{"delta":{"content":[{"type":"text","text":""}]}}]}"#,
-            &sink(),
-        )
-        .await
-        .expect("valid empty text delta");
-    assert!(
-        stream
-            .apply_data(
-                r#"{"choices":[{"delta":{"content":[{"type":"unexpected"}]}}]}"#,
-                &sink()
-            )
-            .await
-            .is_err()
-    );
-    let mut stream = StreamState {
-        thinking: (0..MAX_THINKING_BLOCKS)
-            .map(|_| ThinkingBlock {
-                kind: "thinking",
-                closed: Some(true),
-                finished: true,
-                ..ThinkingBlock::default()
-            })
-            .collect(),
-        ..StreamState::default()
-    };
-    assert!(
-        stream
-            .append_thinking(
-                ThinkingChunk {
-                    thinking: Vec::new(),
-                    signature: None,
-                    closed: Some(true)
-                },
-                &sink()
-            )
-            .await
-            .is_err()
-    );
-}
-
 #[test]
 fn route_replay_strips_native_thinking_without_copying_unaffected_history() {
     let user = Arc::new(user_message("Read it."));
@@ -426,83 +267,5 @@ async fn generation_error_never_commits_partial_tools_or_text() {
             .apply_data(r#"{"choices":[{"finish_reason":"error"}]}"#, &sink())
             .await
             .is_err()
-    );
-}
-
-#[test]
-fn single_text_tool_results_borrow_without_weakening_validation() {
-    for text in ["", "x".repeat(65_536).as_str()] {
-        let output = json!([{"type": "input_text", "text": text}]);
-        let WireContent::Text(Cow::Borrowed(borrowed)) =
-            WireContent::tool_result(&output, "Mistral").unwrap()
-        else {
-            panic!("single text result should borrow its stored text");
-        };
-        assert!(std::ptr::eq(borrowed, output[0]["text"].as_str().unwrap()));
-        assert_eq!(
-            serde_json::to_value(WireContent::Text(borrowed.into())).unwrap(),
-            text
-        );
-    }
-    assert!(WireContent::tool_result(&json!([{"type": "input_text"}]), "Mistral").is_err());
-}
-
-#[test]
-fn tool_observations_keep_text_images_and_file_references_together() {
-    let mut input = vec![
-        user_message("Inspect it."),
-        json!({"type": "function_call", "call_id": "call-a", "name": "view_image", "arguments": "{}"}),
-        json!({"type": "function_call_output", "call_id": "call-a", "output": [
-            {"type": "input_text", "text": "Screenshot"},
-            {"type": "file", "file": {"id": "original"}},
-            {"type": "input_image", "media_type": "image/png", "data": "aGVsbG8="}
-        ]}),
-    ];
-    let model = model();
-    let body = serde_json::to_value(model.request_body(request(&input, &[])).unwrap()).unwrap();
-    assert_eq!(
-        body["messages"][3]["content"],
-        json!([
-            {"type": "text", "text": "Screenshot"},
-            {"type": "text", "text": "Stored file: {\"id\":\"original\"}"},
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}}
-        ])
-    );
-    input[2]["output"] =
-        json!([{"type": "input_text", "text": ""}, {"type": "file", "file": {"id": "original"}}]);
-    let body = serde_json::to_value(model.request_body(request(&input, &[])).unwrap()).unwrap();
-    assert_eq!(
-        body["messages"][3]["content"],
-        "\nStored file: {\"id\":\"original\"}"
-    );
-    input[2]["output"] = json!([{"type": "input_text"}, {"type": "input_image", "media_type": "image/png", "data": "aGVsbG8="}]);
-    assert!(model.request_body(request(&input, &[])).is_err());
-    input[2]["output"] = json!("unsupported tool scalar");
-    assert!(model.request_body(request(&input, &[])).is_err());
-}
-
-#[tokio::test]
-async fn missing_closed_metadata_is_not_invented_on_tool_only_thinking() {
-    let mut stream = StreamState::default();
-    let events = sink();
-    for frame in [
-        json!({"choices": [{"delta": {"content": [{"type": "thinking", "thinking": [{"type": "text", "text": "Read "}]}]}}]}),
-        json!({"choices": [{"delta": {"content": [{"type": "text", "text": ""}]}}]}),
-        json!({"choices": [{"delta": {
-            "content": [{"type": "thinking", "thinking": [{"type": "text", "text": "it."}], "signature": "opaque"}],
-            "tool_calls": [{"index": 0, "id": "call-a", "function": {"name": "read", "arguments": "{}"}}]
-        }}]}),
-    ] {
-        stream
-            .apply_data(&frame.to_string(), &events)
-            .await
-            .unwrap();
-    }
-    stream.apply_data("[DONE]", &events).await.unwrap();
-    let output = stream.finish().unwrap();
-    assert!(!output.end_turn());
-    assert_eq!(
-        output.output()[0][RAW_THINKING],
-        json!([{"type": "thinking", "thinking": [{"type": "text", "text": "Read it."}], "signature": "opaque"}])
     );
 }

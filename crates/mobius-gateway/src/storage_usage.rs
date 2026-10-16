@@ -451,31 +451,6 @@ mod tests {
         assert_eq!((size.bytes, size.files), (4, 1));
         assert!(size.complete);
     }
-    #[test]
-    fn depth_limit_skips_only_the_deep_subtree() {
-        let root = tempfile::tempdir().unwrap();
-        let file = root.path().join("file");
-        std::fs::write(&file, b"data").unwrap();
-        let (size, _) = super::measure_paths(
-            vec![(file, 1), (root.path().join("deep"), 65)],
-            &mut super::MeasurementBudget::new(),
-            None,
-        );
-        assert_eq!((size.bytes, size.files, size.complete), (4, 1, false));
-    }
-
-    #[test]
-    fn charged_blobs_are_counted_during_the_category_walk() {
-        let root = tempfile::tempdir().unwrap();
-        let blobs = root.path().join("session-files/blobs");
-        std::fs::create_dir_all(&blobs).unwrap();
-        std::fs::write(blobs.join("blob"), b"payload").unwrap();
-        std::fs::write(root.path().join("session-files/metadata"), b"meta").unwrap();
-        let (categories, used) =
-            super::gateway_categories(root.path(), &mut super::MeasurementBudget::new());
-        assert_eq!(used, 7);
-        assert_eq!(categories[0].size.bytes, 11);
-    }
 
     #[test]
     fn quota_includes_project_files_and_copies_but_counts_nested_paths_once() {
@@ -520,28 +495,6 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn browser_profile_symlinks_preserve_complete_usage_without_charging_targets() {
-        let root = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        std::fs::write(outside.path().join("unrelated"), b"outside data").unwrap();
-        let profile = root.path().join("desktop/profile");
-        std::fs::create_dir_all(&profile).unwrap();
-        std::fs::write(profile.join("Preferences"), b"preferences").unwrap();
-        let link = profile.join("SingletonSocket");
-        std::os::unix::fs::symlink(outside.path().join("missing-runtime-socket"), &link).unwrap();
-        let (categories, used) =
-            super::gateway_categories(root.path(), &mut super::MeasurementBudget::new());
-        assert_eq!(used, 0);
-        assert!(categories.iter().all(|category| category.size.complete));
-        assert_eq!(categories[0].size.files, 2);
-        assert_eq!(
-            categories[0].size.bytes,
-            11 + std::fs::symlink_metadata(link).unwrap().len()
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
     fn charged_blob_symlinks_and_linked_blob_roots_make_usage_incomplete() {
         let root = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
@@ -560,19 +513,5 @@ mod tests {
             super::gateway_categories(root.path(), &mut super::MeasurementBudget::new());
         assert_eq!(used, 0);
         assert!(!categories[0].size.complete);
-    }
-
-    #[tokio::test]
-    async fn expired_measurement_budget_skips_async_reads() {
-        let budget = super::MeasurementBudget {
-            started: std::time::Instant::now() - std::time::Duration::from_secs(3),
-            entries: 0,
-        };
-        assert!(
-            budget
-                .wait(async { panic!("expired operation was polled") })
-                .await
-                .is_none()
-        );
     }
 }

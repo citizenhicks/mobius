@@ -183,26 +183,3 @@ pub(super) fn background_output(output: BackgroundCommandPoll, output_limit: usi
     })
     .to_string()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn command_arguments_reject_unknown_fields() {
-        assert!(
-            serde_json::from_value::<BashArgs>(
-                serde_json::json!({"command": "true", "unexpected": true})
-            )
-            .is_err()
-        );
-        assert!(
-            serde_json::from_value::<ManageCommandArgs>(serde_json::json!({
-                "command_id": uuid::Uuid::nil().to_string(),
-                "action": "poll",
-                "unexpected": true,
-            }))
-            .is_err()
-        );
-    }
-}

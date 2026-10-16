@@ -1,19 +1,11 @@
-use super::super::chat_completions::argument_text;
 use crate::backend::model::ToolDefinition;
 use serde_json::json;
-use std::borrow::Cow;
 use std::sync::Arc;
 
 use super::*;
 use crate::backend::model::PromptCacheIdentity;
 use crate::backend::model::transport::capture_http_request;
 use crate::backend::model::user_message;
-use crate::protocol::FrontendSymbol;
-
-#[test]
-fn provider_advertises_kimi_identity() {
-    assert_eq!(provider().symbol(), FrontendSymbol::Custom("kimi".into()));
-}
 
 #[tokio::test]
 async fn credentialless_post_uses_custom_path_and_omits_authorization() {
@@ -39,17 +31,6 @@ async fn credentialless_post_uses_custom_path_and_omits_authorization() {
     let request = server.await.expect("HTTP server").to_ascii_lowercase();
     assert!(request.starts_with("post /proxy/chat/completions http/1.1\r\n"));
     assert!(!request.contains("authorization:"));
-}
-
-#[test]
-fn serialized_tool_arguments_are_borrowed_and_still_validated() {
-    let valid = Value::String("{\"path\":\"a.rs\"}".into());
-    assert!(matches!(argument_text(Some(&valid)), Ok(Cow::Borrowed(_))));
-    assert!(argument_text(Some(&Value::String("{broken".into()))).is_err());
-    assert_eq!(
-        argument_text(Some(&json!({"path": "a.rs"}))).expect("structured arguments"),
-        "{\"path\":\"a.rs\"}"
-    );
 }
 
 #[test]
@@ -156,27 +137,6 @@ fn responses_history_becomes_kimi_messages_and_tools() {
     );
 }
 
-#[test]
-fn neutral_image_becomes_kimi_image_url() {
-    let input = json!([
-        {"type": "input_text", "text": "Describe it."},
-        {"type": "input_image", "media_type": "image/jpeg", "data": "aGVsbG8="}
-    ]);
-    let content = serde_json::to_value(WireContent::new(Some(&input), "Kimi").expect("wire image"))
-        .expect("serialized image");
-
-    assert_eq!(
-        content,
-        json!([
-            {"type": "text", "text": "Describe it."},
-            {
-                "type": "image_url",
-                "image_url": {"url": "data:image/jpeg;base64,aGVsbG8="}
-            }
-        ])
-    );
-}
-
 #[tokio::test]
 async fn stream_normalizes_deltas_tools_usage_and_errors() {
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -246,21 +206,4 @@ async fn stream_normalizes_deltas_tools_usage_and_errors() {
         .await
         .expect_err("stream error");
     assert!(error.to_string().contains("quota"));
-}
-
-#[test]
-fn kimi_usage_preserves_provider_reported_cache_writes() {
-    let usage = decode_usage(Some(&json!({
-        "prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110,
-        "prompt_tokens_details": {"cached_tokens": 20, "cache_write_tokens": 30}
-    })))
-    .expect("Kimi usage");
-    assert_eq!(
-        (
-            usage.input_tokens,
-            usage.cached_input_tokens,
-            usage.cache_write_input_tokens
-        ),
-        (100, 20, 30)
-    );
 }

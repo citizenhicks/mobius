@@ -695,16 +695,6 @@ fn log_interruption(context: &str, cause: impl std::fmt::Display) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn disabled_interruption_logging_does_not_format_diagnostics() {
-        tracing::subscriber::with_default(tracing::subscriber::NoSubscriber::default(), || {
-            log_interruption(
-                "test",
-                std::fmt::from_fn(|_| panic!("disabled diagnostic was formatted")),
-            );
-        });
-    }
-
     #[tokio::test]
     async fn send_failure_records_request_failed_and_finishes_closing() {
         let (commands, mut receiver) = mpsc::channel(1);

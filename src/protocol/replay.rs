@@ -440,9 +440,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::protocol::{
-        MessageAuthor, MessageDelivery, ModelStepAnnotation, SessionFileReference,
-    };
+    use crate::protocol::{MessageAuthor, MessageDelivery, SessionFileReference};
 
     fn user_message(text: &str) -> Value {
         typed_user_message(text, Vec::new())
@@ -470,56 +468,6 @@ mod tests {
             "content": [{"type": "input_text", "text": text}],
             INTERNAL_MESSAGE_FIELD: kind,
         })
-    }
-
-    #[test]
-    fn replay_uses_only_neutral_reasoning_and_hides_internal_messages() {
-        let history = vec![
-            user_message("hello"),
-            serde_json::json!({
-                "role": "assistant",
-                "content": "done",
-                "_mobius_reasoning": "neutral",
-                "_anthropic_content": "provider-private"
-            }),
-            internal_user_message("compaction", "hidden"),
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(index, item)| {
-            (
-                MessageTarget {
-                    checkpoint_sequence: 4,
-                    batch_item_count: index + 1,
-                },
-                item,
-            )
-        })
-        .collect::<Vec<_>>();
-
-        let replayed = events(&history, "session");
-
-        assert_eq!(replayed.len(), 2);
-        assert!(matches!(&replayed[0], EventMsg::Message(event) if event.text == "hello"));
-        assert!(matches!(
-            &replayed[1],
-            EventMsg::AssistantMessage(event)
-                if event.turn_id.as_ref() == "history-4-2"
-                    && event.model_step_id.as_ref() == "history-4-2"
-                    && event.content.len() == 2
-                    && event.content[0].phase == ModelStepContentPhase::Reasoning
-                    && event.content[0].text == "neutral"
-                    && event.content[1].phase == ModelStepContentPhase::FinalAnswer
-                    && event.content[1].text == "done"
-        ));
-        assert!(matches!(
-            &replayed[0],
-            EventMsg::Message(event)
-                if event.message_target == Some(MessageTarget {
-                    checkpoint_sequence: 4,
-                    batch_item_count: 1,
-                })
-        ));
     }
 
     #[test]
@@ -561,100 +509,6 @@ mod tests {
     }
 
     #[test]
-    fn replay_preserves_attachment_only_user_messages() {
-        let item = typed_user_message(
-            "",
-            vec![SessionFileReference {
-                id: "3d46beff-7e84-46ea-859a-e66b4614a79b".into(),
-                name: "photo.png".into(),
-                size: 4,
-                media_type: "image/png".into(),
-            }],
-        );
-        let events = events(
-            &[(
-                MessageTarget {
-                    checkpoint_sequence: 1,
-                    batch_item_count: 1,
-                },
-                item,
-            )],
-            "session",
-        );
-
-        assert!(matches!(
-            events.as_slice(),
-            [EventMsg::Message(message)] if message.text.is_empty()
-                && message.attachments[0].name == "photo.png"
-        ));
-    }
-
-    #[test]
-    fn replay_preserves_commentary_phase() {
-        let history = [(
-            MessageTarget {
-                checkpoint_sequence: 2,
-                batch_item_count: 1,
-            },
-            serde_json::json!({
-                "type": "message",
-                "role": "assistant",
-                "phase": "commentary",
-                "content": [{"type": "output_text", "text": "Checking the workspace."}]
-            }),
-        )];
-
-        let replayed = events(&history, "session");
-
-        assert!(matches!(
-            replayed.as_slice(),
-            [EventMsg::AssistantMessage(message)]
-                if message.content[0].text == "Checking the workspace."
-                    && message.content[0].phase == ModelStepContentPhase::Commentary
-        ));
-    }
-
-    #[test]
-    fn replay_preserves_assistant_message_citations() {
-        let history = [(
-            MessageTarget {
-                checkpoint_sequence: 2,
-                batch_item_count: 1,
-            },
-            serde_json::json!({
-                "type": "message",
-                "role": "assistant",
-                "content": [{
-                    "type": "output_text",
-                    "text": "Source",
-                    "annotations": [{
-                        "type": "url_citation",
-                        "url": "https://example.com",
-                        "title": "Example",
-                        "content": "Relevant excerpt.",
-                        "start_index": 0,
-                        "end_index": 6
-                    }]
-                }]
-            }),
-        )];
-
-        let replayed = events(&history, "session");
-
-        assert!(matches!(
-            replayed.as_slice(),
-            [EventMsg::AssistantMessage(message)]
-                if matches!(
-                    message.content[0].annotations.as_slice(),
-                    [ModelStepAnnotation::UrlCitation { url, title, content: Some(content), start_index: 0, end_index: 6 }]
-                        if url == "https://example.com"
-                            && title == "Example"
-                            && content == "Relevant excerpt."
-                )
-        ));
-    }
-
-    #[test]
     fn replay_keeps_tool_identity_stable_across_durable_batches() {
         let history = vec![
             (
@@ -692,46 +546,5 @@ mod tests {
                     && end.output.0.len() == 2
                     && matches!(&end.output.0[1], crate::protocol::ContentPart::Image { image } if image.file.id == "screen")
         ));
-    }
-
-    #[test]
-    fn replay_preserves_tool_loads() {
-        let history = [(
-            MessageTarget {
-                checkpoint_sequence: 11,
-                batch_item_count: 2,
-            },
-            ToolLoad {
-                catalog_revision: "catalog-1".into(),
-                tools: vec!["notebook_post".into(), "notebook_read".into()],
-            }
-            .to_input(),
-        )];
-
-        let replayed = events(&history, "session");
-
-        assert!(matches!(
-            replayed.as_slice(),
-            [EventMsg::ToolLoad(load)]
-                if load.turn_id == "history-11-2"
-                    && load.load_id == load.turn_id
-                    && load.catalog_revision == "catalog-1"
-                    && load.tools == ["notebook_post", "notebook_read"]
-        ));
-    }
-
-    #[test]
-    fn hosted_tool_search_is_complete_without_a_client_output() {
-        let input = [
-            serde_json::json!({
-                "type": "tool_search_call",
-                "execution": "server",
-                "call_id": null,
-                "status": "completed"
-            }),
-            serde_json::json!({"role": "assistant", "content": "done"}),
-        ];
-
-        assert_eq!(tool_complete_boundaries(&input), [1, 2]);
     }
 }

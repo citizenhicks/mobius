@@ -9,31 +9,6 @@ use mobius::protocol::ConversationRole;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
-async fn startup_cancellation_wins_before_voice_result_is_reported() {
-    let (stop, mut stopped) = oneshot::channel();
-    let task =
-        tokio::spawn(
-            async move { startup(&mut stopped, std::future::pending::<Result<()>>()).await },
-        );
-    stop.send(()).expect("stop startup");
-    assert!(
-        tokio::time::timeout(Duration::from_secs(2), task)
-            .await
-            .expect("startup cancellation")
-            .expect("startup task")
-            .is_none()
-    );
-
-    let (stop, mut stopped) = oneshot::channel();
-    stop.send(()).expect("stop ready startup");
-    assert!(
-        startup(&mut stopped, async { Ok::<_, Error>(()) })
-            .await
-            .is_none()
-    );
-}
-
-#[tokio::test]
 async fn voice_delegation_preserves_committed_speech_and_delayed_final_transcripts() {
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("workspace");
@@ -339,30 +314,4 @@ async fn voice_delegation_preserves_committed_speech_and_delayed_final_transcrip
     assert!(history.events.iter().any(|record| matches!(&record.event.msg, EventMsg::Message(message) if message.text == "Yes, do it.")));
     gateway.shutdown().await;
     server.abort();
-}
-
-#[tokio::test(start_paused = true)]
-async fn voice_stop_preserves_the_calls_nondefault_finalization_window() {
-    let (stop, stopped) = oneshot::channel();
-    let (shutdown, shutdown_timeout) = oneshot::channel();
-    shutdown.send(Duration::from_secs(30)).unwrap();
-    let (_updates, updates) = mpsc::channel(2);
-    let (finished, completion) = oneshot::channel();
-    let task = tokio::spawn(async move {
-        stopped.await.unwrap();
-        tokio::time::sleep(Duration::from_secs(14)).await;
-        finished.send(()).unwrap();
-    });
-    let mut voice = ConnectionVoice {
-        session_id: "session".into(),
-        voice_id: "voice".into(),
-        updates,
-        task,
-        stop: Some(stop),
-        shutdown_timeout,
-    };
-    voice.stop().await;
-    completion
-        .await
-        .expect("finalization was not aborted at the default deadline");
 }

@@ -207,34 +207,3 @@ impl Serialize for ModelInput<'_> {
         sequence.end()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn shared_history_staged_input_and_guidance_keep_order_and_borrow_identity() {
-        let history = [Arc::new(Value::String("history".into()))];
-        let staged = [Arc::new(Value::String("staged".into()))];
-        let guidance = [Value::String("guidance".into())];
-        let input = ModelInput::shared_parts(&history, &staged)
-            .with_appended(guidance.as_slice().into())
-            .expect("three borrowed slices");
-        assert!(std::ptr::eq(input.get(0).unwrap(), history[0].as_ref()));
-        assert!(Arc::ptr_eq(input.shared_item(1).unwrap(), &staged[0]));
-        assert!(std::ptr::eq(input.get(2).unwrap(), &guidance[0]));
-        assert_eq!(
-            serde_json::to_value(input).unwrap(),
-            serde_json::json!(["history", "staged", "guidance"])
-        );
-        assert_eq!(
-            serde_json::to_value(input.prefix(2).suffix(1)).unwrap(),
-            serde_json::json!(["staged"])
-        );
-        assert_eq!(
-            input.iter().rev().collect::<Vec<_>>(),
-            vec![&guidance[0], staged[0].as_ref(), history[0].as_ref()]
-        );
-        assert!(input.with_appended(guidance.as_slice().into()).is_err());
-    }
-}

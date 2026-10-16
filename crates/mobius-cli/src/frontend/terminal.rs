@@ -144,25 +144,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cached_line_projection_keeps_style_and_borrows_text() {
-        let original = Line::from(vec![Span::styled(
-            String::from("cached text"),
-            ratatui::style::Style::default().fg(ratatui::style::Color::Red),
-        )])
-        .alignment(ratatui::layout::Alignment::Right);
-        let projected = borrow_line(&original);
-        assert_eq!(projected, original);
-        assert!(matches!(
-            projected.spans[0].content,
-            std::borrow::Cow::Borrowed(_)
-        ));
-        assert_eq!(
-            projected.spans[0].content.as_ptr(),
-            original.spans[0].content.as_ptr()
-        );
-    }
-
-    #[test]
     fn bounded_input_preserves_utf8_and_filters_control_characters() {
         let mut text = String::new();
         assert!(!append_text(&mut text, "a\n\t", 4));

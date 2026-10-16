@@ -1843,7 +1843,6 @@ dependencies = [
  "mobius-gateway",
  "pulldown-cmark",
  "ratatui",
- "serde_json",
  "syntect",
  "tempfile",
  "tokio",

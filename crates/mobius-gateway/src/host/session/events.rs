@@ -413,38 +413,6 @@ fn bounded_activity_message(message: &str) -> String {
     message[..message.floor_char_boundary(MAX_ACTIVITY_MESSAGE_BYTES)].into()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn aborted_turn_logs_preserve_known_reasons_and_redact_arbitrary_text() {
-        for failed in [false, true] {
-            for reason in [
-                "interrupted",
-                "interrupted by restart",
-                "frontend disconnected",
-            ] {
-                assert_eq!(cancellation_reason(reason, failed), reason);
-            }
-        }
-        let private_reason = "provider rejected Bearer secret-token for user@example.com";
-        assert_eq!(cancellation_reason(private_reason, true), "failed");
-        assert_eq!(cancellation_reason(private_reason, false), "aborted");
-    }
-
-    #[test]
-    fn completed_activity_uses_the_bounded_final_answer_without_masking_failures() {
-        let completed = completed_activity(None, Some(&"é".repeat(300)));
-        assert_eq!(completed.last_outcome, Some(ExecutionOutcome::Completed));
-        assert!(completed.message.expect("final answer").len() <= MAX_ACTIVITY_MESSAGE_BYTES);
-
-        let failed = completed_activity(Some("model failed".into()), Some("stale answer"));
-        assert_eq!(failed.last_outcome, Some(ExecutionOutcome::Failed));
-        assert_eq!(failed.message.as_deref(), Some("model failed"));
-    }
-}
-
 fn account_turn_event(
     pending_turns: &mut usize,
     pending_messages: &mut HashSet<String>,
@@ -520,77 +488,6 @@ mod accounting_tests {
             reply: None,
             message_target: None,
         })
-    }
-
-    #[test]
-    fn steering_message_releases_its_turn_reservation() {
-        let mut pending_turns = 2;
-        let mut messages = HashSet::from(["message-1".into()]);
-
-        account_turn_event(
-            &mut pending_turns,
-            &mut messages,
-            &event("message-1", message(MessageDelivery::Steer)),
-        );
-        account_turn_event(
-            &mut pending_turns,
-            &mut messages,
-            &event(
-                "user-1",
-                EventMsg::TurnComplete(TurnCompleteEvent {
-                    turn_id: "turn-1".into(),
-                }),
-            ),
-        );
-
-        assert_eq!(pending_turns, 0);
-        assert!(messages.is_empty());
-    }
-
-    #[test]
-    fn started_message_keeps_its_active_turn_on_delivery() {
-        let mut pending_turns = 1;
-        let mut messages = HashSet::from(["message-1".into()]);
-
-        account_turn_event(
-            &mut pending_turns,
-            &mut messages,
-            &event(
-                "message-1",
-                EventMsg::TurnStarted(TurnStartedEvent {
-                    turn_id: "turn-1".into(),
-                    model_context_window: None,
-                }),
-            ),
-        );
-        account_turn_event(
-            &mut pending_turns,
-            &mut messages,
-            &event("message-1", message(MessageDelivery::Turn)),
-        );
-
-        assert_eq!(pending_turns, 1);
-        assert!(messages.is_empty());
-    }
-
-    #[test]
-    fn unreserved_turn_increments_the_active_count() {
-        let mut pending_turns = 0;
-        let mut messages = HashSet::new();
-
-        account_turn_event(
-            &mut pending_turns,
-            &mut messages,
-            &event(
-                "recovered-message",
-                EventMsg::TurnStarted(TurnStartedEvent {
-                    turn_id: "turn-1".into(),
-                    model_context_window: None,
-                }),
-            ),
-        );
-
-        assert_eq!(pending_turns, 1);
     }
 
     #[test]

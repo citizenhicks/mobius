@@ -44,8 +44,6 @@ use crate::protocol::SessionContext;
 #[path = "sqlite_event.rs"]
 mod event_journal;
 
-#[cfg(test)]
-use self::event_journal::StreamMetricAccumulator;
 use self::event_journal::store_event;
 
 #[path = "sqlite_context.rs"]

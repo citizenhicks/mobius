@@ -282,6 +282,7 @@ impl Desktop {
         self.connection.stream().failed.load(Ordering::Relaxed)
     }
 
+    #[cfg(target_os = "linux")]
     pub(super) fn input_submitted(&self) -> bool {
         self.input_submitted.get()
     }

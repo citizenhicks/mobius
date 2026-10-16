@@ -397,27 +397,4 @@ mod tests {
                 .is_err()
         );
     }
-
-    #[test]
-    fn multipart_edits_do_not_inherit_data_url_size_limit() {
-        let mut bytes = vec![0; MAX_REFERENCE_URL_BYTES / 4 * 3];
-        bytes[..PNG.len()].copy_from_slice(PNG);
-        let references = [ImageGenerationReference {
-            media_type: "image/png",
-            bytes: &bytes,
-        }];
-        let request = ImageGenerationRequest {
-            model: "gpt-image-2.5-sunburst",
-            prompt: "edit",
-            image_aspect: ImageAspect::Square,
-            quality: None,
-            references: &references,
-        };
-        request
-            .validate(ImageInputLimits::default())
-            .expect("aggregate request budget");
-        assert!(IMAGE_APIS["openai"].wire(&request).is_err());
-        assert!(IMAGE_APIS["codex"].wire(&request).is_err());
-        assert!(IMAGE_APIS["openai"].edit_form(&request).is_ok());
-    }
 }

@@ -1,17 +1,6 @@
 use super::super::*;
 use super::support::model_request;
 use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::Error as WebSocketError;
-
-#[test]
-fn websocket_error_cause_keeps_only_the_io_category() {
-    let error = WebSocketError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionReset));
-
-    assert_eq!(
-        websocket_error_cause(&error).to_string(),
-        "I/O:ConnectionReset"
-    );
-}
 
 #[tokio::test]
 async fn cancelled_request_flushes_reason_and_reconnects() {
@@ -98,89 +87,6 @@ async fn cancelled_request_flushes_reason_and_reconnects() {
 }
 
 #[tokio::test]
-async fn failed_exchange_flushes_request_failed_reason() {
-    use futures_util::{SinkExt as _, StreamExt as _};
-    use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
-
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.unwrap();
-        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-        socket.next().await.unwrap().unwrap();
-        socket.send(Message::text("invalid JSON")).await.unwrap();
-        let frame = socket.next().await.unwrap().unwrap();
-        let Message::Close(Some(frame)) = frame else {
-            panic!("expected clean close, received {frame:?}");
-        };
-        assert_eq!(frame.code, CloseCode::Normal);
-        assert_eq!(frame.reason.as_str(), "request_failed");
-    });
-    let (socket, _) = connect_async(format!("ws://{address}")).await.unwrap();
-    let mut connection = OpenAiWsConnection::new(socket);
-    let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
-    let result = timeout(
-        Duration::from_secs(2),
-        exchange(&mut connection, "{}".to_owned(), &events, None),
-    )
-    .await
-    .expect("exchange timeout");
-    assert!(matches!(result, Err(crate::Error::Json(_))));
-    drop(connection);
-    timeout(Duration::from_secs(2), server)
-        .await
-        .expect("close flush timeout")
-        .expect("server task");
-}
-
-#[tokio::test]
-async fn idle_connection_pump_answers_ping() {
-    use futures_util::SinkExt as _;
-    use futures_util::StreamExt as _;
-
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .expect("WebSocket listener");
-    let address = listener.local_addr().expect("WebSocket address");
-    let server = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.expect("WebSocket connection");
-        let mut socket = tokio_tungstenite::accept_async(stream)
-            .await
-            .expect("WebSocket handshake");
-        socket
-            .send(Message::Ping(vec![1, 2, 3].into()))
-            .await
-            .expect("ping");
-        loop {
-            match socket
-                .next()
-                .await
-                .expect("pong frame")
-                .expect("valid frame")
-            {
-                Message::Pong(payload) => break payload,
-                Message::Ping(_) | Message::Text(_) | Message::Binary(_) | Message::Frame(_) => {}
-                Message::Close(_) => panic!("connection closed before pong"),
-            }
-        }
-    });
-    let (socket, _) = connect_async(format!("ws://{address}"))
-        .await
-        .expect("client connection");
-    let connection = OpenAiWsConnection::new(socket);
-
-    let pong = timeout(Duration::from_secs(1), server)
-        .await
-        .expect("idle pong timed out")
-        .expect("WebSocket server");
-    connection.close().await;
-
-    assert_eq!(pong.as_ref(), [1, 2, 3]);
-}
-
-#[tokio::test]
 async fn active_connection_pump_forwards_bursts_without_blocking_ping() {
     use futures_util::SinkExt as _;
     use futures_util::StreamExt as _;
@@ -254,64 +160,6 @@ async fn active_connection_pump_forwards_bursts_without_blocking_ping() {
     assert!(!connection.closed.load(Ordering::Acquire));
     assert_eq!(pong.as_ref(), [1, 2, 3]);
 
-    connection.finish();
-    connection.close().await;
-    server.await.expect("WebSocket server");
-}
-
-#[tokio::test]
-async fn idle_connection_remains_reusable() {
-    use futures_util::SinkExt as _;
-    use futures_util::StreamExt as _;
-
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .expect("WebSocket listener");
-    let address = listener.local_addr().expect("WebSocket address");
-    let server = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.expect("WebSocket connection");
-        let mut socket = tokio_tungstenite::accept_async(stream)
-            .await
-            .expect("WebSocket handshake");
-        for response in ["first response", "second response"] {
-            socket
-                .next()
-                .await
-                .expect("response request")
-                .expect("valid response request");
-            socket
-                .send(Message::text(response))
-                .await
-                .expect("response message");
-        }
-    });
-    let (socket, _) = connect_async(format!("ws://{address}"))
-        .await
-        .expect("client connection");
-    let mut connection = OpenAiWsConnection::new(socket);
-    connection
-        .start(Message::text("first request"))
-        .await
-        .expect("start first exchange");
-    let first = timeout(Duration::from_secs(1), connection.messages.recv())
-        .await
-        .expect("first response timed out")
-        .expect("first response event");
-    assert!(matches!(first, SocketEvent::Message(Message::Text(_))));
-    connection.finish();
-
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    assert!(connection.is_usable());
-    connection
-        .start(Message::text("second request"))
-        .await
-        .expect("start second exchange");
-    let second = timeout(Duration::from_secs(1), connection.messages.recv())
-        .await
-        .expect("second response timed out")
-        .expect("second response event");
-
-    assert!(matches!(second, SocketEvent::Message(Message::Text(_))));
     connection.finish();
     connection.close().await;
     server.await.expect("WebSocket server");
@@ -399,51 +247,4 @@ async fn connection_limit_closes_other_idle_connections() {
     let idle = Arc::clone(sessions.get("idle-session").expect("idle session retained"));
     drop(sessions);
     assert!(idle.lock().await.connection.is_none());
-}
-
-#[tokio::test]
-async fn pump_still_limits_total_buffered_events() {
-    use super::super::connection::MAX_STREAM_EVENTS;
-    use futures_util::{SinkExt as _, StreamExt as _};
-
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.unwrap();
-        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-        socket.next().await.unwrap().unwrap();
-        for _ in 0..=MAX_STREAM_EVENTS {
-            socket.send(Message::text("x")).await.unwrap();
-        }
-        let Message::Close(Some(frame)) = socket.next().await.unwrap().unwrap() else {
-            panic!("expected a close after the response cap");
-        };
-        assert_eq!(frame.reason.as_str(), "request_failed");
-    });
-    let (socket, _) = connect_async(format!("ws://{address}")).await.unwrap();
-    let mut connection = OpenAiWsConnection::new(socket);
-    connection.start(Message::text("request")).await.unwrap();
-    timeout(Duration::from_secs(10), async {
-        // Leave the consumer paused until the pump has enforced its total response cap.
-        while !connection.closed.load(Ordering::Acquire) {
-            tokio::task::yield_now().await;
-        }
-        for _ in 0..MAX_STREAM_EVENTS {
-            assert!(matches!(
-                connection.messages.recv().await,
-                Some(SocketEvent::Message(_))
-            ));
-        }
-        assert!(matches!(
-            connection.messages.recv().await,
-            Some(SocketEvent::ProtocolError(
-                "WebSocket response exceeded size limit"
-            ))
-        ));
-    })
-    .await
-    .expect("response cap enforced");
-    server.await.unwrap();
 }

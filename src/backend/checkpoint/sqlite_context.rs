@@ -63,8 +63,6 @@ impl Serialize for Header<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         // Exhaustive matching makes a newly added checkpoint field a compile-time decision.
         let Checkpoint {
-            #[cfg(test)]
-                clone_count: _,
             context: _,
             version,
             session_id,

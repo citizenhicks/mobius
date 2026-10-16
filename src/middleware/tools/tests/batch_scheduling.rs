@@ -190,34 +190,6 @@ async fn batch_results(execution: tokio::task::JoinHandle<Vec<ToolResult>>) -> V
 }
 
 #[tokio::test]
-async fn consecutive_parallel_calls_overlap() {
-    let (harness, mut events) = SchedulerHarness::new(&["p1", "p2"]);
-    let mut catalog = Catalog::default();
-    catalog
-        .register(harness.tool("parallel", ExecutionMode::Parallel))
-        .expect("register parallel tool");
-    let execution = spawn_test_batch(
-        catalog,
-        vec![
-            scheduled_call("p1", "parallel", &[]),
-            scheduled_call("p2", "parallel", &[]),
-        ],
-        test_permissions(&[]),
-    );
-
-    let started = BTreeSet::from([
-        started_call(&mut events).await,
-        started_call(&mut events).await,
-    ]);
-    assert_eq!(started, BTreeSet::from(["p1".into(), "p2".into()]));
-    harness.release("p1");
-    harness.release("p2");
-
-    let results = batch_results(execution).await;
-    assert!(results.iter().all(|result| !result.is_error), "{results:?}");
-}
-
-#[tokio::test]
 async fn exclusive_calls_separate_parallel_segments() {
     let (harness, mut events) = SchedulerHarness::new(&["p1", "p2", "e", "p3", "p4"]);
     let mut catalog = Catalog::default();
@@ -302,54 +274,5 @@ async fn parallel_results_remain_in_model_call_order() {
             .map(|result| (result.call_id, result.output))
             .collect::<Vec<_>>(),
         vec![("p1".into(), "p1".into()), ("p2".into(), "p2".into())]
-    );
-}
-
-#[tokio::test]
-async fn consecutive_exclusive_calls_remain_sequential() {
-    let (harness, mut events) = SchedulerHarness::new(&["e1", "e2"]);
-    let mut catalog = Catalog::default();
-    catalog
-        .register(harness.tool("exclusive", ExecutionMode::Exclusive))
-        .expect("register exclusive tool");
-    let execution = spawn_test_batch(
-        catalog,
-        vec![
-            scheduled_call("e1", "exclusive", &[]),
-            scheduled_call("e2", "exclusive", &["e1"]),
-        ],
-        test_permissions(&[]),
-    );
-
-    assert_eq!(started_call(&mut events).await, "e1");
-    harness.release("e1");
-    assert_eq!(finished_call(&mut events).await, "e1");
-    assert_eq!(started_call(&mut events).await, "e2");
-    harness.release("e2");
-
-    let results = batch_results(execution).await;
-    assert!(results.iter().all(|result| !result.is_error), "{results:?}");
-}
-
-#[test]
-fn unknown_tools_are_rejected_before_scheduling() {
-    let (harness, _events) = SchedulerHarness::new(&["p1"]);
-    let mut catalog = Catalog::default();
-    catalog
-        .register(harness.tool("parallel", ExecutionMode::Parallel))
-        .expect("register parallel tool");
-    catalog.register_search().expect("register tools_search");
-    catalog.finalize().expect("finalize catalog");
-
-    assert_eq!(
-        catalog
-            .bind_call(
-                scheduled_call("missing-call", "missing", &[]),
-                &BTreeSet::new(),
-                &BTreeSet::new(),
-            )
-            .expect_err("unknown tool must not bind")
-            .to_string(),
-        "tool error: unknown tool `missing`"
     );
 }

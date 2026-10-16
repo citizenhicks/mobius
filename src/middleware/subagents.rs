@@ -44,9 +44,9 @@ use self::runtime::Shared;
 mod runtime;
 mod tools;
 
-use self::tools::{InterruptAgent, ListAgents, SendMessage, SpawnAgent, WaitAgent, fork_context};
 #[cfg(test)]
-use self::tools::{cleanup_error, supervise, wait_definition, wait_timeout};
+use self::tools::supervise;
+use self::tools::{InterruptAgent, ListAgents, SendMessage, SpawnAgent, WaitAgent, fork_context};
 
 const MAX_TASK_NAME_BYTES: usize = 64;
 const IDENTITY_KEY: &str = "subagents.identity";

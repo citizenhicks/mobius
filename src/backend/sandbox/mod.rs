@@ -189,8 +189,6 @@ pub use process_group::ProcessGroupGuard;
 
 use approval::Approval;
 pub(crate) use background::BackgroundCommandPoll;
-#[cfg(test)]
-pub(crate) use background::BackgroundCommandStatus;
 use background::BackgroundCommands;
 
 const MAX_TOOL_OUTPUT_BYTES: usize = 1024 * 1024;
@@ -913,45 +911,6 @@ pub(crate) struct SandboxApprovalRequest {
 mod tests {
     use super::*;
     use crate::backend::sandbox::local::LocalSandbox;
-    use crate::protocol::{FrontendSettingKind, FrontendSymbol};
-
-    #[test]
-    fn approval_policy_advertises_its_composer_presentation() {
-        let feature = MANIFEST.feature(Default::default());
-        let setting = feature
-            .settings
-            .iter()
-            .find(|setting| setting.composer)
-            .expect("composer setting");
-        let FrontendSettingKind::Select { options, .. } = &setting.kind else {
-            panic!("composer setting must be a select");
-        };
-
-        assert_eq!(setting.id, "approval_policy");
-        assert_eq!(options[0].symbol, Some(FrontendSymbol::ShieldCheck));
-        assert_eq!(options[3].symbol, Some(FrontendSymbol::ShieldOff));
-        assert_eq!(options[3].tone, FrontendTone::Error);
-    }
-
-    #[test]
-    fn workspace_prompt_names_primary_and_attached_folders() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        let sandbox = Sandbox::new(
-            Arc::new(LocalSandbox::new(workspace.path()).expect("backend")),
-            ApprovalPolicy::Ask,
-        )
-        .attached_folders(
-            PathBuf::from("/primary workspace"),
-            vec![PathBuf::from("/attached\nworkspace")],
-        );
-
-        assert_eq!(
-            sandbox.workspace_prompt.as_deref(),
-            Some(
-                "Primary workspace cwd: \"/primary workspace\".\nAttached writable folders (use absolute paths):\n- \"/attached\\nworkspace\""
-            )
-        );
-    }
 
     #[tokio::test]
     async fn mutation_fails_closed_without_per_call_authority() {

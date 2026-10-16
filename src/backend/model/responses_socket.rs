@@ -29,11 +29,7 @@ use self::connection::SocketEvent;
 use self::connection::connect;
 use self::connection::exchange;
 #[cfg(test)]
-use self::connection::failed_exchange;
-#[cfg(test)]
 use self::connection::read_exchange;
-#[cfg(test)]
-use self::connection::websocket_error_cause;
 use super::GeneratedImage;
 use super::ImageGenerationRequest;
 use super::Model;

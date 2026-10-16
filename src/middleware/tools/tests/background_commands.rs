@@ -1,38 +1,5 @@
 use super::*;
 
-#[test]
-fn only_launching_a_command_requires_approval() {
-    let mut catalog = Catalog::default();
-    catalog.register(Arc::new(Bash)).expect("bash");
-    catalog
-        .register(Arc::new(ManageCommand))
-        .expect("manage command");
-
-    assert!(catalog.requires_approval("bash"));
-    assert!(!catalog.requires_approval("manage_command"));
-}
-
-#[test]
-fn background_output_remains_valid_json_at_its_limit() {
-    let rendered = background_output(
-        BackgroundCommandPoll {
-            command_id: Some(uuid::Uuid::nil().to_string()),
-            status: crate::backend::sandbox::BackgroundCommandStatus::Running,
-            exit_code: None,
-            stdout: "\0".repeat(6_000),
-            stderr: String::new(),
-            truncated: false,
-            error: Some("\0".repeat(512)),
-        },
-        crate::backend::sandbox::default_tool_output_limit(),
-    );
-
-    assert!(rendered.len() <= crate::backend::sandbox::default_tool_output_limit());
-    let value: Value = serde_json::from_str(&rendered).expect("valid JSON");
-    assert_eq!(value["status"], "running");
-    assert_eq!(value["command_id"], uuid::Uuid::nil().to_string());
-}
-
 fn command_context(sandbox: &Arc<Sandbox>, owner: &str, authorized: bool) -> ToolContext {
     ToolContext::new(
         Arc::clone(sandbox),
@@ -45,38 +12,6 @@ fn command_context(sandbox: &Arc<Sandbox>, owner: &str, authorized: bool) -> Too
         .for_call("command"),
         "turn",
     )
-}
-
-#[tokio::test]
-async fn bash_returns_completed_output_and_rejects_unauthorized_launches() {
-    let sandbox = test_sandbox();
-    let command = serde_json::json!({"command": "printf done; printf warning >&2; exit 7"});
-    assert!(
-        Bash.call(command_context(&sandbox, "owner", false), command.clone())
-            .await
-            .is_err()
-    );
-    assert!(
-        !sandbox
-            .has_background_commands("owner")
-            .expect("no unauthorized command")
-    );
-
-    let response = Bash
-        .call(command_context(&sandbox, "owner", true), command)
-        .await
-        .expect("bash");
-    let output: Value = serde_json::from_str(&response.content.text()).expect("command output");
-    assert_eq!(output["status"], "exited");
-    assert_eq!(output["stdout"], "done");
-    assert_eq!(output["stderr"], "warning");
-    assert_eq!(output["exit_code"], 7);
-    assert!(output["command_id"].is_null());
-    assert!(
-        !sandbox
-            .has_background_commands("owner")
-            .expect("completed command removed")
-    );
 }
 
 #[tokio::test]

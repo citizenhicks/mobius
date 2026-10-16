@@ -772,16 +772,6 @@ impl BotStore {
             .transpose()
     }
 
-    #[cfg(test)]
-    pub(crate) fn mobius(&self) -> Result<BotRecord> {
-        self.fresh_state()?
-            .bots
-            .iter()
-            .find(|bot| bot.handle == MOBIUS_HANDLE)
-            .ok_or_else(|| Error::Config("the built-in @mobius Bot is missing".into()))?
-            .record()
-    }
-
     /// Registers a definition and its consumers in the same durable transaction.
     pub(crate) fn create_routine(
         &self,

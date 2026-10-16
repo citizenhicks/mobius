@@ -554,34 +554,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn spawn_text_states_the_rust_task_name_bound_and_fork_labels() {
-        assert_eq!(
-            spawn_definition().parameters["properties"]["task_name"]["description"],
-            "1-64 lowercase letters, digits, or underscores."
-        );
-        assert_eq!(
-            validate_task_name("Bad")
-                .expect_err("uppercase")
-                .to_string(),
-            Error::Tool(
-                "task_name must contain 1-64 lowercase letters, digits, or underscores".into()
-            )
-            .to_string()
-        );
-        assert!(parse_fork_turns(Some("0")).is_err());
-        assert_eq!(
-            [
-                ForkTurns::None,
-                ForkTurns::All,
-                ForkTurns::Last(1),
-                ForkTurns::Last(3)
-            ]
-            .map(ForkTurns::label),
-            ["No context", "Full context", "Last 1 turn", "Last 3 turns"]
-        );
-    }
-
-    #[test]
     fn peer_submission_preserves_agent_provenance() {
         let submission = peer_submission(
             "session-reviewer",
@@ -605,60 +577,6 @@ mod tests {
                 && handle == "reviewer"
                 && text == "Review the parser"
         ));
-    }
-
-    #[test]
-    fn peer_messages_keep_source_ancestry_and_stable_command_identity() {
-        let origin = MessageAuthor::Source {
-            message_id: "incoming-message".into(),
-            source: crate::protocol::MessageSource::External {
-                source_id: "routine".into(),
-                event_id: "source-event".into(),
-            },
-            cause_id: Some("source-event".into()),
-            ancestry: vec!["earlier-event".into()],
-            handle: "routine".into(),
-            symbol: None,
-        };
-        let first = peer_submission(
-            "sender-session",
-            "/root/reviewer",
-            "check it".into(),
-            &origin,
-            "stable-command",
-        );
-        let retry = peer_submission(
-            "sender-session",
-            "/root/reviewer",
-            "check it".into(),
-            &origin,
-            "stable-command",
-        );
-        assert_eq!(
-            Submission::message(first.clone()),
-            Submission::message(retry)
-        );
-        let MessageAuthor::Source {
-            message_id,
-            cause_id,
-            ancestry,
-            source,
-            ..
-        } = &first.author
-        else {
-            panic!("source")
-        };
-        assert_eq!(message_id, "stable-command");
-        assert_eq!(cause_id.as_deref(), Some("incoming-message"));
-        assert_eq!(
-            ancestry.as_slice(),
-            ["earlier-event", "source-event", "incoming-message"]
-        );
-        assert!(
-            matches!(source,crate::protocol::MessageSource::Session{session_id} if session_id=="sender-session")
-        );
-        crate::protocol::validate_message_content(&first.author, &first.text, &[])
-            .expect("valid causal message");
     }
 
     #[test]

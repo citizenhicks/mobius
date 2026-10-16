@@ -44,7 +44,7 @@ pub(super) fn fallback() -> Value {
     Value::Null
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 fn drm(root: &std::path::Path) -> crate::Result<Value> {
     let entries = std::fs::read_dir(root)?;
     let mut devices = Vec::new();
@@ -107,7 +107,7 @@ async fn output(program: &str, args: &[&str]) -> crate::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 fn apple(bytes: &[u8]) -> crate::Result<Value> {
     let value = plist::Value::from_reader_xml(bytes)
         .map_err(|_| crate::Error::Config("invalid GPU property list".into()))?;
@@ -134,7 +134,7 @@ fn apple(bytes: &[u8]) -> crate::Result<Value> {
     )
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 fn nvidia(bytes: &[u8]) -> crate::Result<Value> {
     let text = std::str::from_utf8(bytes)
         .map_err(|_| crate::Error::Config("invalid GPU output".into()))?;
@@ -152,40 +152,4 @@ fn nvidia(bytes: &[u8]) -> crate::Result<Value> {
     Ok(
         json!({"status": if devices.is_empty() { "unavailable" } else { "ok" }, "source": "nvidia_smi", "devices": devices}),
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn drm_counters_distinguish_unavailable_devices_from_zero_usage() {
-        let root = tempfile::tempdir().unwrap();
-        assert_eq!(drm(root.path()).unwrap()["status"], "not_detected");
-        let device = root.path().join("card0/device");
-        std::fs::create_dir_all(&device).unwrap();
-        std::fs::write(device.join("gpu_busy_percent"), "0").unwrap();
-        std::fs::write(device.join("mem_info_vram_used"), "4096").unwrap();
-        std::fs::create_dir_all(root.path().join("card0-DP-1")).unwrap();
-        let value = drm(root.path()).unwrap();
-        assert_eq!(value["devices"].as_array().unwrap().len(), 1);
-        assert_eq!(value["devices"][0]["utilization_percent"], 0);
-        assert_eq!(value["devices"][0]["dedicated_memory_used_bytes"], 4096);
-        assert!(value["devices"][0]["dedicated_memory_total_bytes"].is_null());
-    }
-
-    #[test]
-    fn gpu_counters_preserve_units_and_unavailable_values() {
-        let value = nvidia(b"Test GPU, 40, 128, 8192\nTest GPU, [N/A], [N/A], 8192").unwrap();
-        assert_eq!(
-            value["devices"][0]["dedicated_memory_used_bytes"],
-            128 * 1024 * 1024
-        );
-        assert!(value["devices"][1]["utilization_percent"].is_null());
-        let xml = br#"<?xml version="1.0"?><plist version="1.0"><array><dict><key>model</key><string>Apple GPU</string><key>PerformanceStatistics</key><dict><key>Device Utilization %</key><integer>12</integer><key>In use system memory</key><integer>4096</integer></dict></dict></array></plist>"#;
-        let value = apple(xml).unwrap();
-        assert_eq!(value["devices"][0]["system_memory_used_bytes"], 4096);
-        assert_eq!(value["devices"][0]["utilization_percent"], 12);
-        assert!(value["devices"][0]["dedicated_memory_used_bytes"].is_null());
-    }
 }

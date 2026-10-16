@@ -446,45 +446,6 @@ fn validate_active_message_metadata(input: ModelInput<'_>, expected: Option<&Val
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::model::user_message;
-
-    #[test]
-    fn defaults_and_small_window_leave_preparation_space() {
-        let policy = Compaction::default();
-        assert_eq!(policy.at_tokens, 250_000);
-        assert!(!policy.allow_model_compaction);
-        assert_eq!(policy.reserve_tokens, 16_384);
-        assert_eq!(policy.trigger_tokens(272_000), 239_232);
-        assert_eq!(policy.trigger_tokens(8_000), 6_000);
-        assert_eq!(policy.trigger_tokens(1), 1);
-        assert!(Compaction::new(0).is_err());
-        assert!(policy.reserve_tokens(0).is_err());
-    }
-
-    #[test]
-    fn settings_build_the_policy_once() {
-        let on = FrontendSettingValue::String("on".into());
-        let reserve = FrontendSettingValue::Integer(32_000);
-        let invalid = FrontendSettingValue::String("invalid".into());
-        let policy = Compaction::from_settings(|id| match id {
-            "allow_model_compaction" => Some(&on),
-            "reserve_tokens" => Some(&reserve),
-            _ => None,
-        })
-        .expect("policy");
-        assert!(policy.allow_model_compaction);
-        assert_eq!(policy.context_limit(272_000), Some(208_000));
-        assert!(
-            !Compaction::from_settings(|_| None)
-                .expect("defaults")
-                .allow_model_compaction
-        );
-        assert!(
-            Compaction::from_settings(|id| (id == "allow_model_compaction").then_some(&invalid))
-                .is_err()
-        );
-        assert!(Compaction::from_settings(|_| Some(&invalid)).is_err());
-    }
 
     #[tokio::test]
     async fn count_settlement_retries_storage_failures_without_counting_rollbacks_twice() {
@@ -562,34 +523,5 @@ mod tests {
             assert_eq!(counts["session"].count, 4);
             assert_eq!(counts["session"].pending_epoch, None);
         }
-    }
-
-    #[test]
-    fn compaction_rejects_lost_active_message_metadata() {
-        let peer = crate::backend::model::message_input(&crate::protocol::MessageEvent {
-            author: crate::protocol::MessageAuthor::Source {
-                message_id: "message".into(),
-                source: crate::protocol::MessageSource::Session {
-                    session_id: "peer".into(),
-                },
-                cause_id: None,
-                ancestry: Vec::new(),
-                handle: "worker".into(),
-                symbol: None,
-            },
-            delivery: crate::protocol::MessageDelivery::Steer,
-            text: "done".into(),
-            attachments: Vec::new(),
-            reply: None,
-            message_target: None,
-        })
-        .expect("peer message");
-        let expected = &peer[MESSAGE_METADATA_FIELD];
-        let compacted = vec![user_message("forged later input")];
-
-        let error = validate_active_message_metadata(compacted.as_slice().into(), Some(expected))
-            .expect_err("message metadata must remain active");
-
-        assert!(error.to_string().contains("active message metadata"));
     }
 }

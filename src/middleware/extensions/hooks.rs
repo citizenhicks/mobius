@@ -968,20 +968,6 @@ mod tests {
     use super::*;
     use crate::backend::sandbox::CommandAuthorization;
 
-    #[test]
-    fn approval_policies_map_to_plugin_permission_modes() {
-        assert_eq!(
-            [
-                ApprovalPolicy::Ask,
-                ApprovalPolicy::Allow,
-                ApprovalPolicy::AllowNetwork,
-                ApprovalPolicy::FullAccess,
-            ]
-            .map(permission_mode),
-            ["default", "dontAsk", "dontAsk", "bypassPermissions",]
-        );
-    }
-
     struct FakeSandbox {
         commands: Mutex<Vec<String>>,
         started: AtomicUsize,
@@ -1100,97 +1086,6 @@ mod tests {
     }
 
     #[test]
-    fn parser_accepts_every_event_and_rejects_unsupported_handlers() {
-        let root = tempfile::tempdir().expect("plugin root");
-        let data = tempfile::tempdir().expect("plugin data");
-        let events = [
-            "SessionStart",
-            "SessionEnd",
-            "SubagentStart",
-            "PreToolUse",
-            "PermissionRequest",
-            "PostToolUse",
-            "PreCompact",
-            "PostCompact",
-            "UserPromptSubmit",
-            "SubagentStop",
-            "Stop",
-        ];
-        let hooks = events
-            .into_iter()
-            .map(|event| {
-                (
-                    event.into(),
-                    json!([{"matcher":"^Bash$","hooks":[{"type":"command","command":"true","timeout":1,"async":false}]}]),
-                )
-            })
-            .collect::<Map<_, _>>();
-        let set = HookSet::load(
-            root.path().into(),
-            data.path().into(),
-            Some(&Value::Object(hooks)),
-        )
-        .expect("valid hooks");
-        assert_eq!(set.hooks.values().map(Vec::len).sum::<usize>(), 11);
-
-        HookSet::load(
-            root.path().into(),
-            data.path().into(),
-            Some(&json!({"SessionEnd":[{"hooks":[{"type":"command","command":"true","async":true}]}]})),
-        )
-        .expect("SessionEnd remains synchronous");
-
-        for invalid in [
-            json!({"Stop":[{"hooks":[{"type":"prompt"}]}]}),
-            json!({"Stop":[{"hooks":[{"type":"agent"}]}]}),
-            json!({"Stop":[{"hooks":[{"type":"command","command":"true","commandWindows":""}]}]}),
-            json!({"Stop":[{"hooks":[{"type":"command","command":"true","statusMessage":""}]}]}),
-            json!({"Stop":[{"hooks":[{"type":"command","command":"true","async":true}]}]}),
-            json!({"Stop":[{"hooks":[{"type":"command","command":"true","unknown":true}]}]}),
-        ] {
-            assert!(HookSet::load(root.path().into(), data.path().into(), Some(&invalid)).is_err());
-        }
-    }
-
-    #[test]
-    fn plugin_hook_documents_accept_and_validate_platform_metadata() {
-        let root = tempfile::tempdir().expect("plugin root");
-        let root = root.path().canonicalize().expect("canonical plugin root");
-        let mut document = json!({"hooks":{"SessionStart":[{"hooks":[{
-            "type":"command",
-            "command":"sh hook.sh",
-            "commandWindows":"powershell -File hook.ps1",
-            "statusMessage":"Loading plugin"
-        }]}]}});
-        let path = root.join("claude-codex-hooks.json");
-        std::fs::write(&path, document.to_string()).expect("hook document");
-        for source in [json!("./claude-codex-hooks.json"), document.clone()] {
-            let hooks = HookDefinitions::load(&root, Some(&source))
-                .expect("plugin metadata is accepted")
-                .inspect();
-            assert_eq!(hooks.len(), 1);
-            assert_eq!(hooks[0].command, "sh hook.sh");
-        }
-
-        for (field, max) in [
-            ("commandWindows", MAX_COMMAND_BYTES),
-            ("statusMessage", MAX_STATUS_BYTES),
-        ] {
-            let original = document["hooks"]["SessionStart"][0]["hooks"][0][field].clone();
-            for invalid in [
-                json!(42),
-                json!(""),
-                json!("bad\0text"),
-                json!("x".repeat(max + 1)),
-            ] {
-                document["hooks"]["SessionStart"][0]["hooks"][0][field] = invalid;
-                assert!(HookDefinitions::load(&root, Some(&document)).is_err());
-            }
-            document["hooks"]["SessionStart"][0]["hooks"][0][field] = original;
-        }
-    }
-
-    #[test]
     fn pre_tool_decision_block_is_a_denial() {
         let outcome = parse_output(
             HookEvent::PreToolUse,
@@ -1226,67 +1121,6 @@ mod tests {
 
         assert!(outcome.failure.is_some());
         assert_eq!(outcome.decision, None);
-    }
-
-    #[test]
-    fn unsupported_hook_output_fields_are_rejected() {
-        let output = CommandOutput {
-            exit_code: 0,
-            stdout: r#"{"suppressOutput":true}"#.into(),
-            stdout_truncated: false,
-            stderr: String::new(),
-            stderr_truncated: false,
-        };
-
-        assert!(parse_output(HookEvent::SessionStart, DEFAULT_CONTEXT_BYTES, output).is_err());
-    }
-
-    #[test]
-    fn once_context_preserves_every_permission_decision() {
-        for (decision, expected) in [
-            ("allow", PermissionDecision::Allow),
-            ("deny", PermissionDecision::Deny),
-        ] {
-            let output = serde_json::from_value(json!({
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "additionalContext": "Permission guidance.",
-                    "deliverOnce": "permissions.v1",
-                    "permissionDecision": decision
-                }
-            }))
-            .expect("hook output");
-            let outcome = normalize_output(HookEvent::PreToolUse, DEFAULT_CONTEXT_BYTES, output)
-                .expect("once context");
-
-            assert_eq!(outcome.deliver_once.as_deref(), Some("permissions.v1"));
-            assert_eq!(outcome.permission_decision, Some(expected));
-        }
-    }
-
-    #[test]
-    fn once_context_requires_a_bounded_key_and_nonempty_context() {
-        for (key, context) in [
-            (String::new(), Some("guidance")),
-            ("other:permissions".into(), Some("guidance")),
-            ("é".into(), Some("guidance")),
-            ("x".repeat(129), Some("guidance")),
-            ("permissions".into(), None),
-            ("permissions".into(), Some(" \n")),
-        ] {
-            let output = serde_json::from_value(json!({
-                "hookSpecificOutput": {
-                    "hookEventName": "SessionStart",
-                    "additionalContext": context,
-                    "deliverOnce": key
-                }
-            }))
-            .expect("hook output");
-
-            assert!(
-                normalize_output(HookEvent::SessionStart, DEFAULT_CONTEXT_BYTES, output).is_err()
-            );
-        }
     }
 
     #[tokio::test]

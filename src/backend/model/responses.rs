@@ -16,8 +16,6 @@ use super::ModelInput;
 use super::ModelOutput;
 use super::ModelRequest;
 use super::PromptCacheMode;
-#[cfg(test)]
-use super::TOOLS_SEARCH_NAME;
 use super::ToolDefinition;
 use super::authorization::ApiKeyAuthorization;
 use super::authorization::OpenAiAuthorization;
@@ -42,8 +40,6 @@ use crate::protocol::ModelInfo;
 use crate::protocol::ModelStepAnnotation;
 use crate::protocol::TokenUsage;
 use crate::protocol::ToolDiscoveryMode;
-#[cfg(test)]
-use crate::protocol::ToolLoad;
 use crate::protocol::WebSearchAction;
 
 const MAX_IMAGE_RESPONSE_BYTES: usize = 65 * 1024 * 1024;

@@ -37,22 +37,15 @@ use mobius::backend::sandbox::local::LocalSandbox;
 use mobius::backend::session_files::{SessionFileStore, session_file_limits};
 use mobius::middleware::Middleware;
 use mobius::middleware::MiddlewareStack;
-use mobius::middleware::PromptSection;
-use mobius::middleware::RuntimeContext;
 use mobius::middleware::attachments::Attachments;
 use mobius::middleware::compaction::Compaction;
-use mobius::middleware::extensions::Extensions;
 use mobius::middleware::messages::Messages;
-use mobius::middleware::subagents::SubagentCeilings;
-use mobius::middleware::subagents::Subagents;
 use mobius::middleware::tools::Tools;
 use mobius::protocol::AssistantMessageEvent;
 use mobius::protocol::Event;
 use mobius::protocol::EventMsg;
 use mobius::protocol::MessageAuthor;
 use mobius::protocol::MessageSubmission;
-use mobius::protocol::MessageTarget;
-use mobius::protocol::ModelChoice;
 use mobius::protocol::ModelEvent;
 use mobius::protocol::ModelStepContentPhase;
 use mobius::protocol::Op;
@@ -60,14 +53,12 @@ use mobius::protocol::ReviewDecision;
 use mobius::protocol::SessionContext;
 use mobius::protocol::SessionFileReference;
 use mobius::protocol::TokenUsage;
-use mobius::protocol::ToolDiscoveryMode;
 use serde_json::Value;
 use tempfile::TempDir;
 use tokio::sync::Notify;
 
 mod agent_loop;
 mod attachments;
-mod capabilities;
 mod compaction;
 mod storage;
 
@@ -79,44 +70,14 @@ struct ScriptedModel {
 
 struct RecordedRequest {
     allow_hosted_tools: bool,
-    instructions: String,
     input: Vec<Value>,
     tools: Vec<Arc<ToolDefinition>>,
-}
-
-#[derive(Default)]
-struct PromptExtension {
-    prompt_calls: AtomicUsize,
-    registrations: AtomicUsize,
 }
 
 fn test_session_context() -> SessionContext {
     SessionContext {
         owner_id: "test-bot".into(),
         ..SessionContext::default()
-    }
-}
-
-impl Middleware for PromptExtension {
-    fn name(&self) -> &'static str {
-        "prompt_extension"
-    }
-
-    fn register(
-        &self,
-        _catalog: &mut mobius::middleware::tools::Catalog,
-        _runtime: &RuntimeContext,
-    ) -> Result<()> {
-        self.registrations.fetch_add(1, Ordering::SeqCst);
-        Ok(())
-    }
-
-    fn prompt_section(&self, _runtime: &RuntimeContext) -> Result<Option<PromptSection>> {
-        self.prompt_calls.fetch_add(1, Ordering::SeqCst);
-        Ok(Some(PromptSection::titled(
-            "prompt extension",
-            "capability prompt",
-        )))
     }
 }
 
@@ -154,7 +115,6 @@ impl Model for ScriptedModel {
                 .expect("requests")
                 .push(RecordedRequest {
                     allow_hosted_tools: request.allow_hosted_tools,
-                    instructions: request.instructions.into(),
                     input: request.input.iter().cloned().collect(),
                     tools: request.tools.to_vec(),
                 });

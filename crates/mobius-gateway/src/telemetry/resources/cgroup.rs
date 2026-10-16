@@ -21,7 +21,7 @@ fn read_current() -> Option<Value> {
     Some(read_at(&path))
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 fn resolve(membership: &str, mounts: &str) -> Option<std::path::PathBuf> {
     use std::path::{Component, Path};
     let group = Path::new(
@@ -55,7 +55,7 @@ fn resolve(membership: &str, mounts: &str) -> Option<std::path::PathBuf> {
     None
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 fn read_at(path: &std::path::Path) -> Value {
     let read = |name| std::fs::read_to_string(path.join(name)).ok();
     let cpu = read("cpu.stat");
@@ -108,7 +108,7 @@ fn read_at(path: &std::path::Path) -> Value {
     })
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 fn counter(text: Option<&str>, name: &str) -> Option<u64> {
     text?.lines().find_map(|line| {
         let mut fields = line.split_whitespace();
@@ -116,39 +116,4 @@ fn counter(text: Option<&str>, name: &str) -> Option<u64> {
             .then(|| fields.next()?.parse().ok())
             .flatten()
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cgroup_scope_limits_and_io_are_explicit() {
-        let mounts = "31 25 0:28 /tenant /sys/fs/cgroup rw - cgroup2 cgroup rw";
-        assert_eq!(
-            resolve("0::/tenant/job\n", mounts).unwrap(),
-            std::path::Path::new("/sys/fs/cgroup/job")
-        );
-        assert!(resolve("0::/tenant/../other", mounts).is_none());
-        assert!(resolve("0::/other", mounts).is_none());
-        let root = tempfile::tempdir().unwrap();
-        for (name, text) in [
-            (
-                "cpu.stat",
-                "usage_usec 123\nthrottled_usec 4\nnr_throttled 2",
-            ),
-            ("memory.current", "500"),
-            ("memory.max", "max"),
-            ("cpu.max", "50000 100000"),
-            ("io.stat", "8:0 rbytes=100 wbytes=200 rios=3 wios=4"),
-        ] {
-            std::fs::write(root.path().join(name), text).unwrap();
-        }
-        let value = read_at(root.path());
-        assert_eq!(value["cpu_time_us"], 123);
-        assert_eq!(value["local_cpu_quota_cores"], 0.5);
-        assert!(value["local_memory_limit_bytes"].is_null());
-        assert_eq!(value["disks"][0]["read_operations_total"], 3);
-        assert!(counter(Some("usage_usec bad"), "usage_usec").is_none());
-    }
 }

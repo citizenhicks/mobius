@@ -1,19 +1,14 @@
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
-use ratatui::style::Color;
 
 use super::*;
 use crate::frontend::catalog::UiCatalog;
 use crate::frontend::theme::{Role, current};
 use mobius::protocol::{
-    Event, FrontendAction, FrontendActionListItem, FrontendBlock, FrontendBlockFormat,
-    FrontendBlockRole, FrontendBlockState, FrontendBlockUpdate, FrontendCommand,
-    FrontendContribution, FrontendEvent, FrontendListItemState, FrontendPreviewUpdate,
-    FrontendSlot, FrontendSymbol, FrontendTone, FrontendWidget, FrontendWidgetContent,
-    MessageAuthor, MessageDelivery, MessageEvent, MessageSubmission, ModelStepContent,
-    ModelStepContentPhase, RenderedBlock, ReviewDecision,
+    Event, FrontendBlock, FrontendBlockRole, FrontendPreviewUpdate, FrontendSlot, FrontendSymbol,
+    FrontendTone, FrontendWidget, MessageAuthor, MessageDelivery, MessageEvent, MessageSubmission,
+    ModelStepContent, ModelStepContentPhase, RenderedBlock, ReviewDecision,
 };
 use mobius_gateway::wire::{RecordedEvent, RenderedEvent, RenderedPreview};
 

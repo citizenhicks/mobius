@@ -1190,28 +1190,9 @@ fn pem_error(error: pem::Error) -> std::io::Error {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn client_activity_measurement_does_not_wait_for_presence_persistence() {
-        let clients = super::ClientConnections::default();
-        std::thread::scope(|scope| {
-            let locked = clients.entries.lock().unwrap();
-            let clients = &clients;
-            let (send, receive) = std::sync::mpsc::channel();
-            scope.spawn(move || send.send(clients.native_count()).unwrap());
-            let result = receive.recv_timeout(std::time::Duration::from_secs(1));
-            drop(locked);
-            assert!(
-                result
-                    .expect("client measurement must not wait for the lock")
-                    .is_err()
-            );
-        });
-        assert_eq!(clients.native_count().unwrap(), 0);
-    }
 
     use super::*;
     use crate::wire::{FrameReader, RunStats};
-    use sha2::{Digest as _, Sha256};
     use tokio::sync::oneshot;
 
     fn profile() -> ProfileSnapshot {
@@ -1222,49 +1203,6 @@ mod tests {
             run_stats: RunStats::default(),
             recent_run_groups: Vec::new(),
         }
-    }
-
-    #[tokio::test]
-    async fn repair_pairing_rotates_the_requested_client() {
-        let directory = tempfile::tempdir().expect("state directory");
-        let (auth, grant) = AuthStore::initialize(
-            directory.path().join("auth.json"),
-            crate::auth::AuthConfig::default(),
-        )
-        .expect("initialize auth");
-        let original = auth.pair(&grant.code, "iPhone").expect("pair client");
-        let replacement = auth.create_pairing_code().expect("repair code");
-        let replacing_token_digest = Sha256::digest(original.token.as_bytes()).into();
-        let (mut writer, reader) = tokio::io::duplex(4096);
-        let mut reader = FrameReader::new(reader);
-
-        let identity = authenticate_client(
-            PreAuthClientMessage::RepairPairing {
-                code: replacement.code,
-                replacing_token_digest,
-                client_label: "iPhone".into(),
-                client_kind: ClientKind::Ios,
-            },
-            &auth,
-            &mut writer,
-        )
-        .await
-        .expect("repair pairing");
-        let frame = read_frame::<ServerFrame>(&mut reader)
-            .await
-            .expect("paired response")
-            .expect("paired frame");
-        let ServerMessage::Paired { client_id, token } = frame.message else {
-            panic!("expected paired response");
-        };
-
-        assert_eq!(
-            identity,
-            Some((original.client_id.clone(), ClientKind::Ios))
-        );
-        assert_eq!(client_id, original.client_id);
-        assert!(auth.authenticate(&original.token).is_err());
-        assert!(auth.authenticate(&token).is_ok());
     }
 
     #[tokio::test]

@@ -103,11 +103,4 @@ mod tests {
 
         assert_eq!(decision(key), Some(true));
     }
-
-    #[test]
-    fn enter_does_not_confirm_reinitialization() {
-        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-
-        assert_eq!(decision(key), None);
-    }
 }

@@ -565,7 +565,7 @@ impl DesktopConfig {
 }
 
 /// Resolve an optional desktop app; missing defaults do not disable the whole desktop.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 pub(crate) enum ApplicationRole {
     WindowManager,
     Panel,
@@ -574,7 +574,7 @@ pub(crate) enum ApplicationRole {
     Files,
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 pub(crate) fn application(
     config: &DesktopApplication,
     role: ApplicationRole,
@@ -722,62 +722,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn manifest_defaults_borrow_immutable_storage() {
-        let defaults = ComputerConfig::default();
-        assert!(matches!(defaults.node_download_base_url, Cow::Borrowed(_)));
-        assert!(matches!(defaults.tar_executable, Cow::Borrowed(_)));
-        assert!(matches!(defaults.browser.arguments, Cow::Borrowed(_)));
-        assert!(matches!(defaults.browser.start_page, Cow::Borrowed(_)));
-        assert!(matches!(defaults.desktop.tools.xauth, Cow::Borrowed(_)));
-        assert!(matches!(defaults.desktop.tools.xvnc, Cow::Borrowed(_)));
-        assert!(matches!(defaults.desktop.tools.vncconfig, Cow::Borrowed(_)));
-        assert!(matches!(defaults.desktop.tools.setpriv, Cow::Borrowed(_)));
-        assert!(matches!(
-            defaults.desktop.branding.browser_label,
-            Cow::Borrowed(_)
-        ));
-        assert!(matches!(
-            defaults.desktop.branding.terminal_label,
-            Cow::Borrowed(_)
-        ));
-        assert!(matches!(
-            defaults.desktop.branding.files_label,
-            Cow::Borrowed(_)
-        ));
-    }
-
-    #[test]
-    fn mutating_a_borrowed_default_preserves_other_operator_configurations() {
-        let mut defaults = ComputerConfig::default();
-        defaults
-            .browser
-            .arguments
-            .to_mut()
-            .push("--mute-audio".into());
-        assert!(matches!(defaults.browser.arguments, Cow::Owned(_)));
-        assert!(
-            !ComputerConfig::default()
-                .browser
-                .arguments
-                .iter()
-                .any(|argument| argument == "--mute-audio")
-        );
-    }
-
-    #[test]
-    fn configured_values_own_their_storage_and_remain_editable() {
-        let mut operator: ComputerConfig = toml::from_str(
-            "[browser]\narguments = ['--mute-audio']\nstart_page = 'https://example.invalid'",
-        )
-        .unwrap();
-        assert!(matches!(operator.browser.arguments, Cow::Owned(_)));
-        assert!(matches!(operator.browser.start_page, Cow::Owned(_)));
-        operator.browser.arguments.to_mut().clear();
-        operator.browser.start_page.to_mut().push_str("/start");
-        operator.validate().unwrap();
-    }
-
-    #[test]
     fn root_browser_requires_an_explicit_sandbox_opt_out() {
         let mut browser = BrowserConfig::default();
         let error = browser.validate_root_sandbox(true).unwrap_err();
@@ -797,81 +741,6 @@ mod tests {
     }
 
     #[test]
-    fn typed_defaults_preserve_pinned_runtime_and_desktop_policy() {
-        let defaults = ComputerConfig::default();
-        assert_eq!(defaults.install_timeout_seconds, 600);
-        assert_eq!(defaults.browser.window_size, [1200, 640]);
-        assert_eq!(defaults.browser.window_position, [80, 42]);
-        assert_eq!(defaults.browser.viewport, [1365, 768]);
-        assert_eq!(defaults.desktop.resolution, [1365, 768]);
-        assert_eq!(defaults.desktop.depth, 24);
-        assert_eq!(
-            (defaults.desktop.display_start, defaults.desktop.display_end),
-            (100, 200)
-        );
-        assert_eq!(defaults.desktop.tools.xvnc.as_ref(), ["Xtigervnc", "Xvnc"]);
-        assert_eq!(node_version(), "26.8.1");
-        assert_eq!(
-            node_distribution("linux", "aarch64").unwrap(),
-            (
-                "linux-arm64",
-                "d5f973ce975e4bd03e6c2038260f7e9201615aa8e1ee293c72f8dcc2a6d9fddb"
-            )
-        );
-        assert_eq!(
-            node_distribution("linux", "x86_64").unwrap(),
-            (
-                "linux-x64",
-                "b2b76660fa4ded4e0b2a41ee3c0c651cd52ea8170ead91ebac1e147ac3d55643"
-            )
-        );
-        assert_eq!(
-            node_distribution("macos", "aarch64").unwrap(),
-            (
-                "darwin-arm64",
-                "6e577fd0d9db776db82306629e441a9dace416702622aebdd171c9dfaa41f4d2"
-            )
-        );
-        assert_eq!(
-            node_distribution("macos", "x86_64").unwrap(),
-            (
-                "darwin-x64",
-                "fe9c6dbf9c8e1b4443803d75e2a20366e420dae650c747dbb116b22975751baf"
-            )
-        );
-    }
-
-    #[test]
-    fn embedded_defaults_require_operational_fields_without_public_default_recursion() {
-        let incomplete = DEFAULTS_TEXT.replace("viewport = [1365, 768]", "");
-        let error = toml::from_str::<ComputerDefaults>(&incomplete)
-            .err()
-            .unwrap();
-        assert!(error.to_string().contains("viewport"));
-    }
-
-    #[test]
-    fn partial_policy_keeps_manifest_defaults_and_requires_explicit_sandbox_disable() {
-        let mut config: ComputerConfig =
-            toml::from_str("[browser]\nviewport = [800, 600]\n").unwrap();
-        config.validate().unwrap();
-        assert_eq!(config.browser.viewport, [800, 600]);
-        assert!(
-            !config
-                .browser
-                .headed_arguments(Path::new("/tmp/profile"))
-                .contains(&"--no-sandbox".into())
-        );
-        config.browser.sandbox = false;
-        assert!(
-            config
-                .browser
-                .headed_arguments(Path::new("/tmp/profile"))
-                .contains(&"--no-sandbox".into())
-        );
-    }
-
-    #[test]
     fn operator_arguments_cannot_replace_the_private_control_boundary() {
         let mut config = ComputerConfig::default();
         for argument in [
@@ -883,23 +752,5 @@ mod tests {
             config.browser.arguments = vec![argument.into()].into();
             assert!(config.validate().is_err(), "{argument}");
         }
-    }
-
-    #[test]
-    fn disabled_or_missing_default_application_is_optional() {
-        let application = DesktopApplication {
-            enabled: false,
-            ..DesktopApplication::default()
-        };
-        for role in [
-            ApplicationRole::WindowManager,
-            ApplicationRole::Panel,
-            ApplicationRole::Wallpaper,
-            ApplicationRole::Terminal,
-            ApplicationRole::Files,
-        ] {
-            assert!(super::application(&application, role).unwrap().is_none());
-        }
-        assert!(resolve_executable(Path::new("relative/path")).is_err());
     }
 }

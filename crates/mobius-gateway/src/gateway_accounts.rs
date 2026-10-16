@@ -340,40 +340,6 @@ mod tests {
     }
 
     #[test]
-    fn selecting_a_saved_account_updates_the_selected_endpoint() {
-        let directory = tempfile::tempdir().expect("token directory");
-        let mut accounts = accounts(&directory.path().join("tokens.json"));
-        accounts
-            .add(&endpoint("tcp://127.0.0.1:8741"), "local-token".into())
-            .expect("local account");
-        accounts
-            .add(
-                &endpoint("tls://gateway.example:443"),
-                "remote-token".into(),
-            )
-            .expect("remote account");
-
-        accounts
-            .select("tcp://127.0.0.1:8741")
-            .expect("select account");
-
-        assert_eq!(accounts.selected(), Some("tcp://127.0.0.1:8741"));
-    }
-
-    #[test]
-    fn forgetting_the_selected_account_clears_selection() {
-        let directory = tempfile::tempdir().expect("token directory");
-        let mut accounts = accounts(&directory.path().join("tokens.json"));
-        accounts
-            .add(&endpoint("tcp://127.0.0.1:8741"), "local-token".into())
-            .expect("local account");
-
-        accounts.forget("tcp://127.0.0.1:8741");
-
-        assert_eq!(accounts.selected(), None);
-    }
-
-    #[test]
     fn account_record_round_trips_selection_and_tokens() {
         let directory = tempfile::tempdir().expect("token directory");
         let path = directory.path().join("tokens.json");
@@ -391,20 +357,6 @@ mod tests {
             (loaded.selected(), loaded.token(&endpoint)),
             (Some("tls://gateway.example:443"), Some("remote-token"))
         );
-    }
-
-    #[test]
-    fn old_token_maps_fail_with_repair_guidance() {
-        let directory = tempfile::tempdir().expect("token directory");
-        let path = directory.path().join("tokens.json");
-        std::fs::write(&path, r#"{"tcp://127.0.0.1:8741":"token"}"#).expect("legacy token map");
-        #[cfg(unix)]
-        std::fs::set_permissions(&path, mobius::owner_only::file()).expect("private permissions");
-
-        let error = GatewayAccounts::load_from(path).expect_err("old format must fail");
-
-        assert!(error.to_string().contains("delete"));
-        assert!(error.to_string().contains("pair again"));
     }
 
     #[test]

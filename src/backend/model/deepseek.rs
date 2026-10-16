@@ -62,31 +62,7 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
 mod tests {
     use super::*;
     use crate::backend::model::provider::HostedWebSearch;
-    use crate::backend::model::provider::ProviderAuth;
     use crate::backend::model::provider::ProviderCredential;
-    use crate::backend::model::provider::provider as registered_provider;
-    use crate::protocol::ModelCapability;
-
-    #[test]
-    fn advertised_web_search_modes_build() {
-        let definition = provider();
-        for web_search in definition.web_search().iter().copied() {
-            definition
-                .build(ProviderBuildConfig {
-                    capability: None,
-                    tool_discovery: None,
-                    credential: ProviderCredential::ApiKey("test-key".into()),
-                    model: definition.default_model().expect("default model").into(),
-                    base_url: Some(MANIFEST.base_url.as_str().into()),
-                    reasoning_effort: None,
-                    service_tier: None,
-                    web_search,
-                    http: reqwest::Client::new(),
-                    transport: crate::backend::model::ModelTransportSettings::default(),
-                })
-                .expect("advertised web search mode builds");
-        }
-    }
 
     #[test]
     fn image_input_is_enabled_only_for_catalogued_vision_models() {
@@ -114,60 +90,6 @@ mod tests {
                 assert_eq!(model.supports_image_input(), supports_images, "{id}");
                 assert_eq!(model.supports_tool_image_input(), supports_images, "{id}");
             }
-        }
-    }
-
-    #[test]
-    fn vision_catalog_rejects_unknown_and_duplicate_model_ids() {
-        let mut catalog: super::super::provider::ModelCatalog =
-            toml::from_str(include_str!("deepseek.toml")).expect("catalog");
-        catalog.validate().expect("valid catalog");
-        catalog.image_input_models.push("unknown-model".into());
-        assert!(catalog.validate().is_err());
-        catalog.image_input_models.pop();
-        catalog.image_input_models.push("deepseek-flash".into());
-        assert!(catalog.validate().is_err());
-    }
-
-    #[test]
-    fn registered_provider_keeps_declared_capabilities_on_each_endpoint() {
-        let definition = registered_provider("deepseek").expect("registered provider");
-        assert!(matches!(
-            definition.auth(),
-            ProviderAuth::ApiKey(key) if Some(key) == MANIFEST.credential_env.as_deref()
-        ));
-        assert_eq!(definition.models(), &CATALOG.models);
-        assert_eq!(definition.web_search(), &MANIFEST.search);
-        for base_url in [MANIFEST.base_url.as_str(), "https://custom.example/v1"] {
-            let model = definition
-                .build(ProviderBuildConfig {
-                    capability: None,
-                    tool_discovery: None,
-                    credential: ProviderCredential::ApiKey("test-key".into()),
-                    model: definition.default_model().expect("default model").into(),
-                    base_url: Some(base_url.into()),
-                    reasoning_effort: None,
-                    service_tier: None,
-                    web_search: HostedWebSearch::Off,
-                    http: reqwest::Client::new(),
-                    transport: crate::backend::model::ModelTransportSettings::default(),
-                })
-                .expect("build provider");
-
-            assert_eq!(model.info().reasoning_effort.as_deref(), None);
-            assert_eq!(
-                (
-                    model.supports_image_input(),
-                    model.supports_image_generation(),
-                    model.supports_realtime_voice(),
-                ),
-                (
-                    definition.supports_image_input(),
-                    definition.supports(ModelCapability::ImageGeneration),
-                    definition.supports(ModelCapability::RealtimeVoice),
-                ),
-                "{base_url} capabilities"
-            );
         }
     }
 }

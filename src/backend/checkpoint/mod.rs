@@ -462,9 +462,6 @@ fn validate_queued_message(message: &QueuedMessage) -> Result<()> {
 /// Versioned state persisted at each durable loop boundary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Checkpoint {
-    #[cfg(test)]
-    #[serde(skip)]
-    pub(crate) clone_count: CloneCount,
     /// The version.
     pub version: u32,
     /// The session identifier.
@@ -511,34 +508,11 @@ pub struct Checkpoint {
     pub pending_approval: Option<PendingApproval>,
 }
 
-#[cfg(test)]
-#[derive(Debug, Default)]
-pub(crate) struct CloneCount(pub(crate) Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>);
-
-#[cfg(test)]
-impl Clone for CloneCount {
-    fn clone(&self) -> Self {
-        if let Some(count) = &self.0 {
-            count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-        Self(self.0.clone())
-    }
-}
-
-#[cfg(test)]
-impl PartialEq for CloneCount {
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
-}
-
 impl Checkpoint {
     /// Creates an empty session checkpoint.
     #[must_use]
     pub fn empty(session_id: impl Into<String>) -> Self {
         Self {
-            #[cfg(test)]
-            clone_count: CloneCount::default(),
             version: CHECKPOINT_VERSION,
             session_id: session_id.into(),
             session_context: SessionContext::default(),

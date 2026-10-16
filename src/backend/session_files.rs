@@ -23,8 +23,6 @@ pub use images::grant_context;
 mod storage;
 
 pub use storage::media_type;
-#[cfg(test)]
-use storage::remember_validated_blob;
 pub(crate) use storage::session_storage_key;
 use storage::{
     cleanup_stale_files, create_private_dir, ensure_private_dir, gc_unreferenced_blobs, hash_file,

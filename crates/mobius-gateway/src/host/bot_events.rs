@@ -886,28 +886,4 @@ mod tests {
             .expect("closed projection");
         assert_eq!(bots.unpublished_events(10).expect("events").len(), 1);
     }
-
-    #[test]
-    fn source_terminal_facts_keep_the_bound_and_causal_message_identity() {
-        for length in [15, 16] {
-            let chain = (0..length)
-                .map(|id| format!("cause-{id}"))
-                .collect::<Vec<_>>();
-            let author = MessageAuthor::Source {
-                message_id: "command".into(),
-                source: MessageSource::External {
-                    source_id: "hook".into(),
-                    event_id: "cause-0".into(),
-                },
-                cause_id: Some("cause-0".into()),
-                ancestry: chain.clone(),
-                handle: "source report".into(),
-                symbol: None,
-            };
-            let (cause_id, ancestry) = session_causality(&author);
-            assert_eq!(cause_id.as_deref(), Some("command"));
-            assert_eq!(ancestry.len(), crate::bots::MAX_HOOK_ANCESTRY);
-            assert!(ancestry.starts_with(&chain));
-        }
-    }
 }

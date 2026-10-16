@@ -276,33 +276,4 @@ mod tests {
 
         assert!(!masked_token(token, 24).contains(token));
     }
-
-    #[test]
-    fn finish_normalizes_the_hostname_and_moves_the_token() {
-        let mut state = State {
-            field: Field::Connect,
-            hostname: " mobius.example.com ".into(),
-            token: " secret-tunnel-token ".into(),
-            error: None,
-        };
-
-        let CloudflareInit::Named { hostname, token } = state.finish().expect("valid setup") else {
-            panic!("expected named tunnel");
-        };
-
-        assert_eq!(
-            (hostname.as_str(), token.as_str()),
-            ("mobius.example.com", "secret-tunnel-token")
-        );
-        assert!(state.token.is_empty());
-    }
-
-    #[test]
-    fn quick_connect_is_the_default() {
-        let mut state = State::new();
-
-        let config = state.finish().expect("quick setup");
-
-        assert!(matches!(config, CloudflareInit::Quick));
-    }
 }

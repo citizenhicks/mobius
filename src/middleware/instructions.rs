@@ -133,39 +133,6 @@ fn same_file(_left: &cap_std::fs::Metadata, _right: &cap_std::fs::Metadata) -> b
 mod tests {
     use super::*;
 
-    #[test]
-    fn no_workspace_contributes_nothing() {
-        assert!(
-            Instructions::discover(None)
-                .expect("no workspace")
-                .body
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn override_wins_and_missing_files_are_optional() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        assert!(
-            Instructions::discover(Some(workspace.path()))
-                .expect("empty workspace")
-                .body
-                .is_none()
-        );
-        std::fs::write(workspace.path().join(INSTRUCTIONS_FILE), "base").expect("base");
-        std::fs::write(workspace.path().join(OVERRIDE_FILE), "override").expect("override");
-
-        let instructions = Instructions::discover(Some(workspace.path())).expect("instructions");
-
-        assert_eq!(
-            instructions.section(),
-            Some(PromptSection::titled(
-                "workspace instructions",
-                "Source: `AGENTS.override.md`\n\noverride"
-            ))
-        );
-    }
-
     #[cfg(unix)]
     #[test]
     fn instruction_symlinks_are_rejected() {

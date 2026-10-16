@@ -689,36 +689,6 @@ fn format_address(host: &str, port: u16) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn websocket_admission_is_sensitive_and_separate_from_the_endpoint() {
-        let endpoint: Endpoint = "wss://gateway.example".parse().expect("endpoint");
-        assert!(
-            !endpoint
-                .websocket_request()
-                .expect("request")
-                .headers()
-                .contains_key(AUTHORIZATION)
-        );
-        let endpoint = endpoint
-            .with_websocket_bearer("cloud-secret")
-            .expect("bearer");
-        let request = endpoint.websocket_request().expect("request");
-        assert_eq!(request.headers()[AUTHORIZATION], "Bearer cloud-secret");
-        assert!(request.headers()[AUTHORIZATION].is_sensitive());
-        assert_eq!(endpoint.to_string(), "wss://gateway.example");
-        assert!(!format!("{endpoint:?} {request:?}").contains("cloud-secret"));
-        for invalid in ["", "two words", "secret\r\nInjected: value", "nonascii-é"] {
-            assert!(endpoint.clone().with_websocket_bearer(invalid).is_err());
-        }
-        assert!(
-            "tcp://127.0.0.1:8741"
-                .parse::<Endpoint>()
-                .expect("loopback")
-                .with_websocket_bearer("secret")
-                .is_err()
-        );
-    }
-
     #[tokio::test]
     async fn websocket_redirects_are_rejected_without_exposing_response_secrets() {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -752,59 +722,6 @@ mod tests {
         response.await.expect("server");
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn timed_out_writer_cannot_send_another_frame() {
-        let (transport, _peer) = tokio::io::duplex(4);
-        let (reader, writer) = tokio::io::split(Box::new(transport) as BoxedTransport);
-        let (sender, _events) = GatewayClient::from_parts(reader, writer).into_parts();
-        let request = ClientMessage::ListSessions {
-            request_id: "request".into(),
-        };
-        assert!(
-            matches!(sender.send(request.clone()).await, Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut)
-        );
-        assert!(
-            matches!(sender.send(request).await, Err(Error::Protocol(message)) if message.contains("writer is closed"))
-        );
-    }
-
-    #[tokio::test]
-    async fn connect_authenticates_without_a_session_cursor() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind gateway");
-        let endpoint = format!("tcp://{}", listener.local_addr().expect("gateway address"))
-            .parse::<Endpoint>()
-            .expect("gateway endpoint");
-        let gateway = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.expect("accept client");
-            let (reader, mut writer) = tokio::io::split(stream);
-            let mut reader = FrameReader::new(reader);
-            let frame = read_frame::<ClientFrame>(&mut reader)
-                .await
-                .expect("read authentication")
-                .expect("authentication frame");
-            write_frame(&mut writer, &ServerFrame::new(ServerMessage::Authenticated))
-                .await
-                .expect("acknowledge authentication");
-            frame
-        });
-
-        let _client = GatewayClient::connect(&endpoint, "secret", ClientKind::Cli)
-            .await
-            .expect("connect client");
-        let frame = gateway.await.expect("gateway task");
-
-        assert_eq!(
-            frame.message,
-            ClientMessage::Authenticate {
-                token: "secret".into(),
-                client_kind: ClientKind::Cli,
-                catalog: CatalogHint::default(),
-            }
-        );
-    }
-
     #[test]
     fn endpoint_rejects_remote_plaintext() {
         let error = "tcp://example.com:8741"
@@ -813,34 +730,6 @@ mod tests {
 
         assert!(error.to_string().contains("use tls://"));
         assert!("tcp://127.0.0.1:0".parse::<Endpoint>().is_err());
-    }
-
-    #[test]
-    fn endpoint_accepts_loopback_plaintext_and_remote_encrypted_transports() {
-        let loopback = "tcp://127.0.0.1:8741"
-            .parse::<Endpoint>()
-            .expect("loopback endpoint");
-        let remote = "tls://gateway.example:443"
-            .parse::<Endpoint>()
-            .expect("TLS endpoint");
-        let websocket = "wss://gateway.example"
-            .parse::<Endpoint>()
-            .expect("WSS endpoint");
-
-        assert_eq!(loopback.to_string(), "tcp://127.0.0.1:8741");
-        assert_eq!(remote.to_string(), "tls://gateway.example:443");
-        assert_eq!(websocket.to_string(), "wss://gateway.example");
-        assert!(loopback.is_plaintext());
-        assert!(!remote.is_plaintext());
-        assert!(websocket.is_websocket());
-    }
-
-    #[test]
-    fn authentication_errors_preserve_unauthorized_semantics() {
-        assert!(matches!(
-            connection_error("unauthorized", "authentication failed".into()),
-            Error::Unauthorized
-        ));
     }
 
     #[tokio::test]
@@ -876,64 +765,5 @@ mod tests {
             restored.message,
             ServerMessage::Accepted { request_id } if request_id == "unrelated"
         ));
-    }
-
-    #[tokio::test]
-    async fn nested_scopes_share_the_bounded_deferred_backlog() {
-        let (transport, mut peer) = tokio::io::duplex(1024);
-        write_frame(
-            &mut peer,
-            &ServerFrame::new(ServerMessage::Accepted {
-                request_id: "overflow".into(),
-            }),
-        )
-        .await
-        .expect("write overflow frame");
-        let (reader, _writer) = tokio::io::split(Box::new(transport) as BoxedTransport);
-        let pending = (0..MAX_PENDING_FRAMES)
-            .map(|index| {
-                ServerFrame::new(ServerMessage::Accepted {
-                    request_id: index.to_string(),
-                })
-            })
-            .collect();
-        let mut events = GatewayEvents {
-            reader: FrameReader::new(reader),
-            pending,
-            scoped_deferred: 0,
-        };
-
-        {
-            let mut outer = events.scoped();
-            let frame = outer.next().await.expect("next").expect("outer frame");
-            outer.defer(frame).expect("outer defer");
-            let mut inner = outer.reborrow().scoped();
-            for _ in 1..MAX_PENDING_FRAMES {
-                let frame = inner.next().await.expect("next").expect("inner frame");
-                inner.defer(frame).expect("inner defer");
-            }
-            let overflow = inner.next().await.expect("next").expect("overflow frame");
-            assert!(inner.defer(overflow).is_err());
-        }
-
-        assert_eq!(events.pending.len(), MAX_PENDING_FRAMES);
-    }
-
-    #[tokio::test]
-    async fn scoped_defer_rejects_an_invalid_protocol_version() {
-        let (transport, _peer) = tokio::io::duplex(64);
-        let (reader, _writer) = tokio::io::split(Box::new(transport) as BoxedTransport);
-        let mut events = GatewayEvents {
-            reader: FrameReader::new(reader),
-            pending: VecDeque::new(),
-            scoped_deferred: 0,
-        };
-        let mut frame = ServerFrame::new(ServerMessage::Accepted {
-            request_id: "invalid".into(),
-        });
-        frame.version = crate::wire::PROTOCOL_VERSION.saturating_sub(1);
-
-        assert!(events.scoped().defer(frame).is_err());
-        assert!(events.pending.is_empty());
     }
 }

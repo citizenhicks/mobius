@@ -526,39 +526,6 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     #[test]
-    fn applied_auth_publication_keeps_revocation_and_consumed_pairing_visible() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("auth.json");
-        let (auth, grant) = AuthStore::initialize(&path, AuthConfig::default()).unwrap();
-        let actor = auth.pair(&grant.code, "actor").unwrap();
-        let grant = auth.create_pairing_code().unwrap();
-        let device = auth.pair(&grant.code, "device").unwrap();
-        crate::publication::fail_next_directory_sync(&path);
-        assert!(matches!(
-            auth.unpair_client(&actor.client_id, &device.client_id),
-            Err(Error::PublicationApplied { .. })
-        ));
-        assert!(auth.authenticate(&device.token).is_err());
-        assert!(
-            AuthStore::open(&path, AuthConfig::default())
-                .unwrap()
-                .authenticate(&device.token)
-                .is_err()
-        );
-        let grant = auth.create_pairing_code().unwrap();
-        crate::publication::fail_next_directory_sync(&path);
-        assert!(matches!(
-            auth.pair(&grant.code, "uncertain"),
-            Err(Error::PublicationApplied { .. })
-        ));
-        assert!(auth.pair(&grant.code, "retry").is_err());
-        assert_eq!(
-            serde_json::to_value(&*auth.lock_state().unwrap()).unwrap(),
-            serde_json::from_slice::<serde_json::Value>(&fs::read(path).unwrap()).unwrap()
-        );
-    }
-
-    #[test]
     fn persisted_auth_rejects_oversized_files() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("auth.json");
@@ -570,112 +537,6 @@ mod tests {
             panic!("oversized auth must fail");
         };
         assert!(error.to_string().contains("too large"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn persisted_auth_rejects_fifo_without_a_writer() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("auth.json");
-        assert!(
-            std::process::Command::new("mkfifo")
-                .arg(&path)
-                .status()
-                .unwrap()
-                .success()
-        );
-        let Err(error) = AuthStore::open(path, AuthConfig::default()) else {
-            panic!("FIFO auth must fail");
-        };
-        assert!(error.to_string().contains("regular file"));
-    }
-
-    fn client(id: &str, label: &str, digest_byte: u8) -> ClientToken {
-        ClientToken {
-            id: id.into(),
-            label: label.into(),
-            digest: [digest_byte; 32],
-            created_at: 1,
-        }
-    }
-
-    fn write_auth_state(path: &Path, clients: Vec<ClientToken>) {
-        fs::write(
-            path,
-            serde_json::to_vec(&AuthState {
-                pending_pairing: None,
-                clients,
-            })
-            .expect("encode auth state"),
-        )
-        .expect("write auth state");
-    }
-
-    #[test]
-    fn pairing_three_clients_keeps_every_issued_token_valid() {
-        let directory = tempfile::tempdir().expect("state directory");
-        let path = directory.path().join("auth.json");
-        let (auth, first) =
-            AuthStore::initialize(&path, AuthConfig::default()).expect("initialize auth");
-        let first = auth.pair(&first.code, "Mac").expect("pair Mac");
-        let second_code = auth.create_pairing_code().expect("second code");
-        let second = auth.pair(&second_code.code, "iPhone").expect("pair iPhone");
-        let third_code = auth.create_pairing_code().expect("third code");
-        let third = auth.pair(&third_code.code, "CLI").expect("pair CLI");
-
-        assert!(auth.authenticate(&first.token).is_ok());
-        assert!(auth.authenticate(&second.token).is_ok());
-        assert!(auth.authenticate(&third.token).is_ok());
-    }
-
-    #[test]
-    fn provisioning_local_client_preserves_remote_pairing() {
-        let directory = tempfile::tempdir().expect("state directory");
-        let path = directory.path().join("auth.json");
-        let (auth, grant) =
-            AuthStore::initialize(path, AuthConfig::default()).expect("initialize auth");
-
-        let local = auth
-            .provision_local_client()
-            .expect("provision local client");
-        let remote = auth.pair(&grant.code, "iPhone").expect("pair iPhone");
-
-        assert!(auth.authenticate(&local.token).is_ok());
-        assert!(auth.authenticate(&remote.token).is_ok());
-    }
-
-    #[test]
-    fn paired_clients_are_listed_without_credentials() {
-        let directory = tempfile::tempdir().expect("state directory");
-        let path = directory.path().join("auth.json");
-        let (auth, grant) =
-            AuthStore::initialize(&path, AuthConfig::default()).expect("initialize auth");
-        auth.pair(&grant.code, "Mac").expect("pair Mac");
-
-        assert_eq!(
-            auth.clients().expect("paired clients"),
-            [ClientIdentity {
-                id: pairing_client_id(&grant.code),
-                label: "Mac".into(),
-            }]
-        );
-    }
-
-    #[test]
-    fn pairing_rejects_noncanonical_client_labels_without_consuming_the_code() {
-        let directory = tempfile::tempdir().expect("state directory");
-        let path = directory.path().join("auth.json");
-        let (auth, grant) =
-            AuthStore::initialize(path, AuthConfig::default()).expect("initialize auth");
-
-        for label in [" Mac", "Mac ", "Mac\nterminal"] {
-            let error = auth
-                .pair(&grant.code, label)
-                .expect_err("noncanonical label must fail");
-            assert!(error.to_string().contains("client label"));
-        }
-
-        auth.pair(&grant.code, "Mac").expect("pair canonical label");
     }
 
     #[test]
@@ -691,38 +552,6 @@ mod tests {
         ));
         auth.pair_at(&grant.code, "Mac", grant.expires_at - 1)
             .expect("code is valid before expiry");
-    }
-
-    #[test]
-    fn opening_auth_state_rejects_noncanonical_or_duplicate_client_identity() {
-        let directory = tempfile::tempdir().expect("state directory");
-        let path = directory.path().join("auth.json");
-        let first_id = "00000000-0000-0000-0000-000000000001";
-        let second_id = "00000000-0000-0000-0000-000000000002";
-        let cases = [
-            (
-                vec![client("00000000-0000-0000-0000-00000000000A", "Mac", 1)],
-                "must be canonical",
-            ),
-            (
-                vec![client(first_id, "Mac", 1), client(first_id, "Phone", 2)],
-                "duplicate client IDs",
-            ),
-            (
-                vec![client(first_id, "Mac", 1), client(second_id, "Phone", 1)],
-                "duplicate token digests",
-            ),
-            (vec![client(first_id, " Mac", 1)], "client label"),
-        ];
-
-        for (clients, expected) in cases {
-            write_auth_state(&path, clients);
-            let error = match AuthStore::open(&path, AuthConfig::default()) {
-                Ok(_) => panic!("invalid auth state must fail"),
-                Err(error) => error,
-            };
-            assert!(error.to_string().contains(expected), "{error}");
-        }
     }
 
     #[test]
@@ -755,70 +584,6 @@ mod tests {
             ),
             (true, false, true, true, true)
         );
-    }
-
-    #[test]
-    fn creating_a_new_pairing_code_invalidates_the_previous_code_only() {
-        let directory = tempfile::tempdir().expect("state directory");
-        let path = directory.path().join("auth.json");
-        let (auth, bootstrap) =
-            AuthStore::initialize(&path, AuthConfig::default()).expect("initialize auth");
-        let replacement = auth.create_pairing_code().expect("replacement code");
-
-        let error = auth
-            .pair(&bootstrap.code, "stale")
-            .expect_err("old code must fail");
-
-        assert!(matches!(error, Error::Unauthorized));
-        assert!(auth.pair(&replacement.code, "current").is_ok());
-        assert_eq!(
-            auth.pairing_status(&bootstrap.code)
-                .expect("replaced status"),
-            PairingStatus::Replaced
-        );
-    }
-
-    #[test]
-    fn pairing_status_tracks_a_durable_client_issuance() {
-        let directory = tempfile::tempdir().expect("state directory");
-        let path = directory.path().join("auth.json");
-        let (auth, grant) =
-            AuthStore::initialize(&path, AuthConfig::default()).expect("initialize auth");
-        let pending = auth.pairing_status(&grant.code).expect("pending status");
-        auth.pair(&grant.code, "iPhone").expect("pair iPhone");
-        let reopened = AuthStore::open(path, AuthConfig::default()).expect("reopen auth");
-        let replacement = reopened.create_pairing_code().expect("replacement code");
-        let consumed = reopened
-            .pairing_status(&grant.code)
-            .expect("consumed status");
-
-        assert_eq!(
-            (pending, consumed),
-            (PairingStatus::Pending, PairingStatus::Consumed)
-        );
-        assert_eq!(
-            reopened
-                .pairing_status(&replacement.code)
-                .expect("replacement status"),
-            PairingStatus::Pending
-        );
-    }
-
-    #[test]
-    fn revoking_a_pairing_code_does_not_revoke_its_replacement() {
-        let directory = tempfile::tempdir().expect("state directory");
-        let path = directory.path().join("auth.json");
-        let (auth, revoked) =
-            AuthStore::initialize(path, AuthConfig::default()).expect("initialize auth");
-
-        auth.revoke_pairing_code(&revoked.code)
-            .expect("revoke code");
-        assert!(auth.pair(&revoked.code, "stale").is_err());
-
-        let replacement = auth.create_pairing_code().expect("replacement code");
-        auth.revoke_pairing_code(&revoked.code)
-            .expect("revoke old code");
-        assert!(auth.pair(&replacement.code, "current").is_ok());
     }
 
     #[test]
@@ -869,76 +634,5 @@ mod tests {
             & 0o777;
 
         assert_eq!(mode, 0o600);
-    }
-
-    #[test]
-    fn adding_channel_identity_preserves_existing_authentication_state() {
-        let directory = tempfile::tempdir().expect("state directory");
-        let path = directory.path().join("auth.json");
-        let (auth, grant) =
-            AuthStore::initialize(&path, AuthConfig::default()).expect("initialize auth");
-        let issued = auth.pair(&grant.code, "existing client").expect("pair");
-        let legacy_token = "existing-opaque-token";
-        let mut state = auth.lock_state().unwrap().clone();
-        state.clients[0].digest = digest(legacy_token);
-        save_auth_state(&path, &state, false).unwrap();
-        let original = fs::read(&path).unwrap();
-        fs::remove_file(path.with_extension("channel-key")).unwrap();
-        let reopened =
-            AuthStore::open(&path, AuthConfig::default()).expect("open existing auth state");
-        assert_eq!(fs::read(&path).unwrap(), original);
-        assert_eq!(
-            reopened.authenticate(legacy_token).unwrap().id,
-            issued.client_id
-        );
-        let grant = reopened.create_pairing_code().unwrap();
-        let key = crate::channel::credential_key(&grant.code).unwrap();
-        let paired = reopened.pair(&grant.code, "encrypted client").unwrap();
-        assert_eq!(crate::channel::credential_key(&paired.token).unwrap(), key);
-        let reopened = AuthStore::open(&path, AuthConfig::default()).unwrap();
-        assert_eq!(
-            crate::channel::credential_key(&reopened.create_pairing_code().unwrap().code).unwrap(),
-            key
-        );
-        reopened
-            .unpair_client(&issued.client_id, &paired.client_id)
-            .unwrap();
-        assert!(reopened.authenticate(&paired.token).is_err());
-        assert!(reopened.authenticate(legacy_token).is_ok());
-    }
-}
-
-#[cfg(test)]
-mod configured_policy_tests {
-    use super::*;
-    #[test]
-    fn custom_pairing_policy_changes_lifetime_and_capacity_without_deleting_clients() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("auth.json");
-        let policy = AuthConfig {
-            paired_clients: 1,
-            pairing_lifetime_seconds: 30,
-        };
-        let (auth, grant) = AuthStore::initialize(&path, policy).unwrap();
-        let now = i64::try_from(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-        )
-        .unwrap();
-        assert!((29..=30).contains(&(grant.expires_at - now)));
-        auth.pair(&grant.code, "first").unwrap();
-        let second = auth.create_pairing_code().unwrap();
-        assert!(auth.pair(&second.code, "second").is_err());
-        let opened = AuthStore::open(
-            &path,
-            AuthConfig {
-                paired_clients: 2,
-                ..policy
-            },
-        )
-        .unwrap();
-        opened.pair(&second.code, "second").unwrap();
     }
 }

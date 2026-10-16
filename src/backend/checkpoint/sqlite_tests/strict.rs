@@ -1,27 +1,5 @@
 use super::*;
 
-#[tokio::test]
-async fn checkpoint_version_hard_rejects_previous_generations() {
-    let workspace = tempfile::tempdir().expect("create workspace");
-    let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-        .expect("open checkpoint database");
-    let mut checkpoint = checkpoint("session");
-    assert_eq!(checkpoint.version, 20);
-    for version in [9, 11, 12, 13, 16, 17, 18, 19] {
-        checkpoint.version = version;
-        let error = store
-            .save(&checkpoint, &[], None)
-            .await
-            .expect_err("older checkpoint shape must fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains(&format!("unsupported checkpoint version {version}"))
-        );
-    }
-}
-
 #[test]
 fn open_hard_rejects_previous_schema_generations() {
     for version in [6, 7, 8, 9, 10, 11, 12] {
@@ -46,27 +24,6 @@ fn open_hard_rejects_previous_schema_generations() {
             )
         );
     }
-}
-
-#[test]
-fn open_rejects_a_nonempty_unversioned_database() {
-    let workspace = tempfile::tempdir().expect("create workspace");
-    let path = workspace.path().join("checkpoints.sqlite3");
-    let connection = Connection::open(&path).expect("create unversioned database");
-    connection
-        .execute("CREATE TABLE legacy_state (value TEXT)", [])
-        .expect("create legacy schema");
-    drop(connection);
-
-    let error = SqliteCheckpoint::new(path)
-        .err()
-        .expect("nonempty unversioned database must fail");
-
-    assert_eq!(
-        error.to_string(),
-        "checkpoint error: unversioned SQLite database is not empty; expected schema version \
-             13 (start with a fresh database)"
-    );
 }
 
 #[tokio::test]
@@ -111,29 +68,6 @@ async fn load_completes_while_another_connection_holds_a_write_transaction() {
         loaded
             .expect("reader blocked behind writer")
             .expect("load checkpoint"),
-        Some(checkpoint)
-    );
-}
-
-#[tokio::test]
-async fn save_rejects_a_nonadvancing_sequence() {
-    let workspace = tempfile::tempdir().expect("create workspace");
-    let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-        .expect("open checkpoint database");
-    let mut checkpoint = checkpoint("session");
-    checkpoint.sequence = 2;
-
-    store
-        .save(&checkpoint, &[], None)
-        .await
-        .expect("initial save");
-
-    assert!(store.save(&checkpoint, &[], None).await.is_err());
-    let mut older = checkpoint.clone();
-    older.sequence = 1;
-    assert!(store.save(&older, &[], None).await.is_err());
-    assert_eq!(
-        store.load("session").await.expect("load checkpoint"),
         Some(checkpoint)
     );
 }

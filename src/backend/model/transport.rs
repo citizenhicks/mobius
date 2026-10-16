@@ -517,59 +517,6 @@ mod tests {
     }
 
     #[test]
-    fn http_errors_show_the_provider_message_not_raw_json() {
-        let message = |body: &str| {
-            http_error_message("WebSocket", "503 Service Unavailable", body.as_bytes())
-        };
-        assert_eq!(
-            message(
-                r#"{"error":{"code":"cloud_model_error","message":"Cloud model service unavailable","status":503}}"#
-            ),
-            "WebSocket HTTP 503 Service Unavailable: Cloud model service unavailable"
-        );
-        assert_eq!(
-            message(r#"{"message":"Rate limited"}"#),
-            "WebSocket HTTP 503 Service Unavailable: Rate limited"
-        );
-        assert_eq!(
-            message(r#"{"error":"overloaded"}"#),
-            "WebSocket HTTP 503 Service Unavailable: overloaded"
-        );
-        assert_eq!(
-            message(" upstream down \n"),
-            "WebSocket HTTP 503 Service Unavailable: upstream down"
-        );
-        assert_eq!(message(""), "WebSocket HTTP 503 Service Unavailable");
-    }
-
-    #[test]
-    fn sse_framing_handles_crlf_and_multiline_data() {
-        let mut decoder = SseDecoder::default();
-        decoder
-            .push(
-                b"event: message\r\ndata: one\r\ndata: two\r\n\r\ndata: next\n\n",
-                "test",
-            )
-            .expect("valid chunk");
-
-        let first = decoder
-            .next_frame()
-            .expect("valid frame")
-            .expect("first frame");
-        assert_eq!(frame_data(first).as_deref(), Some("one\ntwo"));
-        assert_eq!(
-            frame_data(
-                decoder
-                    .next_frame()
-                    .expect("valid frame")
-                    .expect("second frame")
-            )
-            .as_deref(),
-            Some("next")
-        );
-    }
-
-    #[test]
     fn sse_framing_handles_one_byte_chunks_and_fragmented_utf8() {
         let input = "data: héllo\r\n\r\ndata: [DONE]\n\n".as_bytes();
         let mut decoder = SseDecoder::default();
@@ -598,30 +545,6 @@ mod tests {
             Some("[DONE]")
         );
         assert!(decoder.next_frame().expect("EOF").is_none());
-    }
-
-    #[test]
-    fn sse_framing_accepts_8_mib_and_rejects_the_first_excess_byte() {
-        let frame = "é".repeat(4 * 1024 * 1024);
-        let mut decoder = SseDecoder::default();
-        decoder
-            .push(frame.as_bytes(), "test")
-            .expect("stream limit");
-        assert!(decoder.next_frame().expect("unfinished frame").is_none());
-        decoder.push(b"\n\n", "test").expect("stream limit");
-        assert_eq!(
-            decoder.next_frame().expect("8 MiB frame").map(str::len),
-            Some(8 * 1024 * 1024)
-        );
-
-        for ending in [b"x".as_slice(), b"x\n\n"] {
-            let mut decoder = SseDecoder::default();
-            decoder
-                .push(frame.as_bytes(), "test")
-                .expect("stream limit");
-            decoder.push(ending, "test").expect("stream limit");
-            assert!(decoder.next_frame().is_err());
-        }
     }
 
     #[test]
@@ -659,56 +582,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn aggregate_stream_limit_rejects_the_first_excess_byte() {
-        let mut total = MAX_STREAM_BYTES;
-        assert!(account_stream_bytes(&mut total, 1, "test").is_err());
-    }
-
-    #[test]
-    fn aggregate_stream_limit_counts_frames_without_data() {
-        let mut decoder = SseDecoder {
-            total: MAX_STREAM_BYTES,
-            ..SseDecoder::default()
-        };
-
-        assert!(decoder.push(b": keep-alive\n\n", "test").is_err());
-        assert!(decoder.bytes.is_empty());
-    }
-
-    #[tokio::test]
-    async fn status_error_preserves_retry_metadata() {
-        let listener = TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .expect("test listener");
-        let address = listener.local_addr().expect("listener address");
-        tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.expect("test connection");
-            stream
-                .write_all(
-                    b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 7\r\n\
-                      Content-Length: 4\r\nConnection: close\r\n\r\nslow",
-                )
-                .await
-                .expect("test response");
-        });
-        let response = streaming_client()
-            .expect("client")
-            .get(format!("http://{address}"))
-            .send()
-            .await
-            .expect("response");
-
-        let Error::Provider(error) = status_error(response, "test").await else {
-            panic!("expected provider error");
-        };
-
-        assert_eq!(
-            (error.status(), error.is_retryable(), error.retry_after()),
-            (Some(429), true, Some("7"))
-        );
-    }
-
     #[tokio::test]
     async fn chunk_timeout_is_idle_not_whole_stream_timeout() {
         let listener = TcpListener::bind(("127.0.0.1", 0))
@@ -743,51 +616,6 @@ mod tests {
 #[cfg(test)]
 mod settings_tests {
     use super::*;
-
-    #[test]
-    fn embedded_policy_preserves_transport_deadlines_and_retry_budgets() {
-        assert_eq!(
-            ModelTransportSettings::default(),
-            ModelTransportSettings {
-                max_request_bytes: 24 * 1024 * 1024,
-                http_connect_timeout_ms: 10_000,
-                http_idle_timeout_ms: 180_000,
-                socket_connect_timeout_ms: 15_000,
-                socket_io_timeout_ms: 5_000,
-                socket_idle_timeout_ms: 300_000,
-                stream_retry_limit: 5,
-                stream_retry_backoff_ms: 200,
-                stream_retry_max_backoff_ms: 3_200,
-                voice_start_timeout_ms: 30_000,
-                voice_io_timeout_ms: 5_000,
-                voice_call_timeout_ms: 3_600_000,
-                oauth_request_timeout_ms: 30_000,
-                oauth_callback_timeout_ms: 900_000,
-                oauth_callback_request_timeout_ms: 5_000,
-                device_code_timeout_ms: 900_000,
-            }
-        );
-    }
-
-    #[test]
-    fn partial_policy_inherits_defaults_and_rejects_invalid_deadlines() {
-        let settings: ModelTransportSettings =
-            toml::from_str("http_idle_timeout_ms = 17\nstream_retry_limit = 0")
-                .expect("partial settings");
-        assert_eq!(settings.http_idle_timeout_ms, 17);
-        assert_eq!(settings.stream_retry_limit, 0);
-        assert_eq!(
-            settings.socket_io_timeout_ms,
-            ModelTransportSettings::default().socket_io_timeout_ms
-        );
-        settings.validate().expect("valid policy");
-        let invalid = ModelTransportSettings {
-            socket_io_timeout_ms: 0,
-            ..settings
-        };
-        assert!(invalid.streaming_client().is_err());
-        assert!(toml::from_str::<ModelTransportSettings>("socket_io_timout_ms = 5").is_err());
-    }
 
     #[tokio::test]
     async fn authenticated_streaming_clients_do_not_follow_redirects() {

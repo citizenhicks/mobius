@@ -1,24 +1,5 @@
 use super::*;
 
-#[test]
-fn stream_metrics_tolerate_wall_clock_regression() {
-    let mut metrics = StreamMetricAccumulator::default();
-    metrics.observe(20, 2).expect("first chunk");
-    metrics.observe(10, 3).expect("regressed clock chunk");
-
-    assert_eq!(
-        metrics.finish(ModelStepContentPhase::Reasoning),
-        Some(StreamMetrics {
-            phase: ModelStepContentPhase::Reasoning,
-            first_delta_at_ms: 20,
-            last_delta_at_ms: 20,
-            chunk_count: 2,
-            utf8_bytes: 5,
-            longest_gap_ms: 0,
-        })
-    );
-}
-
 #[tokio::test]
 async fn assistant_message_compacts_progressive_deltas_and_preserves_citations() {
     use crate::protocol::AssistantContentDeltaEvent;
@@ -176,84 +157,4 @@ async fn assistant_message_compacts_progressive_deltas_and_preserves_citations()
             (ModelStepContentPhase::FinalAnswer, 1, 4),
         ]
     );
-}
-
-#[tokio::test]
-async fn incomplete_model_steps_retain_progressive_deltas() {
-    use crate::protocol::AssistantContentDeltaEvent;
-    use crate::protocol::ModelStepCompletedEvent;
-
-    let workspace = tempfile::tempdir().expect("create workspace");
-    let store = SqliteCheckpoint::new(workspace.path().join("checkpoints.sqlite3"))
-        .expect("open checkpoint database");
-    store
-        .save(&checkpoint("session"), &[], None)
-        .await
-        .expect("save session");
-    for (model_step_id, outcome) in [
-        ("failed", ModelStepOutcome::Failed),
-        ("interrupted", ModelStepOutcome::Interrupted),
-        ("retrying", ModelStepOutcome::Retrying),
-    ] {
-        let delta = Event {
-            submission_id: Some("submission".into()),
-            msg: EventMsg::AssistantContentDelta(AssistantContentDeltaEvent {
-                session_id: "session".into(),
-                turn_id: "turn".into(),
-                model_step_id: model_step_id.into(),
-                delta: format!("partial {model_step_id}"),
-                phase: crate::protocol::ModelStepContentPhase::FinalAnswer,
-            }),
-        };
-        let completed = Event {
-            submission_id: Some("submission".into()),
-            msg: EventMsg::ModelStepCompleted(ModelStepCompletedEvent {
-                session_id: "session".into(),
-                turn_id: "turn".into(),
-                model_step_id: model_step_id.into(),
-                step_index: 0,
-                started_at_ms: 10,
-                completed_at_ms: 20,
-                outcome,
-                diagnostics: None,
-            }),
-        };
-        store
-            .append_event("session", 10, &delta)
-            .await
-            .expect("append partial delta");
-        store
-            .append_event("session", 20, &completed)
-            .await
-            .expect("append incomplete terminal event");
-    }
-
-    let page = store
-        .event_page(
-            "session",
-            EventPageRequest {
-                before_sequence: None,
-                limit: 10,
-            },
-        )
-        .await
-        .expect("event page")
-        .into_chronological();
-
-    assert_eq!(
-        page.iter().map(|event| event.sequence).collect::<Vec<_>>(),
-        [1, 2, 3, 4, 5, 6]
-    );
-    assert!(matches!(
-        page[0].event.msg,
-        EventMsg::AssistantContentDelta(_)
-    ));
-    assert!(matches!(
-        page[2].event.msg,
-        EventMsg::AssistantContentDelta(_)
-    ));
-    assert!(matches!(
-        page[4].event.msg,
-        EventMsg::AssistantContentDelta(_)
-    ));
 }

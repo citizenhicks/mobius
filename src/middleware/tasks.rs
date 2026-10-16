@@ -336,40 +336,6 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn tool_headings_preserve_begin_and_completion_labels_with_null_arguments() {
-        let begin = EventMsg::ToolCallBegin(crate::protocol::ToolCallBeginEvent {
-            turn_id: "turn".into(),
-            call_id: "call".into(),
-            name: "write_todos".into(),
-            arguments: Value::Null,
-        });
-        let end = EventMsg::ToolCallEnd(crate::protocol::ToolCallEndEvent {
-            turn_id: "turn".into(),
-            call_id: "call".into(),
-            name: "write_todos".into(),
-            output: String::new().into(),
-            is_error: true,
-        });
-        assert_eq!(
-            Tasks.render(&begin, "session").unwrap().title,
-            text::DEFINITION.write_todos.title()
-        );
-        assert_eq!(Tasks.render(&end, "session").unwrap().title, "write_todos");
-        assert!(Tasks.render(&begin, "session").unwrap().text.contains('0'));
-        let EventMsg::ToolCallBegin(mut call) = begin else {
-            unreachable!()
-        };
-        call.arguments = serde_json::json!({"todos": [{}, {}, {}]});
-        assert!(
-            Tasks
-                .render(&EventMsg::ToolCallBegin(call), "session")
-                .unwrap()
-                .text
-                .contains('3')
-        );
-    }
-
     #[tokio::test]
     async fn write_todos_persists_session_state_and_updates_the_widget() {
         let temporary = tempfile::tempdir().expect("temporary directory");

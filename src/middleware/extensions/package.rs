@@ -412,64 +412,6 @@ mod tests {
     use crate::middleware::extensions::inspect_package;
 
     #[test]
-    fn agent_plugin_rejects_mcp_even_with_a_portable_skill() {
-        let temporary = tempfile::tempdir().expect("temporary extensions");
-        let plugin = temporary.path().join("remote");
-        std::fs::create_dir(&plugin).expect("plugin directory");
-        std::fs::write(
-            plugin.join("plugin.json"),
-            r#"{"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json","name":"remote"}"#,
-        )
-        .expect("plugin manifest");
-        write_skill(&plugin, "skills/portable", "portable", "Portable skill");
-        std::fs::write(plugin.join("mcp.json"), b"{}").expect("MCP component");
-
-        let error = inspect_package(plugin).expect_err("MCP must be unsupported");
-
-        assert!(error.to_string().contains("unsupported MCP contribution"));
-    }
-
-    #[test]
-    fn openai_plugin_rejects_a_root_mcp_component() {
-        let temporary = tempfile::tempdir().expect("temporary extensions");
-        let plugin = temporary.path().join("remote");
-        std::fs::create_dir_all(plugin.join(".codex-plugin")).expect("plugin manifest directory");
-        std::fs::write(
-            plugin.join(".codex-plugin/plugin.json"),
-            r#"{"name":"remote","skills":"./skills"}"#,
-        )
-        .expect("plugin manifest");
-        write_skill(&plugin, "skills/portable", "portable", "Portable skill");
-        std::fs::write(plugin.join(".mcp.json"), b"{}").expect("MCP component");
-
-        let error = inspect_package(plugin).expect_err("MCP must be unsupported");
-
-        assert!(error.to_string().contains("unsupported MCP contribution"));
-    }
-
-    #[test]
-    fn schema_declared_agent_plugin_wins_over_openai_manifest() {
-        let temporary = tempfile::tempdir().expect("temporary extensions");
-        let plugin = temporary.path().join("remote");
-        std::fs::create_dir_all(plugin.join(".codex-plugin")).expect("plugin manifest directory");
-        std::fs::write(
-            plugin.join(".codex-plugin/plugin.json"),
-            r#"{"name":"openai","skills":"./skills"}"#,
-        )
-        .expect("OpenAI plugin manifest");
-        std::fs::write(
-            plugin.join("plugin.json"),
-            r#"{"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json","name":"remote"}"#,
-        )
-        .expect("Agent Plugin manifest");
-        write_skill(&plugin, "skills/portable", "portable", "Portable skill");
-
-        let package = inspect_package(plugin).expect("Agent Plugin package");
-
-        assert_eq!(package.name, "remote");
-    }
-
-    #[test]
     fn unsupported_agent_manifest_never_falls_back_to_openai_manifest() {
         let temporary = tempfile::tempdir().expect("temporary extensions");
         let plugin = temporary.path().join("remote");

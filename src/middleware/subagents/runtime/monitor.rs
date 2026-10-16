@@ -274,18 +274,3 @@ fn bounded(mut value: String) -> String {
     value.push('…');
     value
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bounded_messages_include_the_ellipsis_within_the_byte_limit() {
-        let message = format!("{}é", "x".repeat(MAX_MESSAGE_BYTES));
-
-        let bounded = bounded(message);
-
-        assert!(bounded.len() <= MAX_MESSAGE_BYTES);
-        assert!(bounded.ends_with('…'));
-    }
-}

@@ -218,17 +218,6 @@ impl GatewayServer {
             .await
     }
 
-    #[cfg(test)]
-    async fn serve_until_inactive(
-        self,
-        shutdown: impl Future<Output = ()>,
-        inactivity_timeout: Duration,
-    ) -> Result<()> {
-        let websocket_host = self.configured_websocket_host()?;
-        self.serve_until_inactive_with_host(shutdown, inactivity_timeout, websocket_host)
-            .await
-    }
-
     async fn serve_until_inactive_with_host(
         mut self,
         shutdown: impl Future<Output = ()>,

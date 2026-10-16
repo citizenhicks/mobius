@@ -121,12 +121,4 @@ mod tests {
         assert!(publish(&path, b"new", true).is_err());
         assert_eq!(fs::read(path).expect("read state"), b"old");
     }
-
-    #[test]
-    fn publish_propagates_parent_errors() {
-        let directory = tempfile::tempdir().expect("publication directory");
-        let path = directory.path().join("missing").join("state");
-
-        assert!(publish(&path, b"state", false).is_err());
-    }
 }

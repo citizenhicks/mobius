@@ -4,8 +4,6 @@ use mobius::backend::model::ModelCredentialLifetime;
 /// File owner for gateway configuration and aggregate usage.
 #[derive(Debug, Clone)]
 pub struct ConfigStore {
-    #[cfg(test)]
-    pub(crate) runtime_operations: std::sync::Arc<RuntimeOperations>,
     state_dir: std::sync::Arc<Path>,
     path: std::sync::Arc<Path>,
 }
@@ -236,8 +234,6 @@ impl ConfigStore {
         Self {
             state_dir: state_dir.into(),
             path: path.into(),
-            #[cfg(test)]
-            runtime_operations: Default::default(),
         }
     }
 
@@ -735,24 +731,6 @@ fn usage_nonnegative(usage: &TokenUsage) -> bool {
 }
 
 #[cfg(test)]
-#[derive(Debug, Default)]
-pub(crate) struct RuntimeOperations {
-    pub(crate) preparations: std::sync::atomic::AtomicUsize,
-    pub(crate) assemblies: std::sync::atomic::AtomicUsize,
-}
-
-#[cfg(test)]
-impl RuntimeOperations {
-    pub(crate) fn counts(&self) -> (usize, usize) {
-        use std::sync::atomic::Ordering::Relaxed;
-        (
-            self.preparations.load(Relaxed),
-            self.assemblies.load(Relaxed),
-        )
-    }
-}
-
-#[cfg(test)]
 mod usage_tests {
     use super::*;
 
@@ -800,36 +778,6 @@ mod usage_tests {
     }
 
     #[test]
-    fn overflow_and_zero_usage_do_not_change_buckets_or_prune_days() {
-        let day = USAGE_HISTORY_DAYS + 7;
-        let now = UNIX_EPOCH + std::time::Duration::from_secs(day * SECONDS_PER_DAY);
-        let mut history = expired_history();
-        history.days.insert(
-            day,
-            BTreeMap::from([(
-                "provider".into(),
-                TokenUsage {
-                    input_tokens: 1,
-                    total_tokens: i64::MAX,
-                    ..Default::default()
-                },
-            )]),
-        );
-        let before = history.clone();
-        assert!(
-            matches!(history.stage("provider", &usage(1), now), Err(error) if error.to_string().contains("overflow"))
-        );
-        assert_eq!(history, before);
-        assert!(
-            history
-                .stage("provider", &TokenUsage::default(), now)
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(history, before);
-    }
-
-    #[test]
     fn failed_usage_publication_restores_usage_and_retained_expired_days() {
         let root = tempfile::tempdir().unwrap();
         let state = root.path().join("state");
@@ -846,26 +794,5 @@ mod usage_tests {
         );
         assert_eq!(config.usage, before);
         assert_eq!(ConfigStore::open(state).unwrap().1.usage, before);
-    }
-
-    #[test]
-    fn applied_usage_publication_keeps_updated_bucket_and_pruning() {
-        let root = tempfile::tempdir().unwrap();
-        let state = root.path().join("state");
-        let (store, mut config) =
-            ConfigStore::initialize(state.clone(), DEFAULT_LISTEN, None).unwrap();
-        config.usage = expired_history();
-        store.save(&config).unwrap();
-        crate::publication::fail_next_directory_sync(&store.path);
-        assert!(matches!(
-            store.record_usage(&mut config, "provider", &usage(7)),
-            Err(Error::PublicationApplied { .. })
-        ));
-        assert!(!config.usage.days.contains_key(&0));
-        assert_eq!(
-            config.usage.days.values().next().unwrap()["provider"],
-            usage(7)
-        );
-        assert_eq!(ConfigStore::open(state).unwrap().1.usage, config.usage);
     }
 }

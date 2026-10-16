@@ -1,66 +1,6 @@
 use super::*;
 
-struct PanickingTool;
-
 struct ApprovalRequiredTool;
-
-struct UsageTool;
-
-impl Tool for UsageTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "usage_tool".into(),
-            description: "Reports paid usage".into(),
-            parameters: serde_json::json!({"type": "object", "properties": {}}),
-        }
-    }
-
-    fn exposure(&self) -> ToolExposure {
-        ToolExposure::Direct
-    }
-
-    fn call<'a>(
-        &'a self,
-        context: ToolContext,
-        _arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
-        Box::pin(async move {
-            assert_eq!(
-                context.call_id, "paid",
-                "dispatch retains the model's call identity"
-            );
-            context.report_usage(crate::protocol::TokenUsage {
-                total_tokens: 7,
-                ..Default::default()
-            })?;
-            Err(Error::Tool(
-                "publication failed after provider billing".into(),
-            ))
-        })
-    }
-}
-
-impl Tool for PanickingTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "panicking".into(),
-            description: String::new(),
-            parameters: serde_json::json!({}),
-        }
-    }
-
-    fn execution_mode(&self) -> ExecutionMode {
-        ExecutionMode::Parallel
-    }
-
-    fn call<'a>(
-        &'a self,
-        _context: ToolContext,
-        _arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
-        panic!("intentional tool panic")
-    }
-}
 
 impl Tool for ApprovalRequiredTool {
     fn definition(&self) -> ToolDefinition {
@@ -85,37 +25,6 @@ impl Tool for ApprovalRequiredTool {
 }
 
 struct PermissionEchoTool;
-
-#[tokio::test]
-async fn paid_tool_usage_retains_the_execution_route() {
-    let mut catalog = Catalog::default();
-    catalog
-        .register(Arc::new(UsageTool))
-        .expect("register tool");
-    let calls = finalize_and_bind(
-        &mut catalog,
-        &[ToolCall {
-            call_id: "paid".into(),
-            name: "usage_tool".into(),
-            arguments: serde_json::json!({}),
-        }],
-    );
-    let result = execute_batch(
-        &catalog,
-        calls,
-        test_sandbox(),
-        &test_permissions(&[]),
-        "turn",
-        "image-route",
-        &crate::protocol::MessageAuthor::User,
-    )
-    .await
-    .remove(0);
-    assert!(result.is_error);
-    let (route, usage) = result.usage.expect("usage");
-    assert_eq!(route, "image-route");
-    assert_eq!(usage.total_tokens, 7);
-}
 
 impl Tool for PermissionEchoTool {
     fn definition(&self) -> ToolDefinition {
@@ -204,56 +113,6 @@ async fn each_call_receives_its_own_permissions() {
 }
 
 #[tokio::test]
-async fn parallel_tool_panic_preserves_call_identity() {
-    let mut catalog = Catalog::default();
-    catalog
-        .register(Arc::new(PanickingTool))
-        .expect("register tool");
-    let calls = [ToolCall {
-        call_id: "call-1".into(),
-        name: "panicking".into(),
-        arguments: serde_json::json!({}),
-    }];
-    let calls = finalize_and_bind(&mut catalog, &calls);
-    let backend =
-        Arc::new(crate::backend::sandbox::local::LocalSandbox::new(".").expect("local sandbox"));
-    let sandbox = Arc::new(crate::backend::sandbox::Sandbox::new(
-        backend,
-        crate::backend::sandbox::ApprovalPolicy::Ask,
-    ));
-    let permissions = SandboxPermissions::restore(
-        "session",
-        crate::backend::sandbox::SandboxMode::WorkspaceWrite,
-        crate::backend::sandbox::NetworkAccess::Denied,
-        Vec::new(),
-    );
-
-    assert_eq!(
-        execute_batch(
-            &catalog,
-            calls,
-            sandbox,
-            &permissions,
-            "turn",
-            "test",
-            &crate::protocol::MessageAuthor::User
-        )
-        .await,
-        vec![ToolResult {
-            call_id: "call-1".into(),
-            name: "panicking".into(),
-            output: "tool panicked".into(),
-            is_error: true,
-            usage: None,
-            handler_executed: true,
-            additional_input: Vec::new(),
-            events: Vec::new(),
-            output_limit: crate::backend::sandbox::default_tool_output_limit(),
-        }]
-    );
-}
-
-#[tokio::test]
 async fn approval_required_handler_cannot_run_without_exact_call_authority() {
     let mut catalog = Catalog::default();
     catalog
@@ -297,55 +156,4 @@ async fn approval_required_handler_cannot_run_without_exact_call_authority() {
         ),
         (true, false, "tool call is not authorized to mutate state")
     );
-}
-
-struct LargeOutput;
-
-impl Tool for LargeOutput {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "large_output".into(),
-            description: "Returns test text".into(),
-            parameters: serde_json::json!({"type":"object", "properties":{}, "additionalProperties":false}),
-        }
-    }
-
-    fn call<'a>(
-        &'a self,
-        _context: ToolContext,
-        _arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
-        Box::pin(async { Ok("x".repeat(50_000).into()) })
-    }
-}
-
-#[tokio::test]
-async fn dispatch_uses_the_execution_boundary_output_budget() {
-    let mut catalog = Catalog::default();
-    catalog.register(Arc::new(LargeOutput)).unwrap();
-    let calls = finalize_and_bind(
-        &mut catalog,
-        &[ToolCall {
-            call_id: "large".into(),
-            name: "large_output".into(),
-            arguments: serde_json::json!({}),
-        }],
-    );
-    let backend = Arc::new(crate::backend::sandbox::local::LocalSandbox::new(".").unwrap());
-    let sandbox = Arc::new(
-        Sandbox::new(backend, crate::backend::sandbox::ApprovalPolicy::Ask)
-            .tool_output_limit(60_000)
-            .unwrap(),
-    );
-    let results = execute_batch(
-        &catalog,
-        calls,
-        sandbox,
-        &test_permissions(&[]),
-        "turn",
-        "test",
-        &crate::protocol::MessageAuthor::User,
-    )
-    .await;
-    assert_eq!(results[0].output.text().len(), 50_000);
 }

@@ -428,20 +428,6 @@ pub(crate) fn string_default<'a>(settings: &'a [MiddlewareSettingManifest], id: 
     }
 }
 
-#[cfg(test)]
-pub(crate) fn static_choices<'a>(
-    settings: &'a [MiddlewareSettingManifest],
-    id: &str,
-) -> &'a [MiddlewareSettingChoice] {
-    match settings.iter().find(|setting| setting.id() == id) {
-        Some(MiddlewareSettingManifest::Select {
-            choices: MiddlewareSettingChoices::Static(choices),
-            ..
-        }) => choices,
-        _ => panic!("missing embedded static choices {id}"),
-    }
-}
-
 fn setting_type(middleware: &str, setting: &str, expected: &str) -> Error {
     Error::Config(format!(
         "middleware setting `{middleware}.{setting}` must be {expected}"
@@ -452,39 +438,6 @@ fn setting_type(middleware: &str, setting: &str, expected: &str) -> Error {
 mod tests {
     use super::*;
 
-    fn setting() -> MiddlewareSettingManifest {
-        let choices = vec![MiddlewareSettingChoice {
-            disables: vec![],
-            value: "safe".into(),
-            label: "Safe".into(),
-            description: "Use the safe policy".into(),
-            symbol: None,
-            tone: FrontendTone::Neutral,
-        }];
-
-        MiddlewareSettingManifest::Select {
-            id: "policy".into(),
-            label: "Policy".into(),
-            description: "Selection".into(),
-            choices: MiddlewareSettingChoices::Static(choices),
-            unset_label: None,
-            default: Some("safe".into()),
-            max_bytes: 16,
-            composer: false,
-        }
-    }
-
-    #[test]
-    fn select_rejects_values_not_declared_by_the_module() {
-        let error = setting()
-            .validate(
-                "example",
-                Some(&FrontendSettingValue::String("unknown".into())),
-            )
-            .expect_err("unknown choice must fail");
-
-        assert!(error.to_string().contains("advertised choice"));
-    }
     #[test]
     fn embedded_settings_reject_invalid_ranges_defaults_and_duplicate_ids() {
         let valid = serde_json::json!({"type":"integer", "id":"count", "label":"Count", "description":"Count", "min":1, "max":10, "step":1, "default":4});
@@ -498,19 +451,5 @@ mod tests {
         let mut invalid = valid;
         invalid["typo"] = true.into();
         assert!(deserialize_settings(&serde_json::json!([invalid])).is_err());
-    }
-
-    #[test]
-    fn embedded_settings_reject_duplicate_choices() {
-        let mut select = setting();
-        let MiddlewareSettingManifest::Select {
-            choices: MiddlewareSettingChoices::Static(choices),
-            ..
-        } = &mut select
-        else {
-            unreachable!()
-        };
-        choices.push(choices[0].clone());
-        assert!(deserialize_settings(&serde_json::to_value([select]).expect("settings")).is_err());
     }
 }

@@ -1,12 +1,11 @@
 use mobius::backend::checkpoint::Checkpoint;
-use mobius::protocol::{SessionContext, TokenUsage};
+use mobius::protocol::TokenUsage;
 
 use super::*;
 use mobius::backend::checkpoint::ExecutionStats;
 
 mod activity;
 mod bots;
-mod descriptors;
 mod hooks;
 mod lifecycle;
 mod live_chats;
@@ -34,7 +33,6 @@ impl GatewayHost {
                     termination: Arc::clone(&termination),
                     session_mutations: Arc::new(RwLock::new(())),
                     realtime_voice: Arc::new(Mutex::new(())),
-                    gateway_sandbox: std::sync::Weak::new(),
                 }),
             },
         );
@@ -126,17 +124,4 @@ pub(crate) fn timer_definition(
             action: crate::wire::RoutineAction::Start,
         }],
     }
-}
-async fn start_routine(gateway: &GatewayHost, id: &str) -> std::result::Result<(), Rejection> {
-    gateway
-        .execute_routine_command(
-            &crate::wire::RoutineCommand {
-                routine_id: id.into(),
-                action: crate::wire::RoutineAction::Start,
-            },
-            None,
-            None,
-            &Uuid::new_v4().to_string(),
-        )
-        .await
 }

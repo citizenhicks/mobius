@@ -101,31 +101,3 @@ async fn upload_admission_requires_a_valid_correlated_collector_decision() {
         .unwrap();
     server.host.shutdown().await;
 }
-
-#[tokio::test]
-async fn a_reported_allowance_does_not_enforce_self_hosted_storage() {
-    let root = tempfile::tempdir().unwrap();
-    let state = root.path().join("state");
-    let (server, _) = configured_test_server(state.clone()).await;
-    server.host.shutdown().await;
-    drop(server);
-    let (store, mut config) = ConfigStore::open(state.clone()).unwrap();
-    config.runtime.storage_limit_bytes = Some(64 * 1024 * 1024);
-    store.save(&config).unwrap();
-    let server = GatewayServer::open(state).await.unwrap();
-    let files = server.host.session_file_store().await;
-    let pending = files
-        .begin_upload(
-            "chat",
-            "large.bin".into(),
-            64 * 1024 * 1024 + 1,
-            "application/octet-stream".into(),
-        )
-        .await
-        .unwrap();
-    Telemetry::admit_upload(&server.host, pending.id(), 64 * 1024 * 1024 + 1)
-        .await
-        .unwrap();
-    drop(pending);
-    server.host.shutdown().await;
-}

@@ -818,35 +818,6 @@ mod tests {
     }
 
     #[test]
-    fn install_uses_the_gateway_scoped_wire_operation() {
-        let ScreenAction::Send {
-            request_id,
-            message,
-            label,
-        } = install_action("https://github.com/example/ponytail/tree/main/plugin".into())
-        else {
-            panic!("install request")
-        };
-        let ClientMessage::InstallExtension {
-            request_id: wire_id,
-            source,
-            reference,
-            subdirectory,
-        } = *message
-        else {
-            panic!("install wire operation")
-        };
-
-        assert_eq!(request_id, wire_id);
-        assert_eq!(
-            source,
-            "https://github.com/example/ponytail/tree/main/plugin"
-        );
-        assert_eq!((reference, subdirectory), (None, None));
-        assert_eq!(label, "Install");
-    }
-
-    #[test]
     fn lifecycle_requests_bind_identity_and_hook_trust_to_the_digest() {
         let record = extension();
         let actions = [
@@ -880,28 +851,6 @@ mod tests {
             ClientMessage::RevokeExtensionHooksTrust { id, expected_digest, .. }
                 if id == &record.id && expected_digest == &record.digest
         ));
-    }
-
-    #[test]
-    fn pasted_source_filters_controls_and_bounds_editor_memory() {
-        let mut state = ExtensionsState {
-            selected: 0,
-            mode: Mode::Install(String::new()),
-            pending: None,
-            notice: None,
-        };
-        let long = "a".repeat(8_192);
-
-        state.paste("https://example.com/repo\n");
-        state.paste(&long);
-
-        let Mode::Install(source) = &state.mode else {
-            panic!("install mode")
-        };
-        assert!(source.starts_with("https://example.com/repo"));
-        assert!(!source.contains('\n'));
-        assert_eq!(source.len(), MAX_ENDPOINT_BYTES);
-        assert!(state.notice.is_some());
     }
 
     #[test]

@@ -3,8 +3,6 @@ mod runtime;
 
 use super::*;
 use mobius::backend::model::provider::provider;
-#[cfg(test)]
-pub(in crate::host) use runtime::fail_queued_routine_commands;
 
 pub(super) type SessionWidgets = Vec<((String, String), mobius::protocol::FrontendWidget)>;
 
@@ -22,8 +20,6 @@ pub(super) struct HostInner {
     pub(super) termination: Arc<tokio::sync::Notify>,
     pub(super) session_mutations: Arc<RwLock<()>>,
     pub(super) realtime_voice: Arc<Mutex<()>>,
-    #[cfg(test)]
-    pub(super) gateway_sandbox: std::sync::Weak<GatewaySandbox>,
 }
 
 struct HostState {
@@ -95,8 +91,6 @@ struct RunningAgent {
     frontend_sink: mobius::middleware::FrontendEventSink,
     session: mobius::protocol::SessionConfiguredEvent,
     gateway_sandbox: Arc<GatewaySandbox>,
-    #[cfg(test)]
-    tool_count: usize,
     prepared: Arc<crate::assembly::PreparedBot>,
 }
 
@@ -124,10 +118,6 @@ pub(super) enum HostCommand {
     #[cfg(test)]
     BotId {
         reply: oneshot::Sender<String>,
-    },
-    #[cfg(test)]
-    ToolCount {
-        reply: oneshot::Sender<usize>,
     },
     AcceptsFileAttachments {
         reply: oneshot::Sender<std::result::Result<bool, Rejection>>,
@@ -224,13 +214,6 @@ impl HostHandle {
     pub(crate) async fn bot_id(&self) -> std::result::Result<String, Rejection> {
         let (reply, receiver) = oneshot::channel();
         self.send(HostCommand::BotId { reply }).await?;
-        receiver.await.map_err(|_| stopped())
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn tool_count(&self) -> std::result::Result<usize, Rejection> {
-        let (reply, receiver) = oneshot::channel();
-        self.send(HostCommand::ToolCount { reply }).await?;
         receiver.await.map_err(|_| stopped())
     }
 
@@ -358,8 +341,6 @@ impl HostHandle {
             }
         }
         state.reconcile_loaded_startup().await?;
-        #[cfg(test)]
-        let gateway_sandbox = Arc::downgrade(&state.running.gateway_sandbox);
         tokio::spawn(state.run());
         Ok(Self {
             inner: Arc::new(HostInner {
@@ -371,8 +352,6 @@ impl HostHandle {
                 termination,
                 session_mutations,
                 realtime_voice: Arc::new(Mutex::new(())),
-                #[cfg(test)]
-                gateway_sandbox,
             }),
         })
     }
@@ -884,8 +863,6 @@ async fn start_agent(
     )
     .await?;
     let frontend_sink = agent.frontend_sink();
-    #[cfg(test)]
-    let tool_count = agent.tool_count();
     let (sender, events, session, frontend) = agent.into_recorded_parts();
     let session_id = Arc::from(session.session_id.as_str());
     Ok(RunningAgent {
@@ -898,8 +875,6 @@ async fn start_agent(
         frontend_sink,
         session,
         gateway_sandbox,
-        #[cfg(test)]
-        tool_count,
         prepared,
     })
 }

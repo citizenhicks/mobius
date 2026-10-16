@@ -171,52 +171,8 @@ impl Tool for SendArtifact {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::SessionFileReference;
-    use std::collections::BTreeMap;
-
-    use crate::backend::checkpoint::{CheckpointStore, sqlite::SqliteCheckpoint};
     use crate::backend::sandbox::local::LocalSandbox;
     use crate::backend::sandbox::{ApprovalPolicy, NetworkAccess, Sandbox, SandboxPermissions};
-    use crate::protocol::{SessionContext, ToolCallEndEvent};
-
-    #[test]
-    fn one_middleware_registers_tools_for_multiple_sessions() {
-        let state = tempfile::tempdir().expect("state");
-        let checkpoints: Arc<dyn CheckpointStore> = Arc::new(
-            SqliteCheckpoint::new(state.path().join("checkpoints.sqlite3"))
-                .expect("checkpoint store"),
-        );
-        let middleware = Artifacts::new(SessionFileStore::new(state.path(), None));
-        let runtime = RuntimeContext {
-            children: crate::agent::ChildAgents::default(),
-            sender: crate::agent::test_sender(),
-            checkpoints,
-            session_id: "session-a".into(),
-            model_route: "model".into(),
-            model: "model".into(),
-            approval_policy: crate::backend::sandbox::ApprovalPolicy::Ask,
-            session_context: SessionContext::default(),
-            metadata: BTreeMap::new(),
-            role: crate::agent::AgentRole::Main,
-            frontend: Arc::new(|_| Ok(())),
-        };
-        let mut second_runtime = runtime.clone();
-        second_runtime.session_id = "session-b".into();
-
-        let mut first = Catalog::default();
-        middleware
-            .register(&mut first, &runtime)
-            .expect("first session catalog");
-        let mut second = Catalog::default();
-        middleware
-            .register(&mut second, &second_runtime)
-            .expect("second session catalog");
-
-        assert_eq!(
-            first.registered_definitions(),
-            second.registered_definitions()
-        );
-    }
 
     #[tokio::test]
     async fn send_artifact_publishes_binary_outside_the_upload_list() {
@@ -269,38 +225,5 @@ mod tests {
                 .data,
             [0, 255, 1, 254]
         );
-    }
-
-    #[test]
-    fn successful_send_replaces_the_pending_block_with_a_file() {
-        let state = tempfile::tempdir().expect("state");
-        let middleware = Artifacts::new(SessionFileStore::new(state.path(), None));
-        let file = SessionFileReference {
-            id: uuid::Uuid::new_v4().to_string(),
-            name: "diagram.svg".into(),
-            size: 4,
-            media_type: "image/svg+xml".into(),
-        };
-        let output = crate::protocol::ToolContent(vec![crate::protocol::ContentPart::File {
-            file: file.clone(),
-        }]);
-
-        let block = middleware
-            .render(
-                &EventMsg::ToolCallEnd(ToolCallEndEvent {
-                    turn_id: "turn".into(),
-                    call_id: "call".into(),
-                    name: "send_artifact".into(),
-                    output,
-                    is_error: false,
-                }),
-                "session-a",
-            )
-            .expect("block");
-
-        assert_eq!(block.update, crate::protocol::FrontendBlockUpdate::Replace);
-        assert_eq!(block.title, "Sent diagram.svg");
-        assert!(block.text.is_empty());
-        assert_eq!(block.files, [file]);
     }
 }

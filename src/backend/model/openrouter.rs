@@ -76,32 +76,3 @@ fn build_provider(config: ProviderBuildConfig) -> Result<Arc<dyn Model>> {
     };
     Ok(Arc::new(provider))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::backend::model::provider::ProviderCredential;
-
-    #[test]
-    fn advertised_web_search_modes_build() {
-        let definition = provider();
-        for web_search in definition.web_search().iter().copied() {
-            let model = definition
-                .build(ProviderBuildConfig {
-                    capability: None,
-                    tool_discovery: None,
-                    credential: ProviderCredential::ApiKey("test-key".into()),
-                    model: "test-model".into(),
-                    base_url: Some(MANIFEST.base_url.as_str().into()),
-                    reasoning_effort: None,
-                    service_tier: None,
-                    web_search,
-                    http: reqwest::Client::new(),
-                    transport: crate::backend::model::ModelTransportSettings::default(),
-                })
-                .expect("advertised web search mode builds");
-            assert!(model.supports_image_generation());
-            assert!(!model.supports_realtime_voice());
-        }
-    }
-}

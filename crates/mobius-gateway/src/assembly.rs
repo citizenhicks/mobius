@@ -113,11 +113,6 @@ pub(crate) fn prepare_bot<'a>(
 ) -> impl std::future::Future<Output = Result<PreparedBot>> + Send + use<'a> {
     // Resolve configuration while its owner can lend a lock guard; only runtime preparation awaits.
     let prepared = (|| {
-        #[cfg(test)]
-        store
-            .runtime_operations
-            .preparations
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let config = &bot.config.config;
         let choices = crate::provider_catalog::configured_model_catalog(gateway)?;
         crate::config::validate_bot_compatibility(gateway, config, choices.catalogs())?;
@@ -198,11 +193,6 @@ pub(crate) async fn assemble(
     live_chats: Option<Arc<dyn LiveChats>>,
     host_access: Option<crate::host::HostAccess>,
 ) -> Result<BuiltAgent> {
-    #[cfg(test)]
-    store
-        .runtime_operations
-        .assemblies
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if let Some(session_id) = session_id.as_deref() {
         validate_session_id(session_id)?;
     }

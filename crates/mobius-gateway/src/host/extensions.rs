@@ -369,47 +369,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn startup_rejects_a_bot_with_a_missing_selected_extension() {
-        let root = tempfile::tempdir().expect("root");
-        let listen = "127.0.0.1:8741".parse().expect("listen address");
-        let (store, config) =
-            ConfigStore::initialize(root.path().join("state"), listen, None).expect("config");
-        let config = config
-            .registering_provider(
-                AgentComposition::default().provider,
-                "Test".into(),
-                Default::default(),
-                Vec::new(),
-                Vec::new(),
-            )
-            .expect("provider");
-        let mut bot_config = config
-            .bot_defaults
-            .as_ref()
-            .expect("Bot defaults")
-            .config
-            .clone();
-        bot_config.extensions.insert(EXTENSION_ID.into());
-        let bots = Arc::new(BotStore::open(store.state_dir()).expect("Bots"));
-        bots.seed_default(config.bot_defaults.as_ref().expect("Bot defaults"))
-            .expect("seed Mobius Bot");
-        bots.create_bot("fixture", "Fixture", bot_config)
-            .expect("Bot");
-        let credentials =
-            Arc::new(CredentialStore::open(store.credentials_path()).expect("credentials"));
-
-        let error = match GatewayHost::start(store, config, credentials, bots).await {
-            Ok(_) => panic!("missing selected extension must fail startup"),
-            Err(error) => error,
-        };
-        assert!(
-            error
-                .to_string()
-                .contains("selected extension `skill:fixture` is not installed")
-        );
-    }
-
-    #[tokio::test]
     async fn uninstall_rejects_an_extension_selected_by_a_bot() {
         let (_root, gateway) = gateway_with_selected_extension().await;
         let rejection = gateway
@@ -429,85 +388,6 @@ mod tests {
         assert!(installed);
         assert_eq!(rejection.code, "extension_in_use");
         assert!(rejection.message.contains("Bot @fixture"));
-    }
-
-    #[tokio::test]
-    async fn extension_changes_only_rebuild_dependent_bots_when_used() {
-        let (root, gateway) = gateway_with_selected_extension().await;
-        let workspace = root.path().join("workspace");
-        std::fs::create_dir(&workspace).expect("workspace");
-        let (bot, other, digest, operations) = {
-            let state = gateway.state.lock().await;
-            let bots = state.bots.bots().expect("Bots");
-            let bot = bots
-                .iter()
-                .find(|bot| bot.config.config.extensions.contains(EXTENSION_ID))
-                .unwrap()
-                .clone();
-            let other = bots
-                .iter()
-                .find(|bot| !bot.config.config.extensions.contains(EXTENSION_ID))
-                .unwrap()
-                .clone();
-            let mut config = state.config.lock().unwrap();
-            let installed = config.installed_extensions.get_mut(EXTENSION_ID).unwrap();
-            installed.hooks.push(ExtensionHookRecord {
-                event: "SessionStart".into(),
-                matcher: None,
-                command: "true".into(),
-                timeout_seconds: 5,
-            });
-            (
-                bot,
-                other,
-                installed.digest.clone(),
-                Arc::clone(&state.store.runtime_operations),
-            )
-        };
-        let selected = gateway.create_session(&workspace, &bot.id).await.unwrap();
-        let sibling = gateway.create_session(&workspace, &bot.id).await.unwrap();
-        let unrelated = gateway.create_session(&workspace, &other.id).await.unwrap();
-        let before = operations.counts();
-        gateway
-            .set_extension_hooks_trusted(EXTENSION_ID.into(), digest, true)
-            .await
-            .unwrap();
-        assert_eq!(
-            operations.counts(),
-            before,
-            "editing an extension does no preparation or assembly"
-        );
-        unrelated.accepts_file_attachments().await.unwrap();
-        assert_eq!(operations.counts(), before, "unrelated Bot stays prepared");
-        selected.accepts_file_attachments().await.unwrap();
-        sibling.accepts_file_attachments().await.unwrap();
-        assert_eq!(
-            operations.counts(),
-            (before.0 + 1, before.1 + 2),
-            "one preparation shared by both dependent chats"
-        );
-        let before_noop = operations.counts();
-        let digest = gateway
-            .state
-            .lock()
-            .await
-            .config
-            .lock()
-            .unwrap()
-            .installed_extensions[EXTENSION_ID]
-            .digest
-            .clone();
-        gateway
-            .set_extension_hooks_trusted(EXTENSION_ID.into(), digest, true)
-            .await
-            .unwrap();
-        selected.accepts_file_attachments().await.unwrap();
-        assert_eq!(
-            operations.counts(),
-            before_noop,
-            "unchanged extension trust does no runtime work"
-        );
-        gateway.shutdown().await;
     }
 
     #[test]

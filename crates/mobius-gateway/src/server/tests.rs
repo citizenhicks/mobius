@@ -1,5 +1,4 @@
 use futures_util::StreamExt as _;
-use mobius::backend::checkpoint::{Checkpoint, CheckpointStore as _, sqlite::SqliteCheckpoint};
 use mobius::protocol::{
     Event, EventMsg, MessageAuthor, MessageSubmission, Op, SessionFileReference, Submission,
 };
@@ -66,7 +65,6 @@ mod sessions;
 mod telemetry;
 mod transport;
 mod upload_admission;
-mod voice;
 
 fn timer_definition(
     workspace: &Path,
@@ -290,13 +288,6 @@ async fn wait_session_activity(
             _ => {}
         }
     }
-}
-
-async fn drain_ready_replay(events: &mut GatewayEvents) {
-    while matches!(
-        tokio::time::timeout(Duration::from_millis(10), events.next()).await,
-        Ok(Ok(Some(_)))
-    ) {}
 }
 
 fn user_message(text: impl Into<String>, attachments: Vec<SessionFileReference>) -> Op {

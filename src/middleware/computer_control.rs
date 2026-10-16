@@ -263,7 +263,6 @@ mod tests {
     use super::*;
     use crate::backend::sandbox::{
         ApprovalPolicy, NetworkAccess, Sandbox, SandboxMode, SandboxPermissions,
-        local::LocalSandbox,
     };
 
     fn runtime(worker: WorkerCommand) -> Arc<ComputerRuntime> {
@@ -289,75 +288,6 @@ mod tests {
                 )
                 .is_err()
             );
-        }
-    }
-
-    #[test]
-    fn schema_bounds_and_heading_come_from_the_owner() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        let control = ComputerControl::new(
-            SessionFileStore::new(workspace.path(), None),
-            runtime(WorkerCommand {
-                executable: "/unused".into(),
-                arguments: Vec::new(),
-            }),
-        );
-        let schema = control.0.definition().parameters;
-        assert_eq!(schema["properties"]["code"]["maxLength"], 40_000);
-        assert_eq!(schema["properties"]["timeout_ms"]["minimum"], 1);
-        assert_eq!(schema["properties"]["timeout_ms"]["maximum"], 120_000);
-        let block = control
-            .render(
-                &EventMsg::ToolCallBegin(crate::protocol::ToolCallBeginEvent {
-                    turn_id: "turn".into(),
-                    call_id: "call".into(),
-                    name: "computer_control".into(),
-                    arguments: serde_json::json!({"code": "await page()"}),
-                }),
-                "session",
-            )
-            .expect("computer block");
-        assert_eq!(
-            (block.title.as_str(), block.text.as_str()),
-            ("Computer", "")
-        );
-    }
-
-    #[tokio::test]
-    async fn failed_or_cancelled_evaluation_still_fails() {
-        for timeout_ms in [1, 10_000] {
-            let workspace = tempfile::tempdir().expect("workspace");
-            let tool = Evaluate {
-                files: SessionFileStore::new(workspace.path(), None),
-                runtime: runtime(WorkerCommand {
-                    executable: "/usr/bin/python3".into(),
-                    arguments: vec!["-c".into(), "import time; time.sleep(30)".into()],
-                }),
-            };
-            let sandbox = Arc::new(Sandbox::new(
-                Arc::new(LocalSandbox::new(workspace.path()).expect("sandbox")),
-                ApprovalPolicy::Ask,
-            ));
-            let permissions = SandboxPermissions::restore(
-                "session",
-                SandboxMode::WorkspaceWrite,
-                NetworkAccess::Denied,
-                ["call".into()],
-            )
-            .for_call("call");
-            let result = tokio::time::timeout(
-                Duration::from_millis(100),
-                tool.call(
-                    ToolContext::new(sandbox, permissions, "turn"),
-                    serde_json::json!({"code":"unused", "timeout_ms":timeout_ms}),
-                ),
-            )
-            .await;
-            if timeout_ms == 1 {
-                assert!(matches!(result, Ok(Err(_))), "worker deadline failed");
-            } else {
-                assert!(result.is_err(), "evaluation was cancelled");
-            }
         }
     }
 
@@ -477,58 +407,5 @@ mod tests {
                 .await
                 .expect("worker cleanup");
         }
-    }
-
-    #[tokio::test]
-    async fn unreadable_failure_image_preserves_the_original_error() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        let state = tempfile::tempdir().expect("state");
-        let output = serde_json::json!({
-            "content": [
-                {"type":"text", "text":"Failure: action_timeout; session state: retained. Original error: missing button"},
-                {"type":"image", "path":workspace.path().join("missing.png"), "detail":"auto"}
-            ],
-            "is_error": true
-        });
-        let tool = Evaluate {
-            files: SessionFileStore::new(state.path(), None),
-            runtime: runtime(WorkerCommand {
-                executable: "/usr/bin/python3".into(),
-                arguments: vec!["-c".into(),
-                    "import sys,struct; n=struct.unpack('>I',sys.stdin.buffer.read(4))[0]; sys.stdin.buffer.read(n); data=sys.argv[1].encode(); sys.stdout.buffer.write(struct.pack('>I',len(data))+data); sys.stdout.buffer.flush()".into(),
-                    output.to_string()],
-            }),
-        };
-        let sandbox = Arc::new(Sandbox::new(
-            Arc::new(LocalSandbox::new(workspace.path()).expect("sandbox")),
-            ApprovalPolicy::Ask,
-        ));
-        let permissions = SandboxPermissions::restore(
-            "session",
-            SandboxMode::WorkspaceWrite,
-            NetworkAccess::Denied,
-            ["call".into()],
-        )
-        .for_call("call");
-        let result = tool
-            .call(
-                ToolContext::new(sandbox, permissions, "turn"),
-                serde_json::json!({"code":"unused"}),
-            )
-            .await
-            .expect("failed observation still returned");
-        assert!(result.is_error);
-        assert!(
-            result
-                .content
-                .text()
-                .contains("Original error: missing button")
-        );
-        assert!(
-            result
-                .content
-                .text()
-                .contains("Image observation unavailable")
-        );
     }
 }

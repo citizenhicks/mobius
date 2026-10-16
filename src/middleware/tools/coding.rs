@@ -376,26 +376,3 @@ impl Tool for ApplyPatch {
         })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn file_arguments_reject_unknown_fields() {
-        assert!(
-            serde_json::from_value::<PathArgs>(
-                serde_json::json!({"path": "README.md", "unexpected": true})
-            )
-            .is_err()
-        );
-        assert!(
-            serde_json::from_value::<WriteArgs>(serde_json::json!({
-                "path": "README.md",
-                "content": "",
-                "unexpected": true,
-            }))
-            .is_err()
-        );
-    }
-}

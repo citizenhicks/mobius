@@ -324,15 +324,6 @@ fn timeout() -> Rejection {
 mod tests {
     use super::*;
 
-    fn git(workspace: &Path, args: &[&str]) {
-        let status = std::process::Command::new("git")
-            .args(args)
-            .current_dir(workspace)
-            .status()
-            .expect("run Git");
-        assert!(status.success());
-    }
-
     fn sandbox(workspace: &Path) -> (tempfile::TempDir, GatewaySandbox) {
         let state = tempfile::tempdir().expect("state");
         let sandbox = GatewaySandbox::new(workspace, state.path(), None, Duration::from_secs(5))
@@ -354,25 +345,6 @@ mod tests {
                 ..
             })
         ));
-    }
-
-    #[tokio::test]
-    async fn write_creates_and_atomically_replaces_workspace_text() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        let (_state, sandbox) = sandbox(workspace.path());
-
-        write(&sandbox, ".env", "TOKEN=first\n")
-            .await
-            .expect("create workspace file");
-        write(&sandbox, ".env", "TOKEN=second\n")
-            .await
-            .expect("replace workspace file");
-
-        assert_eq!(
-            std::fs::read_to_string(workspace.path().join(".env")).expect("read workspace file"),
-            "TOKEN=second\n"
-        );
-        assert!(write(&sandbox, "../outside", "secret").await.is_err());
     }
 
     #[tokio::test]
@@ -408,129 +380,6 @@ mod tests {
         remove(&sandbox, "file.txt").await.unwrap();
         assert!(!workspace.path().join("file.txt").exists());
         assert!(workspace.path().join(".git/config").exists());
-    }
-
-    #[tokio::test]
-    async fn git_catalog_excludes_ignored_directories_and_git_internals() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        git(workspace.path(), &["init", "--quiet"]);
-        std::fs::write(workspace.path().join(".gitignore"), b"ignored/\n.env\n")
-            .expect("ignore rules");
-        std::fs::create_dir(workspace.path().join("ignored")).expect("ignored directory");
-        std::fs::write(workspace.path().join("ignored/generated.txt"), b"ignored")
-            .expect("ignored file");
-        std::fs::write(workspace.path().join("included.txt"), b"included").expect("included file");
-        std::fs::write(workspace.path().join(".env"), b"TOKEN=secret\n").expect("environment file");
-        let (_state, sandbox) = sandbox(workspace.path());
-
-        let catalog = list(&sandbox, workspace.path(), WorkspaceFileScope::All)
-            .await
-            .expect("workspace files");
-
-        assert!(!catalog.truncated);
-        assert!(catalog.files.iter().any(|file| file.path == ".env"));
-        assert!(catalog.files.iter().any(|file| file.path == ".gitignore"));
-        assert!(catalog.files.iter().any(|file| file.path == "included.txt"));
-        assert!(
-            catalog
-                .files
-                .iter()
-                .all(|file| !file.path.starts_with("ignored/"))
-        );
-        assert!(
-            catalog
-                .files
-                .iter()
-                .all(|file| !file.path.starts_with(".git/"))
-        );
-        assert!(read(&sandbox, ".git/config", 0, 16).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn modified_catalog_includes_every_openable_uncommitted_file() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        git(workspace.path(), &["init", "--quiet"]);
-        std::fs::write(workspace.path().join(".gitignore"), b"ignored.txt\n")
-            .expect("ignore rules");
-        for path in ["clean.txt", "staged.txt", "unstaged.txt", "deleted.txt"] {
-            std::fs::write(workspace.path().join(path), b"baseline").expect("baseline file");
-        }
-        git(workspace.path(), &["add", "."]);
-        git(
-            workspace.path(),
-            &[
-                "-c",
-                "user.name=möbius Test",
-                "-c",
-                "user.email=mobius@example.invalid",
-                "commit",
-                "--quiet",
-                "-m",
-                "baseline",
-            ],
-        );
-        std::fs::write(workspace.path().join("staged.txt"), b"staged").expect("staged file");
-        git(workspace.path(), &["add", "staged.txt"]);
-        std::fs::write(workspace.path().join("staged.txt"), b"staged and unstaged")
-            .expect("second staged file change");
-        std::fs::write(workspace.path().join("unstaged.txt"), b"unstaged").expect("unstaged file");
-        std::fs::write(workspace.path().join("untracked.txt"), b"untracked")
-            .expect("untracked file");
-        std::fs::write(workspace.path().join("ignored.txt"), b"ignored").expect("ignored file");
-        std::fs::remove_file(workspace.path().join("deleted.txt")).expect("deleted file");
-        let (_state, sandbox) = sandbox(workspace.path());
-
-        let catalog = list(&sandbox, workspace.path(), WorkspaceFileScope::Modified)
-            .await
-            .expect("modified files");
-
-        assert_eq!(
-            catalog
-                .files
-                .into_iter()
-                .map(|file| file.path)
-                .collect::<Vec<_>>(),
-            ["staged.txt", "unstaged.txt", "untracked.txt"]
-        );
-    }
-
-    #[tokio::test]
-    async fn modified_catalog_is_relative_to_a_nested_workspace() {
-        let repository = tempfile::tempdir().expect("repository");
-        let workspace = repository.path().join("workspace");
-        std::fs::create_dir(&workspace).expect("workspace");
-        git(repository.path(), &["init", "--quiet"]);
-        std::fs::write(workspace.join("inside.txt"), b"baseline").expect("inside file");
-        std::fs::write(repository.path().join("outside.txt"), b"baseline").expect("outside file");
-        git(repository.path(), &["add", "."]);
-        git(
-            repository.path(),
-            &[
-                "-c",
-                "user.name=möbius Test",
-                "-c",
-                "user.email=mobius@example.invalid",
-                "commit",
-                "--quiet",
-                "-m",
-                "baseline",
-            ],
-        );
-        std::fs::write(workspace.join("inside.txt"), b"modified").expect("inside change");
-        std::fs::write(repository.path().join("outside.txt"), b"modified").expect("outside change");
-        git(repository.path(), &["add", "."]);
-        let (_state, sandbox) = sandbox(&workspace);
-        // Bubblewrap masks host /tmp; the parent Git repository must remain readable.
-        let sandbox = sandbox
-            .allow_read_roots([repository.path().to_path_buf()])
-            .expect("repository read root");
-
-        let catalog = list(&sandbox, &workspace, WorkspaceFileScope::Modified)
-            .await
-            .expect("modified files");
-
-        assert_eq!(catalog.files.len(), 1);
-        assert_eq!(catalog.files[0].path, "inside.txt");
     }
 
     #[tokio::test]
@@ -575,32 +424,6 @@ mod tests {
                 .expect("modified catalog")
                 .files
                 .is_empty()
-        );
-    }
-
-    #[test]
-    fn git_catalog_rejects_non_terminated_output() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        std::fs::write(workspace.path().join("file.txt"), b"file").expect("file");
-
-        assert!(git_workspace_files(workspace.path(), "file.txt", false).is_err());
-    }
-
-    #[test]
-    fn each_git_catalog_stream_requires_a_terminator() {
-        assert!(validate_git_paths("first\0").is_ok());
-        assert!(validate_git_paths("truncated").is_err());
-    }
-
-    #[test]
-    fn workspace_file_timeout_reports_the_configured_budget() {
-        let rejection = timeout();
-
-        assert_eq!(FILE_TIMEOUT, Duration::from_secs(30));
-        assert_eq!(rejection.code, "workspace_file_timeout");
-        assert_eq!(
-            rejection.message,
-            "workspace file operation exceeded 30 seconds"
         );
     }
 

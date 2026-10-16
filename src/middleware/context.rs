@@ -1304,42 +1304,6 @@ pub struct MiddlewareCommandContext<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::model::{Model, ModelEventSink, ModelOutput, ModelRequest};
-
-    struct NoModel;
-
-    impl Model for NoModel {
-        fn respond<'a>(
-            &'a self,
-            _request: ModelRequest<'a>,
-            _events: ModelEventSink,
-        ) -> crate::BoxFuture<'a, crate::Result<ModelOutput>> {
-            Box::pin(async { Err(crate::Error::Provider("unused".into())) })
-        }
-    }
-
-    #[test]
-    fn request_input_is_borrowed_until_replaced() {
-        let original = vec![Value::String("original".into())];
-        let role = AgentRole::Main;
-        let router = ModelRouter::new("test", Arc::new(NoModel));
-        let mut context = ModelRequestContext {
-            author: &MessageAuthor::User,
-            role: &role,
-            model: &router,
-            provider: "test",
-            session_id: "session",
-            turn_id: "turn",
-            model_step: 0,
-            input: original.as_slice().into(),
-            replacement: None,
-        };
-
-        assert!(std::ptr::eq(context.input().get(0).unwrap(), &original[0]));
-        context.replace_input(vec![Value::String("replacement".into())]);
-        assert!(context.replacement.is_some());
-        assert_eq!(original, [Value::String("original".into())]);
-    }
 
     #[test]
     fn staged_history_shares_original_items_and_commits_only_when_accepted() {

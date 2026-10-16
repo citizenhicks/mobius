@@ -16,9 +16,6 @@ mod session;
 mod ssh;
 mod telemetry;
 
-#[cfg(test)]
-use routines::accept_routine_while_state_locked;
-
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

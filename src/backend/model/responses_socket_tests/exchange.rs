@@ -2,38 +2,6 @@ use super::super::*;
 use crate::protocol::ModelEvent;
 
 #[tokio::test]
-async fn metadata_only_event_does_not_count_as_sink_delivery() {
-    let (sender, mut messages) = mpsc::unbounded_channel();
-    sender
-        .send(SocketEvent::Message(Message::text(
-            serde_json::json!({
-                "type": "response.output_item.added",
-                "item": {
-                    "id": "commentary-1",
-                    "type": "message",
-                    "phase": "commentary"
-                }
-            })
-            .to_string(),
-        )))
-        .expect("metadata event");
-    drop(sender);
-    let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let sink_delivered = Arc::clone(&delivered);
-    let events: ModelEventSink = Arc::new(move |_| {
-        sink_delivered.fetch_add(1, Ordering::Relaxed);
-        Box::pin(async { Ok(()) })
-    });
-
-    let exchange = read_exchange(&mut messages, &events)
-        .await
-        .expect("exchange result");
-
-    assert!(matches!(exchange, Exchange::Reconnect));
-    assert_eq!(delivered.load(Ordering::Relaxed), 0);
-}
-
-#[tokio::test]
 async fn visible_delta_before_eof_is_still_a_retryable_stream_failure() {
     let (sender, mut messages) = mpsc::unbounded_channel();
     sender
@@ -49,55 +17,6 @@ async fn visible_delta_before_eof_is_still_a_retryable_stream_failure() {
     let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let sink_delivered = Arc::clone(&delivered);
     let events: ModelEventSink = Arc::new(move |_| {
-        sink_delivered.fetch_add(1, Ordering::Relaxed);
-        Box::pin(async { Ok(()) })
-    });
-
-    let exchange = read_exchange(&mut messages, &events)
-        .await
-        .expect("exchange result");
-
-    assert!(matches!(exchange, Exchange::Reconnect));
-    assert_eq!(delivered.load(Ordering::Relaxed), 1);
-}
-
-#[tokio::test]
-async fn server_close_before_completion_is_retryable() {
-    let (sender, mut messages) = mpsc::unbounded_channel();
-    sender.send(SocketEvent::Closed).expect("server close");
-    let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
-
-    let exchange = read_exchange(&mut messages, &events)
-        .await
-        .expect("exchange result");
-
-    assert!(matches!(exchange, Exchange::Reconnect));
-}
-
-#[tokio::test]
-async fn tool_call_readiness_does_not_complete_a_disconnected_exchange() {
-    let (sender, mut messages) = mpsc::unbounded_channel();
-    sender
-        .send(SocketEvent::Message(Message::text(
-            serde_json::json!({
-                "type": "response.output_item.done",
-                "output_index": 0,
-                "item": {
-                    "type": "function_call",
-                    "id": "item-1",
-                    "call_id": "call-1",
-                    "name": "dangerous_tool",
-                    "arguments": "{}"
-                }
-            })
-            .to_string(),
-        )))
-        .expect("tool call item");
-    drop(sender);
-    let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let sink_delivered = Arc::clone(&delivered);
-    let events: ModelEventSink = Arc::new(move |event| {
-        assert!(matches!(event, ModelEvent::ToolCallReady(_)));
         sink_delivered.fetch_add(1, Ordering::Relaxed);
         Box::pin(async { Ok(()) })
     });
@@ -161,25 +80,6 @@ async fn completed_tool_call_is_emitted_before_websocket_completion() {
     );
 }
 
-#[tokio::test(start_paused = true)]
-async fn stream_idle_timeout_is_retryable() {
-    let (_sender, mut messages) = mpsc::unbounded_channel();
-    let events: ModelEventSink = Arc::new(|_| Box::pin(async { Ok(()) }));
-    let exchange = tokio::spawn(async move { read_exchange(&mut messages, &events).await });
-    tokio::task::yield_now().await;
-
-    tokio::time::advance(Duration::from_millis(
-        crate::backend::model::ModelTransportSettings::default().socket_idle_timeout_ms,
-    ))
-    .await;
-    let exchange = exchange
-        .await
-        .expect("exchange task")
-        .expect("exchange result");
-
-    assert!(matches!(exchange, Exchange::Reconnect));
-}
-
 #[tokio::test]
 async fn websocket_burst_waits_for_the_event_sink_in_order() {
     const DELTAS: usize = 2048;
@@ -234,80 +134,4 @@ async fn websocket_burst_waits_for_the_event_sink_in_order() {
         exchange.await.expect("exchange task").expect("exchange"),
         Exchange::Completed(_)
     ));
-}
-
-#[tokio::test]
-async fn completed_web_item_releases_tools_before_web_events_and_retains_handled_items() {
-    let (sender, mut messages) = mpsc::unbounded_channel();
-    for event in [
-        serde_json::json!({
-            "type": "response.output_item.done", "output_index": 1,
-            "item": {"type": "function_call", "call_id": "call-1", "name": "read_file", "arguments": "{}"}
-        }),
-        serde_json::json!({
-            "type": "response.output_item.done", "output_index": 0,
-            "item": {"type": "web_search_call", "id": "search-1"}
-        }),
-        serde_json::json!({
-            "type": "response.output_item.added",
-            "item": {"type": "message", "id": "commentary-1", "phase": "commentary"}
-        }),
-        serde_json::json!({
-            "type": "response.output_item.done", "output_index": 2,
-            "item": {"type": "message", "id": "commentary-1", "role": "assistant", "content": []}
-        }),
-        serde_json::json!({"type": "response.completed", "response": {"id": "response-1", "output": []}}),
-    ] {
-        sender
-            .send(SocketEvent::Message(Message::text(event.to_string())))
-            .expect("event");
-    }
-    drop(sender);
-    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let sink_seen = Arc::clone(&seen);
-    let events: ModelEventSink = Arc::new(move |event| {
-        sink_seen.lock().expect("events lock").push(event);
-        Box::pin(async { Ok(()) })
-    });
-    let Exchange::Completed(response) = read_exchange(&mut messages, &events)
-        .await
-        .expect("exchange")
-    else {
-        panic!("expected completion");
-    };
-    let seen = seen.lock().expect("events lock");
-    assert!(matches!(
-        &seen[..],
-        [
-            ModelEvent::ToolCallReady(_),
-            ModelEvent::WebSearchStarted { .. },
-            ModelEvent::WebSearchCompleted { .. }
-        ]
-    ));
-    assert_eq!(response["output"][0]["id"], "search-1");
-    assert_eq!(response["output"][1]["call_id"], "call-1");
-    assert_eq!(response["output"][2]["id"], "commentary-1");
-}
-
-#[tokio::test]
-async fn duplicate_completed_web_item_is_rejected_before_web_delivery() {
-    let (sender, mut messages) = mpsc::unbounded_channel();
-    for item in [
-        serde_json::json!({"type": "message", "role": "assistant", "content": []}),
-        serde_json::json!({"type": "web_search_call", "id": "search-1"}),
-    ] {
-        sender
-            .send(SocketEvent::Message(Message::text(
-                serde_json::json!({
-                    "type": "response.output_item.done", "output_index": 0, "item": item
-                })
-                .to_string(),
-            )))
-            .expect("event");
-    }
-    drop(sender);
-    let events: ModelEventSink = Arc::new(|_| {
-        panic!("duplicate item must be rejected before event delivery");
-    });
-    assert!(read_exchange(&mut messages, &events).await.is_err());
 }

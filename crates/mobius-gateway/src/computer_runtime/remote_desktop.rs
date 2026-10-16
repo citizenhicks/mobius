@@ -3,7 +3,7 @@
 #[cfg(any(target_os = "linux", test))]
 mod linux;
 mod processes;
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 mod shell;
 
 use std::collections::BTreeMap;
@@ -130,11 +130,6 @@ impl RemoteDesktop {
         DesktopUse {
             remote: Arc::clone(self),
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn consumer_count(&self) -> usize {
-        *mobius::sync::recover_lock(&self.consumers)
     }
 
     fn stop_if_unused(self: &Arc<Self>) {
@@ -1148,7 +1143,7 @@ async fn clean_socket(socket: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 async fn run_short(command: &mut Command) -> Result<()> {
     command
         .stdin(std::process::Stdio::null())

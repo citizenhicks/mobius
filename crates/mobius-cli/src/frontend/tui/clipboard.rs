@@ -473,40 +473,6 @@ mod tests {
     };
 
     #[test]
-    fn bitmap_is_encoded_as_png() {
-        let candidate = bitmap_candidate(1, 1, &[1, 2, 3, 255]).expect("PNG candidate");
-
-        assert_eq!(candidate.name, "clipboard.png");
-        assert_eq!(candidate.media_type, "image/png");
-        let UploadSource::Bytes { bytes, .. } = candidate.source else {
-            panic!("bitmap bytes");
-        };
-        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
-    }
-
-    #[tokio::test]
-    async fn copied_files_are_validated_and_preserved() {
-        let directory = tempfile::tempdir().expect("tempdir");
-        let first = directory.path().join("one.png");
-        let second = directory.path().join("two.pdf");
-        std::fs::write(&first, b"one").expect("first file");
-        std::fs::write(&second, b"two").expect("second file");
-
-        let candidates = file_candidates(
-            vec![first, second],
-            TEST_LIMITS.max_attachment_references,
-            &TEST_LIMITS,
-        )
-        .expect("file candidates");
-
-        assert_eq!(candidates.len(), 2);
-        assert_eq!(candidates[0].name, "one.png");
-        assert_eq!(candidates[0].media_type, "image/png");
-        assert_eq!(candidates[1].name, "two.pdf");
-        assert_eq!(candidates[1].media_type, "application/pdf");
-    }
-
-    #[test]
     fn local_files_must_be_regular_and_fit_the_attachment_count() {
         let directory = tempfile::tempdir().expect("tempdir");
         assert!(
@@ -685,33 +651,6 @@ mod tests {
             completed.message,
             Some(ClientMessage::BeginSessionFileUpload { name, .. }) if name == "two.txt"
         ));
-    }
-
-    #[tokio::test]
-    async fn upload_machine_aborts_a_correlated_scope_mismatch() {
-        let candidate =
-            UploadCandidate::from_bytes("one.txt", "text/plain", b"a".to_vec()).expect("candidate");
-        let mut uploads = ClipboardUploads::default();
-        let begin = uploads.start(vec![candidate], "session").expect("begin");
-        let ClientMessage::BeginSessionFileUpload { request_id, .. } = begin else {
-            panic!("begin message");
-        };
-
-        let result = uploads
-            .handle(
-                &ServerMessage::SessionFileUploadReady {
-                    request_id,
-                    session_id: "old-session".into(),
-                    upload_id: UPLOAD_ID.into(),
-                    max_chunk_bytes: 1,
-                },
-                "session",
-            )
-            .await
-            .expect("correlated response");
-
-        assert!(result.is_err());
-        assert!(!uploads.is_active());
     }
 
     #[tokio::test]

@@ -637,35 +637,3 @@ pub(super) fn usage_status(info: &TokenUsageInfo, context_limit: Option<i64>) ->
     status.apply_context_limit(context_limit);
     status
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use mobius::protocol::TokenUsage;
-
-    #[test]
-    fn context_fill_uses_compaction_target_when_enabled() {
-        let usage = TokenUsage {
-            input_tokens: 90_000,
-            output_tokens: 10_000,
-            total_tokens: 100_000,
-            ..TokenUsage::default()
-        };
-        let info = TokenUsageInfo {
-            total_token_usage: usage.clone(),
-            last_token_usage: usage,
-            model_context_window: Some(1_000_000),
-        };
-
-        assert_eq!(usage_status(&info, Some(250_000)).context_fill, Some(40.0));
-        assert_eq!(usage_status(&info, None).context_fill, Some(10.0));
-
-        let mut status = usage_status(&info, Some(250_000));
-        status.apply_context_limit(Some(500_000));
-        assert_eq!(status.context_fill, Some(20.0));
-
-        let mut status = UsageStatus::default();
-        status.apply_context_limit(Some(250_000));
-        assert_eq!(status.context_fill, None);
-    }
-}

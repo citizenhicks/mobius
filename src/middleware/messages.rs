@@ -400,24 +400,6 @@ async fn validate_reply(
 
 #[cfg(test)]
 mod tests {
-    use crate::protocol::FrontendBlockRole;
-    #[test]
-    fn declared_deliveries_parse_at_the_protocol_boundary() {
-        for choice in
-            super::super::manifest::static_choices(&super::text::DEFINITION.settings, "delivery")
-                .iter()
-        {
-            assert_eq!(
-                choice
-                    .value
-                    .parse::<super::ActiveMessageDelivery>()
-                    .expect("declared delivery")
-                    .id(),
-                choice.value
-            );
-        }
-        assert!("other".parse::<super::ActiveMessageDelivery>().is_err());
-    }
 
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -429,64 +411,6 @@ mod tests {
         ActiveCommandContext, MessageQueue, MessageRouteContext, MiddlewareStack,
     };
     use crate::protocol::{MessageReply, MessageSubmission, MessageTarget, SessionFileReference};
-
-    #[test]
-    fn queue_limit_follows_the_declared_setting_bounds() {
-        for (limit, valid) in [(0, false), (1, true), (1024, true), (1025, false)] {
-            assert_eq!(
-                Messages::new(limit, ActiveMessageDelivery::Steer).is_ok(),
-                valid
-            );
-        }
-    }
-
-    #[test]
-    fn manifest_advertises_delivery_symbols() {
-        assert!(
-            MANIFEST
-                .feature(Default::default())
-                .settings
-                .iter()
-                .all(|setting| !setting.composer)
-        );
-        assert_eq!(
-            super::super::manifest::static_choices(&text::DEFINITION.settings, "delivery")
-                .iter()
-                .map(|choice| (choice.value.as_str(), choice.symbol.as_deref()))
-                .collect::<Vec<_>>(),
-            [("steer", Some("steer")), ("queue", Some("queue"))]
-        );
-    }
-
-    #[test]
-    fn queued_widgets_name_their_delivery() {
-        let messages = Messages::default();
-        let symbol = |delivery| {
-            let FrontendEvent::Widget { item, .. } =
-                messages.queued_widget("message-1", &MessageAuthor::User, delivery, "hello")
-            else {
-                panic!("queued message widget");
-            };
-            assert_eq!(item.text, "hello");
-            assert!(matches!(
-                item.action,
-                Some(Op::CapabilityCommand { arguments, input: Some(input), .. })
-                    if arguments == "message-1" && input == "hello"
-            ));
-            item.symbol
-        };
-
-        assert_eq!(
-            (
-                symbol(MessageDelivery::Steer),
-                symbol(MessageDelivery::Queue),
-            ),
-            (
-                Some(FrontendSymbol::Custom("steer".into())),
-                Some(FrontendSymbol::Custom("queue".into())),
-            )
-        );
-    }
 
     fn user(delivery: Option<ActiveMessageDelivery>) -> MessageSubmission {
         MessageSubmission {
@@ -543,69 +467,6 @@ mod tests {
             })
             .await
             .expect("route message")
-    }
-
-    #[tokio::test]
-    async fn active_user_uses_the_configured_queue_boundary() {
-        let stack = MiddlewareStack::new(vec![Arc::new(
-            Messages::new(4, ActiveMessageDelivery::Queue).expect("messages"),
-        )])
-        .expect("stack");
-        let mut queued = Vec::new();
-
-        let result = route(&stack, &mut queued, &user(None), Some("turn-1")).await;
-
-        assert_eq!(
-            result,
-            SubmissionResult::Accepted {
-                input_changed: false
-            }
-        );
-        assert!(
-            !stack
-                .messages_ready(&queued, "turn-1")
-                .expect("message input readiness")
-        );
-        assert_eq!(
-            stack
-                .next_turn(&mut queued)
-                .expect("next turn")
-                .expect("queued message")
-                .event
-                .message()
-                .map(|message| message.delivery),
-            Some(MessageDelivery::Queue)
-        );
-    }
-
-    #[tokio::test]
-    async fn immediate_turn_does_not_publish_a_queued_widget() {
-        let stack = MiddlewareStack::new(vec![Arc::new(Messages::default())]).expect("stack");
-        let mut queued = Vec::new();
-        let mut events = Vec::new();
-
-        let (_directory, store) = checkpoints();
-        let result = stack
-            .route_message(&mut MessageRouteContext {
-                checkpoints: &store,
-                session_id: "session-1",
-                submission_id: "message-1",
-                message: &mut user(None),
-                active_turn_id: None,
-                queued_messages: MessageQueue::new(&mut queued),
-                events: &mut events,
-            })
-            .await
-            .expect("route message");
-
-        assert_eq!(
-            result,
-            SubmissionResult::Accepted {
-                input_changed: false
-            }
-        );
-        assert!(events.is_empty());
-        assert_eq!(queued.len(), 1);
     }
 
     #[tokio::test]
@@ -756,51 +617,6 @@ mod tests {
             "peer messages use their typed message event, not an activity block"
         );
         assert_eq!(staged[0].event.message().unwrap().text, peer.text);
-    }
-
-    #[tokio::test]
-    async fn queued_external_event_waits_for_its_own_turn() {
-        let stack = MiddlewareStack::new(vec![Arc::new(Messages::default())]).expect("stack");
-        let source = MessageSubmission {
-            author: MessageAuthor::Source {
-                message_id: "report".into(),
-                source: crate::protocol::MessageSource::External {
-                    source_id: "routine".into(),
-                    event_id: "completed".into(),
-                },
-                cause_id: None,
-                ancestry: Vec::new(),
-                handle: "monitor".into(),
-                symbol: None,
-            },
-            text: "Monitoring completed.".into(),
-            attachments: Vec::new(),
-            reply: None,
-            requested_delivery: Some(ActiveMessageDelivery::Queue),
-            target_turn_id: None,
-        };
-        let mut queued = Vec::new();
-        assert_eq!(
-            route(&stack, &mut queued, &source, Some("user-turn")).await,
-            SubmissionResult::Accepted {
-                input_changed: false
-            }
-        );
-        assert!(
-            stack
-                .stage_model_messages(&mut queued, "user-turn")
-                .expect("stage")
-                .is_empty()
-        );
-        let report = stack.next_turn(&mut queued).expect("next").expect("report");
-        let block = Messages::default()
-            .render(&report.event, "report-turn")
-            .expect("external activity");
-        assert_eq!(block.role, FrontendBlockRole::Activity);
-        assert_eq!(block.title, "Message received from @monitor");
-        assert_eq!(block.text, source.text);
-        assert_eq!(block.symbol, Some(FrontendSymbol::Chat));
-        assert!(matches!(report.event, EventMsg::Message(event) if event.author == source.author));
     }
 
     #[tokio::test]

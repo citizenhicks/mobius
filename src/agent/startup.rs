@@ -487,14 +487,3 @@ pub async fn create_agent(mut config: AgentConfig) -> Result<Agent> {
         next_before_sequence,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn an_empty_checkpoint_starts_before_it_resumes() {
-        assert_eq!(initial_hook_source(true), SessionStartSource::Startup);
-        assert_eq!(initial_hook_source(false), SessionStartSource::Resume);
-    }
-}

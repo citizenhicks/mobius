@@ -177,10 +177,6 @@ impl HostState {
             HostCommand::BotId { reply } => {
                 let _ = reply.send(self.spec.bot_id.clone());
             }
-            #[cfg(test)]
-            HostCommand::ToolCount { reply } => {
-                let _ = reply.send(self.running.tool_count);
-            }
             HostCommand::AcceptsFileAttachments { reply } => {
                 let result = async {
                     let _mutation = self.begin_session_mutation()?;

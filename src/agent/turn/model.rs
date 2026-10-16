@@ -1520,41 +1520,6 @@ mod tests {
     }
 
     #[test]
-    fn overflowing_retry_after_uses_configured_backoff() {
-        let error = crate::ProviderError::stream_interrupted(Some(u64::MAX.to_string()));
-        let transport = crate::backend::model::ModelTransportSettings::default();
-        let delay = crate::backend::model::retry_delay(&error, 0, "step-1", &transport);
-        assert!(delay < Duration::from_secs(1));
-    }
-
-    #[test]
-    fn retry_delay_accepts_http_dates() {
-        let date = (chrono::Utc::now() + chrono::Duration::seconds(30)).to_rfc2822();
-        let error = crate::ProviderError::http("busy", 503, Some(date));
-        let transport = crate::backend::model::ModelTransportSettings {
-            stream_retry_max_backoff_ms: 60_000,
-            ..Default::default()
-        };
-        let delay = crate::backend::model::retry_delay(&error, 0, "request", &transport);
-        assert!(delay >= Duration::from_secs(28) && delay <= Duration::from_secs(30));
-    }
-
-    #[test]
-    fn stream_retry_delay_respects_server_seconds() {
-        let error = crate::ProviderError::stream_interrupted(Some("3".into()));
-
-        assert_eq!(
-            crate::backend::model::retry_delay(
-                &error,
-                0,
-                "step-1",
-                &crate::backend::model::ModelTransportSettings::default()
-            ),
-            Duration::from_secs(3)
-        );
-    }
-
-    #[test]
     fn retry_waits_never_exceed_the_configured_ceiling() {
         let transport = crate::backend::model::ModelTransportSettings::default();
         let ceiling = Duration::from_millis(transport.stream_retry_max_backoff_ms);

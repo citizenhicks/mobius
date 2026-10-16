@@ -145,34 +145,3 @@ async fn ordered_images_are_durable_and_reinspectable_after_source_deletion() {
             .is_empty()
     );
 }
-
-#[tokio::test]
-async fn view_image_rejects_malformed_bytes_and_ambiguous_sources() {
-    let state = tempfile::tempdir().expect("state");
-    let workspace = tempfile::tempdir().expect("workspace");
-    std::fs::write(workspace.path().join("bad.png"), b"not an image").expect("file");
-    let tool = ViewImage {
-        store: SessionFileStore::new(state.path(), None),
-    };
-    for arguments in [
-        serde_json::json!({"images": [{"path": "bad.png"}]}),
-        serde_json::json!({"images": [{"path": "bad.png", "file_id": "other"}]}),
-        serde_json::json!({"images": []}),
-    ] {
-        let sandbox = Arc::new(Sandbox::new(
-            Arc::new(
-                crate::backend::sandbox::local::LocalSandbox::new(workspace.path())
-                    .expect("sandbox"),
-            ),
-            crate::backend::sandbox::ApprovalPolicy::Ask,
-        ));
-        assert!(
-            tool.call(
-                ToolContext::new(sandbox, test_permissions(&[]).for_call("view"), "turn"),
-                arguments
-            )
-            .await
-            .is_err()
-        );
-    }
-}

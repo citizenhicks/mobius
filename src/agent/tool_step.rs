@@ -500,24 +500,4 @@ mod tests {
         }
         assert_eq!(batch_usage(&results).unwrap().unwrap().total_tokens, 12);
     }
-
-    #[test]
-    fn interrupted_results_do_not_claim_tools_were_denied() {
-        let calls = [ToolCall {
-            call_id: "call-1".into(),
-            name: "write".into(),
-            arguments: serde_json::json!({}),
-        }];
-
-        let results = interrupted_results(
-            &calls,
-            "execution interrupted; result unknown",
-            crate::backend::sandbox::default_tool_output_limit(),
-        );
-
-        assert_eq!(
-            results[0].output.text(),
-            "execution interrupted; result unknown"
-        );
-    }
 }

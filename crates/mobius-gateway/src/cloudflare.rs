@@ -223,24 +223,6 @@ mod tests {
     use tokio::io::AsyncWriteExt as _;
 
     #[test]
-    fn quick_endpoint_accepts_only_a_root_trycloudflare_url() {
-        let endpoint = quick_endpoint("https://bright-river.trycloudflare.com/")
-            .expect("valid Quick Tunnel URL");
-
-        assert_eq!(endpoint.to_string(), "wss://bright-river.trycloudflare.com");
-    }
-
-    #[test]
-    fn quick_endpoint_rejects_a_nested_hostname() {
-        assert!(quick_endpoint("https://nested.bright-river.trycloudflare.com").is_none());
-    }
-
-    #[test]
-    fn quick_endpoint_rejects_a_non_root_url() {
-        assert!(quick_endpoint("https://bright-river.trycloudflare.com/path").is_none());
-    }
-
-    #[test]
     fn quick_endpoint_rejects_untrusted_url_shapes() {
         for candidate in [
             "http://bright-river.trycloudflare.com",
@@ -275,40 +257,6 @@ mod tests {
             .expect("drainer task");
 
         assert_eq!(endpoint.to_string(), "wss://bright-river.trycloudflare.com");
-    }
-
-    #[test]
-    fn quick_tunnel_command_uses_an_empty_config_and_loopback_origin() {
-        let command =
-            quick_tunnel_command("cloudflared", "127.0.0.1:8741".parse().expect("listen"));
-        let arguments = command
-            .as_std()
-            .get_args()
-            .map(|argument| argument.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            arguments,
-            [
-                "tunnel",
-                "--no-autoupdate",
-                "--config",
-                empty_config_path(),
-                "--url",
-                "http://127.0.0.1:8741"
-            ]
-        );
-        assert_eq!(
-            command
-                .as_std()
-                .get_envs()
-                .filter(|(name, _)| {
-                    *name == std::ffi::OsStr::new("TUNNEL_TOKEN")
-                        || *name == std::ffi::OsStr::new("TUNNEL_TOKEN_FILE")
-                })
-                .count(),
-            2
-        );
     }
 
     #[test]

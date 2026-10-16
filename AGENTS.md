@@ -72,7 +72,7 @@ module.
 - Do not `.clone()` in production code. Borrow, move, use `std::mem::take`/`replace`, or
   share an `Arc`/`Rc` handle instead; restructure before reaching for a copy, and name any
   copy that remains unavoidable. Tests may clone.
-- Add the smallest behavior-focused test that would catch the change.
+- Add the smallest behavior-focused test that would catch the change. Only write a test if it would actually fail when the code is broken in a way that matters. Everything else is slop.
 - Do not add compatibility code. This project has no legacy contract: no old
   names, aliases, dual reads or writes, fallback state discovery, or migrations.
 

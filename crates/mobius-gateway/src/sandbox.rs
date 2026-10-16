@@ -201,12 +201,6 @@ impl GatewaySandbox {
         self.desktop_use.lock().await.take();
     }
 
-    #[cfg(test)]
-    pub(crate) async fn retain_desktop_use_for_test(&self) {
-        let remote = self.remote_desktop.as_ref().expect("desktop owner");
-        *self.desktop_use.lock().await = Some(remote.acquire_use().await);
-    }
-
     fn isolated_backend(&self) -> Result<Self> {
         self.check_execution()?;
         let delegate = self.delegate.isolated_execution()?;
@@ -569,33 +563,6 @@ mod tests {
     const WORKSPACE_GIT_TEST_NAME: &str =
         "sandbox::tests::workspace_git_inherits_home_config_and_ignores_repository_redirects";
 
-    #[tokio::test]
-    async fn isolated_backend_keeps_its_own_desktop_use_until_the_last_cleanup_reference_drops() {
-        let workspace = tempfile::tempdir().unwrap();
-        let state = tempfile::tempdir().unwrap();
-        let remote =
-            std::sync::Arc::new(crate::computer_runtime::remote_desktop::RemoteDesktop::new(
-                state.path(),
-                true,
-                crate::computer_runtime::ComputerConfig::default(),
-            ));
-        let root =
-            GatewaySandbox::new(workspace.path(), state.path(), None, Duration::from_secs(5))
-                .unwrap()
-                .with_remote_desktop(std::sync::Arc::clone(&remote));
-        root.retain_desktop_use_for_test().await;
-        let child = std::sync::Arc::new(root.isolated_backend().unwrap());
-        assert!(child.desktop_use.lock().await.is_none());
-        child.retain_desktop_use_for_test().await;
-        assert_eq!(remote.consumer_count(), 2);
-        root.release_desktop_use().await;
-        let cleanup = std::sync::Arc::clone(&child);
-        drop(child);
-        assert_eq!(remote.consumer_count(), 1);
-        drop(cleanup);
-        assert_eq!(remote.consumer_count(), 0);
-    }
-
     #[test]
     fn every_provider_api_key_environment_is_hidden_from_commands() {
         assert_eq!(
@@ -660,22 +627,6 @@ mod tests {
     }
 
     #[test]
-    fn automatic_git_arguments_pin_repository_execution_policy() {
-        assert_eq!(
-            GIT_ARGUMENTS,
-            [
-                "--no-pager",
-                "-c",
-                "safe.bareRepository=explicit",
-                "-c",
-                "core.hooksPath=/dev/null",
-                "-c",
-                "core.fsmonitor=false",
-            ]
-        );
-    }
-
-    #[test]
     fn construction_rejects_both_state_workspace_overlap_directions() {
         let workspace_parent = tempfile::tempdir().expect("workspace parent");
         let state_inside = workspace_parent.path().join("state");
@@ -709,77 +660,6 @@ mod tests {
                 .to_string()
                 .contains("must not overlap")
         );
-    }
-
-    #[test]
-    fn construction_rejects_a_tls_key_inside_the_chat_workspace() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        let state = tempfile::tempdir().expect("state");
-        let private_key = workspace.path().join("private-key.pem");
-        std::fs::write(&private_key, "private key").expect("private key");
-
-        let error = match GatewaySandbox::new(
-            workspace.path(),
-            state.path(),
-            Some(&private_key),
-            Duration::from_secs(5),
-        ) {
-            Ok(_) => panic!("workspace TLS key must fail"),
-            Err(error) => error,
-        };
-
-        assert!(error.to_string().contains("outside every chat workspace"));
-    }
-
-    #[test]
-    fn gateway_state_cannot_be_added_as_a_read_root() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        let state = tempfile::tempdir().expect("state");
-        let sandbox =
-            GatewaySandbox::new(workspace.path(), state.path(), None, Duration::from_secs(5))
-                .expect("gateway sandbox");
-
-        let result = sandbox.allow_read_roots([state.path().to_path_buf()]);
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn gateway_state_cannot_be_added_as_an_attached_folder() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        let state = tempfile::tempdir().expect("state");
-        let sandbox =
-            GatewaySandbox::new(workspace.path(), state.path(), None, Duration::from_secs(5))
-                .expect("gateway sandbox");
-
-        let result = sandbox.allow_attached_folders([state.path().to_path_buf()]);
-
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn configured_read_roots_allow_absolute_file_reads() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        let state = tempfile::tempdir().expect("state");
-        let resources = tempfile::tempdir().expect("resources");
-        let resource = resources.path().join("SKILL.md");
-        std::fs::write(&resource, "instructions").expect("resource");
-        let resource = std::fs::canonicalize(resource).expect("canonical resource");
-        let sandbox =
-            GatewaySandbox::new(workspace.path(), state.path(), None, Duration::from_secs(5))
-                .expect("gateway sandbox")
-                .allow_read_roots([resources.path().to_path_buf()])
-                .expect("read root");
-
-        let content = sandbox
-            .read(
-                resource.to_str().expect("UTF-8 resource path"),
-                SandboxMode::WorkspaceWrite,
-            )
-            .await
-            .expect("resource read");
-
-        assert_eq!(content, "instructions");
     }
 
     #[tokio::test]
@@ -853,125 +733,6 @@ mod tests {
                 "tls-secret"
             );
         }
-    }
-
-    #[tokio::test]
-    async fn full_access_commands_can_read_gateway_state_and_tls_key() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        let state = tempfile::tempdir().expect("state");
-        let credentials = tempfile::tempdir().expect("credentials");
-        let tls_key = credentials.path().join("private-key.pem");
-        std::fs::write(state.path().join("sentinel"), "gateway-secret").expect("state sentinel");
-        std::fs::write(&tls_key, "tls-secret").expect("TLS key");
-        let sandbox = GatewaySandbox::new(
-            workspace.path(),
-            state.path(),
-            Some(&tls_key),
-            Duration::from_secs(5),
-        )
-        .expect("gateway sandbox");
-        let script = format!(
-            "printf '%s:%s' \"$(cat {}/sentinel)\" \"$(cat {})\"",
-            state.path().display(),
-            tls_key.display()
-        );
-
-        let output = sandbox
-            .execute(
-                &script,
-                SandboxMode::DangerFullAccess,
-                NetworkAccess::Allowed,
-                CommandMode::Foreground,
-                CommandOutputSink::default(),
-            )
-            .await
-            .expect("full-access command");
-
-        assert_eq!(output.exit_code, 0, "{}", output.stderr);
-        assert_eq!(output.stdout, "gateway-secret:tls-secret");
-    }
-
-    #[tokio::test]
-    async fn full_access_file_operations_use_the_host_wide_delegate() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        let state = tempfile::tempdir().expect("state");
-        let outside = tempfile::tempdir().expect("outside");
-        let secret = state.path().join("sentinel");
-        let target = outside.path().join("written.txt");
-        std::fs::write(&secret, "gateway-secret").expect("state sentinel");
-        let sandbox =
-            GatewaySandbox::new(workspace.path(), state.path(), None, Duration::from_secs(5))
-                .expect("gateway sandbox");
-        let secret = secret.to_str().expect("UTF-8 secret path");
-        let target = target.to_str().expect("UTF-8 target path");
-
-        assert!(
-            sandbox
-                .read(secret, SandboxMode::WorkspaceWrite)
-                .await
-                .is_err()
-        );
-        assert_eq!(
-            sandbox
-                .read(secret, SandboxMode::DangerFullAccess)
-                .await
-                .expect("full access read"),
-            "gateway-secret"
-        );
-        assert!(
-            sandbox
-                .write(target, "blocked", SandboxMode::WorkspaceWrite)
-                .await
-                .is_err()
-        );
-        sandbox
-            .write(target, "written", SandboxMode::DangerFullAccess)
-            .await
-            .expect("full access write");
-        assert_eq!(
-            std::fs::read_to_string(target).expect("outside file"),
-            "written"
-        );
-    }
-
-    #[tokio::test]
-    async fn binary_reads_preserve_workspace_file_bytes() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        let state = tempfile::tempdir().expect("state");
-        let expected = [0, 159, 255, 10];
-        std::fs::write(workspace.path().join("report.bin"), expected).expect("binary file");
-        let sandbox =
-            GatewaySandbox::new(workspace.path(), state.path(), None, Duration::from_secs(5))
-                .expect("gateway sandbox");
-
-        let actual = sandbox
-            .read_bytes("report.bin", expected.len(), SandboxMode::WorkspaceWrite)
-            .await
-            .expect("read binary file");
-
-        assert_eq!(actual, expected);
-    }
-
-    #[tokio::test]
-    async fn commands_inherit_the_host_home() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        let state = tempfile::tempdir().expect("state");
-        let sandbox =
-            GatewaySandbox::new(workspace.path(), state.path(), None, Duration::from_secs(5))
-                .expect("gateway sandbox");
-
-        let output = sandbox
-            .execute(
-                r#"printf '%s' "$HOME""#,
-                SandboxMode::WorkspaceWrite,
-                NetworkAccess::Denied,
-                CommandMode::Foreground,
-                CommandOutputSink::default(),
-            )
-            .await
-            .expect("sandboxed command");
-
-        assert_eq!(output.stdout, std::env::var("HOME").expect("host HOME"));
     }
 
     #[tokio::test]

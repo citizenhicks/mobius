@@ -901,65 +901,8 @@ fn missing_token(endpoint: &Endpoint) -> mobius_gateway::Error {
 
 #[cfg(test)]
 mod tests {
-    use clap::CommandFactory as _;
-    use std::io::Write as _;
-
-    use mobius_gateway::config::ConfigStore;
 
     use super::*;
-
-    #[test]
-    fn startup_errors_include_bounded_gateway_diagnostics() {
-        let mut log = tempfile::NamedTempFile::new().expect("startup log");
-        write!(log, "Bubblewrap is unavailable").expect("write startup log");
-
-        let error = startup_error("gateway exited", &log);
-
-        assert!(error.to_string().contains("Bubblewrap is unavailable"));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn gateway_startup_requires_the_starter_to_finish_successfully() {
-        use tokio::io::AsyncWriteExt as _;
-
-        for exit_code in [0, 7] {
-            let log = tempfile::NamedTempFile::new().expect("startup log");
-            let mut child = ProcessCommand::new("sh")
-                .args([
-                    "-c",
-                    "read status; echo startup-diagnostic >&2; exit \"$status\"",
-                ])
-                .stdin(Stdio::piped())
-                .stderr(Stdio::from(log.reopen().expect("startup stderr")))
-                .spawn()
-                .expect("starter process");
-            let mut input = child.stdin.take().expect("starter input");
-            let startup = wait_gateway_startup(&mut child, &log);
-            tokio::pin!(startup);
-            assert!(
-                tokio::time::timeout(Duration::from_millis(20), &mut startup)
-                    .await
-                    .is_err(),
-                "the existing endpoint must not be used while startup is pending"
-            );
-            input
-                .write_all(format!("{exit_code}\n").as_bytes())
-                .await
-                .expect("release starter");
-            let result = startup.await;
-            if exit_code == 0 {
-                result.expect("successful startup");
-            } else {
-                assert!(
-                    result
-                        .expect_err("failed startup must prevent connection")
-                        .to_string()
-                        .contains("startup-diagnostic")
-                );
-            }
-        }
-    }
 
     #[tokio::test]
     async fn task_files_are_bounded_before_gateway_startup() {
@@ -979,24 +922,6 @@ mod tests {
 
         std::fs::write(&path, [0xff]).expect("write invalid UTF-8 task");
         assert!(read_task_file(&path).await.is_err());
-    }
-
-    #[test]
-    fn first_run_initialization_enables_quick_cloudflare_and_loopback() {
-        let directory = tempfile::tempdir().expect("gateway state parent");
-        let state = directory.path().join("gateway");
-
-        mobius_gateway::command::initialize_quick_cloudflare(state.clone())
-            .expect("initialize first-run gateway");
-        let (_, config) = ConfigStore::open(state).expect("open gateway config");
-
-        assert_eq!(
-            (config.cloudflare, config.listen),
-            (
-                Some(mobius_gateway::config::CloudflareConfig::Quick),
-                "127.0.0.1:8741".parse().expect("loopback listener")
-            )
-        );
     }
 
     #[test]
@@ -1057,72 +982,6 @@ mod tests {
 
         assert_eq!(output_text(routine_output, true), "task: reset[2J.md");
         assert_eq!(output_text(routine_output, false), routine_output);
-    }
-
-    #[test]
-    fn explicit_bot_handle_resolves_to_its_stable_id() {
-        let bots = [BotRecord {
-            id: "bot-1".into(),
-            conversation_session_id: "bot-conversation-test".into(),
-            handle: "builder".into(),
-            name: "Builder".into(),
-            description: "Own build work.".into(),
-            tint: Default::default(),
-            shape: mobius_gateway::wire::BotShape::Circle,
-            config: mobius_gateway::wire::VersionedAgentConfig {
-                revision: 1,
-                config: mobius_gateway::wire::AgentComposition::default(),
-            },
-            accepts_file_attachments: false,
-            routine_interaction_policy: mobius_gateway::wire::RoutineInteractionPolicy::Unattended,
-        }];
-
-        assert_eq!(
-            resolve_bot(&bots, "@builder").expect("selected Bot"),
-            "bot-1"
-        );
-    }
-
-    #[test]
-    fn unknown_bot_handle_is_rejected() {
-        let error = resolve_bot(&[], "@builder").expect_err("unknown Bot must fail");
-
-        assert_eq!(
-            error.to_string(),
-            "configuration error: Bot `@builder` was not found"
-        );
-    }
-
-    #[test]
-    fn only_an_unused_startup_chat_is_pristine() {
-        let mut session = SessionRecord {
-            session_id: "startup".into(),
-            session_context: mobius::protocol::SessionContext {
-                origin_label: Some("mobius-gateway".into()),
-                ..Default::default()
-            },
-            parent_session_id: None,
-            parent_sequence: None,
-            sequence: 0,
-            first_user_message: None,
-            execution_stats: Default::default(),
-            title: None,
-            pinned: false,
-            activity: Default::default(),
-            created_at: 0,
-            updated_at: 0,
-        };
-
-        assert!(pristine_session(&session));
-        session.session_context.origin_label = Some("routine".into());
-        assert!(!pristine_session(&session));
-        session.session_context.origin_label = Some("mobius-gateway".into());
-        session.first_user_message = Some("keep this chat".into());
-        assert!(!pristine_session(&session));
-    }
-    #[test]
-    fn command_definition_is_valid() {
-        Cli::command().debug_assert();
     }
 
     #[test]

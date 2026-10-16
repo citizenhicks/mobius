@@ -108,16 +108,3 @@ pub(super) fn state() -> TuiState {
         "MÖBIUS\nmodel: kimi-k3 · high".into(),
     )
 }
-
-pub(super) fn rendered_text(lines: &[ratatui::text::Line<'_>]) -> String {
-    lines
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}

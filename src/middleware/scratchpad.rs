@@ -65,8 +65,6 @@ mod presentation;
 mod projection;
 mod tools;
 
-#[cfg(test)]
-use presentation::action_list_item;
 use presentation::{format_snapshot, publish_widgets, surface_widgets, usage, widget_events};
 use projection::is_projection_item;
 use projection::next_projection;
