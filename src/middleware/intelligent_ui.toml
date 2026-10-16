@@ -1,0 +1,41 @@
+default_enabled = true
+# Editable text and defaults owned by this middleware.
+manifest_description = "Let the agent show lists, tables, charts, figures and link previews natively in the chat"
+manifest_label = "Intelligent UI"
+prompt_main = "Use `show_ui` when structured content reads better as native interface than prose: comparisons, ranked or illustrated lists, figures, trends and proportions, or a set of links worth opening. Keep simple answers as text and never repeat the document's content in prose afterwards. Use only real https URLs you obtained from tools for links and images; omit an image rather than guessing one."
+result_shown = "Shown to the user."
+
+[show_ui]
+title = "Show"
+detail = "title"
+
+[show_ui.tool]
+name = "show_ui"
+description = "Show one native interface document inline in the chat. Blocks render in order; a `section` is a heading for the blocks after it. Prefer a few well-chosen blocks over many."
+
+[show_ui.tool.parameters]
+type = "object"
+required = ["title", "blocks"]
+additionalProperties = false
+
+[show_ui.tool.parameters.properties.title]
+type = "string"
+minLength = 1
+description = "Short document heading."
+
+[show_ui.tool.parameters.properties.blocks]
+type = "array"
+minItems = 1
+maxItems = 24
+
+[show_ui.tool.parameters.properties.blocks.items]
+anyOf = [
+  { type = "object", additionalProperties = false, required = ["type", "title"], properties = { type = { const = "section" }, title = { type = "string" } } },
+  { type = "object", additionalProperties = false, required = ["type", "markdown"], properties = { type = { const = "text" }, markdown = { type = "string" } } },
+  { type = "object", additionalProperties = false, required = ["type", "items"], description = "Rows with optional thumbnail, trailing value and link.", properties = { type = { const = "list" }, items = { type = "array", minItems = 1, maxItems = 30, items = { type = "object", additionalProperties = false, required = ["title"], properties = { title = { type = "string" }, subtitle = { type = "string" }, trailing = { type = "string", description = "Short value such as a price or time." }, image_url = { type = "string", description = "https thumbnail." }, url = { type = "string", description = "https address." } } } } } },
+  { type = "object", additionalProperties = false, required = ["type", "columns", "rows"], properties = { type = { const = "table" }, columns = { type = "array", minItems = 1, maxItems = 6, items = { type = "string" } }, rows = { type = "array", minItems = 1, maxItems = 50, description = "One cell per column.", items = { type = "array", items = { type = "string" } } } } },
+  { type = "object", additionalProperties = false, required = ["type", "items"], description = "Key figures shown as tiles.", properties = { type = { const = "stats" }, items = { type = "array", minItems = 1, maxItems = 6, items = { type = "object", additionalProperties = false, required = ["label", "value"], properties = { label = { type = "string" }, value = { type = "string", description = "Preformatted value." }, detail = { type = "string", description = "Change or comparison." }, trend = { enum = ["up", "down", "flat"] } } } } } },
+  { type = "object", additionalProperties = false, required = ["type", "url", "title"], description = "Rich link preview.", properties = { type = { const = "link" }, url = { type = "string" }, title = { type = "string" }, description = { type = "string" }, image_url = { type = "string" } } },
+  { type = "object", additionalProperties = false, required = ["type", "url", "alt"], properties = { type = { const = "image" }, url = { type = "string" }, alt = { type = "string" }, caption = { type = "string" } } },
+  { type = "object", additionalProperties = false, required = ["type", "kind", "labels", "series"], description = "Every series has one value per label. Pie charts take one series of non-negative values.", properties = { type = { const = "chart" }, kind = { enum = ["bar", "line", "area", "pie"] }, title = { type = "string" }, labels = { type = "array", minItems = 1, maxItems = 40, items = { type = "string" } }, series = { type = "array", minItems = 1, maxItems = 4, items = { type = "object", additionalProperties = false, required = ["name", "values"], properties = { name = { type = "string" }, values = { type = "array", items = { type = "number" } } } } }, unit = { type = "string" } } },
+]

@@ -1,0 +1,1 @@
+Native interface documents with protocol 95: sections, lists, tables, stats, links, images, and charts. Terminal clients receive the same document content as text. Requires protocol 95 clients and gateways.

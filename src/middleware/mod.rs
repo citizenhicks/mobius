@@ -36,6 +36,7 @@ pub(crate) mod delivery_once;
 pub mod extensions;
 pub mod image_generation;
 pub mod instructions;
+pub mod intelligent_ui;
 pub mod manifest;
 pub mod messages;
 pub mod questions;

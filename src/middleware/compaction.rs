@@ -339,6 +339,7 @@ impl Middleware for Compaction {
             content: Default::default(),
             format: crate::protocol::FrontendBlockFormat::PlainText,
             tone: FrontendTone::Neutral,
+            ui: Vec::new(),
         })
     }
 

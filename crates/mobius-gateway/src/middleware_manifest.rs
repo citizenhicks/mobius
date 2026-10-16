@@ -15,6 +15,7 @@ pub(crate) enum BuiltinMiddleware {
     Sandbox,
     Attachments,
     Artifacts,
+    IntelligentUi,
     ImageGeneration,
     Tools,
     Instructions,
@@ -46,7 +47,7 @@ impl MiddlewareRegistration {
     }
 }
 
-pub(crate) static MIDDLEWARE: std::sync::LazyLock<[MiddlewareRegistration; 17]> =
+pub(crate) static MIDDLEWARE: std::sync::LazyLock<[MiddlewareRegistration; 18]> =
     std::sync::LazyLock::new(|| {
         [
             MiddlewareRegistration {
@@ -60,6 +61,10 @@ pub(crate) static MIDDLEWARE: std::sync::LazyLock<[MiddlewareRegistration; 17]> 
             MiddlewareRegistration {
                 kind: BuiltinMiddleware::Artifacts,
                 manifest: &mobius::middleware::artifacts::MANIFEST,
+            },
+            MiddlewareRegistration {
+                kind: BuiltinMiddleware::IntelligentUi,
+                manifest: &mobius::middleware::intelligent_ui::MANIFEST,
             },
             MiddlewareRegistration {
                 kind: BuiltinMiddleware::ImageGeneration,

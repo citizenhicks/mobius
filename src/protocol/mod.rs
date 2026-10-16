@@ -24,9 +24,11 @@ pub(crate) use content::{content_part_text, content_parts, content_parts_mut};
 mod events;
 mod frontend;
 mod replay;
+mod ui;
 
 pub use self::events::*;
 pub use self::frontend::*;
+pub use self::ui::*;
 
 /// Maximum total UTF-8 bytes accepted in one user-input submission.
 pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;

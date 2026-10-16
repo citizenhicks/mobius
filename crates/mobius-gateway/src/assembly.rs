@@ -785,6 +785,9 @@ fn build_middleware(
                 })
             }
             BuiltinMiddleware::Artifacts => Arc::new(Artifacts::new(session_files.clone())),
+            BuiltinMiddleware::IntelligentUi => {
+                Arc::new(mobius::middleware::intelligent_ui::IntelligentUi)
+            }
             BuiltinMiddleware::ImageGeneration => Arc::new(ImageGeneration::from_settings(
                 Arc::clone(&prepared.models),
                 session_files.clone(),

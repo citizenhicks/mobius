@@ -247,6 +247,11 @@ pub struct FrontendBlock {
     pub format: FrontendBlockFormat,
     /// The tone.
     pub tone: FrontendTone,
+    /// Native interface document, headed by `title`, rendered when `format` is `Ui`.
+    /// Append updates retain previous blocks and add these; an empty Append title keeps the
+    /// previous title.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ui: Vec<super::UiBlock>,
 }
 
 /// A capability-owned link to a file or web resource, independent of body formatting.
@@ -335,6 +340,8 @@ pub enum FrontendBlockFormat {
     UnifiedDiff,
     /// Displays a generated image or its pending placeholder.
     Image,
+    /// Displays the block's native interface document.
+    Ui,
 }
 
 /// One selectable action supplied by a capability.
@@ -612,6 +619,7 @@ impl EventMsg {
                     content: Default::default(),
                     format: FrontendBlockFormat::PlainText,
                     tone,
+                    ui: Vec::new(),
                 }
             }
             Self::Frontend(FrontendEvent::Render { capability, block }) => {
