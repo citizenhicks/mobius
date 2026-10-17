@@ -126,17 +126,6 @@ async fn extensionless_images_are_durable_and_reinspectable_after_source_deletio
                 ]
             )
             .await
-            .map(|files| files
-                .into_iter()
-                .map(|(origin, file)| crate::protocol::SessionFileRecord {
-                    origin: if origin == crate::backend::session_files::SessionFileOrigin::Upload {
-                        crate::protocol::SessionFileOrigin::User
-                    } else {
-                        crate::protocol::SessionFileOrigin::Agent
-                    },
-                    file
-                })
-                .collect::<Vec<_>>())
             .expect("published files")
             .is_empty()
     );
