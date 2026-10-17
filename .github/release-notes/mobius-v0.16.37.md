@@ -1,0 +1,1 @@
+Allow an optional checkpoint-writing model in Compaction settings. Leave it unset to inherit the conversation model, or choose a smaller model to prepare checkpoints while retaining the conversation’s selected model. The gateway advertises the existing model-route setting to native apps and the CLI. Protocol 95 is unchanged.

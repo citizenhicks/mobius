@@ -213,12 +213,23 @@ async fn prepare_checkpoint(
         .find(|tool| tool.name == "write_handoff")
         .ok_or_else(|| Error::Config("checkpoint writer is not registered".into()))?;
     let tools = std::slice::from_ref(definition);
-    let source = context.context_provider;
-    let result = prepare_response(context, policy, source, context.input(), pending, tools).await;
+    let source = policy
+        .model_route
+        .as_deref()
+        .unwrap_or(context.context_provider);
+    let result = if context
+        .model
+        .same_context_model(source, context.context_provider)
+    {
+        prepare_response(context, policy, source, context.input(), pending, tools).await
+    } else {
+        prepare_portable_response(context, policy, source, switching, tools).await
+    };
     let (output, summarized, route) = match result {
         Ok((output, summarized)) => (output, summarized, source),
         Err(error)
-            if switching
+            if policy.model_route.is_none()
+                && switching
                 && matches!(
                     error,
                     Error::Provider(_)
@@ -228,45 +239,9 @@ async fn prepare_checkpoint(
                         | Error::Io(_)
                 ) =>
         {
-            let mut portable = (0..context.input().len())
-                .map(|index| {
-                    context
-                        .input()
-                        .shared_item(index)
-                        .map(Arc::clone)
-                        .ok_or_else(|| {
-                            Error::Checkpoint(
-                                "checkpoint preparation requires shared history".into(),
-                            )
-                        })
-                })
-                .collect::<Result<Vec<_>>>()?;
-            crate::backend::model::strip_shared_provider_reasoning(&mut portable);
-            let pending = active_turn(portable.as_slice().into());
-            let (output, summarized) = prepare_response(
-                context,
-                policy,
-                context.provider,
-                portable.as_slice().into(),
-                pending,
-                tools,
-            )
-            .await?;
-            // Top-level reasoning is omitted; map partial progress to its durable boundary.
-            let summarized = if summarized == pending {
-                active_turn(context.input())
-            } else {
-                context
-                    .input()
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, item)| !crate::backend::model::is_provider_reasoning(item))
-                    .nth(summarized - 1)
-                    .map(|(index, _)| index + 1)
-                    .ok_or_else(|| {
-                        Error::Checkpoint("checkpoint preparation lost its source boundary".into())
-                    })?
-            };
+            let (output, summarized) =
+                prepare_portable_response(context, policy, context.provider, switching, tools)
+                    .await?;
             (output, summarized, context.provider)
         }
         Err(error) => return Err(error),
@@ -309,6 +284,61 @@ async fn prepare_checkpoint(
         is_error: false,
     }));
     Ok((fresh, summarized < pending))
+}
+
+async fn prepare_portable_response(
+    context: &ModelContext<'_>,
+    policy: &Compaction,
+    route: &str,
+    switching: bool,
+    tools: &[Arc<ToolDefinition>],
+) -> Result<(crate::backend::model::ModelOutput, usize)> {
+    let mut portable = (0..context.input().len())
+        .map(|index| {
+            context
+                .input()
+                .shared_item(index)
+                .map(Arc::clone)
+                .ok_or_else(|| {
+                    Error::Checkpoint("checkpoint preparation requires shared history".into())
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    crate::backend::model::strip_shared_provider_reasoning(&mut portable);
+    let pending = if switching {
+        active_turn(portable.as_slice().into())
+    } else {
+        portable.len()
+    };
+    let (output, summarized) = prepare_response(
+        context,
+        policy,
+        route,
+        portable.as_slice().into(),
+        pending,
+        tools,
+    )
+    .await?;
+    // Top-level reasoning is omitted; map partial progress to its durable boundary.
+    let summarized = if summarized == pending {
+        if switching {
+            active_turn(context.input())
+        } else {
+            context.input().len()
+        }
+    } else {
+        context
+            .input()
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| !crate::backend::model::is_provider_reasoning(item))
+            .nth(summarized - 1)
+            .map(|(index, _)| index + 1)
+            .ok_or_else(|| {
+                Error::Checkpoint("checkpoint preparation lost its source boundary".into())
+            })?
+    };
+    Ok((output, summarized))
 }
 
 async fn prepare_response(

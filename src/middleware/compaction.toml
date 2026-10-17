@@ -20,6 +20,16 @@ message_one_handoff_call = "checkpoint preparation must return one write_handoff
 message_input_too_large = "checkpoint preparation cannot fit one complete input or tool batch; the chat and pending input are preserved"
 
 [[settings]]
+choices = { source = "model_routes" }
+composer = false
+description = "Model route used to prepare conversation checkpoints"
+id = "model_route"
+label = "Checkpoint model"
+max_bytes = 4096
+type = "select"
+unset_label = "Inherit conversation"
+
+[[settings]]
 choices = { options = [{ description = "Automatic compaction only", disables = [], label = "Off", tone = "neutral", value = "off" }, { description = "Also allow the model to request an early context reset", disables = [], label = "On", tone = "neutral", value = "on" }], source = "static" }
 composer = false
 default = "off"

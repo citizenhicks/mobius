@@ -81,6 +81,7 @@ struct SessionCount {
 
 /// Compacts visible context after a configurable token threshold.
 pub struct Compaction {
+    model_route: Option<String>,
     at_tokens: i64,
     allow_model_compaction: bool,
     reserve_tokens: i64,
@@ -90,6 +91,7 @@ pub struct Compaction {
 impl Default for Compaction {
     fn default() -> Self {
         Self {
+            model_route: None,
             at_tokens: super::manifest::integer_default(&text::DEFINITION.settings, "at_tokens"),
             allow_model_compaction: super::manifest::string_default(
                 &text::DEFINITION.settings,
@@ -161,9 +163,28 @@ impl Compaction {
                 ));
             }
         };
-        Ok(Self::new(integer("at_tokens")?)?
-            .reserve_tokens(integer("reserve_tokens")?)?
-            .allow_model_compaction(allow))
+        let model_route = match setting("model_route") {
+            None => None,
+            Some(FrontendSettingValue::String(route)) => Some(route.to_owned()),
+            Some(_) => {
+                return Err(Error::Config(
+                    "compaction.model_route must be a model route".into(),
+                ));
+            }
+        };
+        Ok(Self {
+            model_route,
+            ..Self::new(integer("at_tokens")?)?
+                .reserve_tokens(integer("reserve_tokens")?)?
+                .allow_model_compaction(allow)
+        })
+    }
+
+    /// Selects the checkpoint writer; unset policies inherit the conversation model.
+    #[must_use]
+    pub fn model_route(mut self, route: impl Into<String>) -> Self {
+        self.model_route = Some(route.into());
+        self
     }
 
     /// Allows the model to request an early checkpoint and context reset.

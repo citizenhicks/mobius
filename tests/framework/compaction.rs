@@ -247,6 +247,83 @@ async fn automatic_plaintext_checkpoint_survives_recreation_and_keeps_the_prefix
 }
 
 #[tokio::test]
+async fn checkpoint_model_override_keeps_the_conversation_on_its_selected_route() {
+    let workspace = TempDir::new().expect("workspace");
+    let conversation = Arc::new(ScriptedModel::new(vec![
+        ModelOutput::from_output(
+            vec![
+                serde_json::json!({"type": "reasoning", "encrypted_content": "private"}),
+                serde_json::json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "draft"}]}),
+            ],
+            true,
+            usage(2_000),
+        )
+        .expect("draft"),
+        text_response("done"),
+    ]));
+    let writer = Arc::new(ScriptedModel::new(vec![checkpoint_response(
+        "Goal: finish the original task. Progress: draft prepared.",
+    )]));
+    let mut router = ModelRouter::new("test", conversation.clone());
+    router
+        .register("checkpoint", writer.clone())
+        .expect("route");
+    let settings = BTreeMap::from([
+        (
+            "model_route",
+            mobius::protocol::FrontendSettingValue::String("checkpoint".into()),
+        ),
+        (
+            "at_tokens",
+            mobius::protocol::FrontendSettingValue::Integer(1_000),
+        ),
+    ]);
+    let config = AgentConfig::new(
+        Arc::new(router),
+        Arc::new(Sandbox::new(
+            Arc::new(LocalSandbox::new(workspace.path()).expect("sandbox")),
+            ApprovalPolicy::Ask,
+        )),
+        Arc::new(SqliteCheckpoint::new(workspace.path().join("state.sqlite3")).expect("store")),
+        MiddlewareStack::new(vec![
+            Arc::new(Messages::default()),
+            Arc::new(Compaction::from_settings(|id| settings.get(id)).expect("policy")),
+        ])
+        .expect("middleware"),
+        "test system prompt",
+    )
+    .session_id("separate-writer")
+    .session_context(test_session_context());
+    let mut agent = create_agent(config).await.expect("agent");
+    agent
+        .sender()
+        .submit(user_message("original task"))
+        .expect("first");
+    assert_eq!(final_message(&mut agent).await, "draft");
+    agent
+        .sender()
+        .submit(user_message("continue"))
+        .expect("next");
+    assert_eq!(final_message(&mut agent).await, "done");
+    let requests = conversation.requests.lock().expect("conversation requests");
+    assert_eq!(requests.len(), 2);
+    assert!(
+        serde_json::to_string(&requests[1].input)
+            .expect("input")
+            .contains("draft prepared")
+    );
+    let summaries = writer.requests.lock().expect("checkpoint requests");
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].tools.len(), 1);
+    assert_eq!(summaries[0].tools[0].name, "write_handoff");
+    assert!(
+        !serde_json::to_string(&summaries[0].input)
+            .expect("writer input")
+            .contains("encrypted_content")
+    );
+}
+
+#[tokio::test]
 async fn invalid_checkpoint_preserves_original_and_pending_input() {
     let workspace = TempDir::new().expect("workspace");
     let model = Arc::new(ScriptedModel::new(vec![
