@@ -1,5 +1,6 @@
 default_enabled = false
 manifest_label = "Image generation"
+prompt_main = "`generate_image`: create or edit an image for the user."
 manifest_description = "Create images with any configured image model"
 render_ready = "Image ready"
 render_failed = "Image generation failed"
@@ -13,7 +14,7 @@ id = "model"
 label = "Model"
 max_bytes = 4096
 type = "select"
-unset_label = "First available"
+unset_label = "Automatic"
 
 [generate_image]
 title = "Generating image"

@@ -8,57 +8,20 @@ group = "read"
 
 [read_file.tool]
 name = "read_file"
-description = "Read a UTF-8 text file under the active sandbox policy. Returns its contents; read the current text before editing."
+description = "Read a UTF-8 text file, or view a PNG, JPEG, WebP or GIF image, under the active sandbox policy. Supply path or an authorized image file_id, never both. Read the current text before editing."
 
 [read_file.tool.parameters]
 type = "object"
-required = ["path"]
+oneOf = [{ required = ["path"] }, { required = ["file_id"] }]
 additionalProperties = false
-
-[read_file.tool.parameters.properties]
 
 [read_file.tool.parameters.properties.path]
 type = "string"
 description = "Workspace-relative path such as `src/main.rs`, or an absolute path allowed by the active sandbox policy."
 
-[view_image]
-title = "View image"
-detail = ""
-
-[view_image.tool]
-name = "view_image"
-description = "View a local PNG, JPEG, WebP, or GIF image when visual inspection is needed. For each image, supply path or file_id, never both."
-
-[view_image.tool.parameters]
-type = "object"
-required = ["images"]
-additionalProperties = false
-
-[view_image.tool.parameters.properties]
-
-[view_image.tool.parameters.properties.images]
-type = "array"
-minItems = 1
-maxItems = 16
-
-[view_image.tool.parameters.properties.images.items]
-type = "object"
-additionalProperties = false
-oneOf = [{ required = ["path"] }, { required = ["file_id"] }]
-
-[view_image.tool.parameters.properties.images.items.properties]
-
-[view_image.tool.parameters.properties.images.items.properties.path]
+[read_file.tool.parameters.properties.file_id]
 type = "string"
-description = "Workspace-relative image path, or an absolute path allowed by the active sandbox policy."
-
-[view_image.tool.parameters.properties.images.items.properties.file_id]
-type = "string"
-description = "An image file ID authorized in this session; provide either path or file_id."
-
-[view_image.tool.parameters.properties.images.items.properties.detail]
-type = "string"
-enum = ["auto", "low", "high"]
+description = "An image file ID authorized in this session."
 
 [write_file]
 title = "Write"

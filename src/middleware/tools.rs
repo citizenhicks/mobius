@@ -53,7 +53,7 @@ mod coding;
 mod commands;
 mod patch;
 
-use coding::{ApplyPatch, ReadFile, ViewImage, WriteFile};
+use coding::{ApplyPatch, ReadFile, WriteFile};
 use commands::{Bash, ManageCommand};
 #[cfg(test)]
 use patch::{apply_patch_document, parse_patch_document, validate_patch_complexity};
@@ -1389,18 +1389,14 @@ impl Tools {
     /// Creates the ordinary read-only file and image tools.
     #[must_use]
     pub fn reading(files: crate::backend::session_files::SessionFileStore) -> Self {
-        Self::new(vec![
-            Arc::new(ReadFile),
-            Arc::new(ViewImage { store: files }),
-        ])
+        Self::new(vec![Arc::new(ReadFile { store: files })])
     }
 
     /// Creates the default file and command tools.
     #[must_use]
     pub fn coding(files: crate::backend::session_files::SessionFileStore) -> Self {
         Self::new(vec![
-            Arc::new(ReadFile),
-            Arc::new(ViewImage { store: files }),
+            Arc::new(ReadFile { store: files }),
             Arc::new(WriteFile),
             Arc::new(ApplyPatch),
             Arc::new(Bash),

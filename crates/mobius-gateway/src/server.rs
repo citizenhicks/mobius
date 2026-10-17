@@ -43,7 +43,7 @@ use uuid::Uuid;
 use crate::auth::{AuthStore, ClientIdentity, PairingGrant};
 use crate::bots::BotStore;
 use crate::config::{ConfigStore, CredentialStore, GatewayConfig, TlsConfig};
-use crate::host::{GatewayHost, HostHandle, Rejection};
+use crate::host::{GatewayHost, HostHandle, Rejection, SessionHistoryPage};
 use crate::wire::{
     CatalogHint, ClientFrame, ClientKind, ClientMessage, ClientStatus, DirectoryEntry,
     DirectoryListing, FrameReader, GatewayNotification, MAX_FRAME_BYTES, ProfileSnapshot,

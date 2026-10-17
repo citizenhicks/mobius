@@ -193,7 +193,7 @@ Tool results contain ordered `ContentPart` text, image, and file observations. I
 same `backend::session_files::SessionFileStore` into `ModelRouter` and media-capable
 middleware. Images are validated and stored immutably; checkpoints hold references,
 and model requests resolve their bytes without changing earlier observations. Use
-`view_image` with an `images` array of paths or authorized `file_id` values, and
+`read_file` with a workspace path or an authorized image `file_id`, and
 `send_artifact` to publish a stored reference. The CLI shows image metadata; the Apple
 app provides previews.
 

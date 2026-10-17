@@ -2,12 +2,11 @@ use super::*;
 
 pub(super) async fn write_session_history(
     writer: &mut (impl AsyncWrite + Unpin),
-    host: &HostHandle,
+    page: std::result::Result<SessionHistoryPage, Rejection>,
     request_id: String,
     session_id: String,
-    before_sequence: Option<u64>,
 ) -> Result<()> {
-    let page = match host.history_page(before_sequence).await {
+    let page = match page {
         Ok(page) => page,
         Err(rejection) => return write_rejection(writer, request_id, rejection).await,
     };

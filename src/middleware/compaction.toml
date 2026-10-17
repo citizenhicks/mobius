@@ -24,10 +24,10 @@ choices = { source = "model_routes" }
 composer = false
 description = "Model route used to prepare conversation checkpoints"
 id = "model_route"
-label = "Checkpoint model"
+label = "Model"
 max_bytes = 4096
 type = "select"
-unset_label = "Inherit conversation"
+unset_label = "Same as chat"
 
 [[settings]]
 choices = { options = [{ description = "Automatic compaction only", disables = [], label = "Off", tone = "neutral", value = "off" }, { description = "Also allow the model to request an early context reset", disables = [], label = "On", tone = "neutral", value = "on" }], source = "static" }
@@ -35,7 +35,7 @@ composer = false
 default = "off"
 description = "Whether the model can request an early checkpoint and context reset"
 id = "allow_model_compaction"
-label = "Allow model-requested compaction"
+label = "Early reset"
 max_bytes = 3
 type = "select"
 

@@ -3,7 +3,7 @@ default_enabled = false
 command_tasks_description = "show the current todo list"
 manifest_description = "Maintain a durable todo list for multi-step work"
 manifest_label = "Tasks"
-prompt_main = "Use `write_todos` only for genuinely multi-step work. Keep the list short, mark work in_progress before starting and completed immediately after finishing, and end with a substantive answer. A <tasks> block restores the authoritative saved list when context restarts."
+prompt_main = "`write_todos`: a short checklist for genuinely multi-step work."
 render_empty = "No tasks."
 render_pending = "[ ]"
 render_in_progress = "[~]"
@@ -21,7 +21,7 @@ count = "todos"
 
 [write_todos.tool]
 name = "write_todos"
-description = "Replace the session todo list with the complete desired list; omitted items are removed, and an empty list clears it."
+description = "Replace the session todo list with the complete desired list; omitted items are removed, and an empty list clears it. Use only for genuinely multi-step work and keep it short. Mark an item in_progress before starting it and completed as soon as it is done, then end with a substantive answer. A <tasks> block restores the saved list when context restarts."
 
 [write_todos.tool.parameters]
 type = "object"

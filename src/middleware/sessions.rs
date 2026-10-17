@@ -11,7 +11,7 @@ use super::Middleware;
 use super::MiddlewareCommandContext;
 use super::MiddlewareCommandOutput;
 use super::RuntimeContext;
-use super::tools::{Catalog, ExecutionMode, Tool, ToolContext, ToolExposure, rank_bm25};
+use super::tools::{Catalog, ExecutionMode, Tool, ToolContext, rank_bm25};
 use crate::BoxFuture;
 use crate::Error;
 use crate::Result;
@@ -52,6 +52,8 @@ mod text {
         pub(super) command_resume_description: String,
         pub(super) manifest_description: String,
         pub(super) manifest_label: String,
+        pub(super) prompt_history: String,
+        pub(super) prompt_chats: String,
         pub(super) message_fork_usage: String,
         pub(super) message_forked: String,
         pub(super) message_no_fork_messages: String,
@@ -268,6 +270,16 @@ impl Middleware for Sessions {
         catalog.register(Arc::new(MessageChat(chats)))
     }
 
+    fn prompt_section(&self, runtime: &RuntimeContext) -> Result<Option<super::PromptSection>> {
+        let chats =
+            self.live_chats.is_some() && matches!(runtime.role, crate::agent::AgentRole::Main);
+        Ok(Some(super::PromptSection::new(if chats {
+            text::DEFINITION.prompt_chats.as_str()
+        } else {
+            text::DEFINITION.prompt_history.as_str()
+        })))
+    }
+
     fn frontend(&self, _session_id: &str) -> FrontendContribution {
         FrontendContribution {
             capability: MANIFEST.id.into(),
@@ -459,10 +471,6 @@ impl Tool for ListChats {
         true
     }
 
-    fn exposure(&self) -> ToolExposure {
-        ToolExposure::Direct
-    }
-
     fn execution_mode(&self) -> ExecutionMode {
         ExecutionMode::Parallel
     }
@@ -494,10 +502,6 @@ impl Tool for ListChats {
 impl Tool for MessageChat {
     fn definition(&self) -> ToolDefinition {
         text::DEFINITION.message_chat.tool.clone()
-    }
-
-    fn exposure(&self) -> ToolExposure {
-        ToolExposure::Direct
     }
 
     fn call<'a>(
@@ -535,10 +539,6 @@ impl Tool for SearchHistory {
         true
     }
 
-    fn exposure(&self) -> ToolExposure {
-        ToolExposure::Direct
-    }
-
     fn execution_mode(&self) -> ExecutionMode {
         ExecutionMode::Parallel
     }
@@ -566,10 +566,6 @@ impl Tool for ReadHistory {
 
     fn read_only(&self) -> bool {
         true
-    }
-
-    fn exposure(&self) -> ToolExposure {
-        ToolExposure::Direct
     }
 
     fn execution_mode(&self) -> ExecutionMode {

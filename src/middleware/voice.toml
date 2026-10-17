@@ -38,4 +38,4 @@ id = "model"
 label = "Voice"
 max_bytes = 4096
 type = "select"
-unset_label = "First available"
+unset_label = "Automatic"

@@ -913,11 +913,18 @@ async fn get_session_history(
     session_id: String,
     before_sequence: Option<u64>,
 ) -> Result<()> {
-    let host = match require_selected(&*connection.selected, &session_id) {
-        Ok(host) => host,
-        Err(rejection) => return write_rejection(writer, request_id, rejection).await,
+    let page = match connection.selected {
+        Some(selected) if selected.host.session_id() == session_id => {
+            selected.host.history_page(before_sequence).await
+        }
+        _ => {
+            connection
+                .gateway
+                .read_session_history(&session_id, before_sequence)
+                .await
+        }
     };
-    write_session_history(writer, host, request_id, session_id, before_sequence).await
+    write_session_history(writer, page, request_id, session_id).await
 }
 
 async fn rename_session(

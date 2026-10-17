@@ -9,7 +9,7 @@ use serde_json::Value;
 use super::tools::{ApprovalRequirement, Catalog, ExecutionMode, Tool, ToolContext, ToolExposure};
 use super::{
     ActiveCommandContext, FrontendEventSink, Middleware, MiddlewareCommandContext,
-    MiddlewareCommandOutput, PromptSection, RuntimeContext, SessionStartContext, SubmissionResult,
+    MiddlewareCommandOutput, RuntimeContext, SessionStartContext, SubmissionResult,
 };
 use crate::agent::{AgentRole, WeakAgentSender};
 use crate::backend::checkpoint::CheckpointStore;
@@ -28,7 +28,6 @@ struct Definition {
     default_enabled: bool,
     manifest_label: String,
     manifest_description: String,
-    prompt_root: String,
     ask_user: super::tools::ToolSpec,
     command_answer_description: String,
     command_skip_description: String,
@@ -158,11 +157,6 @@ impl Middleware for Questions {
         catalog.register(Arc::new(AskUser(Arc::clone(&session))))?;
         self.sessions()?.insert(runtime.session_id.clone(), session);
         Ok(())
-    }
-
-    fn prompt_section(&self, runtime: &RuntimeContext) -> Result<Option<PromptSection>> {
-        Ok(matches!(runtime.role, AgentRole::Main)
-            .then(|| PromptSection::new(&DEFINITION.prompt_root)))
     }
 
     fn frontend(&self, _session_id: &str) -> FrontendContribution {

@@ -1,7 +1,6 @@
 default_enabled = true
 manifest_label = "Questions"
 manifest_description = "Ask the user for missing information without blocking work"
-prompt_root = "Use ask_user only for missing information, a preference, a constraint, or clarification. Ask one self-contained question per call, with the recommended option first and only a few short options. The call returns immediately: keep doing work that does not depend on the answer. The answer arrives as a user message quoting the question. If it is required, finish independent work and end the turn; the answer can start the next turn. Elapsed time is not an answer."
 command_answer_description = "answer an open question"
 command_skip_description = "skip an open question"
 widget_title = "Questions"
@@ -29,7 +28,7 @@ detail = "title"
 
 [ask_user.tool]
 name = "ask_user"
-description = "Ask the user one short, self-contained question and continue working. Suggested options are optional; put the recommended answer first. The user can answer during this turn or later. Ask only for missing information, preferences, constraints, or clarification."
+description = "Ask the user one short, self-contained question, only for missing information, a preference, a constraint, or clarification. Returns immediately: keep doing work that does not depend on the answer. The answer arrives later as a user message quoting the question; if it is required, finish independent work and end the turn. Elapsed time is not an answer. Offer a few short options with the recommended one first."
 
 [ask_user.tool.parameters]
 type = "object"

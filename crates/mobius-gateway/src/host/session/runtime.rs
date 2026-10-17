@@ -545,23 +545,13 @@ impl HostState {
         &self,
         before_sequence: Option<u64>,
     ) -> std::result::Result<SessionHistoryPage, Rejection> {
-        let page = event_turn_page(
+        durable_history_page(
             self.checkpoints.as_ref(),
             &self.running.session_id,
+            &self.running.frontend,
             before_sequence,
         )
         .await
-        .map_err(internal)?;
-        let next_before_sequence = page.next_before_sequence;
-        let records = page
-            .into_chronological()
-            .into_iter()
-            .map(|event| project_record(&self.running.frontend, event))
-            .collect();
-        Ok(SessionHistoryPage {
-            records,
-            next_before_sequence,
-        })
     }
 
     pub(super) fn replay_after(

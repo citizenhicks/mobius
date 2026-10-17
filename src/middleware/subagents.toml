@@ -14,7 +14,7 @@ fork_none = "No context"
 manifest_description = "Delegate independent work to durable child agents"
 manifest_label = "Subagents"
 prompt_child = "You are `{path}`, a child agent.\nCollaborate continuously with your parent: use `send_message` at its canonical path for useful findings, blockers, and questions as they arise. Complete the task and report concisely when done."
-prompt_root = "Delegate independent work to subagents when it can run in parallel. Spawn with fresh context by default; include recent turns only when the task requires them, and full history only when essential. They share files; continue your own work while they run, and wait only when you need their results."
+prompt_root = "`spawn_agent`: delegate independent work to run in parallel."
 render_open = "Open subagent"
 render_open_empty = "Open subagent · no subagents"
 status_title = "Subagents"
@@ -24,10 +24,10 @@ choices = { "source" = "model_routes" }
 composer = false
 description = "Model route used by child agents when a spawn does not select one"
 id = "model_route"
-label = "Default model"
+label = "Model"
 max_bytes = 4096
 type = "select"
-unset_label = "Inherit parent"
+unset_label = "Same as parent"
 
 [[settings]]
 default = 4
@@ -145,7 +145,7 @@ detail = "task_name"
 
 [spawn_agent.tool]
 name = "spawn_agent"
-description = "Start an async child for independent work in this chat's subagent task tree; return its canonical task path before completion. Children share files; give each a clear task and file ownership. Child tool approvals are denied."
+description = "Start an async child for independent work in this chat's subagent task tree; returns its canonical task path before completion. Use fresh context by default; include recent turns only when the task needs them, and full history only when essential. Children share files; give each a clear task and file ownership. Keep working while they run and wait only when you need their results. Child tool approvals are denied."
 
 [spawn_agent.tool.parameters]
 type = "object"

@@ -2,7 +2,7 @@ default_enabled = true
 # Editable text and defaults owned by this middleware.
 manifest_description = "Let the agent show lists, tables, charts, figures and link previews natively in the chat"
 manifest_label = "Intelligent UI"
-prompt_main = "Use `show_ui` when structured content reads better as native interface than prose: comparisons, ranked or illustrated lists, figures, trends and proportions, or a set of links worth opening. Keep simple answers as text and never repeat the document's content in prose afterwards. Use only real https URLs you obtained from tools for links and images; omit an image rather than guessing one."
+prompt_main = "`show_ui`: lists, tables, charts, figures and link cards shown natively; prefer it to prose for structured answers."
 result_shown = "Shown to the user."
 
 [show_ui]
@@ -11,7 +11,15 @@ detail = "title"
 
 [show_ui.tool]
 name = "show_ui"
-description = "Show one native interface document inline in the chat. Blocks render in order; a `section` is a heading for the blocks after it. Prefer a few well-chosen blocks over many."
+description = """Show one native interface document inline in the chat, after gathering the facts with other tools. Blocks render in order. Compose with:
+- `text` first, stating the takeaway in a sentence or two;
+- `stats` for two to four headline figures, with `detail` and `trend` when something changed;
+- `chart`: `line` or `area` for change over time, `bar` to compare categories, `pie` for shares of a whole;
+- `table` when several options share three or more attributes;
+- `list` for places, products, people or steps, with `subtitle`, `trailing` for a price, time or score, and `url`/`image_url` when known;
+- `link` for the few sources most worth opening, saying why;
+- `section` headings to group a longer document.
+Mix block types; three to eight blocks is typical. Use only real https URLs that tools returned and omit an image rather than guess one. Afterwards add at most a sentence or two with a recommendation, never a restatement."""
 
 [show_ui.tool.parameters]
 type = "object"

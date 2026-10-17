@@ -43,5 +43,5 @@ mod batch_scheduling;
 mod discovery;
 mod dispatch_safety;
 mod presentation;
+mod read_image;
 mod registry;
-mod view_image;

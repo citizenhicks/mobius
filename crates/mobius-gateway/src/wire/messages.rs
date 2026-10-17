@@ -82,8 +82,9 @@ pub enum ClientMessage {
         /// Broadcasts to suppress until replaced or the connection closes.
         disabled: BTreeSet<GatewayNotification>,
     },
-    /// Selects a chat for file, history and workspace requests without replaying or
-    /// streaming its events; answered by `session_opened` alone.
+    /// Selects a chat for file and workspace requests without replaying or streaming
+    /// its events; answered by `session_opened` alone. Selecting loads a stopped chat
+    /// and runs its start-up, so history reads should not select first.
     SelectSession {
         /// The request identifier.
         request_id: String,
@@ -238,7 +239,10 @@ pub enum ClientMessage {
         /// The last sequence.
         last_sequence: Option<u64>,
     },
-    /// Selects the get session history case.
+    /// Requests one complete durable turn page of any chat this client could select;
+    /// answered by `session_history`. The selected chat answers itself. Any other chat
+    /// is read without selecting, loading or starting it; when it is not running,
+    /// records carry only framework-rendered blocks, not middleware-rendered ones.
     GetSessionHistory {
         /// The request identifier.
         request_id: String,

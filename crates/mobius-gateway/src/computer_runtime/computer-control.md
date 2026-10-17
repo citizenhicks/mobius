@@ -171,7 +171,7 @@ emitImage copies the file immediately; later edits do not change the observation
 Images and text retain emission order. Do not print base64 or emit an image twice.
 For a transformed capture, describe its transform and coordinate mapping before
 emitting it. Screenshots are observations; use send_artifact when the user wants
-a downloadable deliverable. view_image can reopen an authorized file_id from an
+a downloadable deliverable. read_file can reopen an authorized file_id from an
 earlier observation. Temporary paths belong to the current execution lifetime;
 recorded session files survive interpreter loss.
 

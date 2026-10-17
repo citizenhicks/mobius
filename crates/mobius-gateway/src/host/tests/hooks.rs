@@ -141,7 +141,6 @@ async fn project_free_chats_expose_reads_without_coding_mutations() {
             .unwrap();
         let tools = model.tools.lock().unwrap().last().unwrap().clone();
         assert!(tools.iter().any(|tool| tool == "read_file"));
-        assert!(tools.iter().any(|tool| tool == "view_image"));
         assert_eq!(
             tools.iter().any(|tool| tool == "schedule_routine"),
             persistent

@@ -19,7 +19,6 @@ use crate::{BoxFuture, Error, Result};
 #[serde(deny_unknown_fields)]
 struct Definition {
     read_file: super::ToolSpec,
-    view_image: super::ToolSpec,
     write_file: super::ToolSpec,
     apply_patch: super::ToolSpec,
 }
@@ -27,11 +26,15 @@ crate::embedded_config! { static DEFINITION: Definition = include_str!("coding.t
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PathArgs {
-    path: String,
+struct ReadArgs {
+    path: Option<String>,
+    file_id: Option<String>,
 }
 
-pub(super) struct ReadFile;
+/// Reads text files and views images, by workspace path or authorized session file.
+pub(super) struct ReadFile {
+    pub(super) store: SessionFileStore,
+}
 
 impl Tool for ReadFile {
     fn definition(&self) -> ToolDefinition {
@@ -39,91 +42,14 @@ impl Tool for ReadFile {
     }
 
     fn render(&self, event: &crate::protocol::EventMsg) -> Option<crate::protocol::FrontendBlock> {
-        DEFINITION.read_file.render(event)
-    }
-
-    fn read_only(&self) -> bool {
-        true
-    }
-
-    fn exposure(&self) -> ToolExposure {
-        ToolExposure::Direct
-    }
-
-    fn execution_mode(&self) -> ExecutionMode {
-        ExecutionMode::Parallel
-    }
-
-    fn call<'a>(
-        &'a self,
-        context: ToolContext,
-        arguments: Value,
-    ) -> BoxFuture<'a, Result<crate::protocol::ToolResponse>> {
-        Box::pin(async move {
-            let arguments: PathArgs = serde_json::from_value(arguments)?;
-            context
-                .sandbox
-                .read(&arguments.path, &context.permissions)
-                .await
-                .map(Into::into)
-        })
-    }
-}
-
-pub(super) struct ViewImage {
-    pub(super) store: SessionFileStore,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ViewImageArgs {
-    images: Vec<ImageSource>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ImageSource {
-    path: Option<String>,
-    file_id: Option<String>,
-    #[serde(default)]
-    detail: ImageDetail,
-}
-
-impl Tool for ViewImage {
-    fn definition(&self) -> ToolDefinition {
-        DEFINITION.view_image.tool.clone()
-    }
-
-    fn tool_exposure(&self, context: &mut super::ToolExposureContext<'_>) {
-        if !context.supports_tool_image_input() {
-            context.hide(&[DEFINITION.view_image.tool.name.as_str()]);
+        let mut block = DEFINITION.read_file.render(event)?;
+        if let EventMsg::ToolCallBegin(call) = event
+            && call.arguments.get("path").and_then(Value::as_str).is_none()
+            && let Some(file_id) = call.arguments.get("file_id").and_then(Value::as_str)
+        {
+            block.text = super::formatted_tool_text(file_id);
         }
-    }
-
-    fn render(&self, event: &EventMsg) -> Option<FrontendBlock> {
-        super::render_tool_event(
-            event,
-            |name| name == DEFINITION.view_image.tool.name,
-            |_, arguments| {
-                let detail = arguments
-                    .get("images")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|image| {
-                        image
-                            .get("path")
-                            .or_else(|| image.get("file_id"))
-                            .and_then(Value::as_str)
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                super::ToolHeading {
-                    title: DEFINITION.view_image.title.clone(),
-                    detail,
-                }
-            },
-        )
+        Some(block)
     }
 
     fn read_only(&self) -> bool {
@@ -144,60 +70,53 @@ impl Tool for ViewImage {
         arguments: Value,
     ) -> BoxFuture<'a, Result<ToolResponse>> {
         Box::pin(async move {
-            let arguments: ViewImageArgs = serde_json::from_value(arguments)?;
-            if arguments.images.is_empty() || arguments.images.len() > 16 {
-                return Err(Error::Tool("view_image requires 1–16 images".into()));
-            }
-            let mut content = Vec::new();
-            for source in arguments.images {
-                let image = match (source.path, source.file_id) {
-                    (Some(path), None) => {
-                        let bytes = context
-                            .sandbox
-                            .read_bytes(
-                                &path,
-                                crate::backend::sandbox::MAX_BINARY_FILE_BYTES,
-                                &context.permissions,
-                            )
-                            .await?;
-                        let name = std::path::Path::new(&path)
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .ok_or_else(|| Error::Tool("image path must name a file".into()))?;
-                        self.store
-                            .ingest_image(
-                                context.permissions.session_id(),
-                                name.into(),
-                                bytes,
-                                source.detail,
-                            )
-                            .await?
+            let arguments: ReadArgs = serde_json::from_value(arguments)?;
+            let session = context.permissions.session_id();
+            // Models without image input see a text placeholder; the request layer swaps it in.
+            let image = match (arguments.path, arguments.file_id) {
+                (Some(path), None) => {
+                    let bytes = context
+                        .sandbox
+                        .read_bytes(
+                            &path,
+                            crate::backend::sandbox::MAX_BINARY_FILE_BYTES,
+                            &context.permissions,
+                        )
+                        .await?;
+                    if image::guess_format(&bytes).is_err() {
+                        if bytes.len() > crate::backend::sandbox::MAX_FILE_BYTES {
+                            return Err(Error::Sandbox("file exceeds read limit".into()));
+                        }
+                        return String::from_utf8(bytes)
+                            .map(Into::into)
+                            .map_err(|_| Error::Sandbox(format!("{path} is not valid UTF-8")));
                     }
-                    (None, Some(file_id)) => {
-                        let file = self
-                            .store
-                            .file_reference(context.permissions.session_id(), &file_id)
-                            .await?;
-                        self.store
-                            .inspect_image(context.permissions.session_id(), &file, source.detail)
-                            .await?
-                    }
-                    _ => {
-                        return Err(Error::Tool(
-                            "each image requires exactly one of path or file_id".into(),
-                        ));
-                    }
-                };
-                content.push(ContentPart::Text {
-                    text: format!(
-                        "{}: {} × {} pixels; file_id={}",
-                        image.file.name, image.width, image.height, image.file.id
-                    ),
-                });
-                content.push(ContentPart::Image { image });
-            }
+                    let name = std::path::Path::new(&path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .ok_or_else(|| Error::Tool("image path must name a file".into()))?;
+                    self.store
+                        .ingest_image(session, name.into(), bytes, ImageDetail::Auto)
+                        .await?
+                }
+                (None, Some(file_id)) => {
+                    let file = self.store.file_reference(session, &file_id).await?;
+                    self.store
+                        .inspect_image(session, &file, ImageDetail::Auto)
+                        .await?
+                }
+                _ => return Err(Error::Tool("provide exactly one of path or file_id".into())),
+            };
             Ok(ToolResponse {
-                content: ToolContent(content),
+                content: ToolContent(vec![
+                    ContentPart::Text {
+                        text: format!(
+                            "{}: {} × {} pixels; file_id={}",
+                            image.file.name, image.width, image.height, image.file.id
+                        ),
+                    },
+                    ContentPart::Image { image },
+                ]),
                 is_error: false,
             })
         })

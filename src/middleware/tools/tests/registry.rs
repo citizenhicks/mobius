@@ -54,10 +54,9 @@ fn only_inspection_tools_declare_read_only() {
     let files = tempfile::tempdir().expect("files");
     let mut catalog = Catalog::default();
     for tool in [
-        Arc::new(ReadFile) as Arc<dyn Tool>,
-        Arc::new(ViewImage {
+        Arc::new(ReadFile {
             store: crate::backend::session_files::SessionFileStore::new(files.path(), None),
-        }),
+        }) as Arc<dyn Tool>,
         Arc::new(WriteFile),
         Arc::new(ApplyPatch),
         Arc::new(Bash),
@@ -67,7 +66,7 @@ fn only_inspection_tools_declare_read_only() {
     }
     catalog.register_search().expect("register tools_search");
 
-    let read_only = ["read_file", "view_image", TOOLS_SEARCH_NAME];
+    let read_only = ["read_file", TOOLS_SEARCH_NAME];
     for name in read_only {
         assert!(catalog.is_read_only(name), "{name}");
     }

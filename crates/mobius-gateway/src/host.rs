@@ -196,6 +196,24 @@ pub(crate) struct SessionHistoryPage {
     pub(crate) next_before_sequence: Option<u64>,
 }
 
+/// How a chat request is admitted against session mutations.
+enum Admission {
+    /// May start the chat, so remote execution must be available.
+    Execute,
+    /// Only reads durable state.
+    Observe,
+}
+
+/// A chat that passed selection checks.
+enum AuthorizedChat {
+    Resident(HostHandle),
+    /// A Bot's persistent chat that has never started.
+    Unstarted {
+        bot_id: String,
+    },
+    Stored(ChatSpec),
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct Rejection {
     pub(crate) code: &'static str,
@@ -842,14 +860,70 @@ impl GatewayHost {
         session_id: &str,
         cache: bool,
     ) -> std::result::Result<(HostHandle, bool), Rejection> {
+        let (chat, mutation) = self.authorize_chat(session_id, Admission::Execute).await?;
+        let spec = match chat {
+            AuthorizedChat::Resident(host) => return Ok((host, false)),
+            AuthorizedChat::Unstarted { bot_id } => {
+                drop(mutation);
+                let host = self
+                    .create_session_with_id(
+                        None,
+                        &bot_id,
+                        session_id.into(),
+                        true,
+                        "persistent chat",
+                    )
+                    .await?;
+                return Ok((host, false));
+            }
+            AuthorizedChat::Stored(spec) => spec,
+        };
+        let capacity = self.ensure_capacity().await?;
+        let mut state = self.state.lock().await;
+        if let Some(host) = state.sessions.get(session_id)
+            && host.is_alive()
+        {
+            return Ok((
+                HostHandle {
+                    inner: Arc::clone(&host.inner),
+                },
+                false,
+            ));
+        }
+        state.sessions.remove(session_id);
+        let starting = state.reserve_start(session_id, &spec.bot_id)?;
+        drop(state);
+        drop(mutation);
+        let host = self
+            .start_reserved_session(spec, starting, "mobius-gateway", cache)
+            .await?;
+        drop(capacity);
+        Ok((host, !cache))
+    }
+
+    /// Applies every check selecting `session_id` makes, without starting it.
+    async fn authorize_chat(
+        &self,
+        session_id: &str,
+        admission: Admission,
+    ) -> std::result::Result<(AuthorizedChat, tokio::sync::OwnedRwLockReadGuard<()>), Rejection>
+    {
         validate_session_id(session_id).map_err(|_| invalid_session_id())?;
-        let mutation = self.begin_mutation().await?;
+        let guard = match admission {
+            Admission::Execute => self.begin_mutation().await?,
+            Admission::Observe => self.begin_access().await?,
+        };
         {
             let mut state = self.state.lock().await;
             if let Some(host) = state.sessions.get(session_id)
                 && host.is_alive()
             {
-                return Ok((host.clone(), false));
+                return Ok((
+                    AuthorizedChat::Resident(HostHandle {
+                        inner: Arc::clone(&host.inner),
+                    }),
+                    guard,
+                ));
             }
             state.sessions.remove(session_id);
         }
@@ -870,11 +944,7 @@ impl GatewayHost {
                 .into_iter()
                 .find(|bot| bot.conversation_session_id == session_id)
                 .ok_or_else(unknown_session)?;
-            drop(mutation);
-            let host = self
-                .create_session_with_id(None, &bot.id, session_id.into(), true, "persistent chat")
-                .await?;
-            return Ok((host, false));
+            return Ok((AuthorizedChat::Unstarted { bot_id: bot.id }, guard));
         };
         let tls = config
             .lock()
@@ -902,22 +972,30 @@ impl GatewayHost {
         {
             return Err(invalid_session_workspace());
         }
-        let capacity = self.ensure_capacity().await?;
-        let mut state = self.state.lock().await;
-        if let Some(host) = state.sessions.get(session_id)
-            && host.is_alive()
-        {
-            return Ok((host.clone(), false));
+        Ok((AuthorizedChat::Stored(spec), guard))
+    }
+
+    /// One durable history page for a chat this client could select, read without
+    /// loading the chat: a resident chat answers itself, a stopped one is read from
+    /// its event journal with framework-rendered blocks only.
+    pub(crate) async fn read_session_history(
+        &self,
+        session_id: &str,
+        before_sequence: Option<u64>,
+    ) -> std::result::Result<SessionHistoryPage, Rejection> {
+        let (chat, access) = self.authorize_chat(session_id, Admission::Observe).await?;
+        if let AuthorizedChat::Resident(host) = chat {
+            drop(access);
+            return host.history_page(before_sequence).await;
         }
-        state.sessions.remove(session_id);
-        let starting = state.reserve_start(session_id, &checkpoint.session_context.owner_id)?;
-        drop(state);
-        drop(mutation);
-        let host = self
-            .start_reserved_session(spec, starting, "mobius-gateway", cache)
-            .await?;
-        drop(capacity);
-        Ok((host, !cache))
+        let checkpoints = Arc::clone(&self.state.lock().await.checkpoints);
+        durable_history_page(
+            checkpoints.as_ref(),
+            session_id,
+            &FrameworkPresentation,
+            before_sequence,
+        )
+        .await
     }
 
     pub(crate) async fn reassign_session(
@@ -1342,6 +1420,30 @@ fn scratchpad_error(error: mobius::Error) -> Rejection {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+impl GatewayHost {
+    pub(crate) async fn stop_idle_session(&self, session_id: &str) {
+        let host = self
+            .state
+            .lock()
+            .await
+            .sessions
+            .remove(session_id)
+            .expect("resident chat");
+        assert!(host.stop_if_idle().await);
+    }
+
+    pub(crate) async fn is_resident(&self, session_id: &str) -> bool {
+        let state = self.state.lock().await;
+        state.sessions.contains_key(session_id)
+            || mobius::sync::recover_lock(&state.starting_sessions).contains_key(session_id)
+    }
+
+    pub(crate) async fn checkpoint_store(&self) -> Arc<dyn CheckpointStore> {
+        Arc::clone(&self.state.lock().await.checkpoints)
+    }
+}
 
 fn reject_persistent_session(summary: &SessionSummary) -> std::result::Result<(), Rejection> {
     if summary.session_id == crate::bots::conversation_session_id(&summary.session_context.owner_id)

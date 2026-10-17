@@ -102,8 +102,50 @@ pub(super) async fn load_replay(
     })
 }
 
+/// Renders journal events into the blocks a frontend shows.
+pub(super) trait RenderEvents {
+    fn render(&self, event: &EventMsg) -> Vec<RenderedBlock>;
+}
+
+impl RenderEvents for FrontendExtensions {
+    fn render(&self, event: &EventMsg) -> Vec<RenderedBlock> {
+        FrontendExtensions::render(self, event)
+    }
+}
+
+/// Framework-owned blocks only, for chats read without loading their middleware.
+pub(super) struct FrameworkPresentation;
+
+impl RenderEvents for FrameworkPresentation {
+    fn render(&self, event: &EventMsg) -> Vec<RenderedBlock> {
+        event.presentation().into_iter().collect()
+    }
+}
+
+/// One complete durable turn page, projected for clients.
+pub(super) async fn durable_history_page(
+    checkpoints: &dyn CheckpointStore,
+    session_id: &str,
+    frontend: &impl RenderEvents,
+    before_sequence: Option<u64>,
+) -> std::result::Result<SessionHistoryPage, Rejection> {
+    let page = event_turn_page(checkpoints, session_id, before_sequence)
+        .await
+        .map_err(internal)?;
+    let next_before_sequence = page.next_before_sequence;
+    let records = page
+        .into_chronological()
+        .into_iter()
+        .map(|event| project_record(frontend, event))
+        .collect();
+    Ok(SessionHistoryPage {
+        records,
+        next_before_sequence,
+    })
+}
+
 pub(super) fn render_preview(
-    frontend: &FrontendExtensions,
+    frontend: &impl RenderEvents,
     event: &EventMsg,
 ) -> Option<RenderedPreview> {
     let EventMsg::Frontend(FrontendEvent::Preview {
@@ -144,7 +186,7 @@ pub(super) fn render_preview(
 }
 
 pub(super) fn project_record(
-    frontend: &FrontendExtensions,
+    frontend: &impl RenderEvents,
     mut journal: JournalEvent,
 ) -> RecordedEvent {
     let (blocks, preview) = project_event(frontend, &journal.event.msg);
@@ -168,7 +210,7 @@ pub(super) fn clear_projected_preview_events(event: &mut EventMsg) {
 }
 
 pub(super) fn project_event(
-    frontend: &FrontendExtensions,
+    frontend: &impl RenderEvents,
     event: &EventMsg,
 ) -> (Vec<RenderedBlock>, Option<RenderedPreview>) {
     (frontend.render(event), render_preview(frontend, event))

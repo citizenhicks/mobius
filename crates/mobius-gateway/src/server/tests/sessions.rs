@@ -770,3 +770,150 @@ async fn shutdown_stops_a_blocked_routine_and_fails_its_durable_run() {
         .expect("model server task");
     drop(grant);
 }
+
+async fn request_history(
+    sender: &GatewaySender,
+    events: &mut GatewayEvents,
+    session_id: &str,
+) -> std::result::Result<Vec<crate::wire::RecordedEvent>, String> {
+    let request_id = Uuid::new_v4().to_string();
+    sender
+        .send(ClientMessage::GetSessionHistory {
+            request_id: request_id.clone(),
+            session_id: session_id.into(),
+            before_sequence: None,
+        })
+        .await
+        .expect("request history");
+    loop {
+        match next_gateway_message(events).await {
+            ServerMessage::SessionHistory {
+                request_id: actual,
+                records,
+                ..
+            } if actual == request_id => return Ok(records),
+            ServerMessage::Rejected {
+                request_id: actual,
+                code,
+                ..
+            } if actual == request_id => return Err(code),
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test]
+async fn unselected_chat_history_is_read_without_starting_the_chat() {
+    let root = tempfile::tempdir().expect("root");
+    let workspace = root.path().join("workspace");
+    fs::create_dir(&workspace).expect("workspace");
+    let (server, grant) = configured_test_server(root.path().join("state")).await;
+    let host = server.host.clone();
+    let endpoint = format!("tcp://{}", server.config.listen)
+        .parse::<Endpoint>()
+        .expect("endpoint");
+    let (shutdown, signal) = tokio::sync::oneshot::channel();
+    let serving = tokio::spawn(server.serve_until(async move {
+        let _ = signal.await;
+    }));
+    let (connection, _) = GatewayClient::pair(&endpoint, grant.code, "Recap test", ClientKind::Cli)
+        .await
+        .expect("pair");
+    let (sender, mut events) = connection.into_parts();
+    wait_gateway_ready(&mut events).await;
+    let away = create_chat(&sender, &mut events, &workspace).await;
+    let selected = create_chat(&sender, &mut events, &workspace).await;
+    host.stop_idle_session(&away).await;
+    let checkpoints = host.checkpoint_store().await;
+    for (recorded_at, msg) in [
+        EventMsg::TurnStarted(mobius::protocol::TurnStartedEvent {
+            turn_id: "away".into(),
+            model_context_window: None,
+        }),
+        EventMsg::Warning(mobius::protocol::WarningEvent {
+            message: "work while away".into(),
+        }),
+        EventMsg::TurnComplete(mobius::protocol::TurnCompleteEvent {
+            turn_id: "away".into(),
+        }),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        checkpoints
+            .append_event(
+                &away,
+                i64::try_from(recorded_at).expect("timestamp"),
+                &Event {
+                    submission_id: None,
+                    msg,
+                },
+            )
+            .await
+            .expect("append journal event");
+    }
+
+    let records = request_history(&sender, &mut events, &away)
+        .await
+        .expect("unselected history");
+    let warning = records
+        .iter()
+        .find(|record| {
+            matches!(&record.event.msg, EventMsg::Warning(warning) if warning.message == "work while away")
+        })
+        .expect("durable warning");
+    assert!(
+        warning
+            .blocks
+            .iter()
+            .any(|block| block.block.title == "Warning")
+    );
+    assert!(!host.is_resident(&away).await);
+
+    request_history(&sender, &mut events, &selected)
+        .await
+        .expect("selected history");
+    assert!(host.is_resident(&selected).await);
+
+    for (session_id, expected) in [
+        ("missing-chat", "unknown_session"),
+        ("  ", "invalid_session_id"),
+    ] {
+        assert_eq!(
+            request_history(&sender, &mut events, session_id)
+                .await
+                .err()
+                .as_deref(),
+            Some(expected)
+        );
+    }
+    sender
+        .send(ClientMessage::DeleteSessions {
+            request_id: "delete-away".into(),
+            session_ids: vec![away.as_str().into()],
+            selection: mobius::backend::session_files::SessionFileSelection::All,
+        })
+        .await
+        .expect("delete chat");
+    loop {
+        match next_gateway_message(&mut events).await {
+            ServerMessage::Accepted { request_id } if request_id == "delete-away" => break,
+            ServerMessage::Rejected {
+                request_id,
+                message,
+                ..
+            } if request_id == "delete-away" => panic!("delete rejected: {message}"),
+            _ => {}
+        }
+    }
+    assert_eq!(
+        request_history(&sender, &mut events, &away)
+            .await
+            .err()
+            .as_deref(),
+        Some("unknown_session")
+    );
+    assert!(!host.is_resident(&away).await);
+    shutdown.send(()).expect("shutdown");
+    serving.await.expect("server task").expect("server");
+}

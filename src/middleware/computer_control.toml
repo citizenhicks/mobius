@@ -2,14 +2,14 @@ default_enabled = false
 default_timeout_ms = 30000
 manifest_label = "Computer control"
 manifest_description = "Operate a browser and supported native apps with persistent JavaScript and image observations"
-prompt = "Computer control is available. Read {documentation} before using computer_control. Browser state and JavaScript variables survive context compaction. Action failures can retain interpreter state; follow the reported state. An overall evaluation deadline, cancellation, or runtime restart loses interpreter state and may leave an action completed; never repeat it automatically. Each agent has its own interpreter. Gateway-coordinated headed browser tabs share one persistent profile and serialize foreground use; the first evaluation after startup or takeover observes without executing submitted code."
+prompt = "`computer_control`: drive the browser and desktop; read {documentation} before first use."
 
 [computer_control]
 title = "Computer"
 
 [computer_control.tool]
 name = "computer_control"
-description = "Evaluate JavaScript in this session's persistent computer runtime. Read the installed documentation first. Await every action. Use the documented browser or native desktop APIs and image helpers. Reset explicitly after state loss; never automatically repeat an uncertain action."
+description = "Evaluate JavaScript in this session's persistent computer runtime. Read the installed documentation first. Await every action. Use the documented browser or native desktop APIs and image helpers. Browser state and variables survive context compaction; a failed action may keep interpreter state, so follow the reported state. A deadline, cancellation or runtime restart loses interpreter state and may leave an action completed: reset explicitly and never automatically repeat an uncertain action. Each agent has its own interpreter. Headed browser tabs share one profile and serialize foreground use; the first evaluation after startup or takeover only observes."
 
 [computer_control.tool.parameters]
 type = "object"

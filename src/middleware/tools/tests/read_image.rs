@@ -8,14 +8,14 @@ const PNG: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
 #[tokio::test]
-async fn ordered_images_are_durable_and_reinspectable_after_source_deletion() {
+async fn extensionless_images_are_durable_and_reinspectable_after_source_deletion() {
     let workspace = tempfile::tempdir().expect("workspace");
     let state = tempfile::tempdir().expect("state");
     let store = SessionFileStore::new(state.path(), None);
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(PNG)
         .expect("PNG");
-    let path = workspace.path().join("page.png");
+    let path = workspace.path().join("page");
     std::fs::write(&path, &bytes).expect("image");
     let sandbox = Arc::new(Sandbox::new(
         Arc::new(
@@ -25,7 +25,7 @@ async fn ordered_images_are_durable_and_reinspectable_after_source_deletion() {
     ));
     let mut catalog = Catalog::default();
     catalog
-        .register(Arc::new(ViewImage {
+        .register(Arc::new(ReadFile {
             store: store.clone(),
         }))
         .expect("register");
@@ -33,8 +33,8 @@ async fn ordered_images_are_durable_and_reinspectable_after_source_deletion() {
         &mut catalog,
         &[ToolCall {
             call_id: "view".into(),
-            name: "view_image".into(),
-            arguments: serde_json::json!({"images": [{"path": "page.png", "detail": "high"}, {"path": "page.png", "detail": "low"}]}),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "page"}),
         }],
     );
     let result = execute_batch(
@@ -53,14 +53,10 @@ async fn ordered_images_are_durable_and_reinspectable_after_source_deletion() {
     let [
         ContentPart::Text { .. },
         ContentPart::Image { image: first },
-        ContentPart::Text { .. },
-        ContentPart::Image { image: second },
     ] = result.output.0.as_slice()
     else {
-        panic!("ordered native images");
+        panic!("native image");
     };
-    assert_eq!(first.detail, crate::protocol::ImageDetail::High);
-    assert_eq!(second.detail, crate::protocol::ImageDetail::Low);
     std::fs::remove_file(path).expect("remove source");
     assert_eq!(
         store
@@ -79,8 +75,8 @@ async fn ordered_images_are_durable_and_reinspectable_after_source_deletion() {
         .bind_call(
             ToolCall {
                 call_id: "again".into(),
-                name: "view_image".into(),
-                arguments: serde_json::json!({"images": [{"file_id": first.file.id}]}),
+                name: "read_file".into(),
+                arguments: serde_json::json!({"file_id": first.file.id}),
             },
             &BTreeSet::new(),
             &BTreeSet::new(),
@@ -144,4 +140,106 @@ async fn ordered_images_are_durable_and_reinspectable_after_source_deletion() {
             .expect("published files")
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn read_file_preserves_text_limits_and_rejects_ambiguous_sources() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let state = tempfile::tempdir().expect("state");
+    let text = "Bonjour, 世界\n";
+    std::fs::write(workspace.path().join("notes.png"), text).expect("text");
+    std::fs::write(workspace.path().join("invalid"), [0xff]).expect("invalid UTF-8");
+    std::fs::write(
+        workspace.path().join("oversized"),
+        vec![b'a'; crate::backend::sandbox::MAX_FILE_BYTES + 1],
+    )
+    .expect("oversized text");
+    let sandbox = Arc::new(Sandbox::new(
+        Arc::new(
+            crate::backend::sandbox::local::LocalSandbox::new(workspace.path()).expect("sandbox"),
+        ),
+        crate::backend::sandbox::ApprovalPolicy::Ask,
+    ));
+    let mut catalog = Catalog::default();
+    catalog
+        .register(Arc::new(ReadFile {
+            store: SessionFileStore::new(state.path(), None),
+        }))
+        .expect("register");
+    let cases = [
+        (serde_json::json!({"path": "notes.png"}), false, text),
+        (
+            serde_json::json!({"path": "invalid"}),
+            true,
+            "invalid is not valid UTF-8",
+        ),
+        (
+            serde_json::json!({"path": "oversized"}),
+            true,
+            "file exceeds read limit",
+        ),
+        (
+            serde_json::json!({"path": "notes.png", "file_id": "unused"}),
+            true,
+            "provide exactly one of path or file_id",
+        ),
+        (
+            serde_json::json!({}),
+            true,
+            "provide exactly one of path or file_id",
+        ),
+    ];
+    let calls = cases
+        .iter()
+        .enumerate()
+        .map(|(index, (arguments, _, _))| ToolCall {
+            call_id: index.to_string(),
+            name: "read_file".into(),
+            arguments: arguments.clone(),
+        })
+        .collect::<Vec<_>>();
+    let calls = finalize_and_bind(&mut catalog, &calls);
+    let results = execute_batch(
+        &catalog,
+        calls,
+        sandbox,
+        &test_permissions(&[]),
+        "turn",
+        "test",
+        &crate::protocol::MessageAuthor::User,
+    )
+    .await;
+    assert_eq!(results.len(), cases.len());
+    for (result, (arguments, is_error, expected)) in results.into_iter().zip(cases) {
+        assert_eq!(result.is_error, is_error, "{arguments}");
+        if is_error {
+            assert!(
+                result.output.text().contains(expected),
+                "{}",
+                result.output.text()
+            );
+        } else {
+            assert_eq!(result.output.text(), expected);
+        }
+    }
+}
+
+#[test]
+fn image_file_id_heading_does_not_invent_a_workspace_link() {
+    let state = tempfile::tempdir().expect("state");
+    let tool = ReadFile {
+        store: SessionFileStore::new(state.path(), None),
+    };
+    let block = tool
+        .render(&EventMsg::ToolCallBegin(
+            crate::protocol::ToolCallBeginEvent {
+                turn_id: "turn".into(),
+                call_id: "read".into(),
+                name: "read_file".into(),
+                arguments: serde_json::json!({"file_id": "session-image-id"}),
+            },
+        ))
+        .expect("read heading");
+    assert!(block.text.contains("session-image-id"));
+    assert!(block.links.is_empty());
 }

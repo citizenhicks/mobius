@@ -25,6 +25,7 @@ struct Definition {
     manifest_description: String,
     render_ready: String,
     render_failed: String,
+    prompt_main: String,
     #[serde(deserialize_with = "super::manifest::deserialize_settings")]
     settings: Vec<super::manifest::MiddlewareSettingManifest>,
     generate_image: ToolSpec,
@@ -85,6 +86,11 @@ impl ImageGeneration {
 impl Middleware for ImageGeneration {
     fn name(&self) -> &'static str {
         MANIFEST.id
+    }
+
+    fn prompt_section(&self, _runtime: &RuntimeContext) -> Result<Option<super::PromptSection>> {
+        Ok((self.models.image_choices().len() > 0)
+            .then(|| super::PromptSection::new(DEFINITION.prompt_main.as_str())))
     }
 
     fn register(&self, catalog: &mut Catalog, runtime: &RuntimeContext) -> Result<()> {
